@@ -54,7 +54,7 @@ async fn test_github_e2e() {
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: None,
             token_expires_at: None,
-            scopes: &[],
+            scopes: Some(&[]),
             account_email: None,
             byoc_credential_id: None,
             integration_managed: false,

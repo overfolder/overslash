@@ -134,7 +134,7 @@ async fn test_google_drive_e2e() {
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: None,
             token_expires_at: None,
-            scopes: &["https://www.googleapis.com/auth/drive".to_string()],
+            scopes: Some(&["https://www.googleapis.com/auth/drive".to_string()]),
             account_email: None,
             byoc_credential_id: Some(byoc_id),
             integration_managed: false,

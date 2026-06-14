@@ -426,9 +426,12 @@ pub struct ImportConnectionInput {
     /// `expires_at` is absent.
     #[serde(default)]
     pub expires_in: Option<i64>,
-    /// Granted scopes — labeling + the action scope-gate. Default `[]`.
+    /// Granted scopes — labeling + the action scope-gate. Omitted ⇒ `null`
+    /// (unknown): Overslash records no scope set and the action scope-gate gives
+    /// the connection the benefit of the doubt rather than 403ing scope-gated
+    /// calls. Pass the granted set to opt into precise scope checking.
     #[serde(default)]
-    pub scopes: Vec<String>,
+    pub scopes: Option<Vec<String>>,
     /// Account label. Omitted ⇒ best-effort fetch via the provider userinfo
     /// endpoint. Also the multi-account key for idempotent re-import.
     #[serde(default)]
@@ -450,7 +453,10 @@ pub struct ImportConnectionResponse {
     pub connection_id: Uuid,
     pub provider: String,
     pub account_email: Option<String>,
-    pub scopes: Vec<String>,
+    /// The recorded granted scopes, or `null` when unknown (an import that
+    /// didn't declare them — the scope-gate gives such a connection the benefit
+    /// of the doubt).
+    pub scopes: Option<Vec<String>>,
     pub is_default: bool,
     /// `true` when imported without a `byoc_credential_id` — the integration
     /// owns refresh; Overslash injects until expiry then signals reauth.
@@ -597,22 +603,18 @@ pub async fn kernel_import_connection(
             // injecting a token that has actually expired upstream). A re-import
             // that *does* supply `expires_at`/`expires_in` overrides it.
             let next_expires_at = expires_at.or(existing.token_expires_at);
-            // Likewise preserve the existing scopes when the re-import omits them
-            // (the field defaults to `[]`). Overwriting with an empty set would
-            // wipe the granted scopes and 403 every subsequent scope-gated call.
-            // A re-import that supplies a non-empty `scopes` overrides them.
-            let next_scopes = if input.scopes.is_empty() {
-                existing.scopes.clone()
-            } else {
-                input.scopes.clone()
-            };
+            // Likewise preserve the recorded scopes when the re-import omits them
+            // (`scopes` is now `null`/`None` ⇒ "unknown", not `[]`). Overwriting
+            // with NULL would discard a known granted set; a re-import that
+            // supplies `scopes` overrides it.
+            let next_scopes = input.scopes.clone().or_else(|| existing.scopes.clone());
             let updated = scope
                 .update_connection_tokens_and_scopes(
                     existing.id,
                     &encrypted_access,
                     encrypted_refresh.as_deref(),
                     next_expires_at,
-                    &next_scopes,
+                    next_scopes.as_deref(),
                     account_email.as_deref(),
                 )
                 .await?;
@@ -637,7 +639,7 @@ pub async fn kernel_import_connection(
                     encrypted_access_token: &encrypted_access,
                     encrypted_refresh_token: encrypted_refresh.as_deref(),
                     token_expires_at: expires_at,
-                    scopes: &input.scopes,
+                    scopes: input.scopes.as_deref(),
                     account_email: account_email.as_deref(),
                     byoc_credential_id: byoc_id,
                     integration_managed,
@@ -796,7 +798,7 @@ pub async fn mint_upgrade_auth_url(
     extra_scopes: &[String],
     return_url: Option<&str>,
 ) -> Result<AuthRecoveryUrls, AppError> {
-    let scopes = merge_scopes(&conn.scopes, extra_scopes);
+    let scopes = merge_scopes(conn.scopes.as_deref().unwrap_or(&[]), extra_scopes);
     let scope = OrgScope::new(org_id, state.db.clone());
 
     // The OAuth callback (`routes/connections.rs::oauth_callback`) updates

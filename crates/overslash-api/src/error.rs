@@ -186,6 +186,10 @@ pub enum AppError {
     #[error("missing_scopes: {connection_id}")]
     MissingScopes {
         connection_id: uuid::Uuid,
+        /// The full set the action requires (so the caller sees the target, not
+        /// just the delta).
+        required: Vec<String>,
+        /// The subset not currently granted (the delta to obtain).
         missing: Vec<String>,
         upgrade_url: String,
         auth_url: Option<String>,
@@ -461,6 +465,7 @@ impl IntoResponse for AppError {
             }
             Self::MissingScopes {
                 connection_id,
+                required,
                 missing,
                 upgrade_url,
                 auth_url,
@@ -468,6 +473,7 @@ impl IntoResponse for AppError {
             } => {
                 let mut body = json!({
                     "error": "missing_scopes",
+                    "required": required,
                     "missing": missing,
                     "connection_id": connection_id,
                     "upgrade_url": upgrade_url,
@@ -545,6 +551,7 @@ mod tests {
         let conn_id = Uuid::new_v4();
         let err = AppError::MissingScopes {
             connection_id: conn_id,
+            required: vec!["calendar.readonly".into(), "calendar.events".into()],
             missing: vec!["calendar.readonly".into(), "calendar.events".into()],
             upgrade_url: "https://api.example/v1/connections/x/upgrade_scopes".into(),
             auth_url: Some("https://api.example/connect-authorize?id=abc".into()),
@@ -553,6 +560,10 @@ mod tests {
         let (status, body) = body_json(err.into_response()).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["error"], "missing_scopes");
+        assert_eq!(
+            body["required"],
+            json!(["calendar.readonly", "calendar.events"])
+        );
         assert_eq!(body["connection_id"].as_str().unwrap(), conn_id.to_string());
         assert_eq!(
             body["missing"],
@@ -581,6 +592,7 @@ mod tests {
         // contract applies to the optional `short` field.
         let err = AppError::MissingScopes {
             connection_id: Uuid::new_v4(),
+            required: vec!["s".into()],
             missing: vec!["s".into()],
             upgrade_url: "https://api.example/upg".into(),
             auth_url: None,
@@ -663,6 +675,7 @@ mod tests {
         assert_eq!(
             AppError::MissingScopes {
                 connection_id: Uuid::new_v4(),
+                required: vec![],
                 missing: vec![],
                 upgrade_url: String::new(),
                 auth_url: None,

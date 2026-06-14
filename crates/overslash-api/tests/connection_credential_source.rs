@@ -271,7 +271,7 @@ async fn resolve_soft_pin_falls_back_when_byoc_id_is_dangling() {
         encrypted_access_token: vec![0u8; 1],
         encrypted_refresh_token: None,
         token_expires_at: None,
-        scopes: vec![],
+        scopes: Some(vec![]),
         account_email: None,
         byoc_credential_id: Some(Uuid::new_v4()),
         is_default: true,

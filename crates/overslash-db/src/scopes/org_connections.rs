@@ -92,7 +92,7 @@ impl OrgScope {
         encrypted_access_token: &[u8],
         encrypted_refresh_token: Option<&[u8]>,
         token_expires_at: Option<time::OffsetDateTime>,
-        scopes: &[String],
+        scopes: Option<&[String]>,
         account_email: Option<&str>,
     ) -> Result<bool, sqlx::Error> {
         connection::update_tokens_and_scopes(

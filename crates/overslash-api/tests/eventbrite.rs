@@ -72,7 +72,7 @@ async fn test_eventbrite_e2e() {
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: None,
             token_expires_at: None,
-            scopes: &[],
+            scopes: Some(&[]),
             account_email: None,
             byoc_credential_id: Some(byoc_id),
             integration_managed: false,

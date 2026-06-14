@@ -603,8 +603,16 @@ pub(super) async fn check_required_scopes(
         return Ok(());
     };
 
+    // Unknown granted scopes (a token import that didn't declare them) get the
+    // benefit of the doubt — Overslash can't know what the token covers, so it
+    // doesn't pre-emptively 403; a genuine scope shortfall still surfaces as the
+    // upstream's own error. A known set (orchestrated connections always record
+    // one) is gated precisely.
+    let Some(granted_scopes) = connection.scopes.as_deref() else {
+        return Ok(());
+    };
     let granted: std::collections::HashSet<&str> =
-        connection.scopes.iter().map(String::as_str).collect();
+        granted_scopes.iter().map(String::as_str).collect();
     let missing: Vec<String> = action
         .required_scopes
         .iter()
@@ -629,6 +637,7 @@ pub(super) async fn check_required_scopes(
         );
         return Err(AppError::MissingScopes {
             connection_id: connection.id,
+            required: action.required_scopes.clone(),
             missing,
             upgrade_url,
             auth_url: None,
@@ -676,6 +685,7 @@ pub(super) async fn check_required_scopes(
     );
     Err(AppError::MissingScopes {
         connection_id: connection.id,
+        required: action.required_scopes.clone(),
         missing,
         upgrade_url,
         auth_url,

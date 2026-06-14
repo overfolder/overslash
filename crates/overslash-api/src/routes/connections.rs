@@ -170,7 +170,7 @@ struct ImportConnectionRequest {
     #[serde(default)]
     expires_in: Option<i64>,
     #[serde(default)]
-    scopes: Vec<String>,
+    scopes: Option<Vec<String>>,
     #[serde(default)]
     account_email: Option<String>,
     #[serde(default)]
@@ -185,7 +185,9 @@ struct ImportConnectionResponse {
     provider: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     account_email: Option<String>,
-    scopes: Vec<String>,
+    /// `null` when the import didn't declare scopes (unknown — the scope-gate
+    /// gives the connection the benefit of the doubt).
+    scopes: Option<Vec<String>>,
     is_default: bool,
     integration_managed: bool,
 }
@@ -699,14 +701,15 @@ async fn oauth_callback_inner(
                     "state mismatch: upgrade connection does not match identity/provider".into(),
                 ));
             }
-            let merged: Vec<String> = merge_scopes(&existing.scopes, &granted_scopes);
+            let merged: Vec<String> =
+                merge_scopes(existing.scopes.as_deref().unwrap_or(&[]), &granted_scopes);
             let updated = scope
                 .update_connection_tokens_and_scopes(
                     existing_id,
                     &encrypted_access,
                     encrypted_refresh.as_deref(),
                     expires_at,
-                    &merged,
+                    Some(&merged),
                     // Refresh the label too — the provider may have renamed the
                     // account between the original connect and the upgrade.
                     // `COALESCE` on the repo side leaves the existing value
@@ -732,7 +735,9 @@ async fn oauth_callback_inner(
                     encrypted_access_token: &encrypted_access,
                     encrypted_refresh_token: encrypted_refresh.as_deref(),
                     token_expires_at: expires_at,
-                    scopes: &granted_scopes,
+                    // Orchestrated flows always know the granted set (from the
+                    // token response) — record it (even if empty), never NULL.
+                    scopes: Some(&granted_scopes),
                     account_email: account_email.as_deref(),
                     byoc_credential_id: effective_byoc_id,
                     // Orchestrated connections always refresh via the cascade —
@@ -885,7 +890,7 @@ async fn list_connections(scope: UserScope) -> Result<Json<Vec<ConnectionSummary
                 id: r.id,
                 provider_key: r.provider_key,
                 account_email: r.account_email,
-                scopes: r.scopes,
+                scopes: r.scopes.unwrap_or_default(),
                 is_default: r.is_default,
                 created_at: fmt_time(r.created_at),
             })
@@ -963,7 +968,7 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
         id: conn.id,
         provider_key: conn.provider_key,
         account_email: conn.account_email,
-        scopes: conn.scopes,
+        scopes: conn.scopes.unwrap_or_default(),
         is_default: conn.is_default,
         integration_managed: conn.integration_managed,
         created_at: fmt_time(conn.created_at),
@@ -1075,7 +1080,7 @@ async fn upgrade_connection_scopes(
     // Union existing + requested scopes. Google with `include_granted_scopes=true`
     // would preserve old ones anyway, but sending the full union is what makes
     // non-Google providers work.
-    let merged: Vec<String> = merge_scopes(&existing.scopes, &req.scopes);
+    let merged: Vec<String> = merge_scopes(existing.scopes.as_deref().unwrap_or(&[]), &req.scopes);
 
     // Mirror what `kernel_create_connection_for_identity` will do: union in
     // the provider's identity scopes so `requested_scopes` on the response

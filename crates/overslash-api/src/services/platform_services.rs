@@ -263,7 +263,7 @@ pub async fn kernel_list_services(
     // identity's connection for the template's provider. Resolve those here
     // (deduped by (owner, provider)) so the badge matches a real call instead
     // of falsely reading "needs setup".
-    let mut conn_by_owner_provider: HashMap<(Uuid, String), Vec<String>> = HashMap::new();
+    let mut conn_by_owner_provider: HashMap<(Uuid, String), Option<Vec<String>>> = HashMap::new();
     // Track looked-up pairs separately from found ones: an owner with no
     // connection for the provider must still be cached, or each of its unbound
     // instances would re-query (N+1 on the no-connection path).
@@ -299,16 +299,20 @@ pub async fn kernel_list_services(
             let tpl_key = (row.owner_identity_id, row.template_key.clone());
             let template = templates.get(&tpl_key);
             let credentials_status = template.and_then(|tpl| {
-                let scopes: Option<&[String]> = if let Some(cid) = row.connection_id {
-                    connections_by_id.get(&cid).map(|c| c.scopes.as_slice())
+                let scopes: ScopeKnowledge = if let Some(cid) = row.connection_id {
+                    match connections_by_id.get(&cid) {
+                        Some(c) => scope_knowledge(c.scopes.as_deref()),
+                        None => ScopeKnowledge::NoConnection,
+                    }
                 } else if let (Some(owner), Some(provider)) =
                     (row.owner_identity_id, template_oauth_provider(tpl))
                 {
-                    conn_by_owner_provider
-                        .get(&(owner, provider.to_string()))
-                        .map(|s| s.as_slice())
+                    match conn_by_owner_provider.get(&(owner, provider.to_string())) {
+                        Some(opt) => scope_knowledge(opt.as_deref()),
+                        None => ScopeKnowledge::NoConnection,
+                    }
                 } else {
-                    None
+                    ScopeKnowledge::NoConnection
                 };
                 derive_credentials_status(tpl, scopes, row.secret_name.as_deref())
             });
@@ -571,7 +575,7 @@ pub async fn kernel_create_service(
     let credentials_status = derive_credentials_status(
         &template_def,
         // No connection bulk-fetch here; if pinned, look it up.
-        None,
+        ScopeKnowledge::NoConnection,
         row.secret_name.as_deref(),
     );
     // If a connection was pinned at create time, refine via real scopes.
@@ -584,7 +588,7 @@ pub async fn kernel_create_service(
             .and_then(|conn| {
                 derive_credentials_status(
                     &template_def,
-                    Some(conn.scopes.as_slice()),
+                    scope_knowledge(conn.scopes.as_deref()),
                     row.secret_name.as_deref(),
                 )
             })
@@ -887,11 +891,11 @@ pub async fn compute_credentials_status(
             .await
             .ok()?;
     let conn_scopes = resolve_effective_scopes(db, scope, &template, row).await;
-    derive_credentials_status(
-        &template,
-        conn_scopes.as_deref(),
-        row.secret_name.as_deref(),
-    )
+    let scopes = match &conn_scopes {
+        None => ScopeKnowledge::NoConnection,
+        Some(opt) => scope_knowledge(opt.as_deref()),
+    };
+    derive_credentials_status(&template, scopes, row.secret_name.as_deref())
 }
 
 /// Granted scopes of the connection the *execution* path would actually use.
@@ -904,12 +908,14 @@ pub async fn compute_credentials_status(
 /// auto-resolve (e.g. a `google_calendar` instance with `connection_id = NULL`
 /// when the owner has a Google connection) was misreported as needing setup —
 /// both on the dashboard badge and on the agent-facing `service_status`.
+/// Returns `None` when no connection backs the instance, `Some(None)` when one
+/// does but its scopes are unknown, and `Some(Some(scopes))` for a known set.
 async fn resolve_effective_scopes(
     db: &sqlx::PgPool,
     scope: &OrgScope,
     template: &ServiceDefinition,
     row: &ServiceInstanceRow,
-) -> Option<Vec<String>> {
+) -> Option<Option<Vec<String>>> {
     if let Some(conn_id) = row.connection_id {
         return scope
             .get_connection(conn_id)
@@ -928,12 +934,37 @@ async fn resolve_effective_scopes(
         .map(|c| c.scopes)
 }
 
-/// Pure classifier: takes a template + (optional) granted scopes + secret name
-/// and returns a [`CredentialsStatus`] or `None` when the template has no auth
+/// What is known about a connection's granted scopes when classifying a
+/// service instance's credential health. Distinguishes "no connection at all"
+/// from "a connection exists but its granted scopes are unknown" (an imported
+/// token vaulted without declaring scopes) — the latter gets the benefit of the
+/// doubt, mirroring the call-time scope-gate.
+#[derive(Debug, Clone, Copy)]
+pub enum ScopeKnowledge<'a> {
+    /// No connection is bound and none auto-resolves.
+    NoConnection,
+    /// A connection exists but its granted scopes weren't recorded.
+    Unknown,
+    /// The known granted scope set (possibly empty).
+    Known(&'a [String]),
+}
+
+/// Map a *present* connection's optional scopes to [`ScopeKnowledge`]. Call
+/// sites that reach here have already established the connection exists, so
+/// `None` scopes means "recorded as unknown", not "no connection".
+fn scope_knowledge(scopes: Option<&[String]>) -> ScopeKnowledge<'_> {
+    match scopes {
+        Some(s) => ScopeKnowledge::Known(s),
+        None => ScopeKnowledge::Unknown,
+    }
+}
+
+/// Pure classifier: takes a template + scope knowledge + secret name and
+/// returns a [`CredentialsStatus`] or `None` when the template has no auth
 /// scheme to evaluate.
 pub fn derive_credentials_status(
     template: &ServiceDefinition,
-    granted_scopes: Option<&[String]>,
+    scopes: ScopeKnowledge<'_>,
     secret_name: Option<&str>,
 ) -> Option<CredentialsStatus> {
     let has_oauth = template
@@ -948,27 +979,36 @@ pub fn derive_credentials_status(
         template.mcp.as_ref().map(|m| &m.auth),
         Some(McpAuth::Bearer { .. })
     );
-
-    // No connection bound and no inline secret: a freshly-instantiated service
-    // for an auth-bearing template needs the OAuth dance / secret to be
-    // provided. Surface that explicitly so the agent doesn't need to guess.
-    let no_connection = granted_scopes.is_none();
     let no_secret = secret_name.is_none() || secret_name == Some("");
-    if no_connection {
-        if has_oauth {
-            return Some(CredentialsStatus::NeedsAuthentication);
-        }
-        if has_api_key || mcp_bearer {
-            return Some(if no_secret {
-                CredentialsStatus::NeedsAuthentication
-            } else {
-                CredentialsStatus::Ok
-            });
-        }
-    }
 
-    // No granted scopes to compare against: nothing more to classify.
-    let granted_list = granted_scopes?;
+    let granted_list = match scopes {
+        // No connection bound and no inline secret: a freshly-instantiated
+        // service for an auth-bearing template needs the OAuth dance / secret to
+        // be provided. Surface that explicitly so the agent doesn't guess.
+        ScopeKnowledge::NoConnection => {
+            if has_oauth {
+                return Some(CredentialsStatus::NeedsAuthentication);
+            }
+            if has_api_key || mcp_bearer {
+                return Some(if no_secret {
+                    CredentialsStatus::NeedsAuthentication
+                } else {
+                    CredentialsStatus::Ok
+                });
+            }
+            return None;
+        }
+        // A connection exists but we don't know its scopes — benefit of the
+        // doubt (same as the call-time gate). Classify as Ok for OAuth.
+        ScopeKnowledge::Unknown => {
+            return if has_oauth {
+                Some(CredentialsStatus::Ok)
+            } else {
+                None
+            };
+        }
+        ScopeKnowledge::Known(list) => list,
+    };
 
     if !has_oauth {
         return None;
@@ -1106,7 +1146,7 @@ mod tests {
     fn needs_authentication_when_oauth_template_has_no_connection() {
         let tpl = oauth_template(vec![("a", vec!["s1"])]);
         assert_eq!(
-            derive_credentials_status(&tpl, None, None),
+            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, None),
             Some(CredentialsStatus::NeedsAuthentication)
         );
     }
@@ -1125,7 +1165,7 @@ mod tests {
             runtime: Runtime::Http,
             mcp: None,
         };
-        assert!(derive_credentials_status(&tpl, None, None).is_none());
+        assert!(derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, None).is_none());
     }
 
     #[test]
@@ -1133,7 +1173,7 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
         let granted = scopes(&["s1", "s2"]);
         assert_eq!(
-            derive_credentials_status(&tpl, Some(&granted), None),
+            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
             Some(CredentialsStatus::Ok)
         );
     }
@@ -1143,7 +1183,19 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec![]), ("b", vec![])]);
         let granted = scopes(&[]);
         assert_eq!(
-            derive_credentials_status(&tpl, Some(&granted), None),
+            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
+            Some(CredentialsStatus::Ok)
+        );
+    }
+
+    #[test]
+    fn ok_when_connection_scopes_unknown_benefit_of_the_doubt() {
+        // An imported connection with no declared scopes classifies as Ok, not
+        // degraded — mirrors the call-time scope-gate giving it the benefit of
+        // the doubt.
+        let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
+        assert_eq!(
+            derive_credentials_status(&tpl, ScopeKnowledge::Unknown, None),
             Some(CredentialsStatus::Ok)
         );
     }
@@ -1153,7 +1205,7 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
         let granted = scopes(&["s1"]);
         assert_eq!(
-            derive_credentials_status(&tpl, Some(&granted), None),
+            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
             Some(CredentialsStatus::PartiallyDegraded)
         );
     }
@@ -1163,7 +1215,7 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
         let granted = scopes(&["other"]);
         assert_eq!(
-            derive_credentials_status(&tpl, Some(&granted), None),
+            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
             Some(CredentialsStatus::NeedsReconnect)
         );
     }
@@ -1172,7 +1224,11 @@ mod tests {
     fn ok_when_mcp_bearer_has_secret_and_no_connection() {
         let tpl = mcp_bearer_template(None);
         assert_eq!(
-            derive_credentials_status(&tpl, None, Some("whatsapp_mcp_token")),
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::NoConnection,
+                Some("whatsapp_mcp_token")
+            ),
             Some(CredentialsStatus::Ok)
         );
     }
@@ -1181,11 +1237,11 @@ mod tests {
     fn needs_authentication_when_mcp_bearer_has_no_secret_and_no_connection() {
         let tpl = mcp_bearer_template(None);
         assert_eq!(
-            derive_credentials_status(&tpl, None, None),
+            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, None),
             Some(CredentialsStatus::NeedsAuthentication)
         );
         assert_eq!(
-            derive_credentials_status(&tpl, None, Some("")),
+            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, Some("")),
             Some(CredentialsStatus::NeedsAuthentication)
         );
     }
@@ -1194,7 +1250,7 @@ mod tests {
     fn ok_when_api_key_template_has_secret_and_no_connection() {
         let tpl = api_key_template();
         assert_eq!(
-            derive_credentials_status(&tpl, None, Some("my_api_key")),
+            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, Some("my_api_key")),
             Some(CredentialsStatus::Ok)
         );
     }

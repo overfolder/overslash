@@ -11,7 +11,12 @@ pub struct ConnectionRow {
     pub encrypted_access_token: Vec<u8>,
     pub encrypted_refresh_token: Option<Vec<u8>>,
     pub token_expires_at: Option<OffsetDateTime>,
-    pub scopes: Vec<String>,
+    /// Granted OAuth scopes. `None` means *unknown* (a token import that didn't
+    /// declare them) — the action scope-gate treats unknown as covering
+    /// everything (benefit of the doubt). `Some(vec)` is the known granted set
+    /// (possibly empty); orchestrated connections always record this from the
+    /// token response.
+    pub scopes: Option<Vec<String>>,
     pub account_email: Option<String>,
     pub byoc_credential_id: Option<Uuid>,
     pub is_default: bool,
@@ -35,7 +40,8 @@ pub struct CreateConnection<'a> {
     pub encrypted_access_token: &'a [u8],
     pub encrypted_refresh_token: Option<&'a [u8]>,
     pub token_expires_at: Option<OffsetDateTime>,
-    pub scopes: &'a [String],
+    /// `None` stores SQL NULL — "scopes unknown" (see [`ConnectionRow::scopes`]).
+    pub scopes: Option<&'a [String]>,
     pub account_email: Option<&'a str>,
     pub byoc_credential_id: Option<Uuid>,
     /// See [`ConnectionRow::integration_managed`]. Orchestrated callbacks pass
@@ -74,7 +80,7 @@ pub(crate) async fn create(
         input.encrypted_access_token,
         input.encrypted_refresh_token as Option<&[u8]>,
         input.token_expires_at,
-        input.scopes,
+        input.scopes as Option<&[String]>,
         input.account_email,
         input.byoc_credential_id,
         input.integration_managed,
@@ -187,7 +193,7 @@ pub(crate) async fn update_tokens_and_scopes(
     encrypted_access_token: &[u8],
     encrypted_refresh_token: Option<&[u8]>,
     token_expires_at: Option<OffsetDateTime>,
-    scopes: &[String],
+    scopes: Option<&[String]>,
     account_email: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
@@ -201,7 +207,7 @@ pub(crate) async fn update_tokens_and_scopes(
         encrypted_access_token,
         encrypted_refresh_token as Option<&[u8]>,
         token_expires_at,
-        scopes,
+        scopes as Option<&[String]>,
         account_email,
     )
     .execute(pool)

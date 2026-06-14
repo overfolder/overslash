@@ -213,8 +213,10 @@ async fn integration_managed_missing_scopes_omits_auth_url() {
     }
     common::grant_service_to_everyone(&base, &client, &admin_key, "google_calendar").await;
 
-    // Import an integration-managed connection with NO scopes — the action
-    // requires the calendar scope, so the call must miss.
+    // Import an integration-managed connection with a *known* but insufficient
+    // scope set — the action requires the calendar scope, which is absent, so
+    // the call must miss. (Omitting scopes would instead be "unknown" and get
+    // the benefit of the doubt — covered by a separate test.)
     let (status, _) = import(
         &client,
         &base,
@@ -222,7 +224,8 @@ async fn integration_managed_missing_scopes_omits_auth_url() {
         json!({
             "provider": "google",
             "access_token": "vault-token",
-            "account_email": "noscopes@example.com"
+            "account_email": "noscopes@example.com",
+            "scopes": ["https://www.googleapis.com/auth/calendar.readonly"]
         }),
     )
     .await;
@@ -242,6 +245,9 @@ async fn integration_managed_missing_scopes_omits_auth_url() {
     assert_eq!(resp.status(), 403, "missing required scope must 403");
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"], "missing_scopes");
+    // The envelope shows the full required set and the missing delta.
+    assert_eq!(body["required"], json!([CAL_SCOPE]));
+    assert_eq!(body["missing"], json!([CAL_SCOPE]));
     assert!(
         body.get("auth_url").is_none_or(Value::is_null),
         "integration-managed missing_scopes must omit auth_url: {body}"
@@ -253,6 +259,69 @@ async fn integration_managed_missing_scopes_omits_auth_url() {
         .await
         .unwrap();
     assert_eq!(flows, 0, "no upgrade flow row should be created");
+}
+
+/// An import that omits `scopes` records `null` (unknown), and the scope-gate
+/// gives such a connection the benefit of the doubt — a scope-gated action call
+/// is injected and executes rather than 403ing.
+#[tokio::test]
+async fn import_without_scopes_gets_benefit_of_the_doubt() {
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+    let mock_host = format!("http://{mock_addr}");
+
+    let (base, client) =
+        common::start_api_with_registry(pool.clone(), Some(("google_calendar", mock_host))).await;
+    let (_org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    for pattern in ["http:**", "google_calendar:*:*"] {
+        client
+            .post(format!("{base}/v1/permissions"))
+            .header(auth_header(&admin_key).0, auth_header(&admin_key).1)
+            .json(&json!({"identity_id": ident_id, "action_pattern": pattern}))
+            .send()
+            .await
+            .unwrap();
+    }
+    common::grant_service_to_everyone(&base, &client, &admin_key, "google_calendar").await;
+
+    // Import with NO scopes declared → recorded as null (unknown).
+    let (status, body) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "vault-token",
+            "account_email": "unknown-scopes@example.com"
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(
+        body["scopes"].is_null(),
+        "omitted scopes must be recorded as null, not []: {body}"
+    );
+
+    // The scope-gated action call is given the benefit of the doubt and executes.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth_header(&key).0, auth_header(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "list_events",
+            "params": {"calendarId": "primary"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "unknown scopes must not 403 — benefit of the doubt"
+    );
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
 }
 
 /// `POST /v1/connections/{id}/upgrade_scopes` rejects an integration-managed
@@ -418,7 +487,7 @@ async fn emailless_import_does_not_overwrite_orchestrated_connection() {
             encrypted_access_token: &orchestrated_token,
             encrypted_refresh_token: None,
             token_expires_at: None,
-            scopes: &[],
+            scopes: Some(&[]),
             account_email: None,
             byoc_credential_id: None,
             integration_managed: false,

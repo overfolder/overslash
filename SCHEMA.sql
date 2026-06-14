@@ -144,7 +144,7 @@ CREATE TABLE public.connections (
     encrypted_access_token bytea NOT NULL,
     encrypted_refresh_token bytea,
     token_expires_at timestamp with time zone,
-    scopes text[] DEFAULT '{}'::text[] NOT NULL,
+    scopes text[],
     account_email text,
     byoc_credential_id uuid,
     is_default boolean DEFAULT true NOT NULL,
