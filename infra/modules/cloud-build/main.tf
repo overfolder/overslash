@@ -71,6 +71,10 @@ resource "google_cloudbuild_trigger" "deploy" {
         "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:$COMMIT_SHA",
         "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:latest",
         "--cache=true",
+        # Pin the cache repo explicitly. Kaniko otherwise infers it from a
+        # --destination; the tagged ($COMMIT_SHA) destinations make that
+        # inference fragile, so we point every build at one stable repo.
+        "--cache-repo=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api/cache",
         "--cache-ttl=168h",
       ]
     }

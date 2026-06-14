@@ -89,6 +89,8 @@ resource "google_cloudbuild_trigger" "deploy" {
         "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter:$COMMIT_SHA",
         "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter:latest",
         "--cache=true",
+        # Pin the cache repo explicitly (see cloud-build module for rationale).
+        "--cache-repo=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter/cache",
         "--cache-ttl=168h",
       ]
     }
