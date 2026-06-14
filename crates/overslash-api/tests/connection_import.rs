@@ -286,6 +286,89 @@ async fn self_refresh_import_validates_byoc() {
     assert_eq!(status, 400, "unknown byoc id must 400: {body}");
 }
 
+/// An emailless import must never overwrite an existing *orchestrated*
+/// connection that the `(identity, provider)` fallback happens to match (e.g.
+/// one whose userinfo fetch left `account_email` NULL). It creates a fresh
+/// vault connection instead — the orchestrated row is left untouched.
+#[tokio::test]
+async fn emailless_import_does_not_overwrite_orchestrated_connection() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    // Seed an orchestrated connection (integration_managed = false, NULL email),
+    // exactly what the OAuth callback would create when userinfo returns no email.
+    let enc_key = overslash_core::crypto::Keyring::test();
+    let orchestrated_token =
+        overslash_core::crypto::encrypt(&enc_key, b"orchestrated-token").unwrap();
+    let orchestrated = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_connection(overslash_db::repos::connection::CreateConnection {
+            org_id,
+            identity_id: ident_id,
+            provider_key: "google",
+            encrypted_access_token: &orchestrated_token,
+            encrypted_refresh_token: None,
+            token_expires_at: None,
+            scopes: &[],
+            account_email: None,
+            byoc_credential_id: None,
+            integration_managed: false,
+        })
+        .await
+        .unwrap();
+
+    // Emailless integration-managed import — the fallback would match the
+    // orchestrated row, but the mode differs, so it must create a new row.
+    let (status, body) = import(
+        &client,
+        &base,
+        &key,
+        json!({ "provider": "google", "access_token": "vault-token" }),
+    )
+    .await;
+    assert_eq!(status, 200, "import should succeed: {body}");
+    assert_eq!(body["integration_managed"], true);
+    let imported_id: Uuid = body["connection_id"].as_str().unwrap().parse().unwrap();
+    assert_ne!(
+        imported_id, orchestrated.id,
+        "import must not reuse the orchestrated connection"
+    );
+
+    // The orchestrated row is untouched: still integration_managed = false and
+    // its original (distinct) token.
+    let row = sqlx::query_as::<_, (bool, Vec<u8>)>(
+        "SELECT integration_managed, encrypted_access_token FROM connections WHERE id = $1",
+    )
+    .bind(orchestrated.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!row.0, "orchestrated connection mode must stay false");
+    assert_eq!(
+        row.1, orchestrated_token,
+        "orchestrated connection token must be untouched"
+    );
+
+    // Two connections now exist for the provider.
+    let conns: Value = client
+        .get(format!("{base}/v1/connections"))
+        .header(auth_header(&key).0, auth_header(&key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let google = conns
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["provider_key"] == "google")
+        .count();
+    assert_eq!(google, 2, "expected orchestrated + imported, got: {conns}");
+}
+
 /// `access_token` is required.
 #[tokio::test]
 async fn import_requires_access_token() {

@@ -547,36 +547,49 @@ pub async fn kernel_import_connection(
 
     // Idempotent re-import: update the existing row in place so the partner's
     // refresh/re-auth loop doesn't accrete duplicates.
-    let existing = scope
+    let candidate = scope
         .find_connection_for_import(identity_id, &input.provider, account_email.as_deref())
         .await?;
 
+    // Whether the import's *requested* mode/client matches an existing row's.
+    // The refresh mode (and pinned client) is fixed at first import.
+    let mode_matches = |existing: &ConnectionRow| {
+        existing.integration_managed == integration_managed
+            && (integration_managed || existing.byoc_credential_id == byoc_id)
+    };
+
+    // Decide whether `candidate` is genuinely *this* vault connection or an
+    // accidental match we must not overwrite (notably an orchestrated
+    // connection grabbed by the emailless `(identity, provider)` fallback).
+    let existing = match candidate {
+        Some(c) if account_email.is_some() => {
+            // Email-keyed match: the caller named this account, so an in-place
+            // update is intended. The mode is fixed — reject an explicit
+            // mode/client change rather than silently validating-and-discarding
+            // a `byoc_credential_id` (which would leave a misconfigured row).
+            if !mode_matches(&c) {
+                return Err(AppError::BadRequest(
+                    "a connection for this account already exists with a different refresh \
+                     mode or pinned client; the mode is fixed at import — delete it and \
+                     re-import to change it"
+                        .into(),
+                ));
+            }
+            Some(c)
+        }
+        Some(c) if mode_matches(&c) => {
+            // Emailless heuristic match (the identity's default connection for
+            // the provider). Only reuse it when it is the *same kind* of vault
+            // connection. This is what stops an emailless import from
+            // overwriting an orchestrated connection (or a differently-pinned
+            // one): on a mismatch we fall through to creating a fresh row.
+            Some(c)
+        }
+        _ => None,
+    };
+
     let (connection_id, is_default, effective_integration_managed, audit_action) =
         if let Some(existing) = existing {
-            // Refresh mode is fixed at the first import. Re-import updates tokens
-            // in place but cannot flip the mode or re-pin the client — otherwise
-            // a caller that passes a `byoc_credential_id` expecting self-refresh
-            // on an integration-managed row would have it silently validated and
-            // discarded, leaving a misconfigured connection. Reject the conflict
-            // explicitly instead. Omitting `byoc_credential_id` is always a
-            // token-only update that preserves the existing mode (the hot path
-            // for integration-managed re-import). Delete + re-import to change.
-            if let Some(req_byoc) = input.byoc_credential_id {
-                if existing.integration_managed {
-                    return Err(AppError::BadRequest(
-                        "connection is integration-managed; its refresh mode is fixed at \
-                         import — delete it and re-import to switch to self-refresh"
-                            .into(),
-                    ));
-                }
-                if existing.byoc_credential_id != Some(req_byoc) {
-                    return Err(AppError::BadRequest(
-                        "connection is pinned to a different BYOC client; the pinned client \
-                         is fixed at import — delete it and re-import to change it"
-                            .into(),
-                    ));
-                }
-            }
             let updated = scope
                 .update_connection_tokens_and_scopes(
                     existing.id,
