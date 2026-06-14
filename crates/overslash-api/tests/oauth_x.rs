@@ -195,6 +195,7 @@ async fn test_oauth_x_token_refresh() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: None,
+            integration_managed: false,
         })
         .await
         .unwrap();
@@ -240,9 +241,6 @@ async fn test_oauth_x_pkce_in_auth_url() {
         .json(&json!({
             "provider": "x",
             "scopes": ["tweet.read", "users.read", "offline.access"],
-            // White-label REST opt-in: surface the raw provider URL so we
-            // can assert PKCE params landed on the upstream redirect.
-            "include_raw": true,
         }))
         .send()
         .await
@@ -251,26 +249,25 @@ async fn test_oauth_x_pkce_in_auth_url() {
         .await
         .unwrap();
 
-    let raw = resp["raw"].as_str().unwrap();
     let state = resp["state"].as_str().unwrap();
 
-    // Raw provider URL must contain PKCE parameters
-    assert!(
-        raw.contains("code_challenge="),
-        "raw missing code_challenge: {raw}"
-    );
-    assert!(
-        raw.contains("code_challenge_method=S256"),
-        "raw missing code_challenge_method: {raw}"
-    );
-
-    // `state` is the opaque flow-row id — look the row up and assert the
-    // PKCE verifier was stored.
+    // `state` is the opaque flow-row id — look the row up and assert the PKCE
+    // params landed on the persisted upstream authorize URL and the verifier
+    // was stored. (The raw URL is no longer surfaced via the API.)
     let flow = overslash_db::repos::oauth_connection_flow::get_by_id(&pool, state)
         .await
         .unwrap()
         .expect("flow row should exist");
     assert_eq!(flow.provider_key, "x");
+    let authorize = &flow.upstream_authorize_url;
+    assert!(
+        authorize.contains("code_challenge="),
+        "authorize URL missing code_challenge: {authorize}"
+    );
+    assert!(
+        authorize.contains("code_challenge_method=S256"),
+        "authorize URL missing code_challenge_method: {authorize}"
+    );
     assert!(
         flow.pkce_code_verifier
             .as_deref()
@@ -375,6 +372,7 @@ async fn test_x_real_e2e() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: Some(byoc_id),
+            integration_managed: false,
         })
         .await
         .unwrap();
@@ -522,7 +520,6 @@ async fn test_oauth_github_no_pkce_in_auth_url() {
         .json(&json!({
             "provider": "github",
             "scopes": ["repo"],
-            "include_raw": true,
         }))
         .send()
         .await
@@ -531,21 +528,20 @@ async fn test_oauth_github_no_pkce_in_auth_url() {
         .await
         .unwrap();
 
-    let raw = resp["raw"].as_str().unwrap();
     let state = resp["state"].as_str().unwrap();
 
-    // Non-PKCE provider should NOT have code_challenge
-    assert!(
-        !raw.contains("code_challenge="),
-        "github raw should not have code_challenge: {raw}"
-    );
-
-    // `state` is the opaque flow-row id — confirm no verifier was stored
-    // (github's provider entry has `supports_pkce = false`).
+    // `state` is the opaque flow-row id — confirm no verifier was stored and no
+    // PKCE param landed on the authorize URL (github's provider entry has
+    // `supports_pkce = false`).
     let flow = overslash_db::repos::oauth_connection_flow::get_by_id(&pool, state)
         .await
         .unwrap()
         .expect("flow row should exist");
+    assert!(
+        !flow.upstream_authorize_url.contains("code_challenge="),
+        "github authorize URL should not have code_challenge: {}",
+        flow.upstream_authorize_url
+    );
     assert!(
         flow.pkce_code_verifier.is_none(),
         "github should not store a code verifier",

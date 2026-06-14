@@ -55,24 +55,6 @@ pub struct CreateServiceInput {
     /// for the validation contract.
     #[serde(default)]
     pub connect_return_url: Option<String>,
-    /// White-label opt-in for the auto-initiated OAuth flow. When `true`, uses
-    /// the org's admin-set `oauth_redirect_url` as the provider `redirect_uri`.
-    /// Only consulted when the kernel auto-initiates a flow. See
-    /// [`crate::services::platform_connections::CreateConnectionInput::use_org_redirect`].
-    #[serde(default)]
-    pub connect_use_org_redirect: bool,
-    /// REST-only opt-in: surface the raw upstream provider authorize URL
-    /// (e.g. `https://accounts.google.com/...`) on the `connect` bundle
-    /// in addition to the Overslash-gated `auth_url`. White-label
-    /// integrators wrap the raw URL in their own consent UI so users
-    /// never see Overslash branding. Mirrors `include_raw` on
-    /// `POST /v1/connections` — same Obsidian threat-model gating: PKCE +
-    /// state binding still hold either way, but raw delivery skips the
-    /// chat-delivery hardening that `connect-authorize` provides. The
-    /// MCP `CreateServiceHandler` strips this field so agents can't ever
-    /// hand the user a raw provider URL over chat.
-    #[serde(default)]
-    pub connect_include_raw: Option<bool>,
 }
 
 fn default_status() -> String {
@@ -177,23 +159,14 @@ pub struct ServiceInstanceDetail {
 }
 
 /// OAuth bootstrap bundle returned alongside a freshly-created service
-/// instance. `raw` mirrors the same opt-in field on `POST /v1/connections`
-/// (`include_raw`) — surfaced here as `connect_include_raw` on the
-/// request — for white-label integrators that wrap the upstream provider
-/// URL in their own consent UI. Default callers see only the gated
-/// `auth_url`.
+/// instance. Callers hand the gated `auth_url` to the user; the raw upstream
+/// provider URL is never surfaced.
 #[derive(Serialize, Debug)]
 pub struct ConnectBundle {
     pub auth_url: String,
     pub state: String,
     pub flow_id: String,
     pub expires_at: time::OffsetDateTime,
-    /// Raw upstream provider authorize URL. Only populated when the
-    /// REST caller set `connect_include_raw: true` on the request. The
-    /// MCP path always strips that opt-in, so this field stays `None`
-    /// on every agent-driven flow.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw: Option<String>,
 }
 
 /// Derived credential-health state for a service instance.
@@ -675,7 +648,6 @@ pub async fn kernel_create_service(
             on_behalf_of,
             upgrade_connection_id: None,
             return_url: input.connect_return_url.clone(),
-            use_org_redirect: input.connect_use_org_redirect,
             service_instance_id: Some(row_id),
         };
         match crate::services::platform_connections::kernel_create_connection(
@@ -686,17 +658,11 @@ pub async fn kernel_create_service(
         .await
         {
             Ok(resp) => {
-                let raw = if input.connect_include_raw.unwrap_or(false) {
-                    Some(resp.raw.clone())
-                } else {
-                    None
-                };
                 detail.connect = Some(ConnectBundle {
                     auth_url: resp.auth_url,
                     state: resp.state,
                     flow_id: resp.flow_id,
                     expires_at: resp.expires_at,
-                    raw,
                 });
             }
             Err(err) => {

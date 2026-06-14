@@ -81,6 +81,7 @@ async fn setup_pending_oauth_approval() -> PendingOauthApproval {
             scopes: &["https://www.googleapis.com/auth/calendar".to_string()],
             account_email: None,
             byoc_credential_id: Some(byoc.id),
+            integration_managed: false,
         })
         .await
         .unwrap();

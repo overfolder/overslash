@@ -124,6 +124,7 @@ async fn test_gmail_e2e() {
             ],
             account_email: None,
             byoc_credential_id: Some(byoc_id),
+            integration_managed: false,
         })
         .await
         .unwrap();
@@ -529,6 +530,7 @@ async fn test_gmail_e2e() {
             scopes: &["https://www.googleapis.com/auth/gmail.compose".to_string()],
             account_email: None,
             byoc_credential_id: Some(byoc_id),
+            integration_managed: false,
         })
         .await
         .unwrap();

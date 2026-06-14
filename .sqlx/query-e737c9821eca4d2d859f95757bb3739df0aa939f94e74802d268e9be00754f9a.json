@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, actor_identity_id, provider_key,\n                byoc_credential_id, scopes, pkce_code_verifier,\n                upstream_authorize_url, expires_at, consumed_at,\n                created_at, created_ip, created_user_agent, return_url,\n                redirect_uri, upgrade_connection_id, service_instance_id\n           FROM oauth_connection_flows WHERE id = $1",
+  "query": "SELECT id, org_id, identity_id, actor_identity_id, provider_key,\n                byoc_credential_id, scopes, pkce_code_verifier,\n                upstream_authorize_url, expires_at, consumed_at,\n                created_at, created_ip, created_user_agent, return_url,\n                upgrade_connection_id, service_instance_id\n           FROM oauth_connection_flows WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -170,17 +170,6 @@
       },
       {
         "ordinal": 15,
-        "name": "redirect_uri",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "oauth_connection_flows",
-            "name": "redirect_uri"
-          }
-        }
-      },
-      {
-        "ordinal": 16,
         "name": "upgrade_connection_id",
         "type_info": "Uuid",
         "origin": {
@@ -191,7 +180,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 16,
         "name": "service_instance_id",
         "type_info": "Uuid",
         "origin": {
@@ -224,9 +213,8 @@
       true,
       true,
       true,
-      true,
       true
     ]
   },
-  "hash": "004ac5d1ec394e19e3d873373e8c04ce2d51e171987d223d2ef0eac6d18f09af"
+  "hash": "e737c9821eca4d2d859f95757bb3739df0aa939f94e74802d268e9be00754f9a"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,\n                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,\n                    c.byoc_credential_id, c.is_default, c.created_at, c.updated_at\n             FROM connections c\n             JOIN identities i ON i.id = c.identity_id\n             WHERE c.identity_id = $1 AND i.org_id = $2\n             ORDER BY c.created_at DESC",
+  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes, account_email,\n                byoc_credential_id, is_default, integration_managed, created_at, updated_at\n         FROM connections WHERE id = $1 AND org_id = $2",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,17 @@
       },
       {
         "ordinal": 11,
+        "name": "integration_managed",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "integration_managed"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -166,8 +177,9 @@
       true,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "d1dafcfee538342d47a522862b4a6e0ffc5505435b8eed4b4bc7be00a938129c"
+  "hash": "a9eeb61fb448ae000a0d82583de875c196b1ceb54f17a0f32adee9a108e2c384"
 }

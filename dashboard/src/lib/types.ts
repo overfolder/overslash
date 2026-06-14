@@ -71,17 +71,6 @@ export interface AuditSettings {
   response_body_mode: AuditResponseBodyMode;
 }
 
-/**
- * Shape of GET/PATCH /v1/orgs/{id}/oauth-redirect-settings. `redirect_url` is
- * the org's single admin-set provider `redirect_uri` (the partner-hosted
- * callback) used when a connect/reauth flow opts in via `use_org_redirect`.
- * Empty means white-label is disabled for the org (flows use the default
- * Overslash callback).
- */
-export interface OAuthRedirectSettings {
-  redirect_url: string;
-}
-
 export interface IdpConfig {
   id?: string;
   org_id?: string;
@@ -498,9 +487,6 @@ export interface InitiateConnectionResponse {
   auth_url: string;
   /// Optional shortened form (only present if the shortener is configured).
   short?: string;
-  /// Raw provider authorize URL. Only included when the request set
-  /// `include_raw: true`.
-  raw?: string;
   state: string;
   provider: string;
   expires_at: string;
@@ -570,11 +556,15 @@ export interface UsedByService {
 /**
  * What OAuth client credentials a connection will use on its next refresh.
  * Mirrors the `client_credentials::resolve()` cascade against current state.
+ * `integration_managed` is reported for imported token-vault connections that
+ * have no shared client — Overslash never refreshes them; the integration
+ * refreshes and re-imports.
  */
 export type CredentialSource =
   | { kind: 'byoc' }
   | { kind: 'org_secret' }
   | { kind: 'system' }
+  | { kind: 'integration_managed' }
   | { kind: 'missing' };
 
 /** Full connection detail from `GET /v1/connections/{id}`. */
@@ -584,6 +574,12 @@ export interface ConnectionDetail {
   account_email: string | null;
   scopes: string[];
   is_default: boolean;
+  /**
+   * `true` for imported (token-vault) connections whose refresh the
+   * integration owns. Overslash injects the stored token until expiry, then
+   * signals reauth with no reconnect link (the partner refreshes & re-imports).
+   */
+  integration_managed: boolean;
   created_at: string;
   /** Advances on an in-place reconnect — the detail page polls it. */
   updated_at: string;

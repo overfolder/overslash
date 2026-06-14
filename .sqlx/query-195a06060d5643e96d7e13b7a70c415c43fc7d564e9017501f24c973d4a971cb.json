@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes, account_email,\n                byoc_credential_id, is_default, created_at, updated_at\n         FROM connections WHERE org_id = $1 AND id = ANY($2)",
+  "query": "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,\n                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,\n                    c.byoc_credential_id, c.is_default, c.integration_managed,\n                    c.created_at, c.updated_at\n             FROM connections c\n             JOIN identities i ON i.id = c.identity_id\n             WHERE c.identity_id = $1 AND i.org_id = $2 AND c.provider_key = $3\n             ORDER BY c.is_default DESC, c.created_at DESC LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,17 @@
       },
       {
         "ordinal": 11,
+        "name": "integration_managed",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "integration_managed"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -150,7 +161,8 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "UuidArray"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -166,8 +178,9 @@
       true,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "8b0ebd5fcfbfbc7b57404a8129f5dea240b43f67ce762b6cc0d0507fb330b896"
+  "hash": "195a06060d5643e96d7e13b7a70c415c43fc7d564e9017501f24c973d4a971cb"
 }

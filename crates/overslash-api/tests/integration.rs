@@ -2269,6 +2269,7 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: None,
+            integration_managed: false,
         })
         .await
         .unwrap();
@@ -2333,6 +2334,7 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: None,
+            integration_managed: false,
         })
         .await
         .unwrap();
@@ -2389,6 +2391,7 @@ async fn test_update_tokens_preserves_refresh_token_when_none() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: None,
+            integration_managed: false,
         })
         .await
         .unwrap();

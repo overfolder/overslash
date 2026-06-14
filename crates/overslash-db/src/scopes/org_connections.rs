@@ -31,6 +31,25 @@ impl OrgScope {
         connection::get_by_id(self.db(), self.org_id(), id).await
     }
 
+    /// Find the connection a token import should update in place for an
+    /// (identity, provider[, account_email]), scoped to this org. See
+    /// [`connection::find_for_import`].
+    pub async fn find_connection_for_import(
+        &self,
+        identity_id: Uuid,
+        provider_key: &str,
+        account_email: Option<&str>,
+    ) -> Result<Option<ConnectionRow>, sqlx::Error> {
+        connection::find_for_import(
+            self.db(),
+            self.org_id(),
+            identity_id,
+            provider_key,
+            account_email,
+        )
+        .await
+    }
+
     /// Batch fetch connections by ids, indexed by id. Returns only connections
     /// that belong to this org — foreign ids are silently dropped. Used by
     /// the services list to avoid N+1 lookups while classifying credential

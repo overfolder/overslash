@@ -123,7 +123,6 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
             connection_id,
             auth_url,
             short,
-            raw,
         } => {
             let mut body = json!({ "status": "needs_authentication", "auth_url": auth_url });
             if let Some(s) = service {
@@ -138,29 +137,28 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
             if let Some(s) = short {
                 body["short"] = json!(s);
             }
-            if let Some(r) = raw {
-                body["raw"] = json!(r);
-            }
             Some((StatusCode::OK, Json(body)).into_response())
         }
         AppError::ReauthRequired {
             connection_id,
+            provider,
             auth_url,
             short,
-            raw,
             reason,
+            integration_managed,
         } => {
             let mut body = json!({
                 "status": "reauth_required",
                 "connection_id": connection_id,
-                "auth_url": auth_url,
+                "provider": provider,
                 "reason": reason,
+                "integration_managed": integration_managed,
             });
+            if let Some(url) = auth_url {
+                body["auth_url"] = json!(url);
+            }
             if let Some(s) = short {
                 body["short"] = json!(s);
-            }
-            if let Some(r) = raw {
-                body["raw"] = json!(r);
             }
             Some((StatusCode::OK, Json(body)).into_response())
         }

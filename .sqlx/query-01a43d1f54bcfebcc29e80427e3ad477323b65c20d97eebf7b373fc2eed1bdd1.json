@@ -1,0 +1,187 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes, account_email,\n                byoc_credential_id, is_default, integration_managed, created_at, updated_at\n         FROM connections\n         WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3\n           AND ($4::text IS NULL OR account_email IS NOT DISTINCT FROM $4)\n         ORDER BY is_default DESC, created_at DESC\n         LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "provider_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "provider_key"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "encrypted_access_token",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "encrypted_access_token"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "encrypted_refresh_token",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "encrypted_refresh_token"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "token_expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "token_expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "scopes",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "scopes"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "account_email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "account_email"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "byoc_credential_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "byoc_credential_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "is_default",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "is_default"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "integration_managed",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "integration_managed"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "01a43d1f54bcfebcc29e80427e3ad477323b65c20d97eebf7b373fc2eed1bdd1"
+}
