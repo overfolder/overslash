@@ -588,7 +588,7 @@ pub async fn kernel_import_connection(
         _ => None,
     };
 
-    let (connection_id, is_default, effective_integration_managed, audit_action) =
+    let (connection_id, is_default, effective_integration_managed, effective_scopes, audit_action) =
         if let Some(existing) = existing {
             // Preserve the existing expiry on a token-only re-import that carries
             // no fresh one — otherwise we'd null `token_expires_at` and the
@@ -597,13 +597,22 @@ pub async fn kernel_import_connection(
             // injecting a token that has actually expired upstream). A re-import
             // that *does* supply `expires_at`/`expires_in` overrides it.
             let next_expires_at = expires_at.or(existing.token_expires_at);
+            // Likewise preserve the existing scopes when the re-import omits them
+            // (the field defaults to `[]`). Overwriting with an empty set would
+            // wipe the granted scopes and 403 every subsequent scope-gated call.
+            // A re-import that supplies a non-empty `scopes` overrides them.
+            let next_scopes = if input.scopes.is_empty() {
+                existing.scopes.clone()
+            } else {
+                input.scopes.clone()
+            };
             let updated = scope
                 .update_connection_tokens_and_scopes(
                     existing.id,
                     &encrypted_access,
                     encrypted_refresh.as_deref(),
                     next_expires_at,
-                    &input.scopes,
+                    &next_scopes,
                     account_email.as_deref(),
                 )
                 .await?;
@@ -616,6 +625,7 @@ pub async fn kernel_import_connection(
                 existing.id,
                 existing.is_default,
                 existing.integration_managed,
+                next_scopes,
                 "connection.updated",
             )
         } else {
@@ -637,6 +647,7 @@ pub async fn kernel_import_connection(
                 conn.id,
                 conn.is_default,
                 conn.integration_managed,
+                input.scopes.clone(),
                 "connection.created",
             )
         };
@@ -651,7 +662,7 @@ pub async fn kernel_import_connection(
             detail: serde_json::json!({
                 "provider": input.provider,
                 "account_email": account_email,
-                "scopes": input.scopes,
+                "scopes": effective_scopes,
                 "integration_managed": effective_integration_managed,
                 "imported": true,
             }),
@@ -666,7 +677,7 @@ pub async fn kernel_import_connection(
         let org_id = ctx.org_id;
         let provider_key = input.provider.clone();
         let account_email = account_email.clone();
-        let scopes = input.scopes.clone();
+        let scopes = effective_scopes.clone();
         let action = audit_action;
         tokio::spawn(async move {
             let payload = serde_json::json!({
@@ -686,7 +697,7 @@ pub async fn kernel_import_connection(
         connection_id,
         provider: input.provider,
         account_email,
-        scopes: input.scopes,
+        scopes: effective_scopes,
         is_default,
         integration_managed: effective_integration_managed,
     })

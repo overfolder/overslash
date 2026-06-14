@@ -462,6 +462,51 @@ async fn reimport_without_expiry_preserves_existing_expiry() {
     );
 }
 
+/// A token-only re-import that omits `scopes` (defaults to `[]`) must preserve
+/// the existing granted scopes — wiping them would 403 every subsequent
+/// scope-gated call. A re-import that supplies scopes overrides them.
+#[tokio::test]
+async fn reimport_without_scopes_preserves_existing_scopes() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let (status, _) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "tok",
+            "account_email": "scoped@example.com",
+            "scopes": [CAL_SCOPE]
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // Re-import the same account with NO scopes — must keep the existing set.
+    let (status, body) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "tok2",
+            "account_email": "scoped@example.com"
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["scopes"],
+        json!([CAL_SCOPE]),
+        "re-import without scopes must preserve the existing scopes: {body}"
+    );
+}
+
 /// Re-import for the same (identity, provider, account_email) updates the
 /// existing row in place; a *different* account_email creates a second
 /// connection (multi-account vaulting).
