@@ -52,6 +52,8 @@ Re-import is idempotent and keyed on `(identity, provider, account_email)` (or t
 - **Email-keyed match** (the caller named the account): an in-place update is intended, so a mode/client *change* (integration-managed ↔ self-refresh, or a different pinned client) is **rejected with 400** rather than silently validated-and-discarded — delete and re-import to change.
 - **Emailless match** (the `(identity, provider)` default-connection fallback): the row is reused **only when it is the same kind of vault connection** (same mode, same pinned client). This stops an emailless import from overwriting an *orchestrated* connection that the fallback happens to match (e.g. one whose userinfo fetch left `account_email` NULL) — on a mismatch the import creates a fresh row instead.
 
+A token-only re-import that carries no fresh `expires_at`/`expires_in` **preserves** the existing `token_expires_at` rather than nulling it — otherwise an integration-managed connection would look perpetually valid and never surface reauth (it would keep injecting a token that has actually expired upstream). Supplying a fresh expiry overrides it.
+
 ## Q2 — What happens when we need refresh?
 
 Access tokens are short-lived (Google ≈ 1 h); agents execute at arbitrary times, so overslash must obtain fresh tokens. The refresh-token grant (`grant_type=refresh_token`) needs **client_id + client_secret + refresh_token** — and crucially **no `redirect_uri`**. So refresh is independent of the whole redirect problem. **Overslash refreshes only when it holds the OAuth client for that connection.** Two modes, fixed per connection at import:

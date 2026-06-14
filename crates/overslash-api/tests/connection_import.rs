@@ -398,6 +398,70 @@ async fn import_requires_access_token() {
     assert_eq!(status, 404, "unknown provider must 404");
 }
 
+/// A token-only re-import that carries no fresh expiry must preserve the
+/// existing `token_expires_at` — nulling it would make an integration-managed
+/// connection look perpetually valid and never surface reauth.
+#[tokio::test]
+async fn reimport_without_expiry_preserves_existing_expiry() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    // First import sets an expiry.
+    let (status, _) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "tok",
+            "account_email": "exp@example.com",
+            "expires_in": 3600
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let original = sqlx::query_scalar::<_, Option<time::OffsetDateTime>>(
+        "SELECT token_expires_at FROM connections
+         WHERE org_id = $1 AND identity_id = $2 AND provider_key = 'google'",
+    )
+    .bind(org_id)
+    .bind(ident_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap()
+    .expect("first import sets an expiry");
+
+    // Re-import the same account with NO expiry — must not null it.
+    let (status, _) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "tok2",
+            "account_email": "exp@example.com"
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let after = sqlx::query_scalar::<_, Option<time::OffsetDateTime>>(
+        "SELECT token_expires_at FROM connections
+         WHERE org_id = $1 AND identity_id = $2 AND provider_key = 'google'",
+    )
+    .bind(org_id)
+    .bind(ident_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        after,
+        Some(original),
+        "re-import without expiry must preserve the existing token_expires_at"
+    );
+}
+
 /// Re-import for the same (identity, provider, account_email) updates the
 /// existing row in place; a *different* account_email creates a second
 /// connection (multi-account vaulting).

@@ -590,12 +590,19 @@ pub async fn kernel_import_connection(
 
     let (connection_id, is_default, effective_integration_managed, audit_action) =
         if let Some(existing) = existing {
+            // Preserve the existing expiry on a token-only re-import that carries
+            // no fresh one — otherwise we'd null `token_expires_at` and the
+            // connection would look perpetually valid, so an integration-managed
+            // connection would never surface `reauth_required` (and would keep
+            // injecting a token that has actually expired upstream). A re-import
+            // that *does* supply `expires_at`/`expires_in` overrides it.
+            let next_expires_at = expires_at.or(existing.token_expires_at);
             let updated = scope
                 .update_connection_tokens_and_scopes(
                     existing.id,
                     &encrypted_access,
                     encrypted_refresh.as_deref(),
-                    expires_at,
+                    next_expires_at,
                     &input.scopes,
                     account_email.as_deref(),
                 )
