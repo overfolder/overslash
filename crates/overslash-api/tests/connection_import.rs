@@ -233,6 +233,44 @@ async fn self_refresh_import_validates_byoc() {
     assert_eq!(status, 200, "valid byoc import should succeed: {body}");
     assert_eq!(body["integration_managed"], false);
 
+    // Refresh mode is fixed at first import. Import an integration-managed
+    // connection for a distinct account, then re-import the SAME account with a
+    // BYOC pin — this must be rejected (not silently validated-then-discarded),
+    // otherwise the caller would believe self-refresh is active when it isn't.
+    let (status, body) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "im-tok",
+            "account_email": "switch@example.com"
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "integration-managed import should succeed: {body}"
+    );
+    assert_eq!(body["integration_managed"], true);
+
+    let (status, body) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "im-tok-2",
+            "account_email": "switch@example.com",
+            "byoc_credential_id": byoc_id
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "re-import must not silently switch refresh mode: {body}"
+    );
+
     // Unknown pin → 400 at import time.
     let (status, body) = import(
         &client,

@@ -553,6 +553,30 @@ pub async fn kernel_import_connection(
 
     let (connection_id, is_default, effective_integration_managed, audit_action) =
         if let Some(existing) = existing {
+            // Refresh mode is fixed at the first import. Re-import updates tokens
+            // in place but cannot flip the mode or re-pin the client — otherwise
+            // a caller that passes a `byoc_credential_id` expecting self-refresh
+            // on an integration-managed row would have it silently validated and
+            // discarded, leaving a misconfigured connection. Reject the conflict
+            // explicitly instead. Omitting `byoc_credential_id` is always a
+            // token-only update that preserves the existing mode (the hot path
+            // for integration-managed re-import). Delete + re-import to change.
+            if let Some(req_byoc) = input.byoc_credential_id {
+                if existing.integration_managed {
+                    return Err(AppError::BadRequest(
+                        "connection is integration-managed; its refresh mode is fixed at \
+                         import — delete it and re-import to switch to self-refresh"
+                            .into(),
+                    ));
+                }
+                if existing.byoc_credential_id != Some(req_byoc) {
+                    return Err(AppError::BadRequest(
+                        "connection is pinned to a different BYOC client; the pinned client \
+                         is fixed at import — delete it and re-import to change it"
+                            .into(),
+                    ));
+                }
+            }
             let updated = scope
                 .update_connection_tokens_and_scopes(
                     existing.id,
