@@ -616,6 +616,26 @@ pub(super) async fn check_required_scopes(
         return Ok(());
     }
 
+    // Integration-managed connections can't use the orchestrated upgrade flow —
+    // Overslash holds no client to mint an authorize URL against, and minting
+    // one would do wasted work and leave a stray flow row. Skip the mint and
+    // return the missing_scopes envelope with no `auth_url`/`short`; the
+    // integration broadens the grant and re-imports the connection.
+    if connection.integration_managed {
+        let upgrade_url = format!(
+            "{}/v1/connections/{}/upgrade_scopes",
+            state.config.public_url.trim_end_matches('/'),
+            connection.id
+        );
+        return Err(AppError::MissingScopes {
+            connection_id: connection.id,
+            missing,
+            upgrade_url,
+            auth_url: None,
+            short: None,
+        });
+    }
+
     // Mint a chat-deliverable gated `/connect-authorize` URL that, when
     // consumed, runs an incremental-scope OAuth flow against the existing
     // connection (the minted flow row's `upgrade_connection_id` points at

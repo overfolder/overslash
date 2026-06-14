@@ -188,6 +188,73 @@ async fn integration_managed_import_injects_then_reauths_on_expiry() {
     assert_eq!(body["connection_id"], json!(connection_id));
 }
 
+/// When an action requires a scope an integration-managed connection lacks, the
+/// `missing_scopes` envelope omits `auth_url` (Overslash has no client to mint a
+/// reconnect URL) and no orchestrated flow row is created — the integration
+/// broadens the grant and re-imports.
+#[tokio::test]
+async fn integration_managed_missing_scopes_omits_auth_url() {
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+    let mock_host = format!("http://{mock_addr}");
+
+    let (base, client) =
+        common::start_api_with_registry(pool.clone(), Some(("google_calendar", mock_host))).await;
+    let (_org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    for pattern in ["http:**", "google_calendar:*:*"] {
+        client
+            .post(format!("{base}/v1/permissions"))
+            .header(auth_header(&admin_key).0, auth_header(&admin_key).1)
+            .json(&json!({"identity_id": ident_id, "action_pattern": pattern}))
+            .send()
+            .await
+            .unwrap();
+    }
+    common::grant_service_to_everyone(&base, &client, &admin_key, "google_calendar").await;
+
+    // Import an integration-managed connection with NO scopes — the action
+    // requires the calendar scope, so the call must miss.
+    let (status, _) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "vault-token",
+            "account_email": "noscopes@example.com"
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth_header(&key).0, auth_header(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "list_events",
+            "params": {"calendarId": "primary"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "missing required scope must 403");
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "missing_scopes");
+    assert!(
+        body.get("auth_url").is_none_or(Value::is_null),
+        "integration-managed missing_scopes must omit auth_url: {body}"
+    );
+
+    // No orchestrated flow row was minted for the integration-managed connection.
+    let flows: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_connection_flows")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(flows, 0, "no upgrade flow row should be created");
+}
+
 /// Self-refresh import pins a BYOC client (`integration_managed = false`); a
 /// missing BYOC id is rejected at import time, not deferred to first refresh.
 #[tokio::test]
