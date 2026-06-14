@@ -1060,6 +1060,18 @@ async fn upgrade_connection_scopes(
         ));
     }
 
+    // Integration-managed connections can't be upgraded through the orchestrated
+    // OAuth flow — Overslash holds no client to mint an authorize URL against.
+    // The integration broadens the grant on its side and re-imports the
+    // connection with the wider scopes via `POST /v1/connections/import`.
+    if existing.integration_managed {
+        return Err(AppError::BadRequest(
+            "this connection is integration-managed; scopes can't be upgraded through \
+             Overslash — broaden the grant and re-import it via POST /v1/connections/import"
+                .into(),
+        ));
+    }
+
     // Union existing + requested scopes. Google with `include_granted_scopes=true`
     // would preserve old ones anyway, but sending the full union is what makes
     // non-Google providers work.

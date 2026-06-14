@@ -255,6 +255,47 @@ async fn integration_managed_missing_scopes_omits_auth_url() {
     assert_eq!(flows, 0, "no upgrade flow row should be created");
 }
 
+/// `POST /v1/connections/{id}/upgrade_scopes` rejects an integration-managed
+/// connection — it can't use the orchestrated upgrade flow; the integration
+/// broadens the grant and re-imports.
+#[tokio::test]
+async fn upgrade_scopes_rejects_integration_managed() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let (status, body) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "vault-token",
+            "account_email": "up@example.com"
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let connection_id = body["connection_id"].as_str().unwrap();
+
+    let resp = client
+        .post(format!(
+            "{base}/v1/connections/{connection_id}/upgrade_scopes"
+        ))
+        .header(auth_header(&key).0, auth_header(&key).1)
+        .json(&json!({ "scopes": [CAL_SCOPE] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        400,
+        "upgrade_scopes must reject integration-managed connections"
+    );
+}
+
 /// Self-refresh import pins a BYOC client (`integration_managed = false`); a
 /// missing BYOC id is rejected at import time, not deferred to first refresh.
 #[tokio::test]
