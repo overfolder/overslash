@@ -175,10 +175,10 @@ async fn mcp_call_no_connection_returns_typed_needs_authentication() {
         auth_url.contains("/connect-authorize?id="),
         "auth_url should be a gated link: {auth_url}"
     );
-    // MCP chat-delivery hardening: the upstream provider authorize URL
-    // (`raw`) must never reach the agent. The REST envelope carries it for
-    // white-label integrators; `routes/mcp.rs::forward` strips it on the
-    // way through the MCP boundary.
+    // The upstream provider authorize URL (`raw`) is never surfaced on any
+    // OAuth error envelope (REST or MCP) — white-label partners import tokens
+    // instead of wrapping an Overslash-built authorize URL, so there is no raw
+    // URL to leak to a chat-delivered agent.
     assert!(
         envelope.get("raw").is_none_or(Value::is_null),
         "MCP envelope must not include `raw` (upstream provider URL): {envelope}"
@@ -273,8 +273,8 @@ async fn mcp_call_expired_no_refresh_returns_typed_reauth_required() {
         "reason must be non-empty: {envelope}"
     );
     // See note in `mcp_call_no_connection_returns_typed_needs_authentication`:
-    // the MCP forwarder strips the upstream-provider `raw` URL so chat
-    // delivery can't bypass the Overslash-branded checkpoint.
+    // the upstream-provider `raw` URL is never surfaced on any OAuth error
+    // envelope, so chat delivery can't bypass the Overslash-branded checkpoint.
     assert!(
         envelope.get("raw").is_none_or(Value::is_null),
         "MCP envelope must not include `raw` (upstream provider URL): {envelope}"

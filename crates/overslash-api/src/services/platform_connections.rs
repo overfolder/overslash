@@ -28,23 +28,21 @@
 //! of the raw provider URL. The wire-level field name is unchanged so
 //! existing REST clients keep working — only the *value* upgrades to the
 //! gated URL, which fail-fasts on missing/expired/consumed/session-
-//! mismatch before 302ing to the provider. White-label REST callers that
-//! still need the raw provider URL can opt in via `include_raw: true`.
+//! mismatch before 302ing to the provider. The raw provider authorize URL is
+//! never surfaced — white-label partners run their own OAuth dance and import
+//! the resulting tokens via `/v1/connections/import` rather than wrapping an
+//! Overslash-built authorize URL.
 //!
-//! ## Three-URL bundle
+//! ## URL bundle
 //!
-//! The kernel returns three flavors of the same authorize handle:
+//! The kernel returns two flavors of the same authorize handle:
 //!
 //! - `auth_url`: the Overslash-gated URL — the default deliverable.
 //! - `short`: best-effort `oversla.sh/<slug>` redirect to `auth_url`,
 //!   present only when the shortener is configured. Friendlier for chat
 //!   delivery where long base62 ids get mangled by line-wrapping.
-//! - `raw`: the upstream provider authorize URL. White-label REST
-//!   integrators wrap this in their own consent UI. The MCP forwarder
-//!   strips this field before handing the envelope to the agent — see
-//!   `routes/mcp.rs::forward` and the Obsidian threat-model notes above.
 //!
-//! The same triplet flows through the action-handler error envelopes
+//! The same pair flows through the action-handler error envelopes
 //! (`reauth_required`, `needs_authentication`, `missing_scopes`) via
 //! [`mint_initial_auth_url`] and [`mint_upgrade_auth_url`].
 
@@ -54,7 +52,8 @@ use serde::{Deserialize, Serialize};
 use time::{Duration as TimeDuration, OffsetDateTime};
 use uuid::Uuid;
 
-use overslash_db::repos::connection::ConnectionRow;
+use overslash_core::crypto;
+use overslash_db::repos::connection::{ConnectionRow, CreateConnection};
 use overslash_db::repos::oauth_connection_flow::{self, CreateOauthConnectionFlow};
 use overslash_db::scopes::OrgScope;
 
@@ -105,15 +104,6 @@ pub struct CreateConnectionInput {
     /// response, preserving today's behavior.
     #[serde(default)]
     pub return_url: Option<String>,
-    /// White-label opt-in. When `true`, this flow uses the org's admin-set
-    /// `oauth_redirect_url` as the provider `redirect_uri`: it is baked into the
-    /// authorize URL and reused verbatim at token exchange (the partner forwards
-    /// `{code, state}` to `POST /v1/oauth/exchange`). Requires the org to have a
-    /// valid `oauth_redirect_url` configured — hard-fails with 400 otherwise,
-    /// since the value is baked into the provider URL with no recovery. Default
-    /// `false` uses the historical `{public_url}/v1/oauth/callback` behavior.
-    #[serde(default)]
-    pub use_org_redirect: bool,
     /// When `POST /v1/services` orchestrates an OAuth flow as part of
     /// setting up a new service, this carries the just-created instance's
     /// id so the callback can bind the resulting connection back onto the
@@ -170,50 +160,11 @@ pub(crate) fn parse_return_url(raw: Option<&str>) -> Result<Option<String>, AppE
     Ok(Some(parsed.into()))
 }
 
-/// Parse and validate a white-label `redirect_uri` (the org's
-/// `oauth_redirect_url`), returning the normalized URL. Format rules mirror
-/// [`parse_return_url`] (https-only except localhost, no fragment, no userinfo,
-/// ≤2048 bytes). Used both at write time (the settings PATCH handler) and at
-/// read time (the kernel, before baking the value into the authorize URL).
-pub(crate) fn parse_redirect_uri(raw: Option<&str>) -> Result<Option<String>, AppError> {
-    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Ok(None);
-    };
-    if raw.len() > RETURN_URL_MAX_LEN {
-        return Err(AppError::BadRequest(format!(
-            "redirect_uri exceeds {RETURN_URL_MAX_LEN}-byte limit"
-        )));
-    }
-    let parsed = url::Url::parse(raw)
-        .map_err(|e| AppError::BadRequest(format!("redirect_uri is not a valid URL: {e}")))?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| AppError::BadRequest("redirect_uri must include a host".into()))?
-        .to_ascii_lowercase();
-    let scheme = parsed.scheme();
-    let scheme_ok = scheme == "https"
-        || (scheme == "http" && matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1"));
-    if !scheme_ok {
-        return Err(AppError::BadRequest(
-            "redirect_uri must use https (http allowed only for localhost)".into(),
-        ));
-    }
-    if parsed.fragment().is_some() {
-        return Err(AppError::BadRequest(
-            "redirect_uri must not contain a fragment".into(),
-        ));
-    }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(AppError::BadRequest(
-            "redirect_uri must not contain userinfo".into(),
-        ));
-    }
-    Ok(Some(parsed.into()))
-}
-
-/// The historical provider `redirect_uri`: `{public_url}/v1/oauth/callback`.
-/// Used when a flow row carries no custom `redirect_uri` (legacy/non-white-label
-/// flows), at both authorize build and token exchange.
+/// The provider `redirect_uri`: `{public_url}/v1/oauth/callback`. Every
+/// orchestrated OAuth flow uses this single default at both authorize build
+/// and token exchange — white-label partners no longer orchestrate through
+/// Overslash (they import tokens via `/v1/connections/import`), so there is no
+/// per-flow or per-org redirect override any more.
 pub(crate) fn default_callback_redirect_uri(public_url: &str) -> String {
     format!("{}/v1/oauth/callback", public_url.trim_end_matches('/'))
 }
@@ -224,22 +175,11 @@ pub struct CreateConnectionResponse {
     /// Hand this to the user — the gate fail-fasts on session mismatch
     /// before redirecting to the provider. Field name kept as
     /// `auth_url` so existing REST callers keep working transparently;
-    /// the *value* changed (gated URL instead of raw provider URL),
-    /// which is the security upgrade. White-label callers that need the
-    /// raw provider URL must opt in via `include_raw: true`.
+    /// the *value* is the gated URL (never the raw provider URL).
     pub auth_url: String,
     /// Optional shortened form (only present if the shortener is configured).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub short: Option<String>,
-    /// Raw upstream provider authorize URL (e.g. `https://accounts.google.com/...`).
-    /// Marked `#[serde(skip)]` so the platform-registry MCP path
-    /// (`dispatch_create_connection`) cannot accidentally surface it via a
-    /// blanket `serde_json::to_value(response)` call. The REST
-    /// `initiate_connection` wrapper still gates exposure on
-    /// `include_raw`; the action-handler error envelopes always expose it
-    /// on REST and the MCP forwarder strips it.
-    #[serde(skip)]
-    pub raw: String,
     /// OAuth state parameter. Already bound to org/identity/provider/PKCE
     /// server-side; surfaced here so REST callers can correlate the
     /// callback if they want to.
@@ -258,7 +198,6 @@ pub struct CreateConnectionResponse {
 pub struct AuthRecoveryUrls {
     pub auth_url: String,
     pub short: Option<String>,
-    pub raw: String,
 }
 
 pub async fn kernel_create_connection(
@@ -319,34 +258,10 @@ async fn kernel_create_connection_for_identity(
     )
     .await?;
 
-    // Resolve the provider `redirect_uri`. A white-label flow opts in via
-    // `use_org_redirect` to use the org's admin-set `oauth_redirect_url` (the
-    // partner-hosted callback). It must be configured and valid — hard-fail
-    // otherwise, since this value is baked into the authorize URL with no
-    // callback-time recovery. Default ⇒ the historical overslash.com callback.
-    // Whatever we choose is persisted on the flow row and reused verbatim at
-    // token exchange so the two values byte-match.
-    let custom_redirect_uri = if input.use_org_redirect {
-        let org_url = overslash_db::repos::org::get_oauth_redirect_url(&ctx.db, ctx.org_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("org not found".into()))?;
-        let parsed = parse_redirect_uri(Some(org_url.as_str()).filter(|s| !s.is_empty()))?
-            .ok_or_else(|| {
-                AppError::BadRequest(
-                    "use_org_redirect set but org has no oauth_redirect_url configured".into(),
-                )
-            })?;
-        Some(parsed)
-    } else {
-        None
-    };
-    // The value used to build the authorize URL AND reused at token exchange.
-    // The org's white-label callback when opted in; otherwise the historical
-    // overslash.com callback. Only the custom value is persisted on the flow
-    // row — default flows keep `redirect_uri` NULL and recompute the default.
-    let redirect_uri = custom_redirect_uri
-        .clone()
-        .unwrap_or_else(|| default_callback_redirect_uri(&ctx.config.public_url));
+    // Every orchestrated flow uses the single default callback at both
+    // authorize build and token exchange. White-label partners no longer
+    // orchestrate through Overslash, so there is no per-flow redirect override.
+    let redirect_uri = default_callback_redirect_uri(&ctx.config.public_url);
 
     let byoc_id = creds.byoc_credential_id;
 
@@ -409,7 +324,6 @@ async fn kernel_create_connection_for_identity(
             created_ip: request_meta.ip,
             created_user_agent: request_meta.user_agent,
             return_url: return_url.as_deref(),
-            redirect_uri: custom_redirect_uri.as_deref(),
             upgrade_connection_id: input.upgrade_connection_id,
             service_instance_id: input.service_instance_id,
         },
@@ -434,7 +348,6 @@ async fn kernel_create_connection_for_identity(
     Ok(CreateConnectionResponse {
         auth_url,
         short,
-        raw: raw_authorize_url,
         state: oauth_state,
         provider: input.provider,
         expires_at,
@@ -486,6 +399,310 @@ pub async fn dispatch_create_connection(
     input.service_instance_id = None;
     let response = kernel_create_connection(ctx, input, RequestMeta::default()).await?;
     Ok(serde_json::to_value(response).unwrap_or(serde_json::Value::Null))
+}
+
+// ---------------------------------------------------------------------------
+// Token import (white-label token vault)
+// ---------------------------------------------------------------------------
+
+/// Tokens a white-label partner imports after running the OAuth dance itself.
+/// Overslash stores, refreshes (when a client is shared), and injects them; it
+/// never issues a `redirect_uri`. See `docs/design/white-label-token-vault.md`.
+#[derive(Debug, Default, Deserialize)]
+pub struct ImportConnectionInput {
+    pub provider: String,
+    /// The bearer access token to vault and inject.
+    pub access_token: String,
+    /// Enables Overslash-managed refresh (only used together with a
+    /// `byoc_credential_id`). Omitted ⇒ the connection lives until the access
+    /// token expires and the partner re-imports.
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    /// Absolute expiry as a Unix timestamp (seconds). Takes precedence over
+    /// `expires_in`. Omitted (with no `expires_in`) ⇒ treated as long-lived.
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+    /// Lifetime in seconds from now (the raw OAuth `expires_in`). Used when
+    /// `expires_at` is absent.
+    #[serde(default)]
+    pub expires_in: Option<i64>,
+    /// Granted scopes — labeling + the action scope-gate. Omitted ⇒ `null`
+    /// (unknown): Overslash records no scope set and the action scope-gate gives
+    /// the connection the benefit of the doubt rather than 403ing scope-gated
+    /// calls. Pass the granted set to opt into precise scope checking.
+    #[serde(default)]
+    pub scopes: Option<Vec<String>>,
+    /// Account label. Omitted ⇒ best-effort fetch via the provider userinfo
+    /// endpoint. Also the multi-account key for idempotent re-import.
+    #[serde(default)]
+    pub account_email: Option<String>,
+    /// The partner's registered BYOC client. Present ⇒ Overslash self-refreshes
+    /// (hard-pinned to this client, never the cascade). Null ⇒
+    /// integration-managed: Overslash never refreshes and never borrows the
+    /// org/env OAuth client. No inline client_id/secret — refresh creds always
+    /// come from a stored BYOC row.
+    #[serde(default)]
+    pub byoc_credential_id: Option<Uuid>,
+    /// Owner-user binding, same semantics as `POST /v1/connections`.
+    #[serde(default)]
+    pub on_behalf_of: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportConnectionResponse {
+    pub connection_id: Uuid,
+    pub provider: String,
+    pub account_email: Option<String>,
+    /// The recorded granted scopes, or `null` when unknown (an import that
+    /// didn't declare them — the scope-gate gives such a connection the benefit
+    /// of the doubt).
+    pub scopes: Option<Vec<String>>,
+    pub is_default: bool,
+    /// `true` when imported without a `byoc_credential_id` — the integration
+    /// owns refresh; Overslash injects until expiry then signals reauth.
+    pub integration_managed: bool,
+}
+
+/// Import partner-minted OAuth tokens as a connection. The partner ran the
+/// OAuth dance against its own client; Overslash vaults the tokens and treats
+/// the resulting row exactly like an orchestrated connection for execution,
+/// permissions, and approvals.
+///
+/// Refresh mode is fixed here: a pinned `byoc_credential_id` ⇒ self-refresh
+/// (validated now, hard-pinned, never cascades); a null one ⇒
+/// integration-managed (`integration_managed = true`, no refresh, no env/org
+/// client fallback). Re-import for the same (identity, provider[, account_email])
+/// updates the existing row's tokens in place — the partner's refresh path.
+pub async fn kernel_import_connection(
+    ctx: PlatformCallContext,
+    input: ImportConnectionInput,
+    request_meta: RequestMeta<'_>,
+) -> Result<ImportConnectionResponse, AppError> {
+    let caller_identity_id = ctx.identity_id.ok_or_else(|| {
+        AppError::BadRequest("connection import requires an identity-bound API key".into())
+    })?;
+    if input.access_token.trim().is_empty() {
+        return Err(AppError::BadRequest("access_token is required".into()));
+    }
+
+    let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
+    let identity_id = if let Some(target) = input.on_behalf_of {
+        group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target).await?
+    } else {
+        caller_identity_id
+    };
+
+    let provider = overslash_db::repos::oauth_provider::get_by_key(&ctx.db, &input.provider)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("provider '{}' not found", input.provider)))?;
+
+    let enc_key = ctx.config.keyring()?;
+
+    // Refresh mode, fixed at import. A pinned BYOC ⇒ self-refresh: validate it
+    // resolves for this org/provider now (Tier-1 hard pin — `resolve` errors if
+    // the row is missing) so a bad id fails loudly here, not at first refresh. A
+    // null BYOC ⇒ integration-managed: no client, never refreshes.
+    let (byoc_id, integration_managed) = match input.byoc_credential_id {
+        Some(id) => {
+            let creds = crate::services::client_credentials::resolve(
+                &ctx.db,
+                &enc_key,
+                ctx.org_id,
+                Some(identity_id),
+                &input.provider,
+                None,
+                Some(id),
+            )
+            .await?;
+            (creds.byoc_credential_id, false)
+        }
+        None => (None, true),
+    };
+
+    let expires_at = match input.expires_at {
+        Some(ts) => Some(OffsetDateTime::from_unix_timestamp(ts).map_err(|_| {
+            AppError::BadRequest("expires_at is not a valid Unix timestamp".into())
+        })?),
+        None => input
+            .expires_in
+            .map(|secs| OffsetDateTime::now_utc() + TimeDuration::seconds(secs)),
+    };
+
+    // Caller-supplied label wins; otherwise best-effort userinfo fetch (never
+    // fails the import — an unlabeled connection is fine).
+    let account_email = match input
+        .account_email
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(e) => Some(e.to_string()),
+        None => oauth::fetch_account_email(&ctx.http_client, &provider, &input.access_token)
+            .await
+            .unwrap_or(None),
+    };
+
+    let encrypted_access = crypto::encrypt(&enc_key, input.access_token.as_bytes())?;
+    let encrypted_refresh = input
+        .refresh_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|rt| crypto::encrypt(&enc_key, rt.as_bytes()))
+        .transpose()?;
+
+    // Idempotent re-import: update the existing row in place so the partner's
+    // refresh/re-auth loop doesn't accrete duplicates.
+    let candidate = scope
+        .find_connection_for_import(identity_id, &input.provider, account_email.as_deref())
+        .await?;
+
+    // Whether the import's *requested* mode/client matches an existing row's.
+    // The refresh mode (and pinned client) is fixed at first import.
+    let mode_matches = |existing: &ConnectionRow| {
+        existing.integration_managed == integration_managed
+            && (integration_managed || existing.byoc_credential_id == byoc_id)
+    };
+
+    // Decide whether `candidate` is genuinely *this* vault connection or an
+    // accidental match we must not overwrite (notably an orchestrated
+    // connection grabbed by the emailless `(identity, provider)` fallback).
+    let existing = match candidate {
+        Some(c) if account_email.is_some() => {
+            // Email-keyed match: the caller named this account, so an in-place
+            // update is intended. The mode is fixed — reject an explicit
+            // mode/client change rather than silently validating-and-discarding
+            // a `byoc_credential_id` (which would leave a misconfigured row).
+            if !mode_matches(&c) {
+                return Err(AppError::BadRequest(
+                    "a connection for this account already exists with a different refresh \
+                     mode or pinned client; the mode is fixed at import — delete it and \
+                     re-import to change it"
+                        .into(),
+                ));
+            }
+            Some(c)
+        }
+        Some(c) if mode_matches(&c) => {
+            // Emailless heuristic match (the identity's default connection for
+            // the provider). Only reuse it when it is the *same kind* of vault
+            // connection. This is what stops an emailless import from
+            // overwriting an orchestrated connection (or a differently-pinned
+            // one): on a mismatch we fall through to creating a fresh row.
+            Some(c)
+        }
+        _ => None,
+    };
+
+    let (connection_id, is_default, effective_integration_managed, effective_scopes, audit_action) =
+        if let Some(existing) = existing {
+            // Preserve the existing expiry on a token-only re-import that carries
+            // no fresh one — otherwise we'd null `token_expires_at` and the
+            // connection would look perpetually valid, so an integration-managed
+            // connection would never surface `reauth_required` (and would keep
+            // injecting a token that has actually expired upstream). A re-import
+            // that *does* supply `expires_at`/`expires_in` overrides it.
+            let next_expires_at = expires_at.or(existing.token_expires_at);
+            // Likewise preserve the recorded scopes when the re-import omits them
+            // (`scopes` is now `null`/`None` ⇒ "unknown", not `[]`). Overwriting
+            // with NULL would discard a known granted set; a re-import that
+            // supplies `scopes` overrides it.
+            let next_scopes = input.scopes.clone().or_else(|| existing.scopes.clone());
+            let updated = scope
+                .update_connection_tokens_and_scopes(
+                    existing.id,
+                    &encrypted_access,
+                    encrypted_refresh.as_deref(),
+                    next_expires_at,
+                    next_scopes.as_deref(),
+                    account_email.as_deref(),
+                )
+                .await?;
+            if !updated {
+                return Err(AppError::NotFound(
+                    "connection was deleted during import".into(),
+                ));
+            }
+            (
+                existing.id,
+                existing.is_default,
+                existing.integration_managed,
+                next_scopes,
+                "connection.updated",
+            )
+        } else {
+            let conn = scope
+                .create_connection(CreateConnection {
+                    org_id: ctx.org_id,
+                    identity_id,
+                    provider_key: &input.provider,
+                    encrypted_access_token: &encrypted_access,
+                    encrypted_refresh_token: encrypted_refresh.as_deref(),
+                    token_expires_at: expires_at,
+                    scopes: input.scopes.as_deref(),
+                    account_email: account_email.as_deref(),
+                    byoc_credential_id: byoc_id,
+                    integration_managed,
+                })
+                .await?;
+            (
+                conn.id,
+                conn.is_default,
+                conn.integration_managed,
+                input.scopes.clone(),
+                "connection.created",
+            )
+        };
+
+    let _ = scope
+        .log_audit(overslash_db::repos::audit::AuditEntry {
+            org_id: ctx.org_id,
+            identity_id: Some(caller_identity_id),
+            action: audit_action,
+            resource_type: Some("connection"),
+            resource_id: Some(connection_id),
+            detail: serde_json::json!({
+                "provider": input.provider,
+                "account_email": account_email,
+                "scopes": effective_scopes,
+                "integration_managed": effective_integration_managed,
+                "imported": true,
+            }),
+            description: None,
+            ip_address: request_meta.ip,
+        })
+        .await;
+
+    {
+        let db = ctx.db.clone();
+        let client = ctx.http_client.clone();
+        let org_id = ctx.org_id;
+        let provider_key = input.provider.clone();
+        let account_email = account_email.clone();
+        let scopes = effective_scopes.clone();
+        let action = audit_action;
+        tokio::spawn(async move {
+            let payload = serde_json::json!({
+                "connection_id": connection_id,
+                "provider": provider_key,
+                "account_email": account_email,
+                "scopes": scopes,
+                "identity_id": identity_id,
+                "imported": true,
+            });
+            crate::services::webhook_dispatcher::dispatch(&db, &client, org_id, action, payload)
+                .await;
+        });
+    }
+
+    Ok(ImportConnectionResponse {
+        connection_id,
+        provider: input.provider,
+        account_email,
+        scopes: effective_scopes,
+        is_default,
+        integration_managed: effective_integration_managed,
+    })
 }
 
 /// Build a `PlatformCallContext` from `AppState` + caller identity, suitable
@@ -543,7 +760,6 @@ pub async fn mint_initial_auth_url(
             // instead of landing on the default JSON response. The host is
             // re-validated against the allow-list at callback time.
             return_url: return_url.map(str::to_string),
-            use_org_redirect: false,
             service_instance_id: None,
         },
         RequestMeta::default(),
@@ -552,7 +768,6 @@ pub async fn mint_initial_auth_url(
     Ok(AuthRecoveryUrls {
         auth_url: response.auth_url,
         short: response.short,
-        raw: response.raw,
     })
 }
 
@@ -583,7 +798,7 @@ pub async fn mint_upgrade_auth_url(
     extra_scopes: &[String],
     return_url: Option<&str>,
 ) -> Result<AuthRecoveryUrls, AppError> {
-    let scopes = merge_scopes(&conn.scopes, extra_scopes);
+    let scopes = merge_scopes(conn.scopes.as_deref().unwrap_or(&[]), extra_scopes);
     let scope = OrgScope::new(org_id, state.db.clone());
 
     // The OAuth callback (`routes/connections.rs::oauth_callback`) updates
@@ -614,7 +829,6 @@ pub async fn mint_upgrade_auth_url(
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
                 return_url: return_url.map(str::to_string),
-                use_org_redirect: false,
                 service_instance_id: None,
             },
             RequestMeta::default(),
@@ -623,7 +837,6 @@ pub async fn mint_upgrade_auth_url(
         return Ok(AuthRecoveryUrls {
             auth_url: response.auth_url,
             short: response.short,
-            raw: response.raw,
         });
     }
 
@@ -646,7 +859,6 @@ pub async fn mint_upgrade_auth_url(
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
                 return_url: return_url.map(str::to_string),
-                use_org_redirect: false,
                 service_instance_id: None,
             },
             RequestMeta::default(),
@@ -655,7 +867,6 @@ pub async fn mint_upgrade_auth_url(
         return Ok(AuthRecoveryUrls {
             auth_url: response.auth_url,
             short: response.short,
-            raw: response.raw,
         });
     }
 
@@ -674,7 +885,6 @@ pub async fn mint_upgrade_auth_url(
             on_behalf_of: Some(conn.identity_id),
             upgrade_connection_id: Some(conn.id),
             return_url: return_url.map(str::to_string),
-            use_org_redirect: false,
             service_instance_id: None,
         },
         RequestMeta::default(),
@@ -683,7 +893,6 @@ pub async fn mint_upgrade_auth_url(
     Ok(AuthRecoveryUrls {
         auth_url: response.auth_url,
         short: response.short,
-        raw: response.raw,
     })
 }
 
@@ -763,43 +972,6 @@ mod tests {
         // to a non-HTTP target.
         assert!(parse_return_url(Some("javascript:alert(1)")).is_err());
         assert!(parse_return_url(Some("mailto:foo@example.com")).is_err());
-    }
-
-    #[test]
-    fn parse_redirect_uri_accepts_and_normalizes_https() {
-        // url::Url lowercases the host.
-        let url = parse_redirect_uri(Some(
-            "https://App.Overfolder.com/auth/google/integrations/callback",
-        ))
-        .expect("valid")
-        .expect("present");
-        assert_eq!(
-            url,
-            "https://app.overfolder.com/auth/google/integrations/callback"
-        );
-    }
-
-    #[test]
-    fn parse_redirect_uri_accepts_http_localhost() {
-        let url = parse_redirect_uri(Some("http://localhost:5173/cb"))
-            .expect("valid")
-            .expect("present");
-        assert_eq!(url, "http://localhost:5173/cb");
-    }
-
-    #[test]
-    fn parse_redirect_uri_none_and_blank_pass_through_as_none() {
-        assert!(parse_redirect_uri(None).unwrap().is_none());
-        assert!(parse_redirect_uri(Some("   ")).unwrap().is_none());
-    }
-
-    #[test]
-    fn parse_redirect_uri_rejects_bad_inputs() {
-        assert!(parse_redirect_uri(Some("http://evil.example.com/cb")).is_err());
-        assert!(parse_redirect_uri(Some("https://app.overfolder.com/cb#frag")).is_err());
-        assert!(parse_redirect_uri(Some("https://u:p@app.overfolder.com/cb")).is_err());
-        assert!(parse_redirect_uri(Some("/just/a/path")).is_err());
-        assert!(parse_redirect_uri(Some("javascript:alert(1)")).is_err());
     }
 
     #[test]

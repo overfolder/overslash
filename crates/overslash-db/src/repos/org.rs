@@ -256,38 +256,6 @@ pub async fn set_audit_response_body_mode(
     Ok(result.rows_affected() > 0)
 }
 
-/// Read the `oauth_redirect_url` setting for an org — the single admin-set
-/// provider `redirect_uri` (partner-hosted callback) used when a white-label
-/// flow opts in via `use_org_redirect`. Empty string means the org has no
-/// white-label callback configured. Returns `None` if the org doesn't exist.
-pub async fn get_oauth_redirect_url(
-    pool: &PgPool,
-    id: Uuid,
-) -> Result<Option<String>, sqlx::Error> {
-    let row = sqlx::query!("SELECT oauth_redirect_url FROM orgs WHERE id = $1", id,)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|r| r.oauth_redirect_url))
-}
-
-/// Update the `oauth_redirect_url` setting for an org. The caller is expected to
-/// have validated/normalized the URL at the request boundary; an empty string
-/// clears the setting (disables white-label for the org).
-pub async fn set_oauth_redirect_url(
-    pool: &PgPool,
-    id: Uuid,
-    url: &str,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!(
-        "UPDATE orgs SET oauth_redirect_url = $2, updated_at = now() WHERE id = $1",
-        id,
-        url,
-    )
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
-}
-
 /// Atomically update template settings and return the new values.
 pub async fn update_template_settings(
     pool: &PgPool,

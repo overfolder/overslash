@@ -132,9 +132,10 @@ async fn test_google_calendar_three_modes() {
             encrypted_access_token: &encrypted_token,
             encrypted_refresh_token: None,
             token_expires_at: Some(future_time),
-            scopes: &["https://www.googleapis.com/auth/calendar".to_string()],
+            scopes: Some(&["https://www.googleapis.com/auth/calendar".to_string()]),
             account_email: None,
             byoc_credential_id: Some(byoc.id),
+            integration_managed: false,
         })
         .await
         .unwrap();
@@ -441,9 +442,10 @@ async fn test_google_calendar_real_byoc() {
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: Some(&encrypted_refresh),
             token_expires_at: Some(expires_at),
-            scopes: &["https://www.googleapis.com/auth/calendar".to_string()],
+            scopes: Some(&["https://www.googleapis.com/auth/calendar".to_string()]),
             account_email: Some("angel.overspiral@gmail.com"),
             byoc_credential_id: Some(byoc_id),
+            integration_managed: false,
         })
         .await
         .unwrap();

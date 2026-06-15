@@ -11,10 +11,22 @@ pub struct ConnectionRow {
     pub encrypted_access_token: Vec<u8>,
     pub encrypted_refresh_token: Option<Vec<u8>>,
     pub token_expires_at: Option<OffsetDateTime>,
-    pub scopes: Vec<String>,
+    /// Granted OAuth scopes. `None` means *unknown* (a token import that didn't
+    /// declare them) — the action scope-gate treats unknown as covering
+    /// everything (benefit of the doubt). `Some(vec)` is the known granted set
+    /// (possibly empty); orchestrated connections always record this from the
+    /// token response.
+    pub scopes: Option<Vec<String>>,
     pub account_email: Option<String>,
     pub byoc_credential_id: Option<Uuid>,
     pub is_default: bool,
+    /// `true` for imported connections whose token refresh is the
+    /// integration's responsibility (no BYOC client shared with Overslash).
+    /// Overslash injects the stored access token until expiry, then surfaces
+    /// `reauth_required` instead of attempting a refresh grant — it never
+    /// borrows the org/env OAuth client to refresh an imported token. `false`
+    /// for orchestrated and self-refresh (pinned BYOC) connections.
+    pub integration_managed: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -28,9 +40,14 @@ pub struct CreateConnection<'a> {
     pub encrypted_access_token: &'a [u8],
     pub encrypted_refresh_token: Option<&'a [u8]>,
     pub token_expires_at: Option<OffsetDateTime>,
-    pub scopes: &'a [String],
+    /// `None` stores SQL NULL — "scopes unknown" (see [`ConnectionRow::scopes`]).
+    pub scopes: Option<&'a [String]>,
     pub account_email: Option<&'a str>,
     pub byoc_credential_id: Option<Uuid>,
+    /// See [`ConnectionRow::integration_managed`]. Orchestrated callbacks pass
+    /// `false`; `/v1/connections/import` passes `true` when the caller imports
+    /// without a `byoc_credential_id`.
+    pub integration_managed: bool,
 }
 
 pub(crate) async fn create(
@@ -48,26 +65,62 @@ pub(crate) async fn create(
         ConnectionRow,
         "INSERT INTO connections (org_id, identity_id, provider_key, encrypted_access_token,
          encrypted_refresh_token, token_expires_at, scopes, account_email, byoc_credential_id,
-         is_default)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+         integration_managed, is_default)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                  NOT EXISTS (
                      SELECT 1 FROM connections
                      WHERE identity_id = $2 AND provider_key = $3 AND is_default
                  ))
          RETURNING id, org_id, identity_id, provider_key, encrypted_access_token,
                    encrypted_refresh_token, token_expires_at, scopes, account_email,
-                   byoc_credential_id, is_default, created_at, updated_at",
+                   byoc_credential_id, is_default, integration_managed, created_at, updated_at",
         input.org_id,
         input.identity_id,
         input.provider_key,
         input.encrypted_access_token,
         input.encrypted_refresh_token as Option<&[u8]>,
         input.token_expires_at,
-        input.scopes,
+        input.scopes as Option<&[String]>,
         input.account_email,
         input.byoc_credential_id,
+        input.integration_managed,
     )
     .fetch_one(pool)
+    .await
+}
+
+/// Find the connection a token import should update in place, scoped to an
+/// (org, identity, provider). When `account_email` is given the match is keyed
+/// on it (multi-account: a partner can vault several accounts of one provider
+/// for the same user); otherwise the identity's default-most connection for the
+/// provider is returned. `None` means "no existing connection — create one".
+///
+/// This is what keeps re-import idempotent: an integration-managed connection
+/// is re-imported on every refresh cycle, so without an in-place update each
+/// cycle would accrete a duplicate row.
+pub(crate) async fn find_for_import(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    provider_key: &str,
+    account_email: Option<&str>,
+) -> Result<Option<ConnectionRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ConnectionRow,
+        "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
+                encrypted_refresh_token, token_expires_at, scopes, account_email,
+                byoc_credential_id, is_default, integration_managed, created_at, updated_at
+         FROM connections
+         WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3
+           AND ($4::text IS NULL OR account_email IS NOT DISTINCT FROM $4)
+         ORDER BY is_default DESC, created_at DESC
+         LIMIT 1",
+        org_id,
+        identity_id,
+        provider_key,
+        account_email,
+    )
+    .fetch_optional(pool)
     .await
 }
 
@@ -82,7 +135,7 @@ pub(crate) async fn get_by_id(
         ConnectionRow,
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes, account_email,
-                byoc_credential_id, is_default, created_at, updated_at
+                byoc_credential_id, is_default, integration_managed, created_at, updated_at
          FROM connections WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -140,7 +193,7 @@ pub(crate) async fn update_tokens_and_scopes(
     encrypted_access_token: &[u8],
     encrypted_refresh_token: Option<&[u8]>,
     token_expires_at: Option<OffsetDateTime>,
-    scopes: &[String],
+    scopes: Option<&[String]>,
     account_email: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
@@ -154,7 +207,7 @@ pub(crate) async fn update_tokens_and_scopes(
         encrypted_access_token,
         encrypted_refresh_token as Option<&[u8]>,
         token_expires_at,
-        scopes,
+        scopes as Option<&[String]>,
         account_email,
     )
     .execute(pool)
@@ -181,7 +234,7 @@ pub(crate) async fn get_by_ids(
         ConnectionRow,
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes, account_email,
-                byoc_credential_id, is_default, created_at, updated_at
+                byoc_credential_id, is_default, integration_managed, created_at, updated_at
          FROM connections WHERE org_id = $1 AND id = ANY($2)",
         org_id,
         ids,

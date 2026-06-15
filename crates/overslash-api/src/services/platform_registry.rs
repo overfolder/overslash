@@ -214,16 +214,10 @@ impl PlatformHandler for CreateServiceHandler {
         params: HashMap<String, Value>,
     ) -> BoxFuture<'_, Result<Value, AppError>> {
         Box::pin(async move {
-            let mut input: CreateServiceInput = params_to_struct(params)?;
+            let input: CreateServiceInput = params_to_struct(params)?;
             if input.template_key.is_empty() {
                 return Err(AppError::BadRequest("'template_key' is required".into()));
             }
-            // Raw upstream URL exposure is a REST-only opt-in for
-            // white-label integrators. The MCP path must never let an
-            // agent hand the user a raw provider URL over chat — the
-            // Obsidian threat model is the reason `connect-authorize`
-            // exists in the first place. See `ConnectBundle::raw`.
-            input.connect_include_raw = None;
             let detail = kernel_create_service(ctx, input).await?;
             Ok(serde_json::to_value(detail).unwrap_or(Value::Null))
         })

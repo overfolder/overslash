@@ -556,11 +556,10 @@ async fn unbound_oauth_instance_without_connection_still_needs_auth() {
 }
 
 #[tokio::test]
-async fn connect_include_raw_exposes_upstream_authorize_url() {
-    // White-label integration path: when the REST caller opts in with
-    // `connect_include_raw: true`, the response also carries the raw
-    // upstream provider URL (e.g. accounts.google.com/...). Default
-    // callers still see only the gated Overslash URL.
+async fn connect_bundle_never_exposes_raw_authorize_url() {
+    // The auto-connect bundle surfaces only the gated Overslash `auth_url`;
+    // the raw upstream provider URL is never exposed. White-label partners
+    // import tokens instead of wrapping an Overslash-built authorize URL.
     ensure_oauth_env();
     let pool = common::test_pool().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
@@ -570,14 +569,12 @@ async fn connect_include_raw_exposes_upstream_authorize_url() {
 
     seed_oauth_template(&base, &client, &admin_key, "gcal-raw").await;
 
-    // Opt-in: raw URL is present.
     let body: Value = client
         .post(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "template_key": "gcal-raw",
             "name": "raw-svc",
-            "connect_include_raw": true,
         }))
         .send()
         .await
@@ -586,35 +583,14 @@ async fn connect_include_raw_exposes_upstream_authorize_url() {
         .await
         .unwrap();
     let connect = body.get("connect").expect("connect bundle present");
-    let raw = connect["raw"].as_str().expect("raw url surfaced");
-    assert!(
-        raw.starts_with("https://accounts.google.com/"),
-        "raw url should be the upstream provider URL; got {raw}"
-    );
     let auth_url = connect["auth_url"].as_str().unwrap();
     assert!(
         auth_url.contains("/connect-authorize?id="),
-        "gated auth_url still primary; got {auth_url}"
+        "gated auth_url is the only deliverable; got {auth_url}"
     );
-
-    // Default (no opt-in): raw URL is absent.
-    let body: Value = client
-        .post(format!("{base}/v1/services"))
-        .header("Authorization", format!("Bearer {api_key}"))
-        .json(&json!({
-            "template_key": "gcal-raw",
-            "name": "raw-svc-default",
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let connect = body.get("connect").expect("connect bundle present");
     assert!(
         connect.get("raw").is_none() || connect["raw"].is_null(),
-        "raw should be omitted without opt-in; got {body}"
+        "raw must never be present on the connect bundle; got {body}"
     );
 }
 

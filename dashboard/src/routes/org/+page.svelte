@@ -7,7 +7,6 @@
 		IdpConfig,
 		ManagedSigninSettings,
 		McpClient,
-		OAuthRedirectSettings,
 		OAuthCredential,
 		OrgInfo,
 		OrgInvite,
@@ -43,11 +42,6 @@
 	let auditSettings = $state<AuditSettings | null>(null);
 	let auditSaving = $state(false);
 	let auditError = $state<string | null>(null);
-	let oauthRedirectSettings = $state<OAuthRedirectSettings | null>(null);
-	let oauthRedirectSaving = $state(false);
-	let oauthRedirectError = $state<string | null>(null);
-	// Draft URL bound to the input, seeded from the saved value on load.
-	let oauthRedirectInput = $state('');
 	let managedSigninSettings = $state<ManagedSigninSettings | null>(null);
 	let managedSigninSaving = $state(false);
 	let managedSigninError = $state<string | null>(null);
@@ -68,8 +62,6 @@
 		secretRequestSettings = data.secretRequestSettings;
 		executionSettings = data.executionSettings;
 		auditSettings = data.auditSettings;
-		oauthRedirectSettings = data.oauthRedirectSettings;
-		oauthRedirectInput = data.oauthRedirectSettings?.redirect_url ?? '';
 		managedSigninSettings = data.managedSigninSettings;
 		invites = data.invites;
 		subscription = data.subscription;
@@ -511,27 +503,6 @@
 		}
 	}
 
-	// PATCH the single org redirect URL. The endpoint validates the value and
-	// returns the stored result; an empty string clears it (disables white-label).
-	async function saveOauthRedirectUrl(e: Event) {
-		e.preventDefault();
-		if (!org) return;
-		oauthRedirectSaving = true;
-		oauthRedirectError = null;
-		try {
-			const updated = await session.patch<OAuthRedirectSettings>(
-				`/v1/orgs/${org.id}/oauth-redirect-settings`,
-				{ redirect_url: oauthRedirectInput.trim() }
-			);
-			oauthRedirectSettings = updated;
-			oauthRedirectInput = updated.redirect_url;
-		} catch (err) {
-			oauthRedirectError = asMessage(err);
-		} finally {
-			oauthRedirectSaving = false;
-		}
-	}
-
 	async function toggleAllowUnsignedSecretProvide(nextValue?: boolean) {
 		if (!org || !secretRequestSettings) return;
 		const next = nextValue ?? !secretRequestSettings.allow_unsigned_secret_provide;
@@ -836,48 +807,6 @@
 				{#if auditError}
 					<div class="form-error">{auditError}</div>
 				{/if}
-			{/if}
-		</section>
-
-		<!-- White-label OAuth redirect URL -->
-		<section class="card">
-			<h2>OAuth redirect URL</h2>
-			<p class="section-desc">
-				The provider <code>redirect_uri</code> Overslash sends when a connect or
-				reauth flow opts into white-label (<code>use_org_redirect: true</code> on
-				<code>POST /v1/connections</code>, <code>/upgrade_scopes</code>, or
-				<code>POST /v1/services</code>). This URL must also be registered as a
-				redirect URI on your provider's OAuth client. The partner backend receives
-				the provider's <code>code</code> and <code>state</code> at this URL and
-				forwards them to <code>POST /v1/oauth/exchange</code>. Leave empty to
-				disable white-label — flows use the default Overslash callback. The
-				dashboard's own Connect flows always use the default callback.
-			</p>
-			{#if oauthRedirectSettings}
-				<form class="inline-form" onsubmit={saveOauthRedirectUrl}>
-					<label>
-						Redirect URL
-						<input
-							type="url"
-							bind:value={oauthRedirectInput}
-							placeholder="https://app.overfolder.com/auth/google/integrations/callback"
-							disabled={oauthRedirectSaving}
-						/>
-					</label>
-					{#if oauthRedirectError}
-						<p class="form-error">{oauthRedirectError}</p>
-					{/if}
-					<div class="form-actions">
-						<button
-							type="submit"
-							class="btn btn-primary"
-							disabled={oauthRedirectSaving ||
-								oauthRedirectInput.trim() === (oauthRedirectSettings.redirect_url ?? '')}
-						>
-							{oauthRedirectSaving ? 'Saving…' : 'Save'}
-						</button>
-					</div>
-				</form>
 			{/if}
 		</section>
 

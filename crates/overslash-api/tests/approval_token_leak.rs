@@ -78,9 +78,10 @@ async fn setup_pending_oauth_approval() -> PendingOauthApproval {
             encrypted_access_token: &encrypted_token,
             encrypted_refresh_token: None,
             token_expires_at: Some(future_time),
-            scopes: &["https://www.googleapis.com/auth/calendar".to_string()],
+            scopes: Some(&["https://www.googleapis.com/auth/calendar".to_string()]),
             account_email: None,
             byoc_credential_id: Some(byoc.id),
+            integration_managed: false,
         })
         .await
         .unwrap();

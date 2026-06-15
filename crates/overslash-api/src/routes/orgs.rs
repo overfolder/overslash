@@ -47,10 +47,6 @@ pub fn router() -> Router<AppState> {
             get(get_audit_settings).patch(patch_audit_settings),
         )
         .route(
-            "/v1/orgs/{id}/oauth-redirect-settings",
-            get(get_oauth_redirect_settings).patch(patch_oauth_redirect_settings),
-        )
-        .route(
             "/v1/orgs/{id}/managed-signin",
             get(get_managed_signin).patch(patch_managed_signin),
         )
@@ -945,83 +941,6 @@ async fn patch_audit_settings(
 
     Ok(Json(AuditSettingsResponse {
         response_body_mode: mode.as_str().to_string(),
-    }))
-}
-
-// ─── OAuth redirect URL (white-label per-org provider callback) ───
-
-#[derive(Serialize)]
-struct OAuthRedirectSettingsResponse {
-    /// The org's admin-set provider `redirect_uri` used when a connect/reauth
-    /// flow opts in via `use_org_redirect`. Empty string means white-label is
-    /// disabled for the org (flows use the default Overslash callback).
-    redirect_url: String,
-}
-
-#[derive(Deserialize)]
-struct PatchOAuthRedirectSettingsRequest {
-    redirect_url: String,
-}
-
-async fn get_oauth_redirect_settings(
-    State(state): State<AppState>,
-    ReqExt(ext): ReqExt,
-    auth: AuthContext,
-    Path(id): Path<Uuid>,
-) -> Result<Json<OAuthRedirectSettingsResponse>> {
-    if id != auth.org_id {
-        return Err(AppError::Forbidden("cannot read another org".into()));
-    }
-    let redirect_url = overslash_db::repos::org::get_oauth_redirect_url(state.db(&ext), id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
-    Ok(Json(OAuthRedirectSettingsResponse { redirect_url }))
-}
-
-async fn patch_oauth_redirect_settings(
-    State(state): State<AppState>,
-    ReqExt(ext): ReqExt,
-    AdminAcl(acl): AdminAcl,
-    ip: ClientIp,
-    Path(id): Path<Uuid>,
-    Json(req): Json<PatchOAuthRedirectSettingsRequest>,
-) -> Result<Json<OAuthRedirectSettingsResponse>> {
-    if id != acl.org_id {
-        return Err(AppError::Forbidden(
-            "cannot mutate another org's config".into(),
-        ));
-    }
-
-    // Validate on write with the same parser the kernel uses at read time. An
-    // empty/blank value clears the setting (disables white-label); a non-empty
-    // value must be a valid https (or localhost-http) URL, else 400.
-    let trimmed = req.redirect_url.trim();
-    let stored = crate::services::platform_connections::parse_redirect_uri(
-        Some(trimmed).filter(|s| !s.is_empty()),
-    )?
-    .unwrap_or_default();
-
-    let updated =
-        overslash_db::repos::org::set_oauth_redirect_url(state.db(&ext), id, &stored).await?;
-    if !updated {
-        return Err(AppError::NotFound("org not found".into()));
-    }
-
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
-        .log_audit(AuditEntry {
-            org_id: id,
-            identity_id: acl.identity_id,
-            action: "org.oauth_redirect_settings.updated",
-            resource_type: Some("org"),
-            resource_id: Some(id),
-            detail: serde_json::json!({ "redirect_url": stored }),
-            description: None,
-            ip_address: ip.0.as_deref(),
-        })
-        .await;
-
-    Ok(Json(OAuthRedirectSettingsResponse {
-        redirect_url: stored,
     }))
 }
 

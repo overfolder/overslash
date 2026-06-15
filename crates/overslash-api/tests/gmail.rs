@@ -115,15 +115,16 @@ async fn test_gmail_e2e() {
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: Some(&encrypted_refresh),
             token_expires_at: Some(expires_at),
-            scopes: &[
+            scopes: Some(&[
                 "https://www.googleapis.com/auth/gmail.readonly".to_string(),
                 "https://www.googleapis.com/auth/gmail.send".to_string(),
                 "https://www.googleapis.com/auth/gmail.modify".to_string(),
                 "https://www.googleapis.com/auth/gmail.compose".to_string(),
                 "https://www.googleapis.com/auth/gmail.metadata".to_string(),
-            ],
+            ]),
             account_email: None,
             byoc_credential_id: Some(byoc_id),
+            integration_managed: false,
         })
         .await
         .unwrap();
@@ -526,9 +527,10 @@ async fn test_gmail_e2e() {
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: Some(&encrypted_refresh),
             token_expires_at: Some(expires_at),
-            scopes: &["https://www.googleapis.com/auth/gmail.compose".to_string()],
+            scopes: Some(&["https://www.googleapis.com/auth/gmail.compose".to_string()]),
             account_email: None,
             byoc_credential_id: Some(byoc_id),
+            integration_managed: false,
         })
         .await
         .unwrap();

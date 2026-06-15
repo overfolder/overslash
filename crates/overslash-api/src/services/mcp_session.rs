@@ -285,16 +285,7 @@ pub async fn complete_from_elicitation(
         .await?;
 
     let call_status = call_resp.status();
-    let mut call_body: Value = call_resp.json().await.unwrap_or(Value::Null);
-    // The action handler can surface OAuth-shaped typed errors
-    // (`reauth_required`, `needs_authentication`, `missing_scopes`) when
-    // an approval replay hits a broken connection. Those envelopes carry
-    // `raw` (upstream provider `/authorize` URL) for white-label REST
-    // integrators — but the elicitation SSE stream that delivers this
-    // body to the MCP agent is the same chat-delivery surface the
-    // `forward()` strip protects. Reuse the shared helper so both
-    // relays apply the same policy. No-op on success bodies.
-    crate::routes::mcp::strip_oauth_raw_for_chat_delivery(&mut call_body);
+    let call_body: Value = call_resp.json().await.unwrap_or(Value::Null);
 
     if call_status.is_success() {
         let updated = repo::complete(state.db(ext), elicit_id, &call_body).await?;

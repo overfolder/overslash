@@ -2266,9 +2266,10 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
             encrypted_access_token: &expired_access,
             encrypted_refresh_token: Some(&refresh_tok),
             token_expires_at: Some(expired_time),
-            scopes: &[],
+            scopes: Some(&[]),
             account_email: None,
             byoc_credential_id: None,
+            integration_managed: false,
         })
         .await
         .unwrap();
@@ -2330,9 +2331,10 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
             encrypted_access_token: &valid_access,
             encrypted_refresh_token: None,
             token_expires_at: Some(future_time),
-            scopes: &[],
+            scopes: Some(&[]),
             account_email: None,
             byoc_credential_id: None,
+            integration_managed: false,
         })
         .await
         .unwrap();
@@ -2386,9 +2388,10 @@ async fn test_update_tokens_preserves_refresh_token_when_none() {
             encrypted_access_token: &initial_access,
             encrypted_refresh_token: Some(&initial_refresh),
             token_expires_at: Some(time::OffsetDateTime::now_utc() - time::Duration::hours(1)),
-            scopes: &[],
+            scopes: Some(&[]),
             account_email: None,
             byoc_credential_id: None,
+            integration_managed: false,
         })
         .await
         .unwrap();

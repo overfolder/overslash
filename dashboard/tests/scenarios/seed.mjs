@@ -412,18 +412,3 @@ export async function setAuditResponseBodyMode(session, mode) {
 		body: { response_body_mode: mode }
 	});
 }
-
-/**
- * Set the org's white-label OAuth redirect URL — the single admin-set provider
- * `redirect_uri` a flow opts into via `use_org_redirect`. Returns the stored value.
- *
- * @param {import('./auth.mjs').Session} session
- * @param {string} redirectUrl
- * @returns {Promise<{ redirect_url: string }>}
- */
-export async function setOauthRedirectUrl(session, redirectUrl) {
-	return api(session, `/v1/orgs/${session.orgId}/oauth-redirect-settings`, {
-		method: 'PATCH',
-		body: { redirect_url: redirectUrl }
-	});
-}
