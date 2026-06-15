@@ -836,3 +836,71 @@ async fn test_enable_nonexistent_global_returns_404() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 }
+
+// ---------------------------------------------------------------------------
+// TemplateDetail.scopes — union of every action's required_scopes, surfaced
+// on GET /v1/templates/{key} for white-label partners (token-vault import).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_global_template_detail_includes_scopes() {
+    let (base, client, _, admin_key, _, _, _, _) = bootstrap(true).await;
+
+    // google_calendar declares a root-level OAuth scope, so the union is
+    // non-empty and deterministic.
+    let resp = client
+        .get(format!("{base}/v1/templates/google_calendar"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+
+    let scopes: Vec<&str> = body["scopes"]
+        .as_array()
+        .expect("scopes field missing on global template detail")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        scopes.contains(&"https://www.googleapis.com/auth/calendar"),
+        "expected calendar scope in union, got {scopes:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_org_template_detail_includes_scopes() {
+    let (base, client, _, admin_key, _, _, _, _) = bootstrap(false).await;
+
+    // Create an org (DB-tier) template so we exercise db_row_to_detail.
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "openapi": minimal_openapi("scoped-internal", "Scoped Internal"),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let created: Value = resp.json().await.unwrap();
+    // The create response is itself a TemplateDetail and carries the field.
+    assert!(
+        created["scopes"].is_array(),
+        "create response missing scopes array: {created}"
+    );
+
+    let resp = client
+        .get(format!("{base}/v1/templates/scoped-internal"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["scopes"].is_array(),
+        "org template detail missing scopes array: {body}"
+    );
+}
