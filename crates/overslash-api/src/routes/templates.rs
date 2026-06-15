@@ -137,6 +137,11 @@ struct TemplateDetail {
     /// Compiled actions view for rendering the service detail page without
     /// re-parsing on the client.
     actions: Vec<ActionSummary>,
+    /// Union of every action's `required_scopes` — the OAuth scopes a caller
+    /// must request so the connection covers this service. White-label
+    /// partners read this to build their own authorize URL (token-vault
+    /// model); the dashboard renders them as the service-specific scope chips.
+    scopes: Vec<String>,
     tier: String,
     /// DB id for org/user templates; None for global.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -281,6 +286,19 @@ fn is_global_visible(filter: &Option<HashSet<String>>, key: &str) -> bool {
     }
 }
 
+/// Union every action's `required_scopes` into a sorted, deduped list — the
+/// OAuth scopes that fully cover this template. Mirrors
+/// `platform_services::template_action_scopes`; surfaced on `TemplateDetail`
+/// so white-label partners (token-vault import) request exactly these.
+fn template_required_scopes(def: &ServiceDefinition) -> Vec<String> {
+    def.actions
+        .values()
+        .flat_map(|a| a.required_scopes.iter().cloned())
+        .collect::<std::collections::BTreeSet<String>>()
+        .into_iter()
+        .collect()
+}
+
 fn actions_from_definition(def: &ServiceDefinition) -> Vec<ActionSummary> {
     let mut out: Vec<ActionSummary> = def
         .actions
@@ -321,6 +339,7 @@ fn db_row_to_detail(t: service_template::ServiceTemplateRow, tier: &str) -> Resu
         auth,
         openapi: openapi_yaml,
         actions: actions_from_definition(&def),
+        scopes: template_required_scopes(&def),
         tier: tier.into(),
         id: Some(t.id),
         runtime,
@@ -579,6 +598,7 @@ async fn get_template(
         auth,
         openapi: openapi_yaml,
         actions: actions_from_definition(svc),
+        scopes: template_required_scopes(svc),
         tier: "global".into(),
         id: None,
         runtime,

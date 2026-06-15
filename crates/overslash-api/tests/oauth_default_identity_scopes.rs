@@ -190,3 +190,91 @@ async fn oauth_providers_route_exposes_default_identity_scopes() {
         }
     }
 }
+
+/// `GET /v1/oauth-providers/{key}` returns the full OAuth metadata a
+/// white-label partner needs to run the authorize + code-exchange dance
+/// itself (token-vault model). Read-only catalog data — no secrets.
+#[tokio::test]
+async fn oauth_provider_detail_exposes_full_metadata() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_user, _ident_id, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    let resp = client
+        .get(format!("{base}/v1/oauth-providers/google"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let p: Value = resp.json().await.unwrap();
+
+    assert_eq!(p["key"].as_str(), Some("google"));
+    assert!(
+        !p["display_name"].as_str().unwrap_or("").is_empty(),
+        "display_name should be populated"
+    );
+    // Endpoints the partner posts the authorize/exchange requests to.
+    assert!(
+        p["authorization_endpoint"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("https://"),
+        "authorization_endpoint should be an https URL: {p:?}"
+    );
+    assert!(
+        p["token_endpoint"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("https://"),
+        "token_endpoint should be an https URL: {p:?}"
+    );
+    // Flags and method are always present (non-optional in the schema).
+    assert!(p["supports_pkce"].is_boolean(), "supports_pkce missing");
+    assert!(
+        p["supports_refresh"].is_boolean(),
+        "supports_refresh missing"
+    );
+    assert!(
+        p["token_auth_method"].is_string(),
+        "token_auth_method missing"
+    );
+    // Identity scopes mirror the list endpoint so the partner can union them
+    // into its authorize URL.
+    let scopes: Vec<&str> = p["default_identity_scopes"]
+        .as_array()
+        .expect("default_identity_scopes missing")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    for s in ["openid", "email", "profile"] {
+        assert!(
+            scopes.contains(&s),
+            "missing identity scope {s}: {scopes:?}"
+        );
+    }
+
+    // Secrets must never be surfaced through the catalog endpoint.
+    assert!(p.get("client_id").is_none(), "client_id leaked");
+    assert!(p.get("client_secret").is_none(), "client_secret leaked");
+}
+
+/// Unknown provider key → 404, not a 500 or empty body.
+#[tokio::test]
+async fn oauth_provider_detail_unknown_key_404() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_user, _ident_id, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    let resp = client
+        .get(format!("{base}/v1/oauth-providers/does-not-exist"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
