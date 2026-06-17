@@ -498,26 +498,29 @@ pub async fn kernel_import_connection(
 
     let enc_key = ctx.config.keyring()?;
 
-    // Refresh mode, fixed at import. A pinned BYOC ⇒ self-refresh: validate it
+    // Imported connections must pin a BYOC client: Overslash self-refreshes the
+    // token via that client, hard-pinned (never the org/env cascade — a refresh
+    // token is valid only against the client that issued it). Validate the pin
     // resolves for this org/provider now (Tier-1 hard pin — `resolve` errors if
-    // the row is missing) so a bad id fails loudly here, not at first refresh. A
-    // null BYOC ⇒ integration-managed: no client, never refreshes.
-    let (byoc_id, integration_managed) = match input.byoc_credential_id {
-        Some(id) => {
-            let creds = crate::services::client_credentials::resolve(
-                &ctx.db,
-                &enc_key,
-                ctx.org_id,
-                Some(identity_id),
-                &input.provider,
-                None,
-                Some(id),
-            )
-            .await?;
-            (creds.byoc_credential_id, false)
-        }
-        None => (None, true),
-    };
+    // the row is missing) so a bad id fails loudly here, not at first refresh.
+    let pinned_byoc_id = input.byoc_credential_id.ok_or_else(|| {
+        AppError::BadRequest(
+            "byoc_credential_id is required: imported connections self-refresh via a pinned \
+             client. Register the client as a BYOC credential and import against it."
+                .into(),
+        )
+    })?;
+    let creds = crate::services::client_credentials::resolve(
+        &ctx.db,
+        &enc_key,
+        ctx.org_id,
+        Some(identity_id),
+        &input.provider,
+        None,
+        Some(pinned_byoc_id),
+    )
+    .await?;
+    let byoc_id = creds.byoc_credential_id;
 
     let expires_at = match input.expires_at {
         Some(ts) => Some(OffsetDateTime::from_unix_timestamp(ts).map_err(|_| {
@@ -557,12 +560,9 @@ pub async fn kernel_import_connection(
         .find_connection_for_import(identity_id, &input.provider, account_email.as_deref())
         .await?;
 
-    // Whether the import's *requested* mode/client matches an existing row's.
-    // The refresh mode (and pinned client) is fixed at first import.
-    let mode_matches = |existing: &ConnectionRow| {
-        existing.integration_managed == integration_managed
-            && (integration_managed || existing.byoc_credential_id == byoc_id)
-    };
+    // Whether the import's pinned client matches an existing row's. The pinned
+    // client is fixed at first import.
+    let mode_matches = |existing: &ConnectionRow| existing.byoc_credential_id == byoc_id;
 
     // Decide whether `candidate` is genuinely *this* vault connection or an
     // accidental match we must not overwrite (notably an orchestrated
@@ -570,14 +570,14 @@ pub async fn kernel_import_connection(
     let existing = match candidate {
         Some(c) if account_email.is_some() => {
             // Email-keyed match: the caller named this account, so an in-place
-            // update is intended. The mode is fixed — reject an explicit
-            // mode/client change rather than silently validating-and-discarding
-            // a `byoc_credential_id` (which would leave a misconfigured row).
+            // update is intended. The pinned client is fixed — reject an
+            // explicit change rather than silently validating-and-discarding a
+            // `byoc_credential_id` (which would leave a misconfigured row).
             if !mode_matches(&c) {
                 return Err(AppError::BadRequest(
-                    "a connection for this account already exists with a different refresh \
-                     mode or pinned client; the mode is fixed at import — delete it and \
-                     re-import to change it"
+                    "a connection for this account already exists with a different pinned \
+                     client; the pinned client is fixed at import — delete it and re-import \
+                     to change it"
                         .into(),
                 ));
             }
@@ -585,10 +585,10 @@ pub async fn kernel_import_connection(
         }
         Some(c) if mode_matches(&c) => {
             // Emailless heuristic match (the identity's default connection for
-            // the provider). Only reuse it when it is the *same kind* of vault
-            // connection. This is what stops an emailless import from
-            // overwriting an orchestrated connection (or a differently-pinned
-            // one): on a mismatch we fall through to creating a fresh row.
+            // the provider). Only reuse it when it pins the *same* client. This
+            // is what stops an emailless import from overwriting an orchestrated
+            // connection (or a differently-pinned one): on a mismatch we fall
+            // through to creating a fresh row.
             Some(c)
         }
         _ => None,
