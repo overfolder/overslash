@@ -95,9 +95,12 @@ pub(crate) async fn find_for_import(
 ) -> Result<Option<ConnectionRow>, sqlx::Error> {
     sqlx::query_as!(
         ConnectionRow,
+        // `scopes AS "scopes?"`: force the nullable override — a single-table
+        // SELECT trips a sqlx-macro quirk that decodes the nullable `scopes`
+        // (migration 083) as non-`Option` and panics on a NULL. See `get_by_id`.
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
-                encrypted_refresh_token, token_expires_at, scopes, account_email,
-                byoc_credential_id, is_default, created_at, updated_at
+                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
+                account_email, byoc_credential_id, is_default, created_at, updated_at
          FROM connections
          WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3
            AND ($4::text IS NULL OR account_email IS NOT DISTINCT FROM $4)
@@ -121,9 +124,13 @@ pub(crate) async fn get_by_id(
 ) -> Result<Option<ConnectionRow>, sqlx::Error> {
     sqlx::query_as!(
         ConnectionRow,
+        // `scopes` is nullable (migration 083). The single-table SELECT trips a
+        // sqlx-macro nullability quirk that decodes it as non-`Option` and panics
+        // on a NULL (an import that didn't declare scopes), so force the override
+        // explicitly. See `scopes/user_connections.rs` (its JOIN sidesteps this).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
-                encrypted_refresh_token, token_expires_at, scopes, account_email,
-                byoc_credential_id, is_default, created_at, updated_at
+                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
+                account_email, byoc_credential_id, is_default, created_at, updated_at
          FROM connections WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -220,9 +227,10 @@ pub(crate) async fn get_by_ids(
     }
     sqlx::query_as!(
         ConnectionRow,
+        // `scopes AS "scopes?"`: force the nullable override (see `get_by_id`).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
-                encrypted_refresh_token, token_expires_at, scopes, account_email,
-                byoc_credential_id, is_default, created_at, updated_at
+                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
+                account_email, byoc_credential_id, is_default, created_at, updated_at
          FROM connections WHERE org_id = $1 AND id = ANY($2)",
         org_id,
         ids,

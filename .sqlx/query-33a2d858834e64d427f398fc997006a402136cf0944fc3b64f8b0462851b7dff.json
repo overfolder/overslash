@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes, account_email,\n                byoc_credential_id, is_default, created_at, updated_at\n         FROM connections\n         WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3\n           AND ($4::text IS NULL OR account_email IS NOT DISTINCT FROM $4)\n         ORDER BY is_default DESC, created_at DESC\n         LIMIT 1",
+  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, created_at, updated_at\n         FROM connections WHERE id = $1 AND org_id = $2",
   "describe": {
     "columns": [
       {
@@ -82,7 +82,7 @@
       },
       {
         "ordinal": 7,
-        "name": "scopes",
+        "name": "scopes?: Vec<String>",
         "type_info": "TextArray",
         "origin": {
           "Table": {
@@ -150,9 +150,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -171,5 +169,5 @@
       false
     ]
   },
-  "hash": "6ca42d04766980eb42d70f0b89502201baee3a45b0daa01ecbfed8bc33541801"
+  "hash": "33a2d858834e64d427f398fc997006a402136cf0944fc3b64f8b0462851b7dff"
 }
