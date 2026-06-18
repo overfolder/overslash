@@ -327,7 +327,9 @@ async fn non_headless_reauth_still_mints_gated_url() {
 
     assert_eq!(status, 401, "expected reauth_required: {body}");
     assert_eq!(body["error"], "reauth_required");
-    let auth_url = body["auth_url"].as_str().expect("non-headless must mint auth_url");
+    let auth_url = body["auth_url"]
+        .as_str()
+        .expect("non-headless must mint auth_url");
     assert!(
         auth_url.contains("/connect-authorize?id="),
         "auth_url should be a gated link: {auth_url}"
