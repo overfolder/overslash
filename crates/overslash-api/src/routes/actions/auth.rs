@@ -67,8 +67,12 @@ pub(super) fn classify_oauth(err: &OAuthError) -> OAuthOutcome {
 /// URL-less typed envelopes instead of minting gated `/connect-authorize`
 /// links (and no `oauth_connection_flows` row). A read failure or missing org
 /// defaults to `false` — the safe, gated path for normal dashboard customers.
-async fn org_is_headless(state: &AppState, org_id: Uuid) -> bool {
-    overslash_db::repos::org::get_headless(&state.db, org_id)
+///
+/// Pass the request's pool (`state.db(ext)` or `scope.db()`) so the lookup hits
+/// the right database under the shared-router test harness (in production /
+/// per-test routers that is `&state.db`).
+async fn org_is_headless(db: &sqlx::PgPool, org_id: Uuid) -> bool {
+    overslash_db::repos::org::get_headless(db, org_id)
         .await
         .ok()
         .flatten()
@@ -87,6 +91,7 @@ async fn org_is_headless(state: &AppState, org_id: Uuid) -> bool {
 /// non-bailing variant: see [`oauth_error_to_app_error_or_continue`].
 pub(super) async fn oauth_error_to_app_error(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org_id: Uuid,
     caller_identity_id: Uuid,
     conn: &overslash_db::repos::connection::ConnectionRow,
@@ -97,6 +102,7 @@ pub(super) async fn oauth_error_to_app_error(
         OAuthOutcome::Reauth(reason) => {
             reauth_required_envelope(
                 state,
+                ext,
                 org_id,
                 caller_identity_id,
                 conn,
@@ -124,6 +130,7 @@ pub(super) async fn oauth_error_to_app_error(
 /// authentication via provider B.
 pub(super) async fn oauth_error_to_app_error_or_continue(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org_id: Uuid,
     caller_identity_id: Uuid,
     conn: &overslash_db::repos::connection::ConnectionRow,
@@ -134,6 +141,7 @@ pub(super) async fn oauth_error_to_app_error_or_continue(
         OAuthOutcome::Reauth(reason) => Some(
             reauth_required_envelope(
                 state,
+                ext,
                 org_id,
                 caller_identity_id,
                 conn,
@@ -165,8 +173,10 @@ pub(super) async fn oauth_error_to_app_error_or_continue(
 /// and fall back to `Internal` if the URL mint itself fails — at that
 /// point we genuinely can't help the user from this response and the
 /// operator needs to investigate.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn reauth_required_envelope(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org_id: Uuid,
     caller_identity_id: Uuid,
     conn: &overslash_db::repos::connection::ConnectionRow,
@@ -179,7 +189,7 @@ pub(super) async fn reauth_required_envelope(
     // envelope keyed by provider/scopes/email; the integration re-runs its own
     // dance and re-imports. This is the single choke point for reauth, so it
     // covers both the bailing and the non-bailing callers.
-    if org_is_headless(state, org_id).await {
+    if org_is_headless(state.db(ext), org_id).await {
         return AppError::ReauthRequired {
             connection_id: conn.id,
             provider: conn.provider_key.clone(),
@@ -244,6 +254,7 @@ pub(super) async fn reauth_required_envelope(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn needs_authentication_for_service(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org_id: Uuid,
     caller_identity_id: Uuid,
     svc: &overslash_core::types::ServiceDefinition,
@@ -272,7 +283,7 @@ pub(super) async fn needs_authentication_for_service(
     // Headless (white-label) org: no gated URL, no flow row. Hand back a
     // URL-less envelope naming the provider + required scopes so the
     // integration runs its own dance and imports a connection.
-    if org_is_headless(state, org_id).await {
+    if org_is_headless(state.db(ext), org_id).await {
         return Ok(Some(AppError::NeedsAuthentication {
             service: Some(service_key.to_string()),
             service_instance_id: instance.map(|i| i.id),
@@ -475,6 +486,7 @@ pub(crate) async fn resolve_service_auth(
                     let err_str = e.to_string();
                     if let Some(err) = oauth_error_to_app_error_or_continue(
                         state,
+                        ext,
                         org_id,
                         identity_id,
                         &conn,
@@ -587,7 +599,7 @@ pub(super) async fn check_required_scopes(
     // `upgrade_url` — the org's end users can't open either, and minting an
     // upgrade flow would leave a stray flow row. The integration broadens the
     // grant against its own client and re-imports the connection.
-    if org_is_headless(state, org_id).await {
+    if org_is_headless(scope.db(), org_id).await {
         return Err(AppError::MissingScopes {
             connection_id: connection.id,
             required: action.required_scopes.clone(),
@@ -834,6 +846,7 @@ pub(crate) async fn resolve_instance_auth(
                     // `needs_authentication` 401.
                     return Err(oauth_error_to_app_error(
                         state,
+                        ext,
                         org_id,
                         identity_id,
                         &conn,

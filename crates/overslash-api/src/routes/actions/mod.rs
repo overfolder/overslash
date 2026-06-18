@@ -148,7 +148,9 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
                     body["account_email"] = json!(e);
                 }
             } else {
-                body["auth_url"] = json!(auth_url);
+                if let Some(url) = auth_url {
+                    body["auth_url"] = json!(url);
+                }
                 if let Some(s) = short {
                     body["short"] = json!(s);
                 }

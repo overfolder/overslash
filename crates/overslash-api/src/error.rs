@@ -468,8 +468,13 @@ impl IntoResponse for AppError {
                         body["account_email"] = json!(e);
                     }
                 } else {
-                    // `auth_url` is always present for non-headless orgs.
-                    body["auth_url"] = json!(auth_url);
+                    // Non-headless: `auth_url` is normally present (the gated
+                    // link). Omit the key rather than emit `null` if it's ever
+                    // absent — matches the `ReauthRequired`/`MissingScopes`
+                    // contract so consumers can branch on key presence.
+                    if let Some(url) = auth_url {
+                        body["auth_url"] = json!(url);
+                    }
                     if let Some(s) = short {
                         body["short"] = json!(s);
                     }
