@@ -140,27 +140,38 @@ pub enum AppError {
     /// — present only when the shortener is configured; friendlier for
     /// chat delivery where the long base62 flow id gets mangled by line
     /// wrapping. The raw upstream provider authorize URL is never surfaced.
+    ///
+    /// **Headless orgs** (white-label, no Overslash dashboard session): no
+    /// user-facing URL is minted (`auth_url`/`short` omitted, no flow row).
+    /// `headless: true` plus `provider`/`required_scopes` tell the integration
+    /// to run its own OAuth dance and re-import.
     #[error("needs_authentication: {service:?}")]
     NeedsAuthentication {
         service: Option<String>,
         service_instance_id: Option<uuid::Uuid>,
         connection_id: Option<uuid::Uuid>,
-        auth_url: String,
+        /// `None` only for headless orgs (no gated URL minted).
+        auth_url: Option<String>,
         short: Option<String>,
+        provider: Option<String>,
+        required_scopes: Vec<String>,
+        account_email: Option<String>,
+        headless: bool,
     },
 
-    /// An existing connection's access token can no longer be refreshed.
-    /// Returned as 401. Two shapes by connection kind:
+    /// An existing connection's access token can no longer be refreshed
+    /// (revoked, expired Google testing-client refresh). Returned as 401.
+    /// Two shapes by *org kind* — orthogonal to how the connection refreshes:
     ///
-    /// - **Orchestrated / self-refresh** (`integration_managed = false`): the
-    ///   refresh grant failed (revoked, expired Google testing-client refresh).
-    ///   `auth_url` is a freshly-minted gated link that, on consent, updates
-    ///   the *same* connection in place via the upgrade-flow callback — without
-    ///   that we'd orphan the broken row and any service bound to its id.
-    /// - **Integration-managed** (`integration_managed = true`): an imported
-    ///   connection with no shared client. Overslash can't mint a reconnect
-    ///   link, so `auth_url`/`short` are omitted; the integration must refresh
-    ///   and re-import. A `connection.refresh_required` webhook fires alongside.
+    /// - **Orchestrated org** (`headless = false`): `auth_url` is a freshly-minted
+    ///   gated link that, on consent, updates the *same* connection in place via
+    ///   the upgrade-flow callback — without that we'd orphan the broken row and
+    ///   any service bound to its id.
+    /// - **Headless org** (`headless = true`): a white-label org whose end users
+    ///   have no Overslash session. Overslash mints no reconnect link and no
+    ///   flow row, so `auth_url`/`short` are omitted; the integration re-runs its
+    ///   own dance and re-imports. `provider`/`required_scopes`/`account_email`
+    ///   carry the identity it must re-authorize.
     ///
     /// `short` is the chat-friendly shortened form of `auth_url`. The raw
     /// upstream provider authorize URL is never surfaced.
@@ -171,7 +182,9 @@ pub enum AppError {
         auth_url: Option<String>,
         short: Option<String>,
         reason: String,
-        integration_managed: bool,
+        required_scopes: Vec<String>,
+        account_email: Option<String>,
+        headless: bool,
     },
 
     /// An OAuth connection exists but lacks one or more scopes the action
@@ -179,6 +192,11 @@ pub enum AppError {
     /// callers can POST to; `auth_url` is the chat-deliverable gated
     /// `/connect-authorize` link that runs incremental-scope OAuth against the
     /// existing connection (preferred for agents). Returned as 403.
+    ///
+    /// **Headless orgs** (`headless = true`): both `auth_url`/`short` *and*
+    /// `upgrade_url` are omitted — the upgrade path would mint a gated flow the
+    /// org's users can't open. The integration re-imports with the wider scopes;
+    /// `provider`/`account_email` name the connection's identity.
     ///
     /// `short` follows the same semantics as on [`Self::NeedsAuthentication`].
     /// `upgrade_url` (REST endpoint) is Overslash-owned; the raw upstream
@@ -191,9 +209,13 @@ pub enum AppError {
         required: Vec<String>,
         /// The subset not currently granted (the delta to obtain).
         missing: Vec<String>,
-        upgrade_url: String,
+        /// `None` only for headless orgs (no gated upgrade flow minted).
+        upgrade_url: Option<String>,
         auth_url: Option<String>,
         short: Option<String>,
+        provider: Option<String>,
+        account_email: Option<String>,
+        headless: bool,
     },
 
     /// The action's template declared a required secret (an inline API key,
@@ -417,10 +439,13 @@ impl IntoResponse for AppError {
                 connection_id,
                 auth_url,
                 short,
+                provider,
+                required_scopes,
+                account_email,
+                headless,
             } => {
                 let mut body = json!({
                     "error": "needs_authentication",
-                    "auth_url": auth_url,
                 });
                 if let Some(s) = service {
                     body["service"] = json!(s);
@@ -431,8 +456,23 @@ impl IntoResponse for AppError {
                 if let Some(id) = connection_id {
                     body["connection_id"] = json!(id);
                 }
-                if let Some(s) = short {
-                    body["short"] = json!(s);
+                if *headless {
+                    // White-label org: no gated URL. The integration runs its
+                    // own dance and re-imports, keyed by provider/scopes/email.
+                    body["headless"] = json!(true);
+                    if let Some(p) = provider {
+                        body["provider"] = json!(p);
+                    }
+                    body["required_scopes"] = json!(required_scopes);
+                    if let Some(e) = account_email {
+                        body["account_email"] = json!(e);
+                    }
+                } else {
+                    // `auth_url` is always present for non-headless orgs.
+                    body["auth_url"] = json!(auth_url);
+                    if let Some(s) = short {
+                        body["short"] = json!(s);
+                    }
                 }
                 return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
             }
@@ -442,24 +482,34 @@ impl IntoResponse for AppError {
                 auth_url,
                 short,
                 reason,
-                integration_managed,
+                required_scopes,
+                account_email,
+                headless,
             } => {
                 let mut body = json!({
                     "error": "reauth_required",
                     "connection_id": connection_id,
                     "provider": provider,
                     "reason": reason,
-                    "integration_managed": integration_managed,
                 });
-                // Integration-managed connections carry no Overslash reconnect
-                // link — the integration refreshes and re-imports. For all
-                // other connections `auth_url` is the chat-deliverable gated
-                // link (`short` its shortened form).
-                if let Some(url) = auth_url {
-                    body["auth_url"] = json!(url);
-                }
-                if let Some(s) = short {
-                    body["short"] = json!(s);
+                if *headless {
+                    // White-label org: no Overslash reconnect link, no flow row.
+                    // The integration refreshes against its own client and
+                    // re-imports, keyed by provider/scopes/email.
+                    body["headless"] = json!(true);
+                    body["required_scopes"] = json!(required_scopes);
+                    if let Some(e) = account_email {
+                        body["account_email"] = json!(e);
+                    }
+                } else {
+                    // `auth_url` is the chat-deliverable gated link (`short` its
+                    // shortened form).
+                    if let Some(url) = auth_url {
+                        body["auth_url"] = json!(url);
+                    }
+                    if let Some(s) = short {
+                        body["short"] = json!(s);
+                    }
                 }
                 return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
             }
@@ -470,19 +520,37 @@ impl IntoResponse for AppError {
                 upgrade_url,
                 auth_url,
                 short,
+                provider,
+                account_email,
+                headless,
             } => {
                 let mut body = json!({
                     "error": "missing_scopes",
                     "required": required,
                     "missing": missing,
                     "connection_id": connection_id,
-                    "upgrade_url": upgrade_url,
                 });
-                if let Some(url) = auth_url {
-                    body["auth_url"] = json!(url);
-                }
-                if let Some(s) = short {
-                    body["short"] = json!(s);
+                if *headless {
+                    // White-label org: omit both the gated `auth_url` and the
+                    // `upgrade_url` (it would mint a gated flow too). The
+                    // integration re-imports with the wider scopes.
+                    body["headless"] = json!(true);
+                    if let Some(p) = provider {
+                        body["provider"] = json!(p);
+                    }
+                    if let Some(e) = account_email {
+                        body["account_email"] = json!(e);
+                    }
+                } else {
+                    if let Some(url) = upgrade_url {
+                        body["upgrade_url"] = json!(url);
+                    }
+                    if let Some(url) = auth_url {
+                        body["auth_url"] = json!(url);
+                    }
+                    if let Some(s) = short {
+                        body["short"] = json!(s);
+                    }
                 }
                 return (StatusCode::FORBIDDEN, Json(body)).into_response();
             }
@@ -553,13 +621,20 @@ mod tests {
             connection_id: conn_id,
             required: vec!["calendar.readonly".into(), "calendar.events".into()],
             missing: vec!["calendar.readonly".into(), "calendar.events".into()],
-            upgrade_url: "https://api.example/v1/connections/x/upgrade_scopes".into(),
+            upgrade_url: Some("https://api.example/v1/connections/x/upgrade_scopes".into()),
             auth_url: Some("https://api.example/connect-authorize?id=abc".into()),
             short: Some("https://oversla.sh/abc".into()),
+            provider: Some("google".into()),
+            account_email: None,
+            headless: false,
         };
         let (status, body) = body_json(err.into_response()).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["error"], "missing_scopes");
+        assert!(
+            body.get("headless").is_none(),
+            "headless must be absent on a non-headless envelope: {body}"
+        );
         assert_eq!(
             body["required"],
             json!(["calendar.readonly", "calendar.events"])
@@ -594,9 +669,12 @@ mod tests {
             connection_id: Uuid::new_v4(),
             required: vec!["s".into()],
             missing: vec!["s".into()],
-            upgrade_url: "https://api.example/upg".into(),
+            upgrade_url: Some("https://api.example/upg".into()),
             auth_url: None,
             short: None,
+            provider: Some("google".into()),
+            account_email: None,
+            headless: false,
         };
         let (_, body) = body_json(err.into_response()).await;
         assert!(
@@ -677,9 +755,12 @@ mod tests {
                 connection_id: Uuid::new_v4(),
                 required: vec![],
                 missing: vec![],
-                upgrade_url: String::new(),
+                upgrade_url: None,
                 auth_url: None,
                 short: None,
+                provider: None,
+                account_email: None,
+                headless: false,
             }
             .status_code(),
             StatusCode::FORBIDDEN,

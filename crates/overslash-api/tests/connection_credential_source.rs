@@ -275,7 +275,6 @@ async fn resolve_soft_pin_falls_back_when_byoc_id_is_dangling() {
         account_email: None,
         byoc_credential_id: Some(Uuid::new_v4()),
         is_default: true,
-        integration_managed: false,
         created_at: time::OffsetDateTime::now_utc(),
         updated_at: time::OffsetDateTime::now_utc(),
     };

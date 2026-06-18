@@ -55,16 +55,24 @@ pub(super) fn classify_oauth(err: &OAuthError) -> OAuthOutcome {
     match err {
         OAuthError::RefreshFailed(_) => OAuthOutcome::Reauth("refresh_token_failed"),
         OAuthError::NoRefreshToken => OAuthOutcome::Reauth("no_refresh_token"),
-        // Integration-managed staleness is handled before token resolution
-        // (it never reaches the normal reauth path), but classify it here for
-        // completeness: it is a caller-actionable reauth, not a server fault.
-        OAuthError::IntegrationManagedStale => OAuthOutcome::Reauth("integration_token_expired"),
         OAuthError::CryptoError(_)
         | OAuthError::DbError(_)
         | OAuthError::ParseError(_)
         | OAuthError::ProviderNotFound(_) => OAuthOutcome::Internal,
         OAuthError::HttpError(_) | OAuthError::TokenExchangeFailed(_) => OAuthOutcome::Upstream,
     }
+}
+
+/// Whether `org_id` is a headless (white-label) org: auth-recovery returns
+/// URL-less typed envelopes instead of minting gated `/connect-authorize`
+/// links (and no `oauth_connection_flows` row). A read failure or missing org
+/// defaults to `false` — the safe, gated path for normal dashboard customers.
+async fn org_is_headless(state: &AppState, org_id: Uuid) -> bool {
+    overslash_db::repos::org::get_headless(&state.db, org_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false)
 }
 
 /// Map an `OAuthError` to the right `AppError` response shape, given a
@@ -166,6 +174,23 @@ pub(super) async fn reauth_required_envelope(
     underlying: &OAuthError,
     return_url_hint: Option<&str>,
 ) -> AppError {
+    // Headless (white-label) org: the connection's end users have no Overslash
+    // session, so mint no gated link and no flow row. Return a URL-less
+    // envelope keyed by provider/scopes/email; the integration re-runs its own
+    // dance and re-imports. This is the single choke point for reauth, so it
+    // covers both the bailing and the non-bailing callers.
+    if org_is_headless(state, org_id).await {
+        return AppError::ReauthRequired {
+            connection_id: conn.id,
+            provider: conn.provider_key.clone(),
+            auth_url: None,
+            short: None,
+            reason: reason.to_string(),
+            required_scopes: conn.scopes.clone().unwrap_or_default(),
+            account_email: conn.account_email.clone(),
+            headless: true,
+        };
+    }
     match platform_connections::mint_upgrade_auth_url(
         state,
         org_id,
@@ -182,7 +207,9 @@ pub(super) async fn reauth_required_envelope(
             auth_url: Some(urls.auth_url),
             short: urls.short,
             reason: reason.to_string(),
-            integration_managed: false,
+            required_scopes: Vec::new(),
+            account_email: conn.account_email.clone(),
+            headless: false,
         },
         Err(mint_err) => {
             // Pass the kernel's typed error through verbatim — wrapping
@@ -197,73 +224,6 @@ pub(super) async fn reauth_required_envelope(
             );
             mint_err
         }
-    }
-}
-
-/// Reauth envelope for an integration-managed (imported, no-client)
-/// connection. Overslash holds no OAuth client for it, so there is no
-/// reconnect URL to mint — the integration must refresh and re-import. The
-/// envelope carries `integration_managed: true` and omits `auth_url`/`short`.
-/// A `connection.refresh_required` webhook fires alongside so the partner can
-/// refresh proactively before the next call fails.
-pub(super) fn integration_managed_reauth_envelope(
-    state: &AppState,
-    org_id: Uuid,
-    conn: &overslash_db::repos::connection::ConnectionRow,
-) -> AppError {
-    {
-        let db = state.db.clone();
-        let client = state.http_client.clone();
-        let connection_id = conn.id;
-        let provider = conn.provider_key.clone();
-        let identity_id = conn.identity_id;
-        let account_email = conn.account_email.clone();
-        tokio::spawn(async move {
-            let payload = serde_json::json!({
-                "connection_id": connection_id,
-                "provider": provider,
-                "identity_id": identity_id,
-                "account_email": account_email,
-            });
-            crate::services::webhook_dispatcher::dispatch(
-                &db,
-                &client,
-                org_id,
-                "connection.refresh_required",
-                payload,
-            )
-            .await;
-        });
-    }
-    AppError::ReauthRequired {
-        connection_id: conn.id,
-        provider: conn.provider_key.clone(),
-        auth_url: None,
-        short: None,
-        reason: "integration_token_expired".to_string(),
-        integration_managed: true,
-    }
-}
-
-/// Resolve the injected auth value for an integration-managed connection, or
-/// the appropriate error: the integration-managed reauth envelope when the
-/// stored token has expired, or `Internal` on a crypto failure (wrong key —
-/// not caller-actionable). Shared by the service- and instance-bound paths.
-fn resolve_integration_managed_header_value(
-    state: &AppState,
-    enc_key: &overslash_core::crypto::Keyring,
-    org_id: Uuid,
-    conn: &overslash_db::repos::connection::ConnectionRow,
-) -> Result<String, AppError> {
-    match crate::services::oauth::resolve_integration_managed_token(enc_key, conn) {
-        Ok(token) => Ok(token),
-        Err(OAuthError::IntegrationManagedStale) => {
-            Err(integration_managed_reauth_envelope(state, org_id, conn))
-        }
-        Err(e) => Err(AppError::Internal(format!(
-            "integration-managed token resolution failed for connection {}: {e}",
-            conn.id
-        ))),
     }
 }
 
@@ -308,6 +268,23 @@ pub(super) async fn needs_authentication_for_service(
     let Some(provider) = provider else {
         return Ok(None);
     };
+
+    // Headless (white-label) org: no gated URL, no flow row. Hand back a
+    // URL-less envelope naming the provider + required scopes so the
+    // integration runs its own dance and imports a connection.
+    if org_is_headless(state, org_id).await {
+        return Ok(Some(AppError::NeedsAuthentication {
+            service: Some(service_key.to_string()),
+            service_instance_id: instance.map(|i| i.id),
+            connection_id: None,
+            auth_url: None,
+            short: None,
+            provider: Some(provider),
+            required_scopes: action.required_scopes.clone(),
+            account_email: None,
+            headless: true,
+        }));
+    }
 
     // Request the action's declared `required_scopes` up-front so the user
     // only sees one consent screen instead of two (consenting to nothing,
@@ -365,8 +342,12 @@ pub(super) async fn needs_authentication_for_service(
         service: Some(service_key.to_string()),
         service_instance_id: instance.map(|i| i.id),
         connection_id: None,
-        auth_url: urls.auth_url,
+        auth_url: Some(urls.auth_url),
         short: urls.short,
+        provider: Some(provider),
+        required_scopes: action.required_scopes.clone(),
+        account_email: None,
+        headless: false,
     }))
 }
 
@@ -439,28 +420,6 @@ pub(crate) async fn resolve_service_auth(
                     )));
                 }
             };
-            // Integration-managed (imported, no shared client) connections
-            // never resolve a client or refresh: inject the stored token until
-            // it expires, then signal the integration to refresh and re-import.
-            // This is the explicit exception to the credential cascade — an
-            // imported connection must never borrow the org/env OAuth client.
-            if conn.integration_managed {
-                let value =
-                    resolve_integration_managed_header_value(state, &enc_key, org_id, &conn)?;
-                let value = match &token_injection.prefix {
-                    Some(p) => format!("{p}{value}"),
-                    None => value,
-                };
-                let auth_header =
-                    token_injection
-                        .header_name
-                        .as_ref()
-                        .map(|header_name| AuthHeader {
-                            name: header_name.clone(),
-                            value,
-                        });
-                return Ok(ResolvedAuth::oauth(auth_header));
-            }
             // Per-provider credentials resolution. Failures here are
             // typically "no BYOC for provider X and no env fallback" — a
             // legitimate "try the next provider" signal. Log and continue
@@ -624,24 +583,21 @@ pub(super) async fn check_required_scopes(
         return Ok(());
     }
 
-    // Integration-managed connections can't use the orchestrated upgrade flow —
-    // Overslash holds no client to mint an authorize URL against, and minting
-    // one would do wasted work and leave a stray flow row. Skip the mint and
-    // return the missing_scopes envelope with no `auth_url`/`short`; the
-    // integration broadens the grant and re-imports the connection.
-    if connection.integration_managed {
-        let upgrade_url = format!(
-            "{}/v1/connections/{}/upgrade_scopes",
-            state.config.public_url.trim_end_matches('/'),
-            connection.id
-        );
+    // Headless (white-label) org: omit both the gated `auth_url` and the
+    // `upgrade_url` — the org's end users can't open either, and minting an
+    // upgrade flow would leave a stray flow row. The integration broadens the
+    // grant against its own client and re-imports the connection.
+    if org_is_headless(state, org_id).await {
         return Err(AppError::MissingScopes {
             connection_id: connection.id,
             required: action.required_scopes.clone(),
             missing,
-            upgrade_url,
+            upgrade_url: None,
             auth_url: None,
             short: None,
+            provider: Some(connection.provider_key.clone()),
+            account_email: connection.account_email.clone(),
+            headless: true,
         });
     }
 
@@ -687,9 +643,12 @@ pub(super) async fn check_required_scopes(
         connection_id: connection.id,
         required: action.required_scopes.clone(),
         missing,
-        upgrade_url,
+        upgrade_url: Some(upgrade_url),
         auth_url,
         short,
+        provider: Some(connection.provider_key.clone()),
+        account_email: connection.account_email.clone(),
+        headless: false,
     })
 }
 
@@ -808,40 +767,6 @@ pub(crate) async fn resolve_instance_auth(
                 .config
                 .keyring()
                 .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
-            // Integration-managed connections never resolve a client or
-            // refresh — inject the stored token until expiry, then signal the
-            // integration. See `resolve_service_auth` for the rationale.
-            if conn.integration_managed {
-                let access_token =
-                    resolve_integration_managed_header_value(state, &enc_key, org_id, &conn)?;
-                for service_auth in &svc.auth {
-                    if let overslash_core::types::ServiceAuth::OAuth {
-                        provider,
-                        token_injection,
-                        ..
-                    } = service_auth
-                    {
-                        if *provider == conn.provider_key {
-                            let value = match &token_injection.prefix {
-                                Some(p) => format!("{p}{access_token}"),
-                                None => access_token,
-                            };
-                            let auth_header =
-                                token_injection.header_name.as_ref().map(|header_name| {
-                                    AuthHeader {
-                                        name: header_name.clone(),
-                                        value,
-                                    }
-                                });
-                            return Ok(ResolvedAuth::oauth(auth_header));
-                        }
-                    }
-                }
-                return Ok(ResolvedAuth::oauth(Some(AuthHeader {
-                    name: "Authorization".into(),
-                    value: format!("Bearer {access_token}"),
-                })));
-            }
             let creds = crate::services::client_credentials::resolve(
                 state.db(ext),
                 &enc_key,

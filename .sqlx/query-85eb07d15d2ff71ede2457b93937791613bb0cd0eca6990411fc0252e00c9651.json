@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO connections (org_id, identity_id, provider_key, encrypted_access_token,\n         encrypted_refresh_token, token_expires_at, scopes, account_email, byoc_credential_id,\n         integration_managed, is_default)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,\n                 NOT EXISTS (\n                     SELECT 1 FROM connections\n                     WHERE identity_id = $2 AND provider_key = $3 AND is_default\n                 ))\n         RETURNING id, org_id, identity_id, provider_key, encrypted_access_token,\n                   encrypted_refresh_token, token_expires_at, scopes, account_email,\n                   byoc_credential_id, is_default, integration_managed, created_at, updated_at",
+  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes, account_email,\n                byoc_credential_id, is_default, created_at, updated_at\n         FROM connections WHERE id = $1 AND org_id = $2",
   "describe": {
     "columns": [
       {
@@ -126,17 +126,6 @@
       },
       {
         "ordinal": 11,
-        "name": "integration_managed",
-        "type_info": "Bool",
-        "origin": {
-          "Table": {
-            "table": "connections",
-            "name": "integration_managed"
-          }
-        }
-      },
-      {
-        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +136,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 12,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -161,15 +150,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text",
-        "Bytea",
-        "Bytea",
-        "Timestamptz",
-        "TextArray",
-        "Text",
-        "Uuid",
-        "Bool"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -185,9 +166,8 @@
       true,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "bfd2dab544c3711a9a3d0daf04868790ca0fa55a1dff6828ac9fcd60cd93379b"
+  "hash": "85eb07d15d2ff71ede2457b93937791613bb0cd0eca6990411fc0252e00c9651"
 }

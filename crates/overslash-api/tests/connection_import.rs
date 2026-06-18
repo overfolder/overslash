@@ -1,23 +1,26 @@
 //! White-label token-vault import tests (`POST /v1/connections/import`).
 //!
-//! These exercise the full surface of `docs/design/white-label-token-vault.md`
+//! These exercise the import surface of `docs/design/white-label-token-vault.md`
 //! with a *fake integration partner* — the test itself plays the partner: it
 //! holds already-minted OAuth tokens (the partner ran its own OAuth dance) and
 //! POSTs them to `/v1/connections/import`. Overslash then stores, injects, and
-//! (for self-refresh connections) would refresh them. No `redirect_uri` is ever
-//! issued.
+//! self-refreshes them via the **required** pinned BYOC client. No `redirect_uri`
+//! is ever issued.
+//!
+//! Every import now pins a `byoc_credential_id` (the no-client "integration-
+//! managed" mode was removed): a null pin 400s. URL-less auth-recovery for
+//! headless orgs is covered separately in `headless_oauth.rs`.
 //!
 //! Coverage:
-//!   - integration-managed import (null BYOC): token injected on action calls
-//!     until expiry, then `reauth_required` flagged integration-managed with no
-//!     reconnect link — and NO refresh attempt / no org-env client fallback;
-//!   - self-refresh import (pinned BYOC): `integration_managed = false`, and a
-//!     missing BYOC id 400s at import time;
+//!   - import requires a `byoc_credential_id` (400 when null) and validates it
+//!     (404 provider / 400 unknown pin / 400 empty access_token);
+//!   - imported tokens are injected verbatim on action calls;
 //!   - idempotent re-import (same identity+provider+email updates in place) vs
 //!     multi-account (distinct emails create distinct connections);
-//!   - `expires_at` / `expires_in` expiry resolution;
+//!   - `expires_at` / `expires_in` expiry resolution and preservation on
+//!     token-only re-import; scope preservation on re-import;
 //!   - `on_behalf_of` owner binding;
-//!   - input validation (`access_token` required).
+//!   - `upgrade_scopes` is rejected for headless orgs.
 
 // Test setup seeds rows + reads identities via direct SQL.
 #![allow(clippy::disallowed_methods)]
@@ -51,24 +54,35 @@ async fn import(
     (status, body)
 }
 
-/// End-to-end: import an integration-managed Google connection (no BYOC), then
-/// drive a real action call through the mock upstream. A fresh token is
-/// injected verbatim; once the token expires, the action call returns
-/// `reauth_required` flagged `integration_managed` with no reconnect link —
-/// proving Overslash never attempted a refresh nor borrowed the org/env client.
+/// Register a self-service BYOC client bound to `ident_id` and return its id.
+/// Every import pins one — Overslash self-refreshes via the pinned client.
+async fn register_byoc(client: &reqwest::Client, base: &str, key: &str, ident_id: Uuid) -> String {
+    let byoc: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header(auth_header(key).0, auth_header(key).1)
+        .json(&json!({
+            "provider": "google",
+            "client_id": "partner-client-id",
+            "client_secret": "partner-client-secret",
+            "identity_id": ident_id
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    byoc["id"].as_str().unwrap().to_string()
+}
+
+/// End-to-end: import a Google connection pinned to a BYOC client, then drive a
+/// real action call through the mock upstream. The vaulted token is injected
+/// verbatim (it is still valid, so no refresh fires).
 #[tokio::test]
-async fn integration_managed_import_injects_then_reauths_on_expiry() {
+async fn import_injects_token_verbatim() {
     let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
     let mock_host = format!("http://{mock_addr}");
-
-    // Point google's token endpoint at the mock so an *accidental* refresh
-    // attempt would be observable (it must NOT happen for integration-managed).
-    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'google'")
-        .bind(format!("http://{mock_addr}/oauth/token"))
-        .execute(&pool)
-        .await
-        .unwrap();
 
     let (base, client) =
         common::start_api_with_registry(pool.clone(), Some(("google_calendar", mock_host))).await;
@@ -85,7 +99,8 @@ async fn integration_managed_import_injects_then_reauths_on_expiry() {
     }
     common::grant_service_to_everyone(&base, &client, &admin_key, "google_calendar").await;
 
-    // --- Import an integration-managed connection (no byoc_credential_id) ---
+    let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
+
     let (status, body) = import(
         &client,
         &base,
@@ -93,6 +108,8 @@ async fn integration_managed_import_injects_then_reauths_on_expiry() {
         json!({
             "provider": "google",
             "access_token": "vault-access-token-1",
+            "refresh_token": "vault-refresh-1",
+            "byoc_credential_id": byoc_id,
             "scopes": [CAL_SCOPE],
             "account_email": "partner-user@example.com",
             "expires_in": 3600
@@ -100,25 +117,15 @@ async fn integration_managed_import_injects_then_reauths_on_expiry() {
     )
     .await;
     assert_eq!(status, 200, "import should succeed: {body}");
-    assert_eq!(body["integration_managed"], true);
     assert_eq!(body["provider"], "google");
     assert_eq!(body["account_email"], "partner-user@example.com");
-    let connection_id = body["connection_id"].as_str().unwrap().to_string();
+    // No `integration_managed` discriminator on the response anymore.
+    assert!(
+        body.get("integration_managed").is_none(),
+        "integration_managed must not appear on the import response: {body}"
+    );
 
-    // GET the connection: integration-managed posture is surfaced.
-    let detail: Value = client
-        .get(format!("{base}/v1/connections/{connection_id}"))
-        .header(auth_header(&key).0, auth_header(&key).1)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(detail["integration_managed"], true);
-    assert_eq!(detail["credential_source"]["kind"], "integration_managed");
-
-    // --- Action call: the vaulted token is injected verbatim ---
+    // The vaulted token is injected verbatim on the action call.
     let resp = client
         .post(format!("{base}/v1/actions/call"))
         .header(auth_header(&key).0, auth_header(&key).1)
@@ -136,129 +143,8 @@ async fn integration_managed_import_injects_then_reauths_on_expiry() {
     let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(
         echo["headers"]["authorization"], "Bearer vault-access-token-1",
-        "integration-managed token must be injected verbatim"
+        "imported token must be injected verbatim"
     );
-
-    // --- Re-import the same account with an already-expired token ---
-    let past = (time::OffsetDateTime::now_utc() - time::Duration::hours(1)).unix_timestamp();
-    let (status, _) = import(
-        &client,
-        &base,
-        &key,
-        json!({
-            "provider": "google",
-            "access_token": "vault-access-token-expired",
-            "scopes": [CAL_SCOPE],
-            "account_email": "partner-user@example.com",
-            "expires_at": past
-        }),
-    )
-    .await;
-    assert_eq!(status, 200);
-
-    // The same action call now returns reauth_required, flagged
-    // integration-managed, with NO reconnect link — Overslash never tried to
-    // refresh (it has no client) and never fell back to org/env credentials.
-    let resp = client
-        .post(format!("{base}/v1/actions/call"))
-        .header(auth_header(&key).0, auth_header(&key).1)
-        .json(&json!({
-            "service": "google_calendar",
-            "action": "list_events",
-            "params": {"calendarId": "primary"}
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        401,
-        "expired integration-managed token must surface reauth_required"
-    );
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["error"], "reauth_required");
-    assert_eq!(body["integration_managed"], true);
-    assert_eq!(body["provider"], "google");
-    assert_eq!(body["reason"], "integration_token_expired");
-    assert!(
-        body.get("auth_url").is_none_or(Value::is_null),
-        "integration-managed reauth must NOT carry a reconnect auth_url: {body}"
-    );
-    // Same connection id (re-import updated in place, no orphan row).
-    assert_eq!(body["connection_id"], json!(connection_id));
-}
-
-/// When an action requires a scope an integration-managed connection lacks, the
-/// `missing_scopes` envelope omits `auth_url` (Overslash has no client to mint a
-/// reconnect URL) and no orchestrated flow row is created — the integration
-/// broadens the grant and re-imports.
-#[tokio::test]
-async fn integration_managed_missing_scopes_omits_auth_url() {
-    let pool = common::test_pool().await;
-    let mock_addr = common::start_mock().await;
-    let mock_host = format!("http://{mock_addr}");
-
-    let (base, client) =
-        common::start_api_with_registry(pool.clone(), Some(("google_calendar", mock_host))).await;
-    let (_org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
-
-    for pattern in ["http:**", "google_calendar:*:*"] {
-        client
-            .post(format!("{base}/v1/permissions"))
-            .header(auth_header(&admin_key).0, auth_header(&admin_key).1)
-            .json(&json!({"identity_id": ident_id, "action_pattern": pattern}))
-            .send()
-            .await
-            .unwrap();
-    }
-    common::grant_service_to_everyone(&base, &client, &admin_key, "google_calendar").await;
-
-    // Import an integration-managed connection with a *known* but insufficient
-    // scope set — the action requires the calendar scope, which is absent, so
-    // the call must miss. (Omitting scopes would instead be "unknown" and get
-    // the benefit of the doubt — covered by a separate test.)
-    let (status, _) = import(
-        &client,
-        &base,
-        &key,
-        json!({
-            "provider": "google",
-            "access_token": "vault-token",
-            "account_email": "noscopes@example.com",
-            "scopes": ["https://www.googleapis.com/auth/calendar.readonly"]
-        }),
-    )
-    .await;
-    assert_eq!(status, 200);
-
-    let resp = client
-        .post(format!("{base}/v1/actions/call"))
-        .header(auth_header(&key).0, auth_header(&key).1)
-        .json(&json!({
-            "service": "google_calendar",
-            "action": "list_events",
-            "params": {"calendarId": "primary"}
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 403, "missing required scope must 403");
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["error"], "missing_scopes");
-    // The envelope shows the full required set and the missing delta.
-    assert_eq!(body["required"], json!([CAL_SCOPE]));
-    assert_eq!(body["missing"], json!([CAL_SCOPE]));
-    assert!(
-        body.get("auth_url").is_none_or(Value::is_null),
-        "integration-managed missing_scopes must omit auth_url: {body}"
-    );
-
-    // No orchestrated flow row was minted for the integration-managed connection.
-    let flows: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_connection_flows")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(flows, 0, "no upgrade flow row should be created");
 }
 
 /// An import that omits `scopes` records `null` (unknown), and the scope-gate
@@ -285,6 +171,8 @@ async fn import_without_scopes_gets_benefit_of_the_doubt() {
     }
     common::grant_service_to_everyone(&base, &client, &admin_key, "google_calendar").await;
 
+    let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
+
     // Import with NO scopes declared → recorded as null (unknown).
     let (status, body) = import(
         &client,
@@ -293,6 +181,7 @@ async fn import_without_scopes_gets_benefit_of_the_doubt() {
         json!({
             "provider": "google",
             "access_token": "vault-token",
+            "byoc_credential_id": byoc_id,
             "account_email": "unknown-scopes@example.com"
         }),
     )
@@ -324,76 +213,17 @@ async fn import_without_scopes_gets_benefit_of_the_doubt() {
     assert_eq!(body["status"], "called");
 }
 
-/// `POST /v1/connections/{id}/upgrade_scopes` rejects an integration-managed
-/// connection — it can't use the orchestrated upgrade flow; the integration
-/// broadens the grant and re-imports.
+/// Import requires a `byoc_credential_id`: a null pin is rejected with 400, an
+/// unknown pin is rejected with 400, and the pin is validated at import time
+/// (not deferred to first refresh).
 #[tokio::test]
-async fn upgrade_scopes_rejects_integration_managed() {
-    let pool = common::test_pool().await;
-    let (addr, client) = common::start_api(pool.clone()).await;
-    let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
-
-    let (status, body) = import(
-        &client,
-        &base,
-        &key,
-        json!({
-            "provider": "google",
-            "access_token": "vault-token",
-            "account_email": "up@example.com"
-        }),
-    )
-    .await;
-    assert_eq!(status, 200);
-    let connection_id = body["connection_id"].as_str().unwrap();
-
-    let resp = client
-        .post(format!(
-            "{base}/v1/connections/{connection_id}/upgrade_scopes"
-        ))
-        .header(auth_header(&key).0, auth_header(&key).1)
-        .json(&json!({ "scopes": [CAL_SCOPE] }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        400,
-        "upgrade_scopes must reject integration-managed connections"
-    );
-}
-
-/// Self-refresh import pins a BYOC client (`integration_managed = false`); a
-/// missing BYOC id is rejected at import time, not deferred to first refresh.
-#[tokio::test]
-async fn self_refresh_import_validates_byoc() {
+async fn import_requires_and_validates_byoc() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
     let (_org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
 
-    // Register a BYOC client (self-service, bound to the caller identity — the
-    // same identity the import lands on) the partner used to mint the tokens.
-    let byoc: Value = client
-        .post(format!("{base}/v1/byoc-credentials"))
-        .header(auth_header(&key).0, auth_header(&key).1)
-        .json(&json!({
-            "provider": "google",
-            "client_id": "partner-client-id",
-            "client_secret": "partner-client-secret",
-            "identity_id": ident_id
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let byoc_id = byoc["id"].as_str().unwrap();
-
-    // Valid pin → self-refresh connection.
+    // Null BYOC → 400 (the core invariant).
     let (status, body) = import(
         &client,
         &base,
@@ -401,51 +231,13 @@ async fn self_refresh_import_validates_byoc() {
         json!({
             "provider": "google",
             "access_token": "tok",
-            "refresh_token": "refresh-tok",
-            "byoc_credential_id": byoc_id,
             "scopes": [CAL_SCOPE]
-        }),
-    )
-    .await;
-    assert_eq!(status, 200, "valid byoc import should succeed: {body}");
-    assert_eq!(body["integration_managed"], false);
-
-    // Refresh mode is fixed at first import. Import an integration-managed
-    // connection for a distinct account, then re-import the SAME account with a
-    // BYOC pin — this must be rejected (not silently validated-then-discarded),
-    // otherwise the caller would believe self-refresh is active when it isn't.
-    let (status, body) = import(
-        &client,
-        &base,
-        &key,
-        json!({
-            "provider": "google",
-            "access_token": "im-tok",
-            "account_email": "switch@example.com"
-        }),
-    )
-    .await;
-    assert_eq!(
-        status, 200,
-        "integration-managed import should succeed: {body}"
-    );
-    assert_eq!(body["integration_managed"], true);
-
-    let (status, body) = import(
-        &client,
-        &base,
-        &key,
-        json!({
-            "provider": "google",
-            "access_token": "im-tok-2",
-            "account_email": "switch@example.com",
-            "byoc_credential_id": byoc_id
         }),
     )
     .await;
     assert_eq!(
         status, 400,
-        "re-import must not silently switch refresh mode: {body}"
+        "import without byoc_credential_id must 400: {body}"
     );
 
     // Unknown pin → 400 at import time.
@@ -461,21 +253,90 @@ async fn self_refresh_import_validates_byoc() {
     )
     .await;
     assert_eq!(status, 400, "unknown byoc id must 400: {body}");
+
+    // Valid pin → succeeds.
+    let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
+    let (status, body) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "tok3",
+            "refresh_token": "refresh-tok",
+            "byoc_credential_id": byoc_id,
+            "scopes": [CAL_SCOPE]
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "valid byoc import should succeed: {body}");
 }
 
-/// An emailless import must never overwrite an existing *orchestrated*
-/// connection that the `(identity, provider)` fallback happens to match (e.g.
-/// one whose userinfo fetch left `account_email` NULL). It creates a fresh
-/// vault connection instead — the orchestrated row is left untouched.
+/// `POST /v1/connections/{id}/upgrade_scopes` is rejected for a **headless** org
+/// — its end users can't open the gated upgrade flow; the integration broadens
+/// the grant and re-imports. Non-headless orgs keep the orchestrated flow.
 #[tokio::test]
-async fn emailless_import_does_not_overwrite_orchestrated_connection() {
+async fn upgrade_scopes_rejected_for_headless_org() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
+    let (status, body) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "vault-token",
+            "byoc_credential_id": byoc_id,
+            "account_email": "up@example.com"
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "import should succeed: {body}");
+    let connection_id = body["connection_id"].as_str().unwrap();
+
+    // Flip the org to headless.
+    let resp = client
+        .patch(format!("{base}/v1/orgs/{org_id}/headless"))
+        .header(auth_header(&admin_key).0, auth_header(&admin_key).1)
+        .json(&json!({ "headless": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "patch headless should succeed");
+
+    let resp = client
+        .post(format!(
+            "{base}/v1/connections/{connection_id}/upgrade_scopes"
+        ))
+        .header(auth_header(&key).0, auth_header(&key).1)
+        .json(&json!({ "scopes": [CAL_SCOPE] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        400,
+        "upgrade_scopes must reject headless orgs"
+    );
+}
+
+/// An emailless import must never overwrite an existing connection that the
+/// `(identity, provider)` fallback happens to match but pins a *different*
+/// client (e.g. an orchestrated row with no BYOC). It creates a fresh vault
+/// connection instead — the original row is left untouched.
+#[tokio::test]
+async fn emailless_import_does_not_overwrite_differently_pinned_connection() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
     let (org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
 
-    // Seed an orchestrated connection (integration_managed = false, NULL email),
-    // exactly what the OAuth callback would create when userinfo returns no email.
+    // Seed an orchestrated connection (no BYOC pin, NULL email), exactly what the
+    // OAuth callback would create when userinfo returns no email.
     let enc_key = overslash_core::crypto::Keyring::test();
     let orchestrated_token =
         overslash_core::crypto::encrypt(&enc_key, b"orchestrated-token").unwrap();
@@ -490,38 +351,43 @@ async fn emailless_import_does_not_overwrite_orchestrated_connection() {
             scopes: Some(&[]),
             account_email: None,
             byoc_credential_id: None,
-            integration_managed: false,
         })
         .await
         .unwrap();
 
-    // Emailless integration-managed import — the fallback would match the
-    // orchestrated row, but the mode differs, so it must create a new row.
+    // Emailless import pinned to a BYOC — the fallback would match the
+    // orchestrated row, but the pinned client differs, so it must create a new row.
+    let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
     let (status, body) = import(
         &client,
         &base,
         &key,
-        json!({ "provider": "google", "access_token": "vault-token" }),
+        json!({
+            "provider": "google",
+            "access_token": "vault-token",
+            "byoc_credential_id": byoc_id
+        }),
     )
     .await;
     assert_eq!(status, 200, "import should succeed: {body}");
-    assert_eq!(body["integration_managed"], true);
     let imported_id: Uuid = body["connection_id"].as_str().unwrap().parse().unwrap();
     assert_ne!(
         imported_id, orchestrated.id,
-        "import must not reuse the orchestrated connection"
+        "import must not reuse the differently-pinned connection"
     );
 
-    // The orchestrated row is untouched: still integration_managed = false and
-    // its original (distinct) token.
-    let row = sqlx::query_as::<_, (bool, Vec<u8>)>(
-        "SELECT integration_managed, encrypted_access_token FROM connections WHERE id = $1",
+    // The orchestrated row is untouched: still no BYOC pin and its original token.
+    let row = sqlx::query_as::<_, (Option<Uuid>, Vec<u8>)>(
+        "SELECT byoc_credential_id, encrypted_access_token FROM connections WHERE id = $1",
     )
     .bind(orchestrated.id)
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(!row.0, "orchestrated connection mode must stay false");
+    assert!(
+        row.0.is_none(),
+        "orchestrated connection pin must stay null"
+    );
     assert_eq!(
         row.1, orchestrated_token,
         "orchestrated connection token must be untouched"
@@ -546,7 +412,8 @@ async fn emailless_import_does_not_overwrite_orchestrated_connection() {
     assert_eq!(google, 2, "expected orchestrated + imported, got: {conns}");
 }
 
-/// `access_token` is required.
+/// `access_token` is required; an unknown provider 404s. Both checks fire before
+/// the BYOC requirement, so no pin is needed to exercise them.
 #[tokio::test]
 async fn import_requires_access_token() {
     let pool = common::test_pool().await;
@@ -576,14 +443,16 @@ async fn import_requires_access_token() {
 }
 
 /// A token-only re-import that carries no fresh expiry must preserve the
-/// existing `token_expires_at` — nulling it would make an integration-managed
-/// connection look perpetually valid and never surface reauth.
+/// existing `token_expires_at` — nulling it would make the connection look
+/// perpetually valid and never surface reauth.
 #[tokio::test]
 async fn reimport_without_expiry_preserves_existing_expiry() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
     let (org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
 
     // First import sets an expiry.
     let (status, _) = import(
@@ -593,6 +462,7 @@ async fn reimport_without_expiry_preserves_existing_expiry() {
         json!({
             "provider": "google",
             "access_token": "tok",
+            "byoc_credential_id": byoc_id,
             "account_email": "exp@example.com",
             "expires_in": 3600
         }),
@@ -618,6 +488,7 @@ async fn reimport_without_expiry_preserves_existing_expiry() {
         json!({
             "provider": "google",
             "access_token": "tok2",
+            "byoc_credential_id": byoc_id,
             "account_email": "exp@example.com"
         }),
     )
@@ -639,16 +510,16 @@ async fn reimport_without_expiry_preserves_existing_expiry() {
     );
 }
 
-/// A token-only re-import that omits `scopes` (defaults to `[]`) must preserve
-/// the existing granted scopes — wiping them would 403 every subsequent
-/// scope-gated call. A re-import that supplies scopes overrides them.
+/// A token-only re-import that omits `scopes` must preserve the existing granted
+/// scopes — wiping them would 403 every subsequent scope-gated call.
 #[tokio::test]
 async fn reimport_without_scopes_preserves_existing_scopes() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
 
     let (status, _) = import(
         &client,
@@ -657,6 +528,7 @@ async fn reimport_without_scopes_preserves_existing_scopes() {
         json!({
             "provider": "google",
             "access_token": "tok",
+            "byoc_credential_id": byoc_id,
             "account_email": "scoped@example.com",
             "scopes": [CAL_SCOPE]
         }),
@@ -672,6 +544,7 @@ async fn reimport_without_scopes_preserves_existing_scopes() {
         json!({
             "provider": "google",
             "access_token": "tok2",
+            "byoc_credential_id": byoc_id,
             "account_email": "scoped@example.com"
         }),
     )
@@ -692,8 +565,9 @@ async fn reimport_is_idempotent_per_account() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
 
     let first: Value = {
         let (s, b) = import(
@@ -703,6 +577,7 @@ async fn reimport_is_idempotent_per_account() {
             json!({
                 "provider": "google",
                 "access_token": "a1",
+                "byoc_credential_id": byoc_id,
                 "account_email": "a@example.com",
                 "scopes": ["s1"]
             }),
@@ -721,6 +596,7 @@ async fn reimport_is_idempotent_per_account() {
         json!({
             "provider": "google",
             "access_token": "a2",
+            "byoc_credential_id": byoc_id,
             "account_email": "a@example.com",
             "scopes": ["s1", "s2"]
         }),
@@ -740,6 +616,7 @@ async fn reimport_is_idempotent_per_account() {
         json!({
             "provider": "google",
             "access_token": "b1",
+            "byoc_credential_id": byoc_id,
             "account_email": "b@example.com"
         }),
     )
@@ -782,6 +659,8 @@ async fn import_resolves_expiry_fields() {
     let base = format!("http://{addr}");
     let (org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
 
+    let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
+
     // expires_in → token_expires_at ≈ now + 3600s.
     let (s, _) = import(
         &client,
@@ -790,6 +669,7 @@ async fn import_resolves_expiry_fields() {
         json!({
             "provider": "google",
             "access_token": "tok",
+            "byoc_credential_id": byoc_id,
             "account_email": "exp-in@example.com",
             "expires_in": 3600
         }),
@@ -806,6 +686,7 @@ async fn import_resolves_expiry_fields() {
         json!({
             "provider": "google",
             "access_token": "tok2",
+            "byoc_credential_id": byoc_id,
             "account_email": "exp-at@example.com",
             "expires_at": absolute
         }),
@@ -857,6 +738,10 @@ async fn import_on_behalf_of_binds_to_user() {
     .await
     .unwrap();
 
+    // The pinned BYOC resolve is org-scoped, so a credential registered on the
+    // agent resolves for the on-behalf-of import landing on the user.
+    let byoc_id = register_byoc(&client, &base, &key, agent_id).await;
+
     let (status, body) = import(
         &client,
         &base,
@@ -864,6 +749,7 @@ async fn import_on_behalf_of_binds_to_user() {
         json!({
             "provider": "google",
             "access_token": "shared-tok",
+            "byoc_credential_id": byoc_id,
             "account_email": "shared@example.com",
             "on_behalf_of": user_id,
         }),

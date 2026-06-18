@@ -123,8 +123,12 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
             connection_id,
             auth_url,
             short,
+            provider,
+            required_scopes,
+            account_email,
+            headless,
         } => {
-            let mut body = json!({ "status": "needs_authentication", "auth_url": auth_url });
+            let mut body = json!({ "status": "needs_authentication" });
             if let Some(s) = service {
                 body["service"] = json!(s);
             }
@@ -134,8 +138,20 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
             if let Some(id) = connection_id {
                 body["connection_id"] = json!(id);
             }
-            if let Some(s) = short {
-                body["short"] = json!(s);
+            if *headless {
+                body["headless"] = json!(true);
+                if let Some(p) = provider {
+                    body["provider"] = json!(p);
+                }
+                body["required_scopes"] = json!(required_scopes);
+                if let Some(e) = account_email {
+                    body["account_email"] = json!(e);
+                }
+            } else {
+                body["auth_url"] = json!(auth_url);
+                if let Some(s) = short {
+                    body["short"] = json!(s);
+                }
             }
             Some((StatusCode::OK, Json(body)).into_response())
         }
@@ -145,20 +161,29 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
             auth_url,
             short,
             reason,
-            integration_managed,
+            required_scopes,
+            account_email,
+            headless,
         } => {
             let mut body = json!({
                 "status": "reauth_required",
                 "connection_id": connection_id,
                 "provider": provider,
                 "reason": reason,
-                "integration_managed": integration_managed,
             });
-            if let Some(url) = auth_url {
-                body["auth_url"] = json!(url);
-            }
-            if let Some(s) = short {
-                body["short"] = json!(s);
+            if *headless {
+                body["headless"] = json!(true);
+                body["required_scopes"] = json!(required_scopes);
+                if let Some(e) = account_email {
+                    body["account_email"] = json!(e);
+                }
+            } else {
+                if let Some(url) = auth_url {
+                    body["auth_url"] = json!(url);
+                }
+                if let Some(s) = short {
+                    body["short"] = json!(s);
+                }
             }
             Some((StatusCode::OK, Json(body)).into_response())
         }
