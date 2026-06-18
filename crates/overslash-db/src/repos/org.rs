@@ -342,6 +342,31 @@ pub async fn set_allow_overslash_managed_signin(
     Ok(result.rows_affected() > 0)
 }
 
+/// Read the `headless` flag for an org. `true` ⇒ white-label org whose end
+/// users have no Overslash session, so auth-recovery returns URL-less envelopes
+/// instead of gated `/connect-authorize` links. `None` (org missing) and the
+/// default are both treated as `false` by callers.
+pub async fn get_headless(pool: &PgPool, id: Uuid) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!("SELECT headless FROM orgs WHERE id = $1", id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.headless))
+}
+
+/// Flip the `headless` flag for an org. Admin/provisioning-only — a
+/// white-label partner onboarding capability, not an end-user self-service
+/// toggle.
+pub async fn set_headless(pool: &PgPool, id: Uuid, value: bool) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET headless = $2, updated_at = now() WHERE id = $1",
+        id,
+        value,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Update an org's sub-agent cleanup configuration. Bounds validated by caller.
 pub async fn update_subagent_cleanup_config(
     pool: &PgPool,

@@ -315,7 +315,7 @@ async fn mode_c_missing_provider_row_stays_internal_500() {
 /// REST sibling of `mcp_call_expired_no_refresh_returns_typed_reauth_required`:
 /// the action-call REST envelope for `reauth_required` on a normal
 /// (orchestrated / self-refresh) connection carries the gated `auth_url`,
-/// the `provider`, `integration_managed: false`, and never a raw provider URL.
+/// the `provider`, no `headless` discriminator, and never a raw provider URL.
 #[tokio::test]
 async fn reauth_required_rest_envelope_shape() {
     let pool = common::test_pool().await;
@@ -384,9 +384,12 @@ async fn reauth_required_rest_envelope_shape() {
         auth_url.contains("/connect-authorize?id="),
         "auth_url should be a gated link: {auth_url}"
     );
-    // Normal (non-imported) connection: provider present, not integration-managed.
+    // Normal (non-headless) org: provider present, no `headless` discriminator.
     assert_eq!(body["provider"], "x");
-    assert_eq!(body["integration_managed"], false);
+    assert!(
+        body.get("headless").is_none(),
+        "headless must not appear on a non-headless reauth envelope: {body}"
+    );
     // The raw upstream provider URL is never surfaced.
     assert!(
         body.get("raw").is_none_or(Value::is_null),

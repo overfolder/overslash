@@ -436,11 +436,11 @@ pub struct ImportConnectionInput {
     /// endpoint. Also the multi-account key for idempotent re-import.
     #[serde(default)]
     pub account_email: Option<String>,
-    /// The partner's registered BYOC client. Present ⇒ Overslash self-refreshes
-    /// (hard-pinned to this client, never the cascade). Null ⇒
-    /// integration-managed: Overslash never refreshes and never borrows the
-    /// org/env OAuth client. No inline client_id/secret — refresh creds always
-    /// come from a stored BYOC row.
+    /// The partner's registered BYOC client. **Required**: every imported
+    /// connection is hard-pinned to a BYOC client and self-refreshes via it
+    /// (never the org/env cascade — a refresh token is valid only against the
+    /// client that issued it). A null value is rejected with 400. No inline
+    /// client_id/secret — refresh creds always come from a stored BYOC row.
     #[serde(default)]
     pub byoc_credential_id: Option<Uuid>,
     /// Owner-user binding, same semantics as `POST /v1/connections`.
@@ -458,9 +458,6 @@ pub struct ImportConnectionResponse {
     /// of the doubt).
     pub scopes: Option<Vec<String>>,
     pub is_default: bool,
-    /// `true` when imported without a `byoc_credential_id` — the integration
-    /// owns refresh; Overslash injects until expiry then signals reauth.
-    pub integration_managed: bool,
 }
 
 /// Import partner-minted OAuth tokens as a connection. The partner ran the
@@ -468,11 +465,12 @@ pub struct ImportConnectionResponse {
 /// the resulting row exactly like an orchestrated connection for execution,
 /// permissions, and approvals.
 ///
-/// Refresh mode is fixed here: a pinned `byoc_credential_id` ⇒ self-refresh
-/// (validated now, hard-pinned, never cascades); a null one ⇒
-/// integration-managed (`integration_managed = true`, no refresh, no env/org
-/// client fallback). Re-import for the same (identity, provider[, account_email])
-/// updates the existing row's tokens in place — the partner's refresh path.
+/// A `byoc_credential_id` is **required**: the import is hard-pinned to that
+/// client and self-refreshes via it (validated now, never cascades). Re-import
+/// for the same (identity, provider[, account_email]) updates the existing
+/// row's tokens in place — the partner's refresh path. Auth-recovery on a
+/// headless org returns a URL-less envelope so the partner re-runs its own
+/// dance and re-imports (see `error.rs` and `routes/actions/auth.rs`).
 pub async fn kernel_import_connection(
     ctx: PlatformCallContext,
     input: ImportConnectionInput,
@@ -498,26 +496,29 @@ pub async fn kernel_import_connection(
 
     let enc_key = ctx.config.keyring()?;
 
-    // Refresh mode, fixed at import. A pinned BYOC ⇒ self-refresh: validate it
+    // Imported connections must pin a BYOC client: Overslash self-refreshes the
+    // token via that client, hard-pinned (never the org/env cascade — a refresh
+    // token is valid only against the client that issued it). Validate the pin
     // resolves for this org/provider now (Tier-1 hard pin — `resolve` errors if
-    // the row is missing) so a bad id fails loudly here, not at first refresh. A
-    // null BYOC ⇒ integration-managed: no client, never refreshes.
-    let (byoc_id, integration_managed) = match input.byoc_credential_id {
-        Some(id) => {
-            let creds = crate::services::client_credentials::resolve(
-                &ctx.db,
-                &enc_key,
-                ctx.org_id,
-                Some(identity_id),
-                &input.provider,
-                None,
-                Some(id),
-            )
-            .await?;
-            (creds.byoc_credential_id, false)
-        }
-        None => (None, true),
-    };
+    // the row is missing) so a bad id fails loudly here, not at first refresh.
+    let pinned_byoc_id = input.byoc_credential_id.ok_or_else(|| {
+        AppError::BadRequest(
+            "byoc_credential_id is required: imported connections self-refresh via a pinned \
+             client. Register the client as a BYOC credential and import against it."
+                .into(),
+        )
+    })?;
+    let creds = crate::services::client_credentials::resolve(
+        &ctx.db,
+        &enc_key,
+        ctx.org_id,
+        Some(identity_id),
+        &input.provider,
+        None,
+        Some(pinned_byoc_id),
+    )
+    .await?;
+    let byoc_id = creds.byoc_credential_id;
 
     let expires_at = match input.expires_at {
         Some(ts) => Some(OffsetDateTime::from_unix_timestamp(ts).map_err(|_| {
@@ -557,12 +558,9 @@ pub async fn kernel_import_connection(
         .find_connection_for_import(identity_id, &input.provider, account_email.as_deref())
         .await?;
 
-    // Whether the import's *requested* mode/client matches an existing row's.
-    // The refresh mode (and pinned client) is fixed at first import.
-    let mode_matches = |existing: &ConnectionRow| {
-        existing.integration_managed == integration_managed
-            && (integration_managed || existing.byoc_credential_id == byoc_id)
-    };
+    // Whether the import's pinned client matches an existing row's. The pinned
+    // client is fixed at first import.
+    let mode_matches = |existing: &ConnectionRow| existing.byoc_credential_id == byoc_id;
 
     // Decide whether `candidate` is genuinely *this* vault connection or an
     // accidental match we must not overwrite (notably an orchestrated
@@ -570,14 +568,14 @@ pub async fn kernel_import_connection(
     let existing = match candidate {
         Some(c) if account_email.is_some() => {
             // Email-keyed match: the caller named this account, so an in-place
-            // update is intended. The mode is fixed — reject an explicit
-            // mode/client change rather than silently validating-and-discarding
-            // a `byoc_credential_id` (which would leave a misconfigured row).
+            // update is intended. The pinned client is fixed — reject an
+            // explicit change rather than silently validating-and-discarding a
+            // `byoc_credential_id` (which would leave a misconfigured row).
             if !mode_matches(&c) {
                 return Err(AppError::BadRequest(
-                    "a connection for this account already exists with a different refresh \
-                     mode or pinned client; the mode is fixed at import — delete it and \
-                     re-import to change it"
+                    "a connection for this account already exists with a different pinned \
+                     client; the pinned client is fixed at import — delete it and re-import \
+                     to change it"
                         .into(),
                 ));
             }
@@ -585,23 +583,23 @@ pub async fn kernel_import_connection(
         }
         Some(c) if mode_matches(&c) => {
             // Emailless heuristic match (the identity's default connection for
-            // the provider). Only reuse it when it is the *same kind* of vault
-            // connection. This is what stops an emailless import from
-            // overwriting an orchestrated connection (or a differently-pinned
-            // one): on a mismatch we fall through to creating a fresh row.
+            // the provider). Only reuse it when it pins the *same* client. This
+            // is what stops an emailless import from overwriting an orchestrated
+            // connection (or a differently-pinned one): on a mismatch we fall
+            // through to creating a fresh row.
             Some(c)
         }
         _ => None,
     };
 
-    let (connection_id, is_default, effective_integration_managed, effective_scopes, audit_action) =
+    let (connection_id, is_default, effective_scopes, audit_action) =
         if let Some(existing) = existing {
             // Preserve the existing expiry on a token-only re-import that carries
             // no fresh one — otherwise we'd null `token_expires_at` and the
-            // connection would look perpetually valid, so an integration-managed
-            // connection would never surface `reauth_required` (and would keep
-            // injecting a token that has actually expired upstream). A re-import
-            // that *does* supply `expires_at`/`expires_in` overrides it.
+            // connection would look perpetually valid, so a connection with a
+            // dead refresh token would never surface `reauth_required` (and would
+            // keep injecting a token that has actually expired upstream). A
+            // re-import that *does* supply `expires_at`/`expires_in` overrides it.
             let next_expires_at = expires_at.or(existing.token_expires_at);
             // Likewise preserve the recorded scopes when the re-import omits them
             // (`scopes` is now `null`/`None` ⇒ "unknown", not `[]`). Overwriting
@@ -626,7 +624,6 @@ pub async fn kernel_import_connection(
             (
                 existing.id,
                 existing.is_default,
-                existing.integration_managed,
                 next_scopes,
                 "connection.updated",
             )
@@ -642,13 +639,11 @@ pub async fn kernel_import_connection(
                     scopes: input.scopes.as_deref(),
                     account_email: account_email.as_deref(),
                     byoc_credential_id: byoc_id,
-                    integration_managed,
                 })
                 .await?;
             (
                 conn.id,
                 conn.is_default,
-                conn.integration_managed,
                 input.scopes.clone(),
                 "connection.created",
             )
@@ -665,7 +660,6 @@ pub async fn kernel_import_connection(
                 "provider": input.provider,
                 "account_email": account_email,
                 "scopes": effective_scopes,
-                "integration_managed": effective_integration_managed,
                 "imported": true,
             }),
             description: None,
@@ -701,7 +695,6 @@ pub async fn kernel_import_connection(
         account_email,
         scopes: effective_scopes,
         is_default,
-        integration_managed: effective_integration_managed,
     })
 }
 

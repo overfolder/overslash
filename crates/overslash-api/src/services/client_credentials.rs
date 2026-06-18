@@ -190,11 +190,6 @@ pub enum CredentialSource {
     OrgSecret,
     /// Env-var fallback is active (requires `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS`).
     System,
-    /// An imported, integration-managed connection (no client shared with
-    /// Overslash). Overslash never refreshes it — the integration refreshes
-    /// and re-imports via `POST /v1/connections/import`. The cascade does not
-    /// apply, so this is reported instead of `Byoc`/`OrgSecret`/`Missing`.
-    IntegrationManaged,
     /// Nothing resolves — the next refresh will fail.
     Missing,
 }

@@ -75,7 +75,6 @@ async fn test_eventbrite_e2e() {
             scopes: Some(&[]),
             account_email: None,
             byoc_credential_id: Some(byoc_id),
-            integration_managed: false,
         })
         .await
         .unwrap();

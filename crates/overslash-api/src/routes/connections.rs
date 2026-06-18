@@ -189,14 +189,13 @@ struct ImportConnectionResponse {
     /// gives the connection the benefit of the doubt).
     scopes: Option<Vec<String>>,
     is_default: bool,
-    integration_managed: bool,
 }
 
 /// `POST /v1/connections/import` — vault OAuth tokens a white-label partner
 /// minted itself. The partner runs the full OAuth dance against its own client
-/// and POSTs the resulting tokens here with an org API key; Overslash stores,
-/// refreshes (self-refresh via a pinned BYOC, or integration-managed when no
-/// client is shared), and injects them, and never issues a `redirect_uri`.
+/// and POSTs the resulting tokens here with an org API key, pinning a
+/// **required** `byoc_credential_id`; Overslash stores, self-refreshes via that
+/// pinned client, and injects them, and never issues a `redirect_uri`.
 /// See `docs/design/white-label-token-vault.md`.
 async fn import_connection(
     State(state): State<AppState>,
@@ -245,7 +244,6 @@ async fn import_connection(
         account_email: resp.account_email,
         scopes: resp.scopes,
         is_default: resp.is_default,
-        integration_managed: resp.integration_managed,
     }))
 }
 
@@ -740,10 +738,6 @@ async fn oauth_callback_inner(
                     scopes: Some(&granted_scopes),
                     account_email: account_email.as_deref(),
                     byoc_credential_id: effective_byoc_id,
-                    // Orchestrated connections always refresh via the cascade —
-                    // only `/v1/connections/import` with a null BYOC mints an
-                    // integration-managed row.
-                    integration_managed: false,
                 })
                 .await?;
             (conn.id, "connection.created", granted_scopes.clone())
@@ -918,16 +912,13 @@ struct ConnectionDetail {
     account_email: Option<String>,
     scopes: Vec<String>,
     is_default: bool,
-    /// `true` for imported connections whose refresh the integration owns.
-    integration_managed: bool,
     created_at: String,
     updated_at: String,
     used_by: Vec<UsedByService>,
     /// What OAuth client credentials the next refresh will use. Mirrors the
     /// `client_credentials::resolve()` cascade against current state (the
-    /// connection's stored BYOC may have been deleted out from under it). For
-    /// integration-managed connections the cascade doesn't apply, so this is
-    /// `IntegrationManaged`.
+    /// connection's stored BYOC may have been deleted out from under it) —
+    /// a pinned BYOC for imported connections, the org/env cascade otherwise.
     credential_source: client_credentials::CredentialSource,
 }
 
@@ -950,19 +941,16 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
         })
         .collect();
 
-    // Integration-managed connections aren't refreshed by Overslash, so the
-    // cascade doesn't describe them — report the dedicated source instead.
-    let credential_source = if conn.integration_managed {
-        client_credentials::CredentialSource::IntegrationManaged
-    } else {
-        client_credentials::describe_source(
-            &org,
-            &conn.provider_key,
-            Some(conn.identity_id),
-            conn.byoc_credential_id,
-        )
-        .await?
-    };
+    // Every connection refreshes via the credential cascade — a pinned BYOC
+    // (imported connections, and orchestrated ones that pinned one) or the
+    // org/env fallback. Describe whichever the next refresh would use.
+    let credential_source = client_credentials::describe_source(
+        &org,
+        &conn.provider_key,
+        Some(conn.identity_id),
+        conn.byoc_credential_id,
+    )
+    .await?;
 
     Ok(Json(ConnectionDetail {
         id: conn.id,
@@ -970,7 +958,6 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
         account_email: conn.account_email,
         scopes: conn.scopes.unwrap_or_default(),
         is_default: conn.is_default,
-        integration_managed: conn.integration_managed,
         created_at: fmt_time(conn.created_at),
         updated_at: fmt_time(conn.updated_at),
         used_by,
@@ -1065,14 +1052,17 @@ async fn upgrade_connection_scopes(
         ));
     }
 
-    // Integration-managed connections can't be upgraded through the orchestrated
-    // OAuth flow — Overslash holds no client to mint an authorize URL against.
-    // The integration broadens the grant on its side and re-imports the
-    // connection with the wider scopes via `POST /v1/connections/import`.
-    if existing.integration_managed {
+    // Headless (white-label) orgs drive their own OAuth flow — the gated
+    // upgrade flow would mint a `/connect-authorize` link their end users can't
+    // open. They broaden the grant on their side and re-import the connection
+    // with the wider scopes via `POST /v1/connections/import`.
+    if overslash_db::repos::org::get_headless(state.db(&ext), acl.org_id)
+        .await?
+        .unwrap_or(false)
+    {
         return Err(AppError::BadRequest(
-            "this connection is integration-managed; scopes can't be upgraded through \
-             Overslash — broaden the grant and re-import it via POST /v1/connections/import"
+            "this org is headless; scopes can't be upgraded through Overslash — broaden \
+             the grant and re-import the connection via POST /v1/connections/import"
                 .into(),
         ));
     }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,\n                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,\n                    c.byoc_credential_id, c.is_default, c.integration_managed,\n                    c.created_at, c.updated_at\n             FROM connections c\n             JOIN identities i ON i.id = c.identity_id\n             WHERE c.identity_id = $1 AND i.org_id = $2 AND c.provider_key = $3\n             ORDER BY c.is_default DESC, c.created_at DESC LIMIT 1",
+  "query": "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,\n                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,\n                    c.byoc_credential_id, c.is_default,\n                    c.created_at, c.updated_at\n             FROM connections c\n             JOIN identities i ON i.id = c.identity_id\n             WHERE c.id = $1 AND c.identity_id = $2 AND i.org_id = $3",
   "describe": {
     "columns": [
       {
@@ -126,17 +126,6 @@
       },
       {
         "ordinal": 11,
-        "name": "integration_managed",
-        "type_info": "Bool",
-        "origin": {
-          "Table": {
-            "table": "connections",
-            "name": "integration_managed"
-          }
-        }
-      },
-      {
-        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +136,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 12,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -162,7 +151,7 @@
       "Left": [
         "Uuid",
         "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -178,9 +167,8 @@
       true,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "195a06060d5643e96d7e13b7a70c415c43fc7d564e9017501f24c973d4a971cb"
+  "hash": "7de689771112dfcc6003291deceef4b641fb3c798b11c1a94c0487348b6404b6"
 }

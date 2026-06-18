@@ -722,6 +722,7 @@ pub(super) async fn resolve_request(
         if !resolved_auth.oauth_injected && resolved_auth.secrets.is_empty() {
             if let Some(err) = needs_authentication_for_service(
                 state,
+                ext,
                 scope.org_id(),
                 identity_id,
                 &svc,

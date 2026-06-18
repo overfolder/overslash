@@ -195,7 +195,6 @@ async fn test_oauth_x_token_refresh() {
             scopes: Some(&[]),
             account_email: None,
             byoc_credential_id: None,
-            integration_managed: false,
         })
         .await
         .unwrap();
@@ -372,7 +371,6 @@ async fn test_x_real_e2e() {
             scopes: Some(&[]),
             account_email: None,
             byoc_credential_id: Some(byoc_id),
-            integration_managed: false,
         })
         .await
         .unwrap();

@@ -135,7 +135,6 @@ async fn test_google_calendar_three_modes() {
             scopes: Some(&["https://www.googleapis.com/auth/calendar".to_string()]),
             account_email: None,
             byoc_credential_id: Some(byoc.id),
-            integration_managed: false,
         })
         .await
         .unwrap();
@@ -445,7 +444,6 @@ async fn test_google_calendar_real_byoc() {
             scopes: Some(&["https://www.googleapis.com/auth/calendar".to_string()]),
             account_email: Some("angel.overspiral@gmail.com"),
             byoc_credential_id: Some(byoc_id),
-            integration_managed: false,
         })
         .await
         .unwrap();

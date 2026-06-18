@@ -50,6 +50,10 @@ pub fn router() -> Router<AppState> {
             "/v1/orgs/{id}/managed-signin",
             get(get_managed_signin).patch(patch_managed_signin),
         )
+        .route(
+            "/v1/orgs/{id}/headless",
+            get(get_headless).patch(patch_headless),
+        )
 }
 
 // Bounds for sub-agent idle cleanup config (per replan).
@@ -1018,5 +1022,76 @@ async fn patch_managed_signin(
 
     Ok(Json(ManagedSigninResponse {
         allow_overslash_managed_signin: req.allow_overslash_managed_signin,
+    }))
+}
+
+// ─── Headless (white-label, URL-less auth-recovery) ───
+
+#[derive(Serialize)]
+struct HeadlessResponse {
+    /// When `true`, this is a white-label org whose end users have no Overslash
+    /// dashboard session. Auth-recovery on an action call (`reauth_required`,
+    /// `needs_authentication`, `missing_scopes`) returns a typed, URL-less
+    /// envelope (no gated `/connect-authorize` link, no `oauth_connection_flows`
+    /// row); the integration re-runs its own OAuth dance and re-imports via
+    /// `POST /v1/connections/import`. Admin/provisioning-only — a partner
+    /// onboarding capability with no end-user surface (no dashboard toggle).
+    headless: bool,
+}
+
+#[derive(Deserialize)]
+struct PatchHeadlessRequest {
+    headless: bool,
+}
+
+async fn get_headless(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<Json<HeadlessResponse>> {
+    if id != auth.org_id {
+        return Err(AppError::Forbidden("cannot read another org".into()));
+    }
+    let value = overslash_db::repos::org::get_headless(state.db(&ext), id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    Ok(Json(HeadlessResponse { headless: value }))
+}
+
+async fn patch_headless(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    AdminAcl(acl): AdminAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchHeadlessRequest>,
+) -> Result<Json<HeadlessResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot mutate another org's config".into(),
+        ));
+    }
+
+    let updated = overslash_db::repos::org::set_headless(state.db(&ext), id, req.headless).await?;
+    if !updated {
+        return Err(AppError::NotFound("org not found".into()));
+    }
+
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: acl.identity_id,
+            action: "org.headless.updated",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({ "headless": req.headless }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(HeadlessResponse {
+        headless: req.headless,
     }))
 }

@@ -137,7 +137,6 @@ async fn test_google_drive_e2e() {
             scopes: Some(&["https://www.googleapis.com/auth/drive".to_string()]),
             account_email: None,
             byoc_credential_id: Some(byoc_id),
-            integration_managed: false,
         })
         .await
         .unwrap();

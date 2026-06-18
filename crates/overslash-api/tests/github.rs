@@ -57,7 +57,6 @@ async fn test_github_e2e() {
             scopes: Some(&[]),
             account_email: None,
             byoc_credential_id: None,
-            integration_managed: false,
         })
         .await
         .unwrap();

@@ -248,36 +248,6 @@ pub async fn resolve_access_token(
     Ok(tokens.access_token)
 }
 
-/// Resolve the access token for an **integration-managed** connection — an
-/// imported connection with no BYOC client (`integration_managed = true`).
-/// Overslash holds no OAuth client for it, so it never runs a refresh grant
-/// and never borrows the org/env OAuth client: it returns the stored access
-/// token while it is still valid, or [`OAuthError::IntegrationManagedStale`]
-/// once expired so the caller can signal the integration to refresh and
-/// re-import. Synchronous — there is no network call and nothing to write.
-pub fn resolve_integration_managed_token(
-    enc_key: &crypto::Keyring,
-    conn: &connection::ConnectionRow,
-) -> Result<String, OAuthError> {
-    let access_token = String::from_utf8(
-        crypto::decrypt(enc_key, &conn.encrypted_access_token)
-            .map_err(|e| OAuthError::CryptoError(e.to_string()))?,
-    )
-    .map_err(|_| OAuthError::CryptoError("invalid utf-8".into()))?;
-
-    // Same 60s skew buffer as `resolve_access_token`. A connection with no
-    // recorded expiry (opaque/long-lived token) is treated as always valid.
-    let is_expired = conn
-        .token_expires_at
-        .map(|exp| exp < time::OffsetDateTime::now_utc() + time::Duration::seconds(60))
-        .unwrap_or(false);
-
-    if is_expired {
-        return Err(OAuthError::IntegrationManagedStale);
-    }
-    Ok(access_token)
-}
-
 #[derive(Debug, serde::Deserialize)]
 pub struct TokenResponse {
     pub access_token: String,
@@ -473,10 +443,4 @@ pub enum OAuthError {
     NoRefreshToken,
     #[error("provider not found: {0}")]
     ProviderNotFound(String),
-    /// An integration-managed (imported, no-client) connection's access token
-    /// has expired. Overslash cannot refresh it — the integration must refresh
-    /// and re-import. Mapped to a `reauth_required` envelope flagged
-    /// `integration_managed` with no reconnect URL.
-    #[error("integration-managed token expired")]
-    IntegrationManagedStale,
 }

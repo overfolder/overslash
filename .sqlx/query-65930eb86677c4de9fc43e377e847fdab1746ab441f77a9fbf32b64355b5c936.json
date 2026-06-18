@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,\n                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,\n                    c.byoc_credential_id, c.is_default, c.integration_managed,\n                    c.created_at, c.updated_at\n             FROM connections c\n             JOIN identities i ON i.id = c.identity_id\n             WHERE c.id = $1 AND c.identity_id = $2 AND i.org_id = $3",
+  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, created_at, updated_at\n         FROM connections\n         WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3\n           AND ($4::text IS NULL OR account_email IS NOT DISTINCT FROM $4)\n         ORDER BY is_default DESC, created_at DESC\n         LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -82,7 +82,7 @@
       },
       {
         "ordinal": 7,
-        "name": "scopes",
+        "name": "scopes?: Vec<String>",
         "type_info": "TextArray",
         "origin": {
           "Table": {
@@ -126,17 +126,6 @@
       },
       {
         "ordinal": 11,
-        "name": "integration_managed",
-        "type_info": "Bool",
-        "origin": {
-          "Table": {
-            "table": "connections",
-            "name": "integration_managed"
-          }
-        }
-      },
-      {
-        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +136,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 12,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -162,7 +151,8 @@
       "Left": [
         "Uuid",
         "Uuid",
-        "Uuid"
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
@@ -178,9 +168,8 @@
       true,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "79d67e9b76bcae13575eccbcd8896dfb928a96023588effd06797b076c99d059"
+  "hash": "65930eb86677c4de9fc43e377e847fdab1746ab441f77a9fbf32b64355b5c936"
 }
