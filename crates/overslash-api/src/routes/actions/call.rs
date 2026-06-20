@@ -149,7 +149,6 @@ pub(super) async fn call_action_impl(
         &ext,
         &auth,
         &scope,
-        identity_id,
         ceiling_user_id,
         &req,
         pre_resolved_mode_c,

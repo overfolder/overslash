@@ -1042,6 +1042,20 @@ pub async fn start_mock() -> SocketAddr {
     addr
 }
 
+/// The owner user ("test-user") that [`bootstrap_org_identity`] creates and
+/// parents the returned agent under. OAuth connections resolve at the owner
+/// identity (DECISIONS.md D22), so tests that exercise the auto-resolve path
+/// must seed connections here, not on the calling agent.
+pub async fn owner_user_id(pool: &PgPool, org_id: Uuid) -> Uuid {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM identities WHERE org_id = $1 AND kind = 'user' AND name = 'test-user'",
+    )
+    .bind(org_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
 /// Bootstrap org + identity + identity-bound API key.
 /// Returns (org_id, identity_id, agent_api_key, org_admin_api_key).
 pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid, String, String) {

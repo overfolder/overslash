@@ -93,7 +93,7 @@ pub(super) async fn oauth_error_to_app_error(
     state: &AppState,
     ext: &axum::http::Extensions,
     org_id: Uuid,
-    caller_identity_id: Uuid,
+    owner_identity_id: Uuid,
     conn: &overslash_db::repos::connection::ConnectionRow,
     err: OAuthError,
     return_url_hint: Option<&str>,
@@ -104,7 +104,7 @@ pub(super) async fn oauth_error_to_app_error(
                 state,
                 ext,
                 org_id,
-                caller_identity_id,
+                owner_identity_id,
                 conn,
                 reason,
                 &err,
@@ -132,7 +132,7 @@ pub(super) async fn oauth_error_to_app_error_or_continue(
     state: &AppState,
     ext: &axum::http::Extensions,
     org_id: Uuid,
-    caller_identity_id: Uuid,
+    owner_identity_id: Uuid,
     conn: &overslash_db::repos::connection::ConnectionRow,
     err: OAuthError,
     return_url_hint: Option<&str>,
@@ -143,7 +143,7 @@ pub(super) async fn oauth_error_to_app_error_or_continue(
                 state,
                 ext,
                 org_id,
-                caller_identity_id,
+                owner_identity_id,
                 conn,
                 reason,
                 &err,
@@ -178,7 +178,11 @@ pub(super) async fn reauth_required_envelope(
     state: &AppState,
     ext: &axum::http::Extensions,
     org_id: Uuid,
-    caller_identity_id: Uuid,
+    // The connection lives at the owner identity (D22), so mint the gated
+    // upgrade flow against the owner — the human owner is who can heal the
+    // shared credential, and the minted flow/connection must key to the same
+    // identity the resolver read from.
+    owner_identity_id: Uuid,
     conn: &overslash_db::repos::connection::ConnectionRow,
     reason: &'static str,
     underlying: &OAuthError,
@@ -204,7 +208,7 @@ pub(super) async fn reauth_required_envelope(
     match platform_connections::mint_upgrade_auth_url(
         state,
         org_id,
-        caller_identity_id,
+        owner_identity_id,
         conn,
         &[],
         return_url_hint,
@@ -256,7 +260,9 @@ pub(super) async fn needs_authentication_for_service(
     state: &AppState,
     ext: &axum::http::Extensions,
     org_id: Uuid,
-    caller_identity_id: Uuid,
+    // Mint the initial connect flow at the owner (D22) so the connection the
+    // user creates lands on the owner identity and is shared by every agent.
+    owner_identity_id: Uuid,
     svc: &overslash_core::types::ServiceDefinition,
     action: &overslash_core::types::ServiceAction,
     instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
@@ -318,7 +324,7 @@ pub(super) async fn needs_authentication_for_service(
     let urls = match platform_connections::mint_initial_auth_url(
         state,
         org_id,
-        caller_identity_id,
+        owner_identity_id,
         &provider,
         &action.required_scopes,
         None,
@@ -377,7 +383,12 @@ pub(crate) async fn resolve_service_auth(
     state: &AppState,
     ext: &axum::http::Extensions,
     scope: &OrgScope,
-    identity_id: Uuid,
+    // The connection (and its client credentials / reauth recovery) resolves
+    // at the OWNER identity, not the calling agent (D22): connections are
+    // identity-scoped but shared at the owner, so a child agent inherits the
+    // owner user's connection and one reauth heals every agent. Callers pass
+    // the ceiling user id (`group_ceiling::ceiling_user_id_from_identity`).
+    owner_identity_id: Uuid,
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
     return_url_hint: Option<&str>,
@@ -387,9 +398,11 @@ pub(crate) async fn resolve_service_auth(
     }
 
     let org_id = scope.org_id();
-    // The auto-resolve path is per-identity: build a UserScope so the
-    // connection lookup is bounded by `(org_id, user_id)`.
-    let user_scope = overslash_db::scopes::UserScope::new(org_id, identity_id, scope.db().clone());
+    // Resolve the connection at the owner identity. `UserScope` here is really
+    // an identity scope (its `user_id` field holds any identity_id), so a
+    // UserScope built from the owner selects the owner's connections.
+    let user_scope =
+        overslash_db::scopes::UserScope::new(org_id, owner_identity_id, scope.db().clone());
 
     // Try OAuth first: check if identity has a connection for this service's OAuth provider
     // The encryption key is process-global, so a parse error here can't be
@@ -439,7 +452,7 @@ pub(crate) async fn resolve_service_auth(
                 state.db(ext),
                 &enc_key,
                 org_id,
-                Some(identity_id),
+                Some(owner_identity_id),
                 provider,
                 Some(&conn),
                 None,
@@ -488,7 +501,7 @@ pub(crate) async fn resolve_service_auth(
                         state,
                         ext,
                         org_id,
-                        identity_id,
+                        owner_identity_id,
                         &conn,
                         e,
                         return_url_hint,
@@ -532,7 +545,10 @@ pub(crate) async fn resolve_service_auth(
 pub(super) async fn check_required_scopes(
     state: &AppState,
     scope: &OrgScope,
-    identity_id: Uuid,
+    // Auto-resolved connections are read at the owner identity (D22), matching
+    // what `resolve_service_auth` will actually use. Explicit instance→
+    // connection bindings still resolve org-scoped via `scope.get_connection`.
+    owner_identity_id: Uuid,
     instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
     svc: &overslash_core::types::ServiceDefinition,
     action: &overslash_core::types::ServiceAction,
@@ -553,7 +569,8 @@ pub(super) async fn check_required_scopes(
     };
 
     let org_id = scope.org_id();
-    let user_scope = overslash_db::scopes::UserScope::new(org_id, identity_id, scope.db().clone());
+    let user_scope =
+        overslash_db::scopes::UserScope::new(org_id, owner_identity_id, scope.db().clone());
 
     // Resolve the connection the exec path would actually use — instance's
     // explicit binding takes precedence, else `find_my_connection_by_provider`.
@@ -630,7 +647,7 @@ pub(super) async fn check_required_scopes(
     let (auth_url, short) = match platform_connections::mint_upgrade_auth_url(
         state,
         scope.org_id(),
-        identity_id,
+        owner_identity_id,
         &connection,
         &missing,
         return_url_hint,
@@ -714,10 +731,16 @@ pub(crate) async fn resolve_replay_auth_header(
         ))
     })?;
 
+    // Connections resolve at the owner identity (D22). The replay path only
+    // carries the requester's identity, so derive the owner here (template
+    // tier resolution above stays per-caller).
+    let owner_identity_id =
+        crate::services::group_ceiling::resolve_ceiling_user_id(scope, identity_id).await?;
+
     let resolved = if let Some(ref inst) = instance {
-        resolve_instance_auth(state, ext, scope, identity_id, inst, &svc, &[], None).await?
+        resolve_instance_auth(state, ext, scope, owner_identity_id, inst, &svc, &[], None).await?
     } else {
-        resolve_service_auth(state, ext, scope, identity_id, &svc, &[], None).await?
+        resolve_service_auth(state, ext, scope, owner_identity_id, &svc, &[], None).await?
     };
 
     resolved.auth_header.ok_or_else(|| {
@@ -735,7 +758,10 @@ pub(crate) async fn resolve_instance_auth(
     state: &AppState,
     ext: &axum::http::Extensions,
     scope: &OrgScope,
-    identity_id: Uuid,
+    // Owner identity (D22). Used for client-credential resolution, reauth
+    // recovery, and the template auto-resolve fall-through. The explicit
+    // instance→connection binding below stays org-scoped (`scope.get_connection`).
+    owner_identity_id: Uuid,
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
@@ -783,7 +809,7 @@ pub(crate) async fn resolve_instance_auth(
                 state.db(ext),
                 &enc_key,
                 org_id,
-                Some(identity_id),
+                Some(owner_identity_id),
                 &conn.provider_key,
                 Some(&conn),
                 None,
@@ -848,7 +874,7 @@ pub(crate) async fn resolve_instance_auth(
                         state,
                         ext,
                         org_id,
-                        identity_id,
+                        owner_identity_id,
                         &conn,
                         e,
                         return_url_hint,
@@ -885,7 +911,7 @@ pub(crate) async fn resolve_instance_auth(
         state,
         ext,
         scope,
-        identity_id,
+        owner_identity_id,
         svc,
         explicit_secrets,
         return_url_hint,

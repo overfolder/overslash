@@ -70,10 +70,14 @@ async fn setup_pending_oauth_approval() -> PendingOauthApproval {
         .create_byoc_credential(ident_id, "google", &encrypted_cid, &encrypted_csec)
         .await
         .unwrap();
+    // Connections resolve at the owner identity (D22): the agent shares its
+    // owner user's connection, so create it on the owner ("test-user") that
+    // `bootstrap_org_identity` puts the agent under.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
     overslash_db::scopes::OrgScope::new(org_id, pool.clone())
         .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
-            identity_id: ident_id,
+            identity_id: owner_id,
             provider_key: "google",
             encrypted_access_token: &encrypted_token,
             encrypted_refresh_token: None,

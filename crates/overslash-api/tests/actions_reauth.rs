@@ -330,7 +330,11 @@ async fn reauth_required_rest_envelope_shape() {
     let (org_id, ident_id, api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, ident_id, "x").await;
+    // Connections resolve at the owner identity (D22): the calling agent shares
+    // its owner user's connection, so seed it on the owner ("test-user"), not on
+    // the agent. `bootstrap_org_identity` puts the agent under that user.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, owner_id, "x").await;
 
     let create_resp = client
         .post(format!("{base}/v1/services"))
@@ -492,7 +496,11 @@ async fn wrap_true_returns_200_reauth_required_envelope() {
     let (org_id, ident_id, api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, ident_id, "x").await;
+    // Connections resolve at the owner identity (D22): the calling agent shares
+    // its owner user's connection, so seed it on the owner ("test-user"), not on
+    // the agent. `bootstrap_org_identity` puts the agent under that user.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, owner_id, "x").await;
 
     let create_resp = client
         .post(format!("{base}/v1/services"))

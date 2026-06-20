@@ -205,9 +205,12 @@ async fn mcp_call_expired_no_refresh_returns_typed_reauth_required() {
     let (org_id, ident_id, api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    // Seed a broken X connection for this identity BEFORE creating the
-    // service so resolution finds it via `find_my_connection_by_provider`.
-    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, ident_id, "x").await;
+    // Seed a broken X connection BEFORE creating the service so resolution
+    // finds it via `find_my_connection_by_provider`. Connections resolve at the
+    // owner identity (D22), so seed it on the owner ("test-user") that
+    // `bootstrap_org_identity` puts this agent under, not on the agent itself.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, owner_id, "x").await;
 
     // Create the X service. No `connection_id` field — auto-resolve will
     // pick up the seeded connection by provider key.

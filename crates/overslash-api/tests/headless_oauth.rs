@@ -139,7 +139,7 @@ async fn headless_reauth_required_is_url_less() {
     let conn_id = seed_connection(
         &pool,
         org_id,
-        ident_id,
+        common::owner_user_id(&pool, org_id).await,
         "x",
         &["tweet.read", "users.read"],
         "mock@x",
@@ -245,7 +245,7 @@ async fn headless_missing_scopes_is_url_less() {
     seed_connection(
         &pool,
         org_id,
-        ident_id,
+        common::owner_user_id(&pool, org_id).await,
         "google",
         &["https://www.googleapis.com/auth/calendar.readonly"],
         "mock@google",
@@ -314,7 +314,7 @@ async fn non_headless_reauth_still_mints_gated_url() {
     seed_connection(
         &pool,
         org_id,
-        ident_id,
+        common::owner_user_id(&pool, org_id).await,
         "x",
         &["tweet.read", "users.read"],
         "mock@x",
