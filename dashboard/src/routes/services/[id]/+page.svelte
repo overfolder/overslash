@@ -224,7 +224,7 @@
 				// Use svc.id (not name) so user-shadows-org can't return actions
 				// from a same-named user instance.
 				getServiceActions(fresh.id, ctrl.signal).catch(() => [] as ActionSummary[]),
-				listConnections(ctrl.signal).catch(() => [] as ConnectionSummary[]),
+				listConnections({}, ctrl.signal).catch(() => [] as ConnectionSummary[]),
 				session
 					.get<Identity[]>('/v1/identities', ctrl.signal)
 					.catch(() => [] as Identity[]),
@@ -323,7 +323,7 @@
 				await new Promise((r) => setTimeout(r, 1500));
 				if (ctrl.signal.aborted) return;
 				try {
-					connections = await listConnections(ctrl.signal);
+					connections = await listConnections({}, ctrl.signal);
 				} catch {
 					if (ctrl.signal.aborted) return;
 				}
@@ -392,7 +392,7 @@
 				await new Promise((r) => setTimeout(r, 1500));
 				if (ctrl.signal.aborted) return;
 				try {
-					connections = await listConnections(ctrl.signal);
+					connections = await listConnections({}, ctrl.signal);
 				} catch {
 					if (ctrl.signal.aborted) return;
 				}

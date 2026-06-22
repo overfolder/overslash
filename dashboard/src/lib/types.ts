@@ -538,6 +538,9 @@ export interface ActionParam {
 
 export interface ConnectionSummary {
   id: string;
+  /** Owner identity (the user the linked account belongs to). The admin
+   *  "all users' connections" view resolves this to a display name. */
+  owner_identity_id: string;
   provider_key: string;
   account_email: string | null;
   scopes: string[];

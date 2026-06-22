@@ -31,6 +31,13 @@ impl OrgScope {
         connection::get_by_id(self.db(), self.org_id(), id).await
     }
 
+    /// List every connection in this org, across all identities. Powers the
+    /// dashboard's admin-only "show all users' connections" view. See
+    /// [`connection::list_all_in_org`].
+    pub async fn list_all_connections(&self) -> Result<Vec<ConnectionRow>, sqlx::Error> {
+        connection::list_all_in_org(self.db(), self.org_id()).await
+    }
+
     /// Find the connection a token import should update in place for an
     /// (identity, provider[, account_email]), scoped to this org. See
     /// [`connection::find_for_import`].
@@ -132,5 +139,17 @@ impl OrgScope {
     /// id belongs to another tenant. Used by org-admin connection deletion.
     pub async fn delete_connection(&self, id: Uuid) -> Result<bool, sqlx::Error> {
         connection::delete_by_org(self.db(), id, self.org_id()).await
+    }
+
+    /// Promote a connection to be the default for its provider, scoped to this
+    /// org — demoting any sibling that held the flag *within the connection's
+    /// own owner identity*, not the caller's. Powers an org-admin setting the
+    /// default on another user's connection. Returns `false` if the id belongs
+    /// to another tenant.
+    pub async fn set_connection_default(&self, id: Uuid) -> Result<bool, sqlx::Error> {
+        let Some(conn) = self.get_connection(id).await? else {
+            return Ok(false);
+        };
+        connection::set_default(self.db(), self.org_id(), conn.identity_id, id).await
     }
 }

@@ -852,6 +852,10 @@ async fn oauth_callback_inner(
 #[derive(Serialize)]
 struct ConnectionSummary {
     id: Uuid,
+    /// Owner identity of the connection. Connections are bound to the user
+    /// identity (D22), so this is the user who owns the linked account. The
+    /// dashboard resolves it to a name in the admin "all users" view.
+    owner_identity_id: Uuid,
     provider_key: String,
     account_email: Option<String>,
     /// Scopes the provider actually granted at the last OAuth flow. The
@@ -866,8 +870,41 @@ struct ConnectionSummary {
     created_at: String,
 }
 
-async fn list_connections(scope: UserScope) -> Result<Json<Vec<ConnectionSummary>>> {
-    let rows = scope.list_my_connections().await?;
+/// Query params for `GET /v1/connections`. Mirrors `ListServicesQuery`.
+#[derive(Deserialize, Default)]
+struct ListConnectionsQuery {
+    /// Admin-only: when true, list every connection in the org (all users'
+    /// rows) instead of only the caller's own. Silently ignored for non-admin
+    /// callers so a stale dashboard tab doesn't start 403'ing when an admin
+    /// flag is revoked — same contract as the services list.
+    #[serde(default)]
+    include_user_level: bool,
+}
+
+async fn list_connections(
+    scope: UserScope,
+    Query(q): Query<ListConnectionsQuery>,
+) -> Result<Json<Vec<ConnectionSummary>>> {
+    // `include_user_level` is admin-only. Read `is_org_admin` straight off the
+    // identity row (same flag-based check as the services list — `AdminAcl`
+    // would instead require the `overslash` service admin grant). Non-admins
+    // passing the flag fall through to the standard self-scoped listing.
+    let admin_view_all = if q.include_user_level {
+        scope
+            .org()
+            .get_identity(scope.user_id())
+            .await?
+            .map(|i| i.is_org_admin)
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    let rows = if admin_view_all {
+        scope.org().list_all_connections().await?
+    } else {
+        scope.list_my_connections().await?
+    };
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     // Usage lookup is org-scoped; downgrade the UserScope to an OrgScope so
     // the service_instances query doesn't need a user bound.
@@ -882,6 +919,7 @@ async fn list_connections(scope: UserScope) -> Result<Json<Vec<ConnectionSummary
             .map(|r| ConnectionSummary {
                 used_by_service_templates: usage.remove(&r.id).unwrap_or_default(),
                 id: r.id,
+                owner_identity_id: r.identity_id,
                 provider_key: r.provider_key,
                 account_email: r.account_email,
                 scopes: r.scopes.unwrap_or_default(),
@@ -923,10 +961,26 @@ struct ConnectionDetail {
 }
 
 async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<ConnectionDetail>> {
-    let conn = scope
-        .get_my_connection(id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
+    // Caller's own connection takes the fast path. Falling through to an
+    // org-scoped lookup only for org admins lets them open another user's
+    // connection from the "all users" view; everyone else gets a 404.
+    let conn = match scope.get_my_connection(id).await? {
+        Some(c) => c,
+        None => {
+            let org = scope.org();
+            let is_admin = org
+                .get_identity(scope.user_id())
+                .await?
+                .map(|i| i.is_org_admin)
+                .unwrap_or(false);
+            let conn = if is_admin {
+                org.get_connection(id).await?
+            } else {
+                None
+            };
+            conn.ok_or_else(|| AppError::NotFound("connection not found".into()))?
+        }
+    };
 
     // Usage lookup is org-scoped; downgrade to OrgScope like `list_connections`.
     let org = scope.org();
@@ -967,8 +1021,9 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
 
 /// Promote a connection to be the default for its (identity, provider). Demotes
 /// any sibling that held the flag. Identity-scoped: the caller must own the
-/// connection. Low-risk + idempotent — the dashboard fires it from a radio /
-/// toggle with no confirmation.
+/// connection — or be an org admin acting on another user's connection from the
+/// "all users" view. Low-risk + idempotent — the dashboard fires it from a
+/// radio / toggle with no confirmation.
 async fn set_connection_default(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -980,12 +1035,25 @@ async fn set_connection_default(
         AppError::BadRequest("set_default requires an identity-bound API key".into())
     })?;
 
+    // The caller's own connection takes the identity-scoped path. For a
+    // connection owned by another user, an org admin may still promote it —
+    // the org-scoped path demotes siblings within the *owner's* identity, not
+    // the admin's. Non-owner non-admins get a 404 (the row stays invisible).
     let updated = UserScope::new(acl.org_id, identity_id, state.db_pool(&ext))
         .set_my_connection_default(id)
         .await?;
 
     if !updated {
-        return Err(AppError::NotFound("connection not found".into()));
+        let org = OrgScope::new(acl.org_id, state.db_pool(&ext));
+        let is_admin = org
+            .get_identity(identity_id)
+            .await?
+            .map(|i| i.is_org_admin)
+            .unwrap_or(false);
+        let promoted = is_admin && org.set_connection_default(id).await?;
+        if !promoted {
+            return Err(AppError::NotFound("connection not found".into()));
+        }
     }
 
     let _ = OrgScope::new(acl.org_id, state.db_pool(&ext))
@@ -1131,12 +1199,22 @@ async fn delete_connection(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
-    // Scope delete: if identity-bound, must own the connection.
-    // Org-level keys can delete any connection in the org.
+    // Scope delete: if identity-bound, must own the connection — unless the
+    // caller is an org admin, who may delete any connection in the org (the
+    // "all users" view). Org-level keys can delete any connection in the org.
     let deleted = if let Some(identity_id) = auth.identity_id {
-        UserScope::new(auth.org_id, identity_id, state.db_pool(&ext))
-            .delete_my_connection(id)
-            .await?
+        let user_scope = UserScope::new(auth.org_id, identity_id, state.db_pool(&ext));
+        if user_scope.delete_my_connection(id).await? {
+            true
+        } else {
+            let org = user_scope.org();
+            let is_admin = org
+                .get_identity(identity_id)
+                .await?
+                .map(|i| i.is_org_admin)
+                .unwrap_or(false);
+            is_admin && org.delete_connection(id).await?
+        }
     } else {
         OrgScope::new(auth.org_id, state.db_pool(&ext))
             .delete_connection(id)

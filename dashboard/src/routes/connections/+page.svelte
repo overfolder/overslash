@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { ApiError, type MeIdentity } from '$lib/session';
+	import { ApiError, session, type MeIdentity } from '$lib/session';
 	import { listConnections, setConnectionDefault } from '$lib/api/services';
-	import type { ConnectionSummary, OAuthProviderInfo } from '$lib/types';
+	import type { ConnectionSummary, Identity, OAuthProviderInfo } from '$lib/types';
 	import { compareBy, type SortDir } from '$lib/sort';
 	import { relativeTime, absoluteTime } from '$lib/utils/time';
 	import SearchBar, {
@@ -11,18 +11,37 @@
 		type SearchValue
 	} from '$lib/components/SearchBar.svelte';
 	import SortableHeader from '$lib/components/SortableHeader.svelte';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import ProviderTile from '$lib/components/connections/ProviderTile.svelte';
 	import ConnectAccountModal from '$lib/components/connections/ConnectAccountModal.svelte';
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[] } } =
 		$props();
 
+	// Derive isAdmin + current user id from layout data — gates the admin-only
+	// "show all users' connections" toggle and labels the Owner column.
+	const isAdmin = $derived(data.user?.is_org_admin === true);
+	const currentUserId = $derived(data.user?.identity_id);
+
 	let connections = $state<ConnectionSummary[]>([]);
+	let identities = $state<Identity[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let connecting = $state(false);
 	let highlightId = $state<string | null>(null);
 	let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+	// Admin-only: when true, list every user's connections across the org. The
+	// toggle is hidden from non-admins and the backend ignores the flag for them.
+	let showAllUsers = $state(false);
+
+	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
+
+	// Display label for a connection's owner in the "all users" view. Connections
+	// are bound to the user identity (D22), so owner_identity_id is always set.
+	function ownerLabel(c: ConnectionSummary): string {
+		if (currentUserId && c.owner_identity_id === currentUserId) return 'You';
+		return identityById.get(c.owner_identity_id)?.name ?? 'user';
+	}
 
 	const providers = $derived(data.providers);
 	const providerName = $derived(
@@ -97,6 +116,7 @@
 	const sortAccessor: Record<string, (c: ConnectionSummary) => string | number> = {
 		provider: (c) => displayName(c.provider_key),
 		account: (c) => c.account_email ?? '',
+		owner: (c) => ownerLabel(c),
 		scopes: (c) => c.scopes.length,
 		default: (c) => (c.is_default ? 0 : 1),
 		usedby: (c) => c.used_by_service_templates.length,
@@ -121,7 +141,16 @@
 		loading = true;
 		error = null;
 		try {
-			connections = await listConnections();
+			const [c, ids] = await Promise.all([
+				listConnections({ includeUserLevel: showAllUsers }),
+				// Identity list maps owner UUIDs to display names for the "all users"
+				// view. Only admins can see it; soft-fail so the page stays usable.
+				isAdmin
+					? session.get<Identity[]>('/v1/identities').catch(() => [] as Identity[])
+					: Promise.resolve([] as Identity[])
+			]);
+			connections = c;
+			identities = ids;
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to load connections (${e.status})` : 'Failed to load connections';
 		} finally {
@@ -185,13 +214,30 @@
 		<div class="error">{error}</div>
 	{/if}
 
-	{#if !loading && connections.length > 0}
-		<SearchBar
-			keys={searchKeys}
-			bind:value={search}
-			placeholder="Search by provider or account — try provider = google or account ~ work"
-			onchange={(next) => (search = next)}
-		/>
+	{#if !loading && (connections.length > 0 || isAdmin)}
+		<div class="filters">
+			<SearchBar
+				keys={searchKeys}
+				bind:value={search}
+				placeholder="Search by provider or account — try provider = google or account ~ work"
+				onchange={(next) => (search = next)}
+			/>
+			{#if isAdmin}
+				<label class="admin-toggle" for="show-all-users">
+					<ToggleSwitch
+						id="show-all-users"
+						checked={showAllUsers}
+						onchange={(next) => {
+							showAllUsers = next;
+							void load();
+						}}
+						size="sm"
+						label="Show all users' connections"
+					/>
+					<span>Show all users' connections</span>
+				</label>
+			{/if}
+		</div>
 	{/if}
 
 	{#if loading}
@@ -213,6 +259,9 @@
 					<tr>
 						<SortableHeader label="Provider" column="provider" active={sortKey} dir={sortDir} onsort={sortBy} />
 						<SortableHeader label="Account" column="account" active={sortKey} dir={sortDir} onsort={sortBy} />
+						{#if showAllUsers}
+							<SortableHeader label="Owner" column="owner" active={sortKey} dir={sortDir} onsort={sortBy} />
+						{/if}
 						<SortableHeader label="Scopes" column="scopes" active={sortKey} dir={sortDir} onsort={sortBy} />
 						<SortableHeader label="Default" column="default" active={sortKey} dir={sortDir} onsort={sortBy} />
 						<SortableHeader label="Used by" column="usedby" active={sortKey} dir={sortDir} onsort={sortBy} align="right" />
@@ -224,6 +273,7 @@
 					{#each sorted as c (c.id)}
 						<tr
 							class:is-new={c.id === highlightId}
+							class:show-owner={showAllUsers}
 							class="clickable"
 							onclick={() => openDetail(c.id)}
 						>
@@ -236,6 +286,12 @@
 							<td data-label="Account">
 								<span class="account mono">{c.account_email ?? '—'}</span>
 							</td>
+							{#if showAllUsers}
+								<td data-label="Owner" class="owner-cell muted" title={c.owner_identity_id}>
+									<span class="card-label">Owner</span>
+									<span>{ownerLabel(c)}</span>
+								</td>
+							{/if}
 							<td data-label="Scopes">
 								<span class="scopes">
 									{#each c.scopes.slice(0, 2) as s}
@@ -356,6 +412,28 @@
 		padding: 10px 12px;
 		margin-bottom: 16px;
 		font-size: 13px;
+	}
+	.filters {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem;
+	}
+	.filters > :global(:first-child) {
+		flex: 1;
+		min-width: 240px;
+	}
+	.admin-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		font-size: 0.82rem;
+		color: var(--color-text-muted);
+		cursor: pointer;
+		user-select: none;
+	}
+	.owner-cell {
+		white-space: nowrap;
 	}
 	.empty {
 		background: var(--color-surface);
@@ -578,6 +656,16 @@
 			gap: 6px 10px;
 			align-items: center;
 		}
+		tbody tr.show-owner {
+			grid-template-areas:
+				'provider chev'
+				'account  account'
+				'owner    owner'
+				'scopes   scopes'
+				'default  default'
+				'usedby   usedby'
+				'when     when';
+		}
 		tbody tr.clickable:hover td {
 			background: transparent;
 		}
@@ -595,6 +683,10 @@
 		td[data-label='Scopes'] {
 			grid-area: scopes;
 		}
+		td[data-label='Owner'] {
+			grid-area: owner;
+		}
+		.owner-cell,
 		.default-cell,
 		.usedby-cell,
 		.connected-cell {

@@ -139,6 +139,27 @@ pub(crate) async fn get_by_id(
     .await
 }
 
+/// List every connection in an org, across all identities. Powers the
+/// dashboard's admin-only "show all users' connections" view — the per-user
+/// listing lives on `UserScope::list_my_connections`. Ordered newest-first to
+/// match that per-user query.
+pub(crate) async fn list_all_in_org(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Vec<ConnectionRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ConnectionRow,
+        // `scopes AS "scopes?"`: force the nullable override (see `get_by_id`).
+        "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
+                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
+                account_email, byoc_credential_id, is_default, created_at, updated_at
+         FROM connections WHERE org_id = $1 ORDER BY created_at DESC",
+        org_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// Update the access/refresh token for a connection, scoped to its org.
 /// Used by the OAuth refresh path.
 pub(crate) async fn update_tokens(
