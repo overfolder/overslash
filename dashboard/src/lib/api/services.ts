@@ -149,8 +149,15 @@ export const listServiceGroups = (serviceId: string, signal?: AbortSignal) =>
 
 // -- OAuth connections --
 
-export const listConnections = (signal?: AbortSignal) =>
-	session.get<ConnectionSummary[]>('/v1/connections', signal);
+export const listConnections = (
+	opts: { includeUserLevel?: boolean } = {},
+	signal?: AbortSignal
+) => {
+	// `include_user_level=true` (admin-only) lists every user's connections
+	// across the org; silently ignored for non-admins by the backend.
+	const qs = opts.includeUserLevel ? '?include_user_level=true' : '';
+	return session.get<ConnectionSummary[]>(`/v1/connections${qs}`, signal);
+};
 
 export const getConnection = (id: string, signal?: AbortSignal) =>
 	session.get<ConnectionDetail>(`/v1/connections/${id}`, signal);
