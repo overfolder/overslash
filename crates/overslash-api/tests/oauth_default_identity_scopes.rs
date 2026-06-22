@@ -81,7 +81,10 @@ async fn upgrade_scopes_response_includes_provider_identity_scopes() {
 
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+    let (org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+    // Connections live at the owner identity (D22/D23); the calling agent shares
+    // and may upgrade its owner's connection.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
 
     // Seed a google connection that's missing the identity scopes entirely —
     // mirrors the bad state existing emailless rows are in. The upgrade
@@ -98,7 +101,7 @@ async fn upgrade_scopes_response_includes_provider_identity_scopes() {
          RETURNING id",
     )
     .bind(org_id)
-    .bind(ident_id)
+    .bind(owner_id)
     .bind(&access)
     .fetch_one(&pool)
     .await

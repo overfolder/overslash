@@ -346,6 +346,10 @@ async fn emailless_import_does_not_overwrite_differently_pinned_connection() {
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
     let (org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Both the seeded orchestrated row (as the OAuth callback would create it,
+    // at the owner per D22) and the agent's emailless import (D23) land on the
+    // owner identity, so the fallback-match scenario is exercised there.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
 
     // Seed an orchestrated connection (no BYOC pin, NULL email), exactly what the
     // OAuth callback would create when userinfo returns no email.
@@ -355,7 +359,7 @@ async fn emailless_import_does_not_overwrite_differently_pinned_connection() {
     let orchestrated = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
         .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
-            identity_id: ident_id,
+            identity_id: owner_id,
             provider_key: "google",
             encrypted_access_token: &orchestrated_token,
             encrypted_refresh_token: None,
@@ -405,23 +409,17 @@ async fn emailless_import_does_not_overwrite_differently_pinned_connection() {
         "orchestrated connection token must be untouched"
     );
 
-    // Two connections now exist for the provider.
-    let conns: Value = client
-        .get(format!("{base}/v1/connections"))
-        .header(auth_header(&key).0, auth_header(&key).1)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let google = conns
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|c| c["provider_key"] == "google")
-        .count();
-    assert_eq!(google, 2, "expected orchestrated + imported, got: {conns}");
+    // Two connections now exist for the provider on the owner.
+    let google = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM connections
+         WHERE org_id = $1 AND identity_id = $2 AND provider_key = 'google'",
+    )
+    .bind(org_id)
+    .bind(owner_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(google, 2, "expected orchestrated + imported on the owner");
 }
 
 /// `access_token` is required; an unknown provider 404s. Both checks fire before
@@ -463,6 +461,8 @@ async fn reimport_without_expiry_preserves_existing_expiry() {
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
     let (org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Imports bind to the owner identity (D23), so the stored row lands there.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
 
     let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
 
@@ -486,7 +486,7 @@ async fn reimport_without_expiry_preserves_existing_expiry() {
          WHERE org_id = $1 AND identity_id = $2 AND provider_key = 'google'",
     )
     .bind(org_id)
-    .bind(ident_id)
+    .bind(owner_id)
     .fetch_one(&pool)
     .await
     .unwrap()
@@ -511,7 +511,7 @@ async fn reimport_without_expiry_preserves_existing_expiry() {
          WHERE org_id = $1 AND identity_id = $2 AND provider_key = 'google'",
     )
     .bind(org_id)
-    .bind(ident_id)
+    .bind(owner_id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -577,7 +577,9 @@ async fn reimport_is_idempotent_per_account() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (_org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Imports bind to the owner identity (D23); count rows there, not on the agent.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
 
     let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
 
@@ -639,27 +641,17 @@ async fn reimport_is_idempotent_per_account() {
         "distinct email → distinct connection"
     );
 
-    // The list shows exactly the two connections (no duplicate from re-import).
-    let conns: Value = client
-        .get(format!("{base}/v1/connections"))
-        .header(auth_header(&key).0, auth_header(&key).1)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let google: Vec<&Value> = conns
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|c| c["provider_key"] == "google")
-        .collect();
-    assert_eq!(
-        google.len(),
-        2,
-        "expected 2 google connections, got: {conns}"
-    );
+    // The owner holds exactly the two connections (no duplicate from re-import).
+    let google = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM connections
+         WHERE org_id = $1 AND identity_id = $2 AND provider_key = 'google'",
+    )
+    .bind(org_id)
+    .bind(owner_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(google, 2, "expected 2 google connections on the owner");
 }
 
 /// `expires_in` resolves to an absolute future expiry; `expires_at` is taken
@@ -670,6 +662,8 @@ async fn import_resolves_expiry_fields() {
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
     let (org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Imports bind to the owner identity (D23), so the stored rows land there.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
 
     let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
 
@@ -712,7 +706,7 @@ async fn import_resolves_expiry_fields() {
          ORDER BY account_email",
     )
     .bind(org_id)
-    .bind(ident_id)
+    .bind(owner_id)
     .fetch_all(&pool)
     .await
     .unwrap();
@@ -774,4 +768,50 @@ async fn import_on_behalf_of_binds_to_user() {
         "connection must bind to the owner user, not the agent"
     );
     assert_ne!(owner, agent_id);
+}
+
+/// An agent importing **without** `on_behalf_of` still binds the connection to
+/// its owner user by default (ceiling root). This is the storage complement to
+/// D22: the write path lands on the owner so the read path can resolve it, and
+/// connections stop accreting on agent identities.
+#[tokio::test]
+async fn import_without_on_behalf_of_binds_to_owner() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_id, agent_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    let user_id = common::owner_user_id(&pool, org_id).await;
+    let byoc_id = register_byoc(&client, &base, &key, agent_id).await;
+
+    let (status, body) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "shared-tok",
+            "byoc_credential_id": byoc_id,
+            "account_email": "shared@example.com",
+            // No `on_behalf_of` — the agent imports for itself, but the
+            // connection must still land on the owner.
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "import should succeed: {body}");
+    let connection_id: Uuid = body["connection_id"].as_str().unwrap().parse().unwrap();
+
+    let owner = sqlx::query_scalar::<_, Uuid>("SELECT identity_id FROM connections WHERE id = $1")
+        .bind(connection_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        owner, user_id,
+        "connection must bind to the owner user even without on_behalf_of"
+    );
+    assert_ne!(
+        owner, agent_id,
+        "connection must NOT accrete on the calling agent (the reported bug)"
+    );
 }

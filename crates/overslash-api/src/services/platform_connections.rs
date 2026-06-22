@@ -213,13 +213,15 @@ pub async fn kernel_create_connection(
 
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
 
-    // If on_behalf_of is set, validate it walks the agent's owner chain and
-    // bind the resulting connection to the user instead of the calling agent.
-    let identity_id = if let Some(target) = input.on_behalf_of {
-        group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target).await?
-    } else {
-        caller_identity_id
-    };
+    // OAuth connections bind to the OWNER identity (ceiling root) so every agent
+    // under a user shares one connection and a single reauth heals them all (D22).
+    // on_behalf_of, when given, must still name that owner — validate it for a
+    // precise 403 — but the binding is the owner either way. Audit stays on the
+    // caller (passed separately into kernel_create_connection_for_identity below).
+    if let Some(target) = input.on_behalf_of {
+        group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target).await?;
+    }
+    let identity_id = group_ceiling::resolve_ceiling_user_id(&scope, caller_identity_id).await?;
 
     kernel_create_connection_for_identity(ctx, identity_id, caller_identity_id, input, request_meta)
         .await
@@ -235,7 +237,7 @@ pub async fn kernel_create_connection(
 ///   - `mint_upgrade_auth_url`'s group-granted cross-user branch, which
 ///     authorises the call via `caller_has_group_access_to_connection`
 ///     instead of the on_behalf_of ceiling check.
-async fn kernel_create_connection_for_identity(
+pub(crate) async fn kernel_create_connection_for_identity(
     ctx: PlatformCallContext,
     identity_id: Uuid,
     caller_identity_id: Uuid,
@@ -484,11 +486,14 @@ pub async fn kernel_import_connection(
     }
 
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
-    let identity_id = if let Some(target) = input.on_behalf_of {
-        group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target).await?
-    } else {
-        caller_identity_id
-    };
+    // Bind imported connections to the OWNER identity (ceiling root), same as the
+    // orchestrated create path, so every agent under a user shares one connection
+    // (D22). on_behalf_of, when given, must still name that owner; audit below is
+    // attributed to caller_identity_id.
+    if let Some(target) = input.on_behalf_of {
+        group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target).await?;
+    }
+    let identity_id = group_ceiling::resolve_ceiling_user_id(&scope, caller_identity_id).await?;
 
     let provider = overslash_db::repos::oauth_provider::get_by_key(&ctx.db, &input.provider)
         .await?
@@ -800,8 +805,13 @@ pub async fn mint_upgrade_auth_url(
     // tokens/scopes. So whichever identity owns the flow row, the
     // connection's owner is unchanged after the dance. Two cases to handle:
     //
-    // (1) Same-identity caller. Nothing to validate; the existing kernel
-    //     handles it directly.
+    // (1) Same-identity caller. Bind the flow to the connection's own identity
+    //     directly — an upgrade MUST mint at `existing.identity_id` (the
+    //     callback rejects a flow whose identity differs). We can't route this
+    //     through `kernel_create_connection`, which re-homes fresh connections
+    //     to the caller's ceiling owner (D23): for a legacy agent-owned row
+    //     that would mint at the owner and trip the callback's state-mismatch
+    //     guard.
     //
     // (2) Cross-identity caller. Either an agent acting for its owner user
     //     (handled by `on_behalf_of` + `validate_on_behalf_of`), or user A
@@ -813,8 +823,10 @@ pub async fn mint_upgrade_auth_url(
     //     accepts at call time.
     if conn.identity_id == caller_identity_id {
         let ctx = ctx_from_state(state, org_id, Some(caller_identity_id));
-        let response = kernel_create_connection(
+        let response = kernel_create_connection_for_identity(
             ctx,
+            conn.identity_id,
+            caller_identity_id,
             CreateConnectionInput {
                 provider: conn.provider_key.clone(),
                 scopes,
