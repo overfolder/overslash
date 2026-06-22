@@ -60,6 +60,16 @@ async fn test_gmail_e2e() {
 
     // Bootstrap org + identity + API key
     let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Connections resolve at the owner identity (D22): seed the agent's primary
+    // connection on its owner user so the agent's auto-resolved calls find it.
+    // (The compose-only sub-identity below is a standalone user — its own owner.)
+    let owner_id = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_identity(ident_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .owner_id
+        .unwrap();
 
     // Store BYOC credential via API
     let byoc_resp: Value = client
@@ -110,7 +120,7 @@ async fn test_gmail_e2e() {
     let _conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
         .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
-            identity_id: ident_id,
+            identity_id: owner_id,
             provider_key: "google",
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: Some(&encrypted_refresh),

@@ -139,7 +139,13 @@ async fn reauth_mint_stamps_allow_listed_return_url_and_callback_redirects() {
     let (org_id, ident_id, api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, ident_id, "x").await;
+    let connection_id = seed_connection_no_refresh_expired(
+        &pool,
+        org_id,
+        common::owner_user_id(&pool, org_id).await,
+        "x",
+    )
+    .await;
     seed_x_service(&base, &client, &admin_key, ident_id).await;
 
     let resp = client
@@ -207,7 +213,13 @@ async fn reauth_mint_without_return_url_leaves_flow_row_null() {
     let (org_id, ident_id, api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    seed_connection_no_refresh_expired(&pool, org_id, ident_id, "x").await;
+    seed_connection_no_refresh_expired(
+        &pool,
+        org_id,
+        common::owner_user_id(&pool, org_id).await,
+        "x",
+    )
+    .await;
     seed_x_service(&base, &client, &admin_key, ident_id).await;
 
     let resp = client
@@ -232,7 +244,13 @@ async fn action_call_rejects_malformed_return_url() {
     let (org_id, ident_id, api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    seed_connection_no_refresh_expired(&pool, org_id, ident_id, "x").await;
+    seed_connection_no_refresh_expired(
+        &pool,
+        org_id,
+        common::owner_user_id(&pool, org_id).await,
+        "x",
+    )
+    .await;
     seed_x_service(&base, &client, &admin_key, ident_id).await;
 
     let resp = client

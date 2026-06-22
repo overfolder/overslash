@@ -306,6 +306,15 @@ async fn test_x_real_e2e() {
     // Start API with real service registry (no host override — hits real X)
     let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
     let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Connections resolve at the owner identity (D22): seed on the agent's owner
+    // user so the agent's auto-resolved action calls find the connection.
+    let owner_id = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_identity(ident_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .owner_id
+        .unwrap();
 
     // Store BYOC credential via API
     let byoc_resp: Value = client
@@ -363,7 +372,7 @@ async fn test_x_real_e2e() {
     let _conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
         .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
-            identity_id: ident_id,
+            identity_id: owner_id,
             provider_key: "x",
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: encrypted_refresh.as_deref(),

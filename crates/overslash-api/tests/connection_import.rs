@@ -86,7 +86,12 @@ async fn import_injects_token_verbatim() {
 
     let (base, client) =
         common::start_api_with_registry(pool.clone(), Some(("google_calendar", mock_host))).await;
-    let (_org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Connections resolve at the owner identity (D22), so the agent must import
+    // its shared connection `on_behalf_of` its owner user — exactly how a
+    // white-label partner (Overfolder) binds connections — for the agent's own
+    // action call below to resolve it.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
 
     for pattern in ["http:**", "google_calendar:*:*"] {
         client
@@ -112,7 +117,8 @@ async fn import_injects_token_verbatim() {
             "byoc_credential_id": byoc_id,
             "scopes": [CAL_SCOPE],
             "account_email": "partner-user@example.com",
-            "expires_in": 3600
+            "expires_in": 3600,
+            "on_behalf_of": owner_id,
         }),
     )
     .await;
@@ -158,7 +164,12 @@ async fn import_without_scopes_gets_benefit_of_the_doubt() {
 
     let (base, client) =
         common::start_api_with_registry(pool.clone(), Some(("google_calendar", mock_host))).await;
-    let (_org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Connections resolve at the owner identity (D22), so the agent must import
+    // its shared connection `on_behalf_of` its owner user — exactly how a
+    // white-label partner (Overfolder) binds connections — for the agent's own
+    // action call below to resolve it.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
 
     for pattern in ["http:**", "google_calendar:*:*"] {
         client
@@ -182,7 +193,8 @@ async fn import_without_scopes_gets_benefit_of_the_doubt() {
             "provider": "google",
             "access_token": "vault-token",
             "byoc_credential_id": byoc_id,
-            "account_email": "unknown-scopes@example.com"
+            "account_email": "unknown-scopes@example.com",
+            "on_behalf_of": owner_id,
         }),
     )
     .await;
@@ -730,13 +742,7 @@ async fn import_on_behalf_of_binds_to_user() {
     let (org_id, agent_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
 
     // `bootstrap_org_identity` makes the agent a child of a "test-user".
-    let user_id = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM identities WHERE org_id = $1 AND kind = 'user' AND name = 'test-user'",
-    )
-    .bind(org_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let user_id = common::owner_user_id(&pool, org_id).await;
 
     // The pinned BYOC resolve is org-scoped, so a credential registered on the
     // agent resolves for the on-behalf-of import landing on the user.
