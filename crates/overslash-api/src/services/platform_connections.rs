@@ -213,13 +213,15 @@ pub async fn kernel_create_connection(
 
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
 
-    // If on_behalf_of is set, validate it walks the agent's owner chain and
-    // bind the resulting connection to the user instead of the calling agent.
-    let identity_id = if let Some(target) = input.on_behalf_of {
-        group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target).await?
-    } else {
-        caller_identity_id
-    };
+    // OAuth connections bind to the OWNER identity (ceiling root) so every agent
+    // under a user shares one connection and a single reauth heals them all (D22).
+    // on_behalf_of, when given, must still name that owner — validate it for a
+    // precise 403 — but the binding is the owner either way. Audit stays on the
+    // caller (passed separately into kernel_create_connection_for_identity below).
+    if let Some(target) = input.on_behalf_of {
+        group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target).await?;
+    }
+    let identity_id = group_ceiling::resolve_ceiling_user_id(&scope, caller_identity_id).await?;
 
     kernel_create_connection_for_identity(ctx, identity_id, caller_identity_id, input, request_meta)
         .await
@@ -484,11 +486,14 @@ pub async fn kernel_import_connection(
     }
 
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
-    let identity_id = if let Some(target) = input.on_behalf_of {
-        group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target).await?
-    } else {
-        caller_identity_id
-    };
+    // Bind imported connections to the OWNER identity (ceiling root), same as the
+    // orchestrated create path, so every agent under a user shares one connection
+    // (D22). on_behalf_of, when given, must still name that owner; audit below is
+    // attributed to caller_identity_id.
+    if let Some(target) = input.on_behalf_of {
+        group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target).await?;
+    }
+    let identity_id = group_ceiling::resolve_ceiling_user_id(&scope, caller_identity_id).await?;
 
     let provider = overslash_db::repos::oauth_provider::get_by_key(&ctx.db, &input.provider)
         .await?

@@ -204,8 +204,11 @@ async fn upgrade_scopes_returns_auth_url_with_union_scopes() {
     let pool = common::test_pool().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, ident_id, api_key, _admin_key) =
+    let (org_id, _ident_id, api_key, _admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
+    // Connections live at the owner identity (D22/D23); the calling agent shares
+    // its owner's connection and may upgrade it.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
 
     // Seed env creds so the credential cascade (tier 3) resolves — the
     // upgrade handler pulls creds the same way the initiate path does.
@@ -218,7 +221,7 @@ async fn upgrade_scopes_returns_auth_url_with_union_scopes() {
     let conn_id = seed_connection(
         &pool,
         org_id,
-        ident_id,
+        owner_id,
         "google",
         &["openid", "email"],
         Some("alice@example.com"),
@@ -272,7 +275,9 @@ async fn upgrade_scopes_returns_auth_url_with_union_scopes() {
         .expect("upgrade flow row should exist");
     assert_eq!(flow.upgrade_connection_id, Some(conn_id));
     assert_eq!(flow.provider_key, "google");
-    assert_eq!(flow.identity_id, ident_id);
+    // The upgrade flow binds to the owner (where the connection lives), not the
+    // calling agent.
+    assert_eq!(flow.identity_id, owner_id);
     assert!(
         flow.upstream_authorize_url
             .contains("include_granted_scopes=true")

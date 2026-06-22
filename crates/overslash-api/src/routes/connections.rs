@@ -1114,7 +1114,15 @@ async fn upgrade_connection_scopes(
         .await?
         .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
 
-    if existing.identity_id != caller_identity_id {
+    // Connections live at the owner identity (D22/D23) and are shared by every
+    // agent under it, so the caller may upgrade a connection held by its own
+    // ceiling user (self for a user, owner_id for an agent) — but not one owned
+    // by an unrelated identity. The upgrade's internal create re-resolves to the
+    // same owner, so the flow lands on the owner's connection.
+    let ceiling =
+        crate::services::group_ceiling::resolve_ceiling_user_id(&org_scope, caller_identity_id)
+            .await?;
+    if existing.identity_id != ceiling {
         return Err(AppError::Forbidden(
             "connection belongs to another identity".into(),
         ));
