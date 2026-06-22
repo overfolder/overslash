@@ -401,6 +401,70 @@ async fn upgrade_scopes_rejects_cross_identity_attempts() {
     assert_eq!(resp.status(), 403);
 }
 
+/// Regression: an agent upgrading a *legacy agent-owned* connection (one that
+/// predates migration 086, so `identity_id` still points at the agent) must mint
+/// the flow at the agent — matching the existing row — so the OAuth callback's
+/// `existing.identity_id == flow.identity_id` guard doesn't trip a "state
+/// mismatch". The upgrade must NOT re-home the flow to the agent's owner (D23
+/// owner-binding applies to fresh connections, not in-place upgrades).
+#[tokio::test]
+async fn upgrade_scopes_heals_legacy_agent_owned_connection() {
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, agent_id, api_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    assert_ne!(
+        agent_id, owner_id,
+        "fixture must give an agent under a user"
+    );
+
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var("OAUTH_GOOGLE_CLIENT_ID", "g_client");
+        std::env::set_var("OAUTH_GOOGLE_CLIENT_SECRET", "g_secret");
+    }
+
+    // Seed the connection on the AGENT itself (the pre-086 shape).
+    let conn_id = seed_connection(
+        &pool,
+        org_id,
+        agent_id,
+        "google",
+        &["openid", "email"],
+        None,
+    )
+    .await;
+
+    let resp = client
+        .post(format!("{base}/v1/connections/{conn_id}/upgrade_scopes"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "scopes": ["https://www.googleapis.com/auth/drive.readonly"] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "agent must be able to upgrade its own legacy connection"
+    );
+    let body: Value = resp.json().await.unwrap();
+    let state = body["state"].as_str().unwrap();
+
+    // The minted flow must be keyed to the agent (the connection's identity),
+    // not the owner — otherwise the callback would reject the upgrade.
+    let flow = overslash_db::repos::oauth_connection_flow::get_by_id(&pool, state)
+        .await
+        .unwrap()
+        .expect("upgrade flow row should exist");
+    assert_eq!(flow.upgrade_connection_id, Some(conn_id));
+    assert_eq!(
+        flow.identity_id, agent_id,
+        "upgrade flow must mint at the connection's own identity, not the ceiling owner",
+    );
+}
+
 // ── connection detail (GET /v1/connections/{id}) ────────────────────────────
 
 /// Helper: register a google-backed template under `key` and create an active

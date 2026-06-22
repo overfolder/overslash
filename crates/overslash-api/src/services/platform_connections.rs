@@ -237,7 +237,7 @@ pub async fn kernel_create_connection(
 ///   - `mint_upgrade_auth_url`'s group-granted cross-user branch, which
 ///     authorises the call via `caller_has_group_access_to_connection`
 ///     instead of the on_behalf_of ceiling check.
-async fn kernel_create_connection_for_identity(
+pub(crate) async fn kernel_create_connection_for_identity(
     ctx: PlatformCallContext,
     identity_id: Uuid,
     caller_identity_id: Uuid,
@@ -805,8 +805,13 @@ pub async fn mint_upgrade_auth_url(
     // tokens/scopes. So whichever identity owns the flow row, the
     // connection's owner is unchanged after the dance. Two cases to handle:
     //
-    // (1) Same-identity caller. Nothing to validate; the existing kernel
-    //     handles it directly.
+    // (1) Same-identity caller. Bind the flow to the connection's own identity
+    //     directly — an upgrade MUST mint at `existing.identity_id` (the
+    //     callback rejects a flow whose identity differs). We can't route this
+    //     through `kernel_create_connection`, which re-homes fresh connections
+    //     to the caller's ceiling owner (D23): for a legacy agent-owned row
+    //     that would mint at the owner and trip the callback's state-mismatch
+    //     guard.
     //
     // (2) Cross-identity caller. Either an agent acting for its owner user
     //     (handled by `on_behalf_of` + `validate_on_behalf_of`), or user A
@@ -818,8 +823,10 @@ pub async fn mint_upgrade_auth_url(
     //     accepts at call time.
     if conn.identity_id == caller_identity_id {
         let ctx = ctx_from_state(state, org_id, Some(caller_identity_id));
-        let response = kernel_create_connection(
+        let response = kernel_create_connection_for_identity(
             ctx,
+            conn.identity_id,
+            caller_identity_id,
             CreateConnectionInput {
                 provider: conn.provider_key.clone(),
                 scopes,

@@ -29,7 +29,7 @@ use crate::{
         platform_caller::PlatformCallContext,
         platform_connections::{
             CreateConnectionInput, CreateConnectionResponse, RequestMeta, kernel_create_connection,
-            merge_scopes,
+            kernel_create_connection_for_identity, merge_scopes,
         },
     },
 };
@@ -1115,14 +1115,14 @@ async fn upgrade_connection_scopes(
         .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
 
     // Connections live at the owner identity (D22/D23) and are shared by every
-    // agent under it, so the caller may upgrade a connection held by its own
-    // ceiling user (self for a user, owner_id for an agent) — but not one owned
-    // by an unrelated identity. The upgrade's internal create re-resolves to the
-    // same owner, so the flow lands on the owner's connection.
+    // agent under it, so the caller may upgrade a connection held by itself or
+    // by its own ceiling user (its `owner_id`) — but not one owned by an
+    // unrelated identity. Accept a legacy agent-owned row (`== caller`) too: the
+    // flow is minted at `existing.identity_id` below, so it heals either way.
     let ceiling =
         crate::services::group_ceiling::resolve_ceiling_user_id(&org_scope, caller_identity_id)
             .await?;
-    if existing.identity_id != ceiling {
+    if existing.identity_id != caller_identity_id && existing.identity_id != ceiling {
         return Err(AppError::Forbidden(
             "connection belongs to another identity".into(),
         ));
@@ -1171,8 +1171,14 @@ async fn upgrade_connection_scopes(
         config: state.config.clone(),
         http_client: state.http_client.clone(),
     };
-    let response = kernel_create_connection(
+    // Mint the upgrade flow at the connection's own identity — the callback
+    // rejects a flow whose identity differs from the row it upgrades. Going
+    // through `kernel_create_connection` would re-home to the caller's ceiling
+    // (D23) and break the upgrade of a legacy agent-owned connection.
+    let response = kernel_create_connection_for_identity(
         ctx,
+        existing.identity_id,
+        caller_identity_id,
         CreateConnectionInput {
             provider: existing.provider_key.clone(),
             scopes: merged.clone(),
