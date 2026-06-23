@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_core::permissions::AccessLevel;
-use overslash_core::types::{McpAuth, Runtime, ServiceAuth, ServiceDefinition};
+use overslash_core::types::{McpAuth, Runtime, ServiceAction, ServiceAuth, ServiceDefinition};
 use overslash_db::repos::group::ServiceGroupRow;
 use overslash_db::repos::service_instance::{
     CreateServiceInstance, ServiceInstanceRow, UpdateServiceInstance,
@@ -798,7 +798,7 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
 /// Returns `None` for templates that don't declare an OAuth auth (api-key
 /// only, MCP bearer only, no auth, etc.) — in which case the auto-connect
 /// orchestration in `kernel_create_service` is a no-op.
-fn template_oauth_provider(def: &ServiceDefinition) -> Option<&str> {
+pub(crate) fn template_oauth_provider(def: &ServiceDefinition) -> Option<&str> {
     def.auth.iter().find_map(|a| match a {
         ServiceAuth::OAuth { provider, .. } => Some(provider.as_str()),
         _ => None,
@@ -910,7 +910,7 @@ pub async fn compute_credentials_status(
 /// both on the dashboard badge and on the agent-facing `service_status`.
 /// Returns `None` when no connection backs the instance, `Some(None)` when one
 /// does but its scopes are unknown, and `Some(Some(scopes))` for a known set.
-async fn resolve_effective_scopes(
+pub(crate) async fn resolve_effective_scopes(
     db: &sqlx::PgPool,
     scope: &OrgScope,
     template: &ServiceDefinition,
@@ -956,6 +956,55 @@ fn scope_knowledge(scopes: Option<&[String]>) -> ScopeKnowledge<'_> {
     match scopes {
         Some(s) => ScopeKnowledge::Known(s),
         None => ScopeKnowledge::Unknown,
+    }
+}
+
+/// Per-action scope coverage, surfaced at discovery time so an agent can see
+/// an action is uncovered *before* calling it (instead of after a raw upstream
+/// 403). Mirrors the call-time gate in `routes/actions/auth.rs`.
+#[derive(Serialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeCoverage {
+    /// Every required scope is granted (or the action declares none).
+    Covered,
+    /// At least one required scope is missing — calling it will 403.
+    NeedsReconnect,
+    /// A connection exists but its granted scopes weren't recorded — same
+    /// benefit-of-the-doubt the call-time gate gives, surfaced honestly.
+    Unknown,
+}
+
+/// Coverage of a single action's `required_scopes` against the connection's
+/// scope knowledge, plus the missing-scope delta (empty unless
+/// [`ScopeCoverage::NeedsReconnect`]). Shared by [`derive_credentials_status`]
+/// and the discovery endpoints (`search`, `list_service_actions`) so the
+/// classification stays identical at discovery time and call time.
+pub fn action_scope_coverage(
+    action: &ServiceAction,
+    scopes: ScopeKnowledge<'_>,
+) -> (ScopeCoverage, Vec<String>) {
+    if action.required_scopes.is_empty() {
+        return (ScopeCoverage::Covered, Vec::new());
+    }
+    let granted = match scopes {
+        ScopeKnowledge::Known(list) => list,
+        // No bound connection, or one whose scopes weren't recorded: we can't
+        // prove a gap, so don't cry wolf — report Unknown.
+        ScopeKnowledge::NoConnection | ScopeKnowledge::Unknown => {
+            return (ScopeCoverage::Unknown, Vec::new());
+        }
+    };
+    let granted_set: HashSet<&str> = granted.iter().map(String::as_str).collect();
+    let missing: Vec<String> = action
+        .required_scopes
+        .iter()
+        .filter(|s| !granted_set.contains(s.as_str()))
+        .cloned()
+        .collect();
+    if missing.is_empty() {
+        (ScopeCoverage::Covered, Vec::new())
+    } else {
+        (ScopeCoverage::NeedsReconnect, missing)
     }
 }
 
@@ -1014,24 +1063,14 @@ pub fn derive_credentials_status(
         return None;
     }
 
-    let granted: std::collections::HashSet<&str> =
-        granted_list.iter().map(String::as_str).collect();
-
     let mut any_ok = false;
     let mut any_gap = false;
     for action in template.actions.values() {
-        if action.required_scopes.is_empty() {
-            any_ok = true;
-            continue;
-        }
-        let covered = action
-            .required_scopes
-            .iter()
-            .all(|s| granted.contains(s.as_str()));
-        if covered {
-            any_ok = true;
-        } else {
-            any_gap = true;
+        match action_scope_coverage(action, ScopeKnowledge::Known(granted_list)).0 {
+            ScopeCoverage::Covered => any_ok = true,
+            ScopeCoverage::NeedsReconnect => any_gap = true,
+            // Known scopes never yield Unknown.
+            ScopeCoverage::Unknown => {}
         }
     }
 
@@ -1253,5 +1292,51 @@ mod tests {
             derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, Some("my_api_key")),
             Some(CredentialsStatus::Ok)
         );
+    }
+
+    fn scoped_action(required: &[&str]) -> ServiceAction {
+        let tpl = oauth_template(vec![("a", required.to_vec())]);
+        tpl.actions.get("a").unwrap().clone()
+    }
+
+    #[test]
+    fn coverage_covered_when_all_required_granted() {
+        let action = scoped_action(&["s1", "s2"]);
+        let granted = scopes(&["s1", "s2", "s3"]);
+        let (cov, missing) = action_scope_coverage(&action, ScopeKnowledge::Known(&granted));
+        assert_eq!(cov, ScopeCoverage::Covered);
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn coverage_needs_reconnect_lists_only_missing() {
+        let action = scoped_action(&["s1", "s2"]);
+        let granted = scopes(&["s1"]);
+        let (cov, missing) = action_scope_coverage(&action, ScopeKnowledge::Known(&granted));
+        assert_eq!(cov, ScopeCoverage::NeedsReconnect);
+        assert_eq!(missing, vec!["s2".to_string()]);
+    }
+
+    #[test]
+    fn coverage_unknown_for_unrecorded_or_absent_connection() {
+        let action = scoped_action(&["s1"]);
+        assert_eq!(
+            action_scope_coverage(&action, ScopeKnowledge::Unknown).0,
+            ScopeCoverage::Unknown
+        );
+        assert_eq!(
+            action_scope_coverage(&action, ScopeKnowledge::NoConnection).0,
+            ScopeCoverage::Unknown
+        );
+    }
+
+    #[test]
+    fn coverage_covered_when_action_requires_no_scopes() {
+        let action = scoped_action(&[]);
+        // Even with an unrecorded grant, an action that declares no scopes is
+        // always covered.
+        let (cov, missing) = action_scope_coverage(&action, ScopeKnowledge::Unknown);
+        assert_eq!(cov, ScopeCoverage::Covered);
+        assert!(missing.is_empty());
     }
 }

@@ -19,6 +19,7 @@ use overslash_core::template_validation::{
 };
 use overslash_core::types::{ActionParam, Risk, ServiceDefinition};
 
+use crate::services::platform_services::{ScopeCoverage, ScopeKnowledge, action_scope_coverage};
 use crate::services::platform_templates::{
     self, MAX_TEMPLATE_YAML_BYTES, delete_active_template_inner, kernel_import_template,
     load_draft_for_write_inner,
@@ -212,6 +213,15 @@ pub(crate) struct ActionSummary {
     /// `/v1/actions/call` rejects invocation at resolve time.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     disabled: bool,
+    /// Per-action OAuth scope coverage against the bound connection's granted
+    /// scopes. Only populated when listing actions *for a configured instance*
+    /// (`list_service_actions`) and the action declares scopes; absent on the
+    /// bare template-key listing. `needs_reconnect` means calling it will 403.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope_coverage: Option<ScopeCoverage>,
+    /// Missing-scope delta when `scope_coverage == needs_reconnect`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    missing_scopes: Vec<String>,
 }
 
 /// Full action details including the parameter schema — used by the API
@@ -300,18 +310,48 @@ fn template_required_scopes(def: &ServiceDefinition) -> Vec<String> {
 }
 
 fn actions_from_definition(def: &ServiceDefinition) -> Vec<ActionSummary> {
+    actions_from_definition_inner(def, None)
+}
+
+/// Like [`actions_from_definition`] but annotates each scope-bearing action with
+/// its coverage against a configured instance's bound connection. Used by
+/// `list_service_actions` so an agent sees `needs_reconnect` at discovery time.
+pub(crate) fn actions_from_definition_with_coverage(
+    def: &ServiceDefinition,
+    scopes: ScopeKnowledge<'_>,
+) -> Vec<ActionSummary> {
+    actions_from_definition_inner(def, Some(scopes))
+}
+
+fn actions_from_definition_inner(
+    def: &ServiceDefinition,
+    scopes: Option<ScopeKnowledge<'_>>,
+) -> Vec<ActionSummary> {
     let mut out: Vec<ActionSummary> = def
         .actions
         .iter()
-        .map(|(k, a)| ActionSummary {
-            key: k.clone(),
-            method: a.method.clone(),
-            path: a.path.clone(),
-            description: a.description.clone(),
-            risk: a.risk,
-            mcp_tool: a.mcp_tool.clone(),
-            output_schema: a.output_schema.clone(),
-            disabled: a.disabled,
+        .map(|(k, a)| {
+            // Only scope-bearing (OAuth) actions get a coverage annotation, and
+            // only when resolving for a concrete instance.
+            let (scope_coverage, missing_scopes) = match scopes {
+                Some(knowledge) if !a.required_scopes.is_empty() => {
+                    let (c, m) = action_scope_coverage(a, knowledge);
+                    (Some(c), m)
+                }
+                _ => (None, Vec::new()),
+            };
+            ActionSummary {
+                key: k.clone(),
+                method: a.method.clone(),
+                path: a.path.clone(),
+                description: a.description.clone(),
+                risk: a.risk,
+                mcp_tool: a.mcp_tool.clone(),
+                output_schema: a.output_schema.clone(),
+                disabled: a.disabled,
+                scope_coverage,
+                missing_scopes,
+            }
         })
         .collect();
     out.sort_by(|a, b| a.key.cmp(&b.key));

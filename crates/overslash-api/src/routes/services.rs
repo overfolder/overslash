@@ -16,8 +16,8 @@ use crate::{
         group_ceiling,
         platform_caller::PlatformCallContext,
         platform_services::{
-            self, CreateServiceInput, GetServiceInput, ServiceGroupRef, ServiceInstanceDetail,
-            ServiceInstanceSummary, UpdateServiceInput,
+            self, CreateServiceInput, GetServiceInput, ScopeKnowledge, ServiceGroupRef,
+            ServiceInstanceDetail, ServiceInstanceSummary, UpdateServiceInput,
         },
     },
 };
@@ -373,7 +373,27 @@ async fn list_service_actions(
     }
     .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
 
-    super::templates::resolve_template_actions(&state, &ext, &auth, &instance.template_key)
-        .await
-        .map(Json)
+    // Resolve the same template + connection the exec path would use, then
+    // annotate each scope-bearing action with its coverage so the agent sees
+    // `needs_reconnect` here instead of after a 403.
+    let def = super::templates::resolve_template_definition(
+        &state,
+        &ext,
+        instance.org_id,
+        instance.owner_identity_id,
+        &instance.template_key,
+    )
+    .await?;
+    let effective =
+        platform_services::resolve_effective_scopes(state.db(&ext), &scope, &def, &instance).await;
+    let knowledge = match effective.as_ref() {
+        None => ScopeKnowledge::NoConnection,
+        Some(opt) => match opt.as_deref() {
+            Some(s) => ScopeKnowledge::Known(s),
+            None => ScopeKnowledge::Unknown,
+        },
+    };
+    Ok(Json(
+        super::templates::actions_from_definition_with_coverage(&def, knowledge),
+    ))
 }
