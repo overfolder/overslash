@@ -24,13 +24,16 @@ use uuid::Uuid;
 use overslash_core::search::{Candidate, MIN_SCORE, apply_post_bonuses, keyword_fuzzy_score};
 use overslash_core::types::{Risk, ServiceAuth, ServiceDefinition};
 use overslash_db::repos::{org as org_repo, service_action_embedding, service_template};
-use overslash_db::scopes::OrgScope;
+use overslash_db::scopes::{OrgScope, UserScope};
 
 use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AuthContext, ReqExt},
     services::group_ceiling,
+    services::platform_services::{
+        ScopeCoverage, ScopeKnowledge, action_scope_coverage, template_oauth_provider,
+    },
 };
 
 /// Weight split when blending keyword+fuzzy with embedding cosine. Biased
@@ -125,6 +128,18 @@ struct SearchResult {
     /// this row becomes callable.
     #[serde(skip_serializing_if = "Option::is_none")]
     setup_required: Option<bool>,
+    /// Per-action OAuth scope coverage for a connected instance:
+    /// `needs_reconnect` when the bound connection's granted scopes don't cover
+    /// this action (calling it will 403 with `missing_scopes`), `unknown` when
+    /// the connection's scopes weren't recorded, `covered` otherwise. Only
+    /// present on action rows of OAuth services whose action declares scopes —
+    /// lets an agent reconnect at discovery time instead of after a failed call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope_coverage: Option<ScopeCoverage>,
+    /// The missing-scope delta when `scope_coverage == needs_reconnect`. Empty
+    /// (and omitted) otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    missing_scopes: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -151,6 +166,40 @@ struct InstanceRow {
     account_email: Option<String>,
     /// Secret-name label for api-key instances (when applicable).
     secret_name: Option<String>,
+    /// Granted-scope knowledge of the connection the exec path would use for
+    /// this instance (explicit binding, else owner-provider auto-resolve),
+    /// resolved the same way `list_services` derives `credentials_status`.
+    /// Drives per-action `scope_coverage`. See [`InstanceScopes`].
+    scopes: InstanceScopes,
+}
+
+/// Owned mirror of [`ScopeKnowledge`] carried per instance from
+/// `collect_visible_templates` into the fan-out loop.
+#[derive(Clone)]
+enum InstanceScopes {
+    /// No connection bound and none auto-resolves.
+    NoConnection,
+    /// A connection exists but its granted scopes weren't recorded.
+    Unknown,
+    /// The known granted scope set (possibly empty).
+    Known(Vec<String>),
+}
+
+impl InstanceScopes {
+    fn from_recorded(scopes: Option<&[String]>) -> Self {
+        match scopes {
+            Some(s) => InstanceScopes::Known(s.to_vec()),
+            None => InstanceScopes::Unknown,
+        }
+    }
+
+    fn knowledge(&self) -> ScopeKnowledge<'_> {
+        match self {
+            InstanceScopes::NoConnection => ScopeKnowledge::NoConnection,
+            InstanceScopes::Unknown => ScopeKnowledge::Unknown,
+            InstanceScopes::Known(v) => ScopeKnowledge::Known(v),
+        }
+    }
 }
 
 async fn search(
@@ -249,6 +298,8 @@ async fn search(
                     auth: build_auth_status(&t.def, false),
                     score: None,
                     setup_required: Some(true),
+                    scope_coverage: None,
+                    missing_scopes: Vec::new(),
                 });
             } else {
                 for inst in connected_instances {
@@ -265,6 +316,10 @@ async fn search(
                         auth: build_auth_status(&t.def, true),
                         score: None,
                         setup_required: None,
+                        // Browse rows are service-level (no action) — coverage is
+                        // per-action, so nothing to annotate here.
+                        scope_coverage: None,
+                        missing_scopes: Vec::new(),
                     });
                 }
             }
@@ -386,12 +441,25 @@ async fn search(
                     auth: auth_status.clone(),
                     score: Some(final_score),
                     setup_required: Some(true),
+                    // Catalog rows have no connection; "needs setup" already
+                    // says it's not callable — don't pile on Unknown coverage.
+                    scope_coverage: None,
+                    missing_scopes: Vec::new(),
                 });
             } else {
                 // Fan-out: one row per (action × instance). Score is the
                 // same across instances of the same (template, action) —
                 // tie-break sort below stabilises by service name.
                 for inst in &connected_instances {
+                    // Per-action coverage, but only for actions that actually
+                    // declare scopes (OAuth-secured). Unscoped/api-key actions
+                    // leave the fields absent.
+                    let (scope_coverage, missing_scopes) = if action.required_scopes.is_empty() {
+                        (None, Vec::new())
+                    } else {
+                        let (c, m) = action_scope_coverage(action, inst.scopes.knowledge());
+                        (Some(c), m)
+                    };
                     scored.push(SearchResult {
                         service: Some(inst.name.clone()),
                         template: t.def.key.clone(),
@@ -405,6 +473,8 @@ async fn search(
                         auth: auth_status.clone(),
                         score: Some(final_score),
                         setup_required: None,
+                        scope_coverage,
+                        missing_scopes,
                     });
                 }
             }
@@ -506,15 +576,63 @@ async fn collect_visible_templates(
         .collect();
     let connections_by_id = scope.get_connections_by_ids(&connection_ids).await?;
 
+    // Provider key per template (OAuth templates only), so instances without an
+    // explicit connection binding can auto-resolve their owner-provider
+    // connection — the same connection the exec path / scope-gate would pick.
+    let provider_by_template: HashMap<&str, &str> = templates
+        .iter()
+        .filter_map(|t| template_oauth_provider(&t.def).map(|p| (t.def.key.as_str(), p)))
+        .collect();
+
+    // Auto-resolve owner-provider connections for instances with no explicit
+    // binding, mirroring `kernel_list_services`. Deduped by (owner, provider).
+    let mut conn_by_owner_provider: HashMap<(Uuid, String), Option<Vec<String>>> = HashMap::new();
+    let mut looked_up: HashSet<(Uuid, String)> = HashSet::new();
+    for r in &instances {
+        if r.status != "active" || r.connection_id.is_some() {
+            continue;
+        }
+        let (Some(owner), Some(provider)) = (
+            r.owner_identity_id,
+            provider_by_template.get(r.template_key.as_str()).copied(),
+        ) else {
+            continue;
+        };
+        let key = (owner, provider.to_string());
+        if !looked_up.insert(key.clone()) {
+            continue;
+        }
+        if let Ok(Some(conn)) = UserScope::new(auth.org_id, owner, scope.db().clone())
+            .find_my_connection_by_provider(provider)
+            .await
+        {
+            conn_by_owner_provider.insert(key, conn.scopes);
+        }
+    }
+
     let mut instances_by_template: HashMap<String, Vec<InstanceRow>> = HashMap::new();
     for r in instances {
         if r.status != "active" {
             continue;
         }
-        let account_email = r
-            .connection_id
-            .and_then(|id| connections_by_id.get(&id))
-            .and_then(|c| c.account_email.clone());
+        let bound_conn = r.connection_id.and_then(|id| connections_by_id.get(&id));
+        let account_email = bound_conn.and_then(|c| c.account_email.clone());
+        let scopes = if let Some(cid) = r.connection_id {
+            match connections_by_id.get(&cid) {
+                Some(c) => InstanceScopes::from_recorded(c.scopes.as_deref()),
+                None => InstanceScopes::NoConnection,
+            }
+        } else if let (Some(owner), Some(provider)) = (
+            r.owner_identity_id,
+            provider_by_template.get(r.template_key.as_str()).copied(),
+        ) {
+            match conn_by_owner_provider.get(&(owner, provider.to_string())) {
+                Some(opt) => InstanceScopes::from_recorded(opt.as_deref()),
+                None => InstanceScopes::NoConnection,
+            }
+        } else {
+            InstanceScopes::NoConnection
+        };
         instances_by_template
             .entry(r.template_key.clone())
             .or_default()
@@ -522,6 +640,7 @@ async fn collect_visible_templates(
                 name: r.name,
                 account_email,
                 secret_name: r.secret_name,
+                scopes,
             });
     }
 

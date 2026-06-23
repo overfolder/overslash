@@ -68,12 +68,28 @@ async fn token(Form(params): Form<Vec<(String, String)>>) -> Json<Value> {
                 "token_type": "Bearer",
             }))
         }
-        "refresh_token" => Json(json!({
-            "access_token": "mock_refreshed_access_token",
-            "refresh_token": "mock_refreshed_refresh_token",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-        })),
+        "refresh_token" => {
+            // Opt-in scope echo: a refresh token of the form
+            // `scoped:<space-separated-scopes>` makes the response carry a
+            // `scope` field, so tests can exercise Overslash's self-heal of
+            // recorded scopes on refresh. Plain refresh tokens (every existing
+            // test) get no `scope` field — behavior unchanged.
+            let granted_scope = params
+                .iter()
+                .find(|(k, _)| k == "refresh_token")
+                .and_then(|(_, v)| v.strip_prefix("scoped:"))
+                .map(str::to_string);
+            let mut body = json!({
+                "access_token": "mock_refreshed_access_token",
+                "refresh_token": "mock_refreshed_refresh_token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            });
+            if let Some(scope) = granted_scope {
+                body["scope"] = Value::String(scope);
+            }
+            Json(body)
+        }
         _ => Json(json!({"error": "unsupported_grant_type"})),
     }
 }

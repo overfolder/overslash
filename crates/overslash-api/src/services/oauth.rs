@@ -240,10 +240,31 @@ pub async fn resolve_access_token(
         .expires_in
         .map(|secs| time::OffsetDateTime::now_utc() + time::Duration::seconds(secs));
 
-    scope
-        .update_connection_tokens(conn.id, &new_access, new_refresh.as_deref(), new_expires)
-        .await
-        .map_err(|e| OAuthError::DbError(e.to_string()))?;
+    // Self-heal recorded scopes from the refresh response. Providers (Google
+    // included) echo the authoritative current grant in `scope` on a
+    // `refresh_token` exchange, so persisting it converts a legacy NULL
+    // (benefit-of-the-doubt) connection into a known set — and keeps a known
+    // set current if the user narrowed the grant. A response that omits `scope`
+    // (empty set) must not clobber what we already recorded.
+    let granted_scopes = tokens.granted_scopes();
+    if granted_scopes.is_empty() {
+        scope
+            .update_connection_tokens(conn.id, &new_access, new_refresh.as_deref(), new_expires)
+            .await
+            .map_err(|e| OAuthError::DbError(e.to_string()))?;
+    } else {
+        scope
+            .update_connection_tokens_and_scopes(
+                conn.id,
+                &new_access,
+                new_refresh.as_deref(),
+                new_expires,
+                Some(&granted_scopes),
+                None,
+            )
+            .await
+            .map_err(|e| OAuthError::DbError(e.to_string()))?;
+    }
 
     Ok(tokens.access_token)
 }
