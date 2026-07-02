@@ -598,10 +598,22 @@ pub(super) async fn resolve_request(
             format!("https://{host}{path}")
         };
 
+        // Header-located params (e.g. a template-pinned `Notion-Version`) are
+        // routed into the request headers below — they must not leak into the
+        // query string or JSON body like path/query/body params do.
+        let is_header_param = |k: &str| {
+            action
+                .params
+                .get(k)
+                .map(|p| p.location == ParamLocation::Header)
+                .unwrap_or(false)
+        };
+
         let non_path_params: HashMap<String, serde_json::Value> = req
             .params
             .iter()
             .filter(|(k, _)| !action.path.contains(&format!("{{{k}}}")))
+            .filter(|(k, _)| !is_header_param(k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
@@ -660,6 +672,19 @@ pub(super) async fn resolve_request(
         let mut headers = HashMap::new();
         if body.is_some() {
             headers.insert("Content-Type".to_string(), "application/json".to_string());
+        }
+        // Template-declared header params (`in: header`) are sent verbatim as
+        // request headers. `apply_defaults` has already filled any that carry a
+        // `default` and were omitted by the caller (e.g. `Notion-Version`), so
+        // this stamps the constant version header on every call.
+        for (k, v) in &req.params {
+            if is_header_param(k) {
+                let val = v
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string());
+                headers.insert(k.clone(), val);
+            }
         }
 
         // Scope gate: if the action declares `required_scopes`, and the
