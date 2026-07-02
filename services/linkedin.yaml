@@ -1,0 +1,129 @@
+openapi: 3.1.0
+info:
+  title: LinkedIn
+  description: >-
+    LinkedIn Marketing & member APIs — read the authenticated member's profile
+    (OpenID Connect), publish member shares (UGC Posts), and look up
+    organizations. LinkedIn's platform is access-restricted: the member-share
+    and organization surfaces require an approved app with the corresponding
+    OAuth products enabled, so write actions are marked elevated risk and route
+    through approval.
+  key: linkedin
+  category: Social
+servers:
+  - url: https://api.linkedin.com
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      # Resolves the LinkedIn OAuth provider row seeded in migration
+      # 088_add_linkedin_oauth_provider (endpoints, PKCE=false,
+      # client_secret_post, OIDC issuer/jwks, default identity scopes).
+      provider: linkedin
+      flows:
+        authorizationCode:
+          authorizationUrl: https://www.linkedin.com/oauth/v2/authorization
+          tokenUrl: https://www.linkedin.com/oauth/v2/accessToken
+          # Union of every per-operation scope below. `openid`/`profile`/`email`
+          # come from "Sign In with LinkedIn using OpenID Connect";
+          # `w_member_social` from "Share on LinkedIn"; `r_organization_social`
+          # from the (partner-gated) organization products.
+          scopes:
+            openid: ""
+            profile: ""
+            email: ""
+            w_member_social: ""
+            r_organization_social: ""
+paths:
+  /v2/userinfo:
+    get:
+      operationId: get_profile
+      summary: Get the authenticated member's profile
+      description: >-
+        Returns the OpenID Connect userinfo for the connected member (`sub`,
+        `name`, `given_name`, `family_name`, `picture`, `email`,
+        `email_verified`, `locale`). The member URN used as the `author` of a
+        post is `urn:li:person:{sub}`.
+      risk: read
+      security:
+        - oauth:
+            - openid
+  /v2/ugcPosts:
+    post:
+      operationId: create_post
+      summary: Publish a share on the member's feed
+      description: >-
+        Creates a User Generated Content (UGC) post — a text/article share —
+        on the authenticated member's feed via the `w_member_social` scope.
+        `author` must be the member's own URN (`urn:li:person:{sub}` from
+        get_profile). LinkedIn recommends sending `X-Restli-Protocol-Version:
+        2.0.0`; callers may pass it as a request header.
+      # Publishing to a member's public feed is irreversible from the agent's
+      # point of view and hits LinkedIn's restricted write surface, so it is
+      # marked `write` (elevated) — an uncovered permission chain routes the
+      # call through human approval before the share is created.
+      risk: write
+      security:
+        - oauth:
+            - w_member_social
+      # Surface the human-readable share text + visibility in the approval
+      # review UI and audit log so a reviewer sees exactly what will be posted.
+      disclose:
+        - label: Text
+          filter: '.body.specificContent["com.linkedin.ugc.ShareContent"].shareCommentary.text'
+          max_chars: 2000
+        - label: Visibility
+          filter: '.body.visibility["com.linkedin.ugc.MemberNetworkVisibility"]'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [author, lifecycleState, specificContent, visibility]
+              properties:
+                author:
+                  type: string
+                  description: "Member URN of the post author, e.g. 'urn:li:person:{sub}'"
+                lifecycleState:
+                  type: string
+                  description: Publication state of the post
+                  enum: [PUBLISHED, DRAFT]
+                  default: PUBLISHED
+                specificContent:
+                  type: object
+                  description: >-
+                    Post content keyed by 'com.linkedin.ugc.ShareContent' with a
+                    'shareCommentary.text' body and 'shareMediaCategory'.
+                visibility:
+                  type: object
+                  description: >-
+                    Visibility keyed by
+                    'com.linkedin.ugc.MemberNetworkVisibility' (PUBLIC or
+                    CONNECTIONS).
+  /v2/organizations/{id}:
+    get:
+      operationId: get_organization
+      summary: "Look up organization {id}"
+      description: >-
+        Fetches an organization (company page) by its numeric id. Requires an
+        organization OAuth product (`r_organization_social` or
+        `rw_organization_admin`), which LinkedIn grants only to approved
+        partners.
+      risk: read
+      scope_param: id
+      security:
+        - oauth:
+            - r_organization_social
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: "Numeric organization id (from an 'urn:li:organization:{id}' URN)"
+          schema:
+            type: string
+        - name: projection
+          in: query
+          description: "Optional Rest.li field projection, e.g. '(id,localizedName,vanityName)'"
+          schema:
+            type: string
