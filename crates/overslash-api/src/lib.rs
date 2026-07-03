@@ -20,6 +20,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::{Extensions, HeaderName, HeaderValue, Method, header};
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use tower_http::{
     compression::CompressionLayer,
     cors::{AllowOrigin, CorsLayer},
@@ -195,7 +196,34 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     let metrics_handle = overslash_metrics::setup();
     overslash_metrics::webhooks::init();
 
-    let db = PgPool::connect(&config.database_url).await?;
+    // Request-handler pool. Explicitly sized (was a bare `PgPool::connect`,
+    // which uses sqlx's default `max_connections = 10`). Ten connections shared
+    // by every HTTP handler *and* the ~7 background loops (below) starved under
+    // burst on overslash-dev: the 30s acquire timeout fired and outbound
+    // `connection.*` webhooks were dropped. Postgres' app ceiling (~97) is not
+    // the constraint — per-instance pool sizing is. Cloud Run maxScale 3 × 25 =
+    // 75 leaves headroom. The background loops now get their own pool so a
+    // webhook/expiry burst can't starve request handling.
+    let db = PgPoolOptions::new()
+        .max_connections(config.db_max_connections)
+        .min_connections(config.db_min_connections)
+        .acquire_timeout(std::time::Duration::from_secs(
+            config.db_acquire_timeout_secs,
+        ))
+        .connect(&config.database_url)
+        .await?;
+
+    // Dedicated, small pool for detached background jobs (expiry sweeps,
+    // webhook retry/digest, embedding backfill). Kept separate from `db` so a
+    // burst of background work can never exhaust the request-handler pool.
+    let background_db = PgPoolOptions::new()
+        .max_connections(config.db_background_max_connections)
+        .min_connections(0)
+        .acquire_timeout(std::time::Duration::from_secs(
+            config.db_acquire_timeout_secs,
+        ))
+        .connect(&config.database_url)
+        .await?;
 
     // Run migrations
     overslash_db::MIGRATOR.run(&db).await?;
@@ -288,9 +316,12 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         test_resources: None,
     };
 
-    // Spawn background tasks
+    // Spawn background tasks. These run on `background_db` (a dedicated small
+    // pool) rather than `state.db` (the request-handler pool) so a burst of
+    // expiry/webhook work can't starve request handling — the overslash-dev
+    // pool-exhaustion incident.
     {
-        let db = state.db.clone();
+        let db = background_db.clone();
         let system = overslash_db::scopes::SystemScope::new_internal(db.clone());
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
@@ -353,7 +384,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
         // Webhook retry loop
         tokio::spawn(services::webhook_dispatcher::spawn_retry_loop(
-            state.db.clone(),
+            background_db.clone(),
             state.http_client.clone(),
         ));
 
@@ -362,7 +393,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         // wakes at the anchor and races to send each org's digest exactly
         // once. See services::webhook_digest.
         tokio::spawn(services::webhook_digest::spawn_digest_loop(
-            state.db.clone(),
+            background_db.clone(),
             state.mailer.clone(),
             state.config.public_url.clone(),
         ));
@@ -394,7 +425,10 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             });
         }
 
-        // DB pool stats poller — emits gauge every 30s.
+        // DB pool stats poller — emits gauge every 30s. Deliberately reports
+        // the *request-handler* pool (`state.db`), the one whose saturation
+        // drops user-facing requests; the background pool is small and bounded
+        // by design.
         {
             let db = state.db.clone();
             tokio::spawn(async move {
@@ -420,7 +454,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         // embedder is real. Spawns detached; search stays usable while it
         // progresses because keyword+fuzzy covers gaps until vectors land.
         if state.embeddings_available {
-            let db = state.db.clone();
+            let db = background_db.clone();
             let registry = Arc::clone(&state.registry);
             let embedder = Arc::clone(&state.embedder);
             tokio::spawn(async move {
