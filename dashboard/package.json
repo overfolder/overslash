@@ -44,5 +44,9 @@
     "@fontsource-variable/roboto-mono": "^5.2.8",
     "codemirror": "^6.0.2",
     "yaml": "^2.8.4"
+  },
+  "overrides": {
+    "cookie": "^0.7.0",
+    "esbuild": "^0.28.1"
   }
 }
