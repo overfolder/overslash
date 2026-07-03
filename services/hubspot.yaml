@@ -1,0 +1,314 @@
+# HubSpot CRM (contacts, companies, deals, notes/engagements) via the v3
+# CRM objects API. Two auth methods are supported:
+#   - OAuth (public/marketplace apps): the org's OAuth client credentials
+#     (`OAUTH_HUBSPOT_CLIENT_ID` / `OAUTH_HUBSPOT_CLIENT_SECRET` or a BYOC
+#     credential) drive the standard authorization-code flow. Access tokens
+#     are short-lived (~30m) and refresh automatically via the refresh grant.
+#   - Private App token (apiKey): a static bearer token stored as a secret,
+#     for orgs that drive HubSpot through a Private App instead of OAuth.
+openapi: 3.1.0
+info:
+  title: HubSpot
+  key: hubspot
+  category: CRM
+  description: >-
+    HubSpot CRM via the v3 objects API. Read and write contacts, companies,
+    and deals, and log notes (engagements). Connect with an OAuth app or a
+    Private App access token.
+servers:
+  - url: https://api.hubapi.com
+security:
+  - oauth:
+      - crm.objects.contacts.read
+      - crm.objects.contacts.write
+      - crm.objects.companies.read
+      - crm.objects.deals.read
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: hubspot
+      flows:
+        authorizationCode:
+          authorizationUrl: https://app.hubspot.com/oauth/authorize
+          tokenUrl: https://api.hubapi.com/oauth/v1/token
+          scopes:
+            crm.objects.contacts.read: ""
+            crm.objects.contacts.write: ""
+            crm.objects.companies.read: ""
+            crm.objects.companies.write: ""
+            crm.objects.deals.read: ""
+            crm.objects.deals.write: ""
+    # Private App access token, injected as `Authorization: Bearer <token>`.
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: hubspot_token
+paths:
+  # ── Contacts ────────────────────────────────────────────────────────
+  /crm/v3/objects/contacts:
+    get:
+      operationId: list_contacts
+      summary: List contacts
+      risk: read
+      parameters:
+        - name: limit
+          in: query
+          description: Number of contacts to return per page (max 100, default 10)
+          schema:
+            type: integer
+            default: 10
+        - name: after
+          in: query
+          description: Paging cursor token from the previous response's `paging.next.after`
+          schema:
+            type: string
+        - name: properties
+          in: query
+          description: "Comma-separated list of properties to return, e.g. `email,firstname,lastname`"
+          schema:
+            type: string
+        - name: archived
+          in: query
+          description: Whether to return only archived contacts (default false)
+          schema:
+            type: boolean
+    post:
+      operationId: create_contact
+      summary: "Create a contact"
+      risk: write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties:
+                  type: object
+                  description: >-
+                    Contact property name/value map, e.g.
+                    {"email": "a@b.com", "firstname": "Ada", "lastname": "Lovelace",
+                    "phone": "+1-555-0100", "company": "Analytical Engines"}
+                associations:
+                  type: array
+                  description: "Optional associations to other CRM records: [{to: {id}, types: [{associationCategory, associationTypeId}]}]"
+  /crm/v3/objects/contacts/{contactId}:
+    parameters:
+      - name: contactId
+        in: path
+        required: true
+        description: The contact's object id
+        schema:
+          type: string
+        resolve:
+          get: /crm/v3/objects/contacts/{contactId}
+          pick: properties.email
+    get:
+      operationId: get_contact
+      summary: "Get contact {contactId}"
+      risk: read
+      scope_param: contactId
+      parameters:
+        - name: properties
+          in: query
+          description: Comma-separated list of properties to return
+          schema:
+            type: string
+        - name: associations
+          in: query
+          description: "Comma-separated object types to return associated ids for, e.g. `companies,deals`"
+          schema:
+            type: string
+        - name: archived
+          in: query
+          description: Whether to return the record even if archived (default false)
+          schema:
+            type: boolean
+    patch:
+      operationId: update_contact
+      summary: "Update contact {contactId}"
+      risk: write
+      scope_param: contactId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties:
+                  type: object
+                  description: >-
+                    Contact property name/value map to update, e.g.
+                    {"jobtitle": "CTO", "phone": "+1-555-0199"}
+  # ── Companies ───────────────────────────────────────────────────────
+  /crm/v3/objects/companies:
+    get:
+      operationId: list_companies
+      summary: List companies
+      risk: read
+      parameters:
+        - name: limit
+          in: query
+          description: Number of companies to return per page (max 100, default 10)
+          schema:
+            type: integer
+            default: 10
+        - name: after
+          in: query
+          description: Paging cursor token from the previous response's `paging.next.after`
+          schema:
+            type: string
+        - name: properties
+          in: query
+          description: "Comma-separated list of properties to return, e.g. `name,domain,industry`"
+          schema:
+            type: string
+        - name: archived
+          in: query
+          description: Whether to return only archived companies (default false)
+          schema:
+            type: boolean
+  /crm/v3/objects/companies/{companyId}:
+    parameters:
+      - name: companyId
+        in: path
+        required: true
+        description: The company's object id
+        schema:
+          type: string
+        resolve:
+          get: /crm/v3/objects/companies/{companyId}
+          pick: properties.name
+    get:
+      operationId: get_company
+      summary: "Get company {companyId}"
+      risk: read
+      scope_param: companyId
+      parameters:
+        - name: properties
+          in: query
+          description: Comma-separated list of properties to return
+          schema:
+            type: string
+        - name: associations
+          in: query
+          description: "Comma-separated object types to return associated ids for, e.g. `contacts,deals`"
+          schema:
+            type: string
+        - name: archived
+          in: query
+          description: Whether to return the record even if archived (default false)
+          schema:
+            type: boolean
+  # ── Deals ───────────────────────────────────────────────────────────
+  /crm/v3/objects/deals:
+    get:
+      operationId: list_deals
+      summary: List deals
+      risk: read
+      parameters:
+        - name: limit
+          in: query
+          description: Number of deals to return per page (max 100, default 10)
+          schema:
+            type: integer
+            default: 10
+        - name: after
+          in: query
+          description: Paging cursor token from the previous response's `paging.next.after`
+          schema:
+            type: string
+        - name: properties
+          in: query
+          description: "Comma-separated list of properties to return, e.g. `dealname,amount,dealstage,pipeline`"
+          schema:
+            type: string
+        - name: archived
+          in: query
+          description: Whether to return only archived deals (default false)
+          schema:
+            type: boolean
+  /crm/v3/objects/deals/{dealId}:
+    parameters:
+      - name: dealId
+        in: path
+        required: true
+        description: The deal's object id
+        schema:
+          type: string
+        resolve:
+          get: /crm/v3/objects/deals/{dealId}
+          pick: properties.dealname
+    get:
+      operationId: get_deal
+      summary: "Get deal {dealId}"
+      risk: read
+      scope_param: dealId
+      parameters:
+        - name: properties
+          in: query
+          description: Comma-separated list of properties to return
+          schema:
+            type: string
+        - name: associations
+          in: query
+          description: "Comma-separated object types to return associated ids for, e.g. `contacts,companies`"
+          schema:
+            type: string
+        - name: archived
+          in: query
+          description: Whether to return the record even if archived (default false)
+          schema:
+            type: boolean
+  # ── Notes (engagements) ─────────────────────────────────────────────
+  /crm/v3/objects/notes:
+    get:
+      operationId: list_notes
+      summary: List notes
+      risk: read
+      parameters:
+        - name: limit
+          in: query
+          description: Number of notes to return per page (max 100, default 10)
+          schema:
+            type: integer
+            default: 10
+        - name: after
+          in: query
+          description: Paging cursor token from the previous response's `paging.next.after`
+          schema:
+            type: string
+        - name: properties
+          in: query
+          description: "Comma-separated list of properties to return, e.g. `hs_note_body,hs_timestamp`"
+          schema:
+            type: string
+    post:
+      operationId: create_note
+      summary: "Log a note (engagement)"
+      risk: write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties:
+                  type: object
+                  description: >-
+                    Note property map. `hs_note_body` holds the note text and
+                    `hs_timestamp` the creation time (epoch ms or ISO 8601), e.g.
+                    {"hs_note_body": "Called re: renewal", "hs_timestamp": "2026-07-02T12:00:00Z"}
+                associations:
+                  type: array
+                  description: >-
+                    Records to associate the note with, e.g. a contact:
+                    [{to: {id: "123"}, types: [{associationCategory: "HUBSPOT_DEFINED", associationTypeId: 202}]}]
