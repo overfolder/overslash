@@ -23,7 +23,7 @@ uuid = { workspace = true }
 time = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 glob-match = "0.2"
 serde_yaml = { version = "0.9", optional = true }
 tracing = { workspace = true }
