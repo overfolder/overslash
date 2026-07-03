@@ -620,16 +620,35 @@ pub(super) fn extract_mcp_spec(root: &Map<String, Value>) -> Result<McpSpec, Vec
                     ));
                     return Err(errors);
                 };
-                let scopes = a
-                    .get("scopes")
-                    .and_then(Value::as_array)
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+                // Parse, don't validate: a non-string scope is a config error,
+                // surfaced rather than silently dropped (which would grant fewer
+                // permissions than the operator intended).
+                let scopes = match a.get("scopes") {
+                    None => Vec::new(),
+                    Some(Value::Array(arr)) => {
+                        let mut out = Vec::with_capacity(arr.len());
+                        for (i, v) in arr.iter().enumerate() {
+                            let Some(s) = v.as_str() else {
+                                errors.push(ValidationIssue::new(
+                                    "mcp_invalid",
+                                    format!("x-overslash-mcp.auth.scopes[{i}] must be a string"),
+                                    format!("x-overslash-mcp.auth.scopes[{i}]"),
+                                ));
+                                return Err(errors);
+                            };
+                            out.push(s.to_string());
+                        }
+                        out
+                    }
+                    Some(_) => {
+                        errors.push(ValidationIssue::new(
+                            "mcp_invalid",
+                            "x-overslash-mcp.auth.scopes must be an array of strings",
+                            "x-overslash-mcp.auth.scopes",
+                        ));
+                        return Err(errors);
+                    }
+                };
                 McpAuth::OAuth { provider, scopes }
             }
             Some(other) => {
