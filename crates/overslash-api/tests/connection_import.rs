@@ -569,6 +569,90 @@ async fn reimport_without_scopes_preserves_existing_scopes() {
     );
 }
 
+/// Bug A guard: a re-import that BROADENS the recorded scopes but carries NO
+/// fresh refresh token (while the existing connection has one) is rejected.
+/// This is the source of the metadata-refresh-token-behind-readonly-scopes
+/// divergence (connection `85844f1a`): advancing scopes to `gmail.readonly`
+/// while COALESCE-preserving a metadata-only refresh token makes every call
+/// 403 forever and the self-refresh can't heal it. The partner must re-consent
+/// to obtain a refresh token that backs the wider grant.
+#[tokio::test]
+async fn reimport_broadening_scopes_without_refresh_token_is_rejected() {
+    const GMAIL_READONLY: &str = "https://www.googleapis.com/auth/gmail.readonly";
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (_org_id, ident_id, key, _admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    let byoc_id = register_byoc(&client, &base, &key, ident_id).await;
+
+    // First import: metadata-era grant WITH a refresh token (the vault self-
+    // refreshes via it).
+    let (status, _) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "meta-access",
+            "refresh_token": "meta-refresh",
+            "byoc_credential_id": byoc_id,
+            "account_email": "loopy@example.com",
+            "scopes": [CAL_SCOPE]
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // Re-consent re-import: broadens scopes to include gmail.readonly but
+    // Google returned no new refresh token, so the partner omits it. Must be
+    // rejected rather than silently preserving the metadata refresh token
+    // behind the wider recorded scopes.
+    let (status, body) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "readonly-access",
+            "byoc_credential_id": byoc_id,
+            "account_email": "loopy@example.com",
+            "scopes": [CAL_SCOPE, GMAIL_READONLY]
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "broadening re-import with no fresh refresh token must be rejected: {body}"
+    );
+
+    // The same re-import that DOES carry a fresh refresh token is accepted —
+    // the new token backs the wider grant.
+    let (status, body) = import(
+        &client,
+        &base,
+        &key,
+        json!({
+            "provider": "google",
+            "access_token": "readonly-access",
+            "refresh_token": "readonly-refresh",
+            "byoc_credential_id": byoc_id,
+            "account_email": "loopy@example.com",
+            "scopes": [CAL_SCOPE, GMAIL_READONLY]
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "re-import with a fresh refresh token succeeds");
+    let mut got: Vec<String> = serde_json::from_value(body["scopes"].clone()).unwrap();
+    got.sort();
+    let mut want = vec![CAL_SCOPE.to_string(), GMAIL_READONLY.to_string()];
+    want.sort();
+    assert_eq!(
+        got, want,
+        "wider scopes recorded once a fresh token backs them"
+    );
+}
+
 /// Re-import for the same (identity, provider, account_email) updates the
 /// existing row in place; a *different* account_email creates a second
 /// connection (multi-account vaulting).

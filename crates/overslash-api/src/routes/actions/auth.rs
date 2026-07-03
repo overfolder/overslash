@@ -773,6 +773,92 @@ pub(super) async fn check_required_scopes(
     })
 }
 
+/// Whether an upstream response body is Google's "metadata scope" denial:
+/// a `PERMISSION_DENIED` (HTTP 403) whose message is
+/// `"Metadata scope does not support 'q' parameter"` (or any other metadata
+/// message). This means the *injected access token was metadata-only* even
+/// though the connection's recorded scopes claimed a broader grant like
+/// `gmail.readonly` — the exact divergence from connection `85844f1a`.
+///
+/// We match on the stable substring `"Metadata scope does not support"` rather
+/// than the full message so a change to the offending parameter name (`'q'` vs
+/// something else) doesn't slip past. Only inspects 403 responses.
+pub(super) fn is_metadata_scope_denial(status_code: u16, body: &str) -> bool {
+    status_code == 403 && body.contains("Metadata scope does not support")
+}
+
+/// Surface a metadata-scope denial (see [`is_metadata_scope_denial`]) as a
+/// typed `reauth_required` envelope instead of a 200 with the upstream 403
+/// buried in the body.
+///
+/// The recorded scopes lie (they say `gmail.readonly` but the token is
+/// metadata-only), and the self-refresh path can't heal it — the stored refresh
+/// token is itself metadata-scoped. The only fix is a fresh consent, so a
+/// reauth envelope is the right shape: for a headless (white-label) org it's a
+/// URL-less signal the partner acts on by re-running its own OAuth dance and
+/// re-importing with a fresh refresh token; for an orchestrated org it mints a
+/// gated reconnect link.
+///
+/// Returns `None` when the service has no OAuth provider or no resolvable
+/// connection — in that unexpected case the caller falls back to returning the
+/// upstream 403 unchanged rather than fabricating a reauth for a connection we
+/// can't name.
+pub(super) async fn metadata_scope_reauth_envelope(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    scope: &OrgScope,
+    ceiling_user_id: Uuid,
+    service_key: &str,
+) -> Option<AppError> {
+    // Resolve the service definition to find its OAuth provider. `None` for a
+    // raw-HTTP shape or a template without OAuth — nothing to reauth.
+    let svc = crate::routes::templates::resolve_template_definition(
+        state,
+        ext,
+        scope.org_id(),
+        Some(ceiling_user_id),
+        service_key,
+    )
+    .await
+    .ok()?;
+
+    let provider = svc.auth.iter().find_map(|a| match a {
+        overslash_core::types::ServiceAuth::OAuth { provider, .. } => Some(provider.clone()),
+        _ => None,
+    })?;
+
+    // Connections resolve at the owner identity (D22).
+    let owner_identity_id =
+        crate::services::group_ceiling::resolve_ceiling_user_id(scope, ceiling_user_id)
+            .await
+            .ok()?;
+    let user_scope =
+        overslash_db::scopes::UserScope::new(scope.org_id(), owner_identity_id, scope.db().clone());
+    let connection = user_scope
+        .find_my_connection_by_provider(&provider)
+        .await
+        .ok()
+        .flatten()?;
+
+    Some(
+        reauth_required_envelope(
+            state,
+            ext,
+            scope.org_id(),
+            owner_identity_id,
+            &connection,
+            "metadata_scope_token",
+            &OAuthError::RefreshFailed(
+                "injected access token is metadata-only despite recorded scopes; \
+                 the stored refresh token cannot self-heal — fresh consent required"
+                    .into(),
+            ),
+            None,
+        )
+        .await,
+    )
+}
+
 /// Re-resolve the live OAuth header for an approval replay.
 ///
 /// Replay payloads are credential-free: when the original call resolved an
@@ -1014,6 +1100,21 @@ pub(crate) async fn resolve_instance_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_scope_denial_detected_only_on_403() {
+        let body = r#"{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Metadata scope does not support 'q' parameter"}}"#;
+        assert!(is_metadata_scope_denial(403, body));
+        // Same body on a non-403 status is not the metadata-scope signal.
+        assert!(!is_metadata_scope_denial(200, body));
+        assert!(!is_metadata_scope_denial(500, body));
+    }
+
+    #[test]
+    fn metadata_scope_denial_ignores_unrelated_403() {
+        let body = r#"{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Request had insufficient authentication scopes."}}"#;
+        assert!(!is_metadata_scope_denial(403, body));
+    }
 
     #[test]
     fn classify_oauth_reauth_signals() {
