@@ -926,6 +926,7 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
         let location = match obj.get("in").and_then(Value::as_str) {
             Some("query") => ParamLocation::Query,
             Some("path") => ParamLocation::Path,
+            Some("header") => ParamLocation::Header,
             _ => ParamLocation::Body,
         };
 
@@ -1643,7 +1644,9 @@ mod tests {
                             {"name": "id", "in": "path", "required": true,
                              "schema": {"type": "string"}},
                             {"name": "sendUpdates", "in": "query",
-                             "schema": {"type": "string"}}
+                             "schema": {"type": "string"}},
+                            {"name": "Notion-Version", "in": "header",
+                             "schema": {"type": "string", "default": "2022-06-28"}}
                         ],
                         "requestBody": {
                             "content": {"application/json": {"schema": {
@@ -1660,6 +1663,13 @@ mod tests {
         assert_eq!(a.params["id"].location, ParamLocation::Path);
         assert_eq!(a.params["sendUpdates"].location, ParamLocation::Query);
         assert_eq!(a.params["summary"].location, ParamLocation::Body);
+        // `in: header` params land on `Header`, carrying their default so
+        // `apply_defaults` can pin a constant version header at call time.
+        assert_eq!(a.params["Notion-Version"].location, ParamLocation::Header);
+        assert_eq!(
+            a.params["Notion-Version"].default,
+            Some(serde_json::json!("2022-06-28"))
+        );
         // Path template is unaffected by location tracking.
         assert_eq!(a.path, "/cal/{id}/events");
     }

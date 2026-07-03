@@ -268,10 +268,13 @@ pub struct ParamResolver {
 
 /// Where a parameter is sent on the wire, mirroring the OpenAPI `in:` field.
 ///
-/// Routing only consults `Query`: on non-GET methods, query-located params go
-/// to the URL query string while everything else becomes the JSON body. `Path`
-/// is informational — path interpolation matches `{name}` placeholders in the
-/// path template and never reads this field.
+/// Routing consults `Query` and `Header`: on non-GET methods, query-located
+/// params go to the URL query string, header-located params become request
+/// headers, and everything else becomes the JSON body. A `Header` param with a
+/// `default` (e.g. `Notion-Version: 2022-06-28`) is how a template pins a
+/// constant version/accept header on every call — `apply_defaults` fills it in
+/// when the caller omits it. `Path` is informational — path interpolation
+/// matches `{name}` placeholders in the path template and never reads this field.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ParamLocation {
@@ -279,6 +282,7 @@ pub enum ParamLocation {
     Body,
     Query,
     Path,
+    Header,
 }
 
 impl ParamLocation {
@@ -381,6 +385,10 @@ mod tests {
             serde_json::to_string(&ParamLocation::Path).unwrap(),
             r#""path""#
         );
+        assert_eq!(
+            serde_json::to_string(&ParamLocation::Header).unwrap(),
+            r#""header""#
+        );
 
         assert_eq!(
             serde_json::from_str::<ParamLocation>(r#""body""#).unwrap(),
@@ -394,6 +402,10 @@ mod tests {
             serde_json::from_str::<ParamLocation>(r#""path""#).unwrap(),
             ParamLocation::Path
         );
+        assert_eq!(
+            serde_json::from_str::<ParamLocation>(r#""header""#).unwrap(),
+            ParamLocation::Header
+        );
     }
 
     #[test]
@@ -402,6 +414,7 @@ mod tests {
         assert!(ParamLocation::Body.is_default());
         assert!(!ParamLocation::Query.is_default());
         assert!(!ParamLocation::Path.is_default());
+        assert!(!ParamLocation::Header.is_default());
     }
 
     #[test]
