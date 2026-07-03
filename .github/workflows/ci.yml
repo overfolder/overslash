@@ -108,6 +108,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: lint-deps-opt1
+      # cdn.pyke.io (ort-sys prebuilt binaries) 403s from CI runners; seed
+      # its cache from a release asset so cold-cache builds don't touch it.
+      - uses: ./.github/actions/seed-ort-cache
       # Pin the major so the CLI's offline-cache format matches the workspace
       # sqlx 0.9 (the .sqlx/ files it verifies).
       - uses: taiki-e/install-action@v2
@@ -224,6 +227,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: coverage-deps-opt1
+      # cdn.pyke.io (ort-sys prebuilt binaries) 403s from CI runners; seed
+      # its cache from a release asset so cold-cache builds don't touch it.
+      - uses: ./.github/actions/seed-ort-cache
       # mold replaces the system linker (no RUSTFLAGS change, so cached
       # artifacts stay valid). Linking ~99 instrumented test binaries is
       # the bulk of a warm-cache "compile" phase; mold cuts it sharply.
@@ -350,6 +356,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: e2e-deps-opt1
+      # cdn.pyke.io (ort-sys prebuilt binaries) 403s from CI runners; seed
+      # its cache from a release asset so cold-cache builds don't touch it.
+      - uses: ./.github/actions/seed-ort-cache
       - uses: rui314/setup-mold@v1
       - uses: taiki-e/install-action@v2
         with:

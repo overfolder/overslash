@@ -4,6 +4,12 @@ Known workarounds and deferred improvements.
 
 ---
 
+## CI seeds ort-sys binaries from a release asset (cdn.pyke.io outage)
+
+Since 2026-07-03, `cdn.pyke.io` answers HTTP 403 (Cloudflare bot challenge) to non-browser clients, so any CI job compiling `ort-sys` 2.0.0-rc.12 (pulled in via `fastembed` for semantic search) from a cold cache fails at the build script's binary download. Workaround: `.github/actions/seed-ort-cache` pre-populates `~/.cache/ort.pyke.io` in the `lint`, `coverage`, and `e2e` jobs from the `ort-sys-cache-ms-1.24.2` release asset (the build script's own hash-verified extraction, re-hosted), which makes the build script skip the download entirely. Remove the action and the release once the CDN is reliable again, and refresh the asset + dist hash whenever `ort-sys` is bumped (`build/download/dist.txt` in the crate lists the current hashes). `release.yml` is not covered — it builds non-Linux targets too and needs per-target assets if the outage persists into a release.
+
+---
+
 ## MCP OAuth authorization codes are in-process
 
 `POST /oauth/authorize` stashes one-shot authorization codes (60 s TTL, single-use) in a process-local store (`crates/overslash-api/src/services/oauth_as.rs`). This is fine today because codes expire fast and Overslash runs as a single replica. Moving to multi-replica serving either requires sticky-routing the `authorize` / `token` pair to the same instance or promoting the store to Redis. The `AuthCodeStore` facade is deliberately narrow so a Redis-backed implementation can drop in behind the same interface.
