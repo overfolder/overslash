@@ -347,6 +347,8 @@ export interface McpDetail {
   has_default_secret_name: boolean;
   /** OAuth provider key when `auth_kind === 'oauth'` (D24); drives the connect affordance. */
   provider?: string;
+  /** Superset OAuth scopes requested at connect time when `auth_kind === 'oauth'`. */
+  scopes?: string[];
   autodiscover: boolean;
   /** ISO-8601 of the most recent `tools/list` sync; absent until first resync. */
   discovered_at?: string;

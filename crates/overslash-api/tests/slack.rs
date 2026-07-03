@@ -114,6 +114,7 @@ x-overslash-mcp:
   auth:
     kind: oauth
     provider: slack
+    scopes: [channels:read, chat:write]
   autodiscover: true
   tools:
     - name: list_channels
@@ -251,6 +252,31 @@ async fn slack_mcp_oauth_forwards_connection_token() {
         200,
         "template create: {:?}",
         resp.text().await
+    );
+
+    // The template-detail DTO must surface the oauth provider + scopes so the
+    // dashboard connect flow requests the right scope set (not an empty one).
+    let detail: Value = client
+        .get(format!("{base}/v1/templates/{key_name}"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(detail["mcp"]["auth_kind"], "oauth");
+    assert_eq!(detail["mcp"]["provider"], "slack");
+    let dto_scopes: Vec<String> = detail["mcp"]["scopes"]
+        .as_array()
+        .expect("mcp.scopes should be present for oauth")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        dto_scopes.contains(&"chat:write".to_string())
+            && dto_scopes.contains(&"channels:read".to_string()),
+        "mcp.scopes should round-trip through McpDetail, got {dto_scopes:?}"
     );
 
     // Permission (`**` covers 2- and 3-segment MCP action keys) + Layer-1 access.

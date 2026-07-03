@@ -132,7 +132,11 @@
 		const httpOauth = (selectedDetail?.auth ?? []).find((a: any) => a?.type === 'oauth') as any;
 		if (httpOauth) return httpOauth;
 		if (isMcp && selectedDetail?.mcp?.auth_kind === 'oauth' && selectedDetail?.mcp?.provider) {
-			return { type: 'oauth', provider: selectedDetail.mcp.provider, scopes: [] as string[] };
+			return {
+				type: 'oauth',
+				provider: selectedDetail.mcp.provider,
+				scopes: (selectedDetail.mcp.scopes ?? []) as string[]
+			};
 		}
 		return undefined;
 	});

@@ -102,7 +102,9 @@
 		isMcp && template?.mcp?.auth_kind === 'oauth' ? template?.mcp?.provider : undefined
 	);
 	const oauthProvider = $derived<string | undefined>(oauthAuth?.provider ?? mcpOAuthProvider);
-	const oauthScopes = $derived<string[]>(oauthAuth?.scopes ?? []);
+	// MCP-oauth scopes live on the mcp block; without them the connect flow would
+	// request nothing and mint a token missing every permission.
+	const oauthScopes = $derived<string[]>(oauthAuth?.scopes ?? template?.mcp?.scopes ?? []);
 	const usesOAuth = $derived(!!oauthProvider);
 	const usesApiKey = $derived(
 		(template?.auth ?? []).some((a: any) => a?.type === 'api_key')
