@@ -459,10 +459,10 @@ pub async fn kernel_create_service(
             ));
         }
 
-        let expected_provider = template_def.auth.iter().find_map(|a| match a {
-            ServiceAuth::OAuth { provider, .. } => Some(provider.clone()),
-            _ => None,
-        });
+        // Covers both an HTTP `oauth` scheme and an MCP `auth.kind: oauth`
+        // provider — a pinned connection on an mcp-oauth template (HubSpot,
+        // Slack) must validate the same as an HTTP OAuth template.
+        let expected_provider = template_oauth_provider(&template_def).map(str::to_string);
         match expected_provider {
             Some(tpl_provider) if tpl_provider != connection.provider_key => {
                 return Err(AppError::BadRequest(format!(
@@ -799,10 +799,21 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
 /// only, MCP bearer only, no auth, etc.) — in which case the auto-connect
 /// orchestration in `kernel_create_service` is a no-op.
 pub(crate) fn template_oauth_provider(def: &ServiceDefinition) -> Option<&str> {
-    def.auth.iter().find_map(|a| match a {
+    // HTTP-runtime OAuth scheme first…
+    if let Some(provider) = def.auth.iter().find_map(|a| match a {
         ServiceAuth::OAuth { provider, .. } => Some(provider.as_str()),
         _ => None,
-    })
+    }) {
+        return Some(provider);
+    }
+    // …then an MCP-runtime `auth.kind: oauth` provider — both resolve through
+    // the same connection machinery, so auto-connect orchestration, pinned-
+    // connection validation, and credentials-status surfacing treat them
+    // identically. Covers HubSpot + Slack (remote OAuth MCP servers).
+    match def.mcp.as_ref().map(|m| &m.auth) {
+        Some(McpAuth::OAuth { provider, .. }) => Some(provider.as_str()),
+        _ => None,
+    }
 }
 
 /// Union every action's `required_scopes` into a sorted, deduped list.

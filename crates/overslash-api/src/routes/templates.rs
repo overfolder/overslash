@@ -163,11 +163,16 @@ struct McpDetail {
     /// must supply a URL at creation time.
     #[serde(skip_serializing_if = "Option::is_none")]
     url: Option<String>,
-    /// `none` or `bearer`. The dashboard uses this to gate the secret-name UI.
+    /// `none`, `bearer`, or `oauth`. The dashboard uses this to gate the
+    /// credential UI (secret-name field for bearer, connect prompt for oauth).
     auth_kind: String,
     /// `true` when the template has a hard-coded `secret_name`; `false` when
     /// the operator must supply one at instance creation time.
     has_default_secret_name: bool,
+    /// The OAuth provider key when `auth_kind == "oauth"`; the dashboard
+    /// renders a "connect <provider>" affordance. `None` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
     autodiscover: bool,
     /// ISO-8601 timestamp of the most recent tools/list sync. `None` if never.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -400,12 +405,12 @@ fn runtime_string(def: &ServiceDefinition) -> String {
 fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Option<McpDetail> {
     use overslash_core::types::McpAuth;
     let spec = def.mcp.as_ref()?;
-    let (auth_kind, has_default_secret_name) = match &spec.auth {
-        McpAuth::None => ("none".to_string(), false),
-        McpAuth::Bearer { secret_name } => ("bearer".to_string(), secret_name.is_some()),
+    let (auth_kind, has_default_secret_name, provider) = match &spec.auth {
+        McpAuth::None => ("none".to_string(), false, None),
+        McpAuth::Bearer { secret_name } => ("bearer".to_string(), secret_name.is_some(), None),
         // OAuth MCP servers don't carry a default secret — auth comes from the
         // caller's connection for the named provider.
-        McpAuth::OAuth { .. } => ("oauth".to_string(), false),
+        McpAuth::OAuth { provider, .. } => ("oauth".to_string(), false, Some(provider.clone())),
     };
     let discovered_at = openapi
         .get("x-overslash-mcp")
@@ -416,6 +421,7 @@ fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Opti
         url: spec.url.clone(),
         auth_kind,
         has_default_secret_name,
+        provider,
         autodiscover: spec.autodiscover,
         discovered_at,
     })

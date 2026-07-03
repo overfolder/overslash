@@ -94,11 +94,19 @@
 	const oauthAuth = $derived(
 		(template?.auth ?? []).find((a: any) => a?.type === 'oauth') as any
 	);
-	const usesOAuth = $derived(!!oauthAuth);
+	const isMcp = $derived(template?.runtime === 'mcp');
+	// MCP-runtime templates with `auth.kind: oauth` (D24) resolve through the
+	// same provider connection as HTTP OAuth, so they reuse the whole connect
+	// surface. `oauthProvider`/`oauthScopes` unify both sources.
+	const mcpOAuthProvider = $derived(
+		isMcp && template?.mcp?.auth_kind === 'oauth' ? template?.mcp?.provider : undefined
+	);
+	const oauthProvider = $derived<string | undefined>(oauthAuth?.provider ?? mcpOAuthProvider);
+	const oauthScopes = $derived<string[]>(oauthAuth?.scopes ?? []);
+	const usesOAuth = $derived(!!oauthProvider);
 	const usesApiKey = $derived(
 		(template?.auth ?? []).some((a: any) => a?.type === 'api_key')
 	);
-	const isMcp = $derived(template?.runtime === 'mcp');
 	const isSystem = $derived(!!svc?.is_system);
 	const ownerDisplay = $derived.by(() => {
 		const s = svc;
@@ -174,7 +182,7 @@
 		}
 	}
 	const matchingConnections = $derived(
-		oauthAuth ? connections.filter((c) => c.provider_key === oauthAuth.provider) : connections
+		oauthProvider ? connections.filter((c) => c.provider_key === oauthProvider) : connections
 	);
 	const currentConnection = $derived.by(() => {
 		const cid = svc?.connection_id;
@@ -189,7 +197,7 @@
 	// The template's superset scopes — what it *might* want at full power.
 	// If the connection's granted scopes don't cover this set, the dashboard
 	// prompts for an incremental upgrade.
-	const templateScopes = $derived<string[]>(oauthAuth?.scopes ?? []);
+	const templateScopes = $derived<string[]>(oauthScopes);
 	const missingScopes = $derived.by<string[]>(() => {
 		if (!currentConnection || templateScopes.length === 0) return [];
 		const granted = new Set(currentConnection.scopes);
@@ -291,7 +299,7 @@
 	}
 
 	async function reconnect() {
-		if (!oauthAuth) return;
+		if (!oauthProvider) return;
 		// Cancel any prior in-flight polling loop.
 		reconnectAbort?.abort();
 		const ctrl = new AbortController();
@@ -301,7 +309,7 @@
 		try {
 			const beforeIds = new Set(connections.map((c) => c.id));
 			const resp = await initiateOAuth(
-				{ provider: oauthAuth.provider, scopes: oauthAuth.scopes ?? [] },
+				{ provider: oauthProvider, scopes: oauthScopes },
 				ctrl.signal
 			);
 			if (ctrl.signal.aborted) return;
@@ -328,7 +336,7 @@
 					if (ctrl.signal.aborted) return;
 				}
 				const fresh = connections.find(
-					(c) => !beforeIds.has(c.id) && c.provider_key === oauthAuth.provider
+					(c) => !beforeIds.has(c.id) && c.provider_key === oauthProvider
 				);
 				if (fresh) {
 					editConnection = fresh.id;
@@ -795,7 +803,7 @@
 				{#if usesOAuth}
 					<div class="row">
 						<span class="label">Provider</span>
-						<span>{oauthAuth.provider}</span>
+						<span>{oauthProvider}</span>
 					</div>
 					<div class="row">
 						<span class="label">Status</span>

@@ -124,11 +124,19 @@
 	const authModes = $derived(
 		(selectedDetail?.auth ?? []).map((a: any) => a?.type as string).filter(Boolean)
 	);
-	const usesOAuth = $derived(authModes.includes('oauth'));
 	const usesApiKey = $derived(authModes.includes('api_key'));
-	const oauthProvider = $derived(
-		(selectedDetail?.auth ?? []).find((a: any) => a?.type === 'oauth') as any
-	);
+	// An HTTP `oauth` scheme, or an MCP-runtime `auth.kind: oauth` provider
+	// (D24) normalized to the same {provider, scopes} shape so the connect
+	// surface below is shared. MCP OAuth declares no template-level scopes.
+	const oauthProvider = $derived.by(() => {
+		const httpOauth = (selectedDetail?.auth ?? []).find((a: any) => a?.type === 'oauth') as any;
+		if (httpOauth) return httpOauth;
+		if (isMcp && selectedDetail?.mcp?.auth_kind === 'oauth' && selectedDetail?.mcp?.provider) {
+			return { type: 'oauth', provider: selectedDetail.mcp.provider, scopes: [] as string[] };
+		}
+		return undefined;
+	});
+	const usesOAuth = $derived(!!oauthProvider);
 	const matchingConnections = $derived(
 		oauthProvider
 			? connections.filter((c) => c.provider_key === oauthProvider.provider)
