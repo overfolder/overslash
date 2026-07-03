@@ -96,7 +96,7 @@ paths:
             type: string
         - name: labelIds
           in: query
-          description: "Filter by label ID (e.g. 'INBOX', 'UNREAD', 'STARRED')"
+          description: "Filter by label ID (e.g. 'INBOX', 'UNREAD', 'STARRED'). Pass an array to require multiple labels (AND)."
           schema:
             type: string
         - name: maxResults

@@ -607,18 +607,14 @@ pub(super) async fn resolve_request(
 
         let (url, body) = if action.method == "GET" || action.method == "HEAD" {
             // Append non-path params as query string
-            let url = if non_path_params.is_empty() {
+            let pairs = non_path_params
+                .iter()
+                .flat_map(|(k, v)| encode_query_param(k, v))
+                .collect::<Vec<_>>();
+            let url = if pairs.is_empty() {
                 base_url
             } else {
-                let qs = non_path_params
-                    .iter()
-                    .map(|(k, v)| {
-                        let val = v.as_str().unwrap_or(&v.to_string()).to_string();
-                        format!("{k}={}", urlencoding::encode(&val))
-                    })
-                    .collect::<Vec<_>>()
-                    .join("&");
-                format!("{base_url}?{qs}")
+                format!("{base_url}?{}", pairs.join("&"))
             };
             (url, None)
         } else {
@@ -632,18 +628,14 @@ pub(super) async fn resolve_request(
                         .map(|p| p.location == ParamLocation::Query)
                         .unwrap_or(false)
                 });
-            let url = if query_params.is_empty() {
+            let pairs = query_params
+                .iter()
+                .flat_map(|(k, v)| encode_query_param(k, v))
+                .collect::<Vec<_>>();
+            let url = if pairs.is_empty() {
                 base_url
             } else {
-                let qs = query_params
-                    .iter()
-                    .map(|(k, v)| {
-                        let val = v.as_str().unwrap_or(&v.to_string()).to_string();
-                        format!("{k}={}", urlencoding::encode(&val))
-                    })
-                    .collect::<Vec<_>>()
-                    .join("&");
-                format!("{base_url}?{qs}")
+                format!("{base_url}?{}", pairs.join("&"))
             };
             let body = if body_params.is_empty() {
                 None
@@ -807,4 +799,64 @@ pub(super) async fn resolve_request(
     Err(AppError::BadRequest(
         "request must include 'service' plus either 'action' or ('method' + 'url'/'path')".into(),
     ))
+}
+
+/// Serialize one query param into zero or more URL-encoded `key=value`
+/// pairs. Arrays expand to one pair per element (OpenAPI form/explode
+/// style, e.g. Gmail's repeatable `labelIds`); an empty array emits
+/// nothing. Nested arrays/objects inside an array fall through to their
+/// JSON string encoding — templates only declare arrays of scalars, so
+/// that case is a template bug, not a runtime one.
+fn encode_query_param(key: &str, value: &serde_json::Value) -> Vec<String> {
+    let encode = |v: &serde_json::Value| {
+        let val = v.as_str().unwrap_or(&v.to_string()).to_string();
+        format!("{key}={}", urlencoding::encode(&val))
+    };
+    match value {
+        serde_json::Value::Array(items) => items.iter().map(encode).collect(),
+        other => vec![encode(other)],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_query_param;
+    use serde_json::json;
+
+    #[test]
+    fn array_expands_to_repeated_pairs() {
+        assert_eq!(
+            encode_query_param("labelIds", &json!(["INBOX", "UNREAD"])),
+            vec!["labelIds=INBOX", "labelIds=UNREAD"]
+        );
+    }
+
+    #[test]
+    fn scalars_produce_single_pair() {
+        assert_eq!(encode_query_param("q", &json!("hello")), vec!["q=hello"]);
+        assert_eq!(
+            encode_query_param("maxResults", &json!(50)),
+            vec!["maxResults=50"]
+        );
+        assert_eq!(
+            encode_query_param("includeSpamTrash", &json!(true)),
+            vec!["includeSpamTrash=true"]
+        );
+    }
+
+    #[test]
+    fn empty_array_emits_nothing() {
+        assert_eq!(
+            encode_query_param("labelIds", &json!([])),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn elements_are_url_encoded() {
+        assert_eq!(
+            encode_query_param("q", &json!(["a b&c", "d=e"])),
+            vec!["q=a%20b%26c", "q=d%3De"]
+        );
+    }
 }
