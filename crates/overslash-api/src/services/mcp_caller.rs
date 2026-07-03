@@ -63,10 +63,32 @@ pub async fn invoke(
     auth: &McpAuth,
     tool: &str,
     arguments: &Value,
+    // Out-of-band bearer for `McpAuth::OAuth`: the live access token, resolved
+    // by the action resolver (which has the owner-identity + connection
+    // context that `resolve_headers` lacks). Merged over the vault-derived
+    // headers so it is never persisted in the resolved request.
+    oauth_header: Option<&overslash_core::types::AuthHeader>,
 ) -> Result<ActionResult, McpInvokeError> {
-    let headers = mcp_auth::resolve_headers(state, scope, auth)
+    let mut headers = mcp_auth::resolve_headers(state, scope, auth)
         .await
         .map_err(|app| McpInvokeError { app, audit: None })?;
+
+    if let Some(h) = oauth_header {
+        let name = reqwest::header::HeaderName::from_bytes(h.name.as_bytes()).map_err(|_| {
+            McpInvokeError {
+                app: AppError::Internal(format!("invalid MCP auth header name `{}`", h.name)),
+                audit: None,
+            }
+        })?;
+        let value =
+            reqwest::header::HeaderValue::from_str(&h.value).map_err(|_| McpInvokeError {
+                app: AppError::Internal(
+                    "resolved OAuth token is not a valid HTTP header value".into(),
+                ),
+                audit: None,
+            })?;
+        headers.insert(name, value);
+    }
 
     // Apply OVERSLASH_SSRF_ALLOW_PRIVATE-gated host overrides so e2e tests
     // can route MCP calls at a local fake. Same semantics as the HTTP path

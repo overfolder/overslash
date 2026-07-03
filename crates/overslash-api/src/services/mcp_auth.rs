@@ -26,6 +26,11 @@ pub async fn resolve_headers(
     let mut headers = HeaderMap::new();
     match auth {
         McpAuth::None => {}
+        // OAuth tokens are resolved earlier (in the action resolver, which has
+        // the caller's owner identity + connection context) and injected
+        // out-of-band via `McpTarget.auth_header`. Nothing to add from the
+        // vault here — return empty and let the caller merge the bearer.
+        McpAuth::OAuth { .. } => {}
         McpAuth::Bearer { secret_name } => {
             // secret_name must be resolved to Some before invocation; None here
             // is an internal bug (resolution should have caught it in actions.rs).

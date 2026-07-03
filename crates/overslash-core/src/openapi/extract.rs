@@ -606,11 +606,37 @@ pub(super) fn extract_mcp_spec(root: &Map<String, Value>) -> Result<McpSpec, Vec
                     .map(str::to_string);
                 McpAuth::Bearer { secret_name }
             }
+            Some("oauth") => {
+                let provider = a
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let Some(provider) = provider else {
+                    errors.push(ValidationIssue::new(
+                        "mcp_invalid",
+                        "x-overslash-mcp.auth.provider is required when kind is `oauth`",
+                        "x-overslash-mcp.auth.provider",
+                    ));
+                    return Err(errors);
+                };
+                let scopes = a
+                    .get("scopes")
+                    .and_then(Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                McpAuth::OAuth { provider, scopes }
+            }
             Some(other) => {
                 errors.push(ValidationIssue::new(
                     "mcp_invalid",
                     format!(
-                        "x-overslash-mcp.auth.kind must be one of `none`, `bearer` (got {other:?}); future kinds land in a follow-up PR"
+                        "x-overslash-mcp.auth.kind must be one of `none`, `bearer`, `oauth` (got {other:?})"
                     ),
                     "x-overslash-mcp.auth.kind",
                 ));
@@ -788,6 +814,18 @@ pub(super) fn extract_mcp_actions(
         let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, &mut errors);
         let redact = parse_redact(obj.get("x-overslash-redact"), &base, &mut errors);
 
+        // The upstream MCP tool name defaults to the action key, but may be
+        // overridden with `mcp_tool` when the server's tool name isn't a valid
+        // Overslash action key. HubSpot's remote MCP, for instance, names its
+        // tools `hubspot-list-objects` (dashes), which the action-key grammar
+        // `^[a-z][a-z0-9_]*$` rejects — so the key is `hubspot_list_objects`
+        // and `mcp_tool: hubspot-list-objects` carries the real name upstream.
+        let mcp_tool = obj
+            .get("mcp_tool")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| name.clone());
+
         sink.insert(
             name.clone(),
             ServiceAction {
@@ -802,7 +840,7 @@ pub(super) fn extract_mcp_actions(
                 permission: None,
                 disclose,
                 redact,
-                mcp_tool: Some(name),
+                mcp_tool: Some(mcp_tool),
                 output_schema,
                 disabled,
             },

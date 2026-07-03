@@ -1,328 +1,305 @@
-# HubSpot CRM (contacts, companies, deals, notes/engagements) via the v3
-# CRM objects API. Two auth methods are supported:
-#   - OAuth (public/marketplace apps): the org's OAuth client credentials
-#     (`OAUTH_HUBSPOT_CLIENT_ID` / `OAUTH_HUBSPOT_CLIENT_SECRET` or a BYOC
-#     credential) drive the standard authorization-code flow. Access tokens
-#     are short-lived (~30m) and refresh automatically via the refresh grant.
-#   - Private App token (apiKey): a static bearer token stored as a secret,
-#     for orgs that drive HubSpot through a Private App instead of OAuth.
+# HubSpot CRM via HubSpot's official remote MCP server
+# (https://mcp.hubspot.com), a Streamable-HTTP MCP endpoint that exposes the
+# CRM (contacts, companies, deals, tickets, …) and engagements (notes, tasks,
+# calls, emails, meetings) as tools.
+#
+# Auth: HubSpot's remote MCP requires OAuth 2.1 + PKCE against a *custom* OAuth
+# client — a "MCP auth app" the operator creates in HubSpot (Development → MCP
+# Auth Apps), which issues a client_id/client_secret. Bring that client to
+# Overslash as a BYOC credential for the `hubspot` provider; Overslash then
+# runs the connect flow and injects the resulting bearer on every tool call.
+#
+# The tool list below is authored inline (globals ship their tools in-repo).
+# It is a curated slice of HubSpot's ~21 remote-MCP tools, enriched with
+# Overslash `risk` / `scope_param` / `disclose` fields. `objectType` is the
+# scoping param for the generic object tools (values: contacts, companies,
+# deals, tickets, line_items, products, quotes, orders, carts, invoices,
+# subscriptions, leads, meetings, calls, emails, notes, tasks, users, …).
 openapi: 3.1.0
 info:
   title: HubSpot
   key: hubspot
   category: CRM
   description: >-
-    HubSpot CRM via the v3 objects API. Read and write contacts, companies,
-    and deals, and log notes (engagements). Connect with an OAuth app or a
-    Private App access token.
-servers:
-  - url: https://api.hubapi.com
-security:
-  - oauth:
+    HubSpot CRM via the official remote MCP server. Read and write contacts,
+    companies, deals, and engagements (notes/tasks) through HubSpot's hosted
+    MCP tools. Connect with a custom HubSpot OAuth (MCP auth) app.
+x-overslash-runtime: mcp
+servers: []
+paths: {}
+x-overslash-mcp:
+  url: https://mcp.hubspot.com
+  auth:
+    kind: oauth
+    provider: hubspot
+    # Superset of scopes requested at connect time. HubSpot ultimately gates
+    # access by the user's own permissions + the tools the app exposes, but
+    # these are the CRM read/write scopes the tools below rely on.
+    scopes:
       - crm.objects.contacts.read
       - crm.objects.contacts.write
       - crm.objects.companies.read
+      - crm.objects.companies.write
       - crm.objects.deals.read
-components:
-  securitySchemes:
-    oauth:
-      type: oauth2
-      provider: hubspot
-      flows:
-        authorizationCode:
-          authorizationUrl: https://app.hubspot.com/oauth/authorize
-          tokenUrl: https://api.hubapi.com/oauth/v1/token
-          scopes:
-            crm.objects.contacts.read: ""
-            crm.objects.contacts.write: ""
-            crm.objects.companies.read: ""
-            crm.objects.companies.write: ""
-            crm.objects.deals.read: ""
-            crm.objects.deals.write: ""
-    # Private App access token, injected as `Authorization: Bearer <token>`.
-    token:
-      type: apiKey
-      in: header
-      name: Authorization
-      x-overslash-prefix: "Bearer "
-      default_secret_name: hubspot_token
-paths:
-  # ── Contacts ────────────────────────────────────────────────────────
-  /crm/v3/objects/contacts:
-    get:
-      operationId: list_contacts
-      summary: List contacts
+      - crm.objects.deals.write
+      - crm.schemas.contacts.read
+  autodiscover: false
+  tools:
+    # ── generic object reads ────────────────────────────────────────────
+    - name: hubspot_list_objects
+      mcp_tool: hubspot-list-objects
       risk: read
-      parameters:
-        - name: limit
-          in: query
-          description: Number of contacts to return per page (max 100, default 10)
-          schema:
+      scope_param: objectType
+      description: "List a page of {objectType} records"
+      input_schema:
+        type: object
+        properties:
+          objectType:
+            type: string
+            description: "CRM object type, e.g. `contacts`, `companies`, `deals`, `tickets`."
+          limit:
             type: integer
+            minimum: 1
+            maximum: 100
             default: 10
-        - name: after
-          in: query
-          description: Paging cursor token from the previous response's `paging.next.after`
-          schema:
+            description: "Records per page (max 100)."
+          after:
             type: string
-        - name: properties
-          in: query
-          description: "Comma-separated list of properties to return, e.g. `email,firstname,lastname`"
-          schema:
-            type: string
-        - name: archived
-          in: query
-          description: Whether to return only archived contacts (default false)
-          schema:
-            type: boolean
-    post:
-      operationId: create_contact
-      summary: "Create a contact"
-      risk: write
-      disclose:
-        - label: Email
-          filter: .body.properties.email // empty
-        - label: Name
-          filter: '[.body.properties.firstname // empty, .body.properties.lastname // empty] | join(" ") | select(length > 0)'
-        - label: Company
-          filter: .body.properties.company // empty
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [properties]
-              properties:
-                properties:
-                  type: object
-                  description: >-
-                    Contact property name/value map, e.g.
-                    {"email": "a@b.com", "firstname": "Ada", "lastname": "Lovelace",
-                    "phone": "+1-555-0100", "company": "Analytical Engines"}
-                associations:
-                  type: array
-                  description: "Optional associations to other CRM records: [{to: {id}, types: [{associationCategory, associationTypeId}]}]"
-  /crm/v3/objects/contacts/{contactId}:
-    parameters:
-      - name: contactId
-        in: path
-        required: true
-        description: The contact's object id
-        schema:
-          type: string
-        resolve:
-          get: /crm/v3/objects/contacts/{contactId}
-          pick: properties.email
-    get:
-      operationId: get_contact
-      summary: "Get contact {contactId}"
+            description: "Paging cursor from the previous response's `paging.next.after`."
+          properties:
+            type: array
+            items:
+              type: string
+            description: "Property names to return, e.g. [\"email\", \"firstname\"]."
+        required: [objectType]
+
+    - name: hubspot_search_objects
+      mcp_tool: hubspot-search-objects
       risk: read
-      scope_param: contactId
-      parameters:
-        - name: properties
-          in: query
-          description: Comma-separated list of properties to return
-          schema:
+      scope_param: objectType
+      description: "Search {objectType} records by filters or free text"
+      input_schema:
+        type: object
+        properties:
+          objectType:
             type: string
-        - name: associations
-          in: query
-          description: "Comma-separated object types to return associated ids for, e.g. `companies,deals`"
-          schema:
+            description: "CRM object type to search."
+          query:
             type: string
-        - name: archived
-          in: query
-          description: Whether to return the record even if archived (default false)
-          schema:
-            type: boolean
-    patch:
-      operationId: update_contact
-      summary: "Update contact {contactId}"
+            description: "Free-text search string."
+          filterGroups:
+            type: array
+            description: >-
+              Up to 5 filter groups (OR'd); each has `filters`
+              [{propertyName, operator, value}] (AND'd within a group).
+            items:
+              type: object
+          properties:
+            type: array
+            items:
+              type: string
+            description: "Property names to return."
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 10
+            description: "Max results per page (max 200)."
+          after:
+            type: string
+            description: "Paging cursor."
+        required: [objectType]
+
+    - name: hubspot_batch_read_objects
+      mcp_tool: hubspot-batch-read-objects
+      risk: read
+      scope_param: objectType
+      description: "Read up to 100 {objectType} records by id"
+      input_schema:
+        type: object
+        properties:
+          objectType:
+            type: string
+            description: "CRM object type."
+          inputs:
+            type: array
+            description: "Records to read: [{id}] (or {id, idProperty} to look up by a unique property)."
+            items:
+              type: object
+          properties:
+            type: array
+            items:
+              type: string
+            description: "Property names to return."
+        required: [objectType, inputs]
+
+    # ── generic object writes ───────────────────────────────────────────
+    - name: hubspot_batch_create_objects
+      mcp_tool: hubspot-batch-create-objects
       risk: write
-      scope_param: contactId
+      scope_param: objectType
+      description: "Create {objectType} records"
+      input_schema:
+        type: object
+        properties:
+          objectType:
+            type: string
+            description: "CRM object type to create."
+          inputs:
+            type: array
+            description: "Records to create: [{properties: {...}, associations?: [...]}]."
+            items:
+              type: object
+        required: [objectType, inputs]
+      # MCP-runtime disclosure input is {runtime, tool, arguments, service,
+      # action}; filters address `.arguments.*`.
       disclose:
-        - label: Contact
-          filter: .params.contactId // empty
+        - label: Object type
+          filter: .arguments.objectType
+        - label: Count
+          filter: '.arguments.inputs | length'
+        - label: First email
+          filter: '.arguments.inputs[0].properties.email // empty'
+
+    - name: hubspot_batch_update_objects
+      mcp_tool: hubspot-batch-update-objects
+      risk: write
+      scope_param: objectType
+      description: "Update {objectType} records by id"
+      input_schema:
+        type: object
+        properties:
+          objectType:
+            type: string
+            description: "CRM object type to update."
+          inputs:
+            type: array
+            description: "Records to update: [{id, properties: {...}}]."
+            items:
+              type: object
+        required: [objectType, inputs]
+      disclose:
+        - label: Object type
+          filter: .arguments.objectType
+        - label: Count
+          filter: '.arguments.inputs | length'
+        - label: Ids
+          filter: '[.arguments.inputs[].id] | join(", ")'
+
+    # ── engagements (notes / tasks / calls / emails / meetings) ─────────
+    - name: hubspot_create_engagement
+      mcp_tool: hubspot-create-engagement
+      risk: write
+      scope_param: type
+      description: "Log a {type} engagement"
+      input_schema:
+        type: object
+        properties:
+          type:
+            type: string
+            enum: [NOTE, TASK, MEETING, CALL, EMAIL]
+            description: "Engagement type."
+          properties:
+            type: object
+            description: >-
+              Engagement properties, e.g. {\"hs_note_body\": \"Called re: renewal\",
+              \"hs_timestamp\": \"2026-07-03T12:00:00Z\"}.
+          associations:
+            type: array
+            description: "Records to associate the engagement with, e.g. a contact/company/deal."
+            items:
+              type: object
+        required: [type, properties]
+      disclose:
+        - label: Type
+          filter: .arguments.type
+        - label: Note
+          filter: '.arguments.properties.hs_note_body // empty'
+          max_chars: 500
+        - label: Task
+          filter: '.arguments.properties.hs_task_subject // empty'
+
+    - name: hubspot_update_engagement
+      mcp_tool: hubspot-update-engagement
+      risk: write
+      scope_param: engagementId
+      description: "Update engagement {engagementId}"
+      input_schema:
+        type: object
+        properties:
+          engagementId:
+            type: string
+            description: "The engagement's object id."
+          properties:
+            type: object
+            description: "Engagement properties to update."
+        required: [engagementId, properties]
+      disclose:
+        - label: Engagement
+          filter: .arguments.engagementId
         - label: Updated fields
-          filter: '(.body.properties // {}) | keys | join(", ") | select(length > 0)'
-        - label: Email
-          filter: .body.properties.email // empty
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [properties]
-              properties:
-                properties:
-                  type: object
-                  description: >-
-                    Contact property name/value map to update, e.g.
-                    {"jobtitle": "CTO", "phone": "+1-555-0199"}
-  # ── Companies ───────────────────────────────────────────────────────
-  /crm/v3/objects/companies:
-    get:
-      operationId: list_companies
-      summary: List companies
+          filter: '(.arguments.properties // {}) | keys | join(", ") | select(length > 0)'
+
+    - name: hubspot_get_engagement
+      mcp_tool: hubspot-get-engagement
       risk: read
-      parameters:
-        - name: limit
-          in: query
-          description: Number of companies to return per page (max 100, default 10)
-          schema:
-            type: integer
-            default: 10
-        - name: after
-          in: query
-          description: Paging cursor token from the previous response's `paging.next.after`
-          schema:
+      scope_param: engagementId
+      description: "Get engagement {engagementId}"
+      input_schema:
+        type: object
+        properties:
+          engagementId:
             type: string
-        - name: properties
-          in: query
-          description: "Comma-separated list of properties to return, e.g. `name,domain,industry`"
-          schema:
-            type: string
-        - name: archived
-          in: query
-          description: Whether to return only archived companies (default false)
-          schema:
-            type: boolean
-  /crm/v3/objects/companies/{companyId}:
-    parameters:
-      - name: companyId
-        in: path
-        required: true
-        description: The company's object id
-        schema:
-          type: string
-        resolve:
-          get: /crm/v3/objects/companies/{companyId}
-          pick: properties.name
-    get:
-      operationId: get_company
-      summary: "Get company {companyId}"
+            description: "The engagement's object id."
+        required: [engagementId]
+
+    # ── associations, properties, schema, identity ─────────────────────
+    - name: hubspot_list_associations
+      mcp_tool: hubspot-list-associations
       risk: read
-      scope_param: companyId
-      parameters:
-        - name: properties
-          in: query
-          description: Comma-separated list of properties to return
-          schema:
+      scope_param: objectType
+      description: "List records associated with a {objectType} record"
+      input_schema:
+        type: object
+        properties:
+          objectType:
             type: string
-        - name: associations
-          in: query
-          description: "Comma-separated object types to return associated ids for, e.g. `contacts,deals`"
-          schema:
+            description: "Source CRM object type."
+          objectId:
             type: string
-        - name: archived
-          in: query
-          description: Whether to return the record even if archived (default false)
-          schema:
-            type: boolean
-  # ── Deals ───────────────────────────────────────────────────────────
-  /crm/v3/objects/deals:
-    get:
-      operationId: list_deals
-      summary: List deals
+            description: "Source record id."
+          toObjectType:
+            type: string
+            description: "Associated object type to return, e.g. `companies`."
+        required: [objectType, objectId, toObjectType]
+
+    - name: hubspot_list_properties
+      mcp_tool: hubspot-list-properties
       risk: read
-      parameters:
-        - name: limit
-          in: query
-          description: Number of deals to return per page (max 100, default 10)
-          schema:
-            type: integer
-            default: 10
-        - name: after
-          in: query
-          description: Paging cursor token from the previous response's `paging.next.after`
-          schema:
+      scope_param: objectType
+      description: "List the defined properties for {objectType}"
+      input_schema:
+        type: object
+        properties:
+          objectType:
             type: string
-        - name: properties
-          in: query
-          description: "Comma-separated list of properties to return, e.g. `dealname,amount,dealstage,pipeline`"
-          schema:
-            type: string
-        - name: archived
-          in: query
-          description: Whether to return only archived deals (default false)
-          schema:
-            type: boolean
-  /crm/v3/objects/deals/{dealId}:
-    parameters:
-      - name: dealId
-        in: path
-        required: true
-        description: The deal's object id
-        schema:
-          type: string
-        resolve:
-          get: /crm/v3/objects/deals/{dealId}
-          pick: properties.dealname
-    get:
-      operationId: get_deal
-      summary: "Get deal {dealId}"
+            description: "CRM object type."
+        required: [objectType]
+
+    - name: hubspot_get_schemas
+      mcp_tool: hubspot-get-schemas
       risk: read
-      scope_param: dealId
-      parameters:
-        - name: properties
-          in: query
-          description: Comma-separated list of properties to return
-          schema:
-            type: string
-        - name: associations
-          in: query
-          description: "Comma-separated object types to return associated ids for, e.g. `contacts,companies`"
-          schema:
-            type: string
-        - name: archived
-          in: query
-          description: Whether to return the record even if archived (default false)
-          schema:
-            type: boolean
-  # ── Notes (engagements) ─────────────────────────────────────────────
-  /crm/v3/objects/notes:
-    get:
-      operationId: list_notes
-      summary: List notes
+      description: "List custom object schemas (and their objectType ids)"
+      input_schema:
+        type: object
+        properties: {}
+        required: []
+
+    - name: hubspot_get_user_details
+      mcp_tool: hubspot-get-user-details
       risk: read
-      parameters:
-        - name: limit
-          in: query
-          description: Number of notes to return per page (max 100, default 10)
-          schema:
-            type: integer
-            default: 10
-        - name: after
-          in: query
-          description: Paging cursor token from the previous response's `paging.next.after`
-          schema:
-            type: string
-        - name: properties
-          in: query
-          description: "Comma-separated list of properties to return, e.g. `hs_note_body,hs_timestamp`"
-          schema:
-            type: string
-    post:
-      operationId: create_note
-      summary: "Log a note (engagement)"
-      risk: write
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [properties]
-              properties:
-                properties:
-                  type: object
-                  description: >-
-                    Note property map. `hs_note_body` holds the note text and
-                    `hs_timestamp` the creation time (epoch ms or ISO 8601), e.g.
-                    {"hs_note_body": "Called re: renewal", "hs_timestamp": "2026-07-02T12:00:00Z"}
-                associations:
-                  type: array
-                  description: >-
-                    Records to associate the note with, e.g. a contact:
-                    [{to: {id: "123"}, types: [{associationCategory: "HUBSPOT_DEFINED", associationTypeId: 202}]}]
+      description: "Get the authenticated user, hub id, and granted scopes"
+      input_schema:
+        type: object
+        properties: {}
+        required: []

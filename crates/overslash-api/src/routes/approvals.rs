@@ -1437,6 +1437,60 @@ async fn execute_claimed_approval(
             // envelope and still count as successful execution from the
             // approval's perspective: the agent's call ran, the policy
             // decision was honored. Rule creation should still happen.
+            // Re-resolve OAuth fresh at replay time. Like the HTTP replay path,
+            // the stored payload is credential-free (only the provider survives
+            // in `call.auth`), so the token — which may have expired while the
+            // approval sat pending — is minted anew against the requester's
+            // owner identity here.
+            let mcp_oauth_header = match &call.auth {
+                overslash_core::types::McpAuth::OAuth { provider, .. } => {
+                    let owner = match crate::services::group_ceiling::resolve_ceiling_user_id(
+                        scope,
+                        approval.identity_id,
+                    )
+                    .await
+                    {
+                        Ok(o) => o,
+                        Err(e) => {
+                            return fail_and_return(
+                                scope,
+                                execution_id,
+                                &format!("replay auth re-resolution failed: {e}"),
+                                e,
+                            )
+                            .await;
+                        }
+                    };
+                    match crate::routes::actions::resolve_mcp_oauth_bearer(
+                        state, ext, scope, owner, provider, None,
+                    )
+                    .await
+                    {
+                        Ok(Some(h)) => Some(h),
+                        Ok(None) => {
+                            let msg = "cannot replay: no OAuth connection for the MCP provider \
+                                       (it may have been removed since the approval was created)";
+                            return fail_and_return(
+                                scope,
+                                execution_id,
+                                msg,
+                                AppError::Conflict(msg.into()),
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            return fail_and_return(
+                                scope,
+                                execution_id,
+                                &format!("replay auth re-resolution failed: {e}"),
+                                e,
+                            )
+                            .await;
+                        }
+                    }
+                }
+                _ => None,
+            };
             let outcome = tokio::time::timeout(
                 replay_timeout,
                 mcp_caller::invoke(
@@ -1446,6 +1500,7 @@ async fn execute_claimed_approval(
                     &call.auth,
                     &call.tool,
                     &call.arguments,
+                    mcp_oauth_header.as_ref(),
                 ),
             )
             .await;
