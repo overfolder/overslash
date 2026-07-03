@@ -344,6 +344,145 @@ async fn test_hubspot_crm_modes() {
 }
 
 // ============================================================================
+// Disclosure — contact writes surface labeled, human-readable fields on the
+// approval envelope (SPEC §N "Detail disclosure"). Runs the create/update
+// jq filters end-to-end via the approval gate.
+// ============================================================================
+
+/// Collect an approval envelope's `disclosed_fields` into a {label: value} map.
+fn disclosed_map(exec: &Value) -> std::collections::HashMap<String, String> {
+    exec["disclosed_fields"]
+        .as_array()
+        .expect("disclosed_fields present on approval envelope")
+        .iter()
+        .map(|f| {
+            (
+                f["label"].as_str().unwrap().to_string(),
+                f["value"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn test_hubspot_contact_write_disclosure() {
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+    let mock_host = format!("http://{mock_addr}");
+
+    let (base, client) =
+        common::start_api_with_registry(pool.clone(), Some(("hubspot", mock_host.clone()))).await;
+    let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+
+    // Layer-1: grant the hubspot service instance to Everyone so the ceiling
+    // clears. Deliberately DO NOT add a `hubspot:*:*` permission rule — the
+    // Layer-2 gap routes the write to a pending approval, which is where the
+    // disclosed fields surface.
+    common::grant_service_to_everyone(&base, &client, &admin_key, "hubspot").await;
+
+    // Seed the OAuth connection so auth auto-resolves. Auto-injected auth forces
+    // the approval gate even without an explicit secret ref.
+    let enc_key = overslash_core::crypto::Keyring::test();
+    let encrypted_token =
+        overslash_core::crypto::encrypt(&enc_key, b"hubspot-oauth-token-abc").unwrap();
+    let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
+    let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
+    let future_time = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_byoc_credential(ident_id, "hubspot", &encrypted_cid, &encrypted_csec)
+        .await
+        .unwrap();
+    let scopes = crm_scopes();
+    overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_connection(overslash_db::repos::connection::CreateConnection {
+            org_id,
+            identity_id: owner_id,
+            provider_key: "hubspot",
+            encrypted_access_token: &encrypted_token,
+            encrypted_refresh_token: None,
+            token_expires_at: Some(future_time),
+            scopes: Some(&scopes),
+            account_email: None,
+            byoc_credential_id: Some(byoc.id),
+        })
+        .await
+        .unwrap();
+
+    // ===== create_contact → Email + Name disclosed; Company omitted =====
+    let exec: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "hubspot",
+            "action": "create_contact",
+            "params": {
+                "properties": {
+                    "email": "ada@analytical.example",
+                    "firstname": "Ada",
+                    "lastname": "Lovelace"
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("pending_approval"),
+        "create_contact should gate to approval without a permission rule: {exec:?}"
+    );
+    let fields = disclosed_map(&exec);
+    assert_eq!(
+        fields.get("Email").map(String::as_str),
+        Some("ada@analytical.example")
+    );
+    assert_eq!(fields.get("Name").map(String::as_str), Some("Ada Lovelace"));
+    assert!(
+        !fields.contains_key("Company"),
+        "Company should be omitted when absent, got: {fields:?}"
+    );
+
+    // ===== update_contact → Contact id + Updated fields disclosed; Email omitted =====
+    let exec: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "hubspot",
+            "action": "update_contact",
+            "params": {
+                "contactId": "12345",
+                "properties": {"jobtitle": "CTO", "phone": "+1-555-0199"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("pending_approval"),
+        "update_contact should gate to approval: {exec:?}"
+    );
+    let fields = disclosed_map(&exec);
+    assert_eq!(fields.get("Contact").map(String::as_str), Some("12345"));
+    assert_eq!(
+        fields.get("Updated fields").map(String::as_str),
+        Some("jobtitle, phone"),
+        "Updated fields should list the changed property keys, got: {fields:?}"
+    );
+    assert!(
+        !fields.contains_key("Email"),
+        "Email should be omitted when not part of the update, got: {fields:?}"
+    );
+}
+
+// ============================================================================
 // Real HubSpot API test (requires HUBSPOT_TEST_TOKEN + OAUTH_HUBSPOT_*).
 // ============================================================================
 

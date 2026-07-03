@@ -79,6 +79,13 @@ paths:
       operationId: create_contact
       summary: "Create a contact"
       risk: write
+      disclose:
+        - label: Email
+          filter: .body.properties.email // empty
+        - label: Name
+          filter: '[.body.properties.firstname // empty, .body.properties.lastname // empty] | join(" ") | select(length > 0)'
+        - label: Company
+          filter: .body.properties.company // empty
       requestBody:
         required: true
         content:
@@ -133,6 +140,13 @@ paths:
       summary: "Update contact {contactId}"
       risk: write
       scope_param: contactId
+      disclose:
+        - label: Contact
+          filter: .params.contactId // empty
+        - label: Updated fields
+          filter: '(.body.properties // {}) | keys | join(", ") | select(length > 0)'
+        - label: Email
+          filter: .body.properties.email // empty
       requestBody:
         required: true
         content:
