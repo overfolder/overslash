@@ -902,7 +902,10 @@
 								{/if}
 							</span>
 						</div>
-						{#if template.mcp?.autodiscover !== false && template.tier !== 'global'}
+						<!-- Resync isn't supported for oauth-auth MCP servers (the admin
+						     resync path carries no per-user token) — the backend 400s, so
+						     don't offer the button even if autodiscover is left on. -->
+						{#if template.mcp?.autodiscover !== false && template.tier !== 'global' && template.mcp?.auth_kind !== 'oauth'}
 							<button
 								type="button"
 								class="btn"

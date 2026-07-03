@@ -32,13 +32,12 @@ x-overslash-mcp:
       - groups:history
       - users:read
       - search:read
-  # Slack does not publish canonical machine tool slugs, and a *global*
-  # template can't be resynced (globals ship their tool list in-repo). The
-  # tools below are authored from Slack's published MCP capability docs
-  # (Feb–May 2026 changelogs) and cover the core surface. When promoted to an
-  # org/user tier, `POST /v1/templates/slack/mcp/resync` (with a connected
-  # Slack identity) reconciles these against the live `tools/list`.
-  autodiscover: true
+  # Tool list is authored inline (from Slack's published MCP capability docs,
+  # Feb–May 2026 changelogs) and is authoritative. `autodiscover: false`
+  # because `tools/list` resync isn't supported for oauth-auth MCP servers
+  # (the admin resync path carries no per-user token) — matching hubspot.yaml.
+  # Every tool therefore declares `input_schema`.
+  autodiscover: false
   tools:
     # ── messaging (write — the tool that most benefits from disclosure) ──
     - name: send_message
