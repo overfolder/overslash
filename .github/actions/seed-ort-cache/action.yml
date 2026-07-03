@@ -1,0 +1,34 @@
+name: Seed ort-sys binary cache
+description: >
+  Pre-populate ~/.cache/ort.pyke.io with the ONNX Runtime static binaries
+  that ort-sys 2.0.0-rc.12 (pulled in via fastembed) would otherwise download
+  from cdn.pyke.io at build time. That CDN currently answers HTTP 403 to
+  non-browser clients, which fails every job that compiles ort-sys from a
+  cold cache. The ort-sys build script skips the download entirely when the
+  dist-hash directory already exists, so seeding it here makes CI immune to
+  the CDN. The asset is the build script's own hash-verified extraction,
+  re-hosted as a release asset on this repo.
+
+  Remove this action (and the ort-sys-cache-ms-1.24.2 release) when the
+  upstream CDN is reliable again or when bumping ort-sys — the dist hash
+  below is specific to 2.0.0-rc.12 / ms@1.24.2 / x86_64-unknown-linux-gnu
+  (see build/download/dist.txt in the ort-sys crate for the current values).
+
+runs:
+  using: composite
+  steps:
+    - name: Seed ort-sys binary cache
+      shell: bash
+      run: |
+        DIST_HASH=acc1cba79c337594ead1d88ca72516147aa60054c84217b53399a31caa5ba671
+        TARGET_DIR="$HOME/.cache/ort.pyke.io/dfbin/x86_64-unknown-linux-gnu"
+        if [ -d "$TARGET_DIR/$DIST_HASH" ]; then
+          echo "ort-sys cache already present, nothing to do"
+          exit 0
+        fi
+        mkdir -p "$TARGET_DIR"
+        curl --proto '=https' --tlsv1.2 -sSfL --retry 5 --retry-connrefused \
+          "https://github.com/${GITHUB_REPOSITORY}/releases/download/ort-sys-cache-ms-1.24.2/ort-dfbin-x86_64-unknown-linux-gnu-acc1cba7.tar.gz" \
+          | tar -xz -C "$TARGET_DIR"
+        test -f "$TARGET_DIR/$DIST_HASH/libonnxruntime.a"
+        echo "seeded $TARGET_DIR/$DIST_HASH"
