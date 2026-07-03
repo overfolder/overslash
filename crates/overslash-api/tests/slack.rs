@@ -278,6 +278,20 @@ async fn slack_mcp_oauth_forwards_connection_token() {
             && dto_scopes.contains(&"channels:read".to_string()),
         "mcp.scopes should round-trip through McpDetail, got {dto_scopes:?}"
     );
+    // The top-level `scopes` (for white-label/token-vault consumers) must also
+    // include the mcp oauth scopes — MCP tools carry no per-action scopes.
+    let top_scopes: Vec<String> = detail["scopes"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        top_scopes.contains(&"chat:write".to_string()),
+        "template-level scopes should include mcp oauth scopes, got {top_scopes:?}"
+    );
 
     // Permission (`**` covers 2- and 3-segment MCP action keys) + Layer-1 access.
     client

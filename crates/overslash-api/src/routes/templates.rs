@@ -306,17 +306,26 @@ fn is_global_visible(filter: &Option<HashSet<String>>, key: &str) -> bool {
     }
 }
 
-/// Union every action's `required_scopes` into a sorted, deduped list — the
-/// OAuth scopes that fully cover this template. Mirrors
-/// `platform_services::template_action_scopes`; surfaced on `TemplateDetail`
-/// so white-label partners (token-vault import) request exactly these.
+/// Union the OAuth scopes that fully cover this template into a sorted, deduped
+/// list — every action's `required_scopes` plus, for MCP-runtime `auth.kind:
+/// oauth` templates, the service-level `McpAuth::OAuth { scopes }` (MCP tools
+/// carry no per-action scopes). Mirrors `platform_services::template_action_scopes`;
+/// surfaced on `TemplateDetail` so white-label partners (token-vault import)
+/// request exactly these.
 fn template_required_scopes(def: &ServiceDefinition) -> Vec<String> {
-    def.actions
+    use overslash_core::types::McpAuth;
+    let mut scopes: std::collections::BTreeSet<String> = def
+        .actions
         .values()
         .flat_map(|a| a.required_scopes.iter().cloned())
-        .collect::<std::collections::BTreeSet<String>>()
-        .into_iter()
-        .collect()
+        .collect();
+    if let Some(McpAuth::OAuth {
+        scopes: mcp_scopes, ..
+    }) = def.mcp.as_ref().map(|m| &m.auth)
+    {
+        scopes.extend(mcp_scopes.iter().cloned());
+    }
+    scopes.into_iter().collect()
 }
 
 fn actions_from_definition(def: &ServiceDefinition) -> Vec<ActionSummary> {
