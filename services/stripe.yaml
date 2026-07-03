@@ -30,6 +30,15 @@ paths:
       operationId: create_charge
       summary: "Create charge for {amount} {currency}"
       risk: write
+      disclose:
+        - label: Amount (smallest currency unit)
+          filter: .body.amount
+        - label: Currency
+          filter: .body.currency
+      # The payment source token is a credential-like value; keep it out of
+      # the persisted raw payload.
+      redact:
+        - body.source
       requestBody:
         required: true
         content:

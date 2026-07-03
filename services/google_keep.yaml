@@ -53,6 +53,12 @@ paths:
       disclose:
         - label: Title
           filter: .body.title
+        - label: Text
+          filter: .body.body.text.text // empty
+          max_chars: 2000
+        - label: Checklist
+          filter: '[.body.body.list.listItems[]?.text.text // empty] | select(length > 0) | join("; ")'
+          max_chars: 2000
       requestBody:
         required: true
         content:
@@ -91,3 +97,6 @@ paths:
       summary: "Delete note {noteId}"
       risk: delete
       scope_param: noteId
+      disclose:
+        - label: Note
+          filter: .params.noteId

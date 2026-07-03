@@ -77,6 +77,11 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/gmail.modify
+      disclose:
+        - label: Name
+          filter: .body.name
+        - label: Mailbox
+          filter: .params.userId
       parameters:
         - name: userId
           in: path
@@ -141,6 +146,11 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/gmail.modify
+      disclose:
+        - label: Label ID
+          filter: .params.id
+        - label: Mailbox
+          filter: .params.userId
       parameters:
         - name: userId
           in: path
@@ -298,6 +308,11 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/gmail.modify
+      disclose:
+        - label: Message ID
+          filter: .params.id
+        - label: Mailbox
+          filter: .params.userId
       parameters:
         - name: userId
           in: path
@@ -416,6 +431,11 @@ paths:
       # `_`→`/`, and right-pads to a multiple of 4 with `=`. The shared
       # prelude is inlined into each filter rather than factored out
       # because jq/jaq has no way to declare reusable snippets per-action.
+      #
+      # `body.raw` is deliberately NOT redacted: it is user content (not a
+      # credential), and the raw MIME is the only place a reviewer can see
+      # Cc/Bcc/attachments that the filters above don't extract. (SPEC §12a
+      # shows `redact: [body.raw]` as an illustration, not a requirement.)
       disclose:
         - label: To
           filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^To:\\s*(?<v>[^\\r\\n]+)").v'
@@ -455,6 +475,11 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/gmail.modify
+      disclose:
+        - label: Message ID
+          filter: .params.id
+        - label: Mailbox
+          filter: .params.userId
       parameters:
         - name: userId
           in: path
@@ -650,6 +675,11 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/gmail.compose
+      disclose:
+        - label: Draft ID
+          filter: .params.id
+        - label: Mailbox
+          filter: .params.userId
       parameters:
         - name: userId
           in: path

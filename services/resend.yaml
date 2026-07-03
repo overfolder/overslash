@@ -24,6 +24,16 @@ paths:
       operationId: send_email
       summary: "Send email '{subject}' to {to}"
       risk: write
+      disclose:
+        - label: To
+          filter: .body.to
+        - label: From
+          filter: .body.from
+        - label: Subject
+          filter: .body.subject
+        - label: Body (HTML)
+          filter: .body.html // empty
+          max_chars: 2000
       requestBody:
         required: true
         content:

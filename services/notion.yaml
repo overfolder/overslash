@@ -106,6 +106,18 @@ paths:
       operationId: create_page
       summary: "Create a page under parent {parent}"
       risk: write
+      # No generic "Title" path exists: subpages carry it under
+      # properties.title, database rows under whatever the DB schema names
+      # it — so disclose the whole properties object (auto-stringified as
+      # compact JSON, clamped) rather than guess the wrong key.
+      disclose:
+        - label: Parent
+          filter: .body.parent.database_id // .body.parent.page_id // empty
+        - label: Properties
+          filter: .body.properties
+          max_chars: 1000
+        - label: Content blocks
+          filter: .body.children // empty | length
       requestBody:
         required: true
         content:
@@ -149,6 +161,14 @@ paths:
       summary: "Append content blocks to {block_id}"
       risk: write
       scope_param: block_id
+      disclose:
+        - label: Block
+          filter: .params.block_id
+        - label: Content
+          filter: .body.children
+          max_chars: 2000
+        - label: Insert after
+          filter: .body.after // empty
       requestBody:
         required: true
         content:
