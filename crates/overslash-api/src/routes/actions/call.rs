@@ -525,6 +525,7 @@ pub(super) async fn call_action_impl(
             &mcp_target.auth,
             &mcp_target.tool,
             &mcp_target.arguments,
+            mcp_target.auth_header.as_ref(),
         )
         .await
         {

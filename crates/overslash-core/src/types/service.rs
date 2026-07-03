@@ -133,6 +133,18 @@ pub enum McpAuth {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secret_name: Option<String>,
     },
+    /// `Authorization: Bearer <token>`, where the token is a live OAuth access
+    /// token resolved at call time from the caller's connection for `provider`
+    /// (refreshed via the standard grant, using the org/BYOC OAuth client).
+    /// Mirrors HTTP-runtime `ServiceAuth::OAuth` but for MCP servers that sit
+    /// behind OAuth (e.g. HubSpot's remote MCP). `scopes` is the superset the
+    /// service may request at connect time.
+    #[serde(rename = "oauth")]
+    OAuth {
+        provider: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scopes: Vec<String>,
+    },
 }
 
 /// Alias: a service template is the same as a service definition.
@@ -509,10 +521,45 @@ mod tests {
     }
 
     #[test]
+    fn mcp_auth_oauth_serde() {
+        let a = McpAuth::OAuth {
+            provider: "hubspot".into(),
+            scopes: vec!["crm.objects.contacts.read".into()],
+        };
+        let j = serde_json::to_value(&a).unwrap();
+        assert_eq!(
+            j,
+            serde_json::json!({
+                "kind": "oauth",
+                "provider": "hubspot",
+                "scopes": ["crm.objects.contacts.read"]
+            })
+        );
+        let back: McpAuth = serde_json::from_value(j).unwrap();
+        assert_eq!(back, a);
+    }
+
+    #[test]
+    fn mcp_auth_oauth_without_scopes_serde() {
+        let a = McpAuth::OAuth {
+            provider: "hubspot".into(),
+            scopes: vec![],
+        };
+        let j = serde_json::to_value(&a).unwrap();
+        // Empty scopes are elided; still round-trips.
+        assert_eq!(
+            j,
+            serde_json::json!({ "kind": "oauth", "provider": "hubspot" })
+        );
+        let back: McpAuth = serde_json::from_value(j).unwrap();
+        assert_eq!(back, a);
+    }
+
+    #[test]
     fn mcp_auth_unknown_kind_rejected() {
         // Forward-compat spec: new variants in the enum are additions; *unknown*
         // variants must fail deserialization cleanly so callers know to upgrade.
-        let v = serde_json::json!({ "kind": "oauth", "provider": "google" });
+        let v = serde_json::json!({ "kind": "quantum", "secret_name": "x" });
         assert!(serde_json::from_value::<McpAuth>(v).is_err());
     }
 

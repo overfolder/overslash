@@ -403,6 +403,9 @@ fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Opti
     let (auth_kind, has_default_secret_name) = match &spec.auth {
         McpAuth::None => ("none".to_string(), false),
         McpAuth::Bearer { secret_name } => ("bearer".to_string(), secret_name.is_some()),
+        // OAuth MCP servers don't carry a default secret — auth comes from the
+        // caller's connection for the named provider.
+        McpAuth::OAuth { .. } => ("oauth".to_string(), false),
     };
     let discovered_at = openapi
         .get("x-overslash-mcp")
@@ -2024,6 +2027,17 @@ async fn resync_mcp_tools(
         McpAuth::None => reqwest::header::HeaderMap::new(),
         McpAuth::Bearer { .. } => {
             crate::services::mcp_auth::resolve_headers(&state, &scope, &mcp.auth).await?
+        }
+        // Resync (tools/list) for an OAuth MCP would need a specific connected
+        // user's token, which the admin resync path doesn't carry. OAuth MCP
+        // templates ship their tool list inline (authoritative); live
+        // discovery isn't supported here.
+        McpAuth::OAuth { .. } => {
+            return Err(AppError::BadRequest(
+                "tools/list resync is not supported for oauth-authenticated MCP servers; \
+                 the template's inline tool list is authoritative"
+                    .into(),
+            ));
         }
     };
 

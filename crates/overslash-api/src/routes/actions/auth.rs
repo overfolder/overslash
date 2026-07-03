@@ -532,6 +532,98 @@ pub(crate) async fn resolve_service_auth(
     Ok(ResolvedAuth::none())
 }
 
+/// Resolve a live OAuth bearer for an MCP-runtime service whose `mcp.auth`
+/// declares `{ kind: oauth, provider }`. Mirrors the OAuth arm of
+/// [`resolve_service_auth`] but for the single provider named in the MCP
+/// block and always as `Authorization: Bearer <token>` (MCP servers take the
+/// token in that header). Returns:
+/// - `Ok(Some(header))` — a connection exists and a token resolved (refreshed
+///   via the org/BYOC client if the access token had expired).
+/// - `Ok(None)` — no connection for `provider` yet. The caller decides: the
+///   inline resolver mints an auth URL and gates; replay fails the execution.
+/// - `Err(_)` — reauth required (refresh failed / no refresh token) mapped to
+///   the same recovery envelope the HTTP path uses, or a credential/upstream
+///   error.
+pub(crate) async fn resolve_mcp_oauth_bearer(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    scope: &OrgScope,
+    // Owner identity (D22): connections resolve at the owner, shared by every
+    // child agent, so one reauth heals all.
+    owner_identity_id: Uuid,
+    provider: &str,
+    return_url_hint: Option<&str>,
+) -> Result<Option<AuthHeader>, AppError> {
+    let org_id = scope.org_id();
+    let user_scope =
+        overslash_db::scopes::UserScope::new(org_id, owner_identity_id, scope.db().clone());
+    let enc_key = state
+        .config
+        .keyring()
+        .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
+
+    let conn = match user_scope.find_my_connection_by_provider(provider).await {
+        Ok(Some(conn)) => conn,
+        Ok(None) => return Ok(None),
+        Err(e) => {
+            return Err(AppError::Internal(format!(
+                "connection lookup for provider '{provider}' failed: {e}"
+            )));
+        }
+    };
+
+    // Client credentials for refresh — resolves the connection's pinned BYOC,
+    // then the identity/org/env cascade. HubSpot's remote MCP requires a
+    // custom BYOC app, so this is where that client_id/secret is picked up.
+    let creds = crate::services::client_credentials::resolve(
+        state.db(ext),
+        &enc_key,
+        org_id,
+        Some(owner_identity_id),
+        provider,
+        Some(&conn),
+        None,
+    )
+    .await?;
+
+    match crate::services::oauth::resolve_access_token(
+        scope,
+        &state.http_client,
+        &enc_key,
+        &conn,
+        &creds.client_id,
+        &creds.client_secret,
+    )
+    .await
+    {
+        Ok(access_token) => Ok(Some(AuthHeader {
+            name: "Authorization".to_string(),
+            value: format!("Bearer {access_token}"),
+        })),
+        Err(e) => {
+            // RefreshFailed / NoRefreshToken → `ReauthRequired` (gated URL);
+            // other resolver errors have no click-to-fix shape → BadGateway.
+            if let Some(err) = oauth_error_to_app_error_or_continue(
+                state,
+                ext,
+                org_id,
+                owner_identity_id,
+                &conn,
+                e,
+                return_url_hint,
+            )
+            .await
+            {
+                Err(err)
+            } else {
+                Err(AppError::BadGateway(
+                    "OAuth provider returned an error resolving the MCP access token".into(),
+                ))
+            }
+        }
+    }
+}
+
 /// Fail-fast scope gate: before the outgoing request is built, compare the
 /// connection's granted scopes against what this action declares. When a
 /// template doesn't declare `required_scopes`, returns `Ok(())` — preserves

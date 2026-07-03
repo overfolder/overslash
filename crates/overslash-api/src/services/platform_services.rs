@@ -1016,10 +1016,17 @@ pub fn derive_credentials_status(
     scopes: ScopeKnowledge<'_>,
     secret_name: Option<&str>,
 ) -> Option<CredentialsStatus> {
-    let has_oauth = template
-        .auth
-        .iter()
-        .any(|a| matches!(a, ServiceAuth::OAuth { .. }));
+    // An OAuth MCP server (mcp.auth kind: oauth) needs the same connection
+    // dance as an HTTP OAuth template, so fold it into `has_oauth`.
+    let mcp_oauth = matches!(
+        template.mcp.as_ref().map(|m| &m.auth),
+        Some(McpAuth::OAuth { .. })
+    );
+    let has_oauth = mcp_oauth
+        || template
+            .auth
+            .iter()
+            .any(|a| matches!(a, ServiceAuth::OAuth { .. }));
     let has_api_key = template
         .auth
         .iter()

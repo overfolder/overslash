@@ -59,7 +59,7 @@ use validate::validate_action_impl;
 
 // Used by the approval-replay path to re-mint the OAuth credential that
 // replay payloads deliberately don't persist.
-pub(crate) use auth::resolve_replay_auth_header;
+pub(crate) use auth::{resolve_mcp_oauth_bearer, resolve_replay_auth_header};
 
 /// Cap on the number of instance names we surface in `ServiceResolution`
 /// error payloads. Agents only need a handful to disambiguate; the full
@@ -518,6 +518,10 @@ struct McpTarget {
     url: String,
     /// Resolved auth — for Bearer, secret_name is always Some at this point.
     auth: McpAuth,
+    /// Live OAuth bearer for `McpAuth::OAuth`, resolved out-of-band from the
+    /// caller's connection (never persisted in the request). `None` for
+    /// `None`/`Bearer` auth. Merged into the outbound MCP headers at send time.
+    auth_header: Option<overslash_core::types::AuthHeader>,
     tool: String,
     arguments: serde_json::Value,
 }

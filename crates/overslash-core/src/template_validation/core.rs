@@ -239,6 +239,15 @@ fn check_mcp(def: &ServiceDefinition, issues: &mut Issues) {
             match &mcp.auth {
                 McpAuth::None => {}
                 McpAuth::Bearer { .. } => {}
+                McpAuth::OAuth { provider, .. } => {
+                    if provider.trim().is_empty() {
+                        issues.err(
+                            "mcp_invalid",
+                            "mcp.auth.provider must be non-empty when kind is `oauth`",
+                            "mcp.auth.provider",
+                        );
+                    }
+                }
             }
             if !def.hosts.is_empty() {
                 issues.err(

@@ -446,7 +446,11 @@ pub(super) async fn resolve_request(
                 }
             };
 
-            // Resolve bearer secret_name: instance wins, template is fallback.
+            // Resolve auth. For Bearer: pick secret_name (instance wins,
+            // template fallback). For OAuth: resolve a live bearer from the
+            // caller's connection now (out-of-band), gating to a fresh auth
+            // URL when no connection exists yet.
+            let mut mcp_oauth_header: Option<overslash_core::types::AuthHeader> = None;
             let resolved_auth = match &mcp_spec.auth {
                 McpAuth::None => McpAuth::None,
                 McpAuth::Bearer {
@@ -472,6 +476,50 @@ pub(super) async fn resolve_request(
                     };
                     McpAuth::Bearer {
                         secret_name: Some(sn),
+                    }
+                }
+                McpAuth::OAuth { provider, scopes } => {
+                    match resolve_mcp_oauth_bearer(
+                        state,
+                        ext,
+                        scope,
+                        ceiling_user_id,
+                        provider,
+                        return_url_hint,
+                    )
+                    .await?
+                    {
+                        Some(header) => mcp_oauth_header = Some(header),
+                        None => {
+                            // No connection yet — mint a gated auth URL and
+                            // hand the agent a `needs_authentication` envelope,
+                            // mirroring the HTTP OAuth path.
+                            let urls = platform_connections::mint_initial_auth_url(
+                                state,
+                                scope.org_id(),
+                                ceiling_user_id,
+                                provider,
+                                scopes,
+                                None,
+                                return_url_hint,
+                            )
+                            .await?;
+                            return Err(AppError::NeedsAuthentication {
+                                service: Some(service_key.clone()),
+                                service_instance_id: instance.as_ref().map(|i| i.id),
+                                connection_id: None,
+                                auth_url: Some(urls.auth_url),
+                                short: urls.short,
+                                provider: Some(provider.clone()),
+                                required_scopes: scopes.clone(),
+                                account_email: None,
+                                headless: false,
+                            });
+                        }
+                    }
+                    McpAuth::OAuth {
+                        provider: provider.clone(),
+                        scopes: scopes.clone(),
                     }
                 }
             };
@@ -519,6 +567,7 @@ pub(super) async fn resolve_request(
                     mcp_target: Some(McpTarget {
                         url: resolved_url,
                         auth: resolved_auth,
+                        auth_header: mcp_oauth_header,
                         tool,
                         arguments,
                     }),
