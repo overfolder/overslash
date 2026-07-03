@@ -816,17 +816,25 @@ pub(crate) fn template_oauth_provider(def: &ServiceDefinition) -> Option<&str> {
     }
 }
 
-/// Union every action's `required_scopes` into a sorted, deduped list.
-/// Same `BTreeSet` flatten that the previous `resolve_template_scopes`
-/// helper on the connection kernel used — now lives next to the only
-/// remaining caller (auto-connect orchestration in `kernel_create_service`).
+/// Union the scopes the auto-connect flow should request into a sorted, deduped
+/// list. For HTTP-runtime templates this is every action's `required_scopes`.
+/// For MCP-runtime `auth.kind: oauth` templates the scopes live at the service
+/// level in `McpAuth::OAuth { scopes }` (MCP tools carry no per-action scopes),
+/// so include those too — otherwise the connect flow requests an empty scope
+/// set and the minted token lacks the permissions every tool needs.
 fn template_action_scopes(def: &ServiceDefinition) -> Vec<String> {
-    def.actions
+    let mut scopes: std::collections::BTreeSet<String> = def
+        .actions
         .values()
         .flat_map(|a| a.required_scopes.iter().cloned())
-        .collect::<std::collections::BTreeSet<String>>()
-        .into_iter()
-        .collect()
+        .collect();
+    if let Some(McpAuth::OAuth {
+        scopes: mcp_scopes, ..
+    }) = def.mcp.as_ref().map(|m| &m.auth)
+    {
+        scopes.extend(mcp_scopes.iter().cloned());
+    }
+    scopes.into_iter().collect()
 }
 
 /// Resolve the [`ServiceDefinition`] for a template key across user/org/global tiers.
@@ -1124,6 +1132,43 @@ mod tests {
                 autodiscover: false,
             }),
         }
+    }
+
+    fn mcp_oauth_template(provider: &str, scopes: &[&str]) -> ServiceDefinition {
+        ServiceDefinition {
+            key: "t".into(),
+            display_name: "T".into(),
+            description: None,
+            hosts: vec![],
+            category: None,
+            hidden: false,
+            auth: vec![],
+            // MCP tools carry no per-action required_scopes; scopes live on the
+            // service-level oauth block.
+            actions: HashMap::new(),
+            runtime: Runtime::Mcp,
+            mcp: Some(McpSpec {
+                url: Some("https://mcp.example.com/mcp".into()),
+                auth: McpAuth::OAuth {
+                    provider: provider.to_string(),
+                    scopes: scopes.iter().map(|s| s.to_string()).collect(),
+                },
+                autodiscover: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn mcp_oauth_provider_and_scopes_surface_for_auto_connect() {
+        let def = mcp_oauth_template("slack", &["chat:write", "channels:read"]);
+        // Provider must resolve so auto-connect / pinned-connection validation fire.
+        assert_eq!(template_oauth_provider(&def), Some("slack"));
+        // Scopes come from the mcp.auth block, not (empty) per-action scopes —
+        // otherwise the connect flow requests nothing and the token is useless.
+        assert_eq!(
+            template_action_scopes(&def),
+            vec!["channels:read".to_string(), "chat:write".to_string()]
+        );
     }
 
     fn api_key_template() -> ServiceDefinition {
