@@ -6,6 +6,26 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub database_url: String,
+    /// Max connections in the *request-handler* pool. Shared by every HTTP
+    /// handler. Default 25. `DB_MAX_CONNECTIONS`. The prior code used sqlx's
+    /// bare default of 10, which — shared with ~7 background loops on the same
+    /// pool — starved under burst and fired the 30s acquire timeout (dropped
+    /// `connection.*` webhooks on overslash-dev). Cloud Run maxScale 3 × 25 =
+    /// 75, comfortably under the Postgres app ceiling (~97).
+    pub db_max_connections: u32,
+    /// Min idle connections kept warm in the request-handler pool. Default 2.
+    /// `DB_MIN_CONNECTIONS`.
+    pub db_min_connections: u32,
+    /// Seconds to wait for a free connection before erroring. Default 10.
+    /// `DB_ACQUIRE_TIMEOUT_SECS`. Lower than sqlx's 30s default so a starved
+    /// pool surfaces fast instead of blocking a handler for half a minute.
+    pub db_acquire_timeout_secs: u64,
+    /// Max connections in the dedicated *background-jobs* pool (expiry sweeps,
+    /// webhook retry/digest, embedding backfill). Default 5. `DB_BACKGROUND_MAX_CONNECTIONS`.
+    /// Isolating the loops onto their own small pool means a webhook/expiry
+    /// burst can never starve request handling — the root cause of the
+    /// overslash-dev pool-exhaustion incident.
+    pub db_background_max_connections: u32,
     /// 64-char hex master key used to encrypt every secret value, OAuth
     /// token, BYOC client_id/secret, and IdP credential. Wrapped at runtime
     /// in a [`overslash_core::crypto::Keyring`] together with
@@ -342,6 +362,22 @@ impl Config {
             host,
             port,
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL is required"),
+            db_max_connections: env::var("DB_MAX_CONNECTIONS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(25),
+            db_min_connections: env::var("DB_MIN_CONNECTIONS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2),
+            db_acquire_timeout_secs: env::var("DB_ACQUIRE_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(10),
+            db_background_max_connections: env::var("DB_BACKGROUND_MAX_CONNECTIONS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5),
             secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
                 .expect("SECRETS_ENCRYPTION_KEY is required"),
             secrets_encryption_key_previous: env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS")
@@ -1137,6 +1173,10 @@ mod tests {
             host: "127.0.0.1".into(),
             port: 0,
             database_url: String::new(),
+            db_max_connections: 5,
+            db_min_connections: 1,
+            db_acquire_timeout_secs: 10,
+            db_background_max_connections: 2,
             secrets_encryption_key: "ab".repeat(32),
             secrets_encryption_key_previous: None,
             secrets_encryption_key_active_id: 1,

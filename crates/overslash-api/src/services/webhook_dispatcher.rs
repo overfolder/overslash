@@ -86,6 +86,15 @@ fn build_envelope(
 }
 
 /// Attempt to deliver a single webhook.
+///
+/// Connection-hold invariant: this takes the `pool` (an `Arc`-cheap handle),
+/// **not** a checked-out `PoolConnection`, and never acquires a DB connection
+/// before the outbound HTTP `send()` below. The only DB work — marking the
+/// delivery delivered/failed via `SystemScope` — happens *after* the network
+/// round-trip completes and each query acquires+releases its own connection.
+/// So a slow/hung webhook endpoint can never pin a pool connection across the
+/// (up to 10s) HTTP call. Keep it that way: do not thread a `PoolConnection`
+/// or open a transaction that spans the `send()`.
 #[allow(clippy::too_many_arguments)]
 async fn deliver(
     pool: &PgPool,
