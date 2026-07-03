@@ -379,6 +379,35 @@ pub fn merge_scopes(existing: &[String], incoming: &[String]) -> Vec<String> {
     set.into_iter().collect()
 }
 
+/// Whether an in-place re-import's `incoming` scopes broaden beyond the
+/// connection's `existing` recorded scopes — i.e. `incoming` contains at least
+/// one scope not already granted. Returns `Some(comma-joined-new-scopes)` when
+/// it broadens, `None` otherwise (unknown recorded set, no incoming scopes, or
+/// incoming ⊆ existing).
+///
+/// Used by [`kernel_import_connection`] to refuse a re-import that widens the
+/// grant while carrying no fresh refresh token — see the guard there for the
+/// full rationale (connection `85844f1a` metadata-refresh-token divergence).
+/// An `existing` of `None` (recorded scopes unknown) returns `None`: we can't
+/// prove the incoming set is broader than an unknown one, and the benefit-of-
+/// the-doubt scope-gate already tolerates that connection.
+fn scopes_broadened(existing: Option<&[String]>, incoming: Option<&[String]>) -> Option<String> {
+    let incoming = incoming?;
+    let existing = existing?;
+    let existing_set: BTreeSet<&str> = existing.iter().map(String::as_str).collect();
+    let mut added: Vec<&str> = incoming
+        .iter()
+        .map(String::as_str)
+        .filter(|s| !existing_set.contains(s))
+        .collect();
+    if added.is_empty() {
+        return None;
+    }
+    added.sort_unstable();
+    added.dedup();
+    Some(added.join(", "))
+}
+
 /// Adapter used by the platform_registry handler — accepts a JSON params
 /// map and dispatches into [`kernel_create_connection`] with no network
 /// metadata.
@@ -611,6 +640,38 @@ pub async fn kernel_import_connection(
             // with NULL would discard a known granted set; a re-import that
             // supplies `scopes` overrides it.
             let next_scopes = input.scopes.clone().or_else(|| existing.scopes.clone());
+
+            // Guard the metadata-refresh-token-behind-readonly-scopes divergence
+            // (connection `85844f1a`). A re-import that BROADENS the recorded
+            // scopes while carrying NO fresh refresh token would COALESCE-preserve
+            // the *old* refresh token (below) — but that token was minted for the
+            // narrower grant and, on the next self-refresh, echoes only the
+            // narrower scopes. The scopes advance to (say) gmail.readonly while the
+            // stored refresh token is metadata-only, so calls 403 forever and the
+            // refresh path can't heal it. Google reuses one refresh token per
+            // client+user and returns `None` on re-consent, so the partner's
+            // re-import legitimately can carry no refresh token — but then it must
+            // NOT also broaden scopes against a preserved token we can't trust.
+            // Reject loudly so the partner re-runs consent with `prompt=consent`
+            // (or `access_type=offline` + revoke) to force a fresh refresh token
+            // that actually backs the wider grant.
+            let import_has_fresh_refresh = encrypted_refresh.is_some();
+            let existing_has_refresh = existing.encrypted_refresh_token.is_some();
+            if !import_has_fresh_refresh && existing_has_refresh {
+                if let Some(broadened) =
+                    scopes_broadened(existing.scopes.as_deref(), input.scopes.as_deref())
+                {
+                    return Err(AppError::BadRequest(format!(
+                        "re-import broadens granted scopes ({broadened}) but carries no fresh \
+                         refresh_token: the preserved refresh token was minted for the narrower \
+                         grant and cannot self-refresh the wider scopes (it would silently \
+                         downgrade the connection to metadata-only). Re-run the OAuth consent \
+                         with prompt=consent so the provider issues a fresh refresh token for the \
+                         wider grant, then re-import with it."
+                    )));
+                }
+            }
+
             let updated = scope
                 .update_connection_tokens_and_scopes(
                     existing.id,
@@ -920,6 +981,42 @@ mod tests {
         assert!(merge_scopes(&[], &[]).is_empty());
         assert_eq!(merge_scopes(&["x".into()], &[]), vec!["x".to_string()]);
         assert_eq!(merge_scopes(&[], &["x".into()]), vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn scopes_broadened_detects_new_scope() {
+        let existing = vec!["calendar".to_string(), "openid".to_string()];
+        let incoming = vec![
+            "calendar".to_string(),
+            "openid".to_string(),
+            "gmail.readonly".to_string(),
+        ];
+        assert_eq!(
+            scopes_broadened(Some(&existing), Some(&incoming)),
+            Some("gmail.readonly".to_string())
+        );
+    }
+
+    #[test]
+    fn scopes_broadened_none_when_subset_or_equal() {
+        let existing = vec!["calendar".to_string(), "gmail.readonly".to_string()];
+        // Equal set.
+        assert_eq!(
+            scopes_broadened(Some(&existing), Some(&existing.clone())),
+            None
+        );
+        // Narrower incoming set (a downgrade, not a broadening).
+        let narrower = vec!["calendar".to_string()];
+        assert_eq!(scopes_broadened(Some(&existing), Some(&narrower)), None);
+    }
+
+    #[test]
+    fn scopes_broadened_none_when_recorded_or_incoming_unknown() {
+        let some = vec!["gmail.readonly".to_string()];
+        // Unknown recorded set: can't prove broadening.
+        assert_eq!(scopes_broadened(None, Some(&some)), None);
+        // No incoming scopes declared.
+        assert_eq!(scopes_broadened(Some(&some), None), None);
     }
 
     #[test]
