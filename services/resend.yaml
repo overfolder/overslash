@@ -25,8 +25,10 @@ paths:
       summary: "Send email '{subject}' to {to}"
       risk: write
       disclose:
+        # The Resend API accepts `to` as a string or an array of strings;
+        # join arrays so the summary reads as addresses, not raw JSON.
         - label: To
-          filter: .body.to
+          filter: '.body.to | if type == "array" then join(", ") else . end'
         - label: From
           filter: .body.from
         - label: Subject
