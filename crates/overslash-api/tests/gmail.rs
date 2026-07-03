@@ -629,6 +629,272 @@ async fn test_gmail_e2e() {
     );
     eprintln!("  scope gating: send_message correctly returned missing_scopes");
 
+    // ===== EXTENDED COVERAGE: threads, labels, message modify, untrash =====
+    // These exercise the operations added on top of the original send/read/draft
+    // surface. All run under the primary full-scope `key` identity (Mode C).
+
+    // ===== EXT 1: list_threads (gmail.readonly) =====
+    eprintln!("  [ext 1/7] list_threads ...");
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "list_threads",
+            "params": {"userId": "me", "q": "in:inbox", "maxResults": 5}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    let threads_resp: Value =
+        serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert!(
+        threads_resp["resultSizeEstimate"].is_number(),
+        "list_threads should return resultSizeEstimate, got: {threads_resp}"
+    );
+    let first_thread_id = threads_resp["threads"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|t| t["id"].as_str())
+        .map(String::from);
+    eprintln!(
+        "  list_threads: resultSizeEstimate={}, first_id={:?}",
+        threads_resp["resultSizeEstimate"], first_thread_id
+    );
+
+    // ===== EXT 2: get_thread (gmail.readonly, only if we have a thread) =====
+    if let Some(ref tid) = first_thread_id {
+        eprintln!("  [ext 2/7] get_thread ({tid}) ...");
+        let resp = client
+            .post(format!("{base}/v1/actions/call"))
+            .header(common::auth(&key).0, common::auth(&key).1)
+            .json(&json!({
+                "service": "gmail",
+                "action": "get_thread",
+                "params": {"userId": "me", "id": tid, "format": "metadata"}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "called");
+        let thread: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            thread["id"].as_str(),
+            Some(tid.as_str()),
+            "get_thread should return the requested id"
+        );
+        let msgs = thread["messages"]
+            .as_array()
+            .expect("get_thread should return a messages array");
+        assert!(
+            !msgs.is_empty(),
+            "a thread should contain at least one message"
+        );
+        eprintln!("  get_thread: {} message(s) in thread", msgs.len());
+    } else {
+        eprintln!("  [ext 2/7] get_thread: SKIPPED (no threads in inbox)");
+    }
+
+    // ===== EXT 3: create_label (gmail.modify) =====
+    eprintln!("  [ext 3/7] create_label ...");
+    let label_name = format!("overslash-e2e-{timestamp}");
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "create_label",
+            "params": {
+                "userId": "me",
+                "name": label_name,
+                "labelListVisibility": "labelShow",
+                "messageListVisibility": "show"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    let created_label: Value =
+        serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let label_id = created_label["id"]
+        .as_str()
+        .expect("create_label should return an id")
+        .to_string();
+    assert_eq!(
+        created_label["name"].as_str(),
+        Some(label_name.as_str()),
+        "create_label should echo the requested name"
+    );
+    eprintln!("  create_label: id={label_id} name={label_name}");
+
+    // ===== EXT 4: get_label (gmail.metadata) =====
+    eprintln!("  [ext 4/7] get_label ({label_id}) ...");
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "get_label",
+            "params": {"userId": "me", "id": label_id}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    let fetched_label: Value =
+        serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        fetched_label["id"].as_str(),
+        Some(label_id.as_str()),
+        "get_label should return the same id"
+    );
+    assert_eq!(
+        fetched_label["name"].as_str(),
+        Some(label_name.as_str()),
+        "get_label should return the same name"
+    );
+
+    // ===== EXT 5: modify_message — apply then remove the label (gmail.modify) =====
+    // Re-list live inbox messages so we target a message that has *not* been
+    // trashed earlier in this run (trashed messages drop out of `in:inbox`).
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "list_messages",
+            "params": {"userId": "me", "q": "in:inbox", "maxResults": 1}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let mod_target = resp
+        .json::<Value>()
+        .await
+        .ok()
+        .and_then(|b| serde_json::from_str::<Value>(b["result"]["body"].as_str()?).ok())
+        .and_then(|m| {
+            m["messages"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|msg| msg["id"].as_str())
+                .map(String::from)
+        });
+    if let Some(ref msg_id) = mod_target {
+        eprintln!("  [ext 5/7] modify_message ({msg_id}) apply+remove label ...");
+        // Apply the label.
+        let resp = client
+            .post(format!("{base}/v1/actions/call"))
+            .header(common::auth(&key).0, common::auth(&key).1)
+            .json(&json!({
+                "service": "gmail",
+                "action": "modify_message",
+                "params": {"userId": "me", "id": msg_id, "addLabelIds": [label_id]}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "called");
+        let modified: Value =
+            serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+        let has_label = modified["labelIds"]
+            .as_array()
+            .is_some_and(|ls| ls.iter().any(|l| l.as_str() == Some(label_id.as_str())));
+        assert!(
+            has_label,
+            "modify_message add should attach the label, got: {}",
+            modified["labelIds"]
+        );
+
+        // Remove the label again (restore original state).
+        let resp = client
+            .post(format!("{base}/v1/actions/call"))
+            .header(common::auth(&key).0, common::auth(&key).1)
+            .json(&json!({
+                "service": "gmail",
+                "action": "modify_message",
+                "params": {"userId": "me", "id": msg_id, "removeLabelIds": [label_id]}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: Value = resp.json().await.unwrap();
+        let unmodified: Value =
+            serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+        let still_has_label = unmodified["labelIds"]
+            .as_array()
+            .is_some_and(|ls| ls.iter().any(|l| l.as_str() == Some(label_id.as_str())));
+        assert!(
+            !still_has_label,
+            "modify_message remove should detach the label, got: {}",
+            unmodified["labelIds"]
+        );
+        eprintln!("  modify_message: label applied and removed");
+    } else {
+        eprintln!("  [ext 5/7] modify_message: SKIPPED (no live inbox message)");
+    }
+
+    // ===== EXT 6: delete_label (gmail.modify) — cleanup =====
+    eprintln!("  [ext 6/7] delete_label ({label_id}) ...");
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "delete_label",
+            "params": {"userId": "me", "id": label_id}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "delete_label should succeed");
+    eprintln!("  delete_label: deleted {label_id}");
+
+    // ===== EXT 7: untrash_message (gmail.modify) — restore what TEST 6 trashed =====
+    if let Some(trash_id) = trash_target {
+        eprintln!("  [ext 7/7] untrash_message ({trash_id}) ...");
+        let resp = client
+            .post(format!("{base}/v1/actions/call"))
+            .header(common::auth(&key).0, common::auth(&key).1)
+            .json(&json!({
+                "service": "gmail",
+                "action": "untrash_message",
+                "params": {"userId": "me", "id": trash_id}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "called");
+        let restored: Value =
+            serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+        let still_trashed = restored["labelIds"]
+            .as_array()
+            .is_some_and(|ls| ls.iter().any(|l| l == "TRASH"));
+        assert!(
+            !still_trashed,
+            "untrash_message should remove the TRASH label, got: {}",
+            restored["labelIds"]
+        );
+        eprintln!("  untrash_message: restored {trash_id}");
+    } else {
+        eprintln!("  [ext 7/7] untrash_message: SKIPPED (nothing was trashed)");
+    }
+
     eprintln!("  All Gmail E2E tests completed!");
 }
 
