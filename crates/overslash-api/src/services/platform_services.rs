@@ -1089,6 +1089,28 @@ pub fn derive_credentials_status(
         return None;
     }
 
+    // MCP-oauth templates carry their scopes at the service level, not per
+    // action, so the per-action loop below is a no-op that would always report
+    // `Ok`. Check the mcp scopes against the connection's granted set directly
+    // (all-or-nothing — there's one scope set, no per-action granularity) so
+    // the backend status agrees with the dashboard's missing-scope warning.
+    if let Some(McpAuth::OAuth {
+        scopes: mcp_scopes, ..
+    }) = template.mcp.as_ref().map(|m| &m.auth)
+    {
+        if mcp_scopes.is_empty() {
+            return Some(CredentialsStatus::Ok);
+        }
+        let granted: std::collections::HashSet<&str> =
+            granted_list.iter().map(String::as_str).collect();
+        let all_covered = mcp_scopes.iter().all(|s| granted.contains(s.as_str()));
+        return Some(if all_covered {
+            CredentialsStatus::Ok
+        } else {
+            CredentialsStatus::NeedsReconnect
+        });
+    }
+
     let mut any_ok = false;
     let mut any_gap = false;
     for action in template.actions.values() {
@@ -1168,6 +1190,34 @@ mod tests {
         assert_eq!(
             template_action_scopes(&def),
             vec!["channels:read".to_string(), "chat:write".to_string()]
+        );
+    }
+
+    #[test]
+    fn mcp_oauth_credentials_status_checks_service_level_scopes() {
+        let def = mcp_oauth_template("slack", &["chat:write", "channels:read"]);
+        // No connection → must connect.
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::NoConnection, None),
+            Some(CredentialsStatus::NeedsAuthentication)
+        );
+        // Connection covers every mcp scope → Ok.
+        let full = ["chat:write".to_string(), "channels:read".to_string()];
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::Known(&full), None),
+            Some(CredentialsStatus::Ok)
+        );
+        // Connection missing a scope → NeedsReconnect (not a false Ok from the
+        // per-action loop, which is empty for MCP tools).
+        let partial = ["channels:read".to_string()];
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::Known(&partial), None),
+            Some(CredentialsStatus::NeedsReconnect)
+        );
+        // Unknown granted scopes → benefit of the doubt (Ok), matching the gate.
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::Unknown, None),
+            Some(CredentialsStatus::Ok)
         );
     }
 
