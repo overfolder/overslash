@@ -1,4 +1,5 @@
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead, aead::OsRng, aead::rand_core::RngCore};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+use rand::RngExt as _;
 
 /// AES-256-GCM blob layout:
 ///
@@ -181,11 +182,11 @@ fn parse_id_env(var: &'static str, default: u8) -> Result<u8, CryptoError> {
 pub fn encrypt(keyring: &Keyring, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let cipher = Aes256Gcm::new((&keyring.active_key).into());
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    rand::rng().fill(&mut nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(&nonce, plaintext)
         .map_err(|_| CryptoError::EncryptionFailed)?;
 
     let mut out = Vec::with_capacity(1 + NONCE_LEN + ciphertext.len());
@@ -210,10 +211,11 @@ pub fn decrypt(keyring: &Keyring, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let key = keyring
         .key_for(version)
         .ok_or(CryptoError::UnknownKeyVersion(version))?;
-    let nonce = Nonce::from_slice(&data[NONCE_OFFSET..CIPHERTEXT_OFFSET]);
+    let nonce = Nonce::try_from(&data[NONCE_OFFSET..CIPHERTEXT_OFFSET])
+        .map_err(|_| CryptoError::InvalidData)?;
     let cipher = Aes256Gcm::new(key.into());
     cipher
-        .decrypt(nonce, &data[CIPHERTEXT_OFFSET..])
+        .decrypt(&nonce, &data[CIPHERTEXT_OFFSET..])
         .map_err(|_| CryptoError::DecryptionFailed)
 }
 
