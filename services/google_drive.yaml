@@ -93,8 +93,10 @@ paths:
       disclose:
         - label: Name
           filter: .body.name
+        # `[]` is truthy in jq, so `// empty` alone would disclose an empty
+        # string for `parents: []`; drop empty arrays before joining.
         - label: Parent folders
-          filter: '.body.parents // empty | join(", ")'
+          filter: '.body.parents // [] | select(length > 0) | join(", ")'
       requestBody:
         required: true
         content:
@@ -248,7 +250,7 @@ paths:
         - label: Copy name
           filter: .body.name // empty
         - label: Destination folders
-          filter: '.body.parents // empty | join(", ")'
+          filter: '.body.parents // [] | select(length > 0) | join(", ")'
       parameters:
         - name: fileId
           in: path
