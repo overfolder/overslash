@@ -16,7 +16,7 @@ The prior `feat/mcp-hosting` branch tried to bundle this with *hosting* (subproc
 - A service template can declare `x-overslash-runtime: mcp` with an `x-overslash-mcp` block.
 - Agents invoke its tools through `/v1/actions/call` exactly as they would an HTTP action.
 - Permission chain, approval bubbling, and audit semantics are unchanged.
-- Auth supported: `none`, `bearer` (via the org secret vault).
+- Auth supported: `none`, `bearer` (via the org secret vault), `oauth` (via a provider connection — HubSpot/Slack remote MCP; see below).
 - Streamable HTTP transport only (MCP 2025-06-18). No stdio, no subprocess, no hosting.
 
 ## Template shape
@@ -41,6 +41,27 @@ x-overslash-mcp:
       scope_param: team
   # discovered_tools: [ … ]          # populated by /mcp/resync; do not hand-edit
 ```
+
+### OAuth auth kind
+
+```yaml
+x-overslash-mcp:
+  url: https://mcp.slack.com/mcp     # or https://mcp.hubspot.com
+  auth:
+    kind: oauth
+    provider: slack                  # an oauth_providers row
+    scopes: [chat:write, channels:read, ...]   # superset requested at connect
+```
+
+`kind: oauth` authenticates to the upstream MCP server with a live token from a
+provider **connection**, not a static vault secret. At call time
+`mcp_auth::resolve_headers` resolves the caller's owner connection (D22) for
+`provider`, refreshes it if expired (org/BYOC OAuth client), and injects
+`Authorization: Bearer <token>` — mirroring HTTP-runtime `ServiceAuth::OAuth`.
+This is distinct from the DCR-based resource-server flow in the non-goals below:
+it reuses a **pre-configured** provider client, so it works with MCP auth
+servers that don't support Dynamic Client Registration (e.g. Slack, HubSpot).
+`services/hubspot.yaml` and `services/slack.yaml` are the shipped examples.
 
 - `tools[]` is the admin-authored overlay (risk, scope_param, disabled, description/schema overrides).
 - `discovered_tools[]` is populated by `POST /v1/templates/:key/mcp/resync` from a live `tools/list` call.
@@ -104,7 +125,7 @@ No separate "Add MCP server" wizard — admins paste the YAML in the template ed
 ## Non-goals / deferred
 
 - Custom-header auth (`kind: header` / `headers`) — schema slot reserved, not implemented.
-- MCP OAuth 2.1 resource server support (discovery, DCR, PKCE, per-user connections).
+- MCP OAuth 2.1 **resource-server** support (RFC 9728 discovery, DCR, PKCE, per-upstream connections) — the DCR-based nested-upstream-OAuth path. Note: the `oauth` auth kind above (provider-connection bearer) is implemented and covers OAuth MCP servers that don't support DCR; the discovery/DCR variant remains deferred.
 - Stateful sessions + out-of-band enrollment (WhatsApp-style QR pairing, Signal, etc.). Credential persistence stays server-side; Overslash only tracks paired/not-paired when that's added.
 - stdio/subprocess MCP servers.
 - Hosted MCP runtime.

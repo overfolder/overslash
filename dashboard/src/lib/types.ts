@@ -341,10 +341,14 @@ export type ServiceRuntime = 'http' | 'mcp';
 export interface McpDetail {
   /** Absent when the template has no default URL (operator must supply one at instance creation). */
   url?: string;
-  /** v1: `none` | `bearer`. */
-  auth_kind: 'none' | 'bearer';
+  /** `none` | `bearer` | `oauth`. */
+  auth_kind: 'none' | 'bearer' | 'oauth';
   /** `true` when the template has a hard-coded `secret_name`; `false` means the operator must supply one at instance creation. */
   has_default_secret_name: boolean;
+  /** OAuth provider key when `auth_kind === 'oauth'` (D24); drives the connect affordance. */
+  provider?: string;
+  /** Superset OAuth scopes requested at connect time when `auth_kind === 'oauth'`. */
+  scopes?: string[];
   autodiscover: boolean;
   /** ISO-8601 of the most recent `tools/list` sync; absent until first resync. */
   discovered_at?: string;

@@ -459,10 +459,10 @@ pub async fn kernel_create_service(
             ));
         }
 
-        let expected_provider = template_def.auth.iter().find_map(|a| match a {
-            ServiceAuth::OAuth { provider, .. } => Some(provider.clone()),
-            _ => None,
-        });
+        // Covers both an HTTP `oauth` scheme and an MCP `auth.kind: oauth`
+        // provider — a pinned connection on an mcp-oauth template (HubSpot,
+        // Slack) must validate the same as an HTTP OAuth template.
+        let expected_provider = template_oauth_provider(&template_def).map(str::to_string);
         match expected_provider {
             Some(tpl_provider) if tpl_provider != connection.provider_key => {
                 return Err(AppError::BadRequest(format!(
@@ -799,23 +799,42 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
 /// only, MCP bearer only, no auth, etc.) — in which case the auto-connect
 /// orchestration in `kernel_create_service` is a no-op.
 pub(crate) fn template_oauth_provider(def: &ServiceDefinition) -> Option<&str> {
-    def.auth.iter().find_map(|a| match a {
+    // HTTP-runtime OAuth scheme first…
+    if let Some(provider) = def.auth.iter().find_map(|a| match a {
         ServiceAuth::OAuth { provider, .. } => Some(provider.as_str()),
         _ => None,
-    })
+    }) {
+        return Some(provider);
+    }
+    // …then an MCP-runtime `auth.kind: oauth` provider — both resolve through
+    // the same connection machinery, so auto-connect orchestration, pinned-
+    // connection validation, and credentials-status surfacing treat them
+    // identically. Covers HubSpot + Slack (remote OAuth MCP servers).
+    match def.mcp.as_ref().map(|m| &m.auth) {
+        Some(McpAuth::OAuth { provider, .. }) => Some(provider.as_str()),
+        _ => None,
+    }
 }
 
-/// Union every action's `required_scopes` into a sorted, deduped list.
-/// Same `BTreeSet` flatten that the previous `resolve_template_scopes`
-/// helper on the connection kernel used — now lives next to the only
-/// remaining caller (auto-connect orchestration in `kernel_create_service`).
+/// Union the scopes the auto-connect flow should request into a sorted, deduped
+/// list. For HTTP-runtime templates this is every action's `required_scopes`.
+/// For MCP-runtime `auth.kind: oauth` templates the scopes live at the service
+/// level in `McpAuth::OAuth { scopes }` (MCP tools carry no per-action scopes),
+/// so include those too — otherwise the connect flow requests an empty scope
+/// set and the minted token lacks the permissions every tool needs.
 fn template_action_scopes(def: &ServiceDefinition) -> Vec<String> {
-    def.actions
+    let mut scopes: std::collections::BTreeSet<String> = def
+        .actions
         .values()
         .flat_map(|a| a.required_scopes.iter().cloned())
-        .collect::<std::collections::BTreeSet<String>>()
-        .into_iter()
-        .collect()
+        .collect();
+    if let Some(McpAuth::OAuth {
+        scopes: mcp_scopes, ..
+    }) = def.mcp.as_ref().map(|m| &m.auth)
+    {
+        scopes.extend(mcp_scopes.iter().cloned());
+    }
+    scopes.into_iter().collect()
 }
 
 /// Resolve the [`ServiceDefinition`] for a template key across user/org/global tiers.
@@ -1070,6 +1089,28 @@ pub fn derive_credentials_status(
         return None;
     }
 
+    // MCP-oauth templates carry their scopes at the service level, not per
+    // action, so the per-action loop below is a no-op that would always report
+    // `Ok`. Check the mcp scopes against the connection's granted set directly
+    // (all-or-nothing — there's one scope set, no per-action granularity) so
+    // the backend status agrees with the dashboard's missing-scope warning.
+    if let Some(McpAuth::OAuth {
+        scopes: mcp_scopes, ..
+    }) = template.mcp.as_ref().map(|m| &m.auth)
+    {
+        if mcp_scopes.is_empty() {
+            return Some(CredentialsStatus::Ok);
+        }
+        let granted: std::collections::HashSet<&str> =
+            granted_list.iter().map(String::as_str).collect();
+        let all_covered = mcp_scopes.iter().all(|s| granted.contains(s.as_str()));
+        return Some(if all_covered {
+            CredentialsStatus::Ok
+        } else {
+            CredentialsStatus::NeedsReconnect
+        });
+    }
+
     let mut any_ok = false;
     let mut any_gap = false;
     for action in template.actions.values() {
@@ -1113,6 +1154,71 @@ mod tests {
                 autodiscover: false,
             }),
         }
+    }
+
+    fn mcp_oauth_template(provider: &str, scopes: &[&str]) -> ServiceDefinition {
+        ServiceDefinition {
+            key: "t".into(),
+            display_name: "T".into(),
+            description: None,
+            hosts: vec![],
+            category: None,
+            hidden: false,
+            auth: vec![],
+            // MCP tools carry no per-action required_scopes; scopes live on the
+            // service-level oauth block.
+            actions: HashMap::new(),
+            runtime: Runtime::Mcp,
+            mcp: Some(McpSpec {
+                url: Some("https://mcp.example.com/mcp".into()),
+                auth: McpAuth::OAuth {
+                    provider: provider.to_string(),
+                    scopes: scopes.iter().map(|s| s.to_string()).collect(),
+                },
+                autodiscover: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn mcp_oauth_provider_and_scopes_surface_for_auto_connect() {
+        let def = mcp_oauth_template("slack", &["chat:write", "channels:read"]);
+        // Provider must resolve so auto-connect / pinned-connection validation fire.
+        assert_eq!(template_oauth_provider(&def), Some("slack"));
+        // Scopes come from the mcp.auth block, not (empty) per-action scopes —
+        // otherwise the connect flow requests nothing and the token is useless.
+        assert_eq!(
+            template_action_scopes(&def),
+            vec!["channels:read".to_string(), "chat:write".to_string()]
+        );
+    }
+
+    #[test]
+    fn mcp_oauth_credentials_status_checks_service_level_scopes() {
+        let def = mcp_oauth_template("slack", &["chat:write", "channels:read"]);
+        // No connection → must connect.
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::NoConnection, None),
+            Some(CredentialsStatus::NeedsAuthentication)
+        );
+        // Connection covers every mcp scope → Ok.
+        let full = ["chat:write".to_string(), "channels:read".to_string()];
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::Known(&full), None),
+            Some(CredentialsStatus::Ok)
+        );
+        // Connection missing a scope → NeedsReconnect (not a false Ok from the
+        // per-action loop, which is empty for MCP tools).
+        let partial = ["channels:read".to_string()];
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::Known(&partial), None),
+            Some(CredentialsStatus::NeedsReconnect)
+        );
+        // Unknown granted scopes → benefit of the doubt (Ok), matching the gate.
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::Unknown, None),
+            Some(CredentialsStatus::Ok)
+        );
     }
 
     fn api_key_template() -> ServiceDefinition {

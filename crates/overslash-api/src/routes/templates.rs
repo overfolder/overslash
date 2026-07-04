@@ -163,11 +163,21 @@ struct McpDetail {
     /// must supply a URL at creation time.
     #[serde(skip_serializing_if = "Option::is_none")]
     url: Option<String>,
-    /// `none` or `bearer`. The dashboard uses this to gate the secret-name UI.
+    /// `none`, `bearer`, or `oauth`. The dashboard uses this to gate the
+    /// credential UI (secret-name field for bearer, connect prompt for oauth).
     auth_kind: String,
     /// `true` when the template has a hard-coded `secret_name`; `false` when
     /// the operator must supply one at instance creation time.
     has_default_secret_name: bool,
+    /// The OAuth provider key when `auth_kind == "oauth"`; the dashboard
+    /// renders a "connect <provider>" affordance. `None` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    /// Superset OAuth scopes requested at connect time when `auth_kind ==
+    /// "oauth"`. The dashboard passes these to `initiateOAuth` — without them
+    /// the connect flow would request no scopes and mint a useless token.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    scopes: Vec<String>,
     autodiscover: bool,
     /// ISO-8601 timestamp of the most recent tools/list sync. `None` if never.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -296,17 +306,26 @@ fn is_global_visible(filter: &Option<HashSet<String>>, key: &str) -> bool {
     }
 }
 
-/// Union every action's `required_scopes` into a sorted, deduped list — the
-/// OAuth scopes that fully cover this template. Mirrors
-/// `platform_services::template_action_scopes`; surfaced on `TemplateDetail`
-/// so white-label partners (token-vault import) request exactly these.
+/// Union the OAuth scopes that fully cover this template into a sorted, deduped
+/// list — every action's `required_scopes` plus, for MCP-runtime `auth.kind:
+/// oauth` templates, the service-level `McpAuth::OAuth { scopes }` (MCP tools
+/// carry no per-action scopes). Mirrors `platform_services::template_action_scopes`;
+/// surfaced on `TemplateDetail` so white-label partners (token-vault import)
+/// request exactly these.
 fn template_required_scopes(def: &ServiceDefinition) -> Vec<String> {
-    def.actions
+    use overslash_core::types::McpAuth;
+    let mut scopes: std::collections::BTreeSet<String> = def
+        .actions
         .values()
         .flat_map(|a| a.required_scopes.iter().cloned())
-        .collect::<std::collections::BTreeSet<String>>()
-        .into_iter()
-        .collect()
+        .collect();
+    if let Some(McpAuth::OAuth {
+        scopes: mcp_scopes, ..
+    }) = def.mcp.as_ref().map(|m| &m.auth)
+    {
+        scopes.extend(mcp_scopes.iter().cloned());
+    }
+    scopes.into_iter().collect()
 }
 
 fn actions_from_definition(def: &ServiceDefinition) -> Vec<ActionSummary> {
@@ -400,12 +419,22 @@ fn runtime_string(def: &ServiceDefinition) -> String {
 fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Option<McpDetail> {
     use overslash_core::types::McpAuth;
     let spec = def.mcp.as_ref()?;
-    let (auth_kind, has_default_secret_name) = match &spec.auth {
-        McpAuth::None => ("none".to_string(), false),
-        McpAuth::Bearer { secret_name } => ("bearer".to_string(), secret_name.is_some()),
+    let (auth_kind, has_default_secret_name, provider, scopes) = match &spec.auth {
+        McpAuth::None => ("none".to_string(), false, None, Vec::new()),
+        McpAuth::Bearer { secret_name } => (
+            "bearer".to_string(),
+            secret_name.is_some(),
+            None,
+            Vec::new(),
+        ),
         // OAuth MCP servers don't carry a default secret — auth comes from the
-        // caller's connection for the named provider.
-        McpAuth::OAuth { .. } => ("oauth".to_string(), false),
+        // caller's connection for the named provider, with these scopes.
+        McpAuth::OAuth { provider, scopes } => (
+            "oauth".to_string(),
+            false,
+            Some(provider.clone()),
+            scopes.clone(),
+        ),
     };
     let discovered_at = openapi
         .get("x-overslash-mcp")
@@ -416,6 +445,8 @@ fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Opti
         url: spec.url.clone(),
         auth_kind,
         has_default_secret_name,
+        provider,
+        scopes,
         autodiscover: spec.autodiscover,
         discovered_at,
     })
