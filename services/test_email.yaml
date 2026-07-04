@@ -37,6 +37,14 @@ paths:
       summary: "Send an email to {to} with subject '{subject}'"
       description: Send an email message on the user's behalf.
       risk: write
+      disclose:
+        - label: To
+          filter: .body.to
+        - label: Subject
+          filter: .body.subject
+        - label: Body
+          filter: .body.body
+          max_chars: 2000
       requestBody:
         required: true
         content:

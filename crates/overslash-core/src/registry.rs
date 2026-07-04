@@ -422,6 +422,50 @@ paths:
     }
 
     #[test]
+    fn shipped_mutating_actions_declare_disclose() {
+        // Escape hatch for actions where disclosure is intentionally
+        // omitted. Format: "service_key:action_key". Keep empty; add
+        // entries only with a comment explaining why review disclosure
+        // is impossible for that action.
+        const ALLOW_MISSING: &[&str] = &[];
+
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+
+        let mut missing: Vec<String> = Vec::new();
+        for def in reg.all() {
+            // Platform-runtime actions cannot carry disclose blocks:
+            // extract_platform_action drops them at parse time and
+            // compute_approval_detail never runs disclose filters for the
+            // platform projection ({runtime, action, params, service}
+            // already is the full reviewable payload).
+            if matches!(def.runtime, Runtime::Platform) {
+                continue;
+            }
+            for (key, action) in &def.actions {
+                let id = format!("{}:{}", def.key, key);
+                if action.risk.is_mutating()
+                    && action.disclose.is_empty()
+                    && !ALLOW_MISSING.contains(&id.as_str())
+                {
+                    missing.push(id);
+                }
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "every shipped write/delete action must declare `disclose:` so \
+             approval reviewers see what the action will do; missing: {missing:#?}"
+        );
+    }
+
+    #[test]
     fn shipped_github_templates_auth() {
         use crate::types::ServiceAuth;
 

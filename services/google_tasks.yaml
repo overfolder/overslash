@@ -39,6 +39,9 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: Title
+          filter: .body.title
       requestBody:
         required: true
         content:
@@ -76,6 +79,11 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: Task list
+          filter: .params.tasklist
+        - label: New title
+          filter: .body.title // empty
       requestBody:
         required: true
         content:
@@ -93,6 +101,9 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: Task list
+          filter: .params.tasklist
   /tasks/v1/lists/{tasklist}/tasks:
     parameters:
       - name: tasklist
@@ -147,6 +158,18 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: List
+          filter: .params.tasklist
+        - label: Title
+          filter: .body.title
+        - label: Notes
+          filter: .body.notes // empty
+          max_chars: 1000
+        - label: Due
+          filter: .body.due // empty
+        - label: Status
+          filter: .body.status // empty
       parameters:
         - name: parent
           in: query
@@ -216,6 +239,20 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: List
+          filter: .params.tasklist
+        - label: Task
+          filter: .params.task
+        - label: New title
+          filter: .body.title // empty
+        - label: Notes
+          filter: .body.notes // empty
+          max_chars: 1000
+        - label: Due
+          filter: .body.due // empty
+        - label: Status
+          filter: .body.status // empty
       requestBody:
         content:
           application/json:
@@ -243,3 +280,8 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: List
+          filter: .params.tasklist
+        - label: Task
+          filter: .params.task

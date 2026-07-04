@@ -2168,6 +2168,34 @@ mod tests {
     use super::*;
     use axum::{Router, routing::get};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    // Shipped global templates never pass through the register/import
+    // routes above, so without this test a typo'd disclose filter in
+    // services/*.yaml would only surface at approval time in production.
+    #[test]
+    fn shipped_service_disclose_filters_compile() {
+        let services_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        for entry in std::fs::read_dir(&services_dir).unwrap() {
+            let path = entry.unwrap().path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext != "yaml" && ext != "yml" {
+                continue;
+            }
+            let yaml = std::fs::read_to_string(&path).unwrap();
+            if let Err(report) = parse_normalize_compile_and_check_disclose(&yaml) {
+                panic!(
+                    "shipped template {} failed disclose jq validation: {:?}",
+                    path.display(),
+                    report.errors
+                );
+            }
+        }
+    }
     use tokio::net::TcpListener;
 
     // ── is_disallowed_ip: every branch in the SSRF guard ─────────────
