@@ -12,8 +12,13 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Makes concurrent GET requests to the same service host using the already-authenticated
 /// headers. Returns a map of param name → display name for successful resolutions.
 /// Failures are silently skipped (the caller falls back to raw param values).
+///
+/// Resolver URLs honor `service_base_overrides` the same way the executor
+/// does — an e2e stack that rewrites a service's host to a local fake needs
+/// the resolver GETs to land there too, not on the real provider.
 pub async fn resolve_display_params(
     client: &reqwest::Client,
+    config: &crate::config::Config,
     base_url: &str,
     headers: &HashMap<String, String>,
     action: &ServiceAction,
@@ -36,14 +41,11 @@ pub async fn resolve_display_params(
         .into_iter()
         .map(|(name, resolver)| {
             let client = client.clone();
-            let base_url = base_url.to_string();
             let headers = headers.clone();
-            let params = params.clone();
+            let path = substitute_placeholders(&resolver.get, params);
+            let url = config.apply_base_overrides(&format!("{base_url}{path}"));
 
             async move {
-                let path = substitute_placeholders(&resolver.get, &params);
-                let url = format!("{base_url}{path}");
-
                 let mut req = client.get(&url).timeout(RESOLVE_TIMEOUT);
                 for (key, value) in &headers {
                     req = req.header(key, value);

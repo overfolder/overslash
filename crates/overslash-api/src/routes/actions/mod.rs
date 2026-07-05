@@ -501,6 +501,14 @@ struct ResolvedMeta {
     /// Original resolved params (before url/body assembly), retained for the
     /// disclosure `.params.*` projection. Empty for verb / `http` shapes.
     params: HashMap<String, serde_json::Value>,
+    /// Display names from the template's `resolve` declarations (param name →
+    /// human-readable string), feeding both description interpolation and the
+    /// disclosure `.resolved.*` projection. Populated for the HTTP action
+    /// shape only — resolvers are HTTP-only today, so verb / MCP / platform
+    /// shapes carry an empty map. Resolution happens once, at resolve time,
+    /// and rides here across execution: audit-write disclosure for a delete
+    /// action still names the object even though it's gone upstream.
+    resolved: HashMap<String, String>,
     /// When the resolved service has `runtime: Mcp`, dispatch skips the HTTP
     /// executor and goes through `mcp_caller::invoke` with this payload.
     mcp_target: Option<McpTarget>,

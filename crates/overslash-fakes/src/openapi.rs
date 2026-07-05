@@ -57,6 +57,7 @@ pub fn router(state: SharedState) -> Router {
             get(echo).post(echo).put(echo).delete(echo).patch(echo),
         )
         .route("/large-file", get(large_file))
+        .route("/things/{id}", get(thing_display))
         .route("/drive/files/download", get(drive_download))
         .route("/drive/files/content", get(drive_content))
         .route("/webhooks/receive", post(receive_webhook))
@@ -110,6 +111,24 @@ async fn clear_received_requests(State(s): State<SharedState>) -> &'static str {
     let mut state = s.lock().await;
     state.received_requests.clear();
     "ok"
+}
+
+/// Display-param resolver target: GET /things/{id} → {"id", "name"}.
+/// Backs `resolve: {get, pick}` e2e tests — the resolver GET lands here and
+/// picks `name`. Recorded in `received_requests` so tests can assert the
+/// lookup happened exactly once (at resolve time, never at audit-write).
+async fn thing_display(
+    State(s): State<SharedState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Json<Value> {
+    let mut state = s.lock().await;
+    state.received_requests.push(json!({
+        "method": "GET",
+        "uri": format!("/things/{id}"),
+        "headers": {},
+        "body": "",
+    }));
+    Json(json!({ "id": id, "name": format!("Thing {id}") }))
 }
 
 async fn receive_webhook(

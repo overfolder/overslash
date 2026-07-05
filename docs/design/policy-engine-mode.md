@@ -107,7 +107,7 @@ Surprisingly well in the abstract pieces, weakly in the wiring at the tail.
 | Concept | What needs to change |
 |---|---|
 | **`POST /v1/actions/call` executor tail** | After ceiling + permission-key check, the executor today always builds and dispatches an outbound HTTP request. The fork is: *if* `template.execution = "external"`, return a `decided` verdict instead of executing. The gating code above the fork is shared 1:1. |
-| **`x-overslash-disclose` jq filters** | The projection today is HTTP-shaped: `{ method, url, params, body }`. For external templates the projection becomes `{ action, params, context }` where `context` is whatever JSON the caller passes. The jq engine itself doesn't care; the projection builder needs an external-execution path. |
+| **`x-overslash-disclose` jq filters** | The projection today is HTTP-shaped: `{ method, url, params, body, resolved }`. For external templates the projection becomes `{ action, params, context }` where `context` is whatever JSON the caller passes. The jq engine itself doesn't care; the projection builder needs an external-execution path. |
 | **Replay / `executions` table** | Coupled to "Overslash re-runs the HTTP request 15 minutes after resolve." For external execution, "replay" is the wrong word — there's nothing to replay. The right shape is a **one-shot consume token** that the caller redeems by calling `actions/call` again with `approval_id`. |
 | **Secret-injection keys (`secret:{name}:{host}`)** | These exist to gate Overslash's own secret vault. For external execution, Overslash holds no secret for the call, so these keys don't apply. External templates should not generate them. |
 
