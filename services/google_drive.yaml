@@ -155,7 +155,7 @@ paths:
       scope_param: fileId
       disclose:
         - label: File
-          filter: .params.fileId
+          filter: .resolved.fileId // .params.fileId
         - label: New name
           filter: .body.name // empty
         - label: New description
@@ -200,7 +200,7 @@ paths:
       scope_param: fileId
       disclose:
         - label: File
-          filter: .params.fileId
+          filter: .resolved.fileId // .params.fileId
       parameters:
         - name: supportsAllDrives
           in: query
@@ -246,7 +246,7 @@ paths:
       scope_param: fileId
       disclose:
         - label: File
-          filter: .params.fileId
+          filter: .resolved.fileId // .params.fileId
         - label: Copy name
           filter: .body.name // empty
         - label: Destination folders
@@ -322,7 +322,7 @@ paths:
       scope_param: fileId
       disclose:
         - label: File
-          filter: .params.fileId
+          filter: .resolved.fileId // .params.fileId
         - label: Role
           filter: .body.role
         - label: Grantee type
@@ -374,9 +374,9 @@ paths:
       scope_param: fileId
       disclose:
         - label: File
-          filter: .params.fileId
-        - label: Permission
-          filter: .params.permissionId
+          filter: .resolved.fileId // .params.fileId
+        - label: Grantee
+          filter: .resolved.permissionId // .params.permissionId
       parameters:
         - name: fileId
           in: path
@@ -393,6 +393,12 @@ paths:
           description: The ID of the permission to revoke
           schema:
             type: string
+          # emailAddress is not in the default field mask, so request it
+          # explicitly. Domain/anyone grants have no email — resolution then
+          # falls back to the raw permission id.
+          resolve:
+            get: /drive/v3/files/{fileId}/permissions/{permissionId}?fields=emailAddress&supportsAllDrives=true
+            pick: emailAddress
         - name: supportsAllDrives
           in: query
           description: Whether the requesting application supports both My Drives and shared drives

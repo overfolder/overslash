@@ -93,7 +93,7 @@ paths:
       scope_param: calendarId
       disclose:
         - label: Calendar
-          filter: .params.calendarId
+          filter: .resolved.calendarId // .params.calendarId
         - label: Title
           filter: .body.summary
         - label: Start
@@ -180,9 +180,9 @@ paths:
       scope_param: calendarId
       disclose:
         - label: Calendar
-          filter: .params.calendarId
+          filter: .resolved.calendarId // .params.calendarId
         - label: Event
-          filter: .params.eventId
+          filter: .resolved.eventId // .params.eventId
         - label: New title
           filter: .body.summary // empty
         - label: Start
@@ -242,9 +242,9 @@ paths:
       scope_param: calendarId
       disclose:
         - label: Calendar
-          filter: .params.calendarId
+          filter: .resolved.calendarId // .params.calendarId
         - label: Event
-          filter: .params.eventId
+          filter: .resolved.eventId // .params.eventId
         - label: Notify attendees
           filter: .params.sendUpdates // empty
       parameters:

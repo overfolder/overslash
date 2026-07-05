@@ -269,6 +269,16 @@ paths:
         resolve:
           get: /things/{thing_id}
           pick: name
+      - name: other_id
+        in: query
+        required: false
+        schema: {type: string}
+        # The fake's catch-all echo has no `name` key, so this resolution
+        # always fails — the chained disclose filter below must fall back to
+        # the raw param (resolve_display_params silently skips failures).
+        resolve:
+          get: /missing/{other_id}
+          pick: name
     post:
       operationId: archive_thing
       summary: "Archive {thing_id}"
@@ -277,6 +287,8 @@ paths:
       disclose:
         - label: Thing
           filter: '.resolved.thing_id // .params.thing_id'
+        - label: Other
+          filter: '.resolved.other_id // .params.other_id'
 "#;
 
 /// End-to-end: display-param resolution feeds `.resolved.*` in the disclose
@@ -332,7 +344,7 @@ async fn resolver_display_names_flow_into_disclosed_fields() {
         .json(&json!({
             "service": "thingsvc",
             "action": "archive_thing",
-            "params": {"thing_id": "tt-42"},
+            "params": {"thing_id": "tt-42", "other_id": "ot-7"},
             "secrets": [
                 {"name": "nonexistent", "inject_as": "header", "header_name": "X-Resolve-Test"}
             ]
@@ -351,12 +363,21 @@ async fn resolver_display_names_flow_into_disclosed_fields() {
     let disclosed = exec["disclosed_fields"]
         .as_array()
         .expect("inline disclosed_fields present");
-    assert_eq!(disclosed.len(), 1);
+    assert_eq!(disclosed.len(), 2);
     assert_eq!(disclosed[0]["label"].as_str(), Some("Thing"));
     assert_eq!(
         disclosed[0]["value"].as_str(),
         Some("Thing tt-42"),
         "disclosed value should be the resolver display name, got: {disclosed:?}"
+    );
+    // Chained-field degradation: `other_id`'s resolver GET returns a payload
+    // without the picked key, so `.resolved.other_id` is absent and the
+    // `// .params.other_id` arm must surface the raw value.
+    assert_eq!(disclosed[1]["label"].as_str(), Some("Other"));
+    assert_eq!(
+        disclosed[1]["value"].as_str(),
+        Some("ot-7"),
+        "failed resolution should fall back to the raw param, got: {disclosed:?}"
     );
     // The raw-payload projection now carries the resolved map too.
     let detail = exec["action_detail"].as_str().expect("action_detail");

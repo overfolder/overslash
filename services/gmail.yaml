@@ -81,7 +81,7 @@ paths:
         - label: Name
           filter: .body.name
         - label: Mailbox
-          filter: .params.userId
+          filter: .resolved.userId // .params.userId
       parameters:
         - name: userId
           in: path
@@ -147,10 +147,10 @@ paths:
         - oauth:
             - https://www.googleapis.com/auth/gmail.modify
       disclose:
-        - label: Label ID
-          filter: .params.id
+        - label: Label
+          filter: .resolved.id // .params.id
         - label: Mailbox
-          filter: .params.userId
+          filter: .resolved.userId // .params.userId
       parameters:
         - name: userId
           in: path
@@ -168,6 +168,9 @@ paths:
           description: The ID of the label to delete
           schema:
             type: string
+          resolve:
+            get: /gmail/v1/users/{userId}/labels/{id}
+            pick: name
   /gmail/v1/users/{userId}/messages:
     get:
       operationId: list_messages
@@ -265,6 +268,9 @@ paths:
       # custom label. `// []` guards the absent-field case so the jq/jaq
       # `join` never runs against null.
       disclose:
+        - label: Message
+          filter: .resolved.id // .params.id
+          max_chars: 200
         - label: Add labels
           filter: '(.body.addLabelIds // []) | join(", ")'
         - label: Remove labels
@@ -286,6 +292,9 @@ paths:
           description: The ID of the message to modify
           schema:
             type: string
+          resolve:
+            get: /gmail/v1/users/{userId}/messages/{id}?format=metadata&metadataHeaders=Subject
+            pick: payload.headers.0.value
       requestBody:
         required: true
         content:
@@ -309,10 +318,11 @@ paths:
         - oauth:
             - https://www.googleapis.com/auth/gmail.modify
       disclose:
-        - label: Message ID
-          filter: .params.id
+        - label: Message
+          filter: .resolved.id // .params.id
+          max_chars: 200
         - label: Mailbox
-          filter: .params.userId
+          filter: .resolved.userId // .params.userId
       parameters:
         - name: userId
           in: path
@@ -330,6 +340,9 @@ paths:
           description: The ID of the message to restore from trash
           schema:
             type: string
+          resolve:
+            get: /gmail/v1/users/{userId}/messages/{id}?format=metadata&metadataHeaders=Subject
+            pick: payload.headers.0.value
   /gmail/v1/users/{userId}/threads:
     get:
       operationId: list_threads
@@ -476,10 +489,11 @@ paths:
         - oauth:
             - https://www.googleapis.com/auth/gmail.modify
       disclose:
-        - label: Message ID
-          filter: .params.id
+        - label: Message
+          filter: .resolved.id // .params.id
+          max_chars: 200
         - label: Mailbox
-          filter: .params.userId
+          filter: .resolved.userId // .params.userId
       parameters:
         - name: userId
           in: path
@@ -497,6 +511,9 @@ paths:
           description: The ID of the message to move to trash
           schema:
             type: string
+          resolve:
+            get: /gmail/v1/users/{userId}/messages/{id}?format=metadata&metadataHeaders=Subject
+            pick: payload.headers.0.value
   /gmail/v1/users/{userId}/drafts:
     get:
       operationId: list_drafts
@@ -676,10 +693,13 @@ paths:
         - oauth:
             - https://www.googleapis.com/auth/gmail.compose
       disclose:
-        - label: Draft ID
-          filter: .params.id
+        # Drafts don't support metadataHeaders filtering, so resolve to the
+        # message snippet (first ~100 chars) instead of the Subject header.
+        - label: Draft
+          filter: .resolved.id // .params.id
+          max_chars: 200
         - label: Mailbox
-          filter: .params.userId
+          filter: .resolved.userId // .params.userId
       parameters:
         - name: userId
           in: path
@@ -697,6 +717,9 @@ paths:
           description: The ID of the draft to delete
           schema:
             type: string
+          resolve:
+            get: /gmail/v1/users/{userId}/drafts/{id}?format=metadata
+            pick: message.snippet
   /gmail/v1/users/{userId}/drafts/send:
     post:
       operationId: send_draft
@@ -708,11 +731,13 @@ paths:
             - https://www.googleapis.com/auth/gmail.compose
       # The send_draft request body only references the draft by id; the
       # actual To/Subject/Body content was set at create_draft / update_draft
-      # time and is not visible in this payload. Disclose the draft id so the
-      # reviewer can correlate the send with the previously-disclosed draft.
+      # time and is not visible in this payload. Resolve the id to the draft's
+      # snippet so the reviewer sees what is about to be sent, falling back to
+      # the raw id when resolution fails.
       disclose:
         - label: Draft
-          filter: '.body.id'
+          filter: '.resolved.id // .body.id'
+          max_chars: 200
       parameters:
         - name: userId
           in: path
@@ -735,3 +760,8 @@ paths:
                 id:
                   type: string
                   description: The ID of the draft to send
+                  # Body-schema properties bypass alias normalization (it only
+                  # walks `parameters` arrays), so use the canonical key here.
+                  x-overslash-resolve:
+                    get: /gmail/v1/users/{userId}/drafts/{id}?format=metadata
+                    pick: message.snippet
