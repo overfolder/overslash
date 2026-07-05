@@ -332,6 +332,7 @@ pub(super) async fn resolve_request(
                 disclose: Vec::new(),
                 redact: Vec::new(),
                 params: HashMap::new(),
+                resolved: HashMap::new(),
                 mcp_target: None,
                 platform_target: None,
                 instance_id: instance.as_ref().map(|i| i.id),
@@ -564,6 +565,9 @@ pub(super) async fn resolve_request(
                     disclose: action.disclose.clone(),
                     redact: action.redact.clone(),
                     params: req.params.clone(),
+                    // Resolvers don't run for MCP (no HTTP parameter schema),
+                    // so the disclosure projection's `resolved` stays empty.
+                    resolved: HashMap::new(),
                     mcp_target: Some(McpTarget {
                         url: resolved_url,
                         auth: resolved_auth,
@@ -616,6 +620,7 @@ pub(super) async fn resolve_request(
                     disclose: Vec::new(),
                     redact: Vec::new(),
                     params: HashMap::new(),
+                    resolved: HashMap::new(),
                     mcp_target: None,
                     platform_target: Some(PlatformTarget {
                         action_key: action_key.clone(),
@@ -822,6 +827,7 @@ pub(super) async fn resolve_request(
         };
         let resolved = crate::services::param_resolver::resolve_display_params(
             &state.http_client,
+            &state.config,
             &resolver_base,
             &resolver_headers,
             action,
@@ -861,6 +867,7 @@ pub(super) async fn resolve_request(
                 disclose: action.disclose.clone(),
                 redact: action.redact.clone(),
                 params: req.params.clone(),
+                resolved,
                 mcp_target: None,
                 platform_target: None,
                 instance_id: instance.as_ref().map(|i| i.id),

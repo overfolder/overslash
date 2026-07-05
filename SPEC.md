@@ -1295,12 +1295,14 @@ Each disclose filter runs against this projection of the resolved request:
   "method": "POST",
   "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
   "params": { "userId": "me" },
-  "body": { "raw": "VG86IGFsaWNlQGV4YW1wbGUuY29tCg..." }
+  "body": { "raw": "VG86IGFsaWNlQGV4YW1wbGUuY29tCg..." },
+  "resolved": { "userId": "alice@example.com" }
 }
 ```
 
 - `body` is parsed as JSON when the outbound request's `Content-Type` is a JSON media type (`application/json`, `application/*+json`); otherwise it's carried as the raw string.
 - `params` is the post-resolution parameter map — every arg the agent passed, regardless of whether it was bound to the URL path, the query string, or the body.
+- `resolved` is the display-name map produced by the template's `resolve` param declarations (param name → human-readable string, e.g. a Drive `fileId` → the file's name). Only params whose lookup succeeded appear, so filters should fall back explicitly: `.resolved.fileId // .params.fileId`. Resolution runs **once, at resolve time**, and the map rides in the request metadata through execution — a delete action's audit-write disclosure still names the object even though it no longer exists upstream. MCP- and platform-runtime actions keep their own projections unchanged (`{runtime, tool, arguments, service, action}` / `{runtime, action, params, service}`, no `resolved` key): display-param resolvers are HTTP-action-only.
 
 ### Declaration
 
@@ -1319,6 +1321,28 @@ paths:
           max_chars: 2000
       redact:
         - body.raw
+```
+
+A resolver-backed declaration — the disclosed field prefers the human-readable name and degrades to the opaque ID when the lookup failed:
+
+```yaml
+paths:
+  /drive/v3/files/{fileId}:
+    parameters:
+      - name: fileId
+        in: path
+        required: true
+        schema: { type: string }
+        resolve:
+          get: /drive/v3/files/{fileId}
+          pick: name
+    delete:
+      operationId: delete_file
+      summary: "Delete file {fileId}"
+      risk: delete
+      disclose:
+        - label: File
+          filter: '.resolved.fileId // .params.fileId'
 ```
 
 Unprefixed `disclose:` / `redact:` aliases normalize to `x-overslash-disclose` / `x-overslash-redact` like the other operation-level extensions. jq syntax is validated at template register / promote time; a malformed filter rejects the template with a `disclose_invalid_jq` issue.

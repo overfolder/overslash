@@ -79,7 +79,7 @@ pub(super) async fn compute_disclosure(
     if meta.disclose.is_empty() {
         return Vec::new();
     }
-    let input = core_disclosure::build_jq_input(req, &meta.params);
+    let input = core_disclosure::build_jq_input(req, &meta.params, &meta.resolved);
     match disclosure::run_disclosures(&meta.disclose, &input, filter_timeout).await {
         Ok(v) => v,
         Err(e) => {
@@ -93,7 +93,8 @@ pub(super) async fn compute_disclosure(
 /// redacted JSON blob to persist as `approvals.action_detail`.
 ///
 /// Every branch — including the no-declaration fallback — goes through the
-/// header-free `build_jq_input` projection (`{method, url, params, body}`).
+/// header-free `build_jq_input` projection
+/// (`{method, url, params, body, resolved}`).
 /// Headers are never part of `action_detail`: the projection is what gets
 /// persisted, returned inline in the `pending_approval` envelope (REST and
 /// MCP), and served from `GET /v1/approvals` — all agent-reachable
@@ -109,6 +110,9 @@ pub(super) async fn compute_approval_detail(
     // the tool name and arguments to see what the agent actually called.
     // Disclosure jq filters are still applied when declared — they operate
     // on the MCP projection ({runtime, tool, arguments, service, action}).
+    // No `resolved` key here (or on the platform projection below): display
+    // param resolvers are HTTP-action-only, so `meta.resolved` is always
+    // empty for these shapes and the projections stay unchanged.
     if let Some(target) = meta.mcp_target.as_ref() {
         let projection = serde_json::json!({
             "runtime": "mcp",
@@ -148,10 +152,14 @@ pub(super) async fn compute_approval_detail(
     if meta.disclose.is_empty() && meta.redact.is_empty() {
         return (
             Vec::new(),
-            Some(core_disclosure::build_jq_input(req, &meta.params)),
+            Some(core_disclosure::build_jq_input(
+                req,
+                &meta.params,
+                &meta.resolved,
+            )),
         );
     }
-    let projection = core_disclosure::build_jq_input(req, &meta.params);
+    let projection = core_disclosure::build_jq_input(req, &meta.params, &meta.resolved);
     let disclosed = if meta.disclose.is_empty() {
         Vec::new()
     } else {
@@ -188,6 +196,7 @@ mod tests {
             disclose: Vec::new(),
             redact: Vec::new(),
             params: HashMap::new(),
+            resolved: HashMap::new(),
             mcp_target: None,
             platform_target: None,
             instance_id: None,
@@ -222,7 +231,7 @@ mod tests {
         let detail = detail.expect("fallback always produces a detail blob");
         assert_eq!(
             detail,
-            overslash_core::disclosure::build_jq_input(&req, &meta.params),
+            overslash_core::disclosure::build_jq_input(&req, &meta.params, &meta.resolved),
             "fallback must equal the canonical header-free projection"
         );
         assert!(detail.get("headers").is_none(), "headers must never appear");

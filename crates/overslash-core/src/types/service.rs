@@ -227,8 +227,8 @@ pub struct ServiceAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<String>,
     /// Labeled jq filters to extract human-readable fields from the resolved
-    /// request (method / url / params / body) at approval-create and audit
-    /// write time. See SPEC §N "Detail disclosure".
+    /// request (method / url / params / body / resolved) at approval-create
+    /// and audit write time. See SPEC §N "Detail disclosure".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disclose: Vec<DisclosureField>,
     /// Dotted paths into the resolved request to replace with `"[REDACTED]"`
@@ -254,10 +254,12 @@ pub struct ServiceAction {
 }
 
 /// One entry in `ServiceAction::disclose`. The `filter` is a jq expression
-/// applied to a `{method, url, params, body}` projection of the resolved
-/// request. `max_chars` optionally clamps long string outputs (e.g. email
-/// bodies); results longer than the clamp are still carried but marked
-/// `truncated` for the dashboard.
+/// applied to a `{method, url, params, body, resolved}` projection of the
+/// resolved request (`resolved` carries the display names produced by
+/// `resolve` declarations, so filters can prefer
+/// `.resolved.fileId // .params.fileId`). `max_chars` optionally clamps long
+/// string outputs (e.g. email bodies); results longer than the clamp are
+/// still carried but marked `truncated` for the dashboard.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisclosureField {
     pub label: String,
