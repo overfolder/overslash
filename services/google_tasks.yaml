@@ -81,7 +81,7 @@ paths:
             - https://www.googleapis.com/auth/tasks
       disclose:
         - label: Task list
-          filter: .params.tasklist
+          filter: .resolved.tasklist // .params.tasklist
         - label: New title
           filter: .body.title // empty
       requestBody:
@@ -103,7 +103,7 @@ paths:
             - https://www.googleapis.com/auth/tasks
       disclose:
         - label: Task list
-          filter: .params.tasklist
+          filter: .resolved.tasklist // .params.tasklist
   /tasks/v1/lists/{tasklist}/tasks:
     parameters:
       - name: tasklist
@@ -160,7 +160,7 @@ paths:
             - https://www.googleapis.com/auth/tasks
       disclose:
         - label: List
-          filter: .params.tasklist
+          filter: .resolved.tasklist // .params.tasklist
         - label: Title
           filter: .body.title
         - label: Notes
@@ -241,9 +241,9 @@ paths:
             - https://www.googleapis.com/auth/tasks
       disclose:
         - label: List
-          filter: .params.tasklist
+          filter: .resolved.tasklist // .params.tasklist
         - label: Task
-          filter: .params.task
+          filter: .resolved.task // .params.task
         - label: New title
           filter: .body.title // empty
         - label: Notes
@@ -282,6 +282,6 @@ paths:
             - https://www.googleapis.com/auth/tasks
       disclose:
         - label: List
-          filter: .params.tasklist
+          filter: .resolved.tasklist // .params.tasklist
         - label: Task
-          filter: .params.task
+          filter: .resolved.task // .params.task

@@ -149,6 +149,13 @@ paths:
         description: Identifier of the parent block or page to append content to
         schema:
           type: string
+        # In the common case block_id is a page ID; the blocks endpoint then
+        # reports it as a child_page block whose title we can surface. For
+        # non-page blocks the pick path misses and resolution silently falls
+        # back to the raw id.
+        resolve:
+          get: /v1/blocks/{block_id}
+          pick: child_page.title
       - name: Notion-Version
         in: header
         required: true
@@ -163,7 +170,7 @@ paths:
       scope_param: block_id
       disclose:
         - label: Block
-          filter: .params.block_id
+          filter: .resolved.block_id // .params.block_id
         - label: Content
           filter: .body.children
           max_chars: 2000

@@ -99,4 +99,4 @@ paths:
       scope_param: noteId
       disclose:
         - label: Note
-          filter: .params.noteId
+          filter: .resolved.noteId // .params.noteId
