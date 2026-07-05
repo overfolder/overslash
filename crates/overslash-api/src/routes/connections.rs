@@ -494,6 +494,7 @@ async fn oauth_callback(
         flow.actor_identity_id,
         flow.upgrade_connection_id,
         flow.service_instance_id,
+        &flow.scopes,
         &redirect_uri,
     )
     .await;
@@ -623,6 +624,7 @@ async fn oauth_callback_inner(
     actor_identity_id: Uuid,
     upgrade_connection_id: Option<Uuid>,
     service_instance_id: Option<Uuid>,
+    requested_scopes: &[String],
     redirect_uri: &str,
 ) -> Result<CallbackSuccess> {
     let provider = overslash_db::repos::oauth_provider::get_by_key(state.db(ext), provider_key)
@@ -665,7 +667,10 @@ async fn oauth_callback_inner(
         oauth::fetch_account_email(&state.http_client, &provider, &tokens.access_token)
             .await
             .unwrap_or(None);
-    let granted_scopes = tokens.granted_scopes();
+    // When the token response omits `scope` entirely (HubSpot always does),
+    // RFC 6749 §5.1 means the requested set was granted verbatim — record
+    // that instead of a known-empty `[]` the scope gate would then enforce.
+    let granted_scopes = tokens.granted_scopes_or_requested(requested_scopes);
 
     // Encrypt tokens
     let encrypted_access = crypto::encrypt(&enc_key, tokens.access_token.as_bytes())?;
@@ -733,8 +738,9 @@ async fn oauth_callback_inner(
                     encrypted_access_token: &encrypted_access,
                     encrypted_refresh_token: encrypted_refresh.as_deref(),
                     token_expires_at: expires_at,
-                    // Orchestrated flows always know the granted set (from the
-                    // token response) — record it (even if empty), never NULL.
+                    // Orchestrated flows always know the granted set (echoed
+                    // by the token response, or the requested set when the
+                    // provider omitted `scope`) — record it, never NULL.
                     scopes: Some(&granted_scopes),
                     account_email: account_email.as_deref(),
                     byoc_credential_id: effective_byoc_id,

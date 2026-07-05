@@ -7,6 +7,10 @@
 //! `service_base_overrides`, and verify:
 //!   - a tool call resolves the caller's OAuth connection and injects the
 //!     access token as `Authorization: Bearer` on the outbound MCP request;
+//!   - the tool names sent upstream are the live-catalog names (HubSpot
+//!     retired its original `hubspot-list-objects`-style catalog — the fake
+//!     rejects unknown names the same way the real server does, so a stale
+//!     template shows up as a failing test, not a prod 502);
 //!   - a write tool with no covering permission gates to an approval carrying
 //!     the template's `disclose` fields;
 //!   - a call with no connection yet returns `needs_authentication` with a
@@ -23,6 +27,30 @@ mod common;
 use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
+
+/// The tool catalog mcp.hubspot.com actually serves (verified via tools/list,
+/// 2026-07-05). The fake only accepts these names and answers unknown ones
+/// with JSON-RPC -32603 "Unknown tool: invalid_tool_name" — byte-for-byte what
+/// the real server returns — so template/catalog drift fails loudly here.
+const LIVE_CATALOG: &[&str] = &[
+    "search_crm_objects",
+    "submit_feedback",
+    "get_campaign_contacts_by_type",
+    "manage_crm_objects",
+    "manage_landing_page",
+    "search_owners",
+    "get_campaign_analytics",
+    "query_crm_data",
+    "render_landing_page_ui",
+    "get_organization_details",
+    "get_content_analytics_report",
+    "get_properties",
+    "get_campaign_asset_metrics",
+    "search_properties",
+    "get_crm_objects",
+    "get_user_details",
+    "tool_guidance",
+];
 
 /// CRM scopes seeded onto the test connection — the subset the template's
 /// `mcp.auth.scopes` declares that the tools under test rely on.
@@ -43,14 +71,22 @@ type CallLog = Arc<Mutex<Vec<Value>>>;
 
 /// Start a local MCP fake that speaks Streamable-HTTP JSON-RPC on `POST /`
 /// (the root, matching `https://mcp.hubspot.com`). It records each
-/// `tools/call` (tool name, Authorization header, arguments) and echoes the
-/// arguments back in `structuredContent`. Returns `(base_url, call_log)`.
+/// `tools/call` (tool name, Authorization header, arguments), echoes the
+/// arguments back in `structuredContent` for known catalog names, and returns
+/// the real server's -32603 error for unknown ones. Returns
+/// `(base_url, call_log)`.
 async fn start_mcp_fake() -> (String, CallLog) {
+    start_mcp_fake_with(LIVE_CATALOG).await
+}
+
+/// Same fake with a custom accepted catalog — pass `&[]` to simulate HubSpot
+/// having drifted its catalog away from every name the template sends.
+async fn start_mcp_fake_with(catalog: &'static [&'static str]) -> (String, CallLog) {
     common::allow_loopback_ssrf();
     let calls: CallLog = Arc::new(Mutex::new(Vec::new()));
     let app = Router::new()
         .route("/", post(mcp_rpc))
-        .with_state(calls.clone());
+        .with_state((calls.clone(), catalog));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -60,7 +96,7 @@ async fn start_mcp_fake() -> (String, CallLog) {
 }
 
 async fn mcp_rpc(
-    State(calls): State<CallLog>,
+    State((calls, catalog)): State<(CallLog, &'static [&'static str])>,
     headers: HeaderMap,
     Json(req): Json<Value>,
 ) -> Json<Value> {
@@ -73,28 +109,37 @@ async fn mcp_rpc(
         .to_string();
     let params = req.get("params").cloned().unwrap_or(Value::Null);
 
-    let result = match method {
-        "tools/call" => {
-            let name = params
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-            calls.lock().unwrap().push(json!({
-                "tool": name,
-                "auth": auth,
-                "arguments": args,
+    if method == "tools/call" {
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+        calls.lock().unwrap().push(json!({
+            "tool": name,
+            "auth": auth,
+            "arguments": args,
+        }));
+        if !catalog.contains(&name.as_str()) {
+            // Exactly what mcp.hubspot.com answers for a retired/unknown name.
+            return Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": { "code": -32603, "message": "Unknown tool: invalid_tool_name" }
             }));
-            json!({
+        }
+        return Json(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
                 "content": [{ "type": "text", "text": "ok" }],
                 "structuredContent": { "tool": name, "echo": args },
                 "isError": false
-            })
-        }
-        _ => json!({}),
-    };
-    Json(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+            }
+        }));
+    }
+    Json(json!({ "jsonrpc": "2.0", "id": id, "result": {} }))
 }
 
 /// Boot the API with the bundled registry and route `mcp.hubspot.com` at the
@@ -146,7 +191,8 @@ async fn seed_hubspot_connection(
 }
 
 // ============================================================================
-// Tool call resolves + injects the OAuth bearer on the outbound MCP request.
+// Every read tool in the shipped template resolves against the live catalog,
+// executes through the fake, and carries the auto-resolved OAuth bearer.
 // ============================================================================
 
 #[tokio::test]
@@ -192,57 +238,271 @@ async fn test_hubspot_mcp_tool_call_injects_oauth_bearer() {
         serde_json::from_str(envelope["result"]["body"].as_str().unwrap()).unwrap()
     }
 
-    // hubspot-list-objects
+    // search_crm_objects — the workhorse read.
     let body = call(
         &client,
         &base,
         &key,
-        "hubspot_list_objects",
-        json!({"objectType": "contacts", "limit": 5}),
+        "search_crm_objects",
+        json!({"objectType": "contacts", "query": "ada", "limit": 5}),
     )
     .await;
-    // The fake echoes the UPSTREAM tool name (dashed mcp_tool override).
-    assert_eq!(body["structured"]["tool"], "hubspot-list-objects");
+    assert_eq!(body["structured"]["tool"], "search_crm_objects");
     assert_eq!(body["structured"]["echo"]["objectType"], "contacts");
     assert_eq!(body["structured"]["echo"]["limit"], 5);
 
-    // hubspot-search-objects
+    // get_crm_objects — batch read by id.
     let body = call(
         &client,
         &base,
         &key,
-        "hubspot_search_objects",
-        json!({"objectType": "deals", "query": "acme"}),
+        "get_crm_objects",
+        json!({"objectType": "deals", "objectIds": ["101", "102"]}),
     )
     .await;
     assert_eq!(body["structured"]["echo"]["objectType"], "deals");
-    assert_eq!(body["structured"]["echo"]["query"], "acme");
+    assert_eq!(body["structured"]["echo"]["objectIds"][1], "102");
 
-    // hubspot-batch-create-objects (write)
+    // query_crm_data — the SQL surface.
     let body = call(
         &client,
         &base,
         &key,
-        "hubspot_batch_create_objects",
+        "query_crm_data",
+        json!({"sql": "SELECT email FROM contacts LIMIT 3"}),
+    )
+    .await;
+    assert_eq!(
+        body["structured"]["echo"]["sql"],
+        "SELECT email FROM contacts LIMIT 3"
+    );
+
+    // manage_crm_objects (write) — executes because the `hubspot:*:*` rule covers it.
+    let body = call(
+        &client,
+        &base,
+        &key,
+        "manage_crm_objects",
         json!({
-            "objectType": "contacts",
-            "inputs": [{"properties": {"email": "ada@analytical.example", "firstname": "Ada"}}]
+            "createRequest": {
+                "objectType": "contacts",
+                "objects": [{"properties": {"email": "ada@analytical.example", "firstname": "Ada"}}]
+            },
+            "confirmationStatus": "CONFIRMED"
         }),
     )
     .await;
-    assert_eq!(body["structured"]["echo"]["objectType"], "contacts");
+    assert_eq!(
+        body["structured"]["echo"]["createRequest"]["objectType"],
+        "contacts"
+    );
 
-    // Every recorded call carried the auto-resolved OAuth bearer.
+    // Every recorded call carried the auto-resolved OAuth bearer and a
+    // live-catalog tool name (the fake -32603s anything else).
     let recorded = calls.lock().unwrap().clone();
-    assert_eq!(recorded.len(), 3, "expected 3 tool calls, got {recorded:?}");
+    assert_eq!(recorded.len(), 4, "expected 4 tool calls, got {recorded:?}");
     for c in &recorded {
         assert_eq!(
             c["auth"], "Bearer hubspot-mcp-token-xyz",
             "MCP call should carry the auto-resolved OAuth bearer: {c}"
         );
+        let tool = c["tool"].as_str().unwrap();
+        assert!(
+            LIVE_CATALOG.contains(&tool),
+            "sent a tool name mcp.hubspot.com doesn't serve: {tool}"
+        );
     }
-    // Upstream tool name the MCP client sent (dashed mcp_tool override).
-    assert_eq!(recorded[0]["tool"], "hubspot-list-objects");
+}
+
+// ============================================================================
+// Template ↔ catalog sync: every tool the shipped template exposes must exist
+// in the live catalog snapshot. This is the regression test for the 2026-07
+// incident where HubSpot replaced its entire tool catalog and every "Try it"
+// 502'd with -32603 "Unknown tool".
+// ============================================================================
+
+#[tokio::test]
+async fn test_hubspot_template_tools_exist_in_live_catalog() {
+    let pool = common::test_pool().await;
+    let (mock_host, _calls) = start_mcp_fake().await;
+    let (base, client) = start_with_hubspot_mcp(pool.clone(), mock_host).await;
+
+    let (_org_id, _ident_id, key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    // Read the shipped template's action list through the API (the same
+    // normalized view the executor resolves tools from).
+    let tpl: Value = client
+        .get(format!("{base}/v1/templates/hubspot"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let actions = tpl["actions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("template has actions: {tpl}"));
+    assert!(!actions.is_empty(), "hubspot template exposes tools: {tpl}");
+
+    for a in actions {
+        // The upstream name is `mcp_tool` when aliased, else the action key.
+        let upstream = a["mcp_tool"]
+            .as_str()
+            .or_else(|| a["key"].as_str())
+            .unwrap();
+        assert!(
+            LIVE_CATALOG.contains(&upstream),
+            "template exposes `{upstream}`, which mcp.hubspot.com does not serve — \
+             HubSpot's catalog moved again; re-run tools/list and re-sync \
+             services/hubspot.yaml (see the LIVE_CATALOG constant)"
+        );
+    }
+}
+
+// ============================================================================
+// Catalog drift surfaces as 502 Bad Gateway carrying the upstream -32603 —
+// pinning the failure shape of the 2026-07 incident so it stays diagnosable.
+// ============================================================================
+
+#[tokio::test]
+async fn test_hubspot_catalog_drift_maps_to_bad_gateway() {
+    let pool = common::test_pool().await;
+    // Empty catalog: the "server" recognizes none of the template's tools,
+    // exactly what a catalog replacement looks like from Overslash's side.
+    let (mock_host, calls) = start_mcp_fake_with(&[]).await;
+    let (base, client) = start_with_hubspot_mcp(pool.clone(), mock_host).await;
+
+    let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+
+    common::grant_service_to_everyone(&base, &client, &admin_key, "hubspot").await;
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "hubspot:*:*"}))
+        .send()
+        .await
+        .unwrap();
+    seed_hubspot_connection(&pool, org_id, ident_id, owner_id).await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "hubspot",
+            "action": "search_crm_objects",
+            "params": {"objectType": "contacts"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        502,
+        "unknown-tool RPC error should surface as 502"
+    );
+    let body: Value = resp.json().await.unwrap();
+    let msg = body.to_string();
+    assert!(
+        msg.contains("-32603"),
+        "error body should carry the upstream JSON-RPC code for diagnosis: {msg}"
+    );
+    // The call did reach the server with the right name — the drift is
+    // upstream, not in Overslash's resolution.
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["tool"], "search_crm_objects");
+}
+
+// ============================================================================
+// OAuth callback: HubSpot's token endpoint never echoes `scope`. Per
+// RFC 6749 §5.1 that means the requested set was granted verbatim — the
+// connection must record it, not a known-empty `{}` (which the scope gate
+// would then enforce as "no scopes granted").
+// ============================================================================
+
+#[tokio::test]
+async fn test_hubspot_callback_records_requested_scopes_when_token_omits_scope() {
+    let pool = common::test_pool().await;
+    // The fakes' authorization_code response carries no `scope` field —
+    // byte-compatible with HubSpot's real token endpoint.
+    let mock_addr = common::start_mock().await;
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'hubspot'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, ident_id, _api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    // HubSpot is BYOC-only (custom MCP auth app) — seed the credential the
+    // token exchange will resolve.
+    let byoc: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({
+            "provider": "hubspot",
+            "client_id": "hs_mcp_auth_app_id",
+            "client_secret": "hs_mcp_auth_app_secret",
+            "identity_id": ident_id,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(byoc["id"].is_string(), "byoc create failed: {byoc}");
+
+    let requested = crm_scopes();
+    let state_param =
+        common::seed_oauth_flow_with_scopes(&pool, org_id, ident_id, "hubspot", None, &requested)
+            .await;
+
+    let callback_resp: Value = client
+        .get(format!(
+            "{base}/v1/oauth/callback?code=hs_code_1&state={state_param}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(callback_resp["status"], "connected", "{callback_resp}");
+    assert_eq!(callback_resp["provider"], "hubspot");
+    let echoed: Vec<String> = callback_resp["scopes"]
+        .as_array()
+        .expect("scopes in callback body")
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        echoed, requested,
+        "callback should report the requested set as granted"
+    );
+
+    // And the connection row records them (not `{}`).
+    let conn_id: uuid::Uuid = callback_resp["connection_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_connection(conn_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        conn.scopes.as_deref(),
+        Some(requested.as_slice()),
+        "connection.scopes should carry the RFC 6749 fallback set"
+    );
 }
 
 // ============================================================================
@@ -268,10 +528,12 @@ async fn test_hubspot_mcp_write_disclosure_gates_to_approval() {
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "hubspot",
-            "action": "hubspot_batch_create_objects",
+            "action": "manage_crm_objects",
             "params": {
-                "objectType": "contacts",
-                "inputs": [{"properties": {"email": "grace@navy.example", "firstname": "Grace"}}]
+                "createRequest": {
+                    "objectType": "contacts",
+                    "objects": [{"properties": {"email": "grace@navy.example", "firstname": "Grace"}}]
+                }
             }
         }))
         .send()
@@ -297,14 +559,17 @@ async fn test_hubspot_mcp_write_disclosure_gates_to_approval() {
         })
         .collect();
     assert_eq!(
+        disclosed.get("Operation").map(String::as_str),
+        Some("create")
+    );
+    assert_eq!(
         disclosed.get("Object type").map(String::as_str),
         Some("contacts")
     );
-    assert_eq!(disclosed.get("Count").map(String::as_str), Some("1"));
-    assert_eq!(
-        disclosed.get("First email").map(String::as_str),
-        Some("grace@navy.example"),
-        "disclose should extract the first record's email from .arguments: {disclosed:?}"
+    let payload = disclosed.get("Payload").cloned().unwrap_or_default();
+    assert!(
+        payload.contains("grace@navy.example"),
+        "Payload disclose should carry the record content: {disclosed:?}"
     );
 }
 
@@ -349,7 +614,7 @@ async fn test_hubspot_mcp_needs_authentication_without_connection() {
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "hubspot",
-            "action": "hubspot_list_objects",
+            "action": "search_crm_objects",
             "params": {"objectType": "contacts"}
         }))
         .send()
