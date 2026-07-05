@@ -835,10 +835,10 @@ pub(super) fn extract_mcp_actions(
 
         // The upstream MCP tool name defaults to the action key, but may be
         // overridden with `mcp_tool` when the server's tool name isn't a valid
-        // Overslash action key. HubSpot's remote MCP, for instance, names its
-        // tools `hubspot-list-objects` (dashes), which the action-key grammar
-        // `^[a-z][a-z0-9_]*$` rejects — so the key is `hubspot_list_objects`
-        // and `mcp_tool: hubspot-list-objects` carries the real name upstream.
+        // Overslash action key — e.g. a server naming its tools with dashes
+        // (`some-list-tool`), which the action-key grammar `^[a-z][a-z0-9_]*$`
+        // rejects: the key becomes `some_list_tool` and
+        // `mcp_tool: some-list-tool` carries the real name upstream.
         let mcp_tool = obj
             .get("mcp_tool")
             .and_then(Value::as_str)

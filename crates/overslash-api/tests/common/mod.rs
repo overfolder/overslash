@@ -1921,6 +1921,28 @@ pub async fn seed_oauth_flow(
     provider_key: &str,
     byoc_credential_id: Option<Uuid>,
 ) -> String {
+    seed_oauth_flow_with_scopes(
+        pool,
+        org_id,
+        identity_id,
+        provider_key,
+        byoc_credential_id,
+        &[],
+    )
+    .await
+}
+
+/// [`seed_oauth_flow`] with explicit requested scopes on the flow row — for
+/// tests exercising the RFC 6749 §5.1 fallback (token response omits `scope`
+/// → the requested set is recorded as granted).
+pub async fn seed_oauth_flow_with_scopes(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    provider_key: &str,
+    byoc_credential_id: Option<Uuid>,
+    scopes: &[String],
+) -> String {
     use overslash_db::repos::oauth_connection_flow::{self, CreateOauthConnectionFlow};
     use time::{Duration, OffsetDateTime};
 
@@ -1934,7 +1956,7 @@ pub async fn seed_oauth_flow(
             actor_identity_id: identity_id,
             provider_key,
             byoc_credential_id,
-            scopes: &[],
+            scopes,
             pkce_code_verifier: None,
             upstream_authorize_url: "https://example.test/authorize",
             expires_at: OffsetDateTime::now_utc() + Duration::minutes(10),

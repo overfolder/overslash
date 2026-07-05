@@ -364,6 +364,20 @@ impl TokenResponse {
                 .collect(),
         }
     }
+
+    /// Granted scopes for a connect-time exchange. RFC 6749 §5.1 makes the
+    /// `scope` field OPTIONAL when the granted set is identical to what the
+    /// client requested — HubSpot, for one, never echoes it. Recording `[]`
+    /// in that case turns "provider said nothing" into "known-empty grant",
+    /// which the scope gate then enforces; falling back to the requested set
+    /// keeps the recorded scopes truthful. A present-but-empty `scope` is
+    /// still honored verbatim: the provider explicitly said "no scopes".
+    pub fn granted_scopes_or_requested(&self, requested: &[String]) -> Vec<String> {
+        match &self.scope {
+            None => requested.to_vec(),
+            Some(_) => self.granted_scopes(),
+        }
+    }
 }
 
 /// Fetch the user's profile from the provider's userinfo endpoint and extract
@@ -527,6 +541,44 @@ mod tests {
             scope: None,
         };
         assert!(t.granted_scopes().is_empty());
+    }
+
+    fn token_with_scope(scope: Option<&str>) -> TokenResponse {
+        TokenResponse {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_in: None,
+            token_type: None,
+            scope: scope.map(String::from),
+        }
+    }
+
+    #[test]
+    fn granted_scopes_or_requested_falls_back_when_scope_omitted() {
+        // HubSpot-shaped response: no `scope` field at all → RFC 6749 §5.1
+        // says granted == requested.
+        let requested = v(&["crm.objects.contacts.read", "crm.objects.deals.read"]);
+        let t = token_with_scope(None);
+        assert_eq!(t.granted_scopes_or_requested(&requested), requested);
+    }
+
+    #[test]
+    fn granted_scopes_or_requested_honors_echoed_scope() {
+        // Provider echoed a narrower grant than requested — record what it said.
+        let requested = v(&["openid", "email", "gmail.readonly"]);
+        let t = token_with_scope(Some("openid email"));
+        assert_eq!(
+            t.granted_scopes_or_requested(&requested),
+            v(&["openid", "email"])
+        );
+    }
+
+    #[test]
+    fn granted_scopes_or_requested_honors_explicit_empty_scope() {
+        // A present-but-empty `scope` is an explicit "nothing granted".
+        let requested = v(&["repo"]);
+        let t = token_with_scope(Some(""));
+        assert!(t.granted_scopes_or_requested(&requested).is_empty());
     }
 
     #[test]
