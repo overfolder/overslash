@@ -51,6 +51,7 @@
 	let editConnection = $state('');
 	let editSecret = $state('');
 	let editUrl = $state('');
+	let editUseDefaultConnection = $state(true);
 	let availableSecrets = $state<SecretSummary[]>([]);
 	let secretsLoading = $state(false);
 	let secretsLoaded = false;
@@ -229,6 +230,7 @@
 			editConnection = fresh.connection_id ?? '';
 			editSecret = fresh.secret_name ?? '';
 			editUrl = fresh.url ?? '';
+			editUseDefaultConnection = fresh.use_default_connection;
 			const [tpl, acts, conns, ids, sGroups, gs] = await Promise.all([
 				getTemplate(fresh.template_key, ctrl.signal).catch(() => null),
 				// Use svc.id (not name) so user-shadows-org can't return actions
@@ -281,7 +283,11 @@
 				secret_name:
 					editSecret !== (svc.secret_name ?? '') ? editSecret || null : undefined,
 				url:
-					editUrl !== (svc.url ?? '') ? editUrl.trim() || null : undefined
+					editUrl !== (svc.url ?? '') ? editUrl.trim() || null : undefined,
+				use_default_connection:
+					editUseDefaultConnection !== svc.use_default_connection
+						? editUseDefaultConnection
+						: undefined
 			});
 			svc = updated;
 		} catch (e) {
@@ -648,6 +654,24 @@
 							loading={secretsLoading}
 						/>
 					</div>
+				{/if}
+				{#if usesOAuth && !isSystem}
+					<div class="field toggle-field">
+						<ToggleSwitch
+							checked={editUseDefaultConnection}
+							onchange={(v) => (editUseDefaultConnection = v)}
+							labelledby="edit-use-default-connection-label"
+						/>
+						<span id="edit-use-default-connection-label">
+							Fall back to the default connection for this provider when none is pinned
+						</span>
+					</div>
+					{#if !editUseDefaultConnection}
+						<small class="hint">
+							Off: calls fail with <code>needs_authentication</code> until a connection is
+							explicitly bound. Used for white-label services with a dedicated connection.
+						</small>
+					{/if}
 				{/if}
 				<div class="row">
 					<span class="label">Owner</span>

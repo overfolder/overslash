@@ -1,0 +1,1 @@
+ALTER TABLE oauth_connection_flows DROP COLUMN pin_service_instance_ids;

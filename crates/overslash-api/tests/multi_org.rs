@@ -1287,6 +1287,7 @@ async fn seed_connect_flow(
             return_url: None,
             upgrade_connection_id: None,
             service_instance_id: None,
+            pin_service_instance_ids: &[],
         },
     )
     .await

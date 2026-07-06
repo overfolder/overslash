@@ -111,6 +111,13 @@ pub struct CreateConnectionInput {
     /// where the caller is not orchestrating a service alongside.
     #[serde(default)]
     pub service_instance_id: Option<Uuid>,
+    /// Service instances to atomically bind the resulting connection to when
+    /// the OAuth callback fires — the plural successor to
+    /// `service_instance_id`. Persisted on the flow row; the callback binds
+    /// every id in one transaction alongside the connection insert. Empty ⇒
+    /// no multi-pin.
+    #[serde(default)]
+    pub pin_service_ids: Vec<Uuid>,
 }
 
 /// Maximum byte length for caller-supplied `return_url`. Cap is generous
@@ -328,6 +335,7 @@ pub(crate) async fn kernel_create_connection_for_identity(
             return_url: return_url.as_deref(),
             upgrade_connection_id: input.upgrade_connection_id,
             service_instance_id: input.service_instance_id,
+            pin_service_instance_ids: &input.pin_service_ids,
         },
     )
     .await?;
@@ -477,6 +485,14 @@ pub struct ImportConnectionInput {
     /// Owner-user binding, same semantics as `POST /v1/connections`.
     #[serde(default)]
     pub on_behalf_of: Option<Uuid>,
+    /// Service instances to atomically bind to the imported connection, in the
+    /// same transaction as the connection write. Each instance must be owned by
+    /// the connection's owner identity; a bad id rolls the whole import back so
+    /// no connection is created. Lets a white-label partner mint a service
+    /// (with `use_default_connection = false`) and its connection in one
+    /// coherent step. Empty ⇒ no pinning.
+    #[serde(default)]
+    pub pin_service_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -489,6 +505,9 @@ pub struct ImportConnectionResponse {
     /// of the doubt).
     pub scopes: Option<Vec<String>>,
     pub is_default: bool,
+    /// Instances that were bound to this connection by `pin_service_ids`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_service_ids: Vec<Uuid>,
 }
 
 /// Import partner-minted OAuth tokens as a connection. The partner ran the
@@ -687,6 +706,14 @@ pub async fn kernel_import_connection(
                     "connection was deleted during import".into(),
                 ));
             }
+            // Re-import reuses the existing row; bind any requested pins in their
+            // own transaction (the connection already exists, so there's nothing
+            // to roll back on the connection itself — but the binds are still
+            // all-or-nothing and ownership-gated).
+            scope
+                .pin_service_instances(existing.id, existing.identity_id, &input.pin_service_ids)
+                .await
+                .map_err(pin_error_to_app_error)?;
             (
                 existing.id,
                 existing.is_default,
@@ -695,18 +722,22 @@ pub async fn kernel_import_connection(
             )
         } else {
             let conn = scope
-                .create_connection(CreateConnection {
-                    org_id: ctx.org_id,
-                    identity_id,
-                    provider_key: &input.provider,
-                    encrypted_access_token: &encrypted_access,
-                    encrypted_refresh_token: encrypted_refresh.as_deref(),
-                    token_expires_at: expires_at,
-                    scopes: input.scopes.as_deref(),
-                    account_email: account_email.as_deref(),
-                    byoc_credential_id: byoc_id,
-                })
-                .await?;
+                .create_connection_and_pin(
+                    CreateConnection {
+                        org_id: ctx.org_id,
+                        identity_id,
+                        provider_key: &input.provider,
+                        encrypted_access_token: &encrypted_access,
+                        encrypted_refresh_token: encrypted_refresh.as_deref(),
+                        token_expires_at: expires_at,
+                        scopes: input.scopes.as_deref(),
+                        account_email: account_email.as_deref(),
+                        byoc_credential_id: byoc_id,
+                    },
+                    &input.pin_service_ids,
+                )
+                .await
+                .map_err(pin_error_to_app_error)?;
             (
                 conn.id,
                 conn.is_default,
@@ -761,7 +792,24 @@ pub async fn kernel_import_connection(
         account_email,
         scopes: effective_scopes,
         is_default,
+        pinned_service_ids: input.pin_service_ids,
     })
+}
+
+/// Map the atomic-pin failure onto the API error surface. A `Bind` error is the
+/// caller's fault (unknown / foreign-owned / org-level instance id) → 400 with
+/// the coarse code; a DB error propagates as-is.
+pub(crate) fn pin_error_to_app_error(e: overslash_db::scopes::CreateAndPinError) -> AppError {
+    use overslash_db::scopes::CreateAndPinError;
+    match e {
+        CreateAndPinError::Db(e) => AppError::Database(e),
+        CreateAndPinError::Bind {
+            service_instance_id,
+            code,
+        } => AppError::BadRequest(format!(
+            "{code}: service instance {service_instance_id} cannot be pinned to this connection"
+        )),
+    }
 }
 
 /// Build a `PlatformCallContext` from `AppState` + caller identity, suitable
@@ -820,6 +868,7 @@ pub async fn mint_initial_auth_url(
             // re-validated against the allow-list at callback time.
             return_url: return_url.map(str::to_string),
             service_instance_id: None,
+            pin_service_ids: vec![],
         },
         RequestMeta::default(),
     )
@@ -896,6 +945,7 @@ pub async fn mint_upgrade_auth_url(
                 upgrade_connection_id: Some(conn.id),
                 return_url: return_url.map(str::to_string),
                 service_instance_id: None,
+                pin_service_ids: vec![],
             },
             RequestMeta::default(),
         )
@@ -926,6 +976,7 @@ pub async fn mint_upgrade_auth_url(
                 upgrade_connection_id: Some(conn.id),
                 return_url: return_url.map(str::to_string),
                 service_instance_id: None,
+                pin_service_ids: vec![],
             },
             RequestMeta::default(),
         )
@@ -952,6 +1003,7 @@ pub async fn mint_upgrade_auth_url(
             upgrade_connection_id: Some(conn.id),
             return_url: return_url.map(str::to_string),
             service_instance_id: None,
+            pin_service_ids: vec![],
         },
         RequestMeta::default(),
     )

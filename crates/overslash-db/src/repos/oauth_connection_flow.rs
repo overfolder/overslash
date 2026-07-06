@@ -49,6 +49,10 @@ pub struct OauthConnectionFlowRow {
     /// callback binds the resulting connection back onto this row. `None` is
     /// the low-level path where no service is being set up alongside.
     pub service_instance_id: Option<Uuid>,
+    /// Service instances to atomically bind the resulting connection to on
+    /// callback (plural successor to `service_instance_id`). The callback
+    /// merges this list with the singular column. Empty ⇒ no multi-pin.
+    pub pin_service_instance_ids: Vec<Uuid>,
 }
 
 pub struct CreateOauthConnectionFlow<'a> {
@@ -67,6 +71,7 @@ pub struct CreateOauthConnectionFlow<'a> {
     pub return_url: Option<&'a str>,
     pub upgrade_connection_id: Option<Uuid>,
     pub service_instance_id: Option<Uuid>,
+    pub pin_service_instance_ids: &'a [Uuid],
 }
 
 pub async fn create(
@@ -80,13 +85,13 @@ pub async fn create(
              byoc_credential_id, scopes, pkce_code_verifier,
              upstream_authorize_url, expires_at,
              created_ip, created_user_agent, return_url,
-             upgrade_connection_id, service_instance_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             upgrade_connection_id, service_instance_id, pin_service_instance_ids)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
          RETURNING id, org_id, identity_id, actor_identity_id, provider_key,
                    byoc_credential_id, scopes, pkce_code_verifier,
                    upstream_authorize_url, expires_at, consumed_at,
                    created_at, created_ip, created_user_agent, return_url,
-                   upgrade_connection_id, service_instance_id",
+                   upgrade_connection_id, service_instance_id, pin_service_instance_ids",
         input.id,
         input.org_id,
         input.identity_id,
@@ -102,6 +107,7 @@ pub async fn create(
         input.return_url,
         input.upgrade_connection_id,
         input.service_instance_id,
+        input.pin_service_instance_ids,
     )
     .fetch_one(pool)
     .await
@@ -120,7 +126,7 @@ pub async fn get_by_id(
                 byoc_credential_id, scopes, pkce_code_verifier,
                 upstream_authorize_url, expires_at, consumed_at,
                 created_at, created_ip, created_user_agent, return_url,
-                upgrade_connection_id, service_instance_id
+                upgrade_connection_id, service_instance_id, pin_service_instance_ids
            FROM oauth_connection_flows WHERE id = $1",
         id,
     )
@@ -145,7 +151,7 @@ pub async fn consume(
                     byoc_credential_id, scopes, pkce_code_verifier,
                     upstream_authorize_url, expires_at, consumed_at,
                     created_at, created_ip, created_user_agent, return_url,
-                    upgrade_connection_id, service_instance_id",
+                    upgrade_connection_id, service_instance_id, pin_service_instance_ids",
         id,
     )
     .fetch_optional(pool)

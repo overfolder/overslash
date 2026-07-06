@@ -10,7 +10,30 @@
 use uuid::Uuid;
 
 use crate::repos::connection::{self, ConnectionRow, CreateConnection};
+use crate::repos::service_instance;
 use crate::scopes::OrgScope;
+
+/// Failure modes of [`OrgScope::create_connection_and_pin`]. A `Bind` error
+/// means the whole transaction rolled back — **no** connection was created —
+/// so the caller can surface which instance id was at fault without leaking an
+/// orphan connection.
+#[derive(Debug)]
+pub enum CreateAndPinError {
+    Db(sqlx::Error),
+    /// A pinned instance couldn't be bound. `code` matches the coarse
+    /// `service_instance_bind_error` vocabulary the OAuth callback already uses
+    /// (`service_instance_not_found`, `service_instance_owner_mismatch`).
+    Bind {
+        service_instance_id: Uuid,
+        code: &'static str,
+    },
+}
+
+impl From<sqlx::Error> for CreateAndPinError {
+    fn from(e: sqlx::Error) -> Self {
+        CreateAndPinError::Db(e)
+    }
+}
 
 impl OrgScope {
     /// Create a new connection. The caller's `OrgScope` is the source of
@@ -23,6 +46,59 @@ impl OrgScope {
     ) -> Result<ConnectionRow, sqlx::Error> {
         input.org_id = self.org_id();
         connection::create(self.db(), &input).await
+    }
+
+    /// Create a connection and atomically bind it to `pin_service_ids` in a
+    /// single transaction. Either every named instance ends up pointing at the
+    /// new connection, or nothing is written at all.
+    ///
+    /// Ownership gate (mirrors the OAuth-callback bind): each instance must
+    /// exist and its `owner_identity_id` must equal the connection's
+    /// `identity_id`. Org-level instances (`owner_identity_id IS NULL`) are
+    /// rejected — connections are identity-bound. Any violation rolls the whole
+    /// transaction back so a bad id never leaves an orphaned connection behind.
+    pub async fn create_connection_and_pin<'a>(
+        &self,
+        mut input: CreateConnection<'a>,
+        pin_service_ids: &[Uuid],
+    ) -> Result<ConnectionRow, CreateAndPinError> {
+        input.org_id = self.org_id();
+        let org_id = self.org_id();
+        let mut tx = self.db().begin().await?;
+
+        let conn = connection::create_with(&mut *tx, &input).await?;
+        pin_within_tx(&mut tx, org_id, conn.id, conn.identity_id, pin_service_ids).await?;
+
+        tx.commit().await?;
+        Ok(conn)
+    }
+
+    /// Atomically bind an already-existing connection to `pin_service_ids`.
+    /// Same ownership gate and all-or-nothing semantics as
+    /// [`create_connection_and_pin`]; used by the re-import path where the
+    /// connection row already exists (idempotent token re-import). A no-op when
+    /// `pin_service_ids` is empty.
+    pub async fn pin_service_instances(
+        &self,
+        connection_id: Uuid,
+        connection_identity_id: Uuid,
+        pin_service_ids: &[Uuid],
+    ) -> Result<(), CreateAndPinError> {
+        if pin_service_ids.is_empty() {
+            return Ok(());
+        }
+        let org_id = self.org_id();
+        let mut tx = self.db().begin().await?;
+        pin_within_tx(
+            &mut tx,
+            org_id,
+            connection_id,
+            connection_identity_id,
+            pin_service_ids,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Look up a connection by id, scoped to this org. Returns `None` if the
@@ -152,4 +228,45 @@ impl OrgScope {
         };
         connection::set_default(self.db(), self.org_id(), conn.identity_id, id).await
     }
+}
+
+/// Validate ownership and bind each pinned service instance to `connection_id`
+/// inside `tx`. Returns a `Bind` error (naming the offending id) on the first
+/// violation, leaving `tx` uncommitted so the caller's whole transaction rolls
+/// back. Shared by [`OrgScope::create_connection_and_pin`] and
+/// [`OrgScope::pin_service_instances`].
+async fn pin_within_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org_id: Uuid,
+    connection_id: Uuid,
+    connection_identity_id: Uuid,
+    pin_service_ids: &[Uuid],
+) -> Result<(), CreateAndPinError> {
+    for &sid in pin_service_ids {
+        let instance = service_instance::get_by_id_with(&mut **tx, org_id, sid)
+            .await?
+            .ok_or(CreateAndPinError::Bind {
+                service_instance_id: sid,
+                code: "service_instance_not_found",
+            })?;
+        // Connections are identity-bound: reject org-level instances
+        // (owner_identity_id IS NULL) and any instance owned by a different
+        // identity than the connection's owner.
+        if instance.owner_identity_id != Some(connection_identity_id) {
+            return Err(CreateAndPinError::Bind {
+                service_instance_id: sid,
+                code: "service_instance_owner_mismatch",
+            });
+        }
+        let bound =
+            service_instance::bind_connection_with(&mut **tx, org_id, sid, connection_id).await?;
+        if bound.is_none() {
+            // Deleted between the ownership check and the UPDATE.
+            return Err(CreateAndPinError::Bind {
+                service_instance_id: sid,
+                code: "service_instance_not_found",
+            });
+        }
+    }
+    Ok(())
 }

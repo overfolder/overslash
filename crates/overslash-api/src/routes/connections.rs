@@ -80,6 +80,14 @@ struct InitiateConnectionRequest {
     /// OAuth dance finishes. See [`CreateConnectionInput::return_url`].
     #[serde(default)]
     return_url: Option<String>,
+    /// Service instances to atomically bind the resulting connection to when
+    /// the callback fires. Plural; the singular `service_instance_id` alias is
+    /// merged in. See [`CreateConnectionInput::pin_service_ids`].
+    #[serde(default)]
+    pin_service_ids: Vec<Uuid>,
+    /// Singular back-compat alias for `pin_service_ids`, merged into the list.
+    #[serde(default)]
+    service_instance_id: Option<Uuid>,
 }
 
 /// Wire shape for `POST /v1/connections`.
@@ -123,6 +131,13 @@ async fn initiate_connection(
         config: state.config.clone(),
         http_client: state.http_client.clone(),
     };
+    // Merge the singular alias into the plural list (dedup preserves order).
+    let mut pin_service_ids = req.pin_service_ids;
+    if let Some(sid) = req.service_instance_id {
+        if !pin_service_ids.contains(&sid) {
+            pin_service_ids.push(sid);
+        }
+    }
     let input = CreateConnectionInput {
         provider: req.provider,
         scopes: req.scopes,
@@ -134,6 +149,7 @@ async fn initiate_connection(
         upgrade_connection_id: None,
         return_url: req.return_url,
         service_instance_id: None,
+        pin_service_ids,
     };
     let kernel_response: CreateConnectionResponse = kernel_create_connection(
         ctx,
@@ -177,6 +193,14 @@ struct ImportConnectionRequest {
     byoc_credential_id: Option<Uuid>,
     #[serde(default)]
     on_behalf_of: Option<Uuid>,
+    /// Service instances to atomically bind to the imported connection. The
+    /// plural form; the singular `service_instance_id` is accepted as an alias
+    /// and merged in.
+    #[serde(default)]
+    pin_service_ids: Vec<Uuid>,
+    /// Singular back-compat alias for `pin_service_ids`. Merged into the list.
+    #[serde(default)]
+    service_instance_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -189,6 +213,8 @@ struct ImportConnectionResponse {
     /// gives the connection the benefit of the doubt).
     scopes: Option<Vec<String>>,
     is_default: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pinned_service_ids: Vec<Uuid>,
 }
 
 /// `POST /v1/connections/import` — vault OAuth tokens a white-label partner
@@ -217,6 +243,13 @@ async fn import_connection(
         config: state.config.clone(),
         http_client: state.http_client.clone(),
     };
+    // Merge the singular alias into the plural list (dedup preserves order).
+    let mut pin_service_ids = req.pin_service_ids;
+    if let Some(sid) = req.service_instance_id {
+        if !pin_service_ids.contains(&sid) {
+            pin_service_ids.push(sid);
+        }
+    }
     let input = crate::services::platform_connections::ImportConnectionInput {
         provider: req.provider,
         access_token: req.access_token,
@@ -227,6 +260,7 @@ async fn import_connection(
         account_email: req.account_email,
         byoc_credential_id: req.byoc_credential_id,
         on_behalf_of: req.on_behalf_of,
+        pin_service_ids,
     };
     let resp = crate::services::platform_connections::kernel_import_connection(
         ctx,
@@ -244,6 +278,7 @@ async fn import_connection(
         account_email: resp.account_email,
         scopes: resp.scopes,
         is_default: resp.is_default,
+        pinned_service_ids: resp.pinned_service_ids,
     }))
 }
 
@@ -430,6 +465,10 @@ struct CallbackSuccess {
     /// `service_instance_bind_error`) — callers should not infer that
     /// the named instance now points at this connection.
     service_instance_id: Option<Uuid>,
+    /// Every instance successfully bound to the new connection (the plural
+    /// successor to `service_instance_id`). Empty when no pins were requested
+    /// or all failed.
+    bound_service_instance_ids: Vec<Uuid>,
     /// Coarse error code when binding the connection to the service
     /// instance failed after the OAuth dance succeeded. The connection
     /// itself is still saved — callers can retry the bind via `PUT
@@ -481,6 +520,15 @@ async fn oauth_callback(
         &state.config.public_url,
     );
 
+    // Merge the singular `service_instance_id` (legacy / in-flight flows) with
+    // the plural `pin_service_instance_ids`, preserving order and de-duping.
+    let mut pin_ids = flow.pin_service_instance_ids.clone();
+    if let Some(sid) = flow.service_instance_id {
+        if !pin_ids.contains(&sid) {
+            pin_ids.insert(0, sid);
+        }
+    }
+
     let outcome = oauth_callback_inner(
         &state,
         &ext,
@@ -493,7 +541,7 @@ async fn oauth_callback(
         flow.pkce_code_verifier.as_deref(),
         flow.actor_identity_id,
         flow.upgrade_connection_id,
-        flow.service_instance_id,
+        &pin_ids,
         &flow.scopes,
         &redirect_uri,
     )
@@ -519,6 +567,15 @@ fn callback_success_json(payload: &CallbackSuccess) -> serde_json::Value {
     });
     if let Some(id) = payload.service_instance_id {
         body["service_instance_id"] = serde_json::Value::String(id.to_string());
+    }
+    if !payload.bound_service_instance_ids.is_empty() {
+        body["bound_service_instance_ids"] = serde_json::Value::Array(
+            payload
+                .bound_service_instance_ids
+                .iter()
+                .map(|id| serde_json::Value::String(id.to_string()))
+                .collect(),
+        );
     }
     if let Some(code) = payload.service_instance_bind_error {
         body["service_instance_bind_error"] = serde_json::Value::String(code.into());
@@ -623,7 +680,7 @@ async fn oauth_callback_inner(
     code_verifier: Option<&str>,
     actor_identity_id: Uuid,
     upgrade_connection_id: Option<Uuid>,
-    service_instance_id: Option<Uuid>,
+    service_instance_ids: &[Uuid],
     requested_scopes: &[String],
     redirect_uri: &str,
 ) -> Result<CallbackSuccess> {
@@ -810,9 +867,21 @@ async fn oauth_callback_inner(
     // are also rejected here — connections are identity-bound and the
     // create-time `kernel_create_service` validation already forbids
     // pinning a connection to an org-level service.
+    //
+    // Best-effort by design (unlike the fully-atomic `/v1/connections/import`
+    // path): the OAuth token exchange already succeeded and the connection is
+    // valuable, so a bind failure must NOT discard it. We bind each id
+    // independently, keep the connection regardless, and surface the first
+    // failing id's coarse code — callers retry via `PUT /v1/services/{id}/manage`.
     let scope = OrgScope::new(org_id, state.db_pool(ext));
     let mut service_instance_bind_error: Option<&'static str> = None;
-    if let Some(svc_id) = service_instance_id {
+    let mut bound_service_instance_ids: Vec<Uuid> = Vec::new();
+    for &svc_id in service_instance_ids {
+        // Once one bind has failed, stop attempting the rest — the caller must
+        // retry the whole set anyway, and partial binds are already recorded.
+        if service_instance_bind_error.is_some() {
+            break;
+        }
         match scope.get_service_instance(svc_id).await {
             Ok(None) => {
                 service_instance_bind_error = Some("service_instance_not_found");
@@ -826,9 +895,10 @@ async fn oauth_callback_inner(
                     connection_id: Some(Some(connection_id)),
                     secret_name: None,
                     url: None,
+                    use_default_connection: None,
                 };
                 match scope.update_service_instance(svc_id, &bind_input).await {
-                    Ok(Some(_)) => {}
+                    Ok(Some(_)) => bound_service_instance_ids.push(svc_id),
                     Ok(None) => {
                         // Concurrent delete in the gap between the
                         // ownership check above and the UPDATE.
@@ -850,7 +920,10 @@ async fn oauth_callback_inner(
         provider_key: provider_key.to_string(),
         account_email,
         scopes: granted_scopes,
-        service_instance_id: service_instance_id.filter(|_| service_instance_bind_error.is_none()),
+        // Back-compat: surface the first bound id in the singular field the
+        // JSON/redirect shapes have always carried.
+        service_instance_id: bound_service_instance_ids.first().copied(),
+        bound_service_instance_ids,
         service_instance_bind_error,
     })
 }
@@ -1195,6 +1268,7 @@ async fn upgrade_connection_scopes(
             upgrade_connection_id: Some(id),
             return_url: None,
             service_instance_id: None,
+            pin_service_ids: vec![],
         },
         RequestMeta {
             ip: ip.0.as_deref(),

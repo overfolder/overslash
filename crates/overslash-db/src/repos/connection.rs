@@ -43,6 +43,19 @@ pub(crate) async fn create(
     pool: &PgPool,
     input: &CreateConnection<'_>,
 ) -> Result<ConnectionRow, sqlx::Error> {
+    create_with(pool, input).await
+}
+
+/// Executor-generic variant of [`create`], so the insert can run inside a
+/// caller-supplied transaction (e.g. the atomic `create_connection_and_pin`
+/// flow that binds the new connection to service instances in one commit).
+pub(crate) async fn create_with<'e, E>(
+    executor: E,
+    input: &CreateConnection<'_>,
+) -> Result<ConnectionRow, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     // `is_default` is computed, not defaulted: a new connection becomes the
     // provider default only when the identity has none yet. The column's
     // `DEFAULT true` (migration 009) predates the single-default invariant
@@ -73,7 +86,7 @@ pub(crate) async fn create(
         input.account_email,
         input.byoc_credential_id,
     )
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 

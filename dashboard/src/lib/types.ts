@@ -405,6 +405,8 @@ export interface ServiceInstanceSummary {
   secret_name?: string;
   /** Per-instance MCP server URL override. Present only for MCP runtime services. */
   url?: string;
+  /** When `false`, an unbound instance won't fall back to the identity's default connection for the provider. Defaults to `true`. */
+  use_default_connection: boolean;
   groups?: ServiceGroupRef[];
   credentials_status?: CredentialsStatus;
 }
@@ -424,6 +426,8 @@ export interface CreateServiceRequest {
   url?: string;
   status?: ServiceStatus;
   user_level?: boolean;
+  /** When `false`, this instance won't fall back to the default connection for its provider. Defaults to `true` server-side. */
+  use_default_connection?: boolean;
 }
 
 export interface UpdateServiceRequest {
@@ -431,6 +435,7 @@ export interface UpdateServiceRequest {
   connection_id?: string | null;
   secret_name?: string | null;
   url?: string | null;
+  use_default_connection?: boolean;
 }
 
 // -- OAuth --
