@@ -2429,17 +2429,26 @@ async fn provision_org_subdomain(
         .as_deref()
         .map(|pinned| pinned == slug)
         .unwrap_or(false);
-    // Existing-member short-circuit (only on the invite-gated path): when
-    // alice@acme.com already has a membership in this org and tries a
+    // Existing-member short-circuit (applies to BOTH managed sub-modes):
+    // when alice@acme.com already has a membership in this org and tries a
     // different Overslash-managed IdP (Google→GitHub), the
     // `(org_id, external_id)` lookup above misses (new IdP subject) and
-    // we fall through here. Her original invite is already accepted, so
-    // `find_pending` returns None and the gate would lock her out
-    // (`not_invited`). Recognise her via email-on-existing-membership and
-    // let the new identity attach to her existing user row — no fresh
-    // invite required. Safe because the trust-domain for managed-signin
-    // is the operator's env-creds and the same email already passed the
-    // admin's invite check at first sign-in.
+    // we fall through here. Her original invite is already accepted (or she
+    // was admitted by domain), so the admission gate below would lock her
+    // out. Recognise her via email-on-existing-membership and let the new
+    // identity attach to her existing user row — no fresh gate clearance
+    // required.
+    //
+    // Safe, and NOT the domain-removal bypass it might look like: the
+    // allowlist (like invites, and like the `(org, external_id)` refresh
+    // short-circuit at the top of this fn) is a point-in-time *admission*
+    // gate, not a continuous authorization check. An already-admitted
+    // member keeps signing in through her original IdP with no re-check
+    // regardless of allowlist edits, so re-gating only her *second* IdP
+    // would be incoherent (she's already in via the first) and would also
+    // route her to `create_org_only` below — forking a duplicate `users`
+    // row instead of attaching to her membership. Revoking access is done
+    // by removing the membership, not by editing the domain list.
     let existing_member = if target_org.allow_overslash_managed_signin && !single_org_bypass {
         user_repo::find_member_by_email_in_org(state.db(ext), target_org.id, &userinfo.email)
             .await?
