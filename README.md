@@ -16,17 +16,6 @@ You point your agent at Overslash, declare what services and scopes it needs,
 and Overslash takes care of authentication, authorization, approval, and
 execution.
 
-> ## ⚠️ Pre-release software
->
-> Overslash is under active development and **not yet ready for production
-> use**. APIs, schemas, and behaviors will change without notice. Self-host at
-> your own risk, and expect breakage. We do not yet provide upgrade guarantees,
-> security advisories, or stability commitments.
->
-> If you want to follow along, kick the tires, or give feedback — welcome!
-> If you need a stable production gateway today — wait for the first tagged
-> release.
-
 ---
 
 ## What's in the box
