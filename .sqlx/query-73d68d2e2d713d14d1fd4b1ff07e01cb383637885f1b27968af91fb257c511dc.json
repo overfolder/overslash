@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at\n         FROM orgs WHERE id = $1",
+  "query": "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at\n         FROM orgs WHERE slug = $1",
   "describe": {
     "columns": [
       {
@@ -104,6 +104,28 @@
       },
       {
         "ordinal": 9,
+        "name": "require_invite_admission",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "require_invite_admission"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "managed_signin_allowed_domains",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "managed_signin_allowed_domains"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "creator_user_id",
         "type_info": "Uuid",
         "origin": {
@@ -114,7 +136,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +147,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -138,10 +160,12 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Text"
       ]
     },
     "nullable": [
+      false,
+      false,
       false,
       false,
       false,
@@ -156,5 +180,5 @@
       false
     ]
   },
-  "hash": "fffbc6f94b1fafb6d17c611b4606f4cbd3570b01a382cc452285489137c9eaac"
+  "hash": "73d68d2e2d713d14d1fd4b1ff07e01cb383637885f1b27968af91fb257c511dc"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at\n         FROM orgs WHERE slug = $1",
+  "query": "INSERT INTO orgs (name, slug, plan) VALUES ($1, $2, $3)\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -104,6 +104,28 @@
       },
       {
         "ordinal": 9,
+        "name": "require_invite_admission",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "require_invite_admission"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "managed_signin_allowed_domains",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "managed_signin_allowed_domains"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "creator_user_id",
         "type_info": "Uuid",
         "origin": {
@@ -114,7 +136,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +147,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -138,10 +160,14 @@
     ],
     "parameters": {
       "Left": [
+        "Text",
+        "Text",
         "Text"
       ]
     },
     "nullable": [
+      false,
+      false,
       false,
       false,
       false,
@@ -156,5 +182,5 @@
       false
     ]
   },
-  "hash": "943e68ebe4d54c6a62c2851329ffb49d273012f68cd4dbefd24487147ea61548"
+  "hash": "332929a5551ab512500dc5914b916cfb99375a37b5b14233f6423905f74c3a67"
 }

@@ -79,9 +79,14 @@ Settled architectural decisions. Don't re-litigate without new information.
 **2026-05 amendment — opt-in invite-gated admission**: a corp org may opt in (via `orgs.allow_overslash_managed_signin`, default `true` for new orgs) to invite-gated membership. Two things change when the flag is on:
 
 1. Authentication via Overslash's shared OAuth apps (`GOOGLE_AUTH_*`, `GITHUB_AUTH_*`, future env-var providers) becomes available — until now D12 forbade env-var creds on corp subdomains.
-2. **Every** sign-in into the org — including authentications through a dedicated `org_idp_configs` row — must match a pending `org_invites(email, role)` allowlist entry. The `allowed_email_domains` whitelist is bypassed when the flag is on.
+2. Sign-in is decoupled from membership: the IdP proves who you are, and a second gate — including authentications through a dedicated `org_idp_configs` row — decides who belongs. The per-provider `allowed_email_domains` whitelist is bypassed when the flag is on.
 
-The trust boundary moves from "the IdP's domain claim" to "the admin's curated invite list." The email-spoofing concern the original D12 raised against invites does not apply: there is no second-source IdP to phish (no Okta-backed phantom employee to inherit from); the admin's invite list is the only path in, and each invite is for a specific email the admin chose. Existing orgs stay opted out until an admin flips the toggle. Full design at `docs/design/multi_org_auth.md`.
+**2026-07 amendment (migration 092) — invite vs domain is itself a toggle**: the second gate is configurable via `orgs.require_invite_admission` (default `true`, preserving the 2026-05 behavior above):
+
+- `require_invite_admission = true` — invite-only: every new member must match a pending `org_invites(email, role)` entry.
+- `require_invite_admission = false` — domain admission: any verified email whose domain is on the org-wide `orgs.managed_signin_allowed_domains` list self-provisions as `member`. An empty allowlist is treated as misconfigured (reject `domain_admission_not_configured`), never as open admission.
+
+The trust boundary is either "the admin's curated invite list" or "the admin's curated domain allowlist" — both admin-controlled. Domain admission trusts the verified-email domain (split on `@`, case-insensitive); it does **not** verify Google's `hd`/Workspace claim (see TECH_DEBT.md). The email-spoofing concern the original D12 raised does not apply: there is no second-source IdP to phish; the managed IdP authenticates the email holder and the admin chose which emails/domains matter. Existing orgs keep both flags at their safe defaults (`allow_overslash_managed_signin` per provisioning, `require_invite_admission = true`) until an admin opts in. Full design at `docs/design/multi_org_auth.md`.
 
 ## D13: Auto-call-on-approve is a per-Identity setting (default on)
 

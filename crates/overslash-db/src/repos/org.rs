@@ -18,6 +18,19 @@ pub struct OrgRow {
     /// an invite row. Default `false` for existing orgs; new corp orgs are
     /// flipped to `true` at create time so login works out-of-the-box.
     pub allow_overslash_managed_signin: bool,
+    /// When `true` (the default), a managed-signin org admits members
+    /// invite-only: the IdP authenticates but membership requires a pending
+    /// `org_invites` row. When `false`, admission falls back to the
+    /// `managed_signin_allowed_domains` allowlist below. Independent of
+    /// `allow_overslash_managed_signin` — see migration 092 and
+    /// `crates/overslash-api/src/routes/auth.rs::provision_org_subdomain`.
+    pub require_invite_admission: bool,
+    /// Org-wide email-domain allowlist consulted on the managed-signin path
+    /// when `require_invite_admission = false`. Empty = domain admission is
+    /// unconfigured (admission rejected as misconfigured, NOT open to all).
+    /// Distinct from the per-provider `org_idp_configs.allowed_email_domains`
+    /// used by the legacy per-org-IdP path.
+    pub managed_signin_allowed_domains: Vec<String>,
     /// User who created this org via `POST /v1/orgs` (or the free-unlimited
     /// admin path). `None` for anonymous creator paths and for orgs created
     /// before migration 067 whose `org.created` audit row had no resolvable
@@ -41,7 +54,7 @@ pub async fn create(
     sqlx::query_as!(
         OrgRow,
         "INSERT INTO orgs (name, slug, plan) VALUES ($1, $2, $3)
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at",
         name,
         slug,
         plan,
@@ -53,7 +66,7 @@ pub async fn create(
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at
          FROM orgs WHERE id = $1",
         id,
     )
@@ -282,7 +295,7 @@ pub async fn update_template_settings(
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at
          FROM orgs WHERE slug = $1",
         slug,
     )
@@ -342,6 +355,35 @@ pub async fn set_allow_overslash_managed_signin(
     Ok(result.rows_affected() > 0)
 }
 
+/// Atomically update the managed-signin admission settings, COALESCEing so a
+/// `None` leaves the current value untouched (partial PATCH). Callers
+/// normalize `allowed_domains` (lowercase/trim/dedupe) before persisting.
+/// Returns the updated row, or `None` if the org doesn't exist.
+pub async fn update_managed_admission(
+    pool: &PgPool,
+    id: Uuid,
+    allow_overslash_managed_signin: Option<bool>,
+    require_invite_admission: Option<bool>,
+    allowed_domains: Option<&[String]>,
+) -> Result<Option<OrgRow>, sqlx::Error> {
+    sqlx::query_as!(
+        OrgRow,
+        "UPDATE orgs SET
+            allow_overslash_managed_signin = COALESCE($2, allow_overslash_managed_signin),
+            require_invite_admission = COALESCE($3, require_invite_admission),
+            managed_signin_allowed_domains = COALESCE($4, managed_signin_allowed_domains),
+            updated_at = now()
+         WHERE id = $1
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at",
+        id,
+        allow_overslash_managed_signin,
+        require_invite_admission,
+        allowed_domains,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// Read the `headless` flag for an org. `true` ⇒ white-label org whose end
 /// users have no Overslash session, so auth-recovery returns URL-less envelopes
 /// instead of gated `/connect-authorize` links. `None` (org missing) and the
@@ -381,7 +423,7 @@ pub async fn update_subagent_cleanup_config(
              subagent_archive_retention_days = $3,
              updated_at = now()
          WHERE id = $1
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at",
         id,
         idle_timeout_secs,
         archive_retention_days,

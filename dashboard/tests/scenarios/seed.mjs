@@ -412,3 +412,25 @@ export async function setAuditResponseBodyMode(session, mode) {
 		body: { response_body_mode: mode }
 	});
 }
+
+/**
+ * Patch the org's managed sign-in admission settings (migration 066/092).
+ * Any field left undefined is omitted so the partial PATCH leaves it as-is.
+ * @param {import('./auth.mjs').Session} session
+ * @param {{ allow_overslash_managed_signin?: boolean, require_invite_admission?: boolean, managed_signin_allowed_domains?: string[] }} settings
+ * @returns {Promise<{ allow_overslash_managed_signin: boolean, require_invite_admission: boolean, managed_signin_allowed_domains: string[] }>}
+ */
+export async function setManagedSignin(session, settings) {
+	/** @type {Record<string, unknown>} */
+	const body = {};
+	if (settings.allow_overslash_managed_signin !== undefined)
+		body.allow_overslash_managed_signin = settings.allow_overslash_managed_signin;
+	if (settings.require_invite_admission !== undefined)
+		body.require_invite_admission = settings.require_invite_admission;
+	if (settings.managed_signin_allowed_domains !== undefined)
+		body.managed_signin_allowed_domains = settings.managed_signin_allowed_domains;
+	return api(session, `/v1/orgs/${session.orgId}/managed-signin`, {
+		method: 'PATCH',
+		body
+	});
+}
