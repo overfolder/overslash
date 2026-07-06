@@ -150,12 +150,18 @@ export const listServiceGroups = (serviceId: string, signal?: AbortSignal) =>
 // -- OAuth connections --
 
 export const listConnections = (
-	opts: { includeUserLevel?: boolean } = {},
+	opts: { includeUserLevel?: boolean; ownerIdentityId?: string } = {},
 	signal?: AbortSignal
 ) => {
 	// `include_user_level=true` (admin-only) lists every user's connections
 	// across the org; silently ignored for non-admins by the backend.
-	const qs = opts.includeUserLevel ? '?include_user_level=true' : '';
+	// `owner_identity_id` lists a specific owner's connections (self always
+	// allowed, another identity is admin-only); the service detail page passes
+	// the service's owner so an admin sees that user's bindable connections.
+	const params = new URLSearchParams();
+	if (opts.includeUserLevel) params.set('include_user_level', 'true');
+	if (opts.ownerIdentityId) params.set('owner_identity_id', opts.ownerIdentityId);
+	const qs = params.toString() ? `?${params}` : '';
 	return session.get<ConnectionSummary[]>(`/v1/connections${qs}`, signal);
 };
 

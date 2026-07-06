@@ -885,6 +885,16 @@ struct ListConnectionsQuery {
     /// flag is revoked — same contract as the services list.
     #[serde(default)]
     include_user_level: bool,
+    /// Admin-or-self: list connections owned by this specific identity instead
+    /// of the caller's own. The service detail page passes the service's
+    /// `owner_identity_id` so an admin viewing another user's service sees that
+    /// user's bindable connections (connections are identity-scoped). Equal to
+    /// the caller's own identity → self path. A non-admin caller passing a
+    /// *different* identity is silently downgraded to their own list (no 403,
+    /// same contract as `include_user_level`). Takes precedence over
+    /// `include_user_level` when both are set.
+    #[serde(default)]
+    owner_identity_id: Option<Uuid>,
 }
 
 async fn list_connections(
@@ -895,18 +905,29 @@ async fn list_connections(
     // identity row (same flag-based check as the services list — `AdminAcl`
     // would instead require the `overslash` service admin grant). Non-admins
     // passing the flag fall through to the standard self-scoped listing.
-    let admin_view_all = if q.include_user_level {
-        scope
-            .org()
-            .get_identity(scope.user_id())
-            .await?
-            .map(|i| i.is_org_admin)
-            .unwrap_or(false)
-    } else {
-        false
+    let is_org_admin = || async {
+        Ok::<bool, AppError>(
+            scope
+                .org()
+                .get_identity(scope.user_id())
+                .await?
+                .map(|i| i.is_org_admin)
+                .unwrap_or(false),
+        )
     };
 
-    let rows = if admin_view_all {
+    let rows = if let Some(owner) = q.owner_identity_id {
+        // Owner-scoped listing. Self is always allowed; another identity
+        // requires org admin, else fall through to the caller's own list.
+        if owner == scope.user_id() {
+            scope.list_my_connections().await?
+        } else if is_org_admin().await? {
+            let owner_scope = UserScope::new(scope.org_id(), owner, scope.org().db().clone());
+            owner_scope.list_my_connections().await?
+        } else {
+            scope.list_my_connections().await?
+        }
+    } else if q.include_user_level && is_org_admin().await? {
         scope.org().list_all_connections().await?
     } else {
         scope.list_my_connections().await?

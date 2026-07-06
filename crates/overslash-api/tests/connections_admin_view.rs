@@ -235,6 +235,108 @@ async fn non_admin_cannot_delete_another_users_connection() {
     assert_eq!(remaining, 1, "connection must survive");
 }
 
+/// `?owner_identity_id=<other>` lets an org admin list a specific user's
+/// connections (e.g. the owner of a service they're viewing) — only that
+/// owner's rows, not the admin's own and not the whole org.
+#[tokio::test]
+async fn admin_owner_scoped_lists_only_that_owner() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    let admin_conn =
+        seed_connection(&pool, fx.org_id, fx.user_ids[0], "google", "admin@x", true).await;
+    let write_conn =
+        seed_connection(&pool, fx.org_id, fx.user_ids[1], "github", "write@x", true).await;
+    let read_conn =
+        seed_connection(&pool, fx.org_id, fx.user_ids[2], "github", "read@x", true).await;
+    make_org_admin(&pool, fx.user_ids[0]).await;
+
+    let resp = client
+        .get(format!(
+            "{base}/v1/connections?owner_identity_id={}",
+            fx.user_ids[1]
+        ))
+        .header("Authorization", format!("Bearer {}", fx.admin_key))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let conns: Vec<Value> = resp.json().await.unwrap();
+    let ids: Vec<&str> = conns.iter().filter_map(|c| c["id"].as_str()).collect();
+    assert!(
+        ids.contains(&write_conn.to_string().as_str()),
+        "must see the target owner's connection (got: {ids:?})"
+    );
+    assert!(
+        !ids.contains(&admin_conn.to_string().as_str())
+            && !ids.contains(&read_conn.to_string().as_str()),
+        "must see ONLY the target owner's rows (got: {ids:?})"
+    );
+}
+
+/// A non-admin passing `?owner_identity_id=<other>` is silently downgraded to
+/// their own connections (same contract as `include_user_level`, no 403).
+#[tokio::test]
+async fn non_admin_owner_scoped_downgrades_to_own() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    let admin_conn =
+        seed_connection(&pool, fx.org_id, fx.user_ids[0], "google", "admin@x", true).await;
+    let write_conn =
+        seed_connection(&pool, fx.org_id, fx.user_ids[1], "github", "write@x", true).await;
+
+    // write-user (non-admin) asks for the admin-user's connections.
+    let resp = client
+        .get(format!(
+            "{base}/v1/connections?owner_identity_id={}",
+            fx.user_ids[0]
+        ))
+        .header("Authorization", format!("Bearer {}", fx.write_key))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let conns: Vec<Value> = resp.json().await.unwrap();
+    let ids: Vec<&str> = conns.iter().filter_map(|c| c["id"].as_str()).collect();
+    assert!(
+        ids.contains(&write_conn.to_string().as_str())
+            && !ids.contains(&admin_conn.to_string().as_str()),
+        "non-admin must fall back to their own rows only (got: {ids:?})"
+    );
+}
+
+/// `?owner_identity_id=<self>` is always allowed and returns the caller's own
+/// connections — the common case for a user viewing their own service.
+#[tokio::test]
+async fn owner_scoped_self_returns_own() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    let write_conn =
+        seed_connection(&pool, fx.org_id, fx.user_ids[1], "github", "write@x", true).await;
+
+    let resp = client
+        .get(format!(
+            "{base}/v1/connections?owner_identity_id={}",
+            fx.user_ids[1]
+        ))
+        .header("Authorization", format!("Bearer {}", fx.write_key))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let conns: Vec<Value> = resp.json().await.unwrap();
+    let ids: Vec<&str> = conns.iter().filter_map(|c| c["id"].as_str()).collect();
+    assert!(
+        ids.contains(&write_conn.to_string().as_str()),
+        "self owner scope must return own connections (got: {ids:?})"
+    );
+}
+
 /// An org admin promoting another user's connection demotes the sibling within
 /// the **owner's** (identity, provider), not the admin's.
 #[tokio::test]
