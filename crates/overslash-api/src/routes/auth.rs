@@ -2545,12 +2545,22 @@ async fn provision_org_subdomain(
     )
     .await?;
 
-    // Admin-propagation for existing-member second-IdP logins. The new
-    // identity row defaults to `is_org_admin = false` and is not in
-    // Admins, so the session JWT (keyed on the new identity) would
-    // silently downgrade an admin to a member until they re-signed-in
-    // with their original IdP. Look up the existing user-kind identity
-    // for this `(org, user)` and mirror its admin state onto the new row.
+    // Whether this newly-provisioned identity should be a REAL org admin —
+    // `is_org_admin` flag + `Admins` group + `membership.role='admin'`, not a
+    // bare membership row that merely says 'admin' (which does NOT pass
+    // `AdminAcl`). Two independent triggers, funnelled through the same
+    // `set_is_org_admin` primitive the promote-member endpoint uses so the
+    // grant path never diverges:
+    //   1. The accepted invite explicitly grants `admin`.
+    //   2. Second-IdP login for an already-admin member. The new identity row
+    //      defaults to `is_org_admin = false` and is not in Admins, so without
+    //      this the session JWT (keyed on the new identity) would silently
+    //      downgrade an admin to a member until they re-signed-in with their
+    //      original IdP. Mirror the prior identity's admin state onto the new row.
+    let invited_as_admin = membership_role
+        .as_ref()
+        .is_some_and(|inv| inv.role == membership::ROLE_ADMIN);
+    let mut should_be_admin = invited_as_admin;
     if let Some(ref existing) = existing_member {
         if let Some(prior) = overslash_db::repos::identity::find_by_org_and_user(
             state.db(ext),
@@ -2560,30 +2570,19 @@ async fn provision_org_subdomain(
         .await?
         {
             if prior.id != identity_row.id && prior.is_org_admin {
-                overslash_db::repos::identity::set_is_org_admin(
-                    state.db(ext),
-                    target_org.id,
-                    identity_row.id,
-                    true,
-                )
-                .await?;
-                overslash_db::repos::org_bootstrap::add_identity_to_admins(
-                    state.db(ext),
-                    target_org.id,
-                    identity_row.id,
-                )
-                .await?;
+                should_be_admin = true;
             }
         }
     }
 
-    // The invite's role wins when present — admins explicitly invite people
-    // as `admin` or `member` and that choice should propagate. Without an
-    // invite (legacy path), default to member.
-    let role = membership_role
-        .as_ref()
-        .map(|inv| inv.role.as_str())
-        .unwrap_or(membership::ROLE_MEMBER);
+    // The membership role must agree with the admin decision: an invited or
+    // mirrored admin gets `role='admin'`, everyone else `member` (legacy
+    // no-invite, non-admin path defaults to member).
+    let role = if should_be_admin {
+        membership::ROLE_ADMIN
+    } else {
+        membership::ROLE_MEMBER
+    };
     // `membership::create` is idempotent-friendly-enough via the PK on
     // (user_id, org_id) — but in the SINGLE_ORG_MODE reuse-user path, an
     // earlier sign-in could have left the same `(user_id, org_id)` row
@@ -2598,6 +2597,20 @@ async fn provision_org_subdomain(
             Err(sqlx::Error::Database(e)) if e.is_unique_violation() => false,
             Err(e) => return Err(e.into()),
         };
+
+    // Confer real admin authorization when warranted. `set_is_org_admin` sets
+    // the flag AND inserts the identity into the `Admins` group. Idempotent,
+    // and applied even when the membership row already existed (second-IdP
+    // mirror) so the fresh identity carries the admin grant.
+    if should_be_admin {
+        overslash_db::repos::identity::set_is_org_admin(
+            state.db(ext),
+            target_org.id,
+            identity_row.id,
+            true,
+        )
+        .await?;
+    }
 
     // Best-effort: consume the invite, but ONLY when this sign-in actually
     // produced a new membership. Otherwise the invite is preserved for the

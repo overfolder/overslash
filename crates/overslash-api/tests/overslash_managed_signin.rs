@@ -16,7 +16,28 @@
 
 mod common;
 
+use overslash_api::services::jwt;
 use serde_json::{Value, json};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+/// Mint a session JWT (same signing key as `common::start_api`) so a test can
+/// authenticate as a freshly-provisioned identity and probe `AdminAcl`.
+fn session_cookie(org_id: Uuid, identity_id: Uuid, user_id: Uuid) -> String {
+    let secret = hex::decode("cd".repeat(32)).unwrap();
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let claims = jwt::Claims {
+        sub: identity_id,
+        org: org_id,
+        email: "testuser@example.com".into(),
+        aud: jwt::AUD_SESSION.into(),
+        iat: now,
+        exp: now + 3600,
+        user_id: Some(user_id),
+        mcp_client_id: None,
+    };
+    format!("oss_session={}", jwt::mint(&secret, &claims).expect("mint"))
+}
 
 #[tokio::test]
 async fn new_corp_org_defaults_managed_signin_on() {
@@ -379,6 +400,48 @@ async fn callback_admits_invited_email_on_corp_subdomain() {
     assert_eq!(
         membership_role, "admin",
         "membership role should honor invite role"
+    );
+
+    // Regression (bug fix): an invited *admin* must get REAL admin
+    // authorization — the `is_org_admin` flag AND `Admins`-group membership,
+    // not merely a `role='admin'` membership row. Pre-fix the acceptance path
+    // only wrote the membership role, so the invited admin failed `AdminAcl`.
+    let (new_iid, new_uid, is_admin): (Uuid, Uuid, bool) = sqlx::query_as(
+        "SELECT id, user_id, is_org_admin FROM identities
+         WHERE org_id = $1 AND email = 'testuser@example.com' AND kind = 'user'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(is_admin, "invited admin must have is_org_admin = true");
+
+    let in_admins_group: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM identity_groups ig
+         JOIN groups g ON g.id = ig.group_id
+         WHERE ig.identity_id = $1 AND g.org_id = $2 AND g.system_kind = 'admins'",
+    )
+    .bind(new_iid)
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        in_admins_group, 1,
+        "invited admin must join the Admins group"
+    );
+
+    // End-to-end: the invited admin's session passes an AdminAcl-gated request.
+    let admin_probe = client
+        .get(format!("{base}/v1/org-invites"))
+        .header("cookie", session_cookie(org_id, new_iid, new_uid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        admin_probe.status(),
+        200,
+        "invited admin must pass AdminAcl on a real request"
     );
 }
 
