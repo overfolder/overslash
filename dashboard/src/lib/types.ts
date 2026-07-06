@@ -22,6 +22,14 @@ export interface OrgInfo {
  */
 export interface ManagedSigninSettings {
   allow_overslash_managed_signin: boolean;
+  /** When true (default), a managed-signin org admits invite-only. When
+   * false, admission falls back to the `managed_signin_allowed_domains`
+   * allowlist below. Independent of `allow_overslash_managed_signin`. */
+  require_invite_admission: boolean;
+  /** Org-wide email-domain allowlist consulted on the managed path when
+   * `require_invite_admission` is false. Empty ⇒ domain admission is
+   * unconfigured (managed sign-ins rejected as misconfigured, NOT open). */
+  managed_signin_allowed_domains: string[];
 }
 
 /**

@@ -953,15 +953,55 @@ async fn patch_audit_settings(
 #[derive(Serialize)]
 struct ManagedSigninResponse {
     /// When `true`, members can authenticate via Overslash's managed env-var
-    /// OAuth apps (`GOOGLE_AUTH_*`, etc.). Admission is gated by pending
-    /// `org_invites` rows — see migration 066 and
+    /// OAuth apps (`GOOGLE_AUTH_*`, etc.). Admission is then gated by either
+    /// invites or the domain allowlist below — see migration 066/092 and
     /// `crates/overslash-api/src/routes/auth.rs::provision_org_subdomain`.
     allow_overslash_managed_signin: bool,
+    /// When `true` (default), a managed-signin org admits invite-only. When
+    /// `false`, admission falls back to `managed_signin_allowed_domains`.
+    require_invite_admission: bool,
+    /// Org-wide email-domain allowlist for the managed path when
+    /// `require_invite_admission = false`. Empty ⇒ domain admission is
+    /// unconfigured (managed sign-ins are rejected as misconfigured).
+    managed_signin_allowed_domains: Vec<String>,
+}
+
+impl From<&overslash_db::repos::org::OrgRow> for ManagedSigninResponse {
+    fn from(o: &overslash_db::repos::org::OrgRow) -> Self {
+        Self {
+            allow_overslash_managed_signin: o.allow_overslash_managed_signin,
+            require_invite_admission: o.require_invite_admission,
+            managed_signin_allowed_domains: o.managed_signin_allowed_domains.clone(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct PatchManagedSigninRequest {
-    allow_overslash_managed_signin: bool,
+    /// All three fields are optional so the dashboard can flip one toggle at
+    /// a time; a `None` leaves the stored value untouched.
+    allow_overslash_managed_signin: Option<bool>,
+    require_invite_admission: Option<bool>,
+    managed_signin_allowed_domains: Option<Vec<String>>,
+}
+
+/// Normalize an admin-supplied domain list: lowercase, trim surrounding
+/// whitespace, strip a leading `@` (so `@acme.com` and `acme.com` both work),
+/// drop empties, and dedupe while preserving order. Admission compares
+/// case-insensitively, but storing a canonical form keeps the API/UI honest.
+fn normalize_domains(raw: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for d in raw {
+        let cleaned = d.trim().trim_start_matches('@').to_lowercase();
+        if cleaned.is_empty() {
+            continue;
+        }
+        if seen.insert(cleaned.clone()) {
+            out.push(cleaned);
+        }
+    }
+    out
 }
 
 async fn get_managed_signin(
@@ -973,12 +1013,10 @@ async fn get_managed_signin(
     if id != auth.org_id {
         return Err(AppError::Forbidden("cannot read another org".into()));
     }
-    let value = overslash_db::repos::org::get_allow_overslash_managed_signin(state.db(&ext), id)
+    let org = overslash_db::repos::org::get_by_id(state.db(&ext), id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
-    Ok(Json(ManagedSigninResponse {
-        allow_overslash_managed_signin: value,
-    }))
+    Ok(Json((&org).into()))
 }
 
 async fn patch_managed_signin(
@@ -995,15 +1033,20 @@ async fn patch_managed_signin(
         ));
     }
 
-    let updated = overslash_db::repos::org::set_allow_overslash_managed_signin(
+    let normalized_domains = req
+        .managed_signin_allowed_domains
+        .as_deref()
+        .map(normalize_domains);
+
+    let org = overslash_db::repos::org::update_managed_admission(
         state.db(&ext),
         id,
         req.allow_overslash_managed_signin,
+        req.require_invite_admission,
+        normalized_domains.as_deref(),
     )
-    .await?;
-    if !updated {
-        return Err(AppError::NotFound("org not found".into()));
-    }
+    .await?
+    .ok_or_else(|| AppError::NotFound("org not found".into()))?;
 
     let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
@@ -1013,16 +1056,16 @@ async fn patch_managed_signin(
             resource_type: Some("org"),
             resource_id: Some(id),
             detail: serde_json::json!({
-                "allow_overslash_managed_signin": req.allow_overslash_managed_signin,
+                "allow_overslash_managed_signin": org.allow_overslash_managed_signin,
+                "require_invite_admission": org.require_invite_admission,
+                "managed_signin_allowed_domains": org.managed_signin_allowed_domains,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
         })
         .await;
 
-    Ok(Json(ManagedSigninResponse {
-        allow_overslash_managed_signin: req.allow_overslash_managed_signin,
-    }))
+    Ok(Json((&org).into()))
 }
 
 // ─── Headless (white-label, URL-less auth-recovery) ───

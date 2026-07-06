@@ -167,9 +167,11 @@ Self-hosted deployments bypass this middleware when `SINGLE_ORG_MODE=<slug>` is 
   3. Ensure `user_org_memberships(user_id, org_id, role)` exists. Role comes from the org's `allowed_email_domains` auto-provision rules (default `'member'`). If the IDP email does not match any allowed domain, reject with `not_permitted_by_org_idp` — the org admin controls who gets in through their allowed-domains list. Empty `allowed_email_domains` = trust the IdP (any email admitted by it provisions); non-empty = strict whitelist.
   4. Mint JWT `{ user_id, org_id }`, redirect into the org.
 
-### Flow 2b — Invite-gated admission (Overslash-managed sign-in, opt-in)
+### Flow 2b — Managed sign-in admission (Overslash-managed sign-in, opt-in)
 
 Added 2026-05, migration 066. Default `true` for new corp orgs, `false` for existing ones.
+
+> **Migration 092 (2026-07):** admission on this path is no longer hard-wired to invites. The org-level `require_invite_admission` flag (default `true`) picks the gate — invite-only, or an org-wide domain allowlist. Steps 3–5 below describe the `require_invite_admission = true` (default) case; the `false` case is described immediately after.
 
 - The org has `allow_overslash_managed_signin = true`.
 - `resolve_auth_credentials` first looks for a dedicated `org_idp_configs` row for the provider. If present, dedicated creds win (the admin's explicit setup is authoritative). If absent, it next checks the org's OAuth App Credentials (`OAUTH_{PROVIDER}_CLIENT_ID/SECRET` org secrets) and returns those when configured — an org-level credential is an intentional override of the shared env app. Only when neither is set does it fall back to the server's env-var creds (`GOOGLE_AUTH_CLIENT_ID`, `GITHUB_AUTH_CLIENT_ID`, …) — the Overslash-managed OAuth app authenticates the user.
@@ -179,9 +181,17 @@ Added 2026-05, migration 066. Default `true` for new corp orgs, `false` for exis
   3. Otherwise look up `org_invites WHERE org_id = $org AND email = lower($email) AND accepted_at IS NULL`. No match → reject with `not_invited`.
   4. Provision the `users` row using the standard `(provider, subject)` keying — reuses an existing Overslash-backed user if `(provider, subject)` already exists, otherwise creates an org-only user.
   5. Create the `identities` row + `user_org_memberships(role=$invite.role)` + mark the invite `accepted_at = now()`. Membership role comes from the invite, not from `allowed_email_domains`.
-- The gate applies to **every** sign-in into this org while the flag is on — including authentications via a dedicated `org_idp_configs`. Admins who want the legacy domain-whitelist semantics keep the flag off.
+- The gate applies to **every** sign-in into this org while the flag is on — including authentications via a dedicated `org_idp_configs`. Admins who want the legacy per-provider domain-whitelist semantics keep the flag off.
 
-Threat model: D12's invite concern was "email-spoofing into a per-org IdP-backed membership." That doesn't apply here — there's no Okta on the corp side to vouch for an attacker's email; the admin's `org_invites` list is the only path in, and the admin themselves issued each invite for a specific email under their control. The IdP's role is reduced to "authenticate the holder of this email," and the org admin chooses which emails matter.
+**`require_invite_admission = false` — org-wide domain admission (migration 092).** When the admin turns off the invite requirement, step 3 changes: instead of an `org_invites` lookup, the callback checks the IdP email's domain (split on `@`, case-insensitive) against `orgs.managed_signin_allowed_domains`:
+
+- Empty list → reject `domain_admission_not_configured`. An open-admission-with-no-domains state is a misconfiguration, never "admit the whole internet."
+- Domain not on a non-empty list → reject `domain_not_allowed`.
+- Domain matches → provision as in steps 4–5, but with `role = 'member'` (no invite → no role override) and no invite consumed.
+
+This is deliberately org-wide rather than per-provider: the managed path admits through several env-var providers (Google, GitHub) that share one trust boundary (the operator's env creds), so a single org-level list is the natural home. It is distinct from `org_idp_configs.allowed_email_domains`, which still gates Flow 2a's per-org-IdP path. Domain admission trusts the verified-email domain only; it does **not** verify Google's `hd`/Workspace claim — see `TECH_DEBT.md`.
+
+Threat model: D12's invite concern was "email-spoofing into a per-org IdP-backed membership." That doesn't apply on either managed sub-mode — there's no Okta on the corp side to vouch for an attacker's email. With invites, the admin's `org_invites` list is the only path in; with domain admission, the admin's `managed_signin_allowed_domains` list is, and the managed IdP authenticates the holder of the email. Either way the IdP's role is reduced to "authenticate the holder of this email," and the org admin chooses which emails/domains matter.
 
 ### Flow 3 — Org switch in-app
 

@@ -2394,9 +2394,18 @@ async fn provision_org_subdomain(
     //
     // 1. Overslash-managed sign-in (migration 066): when the org has opted
     //    in via `allow_overslash_managed_signin`, the IdP authenticates but
-    //    cannot admit by itself — membership requires a pending
-    //    `org_invites(email)` row. The invite's `role` is honored when
-    //    creating the membership.
+    //    cannot admit by itself. Migration 092 splits admission into two
+    //    sub-modes, keyed on `require_invite_admission`:
+    //      a. `require_invite_admission = true` (default) — membership
+    //         requires a pending `org_invites(email)` row. The invite's
+    //         `role` is honored when creating the membership. Reject
+    //         `not_invited`.
+    //      b. `require_invite_admission = false` — admit any email whose
+    //         domain is on the org-wide `managed_signin_allowed_domains`
+    //         allowlist. An EMPTY allowlist here is a misconfiguration, not
+    //         "admit everyone": reject `domain_admission_not_configured`.
+    //         A domain not on a non-empty list rejects `domain_not_allowed`.
+    //         New members join as `member` (no invite → no role override).
     //
     // 2. Legacy path: gate on the per-org `org_idp_configs.allowed_email_domains`.
     //    Empty list = "trust the IdP entirely" (the admin already constrained
@@ -2440,17 +2449,46 @@ async fn provision_org_subdomain(
     let membership_role = if single_org_bypass || existing_member.is_some() {
         None
     } else if target_org.allow_overslash_managed_signin {
-        let pending = overslash_db::repos::org_invite::find_pending(
-            state.db(ext),
-            target_org.id,
-            &userinfo.email,
-        )
-        .await?
-        .ok_or_else(|| AppError::Forbidden("not_invited".into()))?;
-        // Defer the `mark_accepted` write until after the membership row
-        // exists — if membership creation fails for any reason we don't
-        // want a consumed invite stranded with no member.
-        Some(pending)
+        if target_org.require_invite_admission {
+            let pending = overslash_db::repos::org_invite::find_pending(
+                state.db(ext),
+                target_org.id,
+                &userinfo.email,
+            )
+            .await?
+            .ok_or_else(|| AppError::Forbidden("not_invited".into()))?;
+            // Defer the `mark_accepted` write until after the membership row
+            // exists — if membership creation fails for any reason we don't
+            // want a consumed invite stranded with no member.
+            Some(pending)
+        } else {
+            // Domain-allowlist admission. The allowlist is trusted only when
+            // non-empty; an empty list with require-invite off means the
+            // admin opened admission without naming any domain — reject
+            // rather than admit the whole internet. Domain match splits the
+            // verified email on `@` (case-insensitive); it does NOT consult
+            // Google's `hd`/hosted-domain claim, so a user with a personal
+            // `@reveni.io` alias would match. See TECH_DEBT.
+            let email_domain = userinfo
+                .email
+                .rsplit('@')
+                .next()
+                .unwrap_or("")
+                .to_lowercase();
+            if target_org.managed_signin_allowed_domains.is_empty() {
+                return Err(AppError::Forbidden(
+                    "domain_admission_not_configured".into(),
+                ));
+            }
+            if !target_org
+                .managed_signin_allowed_domains
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(&email_domain))
+            {
+                return Err(AppError::Forbidden("domain_not_allowed".into()));
+            }
+            None
+        }
     } else {
         let email_domain = userinfo
             .email

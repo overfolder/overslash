@@ -45,6 +45,10 @@
 	let managedSigninSettings = $state<ManagedSigninSettings | null>(null);
 	let managedSigninSaving = $state(false);
 	let managedSigninError = $state<string | null>(null);
+	// Editable buffer for the allowed-domains list (one per line). Synced
+	// from the server value on load and after each save.
+	let domainsInput = $state('');
+	let domainsDirty = $state(false);
 	let invites = $state<OrgInvite[]>([]);
 	let showInviteForm = $state(false);
 	let inviteEmail = $state('');
@@ -63,6 +67,8 @@
 		executionSettings = data.executionSettings;
 		auditSettings = data.auditSettings;
 		managedSigninSettings = data.managedSigninSettings;
+		domainsInput = data.managedSigninSettings?.managed_signin_allowed_domains.join('\n') ?? '';
+		domainsDirty = false;
 		invites = data.invites;
 		subscription = data.subscription;
 	});
@@ -525,17 +531,22 @@
 		invites = await session.get<OrgInvite[]>('/v1/org-invites');
 	}
 
-	async function toggleManagedSignin(nextValue?: boolean) {
+	// Persist one or more managed-admission fields via the partial PATCH.
+	// `allow_overslash_managed_signin` gates whether managed OAuth apps can
+	// authenticate at all; `require_invite_admission` and
+	// `managed_signin_allowed_domains` choose how admitted.
+	async function saveManagedSignin(patch: Partial<ManagedSigninSettings>) {
 		if (!org || !managedSigninSettings) return;
-		const next = nextValue ?? !managedSigninSettings.allow_overslash_managed_signin;
 		managedSigninSaving = true;
 		managedSigninError = null;
 		try {
 			const updated = await session.patch<ManagedSigninSettings>(
 				`/v1/orgs/${org.id}/managed-signin`,
-				{ allow_overslash_managed_signin: next }
+				patch
 			);
 			managedSigninSettings = updated;
+			domainsInput = updated.managed_signin_allowed_domains.join('\n');
+			domainsDirty = false;
 			// Managed-provider rows in /v1/org-idp-configs are gated on the
 			// flag — refetch so they appear/disappear immediately.
 			await refetchIdp();
@@ -544,6 +555,26 @@
 		} finally {
 			managedSigninSaving = false;
 		}
+	}
+
+	function toggleManagedSignin(nextValue?: boolean) {
+		if (!managedSigninSettings) return;
+		const next = nextValue ?? !managedSigninSettings.allow_overslash_managed_signin;
+		return saveManagedSignin({ allow_overslash_managed_signin: next });
+	}
+
+	function toggleRequireInvite(nextValue?: boolean) {
+		if (!managedSigninSettings) return;
+		const next = nextValue ?? !managedSigninSettings.require_invite_admission;
+		return saveManagedSignin({ require_invite_admission: next });
+	}
+
+	function saveAllowedDomains() {
+		const domains = domainsInput
+			.split(/[\s,]+/)
+			.map((d) => d.trim())
+			.filter((d) => d.length > 0);
+		return saveManagedSignin({ managed_signin_allowed_domains: domains });
 	}
 
 	async function submitInvite(e: Event) {
@@ -856,24 +887,20 @@
 		<section class="card">
 			<h2>Sign-in &amp; members</h2>
 			<p class="section-desc">
-				Decouple authentication from membership. When this is on, every
-				new sign-in to this org — through Overslash's managed OAuth apps
-				(Google, GitHub) <em>or</em> through an Identity Provider you
-				configured below — only admits the user if their verified email
-				is on the invite list. Authentication is separated from
-				membership: the IdP proves who you are, the invite list proves
-				you belong.
+				Decouple authentication from membership. Overslash-managed
+				sign-in lets your team authenticate through Overslash's own
+				OAuth apps (Google, GitHub) with no per-org IdP setup: the IdP
+				proves who someone is. You then choose how they're
+				<em>admitted</em> — invite-only, or by email domain.
 			</p>
 
 			<div class="toggle-row">
 				<div class="toggle-body">
-					<div class="toggle-label">Invite-only admission</div>
+					<div class="toggle-label">Allow Overslash-managed sign-in</div>
 					<div class="toggle-help">
-						When on, every new member must have a pending invite below
-						before they can sign in — regardless of which IdP they
-						authenticate with. When off, the per-IdP
-						<code>allowed_email_domains</code> whitelist is the only
-						gate.
+						When on, members can authenticate through Overslash's
+						managed OAuth apps without you configuring an Identity
+						Provider. Admission is still gated below.
 					</div>
 				</div>
 				<ToggleSwitch
@@ -883,11 +910,67 @@
 					label="Allow Overslash-managed sign-in"
 				/>
 			</div>
+
+			{#if managedSigninSettings.allow_overslash_managed_signin}
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Require invite</div>
+						<div class="toggle-help">
+							When on, every new member must have a pending invite
+							below before they can sign in. When off, anyone whose
+							verified email domain is on the allowlist self-provisions
+							on first login — no invite needed.
+						</div>
+					</div>
+					<ToggleSwitch
+						checked={managedSigninSettings.require_invite_admission}
+						onchange={toggleRequireInvite}
+						disabled={managedSigninSaving}
+						label="Require invite for admission"
+					/>
+				</div>
+			{/if}
 			{#if managedSigninError}
 				<div class="form-error">{managedSigninError}</div>
 			{/if}
 
-			{#if managedSigninSettings.allow_overslash_managed_signin}
+			{#if managedSigninSettings.allow_overslash_managed_signin && !managedSigninSettings.require_invite_admission}
+				<div class="domains-block">
+					<div class="toggle-label">Allowed email domains</div>
+					<div class="toggle-help">
+						One domain per line (e.g. <code>reveni.io</code>). Any user
+						whose verified email ends in one of these self-provisions on
+						first login. Matching splits the email on <code>@</code> and
+						is case-insensitive; it does not cryptographically verify the
+						Google Workspace <code>hd</code> claim.
+					</div>
+					{#if managedSigninSettings.managed_signin_allowed_domains.length === 0}
+						<div class="idp-warning-banner compact">
+							<strong>Domain admission is open but no domains are set.</strong>
+							Until you add at least one domain, managed sign-ins are
+							rejected — no one can self-provision.
+						</div>
+					{/if}
+					<textarea
+						class="domains-input"
+						rows="3"
+						placeholder="reveni.io"
+						bind:value={domainsInput}
+						oninput={() => (domainsDirty = true)}
+						disabled={managedSigninSaving}
+					></textarea>
+					<button
+						type="button"
+						class="btn btn-primary"
+						onclick={saveAllowedDomains}
+						disabled={managedSigninSaving || !domainsDirty}
+					>
+						{managedSigninSaving ? 'Saving…' : 'Save domains'}
+					</button>
+				</div>
+			{/if}
+
+			{#if managedSigninSettings.allow_overslash_managed_signin && managedSigninSettings.require_invite_admission}
 				<div class="card-head invites-head">
 					<h3>Invites</h3>
 					<button
@@ -2008,6 +2091,32 @@
 		color: var(--color-text-muted);
 		font-size: 0.82rem;
 		line-height: 1.45;
+	}
+	.domains-block {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		margin-top: 0.75rem;
+		padding-top: 0.75rem;
+		border-top: 1px solid var(--color-border);
+	}
+	.domains-input {
+		font-family: var(--font-mono, monospace);
+		font-size: 0.85rem;
+		padding: 0.5rem 0.6rem;
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		background: var(--color-surface, #fff);
+		color: var(--color-text);
+		resize: vertical;
+	}
+	.domains-block .btn {
+		align-self: flex-start;
+	}
+	.idp-warning-banner.compact {
+		margin: 0;
+		padding: 0.5rem 0.75rem;
+		font-size: 0.82rem;
 	}
 	.mode-group {
 		display: flex;

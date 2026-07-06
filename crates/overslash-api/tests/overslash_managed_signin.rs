@@ -9,6 +9,11 @@
 //! * Invite-gated callback admission: a verified email with a pending
 //!   invite is admitted; without an invite, the callback responds with
 //!   `not_invited`.
+//! * Domain-allowlist admission (migration 092): with managed sign-in on and
+//!   `require_invite_admission = false`, a verified email whose domain is on
+//!   `orgs.managed_signin_allowed_domains` JIT-provisions with no invite;
+//!   an empty allowlist rejects `domain_admission_not_configured` and an
+//!   off-list domain rejects `domain_not_allowed`.
 //!
 //! Mocked OAuth IdP from `overslash_fakes` returns
 //! `email=testuser@example.com` so the invite fixture below matches that
@@ -901,4 +906,257 @@ async fn callback_rejects_uninvited_email_on_managed_signin_org() {
         body["error"].as_str().unwrap().contains("not_invited"),
         "expected not_invited, got: {body:?}"
     );
+}
+
+/// Boot the API with env creds + a google mock, provision a corp org, and
+/// point the google provider at the mock (which returns
+/// `testuser@example.com`). Returns `(base, client, pool, org_id, org_slug,
+/// org_admin_key)` for the domain-admission tests below.
+async fn setup_managed_org_with_google_mock() -> (
+    String,
+    reqwest::Client,
+    sqlx::PgPool,
+    uuid::Uuid,
+    String,
+    String,
+) {
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+
+    sqlx::query(
+        "UPDATE oauth_providers SET authorization_endpoint = $1, token_endpoint = $2, userinfo_endpoint = $3 WHERE key = 'google'",
+    )
+    .bind(format!("http://{mock_addr}/oauth/authorize"))
+    .bind(format!("http://{mock_addr}/oauth/token"))
+    .bind(format!("http://{mock_addr}/oidc/userinfo"))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (base, client) = common::start_api_with_auth_providers(
+        pool.clone(),
+        Some(("env_id".into(), "env_secret".into())),
+        None,
+        "http://localhost:3000",
+    )
+    .await;
+
+    let (org_id, _, _, org_admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    let org_slug = sqlx::query_scalar::<_, String>("SELECT slug FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    (base, client, pool, org_id, org_slug, org_admin_key)
+}
+
+#[tokio::test]
+async fn callback_admits_by_domain_when_invite_not_required() {
+    // Managed sign-in ON + require_invite OFF + domain allowlist. The mock
+    // IdP returns testuser@example.com; with `example.com` on the allowlist
+    // the user JIT-provisions on first login *without* any invite. Models
+    // the Reveni case: any @reveni.io Workspace user self-provisions.
+    let (base, client, pool, org_id, org_slug, org_admin_key) =
+        setup_managed_org_with_google_mock().await;
+
+    // Open domain admission for example.com via the settings PATCH.
+    let resp: Value = client
+        .patch(format!("{base}/v1/orgs/{org_id}/managed-signin"))
+        .header("authorization", format!("Bearer {org_admin_key}"))
+        .json(&json!({
+            "require_invite_admission": false,
+            "managed_signin_allowed_domains": ["Example.COM", "@example.com", ""],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["require_invite_admission"], false);
+    // Normalized: lowercased, leading `@` stripped, empties dropped, deduped.
+    assert_eq!(
+        resp["managed_signin_allowed_domains"],
+        json!(["example.com"]),
+        "domains should be normalized + deduped, got: {resp:?}"
+    );
+
+    let nonce = "managed-nonce-domain-ok";
+    let state_param = format!("login:google:{nonce}");
+    let resp = client
+        .get(format!(
+            "{base}/auth/callback/google?code=mc-domain-ok&state={state_param}"
+        ))
+        .header(
+            "cookie",
+            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        303,
+        "domain-matching email should be admitted without an invite"
+    );
+
+    // Membership created with the default `member` role (no invite = no
+    // role override). No invite row was created or consumed.
+    let membership_role: String = sqlx::query_scalar(
+        "SELECT role FROM user_org_memberships m
+         JOIN users u ON u.id = m.user_id
+         WHERE m.org_id = $1 AND u.email = 'testuser@example.com'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(membership_role, "member");
+
+    let invite_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM org_invites WHERE org_id = $1")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(invite_count, 0, "domain admission must not touch invites");
+}
+
+#[tokio::test]
+async fn callback_rejects_when_domain_admission_unconfigured() {
+    // require_invite OFF but an EMPTY allowlist is a misconfiguration, not
+    // "admit everyone" — reject with `domain_admission_not_configured`.
+    let (base, client, _pool, org_id, org_slug, org_admin_key) =
+        setup_managed_org_with_google_mock().await;
+
+    client
+        .patch(format!("{base}/v1/orgs/{org_id}/managed-signin"))
+        .header("authorization", format!("Bearer {org_admin_key}"))
+        .json(&json!({ "require_invite_admission": false }))
+        .send()
+        .await
+        .unwrap();
+
+    let nonce = "managed-nonce-domain-empty";
+    let state_param = format!("login:google:{nonce}");
+    let resp = client
+        .get(format!(
+            "{base}/auth/callback/google?code=mc-domain-empty&state={state_param}"
+        ))
+        .header(
+            "cookie",
+            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("domain_admission_not_configured"),
+        "expected domain_admission_not_configured, got: {body:?}"
+    );
+}
+
+#[tokio::test]
+async fn callback_rejects_domain_not_on_allowlist() {
+    // require_invite OFF with a non-empty allowlist that does NOT include the
+    // user's domain — reject with `domain_not_allowed`.
+    let (base, client, _pool, org_id, org_slug, org_admin_key) =
+        setup_managed_org_with_google_mock().await;
+
+    client
+        .patch(format!("{base}/v1/orgs/{org_id}/managed-signin"))
+        .header("authorization", format!("Bearer {org_admin_key}"))
+        .json(&json!({
+            "require_invite_admission": false,
+            "managed_signin_allowed_domains": ["other.com"],
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let nonce = "managed-nonce-domain-mismatch";
+    let state_param = format!("login:google:{nonce}");
+    let resp = client
+        .get(format!(
+            "{base}/auth/callback/google?code=mc-domain-mismatch&state={state_param}"
+        ))
+        .header(
+            "cookie",
+            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("domain_not_allowed"),
+        "expected domain_not_allowed, got: {body:?}"
+    );
+}
+
+#[tokio::test]
+async fn managed_signin_settings_partial_patch_round_trip() {
+    // The PATCH is partial: each field defaults to None and leaves the
+    // stored value untouched. Flip fields independently and confirm the
+    // others survive.
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (org_id, _, _, org_admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    // Set domains only; the two booleans keep their defaults (true/true).
+    let resp: Value = client
+        .patch(format!("{base}/v1/orgs/{org_id}/managed-signin"))
+        .header("authorization", format!("Bearer {org_admin_key}"))
+        .json(&json!({ "managed_signin_allowed_domains": ["acme.io"] }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["allow_overslash_managed_signin"], true);
+    assert_eq!(resp["require_invite_admission"], true);
+    assert_eq!(resp["managed_signin_allowed_domains"], json!(["acme.io"]));
+
+    // Flip require_invite only; domains must survive.
+    let resp: Value = client
+        .patch(format!("{base}/v1/orgs/{org_id}/managed-signin"))
+        .header("authorization", format!("Bearer {org_admin_key}"))
+        .json(&json!({ "require_invite_admission": false }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["require_invite_admission"], false);
+    assert_eq!(
+        resp["managed_signin_allowed_domains"],
+        json!(["acme.io"]),
+        "domains must survive an unrelated partial patch"
+    );
+
+    // A fresh GET reflects the persisted state.
+    let got: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}/managed-signin"))
+        .header("authorization", format!("Bearer {org_admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got["require_invite_admission"], false);
+    assert_eq!(got["managed_signin_allowed_domains"], json!(["acme.io"]));
 }
