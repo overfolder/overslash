@@ -669,8 +669,13 @@ pub(super) async fn check_required_scopes(
     let connection = if let Some(inst) = instance {
         if let Some(conn_id) = inst.connection_id {
             scope.get_connection(conn_id).await?
-        } else {
+        } else if inst.use_default_connection {
             user_scope.find_my_connection_by_provider(&provider).await?
+        } else {
+            // Opted out of the default-connection fallback: the exec path
+            // resolves no connection (yields `needs_authentication`), so there
+            // is nothing to gate here. Mirror `resolve_instance_auth`.
+            None
         }
     } else {
         user_scope.find_my_connection_by_provider(&provider).await?
@@ -1084,7 +1089,24 @@ pub(crate) async fn resolve_instance_auth(
         }
     }
 
-    // No bound credentials on instance — fall back to auto-resolve
+    // No bound credentials on instance. Before falling back to auto-resolve
+    // (which would grab the identity's *default* connection for the provider
+    // via `find_my_connection_by_provider`), honor the instance's opt-out: with
+    // `use_default_connection = false`, an unbound OAuth instance must NOT
+    // silently borrow the default. Return `none()` — the caller renders this as
+    // `needs_authentication`, prompting a connect-and-pin. Only short-circuits
+    // OAuth-backed templates (the only ones that resolve a default connection);
+    // ApiKey/env resolution below is unaffected because such templates declare
+    // no OAuth provider.
+    if !instance.use_default_connection
+        && svc
+            .auth
+            .iter()
+            .any(|a| matches!(a, overslash_core::types::ServiceAuth::OAuth { .. }))
+    {
+        return Ok(ResolvedAuth::none());
+    }
+
     resolve_service_auth(
         state,
         ext,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE oauth_connection_flows\n            SET consumed_at = now()\n          WHERE id = $1\n            AND consumed_at IS NULL\n            AND expires_at > now()\n          RETURNING id, org_id, identity_id, actor_identity_id, provider_key,\n                    byoc_credential_id, scopes, pkce_code_verifier,\n                    upstream_authorize_url, expires_at, consumed_at,\n                    created_at, created_ip, created_user_agent, return_url,\n                    upgrade_connection_id, service_instance_id",
+  "query": "UPDATE oauth_connection_flows\n            SET consumed_at = now()\n          WHERE id = $1\n            AND consumed_at IS NULL\n            AND expires_at > now()\n          RETURNING id, org_id, identity_id, actor_identity_id, provider_key,\n                    byoc_credential_id, scopes, pkce_code_verifier,\n                    upstream_authorize_url, expires_at, consumed_at,\n                    created_at, created_ip, created_user_agent, return_url,\n                    upgrade_connection_id, service_instance_id, pin_service_instance_ids",
   "describe": {
     "columns": [
       {
@@ -189,6 +189,17 @@
             "name": "service_instance_id"
           }
         }
+      },
+      {
+        "ordinal": 17,
+        "name": "pin_service_instance_ids",
+        "type_info": "UuidArray",
+        "origin": {
+          "Table": {
+            "table": "oauth_connection_flows",
+            "name": "pin_service_instance_ids"
+          }
+        }
       }
     ],
     "parameters": {
@@ -213,8 +224,9 @@
       true,
       true,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "0da584ff712302db67a8f45a4bddd38727db0617669c7247f2d3a84964ecbdcc"
+  "hash": "e1e7e2519979354f5cef7c310bec88b06de3f567f99b638c13c3c5d52c5c77cd"
 }

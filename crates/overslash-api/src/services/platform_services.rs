@@ -48,6 +48,14 @@ pub struct CreateServiceInput {
     /// pinned or when the template is not OAuth-backed.
     #[serde(default)]
     pub skip_connect: Option<bool>,
+    /// When `false`, this instance must never fall back to the identity's
+    /// default connection for the provider at execution time — it requires an
+    /// explicit `connection_id`. Defaults to `true` (legacy fallback). White-
+    /// label callers that mint a dedicated connection per service set this
+    /// `false` and pin the connection via `pin_service_ids` on connection
+    /// creation. See `service_instances.use_default_connection` (migration 090).
+    #[serde(default)]
+    pub use_default_connection: Option<bool>,
     /// Tenant-supplied URL the OAuth callback redirects back to once the
     /// dance finishes. Only consulted when the kernel auto-initiates a
     /// flow (OAuth template + no pinned connection + not opted out). See
@@ -67,6 +75,8 @@ pub struct UpdateServiceInput {
     pub connection_id: Option<Option<Uuid>>,
     pub secret_name: Option<Option<String>>,
     pub url: Option<Option<String>>,
+    /// `Some` = update the flag; `None` = leave unchanged.
+    pub use_default_connection: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -95,6 +105,9 @@ pub struct ServiceInstanceSummary {
     /// Per-instance MCP server URL override. Overrides the template's `mcp.url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// When `false`, an unbound instance won't fall back to the default
+    /// connection. See `service_instances.use_default_connection`.
+    pub use_default_connection: bool,
     #[serde(default)]
     pub groups: Vec<ServiceGroupRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,6 +156,9 @@ pub struct ServiceInstanceDetail {
     pub secret_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// When `false`, an unbound instance won't fall back to the default
+    /// connection. See `service_instances.use_default_connection`.
+    pub use_default_connection: bool,
     pub status: String,
     pub is_system: bool,
     pub created_at: String,
@@ -272,6 +288,13 @@ pub async fn kernel_list_services(
         if row.connection_id.is_some() {
             continue;
         }
+        // Opted out of the default-connection fallback: execution won't resolve
+        // a connection for this unbound instance, so the classifier must not
+        // either — otherwise the badge would read "ok" while calls 401. Leave it
+        // out of `conn_by_owner_provider` so it classifies NoConnection below.
+        if !row.use_default_connection {
+            continue;
+        }
         let (Some(owner), Some(tpl)) = (
             row.owner_identity_id,
             templates.get(&(row.owner_identity_id, row.template_key.clone())),
@@ -304,6 +327,12 @@ pub async fn kernel_list_services(
                         Some(c) => scope_knowledge(c.scopes.as_deref()),
                         None => ScopeKnowledge::NoConnection,
                     }
+                } else if !row.use_default_connection {
+                    // Opted out of the default fallback and nothing pinned:
+                    // execution resolves no connection, so the badge is
+                    // NoConnection regardless of what the owner has for the
+                    // provider (a sibling instance may have populated the cache).
+                    ScopeKnowledge::NoConnection
                 } else if let (Some(owner), Some(provider)) =
                     (row.owner_identity_id, template_oauth_provider(tpl))
                 {
@@ -547,6 +576,7 @@ pub async fn kernel_create_service(
         connection_id: input.connection_id,
         secret_name: input.secret_name.as_deref(),
         url: input.url.as_deref(),
+        use_default_connection: input.use_default_connection.unwrap_or(true),
         status: &input.status,
     };
 
@@ -653,6 +683,7 @@ pub async fn kernel_create_service(
             upgrade_connection_id: None,
             return_url: input.connect_return_url.clone(),
             service_instance_id: Some(row_id),
+            pin_service_ids: vec![],
         };
         match crate::services::platform_connections::kernel_create_connection(
             connect_ctx,
@@ -742,6 +773,7 @@ pub async fn kernel_update_service(
         connection_id: input.connection_id,
         secret_name: input.secret_name.as_ref().map(|o| o.as_deref()),
         url: input.url.as_ref().map(|o| o.as_deref()),
+        use_default_connection: input.use_default_connection,
     };
 
     let row = scope
@@ -768,6 +800,7 @@ pub fn row_to_summary(
         connection_id: row.connection_id,
         secret_name: row.secret_name,
         url: row.url,
+        use_default_connection: row.use_default_connection,
         groups,
         credentials_status: None,
     }
@@ -785,6 +818,7 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
         connection_id: row.connection_id,
         secret_name: row.secret_name,
         url: row.url,
+        use_default_connection: row.use_default_connection,
         status: row.status,
         is_system: row.is_system,
         created_at: fmt_time(row.created_at),
@@ -942,6 +976,13 @@ pub(crate) async fn resolve_effective_scopes(
             .ok()
             .flatten()
             .map(|c| c.scopes);
+    }
+    // Opted out of the default-connection fallback: execution resolves no
+    // connection, so the classifier reports NoConnection (mirrors
+    // `resolve_instance_auth`). Without this the badge would read "ok" while
+    // calls 401.
+    if !row.use_default_connection {
+        return None;
     }
     let provider = template_oauth_provider(template)?;
     let owner = row.owner_identity_id?;

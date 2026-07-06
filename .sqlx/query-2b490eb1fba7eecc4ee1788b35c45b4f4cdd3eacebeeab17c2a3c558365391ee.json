@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, si.template_id, si.connection_id, si.secret_name, si.url, si.status, si.is_system, si.created_at, si.updated_at FROM service_instances si WHERE si.org_id = $1 AND si.name = $2 AND EXISTS ( SELECT 1 FROM group_grants gg JOIN identity_groups ig ON ig.group_id = gg.group_id JOIN identities i ON i.id = ig.identity_id JOIN groups g ON g.id = gg.group_id WHERE ig.identity_id = $3 AND gg.service_instance_id = si.id AND i.org_id = $1 AND g.org_id = $1 )",
+  "query": "SELECT id, org_id, owner_identity_id, name, template_source, template_key, template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at FROM service_instances WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2 AND status = 'active'",
   "describe": {
     "columns": [
       {
@@ -115,6 +115,17 @@
       },
       {
         "ordinal": 10,
+        "name": "use_default_connection",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "use_default_connection"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "status",
         "type_info": "Text",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "is_system",
         "type_info": "Bool",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -161,8 +172,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Text",
-        "Uuid"
+        "Text"
       ]
     },
     "nullable": [
@@ -179,8 +189,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "cf45f51b6e3cb4527e8f90b3610b5c2753760da0eb546f7687adbfa3b41cc165"
+  "hash": "2b490eb1fba7eecc4ee1788b35c45b4f4cdd3eacebeeab17c2a3c558365391ee"
 }
