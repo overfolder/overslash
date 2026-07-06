@@ -4,24 +4,41 @@
 	import { ApiError } from '$lib/session';
 	import {
 		listTemplates,
+		listAdminTemplates,
 		getTemplate,
 		deleteTemplate,
 		listDrafts,
-		discardDraft
+		discardDraft,
+		getTemplateSettings,
+		enableGlobalTemplate,
+		disableGlobalTemplate
 	} from '$lib/api/services';
-	import type { DraftTemplateDetail, TemplateSummary } from '$lib/types';
+	import type { AdminTemplateSummary, DraftTemplateDetail, TemplateSummary } from '$lib/types';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
 	import SortableHeader from '$lib/components/SortableHeader.svelte';
 	import { compareBy, type SortDir } from '$lib/sort';
 
-	let { isAdmin = false }: { isAdmin?: boolean } = $props();
+	let { isAdmin = false, orgId = undefined }: { isAdmin?: boolean; orgId?: string } = $props();
 
 	let templates = $state<TemplateSummary[]>([]);
 	let drafts = $state<DraftTemplateDetail[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+
+	// Catalog curation (admin-only). `catalogEnabled` maps a global template key
+	// to whether it is in the org's curated catalog; only meaningful when
+	// `globalTemplatesEnabled` is false (curated mode). `curationSaving` holds
+	// keys with an in-flight enable/disable request.
+	let globalTemplatesEnabled = $state(true);
+	let catalogEnabled = $state<Record<string, boolean>>({});
+	let curationSaving = $state<Set<string>>(new Set());
+	let curationError = $state<string | null>(null);
+	// Curation controls only make sense for admins who know the org context and
+	// while the org is in curated mode.
+	const canCurate = $derived(isAdmin && !!orgId);
 	let searchValue = $state<SearchValue>({ expressions: [], freeText: '' });
 	let pendingDelete = $state<TemplateSummary | null>(null);
 	let pendingDiscard = $state<DraftTemplateDetail | null>(null);
@@ -133,9 +150,26 @@
 		loading = true;
 		error = null;
 		try {
-			const [t, d] = await Promise.all([listTemplates(), listDrafts().catch(() => [])]);
-			templates = t;
+			const d = await listDrafts().catch(() => []);
 			drafts = d;
+			if (canCurate && orgId) {
+				// Admins load the full compliance view so curated-out globals remain
+				// visible and re-enableable, plus the org setting that decides whether
+				// per-template toggles are active.
+				const [admin, settings] = await Promise.all([
+					listAdminTemplates(),
+					getTemplateSettings(orgId)
+				]);
+				templates = admin;
+				globalTemplatesEnabled = settings.global_templates_enabled;
+				catalogEnabled = Object.fromEntries(
+					admin
+						.filter((t) => t.tier === 'global')
+						.map((t) => [t.key, (t as AdminTemplateSummary).enabled])
+				);
+			} else {
+				templates = await listTemplates();
+			}
 		} catch (e) {
 			error =
 				e instanceof ApiError
@@ -143,6 +177,29 @@
 					: 'Failed to load templates';
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function toggleCuration(key: string, next: boolean) {
+		if (!canCurate) return;
+		curationError = null;
+		curationSaving = new Set(curationSaving).add(key);
+		// Optimistic update; revert on failure.
+		const prev = catalogEnabled[key];
+		catalogEnabled = { ...catalogEnabled, [key]: next };
+		try {
+			if (next) await enableGlobalTemplate(key);
+			else await disableGlobalTemplate(key);
+		} catch (e) {
+			catalogEnabled = { ...catalogEnabled, [key]: prev };
+			curationError =
+				e instanceof ApiError
+					? `Failed to update catalog (${e.status})`
+					: 'Failed to update catalog';
+		} finally {
+			const s = new Set(curationSaving);
+			s.delete(key);
+			curationSaving = s;
 		}
 	}
 
@@ -270,6 +327,18 @@
 		<div class="error">{error}</div>
 	{/if}
 
+	{#if curationError}
+		<div class="error">{curationError}</div>
+	{/if}
+
+	{#if !loading && canCurate && globalTemplatesEnabled}
+		<div class="curation-note">
+			All global services are currently available. To curate the catalog per
+			template, turn off <strong>“Make all global services available”</strong> in
+			<a href="/org">Org settings → Service catalog</a>.
+		</div>
+	{/if}
+
 	{#if !loading && templates.length > 0}
 		<div class="filters">
 			<SearchBar
@@ -308,6 +377,9 @@
 						<SortableHeader label="Tier" column="tier" active={sortKey} dir={sortDir} onsort={sortBy} />
 						<SortableHeader label="Category" column="category" active={sortKey} dir={sortDir} onsort={sortBy} />
 						<SortableHeader label="Actions" column="actions" active={sortKey} dir={sortDir} onsort={sortBy} />
+						{#if canCurate}
+							<th class="catalog-col">Catalog</th>
+						{/if}
 						<th class="actions-col"></th>
 					</tr>
 				</thead>
@@ -331,6 +403,21 @@
 							</td>
 							<td class="muted">{t.category || '—'}</td>
 							<td>{t.action_count}</td>
+							{#if canCurate}
+								<td class="catalog-col">
+									{#if t.tier === 'global'}
+										<ToggleSwitch
+											checked={globalTemplatesEnabled || catalogEnabled[t.key]}
+											onchange={(next) => toggleCuration(t.key, next)}
+											disabled={globalTemplatesEnabled || curationSaving.has(t.key)}
+											size="sm"
+											label={`Include ${t.display_name} in catalog`}
+										/>
+									{:else}
+										<span class="muted always">Always</span>
+									{/if}
+								</td>
+							{/if}
 							<td class="actions-col">
 								<button
 									type="button"
@@ -552,6 +639,26 @@
 	}
 	.muted {
 		color: var(--color-text-muted);
+	}
+	.catalog-col {
+		text-align: center;
+		white-space: nowrap;
+		width: 1%;
+	}
+	.always {
+		font-size: 0.78rem;
+	}
+	.curation-note {
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		padding: 0.6rem 0.9rem;
+		margin-bottom: 0.9rem;
+		font-size: 0.83rem;
+		color: var(--color-text-muted);
+	}
+	.curation-note a {
+		color: var(--color-primary, #6366f1);
 	}
 	.actions-col {
 		text-align: right;

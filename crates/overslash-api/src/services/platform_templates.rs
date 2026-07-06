@@ -571,6 +571,20 @@ fn is_visible(filter: &Option<HashSet<String>>, key: &str) -> bool {
     }
 }
 
+/// Whether the global template `key` is curated *out* of `org_id`'s catalog —
+/// i.e. `global_templates_enabled` is off and `key` is not in the allow-list.
+/// Returns false when curation is disabled (all globals visible) or the key is
+/// explicitly enabled. Shares the exact filter source used by discovery so the
+/// instantiation guard can never diverge from what listings hide.
+pub(crate) async fn is_global_curated_out(
+    db: &PgPool,
+    org_id: Uuid,
+    key: &str,
+) -> Result<bool, AppError> {
+    let filter = load_global_filter(db, org_id).await?;
+    Ok(!is_visible(&filter, key))
+}
+
 fn template_row_to_value(t: ServiceTemplateRow, tier: &str) -> Result<Value, AppError> {
     let action_count = openapi::compile_service(&t.openapi)
         .map(|(def, _)| def.actions.len())

@@ -172,6 +172,42 @@ pub async fn set_global_templates_enabled(
     Ok(result.rows_affected() > 0)
 }
 
+/// Read the `allow_services_outside_catalog` setting for an org.
+pub async fn get_allow_services_outside_catalog(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT allow_services_outside_catalog FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.allow_services_outside_catalog))
+}
+
+/// Read all three template/catalog settings for an org in one shot.
+/// Returns `(allow_user_templates, global_templates_enabled, allow_services_outside_catalog)`.
+pub async fn get_template_settings(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<(bool, bool, bool)>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT allow_user_templates, global_templates_enabled, allow_services_outside_catalog \
+         FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| {
+        (
+            r.allow_user_templates,
+            r.global_templates_enabled,
+            r.allow_services_outside_catalog,
+        )
+    }))
+}
+
 /// Read the `allow_unsigned_secret_provide` setting for an org.
 pub async fn get_allow_unsigned_secret_provide(
     pool: &PgPool,
@@ -275,21 +311,30 @@ pub async fn update_template_settings(
     id: Uuid,
     allow_user_templates: Option<bool>,
     global_templates_enabled: Option<bool>,
-) -> Result<Option<(bool, bool)>, sqlx::Error> {
+    allow_services_outside_catalog: Option<bool>,
+) -> Result<Option<(bool, bool, bool)>, sqlx::Error> {
     let row = sqlx::query!(
         "UPDATE orgs SET \
          allow_user_templates = COALESCE($2, allow_user_templates), \
          global_templates_enabled = COALESCE($3, global_templates_enabled), \
+         allow_services_outside_catalog = COALESCE($4, allow_services_outside_catalog), \
          updated_at = now() \
          WHERE id = $1 \
-         RETURNING allow_user_templates, global_templates_enabled",
+         RETURNING allow_user_templates, global_templates_enabled, allow_services_outside_catalog",
         id,
         allow_user_templates,
         global_templates_enabled,
+        allow_services_outside_catalog,
     )
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r| (r.allow_user_templates, r.global_templates_enabled)))
+    Ok(row.map(|r| {
+        (
+            r.allow_user_templates,
+            r.global_templates_enabled,
+            r.allow_services_outside_catalog,
+        )
+    }))
 }
 
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {

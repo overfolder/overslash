@@ -223,6 +223,30 @@ export interface TemplateSummary {
   hidden?: boolean;
 }
 
+/**
+ * Admin compliance view (`GET /v1/templates/admin`): every template across all
+ * tiers. Global rows carry an `enabled` flag reflecting the org's curated-catalog
+ * allow-list; org/user rows are always enabled.
+ */
+export interface AdminTemplateSummary extends TemplateSummary {
+  id?: string | null;
+  owner_identity_id?: string | null;
+  /** For global rows: whether the template is in the org's curated catalog. */
+  enabled: boolean;
+}
+
+/**
+ * Org-level template/catalog settings (`/v1/orgs/{id}/template-settings`).
+ */
+export interface TemplateSettings {
+  /** Allow members to define their own user-tier templates. */
+  allow_user_templates: boolean;
+  /** When true, every global template is available; when false, only curated ones. */
+  global_templates_enabled: boolean;
+  /** When false (default), non-admins cannot instantiate globals outside the curated catalog. */
+  allow_services_outside_catalog: boolean;
+}
+
 export interface TemplateDetail {
   key: string;
   display_name: string;

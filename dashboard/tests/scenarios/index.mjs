@@ -34,7 +34,9 @@ export {
 	seedApprovalResolution,
 	seedExecution,
 	setAuditResponseBodyMode,
-	setManagedSignin
+	setManagedSignin,
+	setTemplateSettings,
+	enableGlobalTemplate
 } from './seed.mjs';
 export { makeSnapper } from './snap.mjs';
 export { connectGithubService } from './connect.mjs';

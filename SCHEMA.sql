@@ -551,6 +551,7 @@ CREATE TABLE public.orgs (
     creator_user_id uuid,
     audit_response_body_mode text DEFAULT 'off'::text NOT NULL,
     headless boolean DEFAULT false NOT NULL,
+    allow_services_outside_catalog boolean DEFAULT false NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_audit_response_body_mode_check CHECK ((audit_response_body_mode = ANY (ARRAY['off'::text, 'errors_only'::text, 'all'::text]))),
     CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))

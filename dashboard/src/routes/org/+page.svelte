@@ -13,6 +13,7 @@
 		SecretRequestSettings,
 		ServiceKeyCreated,
 		ServiceKeySummary,
+		TemplateSettings,
 		Webhook,
 		WebhookCreated,
 		WebhookDelivery
@@ -49,6 +50,9 @@
 	// from the server value on load and after each save.
 	let domainsInput = $state('');
 	let domainsDirty = $state(false);
+	let templateSettings = $state<TemplateSettings | null>(null);
+	let templateSettingsSaving = $state(false);
+	let templateSettingsError = $state<string | null>(null);
 	let invites = $state<OrgInvite[]>([]);
 	let showInviteForm = $state(false);
 	let inviteEmail = $state('');
@@ -69,6 +73,7 @@
 		managedSigninSettings = data.managedSigninSettings;
 		domainsInput = data.managedSigninSettings?.managed_signin_allowed_domains.join('\n') ?? '';
 		domainsDirty = false;
+		templateSettings = data.templateSettings;
 		invites = data.invites;
 		subscription = data.subscription;
 	});
@@ -493,6 +498,23 @@
 		}
 	}
 
+	async function patchTemplateSettings(patch: Partial<TemplateSettings>) {
+		if (!org || !templateSettings) return;
+		templateSettingsSaving = true;
+		templateSettingsError = null;
+		try {
+			const updated = await session.patch<TemplateSettings>(
+				`/v1/orgs/${org.id}/template-settings`,
+				patch
+			);
+			templateSettings = updated;
+		} catch (err) {
+			templateSettingsError = asMessage(err);
+		} finally {
+			templateSettingsSaving = false;
+		}
+	}
+
 	async function setAuditResponseBodyMode(mode: AuditResponseBodyMode) {
 		if (!org || !auditSettings || auditSettings.response_body_mode === mode) return;
 		auditSaving = true;
@@ -837,6 +859,70 @@
 				</fieldset>
 				{#if auditError}
 					<div class="form-error">{auditError}</div>
+				{/if}
+			{/if}
+		</section>
+
+		<!-- Service catalog (curated global templates) -->
+		<section class="card">
+			<h2>Service catalog</h2>
+			<p class="section-desc">
+				Controls which global service templates your members can discover and
+				turn into services. Curate the catalog per-template from the
+				<a href="/services?tab=catalog">Services → Catalog</a> tab.
+			</p>
+			{#if templateSettings}
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Make all global services available</div>
+						<div class="toggle-help">
+							When on (default), every shipped global template is available to
+							members. When off, only the templates you explicitly enable in the
+							Catalog tab appear — everything else is hidden from discovery.
+						</div>
+					</div>
+					<ToggleSwitch
+						checked={templateSettings.global_templates_enabled}
+						onchange={(next) => patchTemplateSettings({ global_templates_enabled: next })}
+						disabled={templateSettingsSaving}
+						label="Make all global services available"
+					/>
+				</div>
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Allow services outside the curated catalog</div>
+						<div class="toggle-help">
+							When off (default), non-admins are blocked from creating a service
+							from a global template that is not in the curated catalog — even if
+							they know its key. When on, curated-out templates stay hidden from
+							discovery but can still be instantiated. Admins are always exempt.
+						</div>
+					</div>
+					<ToggleSwitch
+						checked={templateSettings.allow_services_outside_catalog}
+						onchange={(next) =>
+							patchTemplateSettings({ allow_services_outside_catalog: next })}
+						disabled={templateSettingsSaving}
+						label="Allow services outside the curated catalog"
+					/>
+				</div>
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Allow user-defined templates</div>
+						<div class="toggle-help">
+							Let members define their own user-tier service templates in
+							addition to the org and global catalog.
+						</div>
+					</div>
+					<ToggleSwitch
+						checked={templateSettings.allow_user_templates}
+						onchange={(next) => patchTemplateSettings({ allow_user_templates: next })}
+						disabled={templateSettingsSaving}
+						label="Allow user-defined templates"
+					/>
+				</div>
+				{#if templateSettingsError}
+					<div class="form-error">{templateSettingsError}</div>
 				{/if}
 			{/if}
 		</section>

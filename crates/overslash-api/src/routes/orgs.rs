@@ -32,7 +32,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/v1/orgs/{id}/template-settings",
-            patch(patch_template_settings),
+            get(get_template_settings).patch(patch_template_settings),
         )
         .route(
             "/v1/orgs/{id}/secret-request-settings",
@@ -655,12 +655,42 @@ async fn patch_subagent_cleanup_config(
 struct PatchTemplateSettingsRequest {
     allow_user_templates: Option<bool>,
     global_templates_enabled: Option<bool>,
+    /// When false (default), non-admins cannot instantiate global templates
+    /// that fall outside the org's curated catalog.
+    allow_services_outside_catalog: Option<bool>,
 }
 
 #[derive(Serialize)]
 struct TemplateSettingsResponse {
     allow_user_templates: bool,
     global_templates_enabled: bool,
+    allow_services_outside_catalog: bool,
+}
+
+/// Read the org's template/catalog settings. Admin-only: these govern which
+/// global templates members can see and instantiate.
+async fn get_template_settings(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    AdminAcl(acl): AdminAcl,
+    Path(id): Path<Uuid>,
+) -> Result<Json<TemplateSettingsResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot read another org's config".into(),
+        ));
+    }
+
+    let (allow_user_templates, global_templates_enabled, allow_services_outside_catalog) =
+        overslash_db::repos::org::get_template_settings(state.db(&ext), id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+
+    Ok(Json(TemplateSettingsResponse {
+        allow_user_templates,
+        global_templates_enabled,
+        allow_services_outside_catalog,
+    }))
 }
 
 async fn patch_template_settings(
@@ -677,15 +707,19 @@ async fn patch_template_settings(
         ));
     }
 
-    if req.allow_user_templates.is_none() && req.global_templates_enabled.is_none() {
+    if req.allow_user_templates.is_none()
+        && req.global_templates_enabled.is_none()
+        && req.allow_services_outside_catalog.is_none()
+    {
         return Err(AppError::BadRequest("no fields supplied".into()));
     }
 
-    let (allow, globals) = overslash_db::repos::org::update_template_settings(
+    let (allow, globals, outside) = overslash_db::repos::org::update_template_settings(
         state.db(&ext),
         id,
         req.allow_user_templates,
         req.global_templates_enabled,
+        req.allow_services_outside_catalog,
     )
     .await?
     .ok_or_else(|| AppError::NotFound("org not found".into()))?;
@@ -700,6 +734,7 @@ async fn patch_template_settings(
             detail: serde_json::json!({
                 "allow_user_templates": allow,
                 "global_templates_enabled": globals,
+                "allow_services_outside_catalog": outside,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -709,6 +744,7 @@ async fn patch_template_settings(
     Ok(Json(TemplateSettingsResponse {
         allow_user_templates: allow,
         global_templates_enabled: globals,
+        allow_services_outside_catalog: outside,
     }))
 }
 
