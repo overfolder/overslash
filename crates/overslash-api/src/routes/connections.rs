@@ -616,6 +616,20 @@ fn resolve_redirect_target(
     })
 }
 
+/// Browser-facing success redirect to the tenant's `return_url`.
+///
+/// The query string carries only the *stable key* — `connection_id` — plus a
+/// coarse `service_instance_id`/`service_instance_bind_error` echo kept for
+/// back-compat with single-pin callers. It deliberately does **not** enumerate
+/// the full `bound_service_instance_ids` set: a browser-visible query string is
+/// the wrong transport for authoritative binding state (it can't losslessly
+/// carry a list, and the redirect is user-controllable). The authoritative,
+/// complete binding set is the DB — a partner reads it back with
+/// `GET /v1/connections/{connection_id}` (its `used_by` list), keyed off the
+/// `connection_id` already in this redirect. The JSON branch
+/// ([`callback_success_json`]) still includes the full list as a convenience
+/// for programmatic callers, who receive it in an authenticated response body
+/// rather than a URL.
 fn success_redirect(redir: VerifiedRedirect, payload: &CallbackSuccess) -> Response {
     let mut url = redir.url;
     {
@@ -626,6 +640,8 @@ fn success_redirect(redir: VerifiedRedirect, payload: &CallbackSuccess) -> Respo
         if let Some(email) = payload.account_email.as_deref() {
             pairs.append_pair("account_email", email);
         }
+        // Back-compat single-instance echo only. For the full set, the partner
+        // queries `GET /v1/connections/{connection_id}` (see doc comment above).
         if let Some(id) = payload.service_instance_id {
             pairs.append_pair("service_instance_id", &id.to_string());
         }
