@@ -234,7 +234,12 @@
 				// Use svc.id (not name) so user-shadows-org can't return actions
 				// from a same-named user instance.
 				getServiceActions(fresh.id, ctrl.signal).catch(() => [] as ActionSummary[]),
-				listConnections({}, ctrl.signal).catch(() => [] as ConnectionSummary[]),
+				// Scope to the service owner so an admin viewing another user's
+				// service sees that user's (bindable) connections, not their own.
+				listConnections(
+					{ ownerIdentityId: fresh.owner_identity_id },
+					ctrl.signal
+				).catch(() => [] as ConnectionSummary[]),
 				session
 					.get<Identity[]>('/v1/identities', ctrl.signal)
 					.catch(() => [] as Identity[]),
@@ -333,7 +338,10 @@
 				await new Promise((r) => setTimeout(r, 1500));
 				if (ctrl.signal.aborted) return;
 				try {
-					connections = await listConnections({}, ctrl.signal);
+					connections = await listConnections(
+							{ ownerIdentityId: svc?.owner_identity_id },
+							ctrl.signal
+						);
 				} catch {
 					if (ctrl.signal.aborted) return;
 				}
@@ -402,7 +410,10 @@
 				await new Promise((r) => setTimeout(r, 1500));
 				if (ctrl.signal.aborted) return;
 				try {
-					connections = await listConnections({}, ctrl.signal);
+					connections = await listConnections(
+							{ ownerIdentityId: svc?.owner_identity_id },
+							ctrl.signal
+						);
 				} catch {
 					if (ctrl.signal.aborted) return;
 				}
