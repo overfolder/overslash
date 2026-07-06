@@ -322,7 +322,49 @@ pub async fn set_user_id(
     Ok(result.rows_affected() > 0)
 }
 
-/// fast-path flag.
+/// Insert or remove `identity_id` from the org's `Admins` system group inside
+/// an existing transaction. This is the single primitive that every
+/// admin-granting path routes through ([`set_is_org_admin`] for one identity,
+/// [`set_org_member_admin`] for a whole membership) so the group-grant ACL path
+/// can never drift from the `is_org_admin` fast-path flag.
+async fn sync_admins_group_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org_id: Uuid,
+    identity_id: Uuid,
+    value: bool,
+) -> Result<(), sqlx::Error> {
+    if value {
+        sqlx::query!(
+            "INSERT INTO identity_groups (identity_id, group_id)
+             SELECT $1, g.id FROM groups g
+             WHERE g.org_id = $2 AND g.system_kind = 'admins'
+             ON CONFLICT DO NOTHING",
+            identity_id,
+            org_id,
+        )
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        sqlx::query!(
+            "DELETE FROM identity_groups
+             WHERE identity_id = $1
+               AND group_id IN (
+                 SELECT id FROM groups
+                 WHERE org_id = $2 AND system_kind = 'admins'
+               )",
+            identity_id,
+            org_id,
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Toggle the `is_org_admin` flag on a single User identity. The DB CHECK
+/// constraint rejects the call if `id` is not a User. Also keeps the `Admins`
+/// system-group membership in sync (via [`sync_admins_group_tx`]) so the
+/// group-grant ACL path stays consistent with the `is_org_admin` fast-path flag.
 pub async fn set_is_org_admin(
     pool: &PgPool,
     org_id: Uuid,
@@ -339,33 +381,123 @@ pub async fn set_is_org_admin(
     )
     .execute(&mut *tx)
     .await?;
-    if value {
-        sqlx::query!(
-            "INSERT INTO identity_groups (identity_id, group_id)
-             SELECT $1, g.id FROM groups g
-             WHERE g.org_id = $2 AND g.system_kind = 'admins'
-             ON CONFLICT DO NOTHING",
-            id,
-            org_id,
-        )
-        .execute(&mut *tx)
-        .await?;
-    } else {
-        sqlx::query!(
-            "DELETE FROM identity_groups
-             WHERE identity_id = $1
-               AND group_id IN (
-                 SELECT id FROM groups
-                 WHERE org_id = $2 AND system_kind = 'admins'
-               )",
-            id,
-            org_id,
-        )
-        .execute(&mut *tx)
-        .await?;
-    }
+    sync_admins_group_tx(&mut tx, org_id, id, value).await?;
     tx.commit().await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Outcome of [`set_org_member_admin`].
+pub enum SetOrgMemberAdminOutcome {
+    /// Role change applied. `changed` is false when the member was already in
+    /// the requested state (idempotent no-op) — the caller can still treat it
+    /// as success.
+    Updated { changed: bool },
+    /// No `user_org_memberships` row for this `(org, user)`.
+    NotFound,
+    /// Refused: demoting this member would leave the org with zero admins.
+    LastAdmin,
+}
+
+/// Promote or demote an existing org member to/from org admin, atomically.
+///
+/// "Real" admin authorization requires BOTH the `user_org_memberships.role`
+/// (used for the last-admin guard and display) AND the per-identity
+/// `is_org_admin` flag + `Admins`-group membership that `AdminAcl`/`OrgAcl`
+/// actually read (see `extractors.rs`). This helper is the single source of
+/// truth that keeps all three in lock-step for every user-kind identity of the
+/// `(org, user)` — a human may hold more than one identity in an org after
+/// signing in through a second IdP, and each carries its own flag/group state.
+///
+/// Guards the last-admin invariant: refuses to demote the final admin (mirror
+/// of [`remove_user_from_org`]). Locks all admin membership rows in `user_id`
+/// order so concurrent role changes serialise instead of deadlocking. A
+/// self-demotion of the sole admin is refused by the same guard.
+pub async fn set_org_member_admin(
+    pool: &PgPool,
+    org_id: Uuid,
+    user_id: Uuid,
+    make_admin: bool,
+) -> Result<SetOrgMemberAdminOutcome, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Lock every admin membership row of the org in deterministic order so
+    // concurrent promotions/demotions serialise instead of deadlocking, and so
+    // the last-admin count below is a consistent snapshot.
+    let admin_user_ids: Vec<Uuid> = sqlx::query_scalar!(
+        "SELECT user_id FROM user_org_memberships
+         WHERE org_id = $1 AND role = 'admin'
+         ORDER BY user_id FOR UPDATE",
+        org_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    // Lock the target membership row (existence check).
+    let existing_role: Option<String> = sqlx::query_scalar!(
+        "SELECT role FROM user_org_memberships
+         WHERE user_id = $1 AND org_id = $2 FOR UPDATE",
+        user_id,
+        org_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some(existing_role) = existing_role else {
+        return Ok(SetOrgMemberAdminOutcome::NotFound);
+    };
+
+    let is_admin_now = admin_user_ids.contains(&user_id);
+    if !make_admin && is_admin_now && admin_user_ids.len() <= 1 {
+        return Ok(SetOrgMemberAdminOutcome::LastAdmin);
+    }
+
+    let new_role = if make_admin {
+        crate::repos::membership::ROLE_ADMIN
+    } else {
+        crate::repos::membership::ROLE_MEMBER
+    };
+    let changed = existing_role != new_role;
+
+    // 1. Membership role (drives the last-admin guard + display).
+    sqlx::query!(
+        "UPDATE user_org_memberships SET role = $3
+         WHERE user_id = $1 AND org_id = $2",
+        user_id,
+        org_id,
+        new_role,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // 2+3. The per-identity flag + Admins-group membership for EVERY user-kind
+    // identity of this human in the org — the authorization surface the ACL
+    // extractor reads. Route each through the shared group primitive so the two
+    // never drift.
+    let identity_ids: Vec<Uuid> = sqlx::query_scalar!(
+        "SELECT id FROM identities
+         WHERE org_id = $2 AND user_id = $1 AND kind = 'user'",
+        user_id,
+        org_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    sqlx::query!(
+        "UPDATE identities SET is_org_admin = $3, updated_at = now()
+         WHERE org_id = $2 AND user_id = $1 AND kind = 'user'",
+        user_id,
+        org_id,
+        make_admin,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    for id in identity_ids {
+        sync_admins_group_tx(&mut tx, org_id, id, make_admin).await?;
+    }
+
+    tx.commit().await?;
+    Ok(SetOrgMemberAdminOutcome::Updated { changed })
 }
 
 /// Resolve (or create) the well-known "org-service" Agent for an org.

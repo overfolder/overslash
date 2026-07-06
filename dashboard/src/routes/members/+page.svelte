@@ -1,10 +1,57 @@
 <script lang="ts">
+	import { ApiError, session } from '$lib/session';
+	import { invalidateAll } from '$app/navigation';
 	import type { Identity, ApiKeySummary } from './types';
 
-	let { data }: { data: { identities: Identity[]; apiKeys: ApiKeySummary[] } } = $props();
+	let {
+		data
+	}: {
+		data: {
+			identities: Identity[];
+			apiKeys: ApiKeySummary[];
+			viewerIsAdmin: boolean;
+			viewerIdentityId: string | null;
+		};
+	} = $props();
 
 	let query = $state('');
 	let selectedId: string | null = $state(null);
+
+	// Identity id currently being promoted/demoted (drives the spinner + disables
+	// the button); and the last role-change error to surface in the drawer.
+	let pendingRoleFor: string | null = $state(null);
+	let roleError: string | null = $state(null);
+
+	function selectMember(id: string | null) {
+		selectedId = id;
+		roleError = null; // don't carry a stale error across members
+	}
+
+	function asMessage(e: unknown): string {
+		if (e instanceof ApiError) {
+			const body = e.body as { error?: string } | string | undefined;
+			if (typeof body === 'object' && body && 'error' in body && body.error) return body.error;
+			return `Request failed (${e.status}).`;
+		}
+		return 'Network error.';
+	}
+
+	async function setAdmin(u: Identity, makeAdmin: boolean) {
+		pendingRoleFor = u.id;
+		roleError = null;
+		try {
+			await session.patch(`/v1/org-members/${u.id}`, {
+				role: makeAdmin ? 'admin' : 'member'
+			});
+			// Reload identities so the badge + control reflect the new state
+			// (and any other admin's concurrent change).
+			await invalidateAll();
+		} catch (e) {
+			roleError = asMessage(e);
+		} finally {
+			pendingRoleFor = null;
+		}
+	}
 
 	const users = $derived(data.identities.filter((i) => i.kind === 'user'));
 
@@ -137,6 +184,7 @@
 					<tr>
 						<th class="col-user">User</th>
 						<th>Email</th>
+						<th>Role</th>
 						<th>IdP</th>
 						<th class="num">Agents</th>
 						<th>Services</th>
@@ -148,7 +196,7 @@
 					{#each filtered as u (u.id)}
 						<tr
 							class:selected={selectedId === u.id}
-							onclick={() => (selectedId = u.id)}
+							onclick={() => selectMember(u.id)}
 						>
 							<td class="col-user">
 								<div class="user-cell">
@@ -161,6 +209,13 @@
 								</div>
 							</td>
 							<td class="email">{u.email ?? '—'}</td>
+							<td>
+								{#if u.is_org_admin}
+									<span class="badge badge-admin">Admin</span>
+								{:else}
+									<span class="role-member">Member</span>
+								{/if}
+							</td>
 							<td>
 								<span class={providerClass(u.provider)}>{providerLabel(u.provider)}</span>
 							</td>
@@ -192,7 +247,7 @@
 	<div
 		class="drawer-backdrop"
 		role="presentation"
-		onclick={() => (selectedId = null)}
+		onclick={() => selectMember(null)}
 	></div>
 	<aside class="drawer" aria-label="Member detail">
 		<header class="drawer-header">
@@ -207,10 +262,19 @@
 					<p class="muted">{selected.email ?? 'no email on file'}</p>
 				</div>
 			</div>
-			<button class="close" onclick={() => (selectedId = null)} aria-label="Close">×</button>
+			<button class="close" onclick={() => selectMember(null)} aria-label="Close">×</button>
 		</header>
 
 		<dl class="detail-grid">
+			<dt>Role</dt>
+			<dd>
+				{#if selected.is_org_admin}
+					<span class="badge badge-admin">Admin</span>
+				{:else}
+					<span class="role-member">Member</span>
+				{/if}
+			</dd>
+
 			<dt>IdP source</dt>
 			<dd><span class={providerClass(selected.provider)}>{providerLabel(selected.provider)}</span></dd>
 
@@ -241,6 +305,43 @@
 			<dt>Created</dt>
 			<dd>{fmtDateTime(selected.created_at)}</dd>
 		</dl>
+
+		{#if data.viewerIsAdmin}
+			<section class="role-admin">
+				<h3>Admin access</h3>
+				{#if selected.is_org_admin}
+					<p class="role-desc">
+						This member is an org admin — full access to services, connections, members,
+						and org settings.
+					</p>
+					<button
+						class="btn btn-danger"
+						disabled={pendingRoleFor === selected.id}
+						onclick={() => selected && setAdmin(selected, false)}
+					>
+						{pendingRoleFor === selected.id ? 'Removing…' : 'Remove admin'}
+					</button>
+					{#if selected.id === data.viewerIdentityId}
+						<p class="role-hint">You are removing your own admin access.</p>
+					{/if}
+				{:else}
+					<p class="role-desc">
+						Promote to org admin to grant full access to services, connections, members,
+						and org settings.
+					</p>
+					<button
+						class="btn btn-primary"
+						disabled={pendingRoleFor === selected.id}
+						onclick={() => selected && setAdmin(selected, true)}
+					>
+						{pendingRoleFor === selected.id ? 'Promoting…' : 'Make admin'}
+					</button>
+				{/if}
+				{#if roleError}
+					<p class="role-error" role="alert">{roleError}</p>
+				{/if}
+			</section>
+		{/if}
 	</aside>
 {/if}
 
@@ -505,5 +606,71 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		cursor: help;
+	}
+
+	.badge-admin {
+		background: var(--color-primary-bg);
+		color: var(--color-primary);
+	}
+	.role-member {
+		font: var(--text-body-sm);
+		color: var(--color-text-secondary);
+	}
+
+	.role-admin {
+		border-top: 1px solid var(--color-border-subtle);
+		padding-top: var(--space-5);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+		align-items: flex-start;
+	}
+	.role-admin h3 {
+		font: var(--text-h3);
+		color: var(--color-text-heading);
+		margin: 0;
+	}
+	.role-desc {
+		font: var(--text-body-sm);
+		color: var(--color-text-secondary);
+		margin: 0;
+	}
+	.role-hint {
+		font: var(--text-body-sm);
+		color: var(--color-text-secondary);
+		margin: 0;
+	}
+	.role-error {
+		font: var(--text-body-sm);
+		color: var(--danger-600, #dc2626);
+		margin: 0;
+	}
+
+	.btn {
+		padding: var(--space-2) var(--space-4);
+		border-radius: var(--radius-md);
+		border: 1px solid transparent;
+		font: var(--text-body-medium);
+		cursor: pointer;
+		transition: background 0.1s ease, opacity 0.1s ease;
+	}
+	.btn:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+	.btn-primary {
+		background: var(--color-primary);
+		color: var(--color-primary-contrast, #fff);
+	}
+	.btn-primary:hover:not(:disabled) {
+		background: var(--color-primary-hover, var(--color-primary));
+	}
+	.btn-danger {
+		background: var(--color-surface);
+		border-color: var(--danger-500, #ef4444);
+		color: var(--danger-600, #dc2626);
+	}
+	.btn-danger:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--danger-500, #ef4444) 10%, transparent);
 	}
 </style>

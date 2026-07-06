@@ -12,6 +12,7 @@ export interface Identity {
 	depth: number;
 	owner_id: string | null;
 	inherit_permissions: boolean;
+	is_org_admin: boolean;
 	created_at: string;
 	last_active_at: string;
 	archived_at?: string;
