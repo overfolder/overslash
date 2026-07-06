@@ -666,24 +666,6 @@
 						/>
 					</div>
 				{/if}
-				{#if usesOAuth && !isSystem}
-					<div class="field toggle-field">
-						<ToggleSwitch
-							checked={editUseDefaultConnection}
-							onchange={(v) => (editUseDefaultConnection = v)}
-							labelledby="edit-use-default-connection-label"
-						/>
-						<span id="edit-use-default-connection-label">
-							Fall back to the default connection for this provider when none is pinned
-						</span>
-					</div>
-					{#if !editUseDefaultConnection}
-						<small class="hint">
-							Off: calls fail with <code>needs_authentication</code> until a connection is
-							explicitly bound. Used for white-label services with a dedicated connection.
-						</small>
-					{/if}
-				{/if}
 				<div class="row">
 					<span class="label">Owner</span>
 					<span title={svc.owner_identity_id ?? ''}>{ownerDisplay}</span>
@@ -894,6 +876,24 @@
 							{/each}
 						</select>
 					</div>
+					{#if !isSystem}
+						<div class="field toggle-field">
+							<ToggleSwitch
+								checked={editUseDefaultConnection}
+								onchange={(v) => (editUseDefaultConnection = v)}
+								labelledby="edit-use-default-connection-label"
+							/>
+							<span id="edit-use-default-connection-label">
+								Fall back to the default connection for this provider when none is pinned
+							</span>
+						</div>
+						{#if !editUseDefaultConnection}
+							<small class="hint">
+								Off: calls fail with <code>needs_authentication</code> until a connection is
+								explicitly bound. Used for white-label services with a dedicated connection.
+							</small>
+						{/if}
+					{/if}
 					<div class="actions">
 						<button type="button" class="btn" onclick={reconnect} disabled={connecting}>
 							{connecting ? 'Waiting…' : 'Connect new'}
