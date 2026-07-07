@@ -462,7 +462,7 @@
 			</div>
 		{/if}
 	{:else if activeTab === 'catalog'}
-		<TemplateCatalog {isAdmin} />
+		<TemplateCatalog {isAdmin} orgId={($page as any).data?.user?.org_id} />
 	{:else}
 		<ApiExplorer initialService={explorerInitialService} {isAdmin} />
 	{/if}

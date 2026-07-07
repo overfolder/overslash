@@ -15,6 +15,7 @@ use uuid::Uuid;
 use overslash_core::permissions::AccessLevel;
 use overslash_core::types::{McpAuth, Runtime, ServiceAction, ServiceAuth, ServiceDefinition};
 use overslash_db::repos::group::ServiceGroupRow;
+use overslash_db::repos::org as org_repo;
 use overslash_db::repos::service_instance::{
     CreateServiceInstance, ServiceInstanceRow, UpdateServiceInstance,
 };
@@ -449,6 +450,31 @@ pub async fn kernel_create_service(
         &input.template_key,
     )
     .await?;
+
+    // Curated-catalog enforcement. A global template the org has curated out is
+    // hidden from discovery already; here we also block *instantiating* it
+    // unless the org opts into a soft (discovery-only) catalog via
+    // `allow_services_outside_catalog`. Org admins are always exempt. Only the
+    // global tier is curated — org/user templates are in-catalog by definition.
+    if template_source == "global" && ctx.access_level < AccessLevel::Admin {
+        let curated_out = super::platform_templates::is_global_curated_out(
+            &ctx.db,
+            ctx.org_id,
+            &input.template_key,
+        )
+        .await?;
+        if curated_out {
+            let allow_outside = org_repo::get_allow_services_outside_catalog(&ctx.db, ctx.org_id)
+                .await?
+                .unwrap_or(false);
+            if !allow_outside {
+                return Err(AppError::Forbidden(format!(
+                    "service '{}' is not in your organization's curated catalog",
+                    input.template_key
+                )));
+            }
+        }
+    }
 
     if !["draft", "active", "archived"].contains(&input.status.as_str()) {
         return Err(AppError::BadRequest(format!(

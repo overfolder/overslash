@@ -434,3 +434,31 @@ export async function setManagedSignin(session, settings) {
 		body
 	});
 }
+
+/**
+ * Patch the org's template/catalog settings. Accepts any subset of
+ * `allow_user_templates`, `global_templates_enabled`,
+ * `allow_services_outside_catalog`.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {{ allow_user_templates?: boolean, global_templates_enabled?: boolean, allow_services_outside_catalog?: boolean }} patch
+ */
+export async function setTemplateSettings(session, patch) {
+	return api(session, `/v1/orgs/${session.orgId}/template-settings`, {
+		method: 'PATCH',
+		body: patch
+	});
+}
+
+/**
+ * Add a global template key to the org's curated catalog allow-list.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {string} templateKey
+ */
+export async function enableGlobalTemplate(session, templateKey) {
+	return api(session, `/v1/templates/enabled-globals`, {
+		method: 'POST',
+		body: { template_key: templateKey }
+	});
+}

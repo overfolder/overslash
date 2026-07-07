@@ -20,7 +20,9 @@ import type {
 	ServiceInstanceDetail,
 	ServiceInstanceSummary,
 	ServiceStatus,
+	AdminTemplateSummary,
 	TemplateDetail,
+	TemplateSettings,
 	TemplateSummary,
 	UpdateDraftRequest,
 	UpdateServiceRequest,
@@ -51,6 +53,39 @@ export const updateTemplate = (id: string, patch: UpdateTemplateRequest) =>
 
 export const deleteTemplate = (id: string) =>
 	session.delete<{ deleted: boolean }>(`/v1/templates/${id}/manage`);
+
+// -- Catalog curation (org-admin) --
+
+/** Read the org's template/catalog settings. */
+export const getTemplateSettings = (orgId: string, signal?: AbortSignal) =>
+	session.get<TemplateSettings>(`/v1/orgs/${orgId}/template-settings`, signal);
+
+/** Update the org's template/catalog settings. */
+export const updateTemplateSettings = (orgId: string, patch: Partial<TemplateSettings>) =>
+	session.patch<TemplateSettings>(`/v1/orgs/${orgId}/template-settings`, patch);
+
+/**
+ * Admin compliance view: every template across all tiers, with an `enabled`
+ * flag on global rows reflecting the org's curated-catalog allow-list.
+ */
+export const listAdminTemplates = (signal?: AbortSignal) =>
+	session.get<AdminTemplateSummary[]>('/v1/templates/admin', signal);
+
+/** Global template keys explicitly enabled for this org (the curated allow-list). */
+export const listEnabledGlobals = (signal?: AbortSignal) =>
+	session.get<string[]>('/v1/templates/enabled-globals', signal);
+
+/** Add a global template to the org's curated catalog. */
+export const enableGlobalTemplate = (key: string) =>
+	session.post<{ enabled: boolean; template_key: string }>('/v1/templates/enabled-globals', {
+		template_key: key
+	});
+
+/** Remove a global template from the org's curated catalog. */
+export const disableGlobalTemplate = (key: string) =>
+	session.delete<{ disabled: boolean; template_key: string }>(
+		`/v1/templates/enabled-globals/${encodeURIComponent(key)}`
+	);
 
 // -- OpenAPI import / drafts --
 
