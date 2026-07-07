@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orgs SET plan = 'trial', trial_ends_at = $2, updated_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e36285ce6f0ffcd36d464f57d528bae3fcadd532a8799e8ad0d4ce338ece575f"
+}

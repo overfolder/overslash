@@ -305,6 +305,7 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
+        trial_default_duration_days: 30,
         single_org_mode: None,
         app_host_suffix: None,
         api_host_suffix: None,

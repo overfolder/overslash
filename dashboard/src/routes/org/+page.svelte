@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { ApiError, session } from '$lib/session';
+	import { page } from '$app/stores';
 	import type {
 		AuditResponseBodyMode,
 		AuditSettings,
@@ -82,6 +83,44 @@
 	// rate limits. Renders a "Courtesy plan" badge in place of billing
 	// controls.
 	const isFreeUnlimited = $derived(subscription?.plan === 'free_unlimited');
+	// Instance-admin trial controls. The flag comes from the layout identity
+	// (merged into page data), not OrgPageData. `is_instance_admin` is granted
+	// only via DB; the sole other capability today is creating free-unlimited
+	// orgs. Enforcement of trials is banner-only (see DECISIONS D25).
+	const isInstanceAdmin = $derived($page.data.user?.is_instance_admin === true);
+	const isTrial = $derived(subscription?.plan === 'trial');
+	let trialDurationDays = $state(30);
+	let trialExtendDays = $state(30);
+	let trialActionBusy = $state(false);
+	let trialActionError = $state<string | null>(null);
+
+	async function runTrialAction(fn: () => Promise<unknown>) {
+		if (!org) return;
+		trialActionBusy = true;
+		trialActionError = null;
+		try {
+			await fn();
+			// Reload so both the Billing card and the layout trial banner refresh.
+			window.location.reload();
+		} catch (e) {
+			trialActionError =
+				e instanceof ApiError
+					? ((e.body as { error?: string } | undefined)?.error ?? `http_${e.status}`)
+					: 'Network error';
+			trialActionBusy = false;
+		}
+	}
+
+	const startTrial = () =>
+		runTrialAction(() =>
+			session.post(`/v1/orgs/${org!.id}/trial`, { duration_days: trialDurationDays })
+		);
+	const extendTrial = () =>
+		runTrialAction(() =>
+			session.patch(`/v1/orgs/${org!.id}/trial`, { extend_days: trialExtendDays })
+		);
+	const setPlan = (plan: string) =>
+		runTrialAction(() => session.patch(`/v1/orgs/${org!.id}/plan`, { plan }));
 	// Corp orgs need at least one enabled IdP before anyone besides the
 	// creator can sign in (via their Overslash-level login). Banner nudges
 	// them to add one so their team can sign in via the corp IdP.
@@ -1731,6 +1770,67 @@
 			{/if}
 		</section>
 	{/if}
+
+	{#if isInstanceAdmin && !isPersonalOrg && org}
+		<section class="card" id="instance-admin-trial">
+			<h2>Trial <span class="instance-tag">⚡ Instance admin</span></h2>
+			<p class="muted small">
+				Put this org on a managed trial or opt it out. Enforcement is banner-only —
+				an expired trial keeps working; members just see a banner.
+			</p>
+
+			<div class="billing-stat">
+				<span class="billing-label">Current</span>
+				<span class="billing-value">
+					{#if isTrial}
+						Trial · {subscription?.status}{#if subscription?.current_period_end}
+							· ends {new Date(subscription.current_period_end * 1000).toLocaleDateString()}{/if}
+					{:else if isFreeUnlimited}
+						Free Unlimited
+					{:else}
+						{subscription?.plan ?? 'standard'}
+					{/if}
+				</span>
+			</div>
+
+			<div class="trial-admin-controls">
+				<div class="trial-admin-action">
+					<label class="trial-days">
+						Days
+						<input type="number" min="1" max="3650" bind:value={trialDurationDays} disabled={trialActionBusy} />
+					</label>
+					<button type="button" class="btn btn-secondary" disabled={trialActionBusy} onclick={startTrial}>
+						{isTrial ? 'Restart trial' : 'Start trial'}
+					</button>
+				</div>
+
+				{#if isTrial}
+					<div class="trial-admin-action">
+						<label class="trial-days">
+							Extend by
+							<input type="number" min="1" max="3650" bind:value={trialExtendDays} disabled={trialActionBusy} />
+						</label>
+						<button type="button" class="btn btn-secondary" disabled={trialActionBusy} onclick={extendTrial}>
+							Extend
+						</button>
+					</div>
+				{/if}
+
+				<div class="trial-admin-action">
+					<button type="button" class="btn btn-secondary" disabled={trialActionBusy} onclick={() => setPlan('free_unlimited')}>
+						Set Free Unlimited
+					</button>
+					<button type="button" class="btn btn-secondary" disabled={trialActionBusy} onclick={() => setPlan('standard')}>
+						Set Standard
+					</button>
+				</div>
+			</div>
+
+			{#if trialActionError}
+				<p class="form-error">{trialActionError}</p>
+			{/if}
+		</section>
+	{/if}
 </div>
 
 <ConfirmModal
@@ -2208,5 +2308,49 @@
 		margin: 0.75rem 0 0;
 		font-size: 0.85rem;
 		color: var(--color-text-muted);
+	}
+
+	.instance-tag {
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		vertical-align: middle;
+		margin-left: 0.4rem;
+		padding: 0.1rem 0.45rem;
+		border-radius: var(--radius-pill, 999px);
+		background: var(--color-warning-soft, var(--neutral-100));
+		color: var(--color-warning, #b45309);
+	}
+
+	.trial-admin-controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem;
+		margin-top: 1rem;
+	}
+
+	.trial-admin-action {
+		display: flex;
+		align-items: flex-end;
+		gap: 0.5rem;
+	}
+
+	.trial-days {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
+	}
+
+	.trial-days input {
+		width: 5rem;
+		padding: 0.4rem 0.5rem;
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		background: var(--color-surface);
+		color: var(--color-text);
+		font-size: 0.9rem;
 	}
 </style>

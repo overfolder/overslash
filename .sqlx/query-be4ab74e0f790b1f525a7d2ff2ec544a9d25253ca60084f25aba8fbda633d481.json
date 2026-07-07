@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orgs\n         SET plan = $2,\n             trial_ends_at = CASE WHEN $2 = 'trial' THEN trial_ends_at ELSE NULL END,\n             updated_at = now()\n         WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "be4ab74e0f790b1f525a7d2ff2ec544a9d25253ca60084f25aba8fbda633d481"
+}

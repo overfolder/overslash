@@ -14,6 +14,7 @@
 	import Sidebar from '$lib/components/shell/Sidebar.svelte';
 	import TopBar from '$lib/components/shell/TopBar.svelte';
 	import MobileTabBar from '$lib/components/shell/MobileTabBar.svelte';
+	import TrialBanner from '$lib/components/shell/TrialBanner.svelte';
 
 	let { children, data }: { children: Snippet; data: { user: MeIdentity | null } } = $props();
 
@@ -102,6 +103,9 @@
 				{isInstanceAdmin}
 				onMenu={() => (mobileDrawerOpen = true)}
 			/>
+			{#if data?.user?.trial}
+				<TrialBanner trial={data.user.trial} {isAdmin} />
+			{/if}
 			<main class="content">
 				{@render children()}
 			</main>
