@@ -168,6 +168,17 @@ export interface MeIdentity {
 	user_id?: string | null;
 	personal_org_id?: string | null;
 	memberships?: MembershipSummary[];
+	/** Instance-admin-managed trial summary for the org-wide banner. `null`
+	 *  for non-trial orgs. Enforcement is banner-only — informational. */
+	trial?: TrialSummary | null;
+}
+
+export interface TrialSummary {
+	status: 'active' | 'expired';
+	/** Trial window end, unix seconds. */
+	ends_at: number;
+	/** Whole days left (0 once expired). */
+	days_remaining: number;
 }
 
 /** GET /v1/secrets item */

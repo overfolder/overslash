@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at\n         FROM orgs WHERE slug = $1",
+  "query": "UPDATE orgs\n         SET subagent_idle_timeout_secs = $2,\n             subagent_archive_retention_days = $3,\n             updated_at = now()\n         WHERE id = $1\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -137,6 +137,17 @@
       },
       {
         "ordinal": 12,
+        "name": "trial_ends_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "trial_ends_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -160,7 +171,9 @@
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Uuid",
+        "Int4",
+        "Int4"
       ]
     },
     "nullable": [
@@ -176,9 +189,10 @@
       false,
       false,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "73d68d2e2d713d14d1fd4b1ff07e01cb383637885f1b27968af91fb257c511dc"
+  "hash": "234885bd6f0e87d03dd574e8bf0649473f92ade0b151f422478d29e6740a21f2"
 }

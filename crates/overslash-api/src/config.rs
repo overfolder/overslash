@@ -95,6 +95,11 @@ pub struct Config {
     /// "Create org" CTA. Lets a self-hosted operator lock down org creation
     /// after initial setup. Default `true`.
     pub allow_org_creation: bool,
+    /// Default length (in days) of a trial, used both by the instance-admin
+    /// "start trial" endpoint when no explicit duration is given and by the
+    /// self-serve Stripe trial (`subscription_data[trial_period_days]`).
+    /// Default 30 (~1 month).
+    pub trial_default_duration_days: u32,
     /// When set, the subdomain middleware is bypassed and every request is
     /// treated as scoped to the named org slug. Self-hosted operators who
     /// want the old single-org experience set this to their org's slug.
@@ -449,6 +454,11 @@ impl Config {
                 .ok()
                 .map(|v| !matches!(v.as_str(), "false" | "0" | "no" | ""))
                 .unwrap_or(true),
+            trial_default_duration_days: env::var("TRIAL_DEFAULT_DURATION_DAYS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|d| *d > 0)
+                .unwrap_or(30),
             single_org_mode: env::var("SINGLE_ORG_MODE").ok().filter(|s| !s.is_empty()),
             app_host_suffix: env::var("APP_HOST_SUFFIX").ok().filter(|s| !s.is_empty()),
             api_host_suffix: env::var("API_HOST_SUFFIX").ok().filter(|s| !s.is_empty()),
@@ -1203,6 +1213,7 @@ mod tests {
             default_rate_limit: 0,
             default_rate_window_secs: 0,
             allow_org_creation: true,
+            trial_default_duration_days: 30,
             single_org_mode: None,
             cloud_billing: false,
             stripe_secret_key: None,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE orgs\n         SET subagent_idle_timeout_secs = $2,\n             subagent_archive_retention_days = $3,\n             updated_at = now()\n         WHERE id = $1\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at",
+  "query": "INSERT INTO orgs (name, slug, plan) VALUES ($1, $2, $3)\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -137,6 +137,17 @@
       },
       {
         "ordinal": 12,
+        "name": "trial_ends_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "trial_ends_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -160,9 +171,9 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Int4",
-        "Int4"
+        "Text",
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
@@ -178,9 +189,10 @@
       false,
       false,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "7f5e7c6f9dcbea236d805958cbc3ef7dc9af595d79817163c4e70923d2cc1726"
+  "hash": "6908624ed4ec89aef77133d35d08b316d63a39bd2e66fda3ff38c2acc6d3b669"
 }

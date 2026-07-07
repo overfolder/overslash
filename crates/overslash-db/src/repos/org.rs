@@ -37,14 +37,21 @@ pub struct OrgRow {
     /// `user_id`. Used by the `membership.removed` audit event to flag
     /// departures by the founder.
     pub creator_user_id: Option<Uuid>,
+    /// End of an instance-admin-managed trial window. `Some` only when
+    /// `plan = 'trial'`; the org is "on trial" while this is in the future and
+    /// "expired" once it passes. `None` for every non-trial org. Enforcement is
+    /// banner-only (see DECISIONS D25). Self-serve Stripe trials do NOT use this
+    /// field — they carry a `status='trialing'` subscription instead.
+    pub trial_ends_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
 
 /// Insert a new org. `plan` must be one of the values allowed by the
-/// `orgs.plan` CHECK constraint (today: `'standard'` or `'free_unlimited'`).
+/// `orgs.plan` CHECK constraint (`'standard'`, `'free_unlimited'`, `'trial'`).
 /// Most callers pass `"standard"`; the instance-admin path passes
-/// `"free_unlimited"` to skip Stripe.
+/// `"free_unlimited"` to skip Stripe. A brand-new org is never created directly
+/// on `'trial'` — trials are applied afterward via [`set_trial`].
 pub async fn create(
     pool: &PgPool,
     name: &str,
@@ -54,7 +61,7 @@ pub async fn create(
     sqlx::query_as!(
         OrgRow,
         "INSERT INTO orgs (name, slug, plan) VALUES ($1, $2, $3)
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at",
         name,
         slug,
         plan,
@@ -66,7 +73,7 @@ pub async fn create(
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at
          FROM orgs WHERE id = $1",
         id,
     )
@@ -74,14 +81,74 @@ pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::
     .await
 }
 
-/// Read just the `plan` field for an org. Used by the rate-limit hot path
-/// to decide whether to bypass limits without dragging the full `OrgRow`
-/// shape into the cache. Returns `None` if the org doesn't exist.
-pub async fn get_plan(pool: &PgPool, id: Uuid) -> Result<Option<String>, sqlx::Error> {
-    let row = sqlx::query!("SELECT plan FROM orgs WHERE id = $1", id)
+/// Read `(plan, trial_ends_at)` for an org in one query. Used by the
+/// billing-tier cache to answer both the `free_unlimited` bypass and the
+/// trial-status render without two round-trips. Returns `None` if the org
+/// doesn't exist.
+pub async fn get_billing(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<(String, Option<OffsetDateTime>)>, sqlx::Error> {
+    let row = sqlx::query!("SELECT plan, trial_ends_at FROM orgs WHERE id = $1", id)
         .fetch_optional(pool)
         .await?;
-    Ok(row.map(|r| r.plan))
+    Ok(row.map(|r| (r.plan, r.trial_ends_at)))
+}
+
+/// Put an org on an instance-admin-managed trial: set `plan = 'trial'` and the
+/// trial window end. Overwrites any existing trial. Returns `false` if the org
+/// doesn't exist. Callers must invalidate the billing-tier cache afterward.
+pub async fn set_trial(
+    pool: &PgPool,
+    id: Uuid,
+    ends_at: OffsetDateTime,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET plan = 'trial', trial_ends_at = $2, updated_at = now() WHERE id = $1",
+        id,
+        ends_at,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Bump the trial window end. Only affects orgs currently on `plan = 'trial'`
+/// (the `AND plan = 'trial'` guard means a non-trial org returns `false` rather
+/// than silently gaining a `trial_ends_at`). Callers must invalidate the cache.
+pub async fn extend_trial(
+    pool: &PgPool,
+    id: Uuid,
+    ends_at: OffsetDateTime,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET trial_ends_at = $2, updated_at = now()
+         WHERE id = $1 AND plan = 'trial'",
+        id,
+        ends_at,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Set an org's plan tier directly (instance-admin opt-out path, e.g. flipping
+/// a trial org to `free_unlimited` or back to `standard`). Clears
+/// `trial_ends_at` whenever the target plan is not `'trial'`. `plan` must be a
+/// CHECK-allowed value. Callers must invalidate the cache.
+pub async fn set_plan(pool: &PgPool, id: Uuid, plan: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs
+         SET plan = $2,
+             trial_ends_at = CASE WHEN $2 = 'trial' THEN trial_ends_at ELSE NULL END,
+             updated_at = now()
+         WHERE id = $1",
+        id,
+        plan,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Read just the `approval_auto_bubble_secs` setting for an org.
@@ -295,7 +362,7 @@ pub async fn update_template_settings(
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at
          FROM orgs WHERE slug = $1",
         slug,
     )
@@ -374,7 +441,7 @@ pub async fn update_managed_admission(
             managed_signin_allowed_domains = COALESCE($4, managed_signin_allowed_domains),
             updated_at = now()
          WHERE id = $1
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at",
         id,
         allow_overslash_managed_signin,
         require_invite_admission,
@@ -423,7 +490,7 @@ pub async fn update_subagent_cleanup_config(
              subagent_archive_retention_days = $3,
              updated_at = now()
          WHERE id = $1
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at",
         id,
         idle_timeout_secs,
         archive_retention_days,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE orgs SET\n            allow_overslash_managed_signin = COALESCE($2, allow_overslash_managed_signin),\n            require_invite_admission = COALESCE($3, require_invite_admission),\n            managed_signin_allowed_domains = COALESCE($4, managed_signin_allowed_domains),\n            updated_at = now()\n         WHERE id = $1\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, created_at, updated_at",
+  "query": "UPDATE orgs SET\n            allow_overslash_managed_signin = COALESCE($2, allow_overslash_managed_signin),\n            require_invite_admission = COALESCE($3, require_invite_admission),\n            managed_signin_allowed_domains = COALESCE($4, managed_signin_allowed_domains),\n            updated_at = now()\n         WHERE id = $1\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -137,6 +137,17 @@
       },
       {
         "ordinal": 12,
+        "name": "trial_ends_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "trial_ends_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -179,9 +190,10 @@
       false,
       false,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "9a9278c0e6f932199b0a691f1b0944580907314341cd67cffacd21e3bac53887"
+  "hash": "3cba25008d6a488ac24dfcb38953580b8f433bee5413ef1a2cb7bd2a7e9d0683"
 }

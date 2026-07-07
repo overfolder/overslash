@@ -1146,6 +1146,32 @@ async fn me_identity(
 
     let email = ident.email.clone().unwrap_or_default();
 
+    // Trial summary for the org-wide banner. Reaches every member (this
+    // endpoint is the universal auth check), unlike the admin-only
+    // subscription endpoint. `null` for non-trial orgs. Enforcement is
+    // banner-only (DECISIONS D25) — this is purely informational.
+    let now = time::OffsetDateTime::now_utc();
+    let trial = org_row.as_ref().and_then(|o| {
+        use crate::services::billing_tier::{TrialStatus, derive_trial_status};
+        match derive_trial_status(&o.plan, o.trial_ends_at, now) {
+            TrialStatus::Active { ends_at } => {
+                let days_remaining =
+                    ((ends_at - now).whole_seconds() as f64 / 86_400.0).ceil() as i64;
+                Some(json!({
+                    "status": "active",
+                    "ends_at": ends_at.unix_timestamp(),
+                    "days_remaining": days_remaining.max(0),
+                }))
+            }
+            TrialStatus::Expired { ends_at } => Some(json!({
+                "status": "expired",
+                "ends_at": ends_at.unix_timestamp(),
+                "days_remaining": 0,
+            })),
+            TrialStatus::None => None,
+        }
+    });
+
     Ok(axum::Json(json!({
         "identity_id": ident.id,
         "org_id": ident.org_id,
@@ -1161,6 +1187,7 @@ async fn me_identity(
         "user_id": user_id,
         "personal_org_id": personal_org_id,
         "memberships": memberships,
+        "trial": trial,
     })))
 }
 

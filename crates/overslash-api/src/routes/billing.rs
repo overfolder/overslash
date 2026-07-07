@@ -110,6 +110,12 @@ struct CreateCheckoutRequest {
     org_slug: String,
     seats: u32,
     currency: String,
+    /// When true, the checkout session opens a Stripe free trial
+    /// (`subscription_data[trial_period_days]` = `trial_default_duration_days`):
+    /// a card is still collected, but the first charge is deferred by the trial
+    /// window. Drives the "Not sure. Trial for free for a month" toggle.
+    #[serde(default)]
+    trial: bool,
 }
 
 #[derive(Serialize)]
@@ -249,6 +255,14 @@ async fn create_checkout(
         state.config.dashboard_url.trim_end_matches('/')
     );
 
+    // A self-serve trial collects a card but defers the first charge by
+    // `trial_default_duration_days` (Stripe emits status='trialing' until then).
+    let trial_period_days = if req.trial {
+        Some(state.config.trial_default_duration_days)
+    } else {
+        None
+    };
+
     let (session_id, checkout_url) = stripe_create_checkout_session(
         &state.http_client,
         stripe_key,
@@ -258,6 +272,7 @@ async fn create_checkout(
         &success_url,
         &cancel_url,
         &state.config.stripe_api_base,
+        trial_period_days,
     )
     .await?;
 
@@ -458,6 +473,41 @@ async fn get_subscription(
             current_period_end: None,
             cancel_at_period_end: false,
         }));
+    }
+
+    // Instance-admin-managed trial orgs (plan='trial') have no Stripe row.
+    // Return a synthetic body so the dashboard renders the trial banner and
+    // days-remaining. `trialing` while active, `trial_expired` once past the
+    // window (enforcement is banner-only — see DECISIONS D25).
+    use crate::services::billing_tier::TrialStatus;
+    match state
+        .free_unlimited_cache(&ext)
+        .trial_status(state.db(&ext), org_id, OffsetDateTime::now_utc())
+        .await
+    {
+        TrialStatus::Active { ends_at } => {
+            return Ok(Json(SubscriptionResponse {
+                org_id,
+                plan: "trial".into(),
+                seats: 0,
+                status: "trialing".into(),
+                currency: String::new(),
+                current_period_end: Some(ends_at.unix_timestamp()),
+                cancel_at_period_end: false,
+            }));
+        }
+        TrialStatus::Expired { ends_at } => {
+            return Ok(Json(SubscriptionResponse {
+                org_id,
+                plan: "trial".into(),
+                seats: 0,
+                status: "trial_expired".into(),
+                currency: String::new(),
+                current_period_end: Some(ends_at.unix_timestamp()),
+                cancel_at_period_end: false,
+            }));
+        }
+        TrialStatus::None => {}
     }
 
     let sub = billing::get_org_subscription(state.db(&ext), org_id)
@@ -827,6 +877,7 @@ async fn stripe_create_checkout_session(
     success_url: &str,
     cancel_url: &str,
     api_base: &str,
+    trial_period_days: Option<u32>,
 ) -> Result<(String, String)> {
     let seats_str = seats.to_string();
     // `customer_update[address]=auto` is required when `automatic_tax` is on
@@ -834,7 +885,7 @@ async fn stripe_create_checkout_session(
     // compute tax, and `auto` tells it to copy the billing address collected
     // in Checkout onto the Customer. Without it Stripe rejects the request
     // with `customer_tax_location_invalid`.
-    let params = [
+    let mut params: Vec<(&str, &str)> = vec![
         ("mode", "subscription"),
         ("customer", customer_id),
         ("line_items[0][price]", price_id),
@@ -846,6 +897,14 @@ async fn stripe_create_checkout_session(
         ("success_url", success_url),
         ("cancel_url", cancel_url),
     ];
+    // Free trial: card collected now, first charge deferred by N days. Stripe
+    // reports the subscription as status='trialing' with current_period_end at
+    // the trial end, which the dashboard renders as a trial banner.
+    let trial_days_str;
+    if let Some(days) = trial_period_days {
+        trial_days_str = days.to_string();
+        params.push(("subscription_data[trial_period_days]", &trial_days_str));
+    }
 
     let resp = client
         .post(format!("{api_base}/checkout/sessions"))
