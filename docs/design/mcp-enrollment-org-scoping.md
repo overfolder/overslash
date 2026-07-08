@@ -16,7 +16,7 @@ The corporate story this unlocks: IT ships an MDM-managed MCP client config —
 { "mcpServers": { "overslash": { "type": "http", "url": "https://acme.api.overslash.com/mcp" } } }
 ```
 
-— and can trust that any agent enrolled through it is an **Acme** agent, signed in through **Acme's** Okta, bounded by **Acme's** group ceiling and [catalog overlay](org-catalog-overlay.md). An employee's personal Overslash account must be unreachable from that client, by construction.
+— and can trust that any agent enrolled through it is an **Acme** agent, signed in through **Acme's** Okta, bounded by **Acme's** group ceiling and [layered templates](layered-service-templates.md). An employee's personal Overslash account must be unreachable from that client, by construction.
 
 ---
 
