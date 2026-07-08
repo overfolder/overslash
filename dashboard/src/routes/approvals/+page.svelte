@@ -21,7 +21,9 @@
 	let approvals = $state<ApprovalResponse[]>([]);
 	let pendingExecutions = $state<ApprovalResponse[]>([]);
 	let rowBusy = $state<Record<string, boolean>>({});
-	let rowError = $state<string | null>(null);
+	// Per-row so a failure on one row's inline action can't be clobbered by
+	// another row's action starting concurrently.
+	let rowErrors = $state<Record<string, string | null>>({});
 	let execBusy = $state<Record<string, boolean>>({});
 	let execError = $state<string | null>(null);
 
@@ -107,7 +109,7 @@
 	// suggested tier (no expiry — matches the resolver's default); ✕ denies.
 	async function resolveRow(a: ApprovalResponse, resolution: 'allow_remember' | 'deny') {
 		rowBusy = { ...rowBusy, [a.id]: true };
-		rowError = null;
+		rowErrors = { ...rowErrors, [a.id]: null };
 		try {
 			const body: { resolution: string; remember_keys?: string[] } = { resolution };
 			if (resolution === 'allow_remember') {
@@ -122,7 +124,7 @@
 			const updated = await session.post<ApprovalResponse>(`/v1/approvals/${a.id}/resolve`, body);
 			dropResolved(updated);
 		} catch (e) {
-			rowError = pickApiError(e, 'Failed to resolve approval.');
+			rowErrors = { ...rowErrors, [a.id]: pickApiError(e, 'Failed to resolve approval.') };
 		} finally {
 			rowBusy = { ...rowBusy, [a.id]: false };
 		}
@@ -191,9 +193,6 @@
 		{#if data.error}
 			<div class="banner-error">{data.error}</div>
 		{/if}
-		{#if rowError}
-			<div class="banner-error">{rowError}</div>
-		{/if}
 
 		{#if approvals.length > 0}
 			<div class="aq-filters">
@@ -256,6 +255,9 @@
 								<span class="mono">{primaryArg(a)}</span>
 								{#if hasBubbled(a)}<span class="dot">·</span><span class="bubbled">bubbled</span>{/if}
 							</div>
+							{#if rowErrors[a.id]}
+								<div class="aq-rowerr">{rowErrors[a.id]}</div>
+							{/if}
 						</div>
 						<div class="aq-right">
 							<div class="aq-when">
@@ -608,6 +610,11 @@
 	}
 	.aq-line2 .bubbled {
 		color: var(--color-warning);
+	}
+	.aq-rowerr {
+		margin-top: 4px;
+		font-size: 12px;
+		color: var(--color-danger);
 	}
 
 	.aq-right {
