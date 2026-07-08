@@ -46,7 +46,7 @@ Net: the subdomain is a strong signal for *discovery and cold login* but not an 
 
 > On a corp subdomain (`RequestOrgContext::Org { org_id }`), the enrolled agent's org **is** `org_id`. Full stop. The session org, any pre-existing binding, and the client's registration are all subordinate to the subdomain.
 
-The subdomain *is* the lock — this is unconditional for corp subdomains, not a per-org toggle. The apex (`RequestOrgContext::Root`) remains the only place personal-org and org-creator enrollment happens, exactly as today.
+The subdomain *is* the lock — this is unconditional for corp subdomains, not a per-org toggle. But note precisely what it constrains: **the enrollment endpoint on that subdomain**, and nothing else. It is *not* a claim that an org is reachable only via its subdomain. The root apex (`RequestOrgContext::Root`) remains the **multi-org hub**: a user with a valid session for any org they belong to — personal *or corp* — continues to see and use that org from `app.overslash.com` (org switcher, dashboard, and enrollment into their own session org), exactly as today. See *Root and multi-org access* below.
 
 ### Changes to `authorize()`
 
@@ -58,14 +58,26 @@ The subdomain *is* the lock — this is unconditional for corp subdomains, not a
 
 3. **Scope the fast-path binding lookup by `ctx.org`.** Resolve `(user, client_id, ctx.org) → agent`. A binding from another org cannot satisfy an authorize on this subdomain.
 
-4. **Apex unchanged.** On `Root`, enrollment continues to use the session's (personal or created) org.
+4. **Root unchanged — and deliberately permissive.** On `Root`, enrollment continues to use the session's org, which **may be a corp org the user belongs to**, not only a personal/created org. There is no subdomain claim to honor at root, and the session already proves membership, so a member legitimately enrolls into and uses `<org>` from `app.overslash.com`. This is existing behavior and must be preserved (next subsection).
+
+### Root and multi-org access (unchanged — the clarification)
+
+The subdomain lock must not be read as "an org is only usable at its subdomain." It isn't, and today's code already reflects that: `check_subdomain_matches_jwt` (`extractors.rs`) enforces `jwt.org == ctx.org` **only when the context is `Org { … }`** — at `Root` the check is a **no-op**, so a corp-org session is fully accepted on `app.overslash.com`. A member switches to and uses `<org>` from root via the org switcher exactly as for a personal org.
+
+This change is therefore **additive on the subdomain path only**. Two rules keep root intact:
+
+- **Enrollment org follows the *resolved* org**, defined as: the subdomain org on `Org` ctx, the **session org** on `Root` ctx. So the org-derivation and the fast-path binding scoping (item 3) are keyed on that resolved org — on root they degrade to today's session-org behavior, not to any subdomain constraint.
+- **The re-auth-on-mismatch (item 2) fires only on `Org` ctx.** At root there is no subdomain to mismatch against, so a valid session — corp or personal — is never bounced.
+
+Net: the corporate subdomain is a *lock you opt into by pointing a client at it*; root is the *unlocked multi-org hub*. A user who wants the multi-org experience uses root; a corporation that wants its Claude pinned points it at `acme.api.overslash.com`. The two coexist without one restricting the other.
 
 ### Hardening: org-scope the DCR client (recommended)
 
 Rather than rely solely on the authorize-time check, close the gap structurally:
 
-- Add nullable `org_id` to `oauth_mcp_clients`, stamped from `ctx` at `POST /oauth/register` time (NULL for apex/back-compat registrations).
-- On a corp subdomain, `authorize` accepts a `client_id` only if its `org_id` is NULL **or** equals `ctx.org`. A client registered against Acme's AS cannot be replayed against Beta's subdomain.
+- Add nullable `org_id` to `oauth_mcp_clients`, stamped from `ctx` at `POST /oauth/register`: a **subdomain** registration stamps that org (locked); a **root** (or pre-migration back-compat) registration stamps `NULL` — intentionally, so a root-registered client works across whichever of the user's orgs their session is on. `NULL` is the multi-org path, not a gap.
+- On a corp subdomain, `authorize` accepts a `client_id` if its `org_id` is **`NULL` or equals `ctx.org`**, and rejects one stamped for a *different* org. A `NULL` client is safe here precisely because items 1+2 force the agent into `ctx.org` regardless of the client; the stamp only adds cross-subdomain *replay* protection (an Acme-locked client can't be used on Beta's subdomain) and correctly scopes the admin's MCP-Clients list.
+- **Root does not gate on the client's `org_id`** — it's the multi-org hub, so the session org governs and any of the user's orgs is reachable.
 
 In practice standards-compliant clients (Claude Code, Cursor, …) register per issuer and store credentials per server URL, so each `(client, subdomain)` is already a distinct registration — the `org_id` stamp simply makes that structural instead of behavioral, and it makes the admin's **Org Settings → MCP Clients** list correctly scoped to their own org.
 
@@ -78,10 +90,11 @@ Org-scoping answers *"which org does an agent land in"*. It does **not** by itse
 ## Security properties after this change
 
 - **No cross-org leak via a stale session.** A personal (or other-org) session on a corp subdomain forces a re-auth into the corp org; it can never divert the agent.
-- **No cross-org replay of a client.** A `client_id` is pinned to the subdomain it registered against.
+- **No cross-org replay of a client.** A `client_id` stamped for one subdomain org can't authorize on another org's subdomain.
 - **The corporate guarantee is structural.** Point a client at `acme.api.overslash.com/mcp` and every path — discovery, cold login, warm re-auth, fast-path rebind — resolves to the Acme org, Acme's IdP, Acme's ceiling. That is the "force Overslash and their cloud org" outcome the feedback asks for.
+- **Root multi-org access is preserved (the clarification).** A member with a valid `<org>` session sees and uses `<org>` from `app.overslash.com` — dashboard *and* enrollment into their session org — exactly as today. The subdomain lock is an opt-in corporate control (you get it by pointing a client at the subdomain), not a restriction on the root hub.
 
-Apex behavior (personal orgs, org creation) is untouched.
+Root behavior (personal orgs, org creation, **and corp-org access/enrollment via the session**) is untouched.
 
 ---
 
@@ -92,6 +105,8 @@ Apex behavior (personal orgs, org creation) is untouched.
 - A binding made on `beta.*` does not short-circuit authorize on `acme.*`.
 - A `client_id` registered on `acme.*` is rejected on `beta.*/oauth/authorize`.
 - Apex enrollment (personal org, org-creator) unchanged — regression guard.
+- **Root multi-org (the clarification):** authenticated with an **Acme** session on **`app.overslash.com`** → dashboard access to Acme works (no `org_mismatch`), and MCP enrollment at root lands the agent in **Acme** (the session org), not forced elsewhere.
+- A `NULL`/root-registered `client_id` is accepted on a corp subdomain and still lands the agent in that subdomain's org (items 1+2), i.e. back-compat holds without a leak.
 
 ## Open questions
 
