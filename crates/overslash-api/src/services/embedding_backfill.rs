@@ -124,8 +124,14 @@ async fn backfill_db_templates(db: &PgPool, embedder: &dyn Embedder) -> Result<u
     // Pull every active template row across all orgs. The full-scan is
     // acceptable at boot: the table is small, and the alternative
     // (per-scope queries) duplicates bookkeeping for no real savings.
+    // Only **standalone** layers carry an OpenAPI doc to embed. Derived layers
+    // (openapi NULL, migration 097) resolve their surface through the fold at
+    // request time; embedding them here would need the registry, so they are
+    // excluded from the boot backfill. The `openapi IS NOT NULL` filter also
+    // keeps the non-`Option` decode below sound.
     let rows = sqlx::query_as::<_, (uuid::Uuid, Option<uuid::Uuid>, String, serde_json::Value)>(
-        "SELECT org_id, owner_identity_id, key, openapi FROM service_templates WHERE status = 'active'",
+        "SELECT org_id, owner_identity_id, key, openapi FROM service_templates \
+         WHERE status = 'active' AND openapi IS NOT NULL",
     )
     .fetch_all(db)
     .await?;

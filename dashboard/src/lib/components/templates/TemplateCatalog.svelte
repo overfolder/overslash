@@ -253,6 +253,16 @@
 		return isAdmin;
 	}
 
+	/** A derived layer (edited via the layer editor, not the YAML editor). */
+	function isDerived(t: TemplateSummary): boolean {
+		return !!t.extends;
+	}
+
+	/** Admins can build a derived layer over any base to curate it. */
+	function canCustomize(t: TemplateSummary): boolean {
+		return isAdmin && !isDerived(t);
+	}
+
 	onMount(load);
 </script>
 
@@ -397,8 +407,18 @@
 							</td>
 							<td>
 								<StatusBadge variant={t.tier} />
+								{#if isDerived(t)}
+									<span class="layer-badge" title={`Derived layer over ${t.extends}`}>
+										layer ⟵ {t.extends}
+									</span>
+								{/if}
 								{#if t.hidden}
 									<StatusBadge variant="hidden" />
+								{/if}
+								{#if t.warnings}
+									<span class="warn-badge" title="Resolution warnings — open the layer editor">
+										⚠ {t.warnings}
+									</span>
 								{/if}
 							</td>
 							<td class="muted">{t.category || '—'}</td>
@@ -429,7 +449,31 @@
 								>
 									+ New
 								</button>
-								{#if canEdit(t)}
+								{#if canCustomize(t)}
+									<button
+										type="button"
+										class="btn small"
+										title="Curate this template with a derived layer (tracks upstream updates)"
+										onclick={() =>
+											goto(
+												`/services/templates/layer?base=${encodeURIComponent(t.key)}`
+											)}
+									>
+										Customize
+									</button>
+								{/if}
+								{#if canEdit(t) && isDerived(t)}
+									<button
+										type="button"
+										class="btn small"
+										onclick={() =>
+											goto(
+												`/services/templates/layer?edit=${encodeURIComponent(t.key)}`
+											)}
+									>
+										Edit layer
+									</button>
+								{:else if canEdit(t)}
 									<button
 										type="button"
 										class="btn small"
@@ -647,6 +691,28 @@
 	}
 	.always {
 		font-size: 0.78rem;
+	}
+	.layer-badge {
+		display: inline-block;
+		font-size: 0.68rem;
+		font-family: var(--font-mono, monospace);
+		color: var(--color-text-muted);
+		border: 1px solid var(--color-border);
+		border-radius: 4px;
+		padding: 0.05rem 0.35rem;
+		margin-left: 0.25rem;
+		vertical-align: middle;
+	}
+	.warn-badge {
+		display: inline-block;
+		font-size: 0.68rem;
+		color: #b45309;
+		border: 1px solid rgba(180, 83, 9, 0.35);
+		background: rgba(180, 83, 9, 0.08);
+		border-radius: 4px;
+		padding: 0.05rem 0.35rem;
+		margin-left: 0.25rem;
+		vertical-align: middle;
 	}
 	.curation-note {
 		background: var(--color-surface);

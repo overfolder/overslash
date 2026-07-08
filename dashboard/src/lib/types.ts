@@ -221,6 +221,10 @@ export interface TemplateSummary {
   tier: TemplateTier;
   /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
   hidden?: boolean;
+  /** Base template key when this row is a derived layer; absent for standalone/global. */
+  extends?: string;
+  /** Count of fold-time resolution warnings (drift, shadowed extensions, dead entries). */
+  warnings?: number;
 }
 
 /**
@@ -235,16 +239,63 @@ export interface AdminTemplateSummary extends TemplateSummary {
   enabled: boolean;
 }
 
+/** Whether org members may create user-namespace layers. `restrictive` is
+ * reserved (mask-only) and not yet enforced. */
+export type UserTemplatePolicy = 'none' | 'restrictive' | 'full';
+
 /**
  * Org-level template/catalog settings (`/v1/orgs/{id}/template-settings`).
  */
 export interface TemplateSettings {
-  /** Allow members to define their own user-tier templates. */
-  allow_user_templates: boolean;
+  /** Whether members may create user-namespace layers (`none` | `restrictive` | `full`). */
+  user_template_policy: UserTemplatePolicy;
   /** When true, every global template is available; when false, only curated ones. */
   global_templates_enabled: boolean;
   /** When false (default), non-admins cannot instantiate globals outside the curated catalog. */
   allow_services_outside_catalog: boolean;
+}
+
+/** One entry in a derived layer's per-action metadata mask. */
+export interface ActionPatch {
+  /** Clamp risk upward only (adds approvals): `read` | `write` | `delete`. */
+  risk?: 'read' | 'write' | 'delete';
+  /** Relabel the action description. */
+  description?: string;
+  /** Additive disclose specs. */
+  disclose?: unknown[];
+}
+
+/** The expansive half of a delta: new actions + hosts. No auth, no rebinding. */
+export interface Extensions {
+  /** New actions keyed by action key. Each value is an OpenAPI operation fragment. */
+  actions?: Record<string, { method: string; path: string; operation?: unknown }>;
+  /** Additional hosts unioned onto the base. */
+  hosts?: string[];
+}
+
+/**
+ * A derived layer's stored content — a mask half (restrictive) and an extension
+ * half (expansive). Resolved by the fold as `apply(delta, resolve(extends))`.
+ */
+export interface Delta {
+  /** Drop the derived template from the catalog. */
+  hidden?: boolean;
+  /** Relabel the template / description. */
+  display_name?: string;
+  description?: string;
+  /** Keep only these action keys (∩). `[]` = expose nothing; omit = keep all. */
+  allowlist?: string[];
+  /** Drop these action keys (\). */
+  denylist?: string[];
+  /** Per-action metadata masks over the base's actions. */
+  action_patch?: Record<string, ActionPatch>;
+  /** New actions + hosts. */
+  extensions?: Extensions;
+}
+
+/** Non-blocking resolution warnings computed during the fold. */
+export interface ResolutionReport {
+  warnings: ValidationMessage[];
 }
 
 export interface TemplateDetail {
@@ -267,17 +318,35 @@ export interface TemplateDetail {
   mcp?: McpDetail;
   /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
   hidden?: boolean;
+  /** Base template key when this is a derived layer; absent for standalone/global. */
+  extends?: string;
+  /** The stored delta for a derived layer; absent for standalone/global. */
+  delta?: Delta;
+  /** Fold-time resolution warnings (drift, shadowed extensions, dead entries). */
+  resolution_report?: ResolutionReport;
 }
 
 export interface CreateTemplateRequest {
-  /** Raw OpenAPI 3.1 YAML. Must include `info.key` (or alias) as the template key. */
-  openapi: string;
+  /** Raw OpenAPI 3.1 YAML for a standalone layer. Mutually exclusive with `extends`. */
+  openapi?: string;
   user_level?: boolean;
+  /** Base template key for a derived layer. Requires `delta`. */
+  extends?: string;
+  /** The derived-layer delta. Required iff `extends` is set. */
+  delta?: Delta;
+  /** Layer key for a derived layer. Defaults to `extends` (shadow-with-delta). */
+  key?: string;
+  /** Display name for a derived layer. */
+  display_name?: string;
+  /** Category for a derived layer. */
+  category?: string;
 }
 
 export interface UpdateTemplateRequest {
-  /** Full replacement OpenAPI YAML. Template key cannot change via update. */
-  openapi: string;
+  /** Full replacement OpenAPI YAML for a standalone layer. Key cannot change. */
+  openapi?: string;
+  /** Replacement delta for a derived layer. */
+  delta?: Delta;
 }
 
 export interface ValidationResult {

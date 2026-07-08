@@ -11,6 +11,7 @@ import type {
 	CreateByocCredentialRequest,
 	CreateServiceRequest,
 	CreateTemplateRequest,
+	Delta,
 	DraftTemplateDetail,
 	ImportTemplateRequest,
 	InitiateConnectionRequest,
@@ -129,6 +130,22 @@ export const resyncMcpTemplate = (key: string) =>
 export async function validateTemplate(yaml: string): Promise<ValidationResult | null> {
 	try {
 		return await session.postText<ValidationResult>('/v1/templates/validate', yaml);
+	} catch (e) {
+		if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
+		throw e;
+	}
+}
+
+/** Lint a derived-layer delta against its resolved base (live editor feedback). */
+export async function validateDelta(
+	extendsKey: string,
+	delta: Delta
+): Promise<ValidationResult | null> {
+	try {
+		return await session.post<ValidationResult>('/v1/templates/validate-delta', {
+			extends: extendsKey,
+			delta
+		});
 	} catch (e) {
 		if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
 		throw e;

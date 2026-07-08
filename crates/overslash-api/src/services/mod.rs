@@ -35,6 +35,7 @@ pub mod response_filter;
 pub mod session;
 pub mod short_url;
 pub mod ssrf_guard;
+pub mod template_resolve;
 pub mod webhook_digest;
 pub mod webhook_dispatcher;
 pub mod welcome_email;

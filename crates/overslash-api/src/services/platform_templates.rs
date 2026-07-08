@@ -25,6 +25,29 @@ use crate::error::AppError;
 /// the validator.
 pub const MAX_TEMPLATE_YAML_BYTES: usize = 512 * 1024;
 
+/// Enforce the org's `user_template_policy` for a *user-namespace* layer/draft
+/// creation. v1 honors `none` (block) and `full` (allow); `restrictive` is
+/// reserved (its enforcement lights up with the deferred classifier), so it
+/// blocks with a distinct message rather than silently behaving as `full`.
+/// Shared by the HTTP and MCP-kernel create paths.
+pub(crate) async fn enforce_user_template_policy(
+    db: &PgPool,
+    org_id: Uuid,
+) -> Result<(), AppError> {
+    let policy = org_repo::get_user_template_policy(db, org_id)
+        .await?
+        .unwrap_or_else(|| "none".into());
+    match policy.as_str() {
+        "full" => Ok(()),
+        "restrictive" => Err(AppError::Forbidden(
+            "the 'restrictive' user-template policy is reserved and not yet available".into(),
+        )),
+        _ => Err(AppError::Forbidden(
+            "user templates are not enabled for this org".into(),
+        )),
+    }
+}
+
 pub async fn kernel_list_templates(ctx: PlatformCallContext) -> Result<Value, AppError> {
     let global_filter = load_global_filter(&ctx.db, ctx.org_id).await?;
 
@@ -60,9 +83,16 @@ pub async fn kernel_list_templates(ctx: PlatformCallContext) -> Result<Value, Ap
         if is_user_tier && !user_templates_allowed {
             continue;
         }
-        let (action_count, hidden) = openapi::compile_service(&t.openapi)
-            .map(|(def, _)| (def.actions.len(), def.hidden))
-            .unwrap_or((0, false));
+        let (action_count, hidden) = match crate::services::template_resolve::resolve_row(
+            &ctx.db,
+            &ctx.registry,
+            &t,
+        )
+        .await
+        {
+            Ok(r) => (r.definition.actions.len(), r.definition.hidden),
+            Err(_) => (0, false),
+        };
         if hidden {
             continue;
         }
@@ -92,12 +122,12 @@ pub async fn kernel_get_template(ctx: PlatformCallContext, key: String) -> Resul
         if let Some(t) =
             service_template::get_by_key(&ctx.db, ctx.org_id, Some(identity_id), &key).await?
         {
-            return template_row_to_value(t, "user");
+            return template_row_to_value(&ctx, t, "user").await;
         }
     }
 
     if let Some(t) = service_template::get_by_key(&ctx.db, ctx.org_id, None, &key).await? {
-        return template_row_to_value(t, "org");
+        return template_row_to_value(&ctx, t, "org").await;
     }
 
     let global_filter = load_global_filter(&ctx.db, ctx.org_id).await?;
@@ -129,14 +159,7 @@ pub async fn kernel_create_template(
         let identity_id = ctx.identity_id.ok_or_else(|| {
             AppError::BadRequest("user-level templates require an identity-bound API key".into())
         })?;
-        let allowed = org_repo::get_allow_user_templates(&ctx.db, ctx.org_id)
-            .await?
-            .unwrap_or(false);
-        if !allowed {
-            return Err(AppError::Forbidden(
-                "user templates are not enabled for this org".into(),
-            ));
-        }
+        enforce_user_template_policy(&ctx.db, ctx.org_id).await?;
         Some(identity_id)
     } else {
         if ctx.access_level < AccessLevel::Admin {
@@ -172,7 +195,9 @@ pub async fn kernel_create_template(
         description: def.description.as_deref().unwrap_or(""),
         category: def.category.as_deref().unwrap_or(""),
         hosts: &def.hosts,
-        openapi: doc,
+        openapi: Some(doc),
+        extends: None,
+        delta: None,
         status: "active",
     };
 
@@ -253,6 +278,7 @@ pub async fn kernel_import_template(
             hosts: Some(&scalars.hosts),
             openapi: Some(canonical_doc),
             key: Some(&scalars.key),
+            delta: None,
         };
         service_template::update(&ctx.db, existing.id, &update)
             .await?
@@ -274,7 +300,9 @@ pub async fn kernel_import_template(
             description: &scalars.description,
             category: &scalars.category,
             hosts: &scalars.hosts,
-            openapi: canonical_doc,
+            openapi: Some(canonical_doc),
+            extends: None,
+            delta: None,
             status: "draft",
         };
         service_template::create(&ctx.db, &input)
@@ -379,6 +407,21 @@ pub(crate) async fn delete_active_template_inner(
             "admin access required for org-level templates".into(),
         ));
     }
+    // Referential guard: block deleting a base that live derived layers still
+    // extend (they'd otherwise degrade to a broken `dead_*` state). The admin
+    // must reparent/detach the dependents first.
+    let dependents = service_template::list_dependents(db, row.org_id, &row.key).await?;
+    let dependents: Vec<_> = dependents.into_iter().filter(|d| d.id != row.id).collect();
+    if !dependents.is_empty() {
+        let keys: Vec<String> = dependents.iter().map(|d| d.key.clone()).collect();
+        return Err(AppError::Conflict(format!(
+            "template '{}' is the base of {} derived layer(s) ({}); detach or delete them first",
+            row.key,
+            keys.len(),
+            keys.join(", ")
+        )));
+    }
+
     let tier = if row.owner_identity_id.is_some() {
         "user"
     } else {
@@ -406,14 +449,7 @@ pub(crate) async fn resolve_draft_owner_inner(
         let identity_id = caller_identity_id.ok_or_else(|| {
             AppError::BadRequest("user-level drafts require an identity-bound API key".into())
         })?;
-        let allowed = org_repo::get_allow_user_templates(db, org_id)
-            .await?
-            .unwrap_or(false);
-        if !allowed {
-            return Err(AppError::Forbidden(
-                "user templates are not enabled for this org".into(),
-            ));
-        }
+        enforce_user_template_policy(db, org_id).await?;
         Ok(Some(identity_id))
     } else {
         if access_level < AccessLevel::Admin {
@@ -585,10 +621,18 @@ pub(crate) async fn is_global_curated_out(
     Ok(!is_visible(&filter, key))
 }
 
-fn template_row_to_value(t: ServiceTemplateRow, tier: &str) -> Result<Value, AppError> {
-    let action_count = openapi::compile_service(&t.openapi)
-        .map(|(def, _)| def.actions.len())
-        .unwrap_or(0);
+async fn template_row_to_value(
+    ctx: &PlatformCallContext,
+    t: ServiceTemplateRow,
+    tier: &str,
+) -> Result<Value, AppError> {
+    // Resolve through the fold so a derived layer reports its effective action
+    // count (a standalone layer just compiles its own doc).
+    let action_count =
+        match crate::services::template_resolve::resolve_row(&ctx.db, &ctx.registry, &t).await {
+            Ok(r) => r.definition.actions.len(),
+            Err(_) => 0,
+        };
     Ok(serde_json::json!({
         "id": t.id,
         "key": t.key,

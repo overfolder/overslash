@@ -171,7 +171,7 @@ async fn test_create_user_template() {
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({"allow_user_templates": true}))
+        .json(&json!({"user_template_policy": "full"}))
         .send()
         .await
         .unwrap();
