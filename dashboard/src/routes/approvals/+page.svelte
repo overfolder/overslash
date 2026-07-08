@@ -4,7 +4,7 @@
 	import ServiceTile from '$lib/components/approval/ServiceTile.svelte';
 	import { session, type ApprovalResponse } from '$lib/session';
 	import { relativeTime as relativeTimeUtil } from '$lib/utils/time';
-	import { humanize, extractAgentName } from '$lib/approvals/format';
+	import { humanize, extractAgentName, pickApiError } from '$lib/approvals/format';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 
@@ -75,6 +75,15 @@
 
 	const services = $derived([...new Set(approvals.map(primaryService))].sort());
 
+	// Keep the service filter valid: if the selected service drains out of the
+	// queue (all its approvals resolved), its chip disappears — reset to "all"
+	// so the filter can't get stuck hiding every row with no way to clear it.
+	$effect(() => {
+		if (serviceFilter !== 'all' && !services.includes(serviceFilter)) {
+			serviceFilter = 'all';
+		}
+	});
+
 	const visible = $derived.by(() => {
 		const q = query.trim().toLowerCase();
 		return approvals.filter((a) => {
@@ -113,7 +122,7 @@
 			const updated = await session.post<ApprovalResponse>(`/v1/approvals/${a.id}/resolve`, body);
 			dropResolved(updated);
 		} catch (e) {
-			rowError = e instanceof Error ? e.message : 'Failed to resolve approval.';
+			rowError = pickApiError(e, 'Failed to resolve approval.');
 		} finally {
 			rowBusy = { ...rowBusy, [a.id]: false };
 		}
@@ -132,7 +141,7 @@
 			await session.post(`/v1/approvals/${a.id}/call`);
 			pendingExecutions = pendingExecutions.filter((x) => x.id !== a.id);
 		} catch (e) {
-			execError = e instanceof Error ? e.message : 'Failed to dispatch execution.';
+			execError = pickApiError(e, 'Failed to dispatch execution.');
 		} finally {
 			execBusy = { ...execBusy, [a.id]: false };
 		}
@@ -144,7 +153,7 @@
 			await session.post(`/v1/approvals/${a.id}/cancel`);
 			pendingExecutions = pendingExecutions.filter((x) => x.id !== a.id);
 		} catch (e) {
-			execError = e instanceof Error ? e.message : 'Failed to cancel execution.';
+			execError = pickApiError(e, 'Failed to cancel execution.');
 		} finally {
 			execBusy = { ...execBusy, [a.id]: false };
 		}

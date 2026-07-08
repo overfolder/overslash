@@ -1,9 +1,5 @@
-import {
-	session,
-	ApiError,
-	type ApprovalResponse,
-	type ResolveApprovalRequest
-} from '$lib/session';
+import { session, type ApprovalResponse, type ResolveApprovalRequest } from '$lib/session';
+import { pickApiError } from '$lib/approvals/format';
 
 /**
  * Shared resolution controller for approvals.
@@ -75,16 +71,7 @@ export function createResolution(
 		return () => clearInterval(handle);
 	});
 
-	function pickError(e: unknown, status?: number): string {
-		if (e instanceof ApiError) {
-			const body = e.body as { error?: string } | string;
-			if (typeof body === 'object' && body && 'error' in body) {
-				return body.error ?? `Error ${e.status}`;
-			}
-			return typeof body === 'string' ? body : `Error ${e.status}`;
-		}
-		return status ? `Error ${status}` : 'Network error';
-	}
+	const pickError = (e: unknown) => pickApiError(e, 'Network error');
 
 	async function resolve(body: ResolveApprovalRequest) {
 		submitting = true;

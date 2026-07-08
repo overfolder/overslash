@@ -4,7 +4,23 @@
 // resolution.svelte.ts for the async/lifecycle half of the split.
 
 import { highlightJson } from '$lib/api';
-import type { DisclosedField } from '$lib/session';
+import { ApiError, type DisclosedField } from '$lib/session';
+
+/**
+ * Extract a human-readable message from a failed request. Prefers the gateway's
+ * typed `{ error }` envelope, then a raw text body, then the platform Error
+ * message, and finally `fallback` — never the opaque "API error 422".
+ */
+export function pickApiError(e: unknown, fallback = 'Something went wrong.'): string {
+	if (e instanceof ApiError) {
+		const body = e.body as { error?: string } | string;
+		if (typeof body === 'object' && body && 'error' in body) {
+			return body.error ?? `Error ${e.status}`;
+		}
+		return typeof body === 'string' && body ? body : `Error ${e.status}`;
+	}
+	return e instanceof Error ? e.message : fallback;
+}
 
 export const TTL_OPTIONS = [
 	{ value: 'forever', label: 'Never' },
