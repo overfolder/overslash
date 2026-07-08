@@ -21,7 +21,6 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import ApprovalResolver from '$lib/components/ApprovalResolver.svelte';
-	import ApprovalModal from '$lib/components/ApprovalModal.svelte';
 	import { absoluteTime, ttlRemaining } from '$lib/utils/time';
 
 	let identities = $state<Identity[]>([]);
@@ -416,8 +415,7 @@
 
 	function writeSelectionToUrl(id: string | null) {
 		// Mirror the current selection into the URL as `/agents/<id>` (or
-		// `/agents` when nothing is selected). Preserve query/hash — notably
-		// `?approval=<id>` so the deep-link modal survives a tree click.
+		// `/agents` when nothing is selected). Preserve query/hash.
 		const target = id ? `/agents/${id}` : '/agents';
 		const search = $page.url.search;
 		const hash = $page.url.hash;
@@ -472,7 +470,7 @@
 			void loadDetail(target);
 		} else {
 			// Stale or invalid id. Drop selection and replace the URL with
-			// `/agents` (preserving query/hash so `?approval=<id>` survives).
+			// `/agents` (preserving query/hash).
 			selectedId = null;
 			detail = null;
 			void goto(`/agents${$page.url.search}${$page.url.hash}`, {
@@ -482,134 +480,6 @@
 			});
 		}
 	});
-
-	// Deep-link modal: when the URL has `?approval=<id>` (e.g. from a
-	// redirected `/approvals/<id>` visit or an agent-emitted link), load
-	// that approval and open the modal on top of the agents view.
-	let modalApproval = $state<ApprovalResponse | null>(null);
-	let modalError = $state<string | null>(null);
-	let lastLoadedApprovalId = $state<string | null>(null);
-	let autoSelectedForApproval = $state<string | null>(null);
-	const modalApprovalId = $derived($page.url.searchParams.get('approval'));
-	// Org the approval belongs to, carried by the deep-link (`?org=<id>`). When
-	// it differs from the active session org, fetching the approval would 404
-	// (org-scoped) and read as "deleted". Switch into that org first.
-	const modalApprovalOrg = $derived($page.url.searchParams.get('org'));
-	const activeOrgId = $derived(
-		($page.data as { user?: { org_id?: string } })?.user?.org_id ?? null
-	);
-
-	$effect(() => {
-		const id = modalApprovalId;
-		const org = modalApprovalOrg;
-		const active = activeOrgId;
-		if (id === lastLoadedApprovalId) return;
-		lastLoadedApprovalId = id;
-		if (!id) {
-			modalApproval = null;
-			modalError = null;
-			return;
-		}
-		modalError = null;
-		void (async () => {
-			// If the deep-link targets a different org than the active session,
-			// switch into it first, then land back on the approval. The
-			// post-switch URL drops `?org=` so this branch is skipped on reload
-			// (the JWT org now matches) — avoiding a switch loop. Mirrors the
-			// OrgSwitcher's `redirect_to` handling (apex for personal orgs,
-			// subdomain for shared orgs; falls back to current origin).
-			if (org && org !== active) {
-				try {
-					const res = await session.post<{ redirect_to?: string }>('/auth/switch-org', {
-						org_id: org
-					});
-					if (modalApprovalId !== id) return;
-					const dest = new URL(res?.redirect_to ?? window.location.origin);
-					dest.pathname = '/agents';
-					dest.search = `?approval=${encodeURIComponent(id)}`;
-					window.location.href = dest.toString();
-				} catch (e) {
-					if (modalApprovalId !== id) return;
-					modalApproval = null;
-					modalError =
-						e instanceof ApiError && e.status === 403
-							? "You don't have access to this approval's organization."
-							: e instanceof ApiError
-								? `Failed to open approval (${e.status}).`
-								: 'Network error loading approval.';
-				}
-				return;
-			}
-			try {
-				const fetched = await session.get<ApprovalResponse>(`/v1/approvals/${id}`);
-				// Staleness check: the user may have closed the modal or
-				// navigated to a different approval while this fetch was in
-				// flight. Drop the result rather than reopening the modal
-				// with stale data.
-				if (modalApprovalId !== id) return;
-				modalApproval = fetched;
-			} catch (e) {
-				if (modalApprovalId !== id) return;
-				modalApproval = null;
-				if (e instanceof ApiError) {
-					modalError =
-						e.status === 404
-							? 'This approval does not exist or has been deleted.'
-							: `Failed to load approval (${e.status}).`;
-				} else {
-					modalError = 'Network error loading approval.';
-				}
-			}
-		})();
-	});
-
-	// When the modal opens via deep-link (no agent in the URL), highlight
-	// the requesting agent in the tree so the user has somewhere to land
-	// after closing the modal. Never stomp an existing selection.
-	$effect(() => {
-		const approval = modalApproval;
-		if (!approval) {
-			// Reset the guard when the modal closes so that a later
-			// re-open of the same approval link still auto-selects.
-			autoSelectedForApproval = null;
-			return;
-		}
-		if (autoSelectedForApproval === approval.id) return;
-		if (selectedId !== null) {
-			autoSelectedForApproval = approval.id;
-			return;
-		}
-		if (loading || identities.length === 0) return;
-		const pathIds = approval.identity_path_ids ?? [];
-		const requestingId = approval.requesting_identity_id;
-		const candidate =
-			[...pathIds].reverse().find((id) => identities.some((i) => i.id === id)) ??
-			(identities.some((i) => i.id === requestingId) ? requestingId : null);
-		if (candidate) {
-			selectIdentity(candidate);
-		}
-		autoSelectedForApproval = approval.id;
-	});
-
-	function closeApprovalModal() {
-		modalApproval = null;
-		modalError = null;
-		// Drop `?approval=<id>` from the URL without adding a history entry.
-		const url = new URL($page.url);
-		url.searchParams.delete('approval');
-		void goto(`${url.pathname}${url.search}${url.hash}`, {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true
-		});
-	}
-
-	function onModalResolved(updated: ApprovalResponse) {
-		void onApprovalResolved(updated);
-		// Keep the modal open so the user sees the auto-call execution
-		// banner ("Calling upstream action…" → "Called successfully" /
-		// "Call failed: …"). The user closes via × / Esc / backdrop.
-	}
 
 	function toggle(id: string) {
 		const next = new Set(collapsed);
@@ -1189,23 +1059,6 @@
 		}
 	}}
 />
-
-<ApprovalModal
-	open={!!modalApproval}
-	approval={modalApproval}
-	onClose={closeApprovalModal}
-	onResolved={onModalResolved}
-/>
-
-{#if modalApprovalId && !modalApproval && modalError}
-	<div class="backdrop-error" role="dialog" aria-modal="true">
-		<div class="error-card">
-			<h2>Approval unavailable</h2>
-			<p>{modalError}</p>
-			<button class="btn-close" onclick={closeApprovalModal}>Close</button>
-		</div>
-	</div>
-{/if}
 
 <style>
 	/* ── Page layout ── */
@@ -1883,48 +1736,4 @@
 		color: var(--color-danger, #b91c1c);
 	}
 
-	/* Error modal shown when the deep-linked approval can't be loaded. */
-	.backdrop-error {
-		position: fixed;
-		inset: 0;
-		background: rgba(23, 25, 28, 0.45);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		z-index: 1000;
-		padding: 16px;
-	}
-	.error-card {
-		background: var(--color-surface, #fff);
-		border: 1px solid var(--color-border);
-		border-radius: 16px;
-		padding: 24px 28px;
-		max-width: 360px;
-		width: 100%;
-		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-	}
-	.error-card h2 {
-		margin: 0;
-		font-weight: 700;
-		font-size: 16px;
-		color: var(--color-text-heading, var(--color-text));
-	}
-	.error-card p {
-		margin: 0;
-		font-size: 14px;
-		color: var(--color-text-secondary, var(--color-text));
-	}
-	.btn-close {
-		align-self: flex-end;
-		padding: 8px 14px;
-		border-radius: 8px;
-		border: 1px solid var(--color-border);
-		background: var(--color-surface, #fff);
-		color: var(--color-text);
-		cursor: pointer;
-		font-size: 13px;
-	}
 </style>

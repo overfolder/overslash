@@ -1,7 +1,5 @@
 <script lang="ts">
 	import {
-		session,
-		ApiError,
 		type ApprovalResponse,
 		type ResolveApprovalRequest
 	} from '$lib/session';
@@ -11,6 +9,18 @@
 	import RiskBadge from './approval/RiskBadge.svelte';
 	import { relativeTime } from '$lib/utils/time';
 	import { highlightJson } from '$lib/api';
+	import { createResolution } from '$lib/approvals/resolution.svelte';
+	import {
+		TTL_OPTIONS,
+		humanize,
+		tierKeyDisplay,
+		extractAgentName,
+		renderPayload,
+		formatBytes,
+		utf8ByteLength,
+		splitDisclosed,
+		rememberKeys
+	} from '$lib/approvals/format';
 	import { onMount } from 'svelte';
 
 	let { approval, onResolved, compact = false }: {
@@ -19,8 +29,11 @@
 		compact?: boolean;
 	} = $props();
 
-	let override = $state<ApprovalResponse | null>(null);
-	const current = $derived(override ?? approval);
+	const ctrl = createResolution(
+		() => approval,
+		(a) => onResolved?.(a)
+	);
+	const current = $derived(ctrl.current);
 
 	let selectedTier = $state(0);
 	let useCustomKey = $state(false);
@@ -29,8 +42,11 @@
 	let remember = $state(true);
 	let detailsOpen = $state(false);
 	let scopeOpen = $state(false);
-	let submitting = $state(false);
-	let error = $state<string | null>(null);
+	// Local validation error (e.g. empty custom key) shown alongside the
+	// controller's request error.
+	let formError = $state<string | null>(null);
+	const submitting = $derived(ctrl.submitting);
+	const error = $derived(formError ?? ctrl.error);
 
 	// Refresh the relative-time labels (risk bar's "expires in …", execution
 	// expiry hint, etc.) every 30s. Without this the modal can sit open for
@@ -58,6 +74,7 @@
 		remember = true;
 		detailsOpen = false;
 		scopeOpen = false;
+		formError = null;
 	});
 
 	const hasBubbled = $derived(
@@ -75,209 +92,43 @@
 		($page.data as { user?: { org_name?: string | null } })?.user?.org_name ?? ''
 	);
 
-	const ttlOptions = [
-		{ value: 'forever', label: 'Never' },
-		{ value: '1h', label: '1 hour' },
-		{ value: '24h', label: '24 hours' },
-		{ value: '7d', label: '7 days' },
-		{ value: '30d', label: '30 days' }
-	];
-
-	const isPending = $derived(current.status === 'pending');
-	const execution = $derived(current.execution ?? null);
-	const executionPending = $derived(execution?.status === 'pending');
-	const executionRunning = $derived(execution?.status === 'executing');
-	const executionTerminal = $derived(
-		!!execution &&
-			(execution.status === 'executed' ||
-				execution.status === 'failed' ||
-				execution.status === 'cancelled' ||
-				execution.status === 'expired')
-	);
-
-	// `pollStartedAt` is anchored outside the reactive scope so the cap is
-	// a wall-clock window from when polling first became active, not from
-	// the latest poll response. /resolve returns immediately while the
-	// auto-call (#239) runs in a spawned task — without this the resolver
-	// stays stuck on "Calling upstream action…".
-	let pollStartedAt: number | null = null;
-	let pollApprovalId: string | null = null;
-	$effect(() => {
-		const id = current.id;
-		if (isPending || !execution || executionTerminal) {
-			pollStartedAt = null;
-			pollApprovalId = null;
-			return;
-		}
-		if (pollApprovalId !== id) {
-			pollApprovalId = id;
-			pollStartedAt = Date.now();
-		}
-		const startedAt = pollStartedAt!;
-		if (Date.now() - startedAt > 30_000) return;
-		const handle = setInterval(async () => {
-			if (submitting) return;
-			if (Date.now() - startedAt > 30_000) {
-				clearInterval(handle);
-				return;
-			}
-			try {
-				const fresh = await session.get<ApprovalResponse>(`/v1/approvals/${id}`);
-				if (id !== current.id) return;
-				override = fresh;
-			} catch {
-				// transient — keep polling; don't stomp `error` (user-action only)
-			}
-		}, 1500);
-		return () => clearInterval(handle);
-	});
+	const isPending = $derived(ctrl.isPending);
+	const execution = $derived(ctrl.execution);
+	const executionPending = $derived(ctrl.executionPending);
+	const executionRunning = $derived(ctrl.executionRunning);
+	const executionTerminal = $derived(ctrl.executionTerminal);
 
 	const primaryKey = $derived(current.derived_keys[0] ?? null);
 	const serviceLabel = $derived(primaryKey ? humanize(primaryKey.service) : '—');
 
-	const disclosed = $derived(current.disclosed_fields ?? []);
-	const primaryDisclosed = $derived(disclosed.find((f) => f.value !== null && !f.error) ?? null);
-	const remainingDisclosed = $derived(
-		primaryDisclosed
-			? disclosed.filter((f) => f !== primaryDisclosed)
-			: disclosed
-	);
+	const disclosedSplit = $derived(splitDisclosed(current.disclosed_fields));
+	const primaryDisclosed = $derived(disclosedSplit.primary);
+	const remainingDisclosed = $derived(disclosedSplit.remaining);
 
 	const agentName = $derived(extractAgentName(current.identity_path, current.requesting_identity_id));
 
-	function extractAgentName(path: string | null, fallbackId: string): string {
-		if (path) {
-			// SPIFFE-ish: spiffe://org/user/alice/agent/henry — last unit segment is the agent name
-			const parts = path.replace(/^spiffe:\/\//, '').split('/');
-			const last = parts[parts.length - 1];
-			if (last) return last;
-		}
-		return fallbackId.slice(0, 8);
-	}
+	const triggerCall = ctrl.triggerCall;
+	const cancelExecution = ctrl.cancelExecution;
 
-	function escapeHtml(s: string): string {
-		return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-	}
-
-	function renderPayload(raw: string): string {
-		try {
-			return highlightJson(JSON.parse(raw));
-		} catch {
-			return escapeHtml(raw);
-		}
-	}
-
-	function formatBytes(n: number): string {
-		if (n < 1024) return `${n} B`;
-		if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-		return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-	}
-
-	const utf8Encoder = new TextEncoder();
-	function utf8ByteLength(s: string): number {
-		return utf8Encoder.encode(s).byteLength;
-	}
-
-	function humanize(slug: string): string {
-		const known: Record<string, string> = {
-			github: 'GitHub',
-			gitlab: 'GitLab',
-			google_calendar: 'Google Calendar',
-			gmail: 'Gmail'
-		};
-		if (known[slug]) return known[slug];
-		return slug
-			.split(/[_\-]/)
-			.map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-			.join(' ');
-	}
-
-	function tierKeyDisplay(keys: string[]): string {
-		if (!keys.length) return '';
-		return keys.length > 1 ? `${keys[0]} +${keys.length - 1}` : keys[0];
-	}
-
-	function pickError(e: unknown, status?: number): string {
-		if (e instanceof ApiError) {
-			const body = e.body as { error?: string } | string;
-			if (typeof body === 'object' && body && 'error' in body) {
-				return body.error ?? `Error ${e.status}`;
+	function resolve(resolution: 'allow' | 'deny' | 'allow_remember' | 'bubble_up') {
+		formError = null;
+		ctrl.clearError();
+		const body: ResolveApprovalRequest = { resolution };
+		if (resolution === 'allow_remember') {
+			const keys = rememberKeys({
+				useCustomKey,
+				customKey,
+				tiers: current.suggested_tiers,
+				selectedTier
+			});
+			if (!Array.isArray(keys)) {
+				formError = keys.error;
+				return;
 			}
-			return typeof body === 'string' ? body : `Error ${e.status}`;
+			body.remember_keys = keys;
+			if (ttl !== 'forever') body.ttl = ttl;
 		}
-		return status ? `Error ${status}` : 'Network error';
-	}
-
-	async function triggerCall() {
-		submitting = true;
-		error = null;
-		try {
-			const updated = await session.post<ApprovalResponse>(
-				`/v1/approvals/${current.id}/call`,
-				{}
-			);
-			override = updated;
-			onResolved?.(updated);
-		} catch (e) {
-			error = pickError(e);
-		} finally {
-			submitting = false;
-		}
-	}
-
-	async function cancelExecution() {
-		submitting = true;
-		error = null;
-		try {
-			const updated = await session.post<ApprovalResponse>(
-				`/v1/approvals/${current.id}/cancel`,
-				{}
-			);
-			override = updated;
-			onResolved?.(updated);
-		} catch (e) {
-			error = pickError(e);
-		} finally {
-			submitting = false;
-		}
-	}
-
-	async function resolve(resolution: 'allow' | 'deny' | 'allow_remember' | 'bubble_up') {
-		submitting = true;
-		error = null;
-		try {
-			const body: ResolveApprovalRequest = { resolution };
-			if (resolution === 'allow_remember') {
-				if (useCustomKey) {
-					const k = customKey.trim();
-					if (!k) {
-						error = 'Enter a permission key to remember.';
-						submitting = false;
-						return;
-					}
-					body.remember_keys = [k];
-				} else {
-					const tier = current.suggested_tiers[selectedTier];
-					if (!tier) {
-						error = 'Select a permission scope to remember.';
-						submitting = false;
-						return;
-					}
-					body.remember_keys = tier.keys;
-				}
-				if (ttl !== 'forever') body.ttl = ttl;
-			}
-			const updated = await session.post<ApprovalResponse>(
-				`/v1/approvals/${current.id}/resolve`,
-				body
-			);
-			override = updated;
-			onResolved?.(updated);
-		} catch (e) {
-			error = pickError(e);
-		} finally {
-			submitting = false;
-		}
+		ctrl.resolve(body);
 	}
 
 	function onPrimaryAllow() {
@@ -404,7 +255,7 @@
 				<div class="ttl-row" class:dim={!remember}>
 					<label for="ttl">Expiry</label>
 					<select id="ttl" bind:value={ttl} disabled={!remember}>
-						{#each ttlOptions as opt}
+						{#each TTL_OPTIONS as opt}
 							<option value={opt.value}>{opt.label}</option>
 						{/each}
 					</select>

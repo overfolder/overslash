@@ -1,0 +1,103 @@
+// Pure presentation helpers shared across the approval surfaces (the queue at
+// /approvals, the full-page ApprovalDetail, and the compact ApprovalResolver in
+// the agents tree). Kept framework-free so all three stay in lockstep — see
+// resolution.svelte.ts for the async/lifecycle half of the split.
+
+import { highlightJson } from '$lib/api';
+import type { DisclosedField } from '$lib/session';
+
+export const TTL_OPTIONS = [
+	{ value: 'forever', label: 'Never' },
+	{ value: '1h', label: '1 hour' },
+	{ value: '24h', label: '24 hours' },
+	{ value: '7d', label: '7 days' },
+	{ value: '30d', label: '30 days' }
+] as const;
+
+const HUMANIZED: Record<string, string> = {
+	github: 'GitHub',
+	gitlab: 'GitLab',
+	google_calendar: 'Google Calendar',
+	gmail: 'Gmail'
+};
+
+/** Turn a service/action slug into a display label ("google_calendar" → "Google Calendar"). */
+export function humanize(slug: string): string {
+	if (HUMANIZED[slug]) return HUMANIZED[slug];
+	return slug
+		.split(/[_-]/)
+		.map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+		.join(' ');
+}
+
+/** Compact display for a tier's permission keys: "svc:act:arg +2". */
+export function tierKeyDisplay(keys: string[]): string {
+	if (!keys.length) return '';
+	return keys.length > 1 ? `${keys[0]} +${keys.length - 1}` : keys[0];
+}
+
+/** Last unit segment of a SPIFFE-ish identity path, or a short id fallback. */
+export function extractAgentName(path: string | null, fallbackId: string): string {
+	if (path) {
+		const parts = path.replace(/^spiffe:\/\//, '').split('/');
+		const last = parts[parts.length - 1];
+		if (last) return last;
+	}
+	return fallbackId.slice(0, 8);
+}
+
+export function escapeHtml(s: string): string {
+	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Syntax-highlight a raw JSON payload string; fall back to escaped text. */
+export function renderPayload(raw: string): string {
+	try {
+		return highlightJson(JSON.parse(raw));
+	} catch {
+		return escapeHtml(raw);
+	}
+}
+
+export function formatBytes(n: number): string {
+	if (n < 1024) return `${n} B`;
+	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+	return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+const utf8Encoder = new TextEncoder();
+export function utf8ByteLength(s: string): number {
+	return utf8Encoder.encode(s).byteLength;
+}
+
+/** Split disclosed fields into the principal (first renderable) field and the rest. */
+export function splitDisclosed(fields: DisclosedField[] | null): {
+	primary: DisclosedField | null;
+	remaining: DisclosedField[];
+} {
+	const all = fields ?? [];
+	const primary = all.find((f) => f.value !== null && !f.error) ?? null;
+	const remaining = primary ? all.filter((f) => f !== primary) : all;
+	return { primary, remaining };
+}
+
+/**
+ * Resolve the `remember_keys` for an "Allow & Remember", from either a
+ * hand-typed custom key or the selected suggested tier. Returns an error string
+ * instead of throwing so callers can surface it inline.
+ */
+export function rememberKeys(opts: {
+	useCustomKey: boolean;
+	customKey: string;
+	tiers: { keys: string[] }[];
+	selectedTier: number;
+}): string[] | { error: string } {
+	if (opts.useCustomKey) {
+		const k = opts.customKey.trim();
+		if (!k) return { error: 'Enter a permission key to remember.' };
+		return [k];
+	}
+	const tier = opts.tiers[opts.selectedTier];
+	if (!tier) return { error: 'Select a permission scope to remember.' };
+	return tier.keys;
+}
