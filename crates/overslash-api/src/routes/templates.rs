@@ -2297,29 +2297,11 @@ pub(crate) async fn resolve_template_actions(
     auth: &AuthContext,
     key: &str,
 ) -> Result<Vec<ActionSummary>> {
-    // Try user tier
-    if let Some(identity_id) = auth.identity_id {
-        if let Some(t) =
-            service_template::get_by_key(state.db(ext), auth.org_id, Some(identity_id), key).await?
-        {
-            let def = compile_row(&t)?;
-            return Ok(actions_from_definition(&def));
-        }
-    }
-
-    // Try org tier
-    if let Some(t) = service_template::get_by_key(state.db(ext), auth.org_id, None, key).await? {
-        let def = compile_row(&t)?;
-        return Ok(actions_from_definition(&def));
-    }
-
-    // Try global
-    let svc = state
-        .registry
-        .get(key)
-        .ok_or_else(|| AppError::NotFound(format!("template '{key}' not found")))?;
-
-    Ok(actions_from_definition(svc))
+    // Resolve through the layered-template fold so a derived layer reports its
+    // effective (masked/extended) action set — `compile_row` would 400 on a
+    // derived layer, which carries no OpenAPI doc.
+    let def = resolve_template_definition(state, ext, auth.org_id, auth.identity_id, key).await?;
+    Ok(actions_from_definition(&def))
 }
 
 /// Resolve a ServiceDefinition from a template key across all tiers.

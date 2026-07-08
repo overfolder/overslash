@@ -142,6 +142,26 @@ async fn derived_layer_masks_actions_and_hides_from_action_surface() {
     keys.sort();
     assert_eq!(keys, vec!["create_b", "list_a"]);
 
+    // The `/actions` list endpoint resolves through the fold too (not a raw
+    // compile_row, which would 400 on a derived layer).
+    let list: Value = client
+        .get(format!("{base}/v1/templates/zbase_curated/actions"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mut listed: Vec<String> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["key"].as_str().unwrap().to_string())
+        .collect();
+    listed.sort();
+    assert_eq!(listed, vec!["create_b", "list_a"]);
+
     // The masked-out action vanishes from the resolver surface execution uses.
     let resp = client
         .get(format!(
