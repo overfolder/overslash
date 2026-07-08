@@ -628,40 +628,69 @@ async fn list_templates(
         if is_user_tier && !user_templates_allowed {
             continue;
         }
-        let (action_count, hidden, warnings) = resolved_summary(&state, &ext, &t).await;
+        let s = resolved_summary(&state, &ext, &t).await;
         let tier = if is_user_tier { "user" } else { "org" };
         templates.push(TemplateSummary {
             key: t.key,
-            display_name: t.display_name,
-            description: Some(t.description).filter(|s| !s.is_empty()),
-            category: Some(t.category).filter(|s| !s.is_empty()),
-            hosts: t.hosts,
-            action_count,
+            display_name: s.display_name,
+            description: s.description,
+            category: s.category,
+            hosts: s.hosts,
+            action_count: s.action_count,
             tier: tier.into(),
-            hidden,
+            hidden: s.hidden,
             extends: t.extends,
-            warnings,
+            warnings: s.warnings,
         });
     }
 
     Ok(Json(templates))
 }
 
-/// `(action_count, hidden, warning_count)` for a stored row's **effective**
-/// template — folds a derived layer over its base, compiles a standalone.
-/// Best-effort: a row that fails to resolve is summarized as `(0, false, 0)`.
+/// A stored row summarized through its **effective** (folded) template — the
+/// single source of truth for list/search rows. For a derived layer this
+/// reflects the live base + delta (so a relabel in the delta, or an upstream
+/// base change, is never stale against the denormalized columns); for a
+/// standalone layer it equals the compiled openapi. Falls back to the row's
+/// denormalized columns if resolution fails.
+struct RowSummary {
+    display_name: String,
+    description: Option<String>,
+    category: Option<String>,
+    hosts: Vec<String>,
+    action_count: usize,
+    hidden: bool,
+    warnings: usize,
+}
+
 async fn resolved_summary(
     state: &AppState,
     ext: &axum::http::Extensions,
     t: &service_template::ServiceTemplateRow,
-) -> (usize, bool, usize) {
+) -> RowSummary {
     match crate::services::template_resolve::resolve_row(state.db(ext), &state.registry, t).await {
-        Ok(r) => (
-            r.definition.actions.len(),
-            r.definition.hidden,
-            r.warnings.len(),
-        ),
-        Err(_) => (0, false, 0),
+        Ok(r) => {
+            let d = r.definition;
+            RowSummary {
+                display_name: d.display_name,
+                description: d.description.filter(|s| !s.is_empty()),
+                category: d.category.filter(|s| !s.is_empty()),
+                hosts: d.hosts,
+                action_count: d.actions.len(),
+                hidden: d.hidden,
+                warnings: r.warnings.len(),
+            }
+        }
+        // Fall back to the denormalized columns so a broken base still lists.
+        Err(_) => RowSummary {
+            display_name: t.display_name.clone(),
+            description: Some(t.description.clone()).filter(|s| !s.is_empty()),
+            category: Some(t.category.clone()).filter(|s| !s.is_empty()),
+            hosts: t.hosts.clone(),
+            action_count: 0,
+            hidden: false,
+            warnings: 0,
+        },
     }
 }
 
@@ -707,23 +736,30 @@ async fn search_templates(
         if is_user_tier && !user_templates_allowed {
             continue;
         }
+        // Match on the effective (resolved) fields, not the possibly-stale
+        // denormalized columns, so a derived layer relabeled in its delta is
+        // findable by its effective name.
+        let s = resolved_summary(&state, &ext, &t).await;
         if t.key.to_lowercase().contains(&q)
-            || t.display_name.to_lowercase().contains(&q)
-            || t.description.to_lowercase().contains(&q)
+            || s.display_name.to_lowercase().contains(&q)
+            || s.description
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&q)
         {
-            let (action_count, hidden, warnings) = resolved_summary(&state, &ext, &t).await;
             let tier = if is_user_tier { "user" } else { "org" };
             results.push(TemplateSummary {
                 key: t.key,
-                display_name: t.display_name,
-                description: Some(t.description).filter(|s| !s.is_empty()),
-                category: Some(t.category).filter(|s| !s.is_empty()),
-                hosts: t.hosts,
-                action_count,
+                display_name: s.display_name,
+                description: s.description,
+                category: s.category,
+                hosts: s.hosts,
+                action_count: s.action_count,
                 tier: tier.into(),
-                hidden,
+                hidden: s.hidden,
                 extends: t.extends,
-                warnings,
+                warnings: s.warnings,
             });
         }
     }
@@ -1538,7 +1574,7 @@ async fn list_templates_admin(
     // ALL DB templates (org + all users')
     let db_templates = service_template::list_all_by_org(state.db(&ext), acl.org_id).await?;
     for t in db_templates {
-        let (action_count, hidden, warnings) = resolved_summary(&state, &ext, &t).await;
+        let s = resolved_summary(&state, &ext, &t).await;
         let tier = if t.owner_identity_id.is_some() {
             "user"
         } else {
@@ -1546,18 +1582,18 @@ async fn list_templates_admin(
         };
         templates.push(AdminTemplateSummary {
             key: t.key,
-            display_name: t.display_name,
-            description: Some(t.description).filter(|s| !s.is_empty()),
-            category: Some(t.category).filter(|s| !s.is_empty()),
-            hosts: t.hosts,
-            action_count,
+            display_name: s.display_name,
+            description: s.description,
+            category: s.category,
+            hosts: s.hosts,
+            action_count: s.action_count,
             tier: tier.into(),
             id: Some(t.id),
             owner_identity_id: t.owner_identity_id,
             enabled: true, // org/user templates are always "enabled"
-            hidden,
+            hidden: s.hidden,
             extends: t.extends,
-            warnings,
+            warnings: s.warnings,
         });
     }
 

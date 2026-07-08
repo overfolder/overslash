@@ -215,6 +215,60 @@ async fn distinct_key_layer_coexists_with_base() {
     assert_eq!(alt["extends"], "zbase");
 }
 
+// ── Relabel via delta reflects in the list (no stale denormalized column) ──
+
+#[tokio::test]
+async fn delta_relabel_reflects_in_list_and_search() {
+    let (base, client, _org, admin_key, _write) = bootstrap().await;
+    create_base(&base, &client, &admin_key, "zbase").await;
+
+    let created: Value = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "extends": "zbase",
+            "key": "zbase_named",
+            "display_name": "First Name",
+            "delta": { "allowlist": ["list_a"] },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    // Relabel via the delta only (no scalar column write on the update path).
+    let resp = client
+        .put(format!("{base}/v1/templates/{id}/manage"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "delta": { "allowlist": ["list_a"], "display_name": "Renamed Layer" } }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // The list endpoint must show the effective (resolved) name, not the stale
+    // denormalized column.
+    let list: Value = client
+        .get(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["key"] == "zbase_named")
+        .unwrap();
+    assert_eq!(row["display_name"], "Renamed Layer");
+}
+
 // ── Live pointer: editing the base propagates to the derived layer ─────────
 
 #[tokio::test]
