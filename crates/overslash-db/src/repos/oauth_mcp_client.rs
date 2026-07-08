@@ -20,6 +20,11 @@ pub struct OauthMcpClientRow {
     pub client_info: Option<Value>,
     pub protocol_version: Option<String>,
     pub last_session_id: Option<Uuid>,
+    /// Org this client is locked to, stamped from the subdomain context at
+    /// `POST /oauth/register`. `None` = root/multi-org (usable on any
+    /// subdomain, and absent from any org's admin MCP-Clients list). See
+    /// docs/design/mcp-enrollment-org-scoping.md.
+    pub org_id: Option<Uuid>,
 }
 
 impl OauthMcpClientRow {
@@ -43,6 +48,9 @@ pub struct CreateOauthMcpClient<'a> {
     pub software_version: Option<&'a str>,
     pub created_ip: Option<&'a str>,
     pub created_user_agent: Option<&'a str>,
+    /// Org to lock this client to. `Some` on a corp-subdomain registration,
+    /// `None` at root (multi-org).
+    pub org_id: Option<Uuid>,
 }
 
 pub async fn create(
@@ -53,12 +61,12 @@ pub async fn create(
         OauthMcpClientRow,
         "INSERT INTO oauth_mcp_clients
              (client_id, client_name, redirect_uris, software_id, software_version,
-              created_ip, created_user_agent)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+              created_ip, created_user_agent, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            RETURNING id, client_id, client_name, redirect_uris,
                      software_id, software_version, created_at, last_seen_at,
                      created_ip, created_user_agent, is_revoked,
-                     capabilities, client_info, protocol_version, last_session_id",
+                     capabilities, client_info, protocol_version, last_session_id, org_id",
         input.client_id,
         input.client_name,
         input.redirect_uris,
@@ -66,6 +74,7 @@ pub async fn create(
         input.software_version,
         input.created_ip,
         input.created_user_agent,
+        input.org_id,
     )
     .fetch_one(pool)
     .await
@@ -80,7 +89,7 @@ pub async fn get_by_client_id(
         "SELECT id, client_id, client_name, redirect_uris,
                 software_id, software_version, created_at, last_seen_at,
                 created_ip, created_user_agent, is_revoked,
-                capabilities, client_info, protocol_version, last_session_id
+                capabilities, client_info, protocol_version, last_session_id, org_id
            FROM oauth_mcp_clients
           WHERE client_id = $1",
         client_id,
@@ -95,9 +104,31 @@ pub async fn list_all(pool: &PgPool) -> Result<Vec<OauthMcpClientRow>, sqlx::Err
         "SELECT id, client_id, client_name, redirect_uris,
                 software_id, software_version, created_at, last_seen_at,
                 created_ip, created_user_agent, is_revoked,
-                capabilities, client_info, protocol_version, last_session_id
+                capabilities, client_info, protocol_version, last_session_id, org_id
            FROM oauth_mcp_clients
           ORDER BY created_at DESC",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// List the DCR clients locked to one org — the admin MCP-Clients view. Root
+/// (NULL-`org_id`) clients are intentionally excluded: they belong to no org
+/// and are the multi-org hub's, not any single org's, to see or revoke.
+pub async fn list_for_org(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Vec<OauthMcpClientRow>, sqlx::Error> {
+    sqlx::query_as!(
+        OauthMcpClientRow,
+        "SELECT id, client_id, client_name, redirect_uris,
+                software_id, software_version, created_at, last_seen_at,
+                created_ip, created_user_agent, is_revoked,
+                capabilities, client_info, protocol_version, last_session_id, org_id
+           FROM oauth_mcp_clients
+          WHERE org_id = $1
+          ORDER BY created_at DESC",
+        org_id,
     )
     .fetch_all(pool)
     .await
@@ -215,6 +246,7 @@ pub async fn find_similar_for_user(
                   c.client_info,
                   c.protocol_version,
                   c.last_session_id,
+                  c.org_id,
                   b.agent_identity_id AS "agent_identity_id!"
              FROM oauth_mcp_clients c
              JOIN mcp_client_agent_bindings b ON b.client_id = c.client_id
@@ -248,6 +280,7 @@ pub async fn find_similar_for_user(
             client_info: r.client_info,
             protocol_version: r.protocol_version,
             last_session_id: r.last_session_id,
+            org_id: r.org_id,
         },
         agent_identity_id: r.agent_identity_id,
     }))

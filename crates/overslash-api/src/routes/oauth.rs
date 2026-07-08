@@ -106,9 +106,20 @@ struct RegisterRequest {
 async fn register(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
+    ctx: Option<Extension<RequestOrgContext>>,
     headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> Response {
+    // Lock the client to the subdomain org it registered on: a corp-subdomain
+    // registration stamps that org (so the client can't be replayed on another
+    // org's subdomain, and shows up in that org's admin MCP-Clients list); a
+    // root registration stays NULL = multi-org. Missing extension (older test
+    // harnesses) is treated as Root. See mcp-enrollment-org-scoping.md.
+    let ctx = ctx.map(|Extension(c)| c).unwrap_or(RequestOrgContext::Root);
+    let client_org_id = match &ctx {
+        RequestOrgContext::Org { org_id, .. } => Some(*org_id),
+        RequestOrgContext::Root => None,
+    };
     if req.redirect_uris.is_empty() {
         return oauth_error(
             StatusCode::BAD_REQUEST,
@@ -160,6 +171,7 @@ async fn register(
             software_version: req.software_version.as_deref(),
             created_ip: ip.as_deref(),
             created_user_agent: ua.as_deref(),
+            org_id: client_org_id,
         },
     )
     .await
@@ -291,55 +303,63 @@ async fn authorize(
         );
     }
 
+    // Client org gate (hardening): on a corp subdomain, a client stamped for a
+    // *different* org can't authorize here — blocks cross-subdomain replay of a
+    // `client_id`. A NULL (root/multi-org) client is accepted; the
+    // org-derivation below forces the agent into ctx.org regardless of the
+    // client. See docs/design/mcp-enrollment-org-scoping.md.
+    if let RequestOrgContext::Org { org_id, .. } = &ctx {
+        if let Some(client_org) = client.org_id {
+            if client_org != *org_id {
+                return oauth_error(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_client",
+                    "client is registered to a different org",
+                );
+            }
+        }
+    }
+
     // Bounce through IdP login if not signed in.
     let session_claims = match session::extract_session(&state, &headers) {
         Some(c) => c,
-        None => {
-            let authorize_path = rebuild_authorize_path(&params);
-            let next = urlencoding::encode(&authorize_path);
-            match default_idp_provider_for_request(&state, &ext, &ctx).await {
-                IdpBounce::Provider(provider) => {
-                    // Dev login is a separate endpoint, not the generic
-                    // /auth/login/{provider_key} path (which requires an
-                    // oauth_providers DB row).
-                    let login = if provider == "dev" {
-                        format!("/auth/dev/token?next={next}")
-                    } else {
-                        format!("/auth/login/{provider}?next={next}")
-                    };
-                    return Redirect::to(&login).into_response();
-                }
-                IdpBounce::Picker => {
-                    // Corp subdomain with multiple enabled IdPs and no
-                    // designated default — let the user pick. The dashboard
-                    // login page calls /auth/providers and renders the list.
-                    return Redirect::to(&format!("/login?next={next}")).into_response();
-                }
-                IdpBounce::None => {
-                    return oauth_error(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "login_required",
-                        "no IdP is configured for this org",
-                    );
-                }
-            }
-        }
+        None => return idp_bounce(&state, &ext, &ctx, &params).await,
     };
 
-    // Fast path: if this (user, client_id) already has an enrolled agent,
-    // skip the consent screen and issue a code bound to that agent. The
-    // lookup failure-mode is "fall through to consent" rather than 500 so
-    // a transient DB blip doesn't lock the user out of authentication.
-    if let Ok(Some(binding)) =
-        mcp_client_agent_binding::get_for(state.db(&ext), session_claims.sub, &client.client_id)
-            .await
+    // Reconcile the session against the subdomain. On a corp subdomain a
+    // session for a *different* org must not divert the enrollment: force a
+    // re-auth through the org's IdP (next= preserved) so the agent lands in
+    // ctx.org, never in the stale session's org. Root has no subdomain to
+    // mismatch against, so a valid session (corp or personal) is untouched.
+    // See docs/design/mcp-enrollment-org-scoping.md.
+    if let RequestOrgContext::Org { org_id, .. } = &ctx {
+        if session_claims.org != *org_id {
+            return idp_bounce(&state, &ext, &ctx, &params).await;
+        }
+    }
+
+    // The org the enrolled agent lands in: the subdomain org on a corp
+    // subdomain, the session org at root (today's behavior). After the
+    // reconcile above these are equal on a corp subdomain.
+    let resolved_org = match &ctx {
+        RequestOrgContext::Org { org_id, .. } => *org_id,
+        RequestOrgContext::Root => session_claims.org,
+    };
+
+    // Fast path: if this (user, client_id) already has an enrolled agent in
+    // the resolved org, skip the consent screen and issue a code bound to that
+    // agent. The lookup failure-mode is "fall through to consent" rather than
+    // 500 so a transient DB blip doesn't lock the user out of authentication.
+    if let Ok(Some(binding)) = mcp_client_agent_binding::get_for(
+        state.db(&ext),
+        session_claims.sub,
+        &client.client_id,
+        resolved_org,
+    )
+    .await
     {
-        if let Ok(Some(agent)) = identity::get_by_id(
-            state.db(&ext),
-            session_claims.org,
-            binding.agent_identity_id,
-        )
-        .await
+        if let Ok(Some(agent)) =
+            identity::get_by_id(state.db(&ext), resolved_org, binding.agent_identity_id).await
         {
             if agent.archived_at.is_none() && agent.kind == "agent" {
                 let email = agent.email.as_deref().unwrap_or(&session_claims.email);
@@ -348,7 +368,7 @@ async fn authorize(
                     &ext,
                     &client.client_id,
                     agent.id,
-                    session_claims.org,
+                    resolved_org,
                     email,
                     &params.redirect_uri,
                     &params.code_challenge,
@@ -372,7 +392,7 @@ async fn authorize(
             code_challenge: params.code_challenge.clone(),
             state_param: params.state.clone(),
             user_identity_id: session_claims.sub,
-            org_id: session_claims.org,
+            org_id: resolved_org,
             email: session_claims.email.clone(),
             issued_at: Instant::now(),
         },
@@ -401,6 +421,45 @@ fn rebuild_authorize_path(p: &AuthorizeQuery) -> String {
         qs.push_str(&format!("&state={}", urlencoding::encode(s)));
     }
     qs
+}
+
+/// Redirect an `/oauth/authorize` caller through IdP login, preserving the
+/// authorize request as `next=`. Used both when no session is present (cold
+/// login) and when a warm session belongs to a different org than the corp
+/// subdomain demands (reconcile) — in both cases the user must sign into the
+/// org the subdomain names before the agent can be enrolled.
+async fn idp_bounce(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    ctx: &RequestOrgContext,
+    params: &AuthorizeQuery,
+) -> Response {
+    let authorize_path = rebuild_authorize_path(params);
+    let next = urlencoding::encode(&authorize_path);
+    match default_idp_provider_for_request(state, ext, ctx).await {
+        IdpBounce::Provider(provider) => {
+            // Dev login is a separate endpoint, not the generic
+            // /auth/login/{provider_key} path (which requires an
+            // oauth_providers DB row).
+            let login = if provider == "dev" {
+                format!("/auth/dev/token?next={next}")
+            } else {
+                format!("/auth/login/{provider}?next={next}")
+            };
+            Redirect::to(&login).into_response()
+        }
+        IdpBounce::Picker => {
+            // Corp subdomain with multiple enabled IdPs and no designated
+            // default — let the user pick. The dashboard login page calls
+            // /auth/providers and renders the list.
+            Redirect::to(&format!("/login?next={next}")).into_response()
+        }
+        IdpBounce::None => oauth_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "login_required",
+            "no IdP is configured for this org",
+        ),
+    }
 }
 
 /// Build the final authorize-code redirect back to the MCP client. Shared

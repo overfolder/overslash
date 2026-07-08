@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, client_id, client_name, redirect_uris,\n                software_id, software_version, created_at, last_seen_at,\n                created_ip, created_user_agent, is_revoked,\n                capabilities, client_info, protocol_version, last_session_id\n           FROM oauth_mcp_clients\n          WHERE client_id = $1",
+  "query": "SELECT id, client_id, client_name, redirect_uris,\n                software_id, software_version, created_at, last_seen_at,\n                created_ip, created_user_agent, is_revoked,\n                capabilities, client_info, protocol_version, last_session_id, org_id\n           FROM oauth_mcp_clients\n          WHERE client_id = $1",
   "describe": {
     "columns": [
       {
@@ -167,6 +167,17 @@
             "name": "last_session_id"
           }
         }
+      },
+      {
+        "ordinal": 15,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "oauth_mcp_clients",
+            "name": "org_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -189,8 +200,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "3342aa79769d1ed57bb186ba1ddd20349154e7786ae212c4bf42d29cb919b0d2"
+  "hash": "6e23eb78ce614cbc8288734e3e7da9901e3b90bbcaf785ca487813b583aa4ec4"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,\n                created_at, updated_at, elicitation_enabled, self_approve_enabled\n           FROM mcp_client_agent_bindings\n          WHERE user_identity_id = $1 AND client_id = $2",
+  "query": "INSERT INTO mcp_client_agent_bindings\n           (org_id, user_identity_id, client_id, agent_identity_id)\n         VALUES ($1, $2, $3, $4)\n         ON CONFLICT (user_identity_id, client_id, org_id)\n           DO UPDATE SET agent_identity_id = EXCLUDED.agent_identity_id,\n                         updated_at = now()\n         RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,\n                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
   "describe": {
     "columns": [
       {
@@ -106,7 +106,9 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Text"
+        "Uuid",
+        "Text",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -121,5 +123,5 @@
       false
     ]
   },
-  "hash": "44d7e18fb33637dcc93bf3c595724abeb6b97446e8b7ae8bb10165d471480349"
+  "hash": "ff6eee5144ec762ed57fc244670a93e197f0e79f5e9842813d498f59580684a0"
 }

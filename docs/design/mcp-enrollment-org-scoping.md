@@ -1,6 +1,6 @@
 # MCP enrollment org-scoping — a corp subdomain onboards agents only into that org
 
-**Status:** Draft — proposed
+**Status:** Implemented
 **Date:** 2026-07-08
 **Related:** [Feedback 2026-07-08 — refocus/adapt-to-corporate](../feedback/2026-07-08-refocus-adapt-to-corporate.md), [mcp-oauth-transport.md](mcp-oauth-transport.md), SPEC §3 (Multi-Org Deployment Model), §4 (Agent Enrollment), DECISIONS D12 (trust-domain isolation on corp subdomains)
 

@@ -160,6 +160,7 @@ async fn bootstrap() -> Fx {
                 software_version: Some("1.0.0"),
                 created_ip: None,
                 created_user_agent: None,
+                org_id: None,
             },
         )
         .await

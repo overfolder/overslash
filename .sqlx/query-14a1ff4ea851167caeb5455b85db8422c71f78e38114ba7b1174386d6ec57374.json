@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT c.id            AS \"id!\",\n                  c.client_id     AS \"client_id!\",\n                  c.client_name,\n                  c.redirect_uris AS \"redirect_uris!\",\n                  c.software_id,\n                  c.software_version,\n                  c.created_at    AS \"created_at!\",\n                  c.last_seen_at,\n                  c.created_ip,\n                  c.created_user_agent,\n                  c.is_revoked    AS \"is_revoked!\",\n                  c.capabilities,\n                  c.client_info,\n                  c.protocol_version,\n                  c.last_session_id,\n                  b.agent_identity_id AS \"agent_identity_id!\"\n             FROM oauth_mcp_clients c\n             JOIN mcp_client_agent_bindings b ON b.client_id = c.client_id\n            WHERE b.user_identity_id = $1\n              AND c.is_revoked = false\n              AND c.client_name IS NOT DISTINCT FROM $2\n              AND c.software_id IS NOT DISTINCT FROM $3\n         ORDER BY b.updated_at DESC\n            LIMIT 1",
+  "query": "SELECT c.id            AS \"id!\",\n                  c.client_id     AS \"client_id!\",\n                  c.client_name,\n                  c.redirect_uris AS \"redirect_uris!\",\n                  c.software_id,\n                  c.software_version,\n                  c.created_at    AS \"created_at!\",\n                  c.last_seen_at,\n                  c.created_ip,\n                  c.created_user_agent,\n                  c.is_revoked    AS \"is_revoked!\",\n                  c.capabilities,\n                  c.client_info,\n                  c.protocol_version,\n                  c.last_session_id,\n                  c.org_id,\n                  b.agent_identity_id AS \"agent_identity_id!\"\n             FROM oauth_mcp_clients c\n             JOIN mcp_client_agent_bindings b ON b.client_id = c.client_id\n            WHERE b.user_identity_id = $1\n              AND c.is_revoked = false\n              AND c.client_name IS NOT DISTINCT FROM $2\n              AND c.software_id IS NOT DISTINCT FROM $3\n         ORDER BY b.updated_at DESC\n            LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -170,6 +170,17 @@
       },
       {
         "ordinal": 15,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "oauth_mcp_clients",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
         "name": "agent_identity_id!",
         "type_info": "Uuid",
         "origin": {
@@ -203,8 +214,9 @@
       true,
       true,
       true,
+      true,
       false
     ]
   },
-  "hash": "df087391c5c99dcc849f1b25a7b9653fc268373c95aff41d416118fa2510d620"
+  "hash": "14a1ff4ea851167caeb5455b85db8422c71f78e38114ba7b1174386d6ec57374"
 }

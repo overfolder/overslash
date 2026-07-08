@@ -95,6 +95,7 @@ async fn bootstrap_mcp(declare_elicitation: bool) -> McpFixture {
             software_version: Some("1.0.0"),
             created_ip: None,
             created_user_agent: None,
+            org_id: None,
         },
     )
     .await
@@ -339,6 +340,7 @@ async fn patch_mcp_connection_fans_out_to_all_bindings_for_agent() {
             software_version: Some("1.0.0"),
             created_ip: None,
             created_user_agent: None,
+            org_id: None,
         },
     )
     .await
@@ -801,6 +803,7 @@ async fn elicitation_eligible_keyed_on_calling_client_not_latest_binding() {
             software_version: Some("1.0.0"),
             created_ip: None,
             created_user_agent: None,
+            org_id: None,
         },
     )
     .await
