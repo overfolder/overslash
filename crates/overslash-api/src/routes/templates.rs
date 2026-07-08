@@ -1188,8 +1188,38 @@ async fn create_derived_layer(
         "org"
     };
     log_template_created(state, ext, acl, &row, tier, ip.0.as_deref()).await;
+    refresh_layer_embeddings(state, ext, &row, tier).await;
 
     Ok(Json(db_row_to_detail(state, ext, row, tier).await?))
+}
+
+/// Index a **derived** layer's *effective* (folded) surface for semantic search,
+/// mirroring the `refresh_template` call standalone create/update make. Uses the
+/// resolved definition so masked actions stay out of the index and extensions
+/// are included. Best-effort: a layer whose base fails to resolve is skipped
+/// (keyword search still works through the fold at query time). Note: because
+/// `extends` is a live pointer, a later base change is not cascaded into these
+/// embeddings — re-saving the layer re-indexes it (cascade re-embedding is a
+/// documented deferred item, same bucket as the materialized resolved cache).
+async fn refresh_layer_embeddings(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    row: &service_template::ServiceTemplateRow,
+    tier: &'static str,
+) {
+    if let Ok(resolved) =
+        crate::services::template_resolve::resolve_row(state.db(ext), &state.registry, row).await
+    {
+        crate::services::embedding_backfill::refresh_template(
+            state.db(ext),
+            state.embedder.as_ref(),
+            tier,
+            Some(row.org_id),
+            row.owner_identity_id,
+            &resolved.definition,
+        )
+        .await;
+    }
 }
 
 async fn log_template_created(
@@ -1399,6 +1429,7 @@ async fn update_derived_layer(
             ip_address: ip.0.as_deref(),
         })
         .await;
+    refresh_layer_embeddings(state, ext, &row, tier).await;
 
     Ok(Json(db_row_to_detail(state, ext, row, tier).await?))
 }
