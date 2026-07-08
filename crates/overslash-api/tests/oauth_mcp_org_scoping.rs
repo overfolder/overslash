@@ -513,3 +513,87 @@ async fn null_client_accepted_on_corp_subdomain_lands_in_that_org() {
         "NULL client still lands in the subdomain org"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 8. A client stamped for one org cannot bind an agent in another org via the
+//    `switch-org` path: consent_finish re-checks the client stamp at the single
+//    binding-creation site (regression for the Seer finding on #443).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn stamped_client_cannot_bind_in_switched_org() {
+    let pool = common::test_pool().await;
+    let (addr, _c) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.api_host_suffix = Some(SUFFIX.to_string());
+    })
+    .await;
+    let base = format!("http://{addr}");
+
+    let acme = seed_corp_org(&pool, "Acme").await;
+    let beta = add_user_to_corp_org(&pool, acme.user_id, &acme.email, "Beta").await;
+
+    // Client stamped for Acme.
+    let client_id = register_client(&base, REDIRECT, Some(&acme.host)).await;
+    let (_v, challenge) = pkce();
+    let acme_cookie = mint_session(acme.org_id, acme.ident_id, acme.user_id, &acme.email);
+
+    // Authorize on Acme → consent parked in Acme.
+    let resp = authorize(
+        &base,
+        &client_id,
+        REDIRECT,
+        &challenge,
+        Some(&acme_cookie),
+        Some(&acme.host),
+    )
+    .await;
+    let request_id = request_id_from(&location(&resp));
+
+    // Switch the pending request to Beta (a legit member org).
+    let http = reqwest::Client::new();
+    let sw = http
+        .post(format!("{base}/v1/oauth/consent/{request_id}/switch-org"))
+        .header("cookie", format!("oss_session={acme_cookie}"))
+        .json(&json!({ "org_id": beta.org_id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        sw.status(),
+        StatusCode::OK,
+        "switch to a member org is allowed"
+    );
+    let beta_cookie = sw
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|c| c.split(';').next())
+        .and_then(|kv| kv.trim().strip_prefix("oss_session="))
+        .expect("switch-org re-mints the session cookie")
+        .to_string();
+    let sw_body: Value = sw.json().await.unwrap();
+    let beta_request_id = sw_body["request_id"].as_str().unwrap().to_string();
+
+    // Finishing in Beta with the Acme-stamped client must be rejected — the
+    // stamp binds the client to Acme even after an org switch.
+    let fin = http
+        .post(format!("{base}/v1/oauth/consent/{beta_request_id}/finish"))
+        .header("cookie", format!("oss_session={beta_cookie}"))
+        .header("content-type", "application/json")
+        .body(
+            json!({
+                "mode": "new",
+                "agent_name": "cross-org-agent",
+                "inherit_permissions": false,
+                "group_names": [],
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        fin.status(),
+        StatusCode::FORBIDDEN,
+        "an Acme-stamped client must not bind an agent in Beta"
+    );
+}

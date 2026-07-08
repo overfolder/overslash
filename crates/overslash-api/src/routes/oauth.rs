@@ -1050,6 +1050,22 @@ async fn consent_finish(
         .await?
         .ok_or_else(|| AppError::BadRequest("MCP client is no longer registered".into()))?;
 
+    // A client stamped for a specific org (corp-subdomain registration) may
+    // only bind an agent in that org. This is the authoritative re-check of the
+    // authorize-time client-org gate at the single binding-creation site, so it
+    // also covers the `consent_switch_org` path — which clones the pending
+    // request into another org while keeping the original `client_id` and would
+    // otherwise let a stamped client land a binding in a foreign org. NULL
+    // (root/multi-org) clients bind in whatever org the flow resolved to. See
+    // docs/design/mcp-enrollment-org-scoping.md.
+    if let Some(client_org) = client.org_id {
+        if client_org != pending.org_id {
+            return Err(AppError::Forbidden(
+                "client is registered to a different org".into(),
+            ));
+        }
+    }
+
     let agent_identity_id = match body.mode.as_str() {
         "new" => {
             let raw_name = body.agent_name.as_deref().unwrap_or("").trim();
