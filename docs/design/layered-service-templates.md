@@ -55,11 +55,23 @@ Global (Overslash-shipped) templates remain an **in-memory registry loaded from 
 ALTER TABLE service_templates ADD COLUMN extends text;          -- base template key; NULL = standalone
 ALTER TABLE service_templates ADD COLUMN delta   jsonb;         -- derived-layer content; NULL = standalone
 
--- A row is a base doc XOR a delta over a base.
+-- Derived layers carry no full doc, so openapi is no longer globally NOT NULL.
+-- (Existing rows are all standalone and keep their openapi, so the drop is safe.)
+ALTER TABLE service_templates ALTER COLUMN openapi DROP NOT NULL;
+
+-- Shape invariant:
+--   standalone (extends NULL): openapi present, delta NULL
+--   derived   (extends set):   delta present, openapi NULL or a materialized resolved-cache
 ALTER TABLE service_templates
   ADD CONSTRAINT service_templates_layer_shape
-  CHECK ((delta IS NULL) = (extends IS NULL));
+  CHECK (
+    (extends IS NULL     AND delta IS NULL     AND openapi IS NOT NULL)
+    OR
+    (extends IS NOT NULL AND delta IS NOT NULL)
+  );
 ```
+
+> The Rust `ServiceTemplateRow.openapi` field becomes **`Option<serde_json::Value>`** to match (it is `NULL` for a derived layer without a materialized cache). The fold reads `openapi` only for standalone layers, where the shape `CHECK` guarantees it is present.
 
 - **Absorb the existing tier now.** Every existing `service_templates` row is already a valid **standalone layer** — `extends`/`delta` backfill to `NULL`, `openapi` stays authoritative. No data transform, because we are pre-GA with essentially zero production forks. This is the cheap moment; post-launch it would not be.
 - **`openapi` on a derived layer** is `NULL` today, but the `CHECK` deliberately does **not** forbid it: it is **reserved as an optional denormalized cache** of the resolved template (future materialization). If ever written, it is produced by the fold and invalidated whenever the delta *or* the base changes.
