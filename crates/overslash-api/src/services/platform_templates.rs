@@ -409,9 +409,20 @@ pub(crate) async fn delete_active_template_inner(
     }
     // Referential guard: block deleting a base that live derived layers still
     // extend (they'd otherwise degrade to a broken `dead_*` state). The admin
-    // must reparent/detach the dependents first.
-    let dependents = service_template::list_dependents(db, row.org_id, &row.key).await?;
-    let dependents: Vec<_> = dependents.into_iter().filter(|d| d.id != row.id).collect();
+    // must reparent/detach the dependents first. Candidates share the `extends`
+    // key, but a row is only a *real* dependent if its `extends` actually
+    // resolves to THIS row (not another user's same-keyed template or a global)
+    // — so filter by the fold's own base-resolution to avoid over-blocking.
+    let candidates = service_template::list_dependents(db, row.org_id, &row.key).await?;
+    let mut dependents = Vec::new();
+    for c in candidates {
+        if c.id == row.id {
+            continue;
+        }
+        if crate::services::template_resolve::base_row_id_for(db, &c).await? == Some(row.id) {
+            dependents.push(c);
+        }
+    }
     if !dependents.is_empty() {
         let keys: Vec<String> = dependents.iter().map(|d| d.key.clone()).collect();
         return Err(AppError::Conflict(format!(

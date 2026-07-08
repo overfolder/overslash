@@ -524,6 +524,83 @@ async fn delete_base_with_dependents_blocked() {
     assert_eq!(resp.status(), 200);
 }
 
+// ── Delete guard is per-actual-base, not per-shared-key (cross-user) ───────
+
+#[tokio::test]
+async fn delete_guard_does_not_over_block_across_users() {
+    // admin_key (user 0) and write_key (user 1) are distinct user identities.
+    let (base, client, org_id, admin_key, write_key) = bootstrap().await;
+    enable_full_user_policy(&base, &client, org_id, &admin_key).await;
+
+    // Both users create a user-level standalone base with the SAME key `ubase`
+    // (unique per owner, so both succeed).
+    for key in [&admin_key, &write_key] {
+        let resp = client
+            .post(format!("{base}/v1/templates"))
+            .header(auth(key).0, auth(key).1)
+            .json(&json!({ "openapi": base_openapi("ubase"), "user_level": true }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            200,
+            "user base create: {:?}",
+            resp.text().await
+        );
+    }
+
+    // Write user adds a derived layer over *their own* ubase.
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .json(&json!({
+            "extends": "ubase",
+            "key": "ubase_d",
+            "user_level": true,
+            "delta": { "allowlist": ["list_a"] },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Admin's ubase (user 0) has NO dependent — write user's ubase_d resolves to
+    // write user's ubase, not admin's. Deleting admin's ubase must succeed.
+    let admin_ubase_id = get_template(&base, &client, "ubase", &admin_key).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = client
+        .delete(format!("{base}/v1/templates/{admin_ubase_id}/manage"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "unrelated same-keyed layer from another user must not block delete"
+    );
+
+    // Write user's ubase DOES have a real dependent (ubase_d) → blocked.
+    let write_ubase_id = get_template(&base, &client, "ubase", &write_key).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = client
+        .delete(format!("{base}/v1/templates/{write_ubase_id}/manage"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        409,
+        "a real dependent must still block delete"
+    );
+}
+
 // ── Extensions: add a new action + host ────────────────────────────────────
 
 #[tokio::test]

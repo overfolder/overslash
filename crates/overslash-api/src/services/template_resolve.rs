@@ -220,3 +220,28 @@ async fn resolve_base(
         Ok(None)
     }
 }
+
+/// The DB row id that a layer's `extends` **actually** resolves to (its direct
+/// base), or `None` if it resolves to a global registry template or the layer
+/// is standalone. Lets the delete guard identify *real* dependents precisely —
+/// rows that merely share the `extends` key but resolve to a different base
+/// (another user's same-keyed template, or a global) are not dependents. Uses
+/// the same lookup rule as the fold, so it can't diverge from resolution.
+pub async fn base_row_id_for(
+    db: &PgPool,
+    layer: &ServiceTemplateRow,
+) -> Result<Option<Uuid>, AppError> {
+    let Some(ext) = layer.extends.as_deref() else {
+        return Ok(None);
+    };
+    let base = resolve_base(
+        db,
+        layer.org_id,
+        layer.owner_identity_id,
+        layer.owner_identity_id.is_some(),
+        &layer.key,
+        ext,
+    )
+    .await?;
+    Ok(base.map(|r| r.id))
+}
