@@ -11,7 +11,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, OrgAcl, ReqExt, WriteAcl},
+    extractors::{AuthContext, OrgAcl, ReqExt, WriteAcl},
     services::{
         group_ceiling,
         platform_caller::PlatformCallContext,
@@ -281,20 +281,50 @@ async fn create_service(
     Ok(Json(detail))
 }
 
+/// Authorize a mutation (delete/update/status) of a service instance.
+///
+/// Write-level callers may mutate a service they own; mutating another
+/// identity's service, or an org-level (`owner_identity_id IS NULL`) service,
+/// requires Admin. This is strict identity equality — deliberately NOT a
+/// ceiling/family check, so an agent cannot reach its owner-user's or a
+/// sibling agent's services through the API (those are managed on the
+/// integrating app's dashboard). Mirrors `update_template` (templates.rs).
+fn require_owner_or_admin(
+    instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
+    acl: &OrgAcl,
+) -> Result<()> {
+    if instance.owner_identity_id != acl.identity_id
+        && acl.access_level < overslash_core::permissions::AccessLevel::Admin
+    {
+        return Err(AppError::Forbidden("admin access required".into()));
+    }
+    Ok(())
+}
+
 async fn update_service(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
-    AdminAcl(acl): AdminAcl,
+    WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateServiceInput>,
 ) -> Result<Json<ServiceInstanceDetail>> {
+    let instance = scope
+        .get_service_instance(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    if instance.is_system {
+        return Err(AppError::BadRequest("cannot modify system service".into()));
+    }
+    require_owner_or_admin(&instance, &acl)?;
+
     let ctx = ctx_from_acl(&state, &ext, &acl)?;
     let detail = platform_services::kernel_update_service(ctx, id, req).await?;
     Ok(Json(detail))
 }
 
 async fn update_service_status(
-    _: AdminAcl,
+    WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateStatusRequest>,
@@ -306,6 +336,7 @@ async fn update_service_status(
     if existing.is_system {
         return Err(AppError::BadRequest("cannot modify system service".into()));
     }
+    require_owner_or_admin(&existing, &acl)?;
 
     if !["draft", "active", "archived"].contains(&req.status.as_str()) {
         return Err(AppError::BadRequest(format!(
@@ -323,15 +354,16 @@ async fn update_service_status(
 
 /// Delete a service instance.
 async fn delete_service(
-    AdminAcl(acl): AdminAcl,
+    WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
     // Destructive op: intentionally do NOT reach up to the ceiling user for
-    // name resolution. An agent with AdminAcl must not be able to target its
-    // owner user's services via the shadowing lookup; callers that really
-    // mean to delete a parent-owned service can address it by UUID.
+    // name resolution. An agent must not be able to target its owner user's
+    // services via the shadowing lookup; callers that really mean to delete a
+    // parent-owned service can address it by UUID (and still need Admin — see
+    // the ownership check below).
     let instance = if let Ok(uuid) = name.parse::<Uuid>() {
         scope
             .get_service_instance(uuid)
@@ -347,6 +379,8 @@ async fn delete_service(
     if instance.is_system {
         return Err(AppError::BadRequest("cannot delete system service".into()));
     }
+
+    require_owner_or_admin(&instance, &auth)?;
 
     let deleted = scope.delete_service_instance(instance.id).await?;
     if !deleted {
