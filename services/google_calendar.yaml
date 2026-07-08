@@ -91,6 +91,21 @@ paths:
       summary: "Create event '{summary}' on calendar {calendarId}"
       risk: write
       scope_param: calendarId
+      disclose:
+        - label: Calendar
+          filter: .resolved.calendarId // .params.calendarId
+        - label: Title
+          filter: .body.summary
+        - label: Start
+          filter: .body.start.dateTime // .body.start.date // empty
+        - label: End
+          filter: .body.end.dateTime // .body.end.date // empty
+        - label: Location
+          filter: .body.location // empty
+        - label: Attendees
+          filter: '[.body.attendees[]?.email // empty] | select(length > 0) | join(", ")'
+        - label: Notify attendees
+          filter: .params.sendUpdates // empty
       parameters:
         - name: sendUpdates
           in: query
@@ -163,6 +178,23 @@ paths:
       summary: "Update event {eventId} on calendar {calendarId}"
       risk: write
       scope_param: calendarId
+      disclose:
+        - label: Calendar
+          filter: .resolved.calendarId // .params.calendarId
+        - label: Event
+          filter: .resolved.eventId // .params.eventId
+        - label: New title
+          filter: .body.summary // empty
+        - label: Start
+          filter: .body.start.dateTime // .body.start.date // empty
+        - label: End
+          filter: .body.end.dateTime // .body.end.date // empty
+        - label: Location
+          filter: .body.location // empty
+        - label: Attendees
+          filter: '[.body.attendees[]?.email // empty] | select(length > 0) | join(", ")'
+        - label: Notify attendees
+          filter: .params.sendUpdates // empty
       parameters:
         - name: sendUpdates
           in: query
@@ -208,6 +240,13 @@ paths:
       summary: "Delete event {eventId} on calendar {calendarId}"
       risk: delete
       scope_param: calendarId
+      disclose:
+        - label: Calendar
+          filter: .resolved.calendarId // .params.calendarId
+        - label: Event
+          filter: .resolved.eventId // .params.eventId
+        - label: Notify attendees
+          filter: .params.sendUpdates // empty
       parameters:
         - name: sendUpdates
           in: query

@@ -240,12 +240,105 @@ pub async fn resolve_access_token(
         .expires_in
         .map(|secs| time::OffsetDateTime::now_utc() + time::Duration::seconds(secs));
 
-    scope
-        .update_connection_tokens(conn.id, &new_access, new_refresh.as_deref(), new_expires)
-        .await
-        .map_err(|e| OAuthError::DbError(e.to_string()))?;
+    // Reconcile the recorded scope set against what the refresh response
+    // echoed. A refresh must only *widen or heal* the recorded set — never
+    // narrow it. See `reconcile_refresh_scopes` for the full rationale; the
+    // short version is that a stale/metadata-scoped refresh token echoes a
+    // *subset* of the grant the connection was last (re-)imported with, and
+    // writing that subset back down would silently downgrade the connection
+    // to match a token that can no longer do what the recorded scopes claim.
+    let granted_scopes = tokens.granted_scopes();
+    let scopes_to_write = reconcile_refresh_scopes(conn.scopes.as_deref(), &granted_scopes);
+
+    match scopes_to_write {
+        Some(scopes) => {
+            scope
+                .update_connection_tokens_and_scopes(
+                    conn.id,
+                    &new_access,
+                    new_refresh.as_deref(),
+                    new_expires,
+                    Some(&scopes),
+                    None,
+                )
+                .await
+                .map_err(|e| OAuthError::DbError(e.to_string()))?;
+        }
+        None => {
+            // Nothing to change about the recorded scopes (either the refresh
+            // echoed no scope, or it echoed a subset we must not narrow to).
+            // Persist only the fresh tokens.
+            scope
+                .update_connection_tokens(conn.id, &new_access, new_refresh.as_deref(), new_expires)
+                .await
+                .map_err(|e| OAuthError::DbError(e.to_string()))?;
+        }
+    }
 
     Ok(tokens.access_token)
+}
+
+/// Decide what scope set (if any) a `refresh_token` exchange may write back to
+/// a connection's recorded `scopes` column.
+///
+/// **A refresh must never NARROW the recorded scopes.** This is the fix for a
+/// production loop (connection `85844f1a`): a partner reconnected and re-imported
+/// full `gmail.readonly` scopes, but the stored refresh token was still a
+/// *metadata-only* token from an earlier grant (Google reuses one refresh token
+/// per client+user and returns `None` on re-consent, so a re-import can advance
+/// the recorded scopes while preserving the old refresh token — see
+/// `platform_connections::kernel_import_connection`). On the next self-refresh
+/// Google echoed only the metadata scopes; the old code wrote that subset back
+/// *unconditionally*, downgrading the recorded set to `calendar/openid/email/
+/// profile` (no gmail). The scope-gate then failed `list_messages`, but the
+/// connection had already "healed" in the wrong direction — a forever loop.
+///
+/// Returns:
+/// - `Some(union)` — the refresh echoed scopes that *widen or heal* the recorded
+///   set (or the recorded set was unknown/`None`). Persist the union so a legacy
+///   NULL connection becomes known and a genuinely broadened grant is recorded.
+/// - `None` — either the refresh echoed no scopes at all (must not clobber a
+///   known set with the empty set), or it echoed only a *subset* of what we
+///   already recorded (a stale-refresh-token signal — do not narrow). The caller
+///   leaves the recorded `scopes` column untouched.
+///
+/// The union (rather than "recorded verbatim") lets an incremental-consent
+/// refresh that legitimately adds a scope still land, while the subset guard
+/// blocks the downgrade.
+fn reconcile_refresh_scopes(
+    recorded: Option<&[String]>,
+    granted: &[String],
+) -> Option<Vec<String>> {
+    use std::collections::BTreeSet;
+
+    // No scope echoed → nothing to heal, and we must not clobber a known set.
+    if granted.is_empty() {
+        return None;
+    }
+
+    let granted_set: BTreeSet<&str> = granted.iter().map(String::as_str).collect();
+
+    match recorded {
+        // Unknown recorded set (legacy import that didn't declare scopes):
+        // adopt the echoed grant so the connection becomes known.
+        None => Some(granted.to_vec()),
+        Some(recorded) => {
+            let recorded_set: BTreeSet<&str> = recorded.iter().map(String::as_str).collect();
+            // If the refresh echoed everything we already had (possibly more),
+            // record the union — this is the widen/heal case. Otherwise the
+            // refresh dropped scopes we know were granted: a stale/downgraded
+            // refresh token. Never narrow — leave the recorded set as-is.
+            if recorded_set.is_subset(&granted_set) {
+                let union: Vec<String> = recorded_set
+                    .union(&granted_set)
+                    .map(|s| s.to_string())
+                    .collect();
+                Some(union)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -269,6 +362,20 @@ impl TokenResponse {
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string())
                 .collect(),
+        }
+    }
+
+    /// Granted scopes for a connect-time exchange. RFC 6749 §5.1 makes the
+    /// `scope` field OPTIONAL when the granted set is identical to what the
+    /// client requested — HubSpot, for one, never echoes it. Recording `[]`
+    /// in that case turns "provider said nothing" into "known-empty grant",
+    /// which the scope gate then enforces; falling back to the requested set
+    /// keeps the recorded scopes truthful. A present-but-empty `scope` is
+    /// still honored verbatim: the provider explicitly said "no scopes".
+    pub fn granted_scopes_or_requested(&self, requested: &[String]) -> Vec<String> {
+        match &self.scope {
+            None => requested.to_vec(),
+            Some(_) => self.granted_scopes(),
         }
     }
 }
@@ -373,6 +480,57 @@ mod tests {
         assert_eq!(t.granted_scopes(), vec!["repo", "read:user"]);
     }
 
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn reconcile_refresh_never_narrows_recorded_scopes() {
+        // The production loop: recorded set carries gmail.readonly (a fresh
+        // re-import), but the stale metadata refresh token echoes only the
+        // metadata subset. Must NOT narrow — leave recorded untouched.
+        let recorded = v(&["gmail.readonly", "calendar", "openid", "email", "profile"]);
+        let granted = v(&["calendar", "openid", "email", "profile"]);
+        assert_eq!(reconcile_refresh_scopes(Some(&recorded), &granted), None);
+    }
+
+    #[test]
+    fn reconcile_refresh_empty_response_does_not_clobber() {
+        let recorded = v(&["gmail.readonly", "calendar"]);
+        assert_eq!(reconcile_refresh_scopes(Some(&recorded), &[]), None);
+    }
+
+    #[test]
+    fn reconcile_refresh_heals_unknown_recorded_set() {
+        // Legacy import with NULL scopes: adopt the echoed grant.
+        let granted = v(&["gmail.readonly", "calendar"]);
+        assert_eq!(
+            reconcile_refresh_scopes(None, &granted),
+            Some(v(&["gmail.readonly", "calendar"]))
+        );
+    }
+
+    #[test]
+    fn reconcile_refresh_widens_on_broader_grant() {
+        // Incremental consent legitimately added a scope: record the union.
+        let recorded = v(&["calendar", "openid"]);
+        let granted = v(&["calendar", "openid", "gmail.readonly"]);
+        let out = reconcile_refresh_scopes(Some(&recorded), &granted).expect("should widen");
+        let mut sorted = out;
+        sorted.sort();
+        assert_eq!(sorted, v(&["calendar", "gmail.readonly", "openid"]));
+    }
+
+    #[test]
+    fn reconcile_refresh_identical_set_is_noop_union() {
+        let recorded = v(&["calendar", "openid"]);
+        let granted = v(&["openid", "calendar"]);
+        let out = reconcile_refresh_scopes(Some(&recorded), &granted).expect("subset holds");
+        let mut sorted = out;
+        sorted.sort();
+        assert_eq!(sorted, v(&["calendar", "openid"]));
+    }
+
     #[test]
     fn granted_scopes_empty_when_missing() {
         let t = TokenResponse {
@@ -383,6 +541,44 @@ mod tests {
             scope: None,
         };
         assert!(t.granted_scopes().is_empty());
+    }
+
+    fn token_with_scope(scope: Option<&str>) -> TokenResponse {
+        TokenResponse {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_in: None,
+            token_type: None,
+            scope: scope.map(String::from),
+        }
+    }
+
+    #[test]
+    fn granted_scopes_or_requested_falls_back_when_scope_omitted() {
+        // HubSpot-shaped response: no `scope` field at all → RFC 6749 §5.1
+        // says granted == requested.
+        let requested = v(&["crm.objects.contacts.read", "crm.objects.deals.read"]);
+        let t = token_with_scope(None);
+        assert_eq!(t.granted_scopes_or_requested(&requested), requested);
+    }
+
+    #[test]
+    fn granted_scopes_or_requested_honors_echoed_scope() {
+        // Provider echoed a narrower grant than requested — record what it said.
+        let requested = v(&["openid", "email", "gmail.readonly"]);
+        let t = token_with_scope(Some("openid email"));
+        assert_eq!(
+            t.granted_scopes_or_requested(&requested),
+            v(&["openid", "email"])
+        );
+    }
+
+    #[test]
+    fn granted_scopes_or_requested_honors_explicit_empty_scope() {
+        // A present-but-empty `scope` is an explicit "nothing granted".
+        let requested = v(&["repo"]);
+        let t = token_with_scope(Some(""));
+        assert!(t.granted_scopes_or_requested(&requested).is_empty());
     }
 
     #[test]

@@ -31,6 +31,10 @@ paths:
       operationId: post_tweet
       summary: Create a tweet
       risk: write
+      disclose:
+        - label: Text
+          filter: .body.text
+          max_chars: 500
       requestBody:
         required: true
         content:
@@ -48,6 +52,10 @@ paths:
       summary: "Delete tweet {tweet_id}"
       risk: write
       scope_param: tweet_id
+      disclose:
+        - label: Tweet
+          filter: .resolved.tweet_id // .params.tweet_id
+          max_chars: 500
       parameters:
         - name: tweet_id
           in: path
@@ -55,6 +63,9 @@ paths:
           description: The ID of the tweet to delete
           schema:
             type: string
+          resolve:
+            get: /2/tweets/{tweet_id}
+            pick: data.text
   /2/users/{user_id}/tweets:
     get:
       operationId: get_user_tweets

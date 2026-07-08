@@ -3,6 +3,7 @@
 	import { page } from '$app/stores';
 	import { ApiError, session } from '$lib/session';
 	import { slugify, makeDebouncedSlugChecker, type SlugCheck } from '$lib/utils/slug';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	type GeoResponse = { currency: string; base_price: number };
 
@@ -28,6 +29,9 @@
 	let orgSlug = $state('');
 	let slugTouched = $state(false);
 	let seats = $state(2);
+	// "Not sure. Trial for free for a month" — collects a card via Stripe but
+	// defers the first charge by the trial window (status='trialing').
+	let trial = $state(false);
 
 	let slugCheck = $state<SlugCheck>({ kind: 'idle' });
 	const scheduleSlugCheck = makeDebouncedSlugChecker((s) => (slugCheck = s));
@@ -103,7 +107,8 @@
 				org_name: orgName.trim(),
 				org_slug: orgSlug.trim(),
 				seats,
-				currency
+				currency,
+				trial
 			});
 			window.location.href = res.url;
 		} catch (err) {
@@ -202,6 +207,19 @@
 				{/if}
 			</div>
 
+			<div class="trial-row">
+				<ToggleSwitch
+					checked={trial}
+					onchange={(next) => (trial = next)}
+					disabled={submitting}
+					labelledby="trial-label"
+				/>
+				<span class="trial-copy" id="trial-label">
+					<strong>Not sure? Trial free for a month.</strong>
+					<span class="hint">Card required — no charge until your 30-day trial ends. Cancel any time before then.</span>
+				</span>
+			</div>
+
 			{#if submitError}
 				<div class="error">{submitError}</div>
 			{/if}
@@ -209,6 +227,8 @@
 			<button type="submit" class="btn-primary" disabled={!canSubmit}>
 				{#if submitting}
 					Redirecting to Stripe…
+				{:else if trial}
+					Start free trial →
 				{:else}
 					Continue to payment →
 				{/if}
@@ -216,7 +236,11 @@
 		</form>
 
 		<p class="legal">
-			Billed monthly. Cancel any time from the Stripe portal.
+			{#if trial}
+				Free for 30 days, then {currencySymbol}{totalPerMonth}/{currencyUpper}/month. Cancel any time from the Stripe portal.
+			{:else}
+				Billed monthly. Cancel any time from the Stripe portal.
+			{/if}
 			OSS, research, or education? <a href="mailto:sales@overslash.com">Email us</a> — we usually say yes.
 		</p>
 	</div>
@@ -376,6 +400,29 @@
 	.price-hint {
 		font-size: 0.7rem;
 		color: var(--color-text-muted);
+	}
+
+	.trial-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.6rem;
+		padding: 0.75rem;
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		background: var(--color-bg);
+	}
+
+	.trial-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		font-size: 0.85rem;
+		color: var(--color-text);
+		cursor: pointer;
+	}
+
+	.trial-copy strong {
+		font-weight: 600;
 	}
 
 	.error {

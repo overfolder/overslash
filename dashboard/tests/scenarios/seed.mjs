@@ -414,16 +414,51 @@ export async function setAuditResponseBodyMode(session, mode) {
 }
 
 /**
- * Set the org's white-label OAuth callback-host allow-list — the hosts an org
- * API key may use as a custom OAuth `redirect_uri`. Returns the normalized list.
+ * Patch the org's managed sign-in admission settings (migration 066/092).
+ * Any field left undefined is omitted so the partial PATCH leaves it as-is.
+ * @param {import('./auth.mjs').Session} session
+ * @param {{ allow_overslash_managed_signin?: boolean, require_invite_admission?: boolean, managed_signin_allowed_domains?: string[] }} settings
+ * @returns {Promise<{ allow_overslash_managed_signin: boolean, require_invite_admission: boolean, managed_signin_allowed_domains: string[] }>}
+ */
+export async function setManagedSignin(session, settings) {
+	/** @type {Record<string, unknown>} */
+	const body = {};
+	if (settings.allow_overslash_managed_signin !== undefined)
+		body.allow_overslash_managed_signin = settings.allow_overslash_managed_signin;
+	if (settings.require_invite_admission !== undefined)
+		body.require_invite_admission = settings.require_invite_admission;
+	if (settings.managed_signin_allowed_domains !== undefined)
+		body.managed_signin_allowed_domains = settings.managed_signin_allowed_domains;
+	return api(session, `/v1/orgs/${session.orgId}/managed-signin`, {
+		method: 'PATCH',
+		body
+	});
+}
+
+/**
+ * Patch the org's template/catalog settings. Accepts any subset of
+ * `allow_user_templates`, `global_templates_enabled`,
+ * `allow_services_outside_catalog`.
  *
  * @param {import('./auth.mjs').Session} session
- * @param {string[]} allowedHosts
- * @returns {Promise<{ allowed_hosts: string[] }>}
+ * @param {{ allow_user_templates?: boolean, global_templates_enabled?: boolean, allow_services_outside_catalog?: boolean }} patch
  */
-export async function setOauthCallbackHosts(session, allowedHosts) {
-	return api(session, `/v1/orgs/${session.orgId}/oauth-callback-settings`, {
+export async function setTemplateSettings(session, patch) {
+	return api(session, `/v1/orgs/${session.orgId}/template-settings`, {
 		method: 'PATCH',
-		body: { allowed_hosts: allowedHosts }
+		body: patch
+	});
+}
+
+/**
+ * Add a global template key to the org's curated catalog allow-list.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {string} templateKey
+ */
+export async function enableGlobalTemplate(session, templateKey) {
+	return api(session, `/v1/templates/enabled-globals`, {
+		method: 'POST',
+		body: { template_key: templateKey }
 	});
 }

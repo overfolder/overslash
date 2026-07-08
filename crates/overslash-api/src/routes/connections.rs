@@ -29,7 +29,7 @@ use crate::{
         platform_caller::PlatformCallContext,
         platform_connections::{
             CreateConnectionInput, CreateConnectionResponse, RequestMeta, kernel_create_connection,
-            merge_scopes,
+            kernel_create_connection_for_identity, merge_scopes,
         },
     },
 };
@@ -41,6 +41,7 @@ pub fn router() -> Router<AppState> {
             "/v1/connections",
             post(initiate_connection).get(list_connections),
         )
+        .route("/v1/connections/import", post(import_connection))
         .route(
             "/v1/connections/{id}",
             get(get_connection).delete(delete_connection),
@@ -54,7 +55,6 @@ pub fn router() -> Router<AppState> {
             post(upgrade_connection_scopes),
         )
         .route("/v1/oauth/callback", get(oauth_callback))
-        .route("/v1/oauth/exchange", post(oauth_exchange))
         .route("/connect-authorize", get(connect_authorize))
         .route(
             "/connect-authorize/confirm",
@@ -76,22 +76,18 @@ struct InitiateConnectionRequest {
     /// user itself). Lets all agents under the user share the connection.
     #[serde(default)]
     on_behalf_of: Option<Uuid>,
-    /// REST-only opt-in: include the raw provider authorize URL alongside
-    /// the proxied form. Intended for white-label integrations that wrap
-    /// the dance in their own consent UI. The MCP path never sets this —
-    /// chat-delivered links must always go through the gate.
-    #[serde(default)]
-    include_raw: bool,
     /// Optional tenant-supplied URL the callback redirects to after the
     /// OAuth dance finishes. See [`CreateConnectionInput::return_url`].
     #[serde(default)]
     return_url: Option<String>,
-    /// Optional white-label provider `redirect_uri`. See
-    /// [`CreateConnectionInput::redirect_uri`]. Host must be on the org's
-    /// `oauth_callback_allowed_hosts` allow-list; pairs with
-    /// `POST /v1/oauth/exchange`.
+    /// Service instances to atomically bind the resulting connection to when
+    /// the callback fires. Plural; the singular `service_instance_id` alias is
+    /// merged in. See [`CreateConnectionInput::pin_service_ids`].
     #[serde(default)]
-    redirect_uri: Option<String>,
+    pin_service_ids: Vec<Uuid>,
+    /// Singular back-compat alias for `pin_service_ids`, merged into the list.
+    #[serde(default)]
+    service_instance_id: Option<Uuid>,
 }
 
 /// Wire shape for `POST /v1/connections`.
@@ -101,15 +97,14 @@ struct InitiateConnectionRequest {
 /// fail-fasts on session mismatch before redirecting to the provider, so
 /// existing callers transparently inherit the chat-delivery hardening
 /// described in the kernel doc-comment in
-/// `services/platform_connections.rs`. White-label callers that still
-/// need the raw provider URL can opt in via `include_raw: true`.
+/// `services/platform_connections.rs`. The raw provider authorize URL is
+/// never surfaced — white-label partners import tokens instead of wrapping an
+/// Overslash-built authorize URL.
 #[derive(Serialize)]
 struct InitiateConnectionResponse {
     auth_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     short: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    raw: Option<String>,
     state: String,
     provider: String,
     expires_at: OffsetDateTime,
@@ -136,6 +131,13 @@ async fn initiate_connection(
         config: state.config.clone(),
         http_client: state.http_client.clone(),
     };
+    // Merge the singular alias into the plural list (dedup preserves order).
+    let mut pin_service_ids = req.pin_service_ids;
+    if let Some(sid) = req.service_instance_id {
+        if !pin_service_ids.contains(&sid) {
+            pin_service_ids.push(sid);
+        }
+    }
     let input = CreateConnectionInput {
         provider: req.provider,
         scopes: req.scopes,
@@ -146,8 +148,8 @@ async fn initiate_connection(
         // recovery arms (or the dedicated `/upgrade_scopes` route).
         upgrade_connection_id: None,
         return_url: req.return_url,
-        redirect_uri: req.redirect_uri,
         service_instance_id: None,
+        pin_service_ids,
     };
     let kernel_response: CreateConnectionResponse = kernel_create_connection(
         ctx,
@@ -159,22 +161,124 @@ async fn initiate_connection(
     )
     .await?;
 
-    // White-label REST callers opting into `include_raw` are agreeing to
-    // render their own consent screen and have already cleared the
-    // Obsidian threat model server-side (PKCE + state binding still hold
-    // either way). The kernel response carries `raw` in a `#[serde(skip)]`
-    // field, so MCP `dispatch_create_connection` can never accidentally
-    // surface it — only this explicit opt-in does.
-    let raw = req.include_raw.then(|| kernel_response.raw.clone());
-
     Ok(Json(InitiateConnectionResponse {
         auth_url: kernel_response.auth_url,
         short: kernel_response.short,
-        raw,
         state: kernel_response.state,
         provider: kernel_response.provider,
         expires_at: kernel_response.expires_at,
         flow_id: kernel_response.flow_id,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/connections/import — white-label token vault
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ImportConnectionRequest {
+    provider: String,
+    access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    expires_at: Option<i64>,
+    #[serde(default)]
+    expires_in: Option<i64>,
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+    #[serde(default)]
+    account_email: Option<String>,
+    #[serde(default)]
+    byoc_credential_id: Option<Uuid>,
+    #[serde(default)]
+    on_behalf_of: Option<Uuid>,
+    /// Service instances to atomically bind to the imported connection. The
+    /// plural form; the singular `service_instance_id` is accepted as an alias
+    /// and merged in.
+    #[serde(default)]
+    pin_service_ids: Vec<Uuid>,
+    /// Singular back-compat alias for `pin_service_ids`. Merged into the list.
+    #[serde(default)]
+    service_instance_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct ImportConnectionResponse {
+    connection_id: Uuid,
+    provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_email: Option<String>,
+    /// `null` when the import didn't declare scopes (unknown — the scope-gate
+    /// gives the connection the benefit of the doubt).
+    scopes: Option<Vec<String>>,
+    is_default: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pinned_service_ids: Vec<Uuid>,
+}
+
+/// `POST /v1/connections/import` — vault OAuth tokens a white-label partner
+/// minted itself. The partner runs the full OAuth dance against its own client
+/// and POSTs the resulting tokens here with an org API key, pinning a
+/// **required** `byoc_credential_id`; Overslash stores, self-refreshes via that
+/// pinned client, and injects them, and never issues a `redirect_uri`.
+/// See `docs/design/white-label-token-vault.md`.
+async fn import_connection(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    WriteAcl(acl): WriteAcl,
+    ip: ClientIp,
+    headers: HeaderMap,
+    Json(req): Json<ImportConnectionRequest>,
+) -> Result<Json<ImportConnectionResponse>> {
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    let ctx = PlatformCallContext {
+        org_id: acl.org_id,
+        identity_id: acl.identity_id,
+        access_level: acl.access_level,
+        db: state.db_pool(&ext),
+        registry: state.registry.clone(),
+        config: state.config.clone(),
+        http_client: state.http_client.clone(),
+    };
+    // Merge the singular alias into the plural list (dedup preserves order).
+    let mut pin_service_ids = req.pin_service_ids;
+    if let Some(sid) = req.service_instance_id {
+        if !pin_service_ids.contains(&sid) {
+            pin_service_ids.push(sid);
+        }
+    }
+    let input = crate::services::platform_connections::ImportConnectionInput {
+        provider: req.provider,
+        access_token: req.access_token,
+        refresh_token: req.refresh_token,
+        expires_at: req.expires_at,
+        expires_in: req.expires_in,
+        scopes: req.scopes,
+        account_email: req.account_email,
+        byoc_credential_id: req.byoc_credential_id,
+        on_behalf_of: req.on_behalf_of,
+        pin_service_ids,
+    };
+    let resp = crate::services::platform_connections::kernel_import_connection(
+        ctx,
+        input,
+        RequestMeta {
+            ip: ip.0.as_deref(),
+            user_agent,
+        },
+    )
+    .await?;
+
+    Ok(Json(ImportConnectionResponse {
+        connection_id: resp.connection_id,
+        provider: resp.provider,
+        account_email: resp.account_email,
+        scopes: resp.scopes,
+        is_default: resp.is_default,
+        pinned_service_ids: resp.pinned_service_ids,
     }))
 }
 
@@ -361,6 +465,10 @@ struct CallbackSuccess {
     /// `service_instance_bind_error`) — callers should not infer that
     /// the named instance now points at this connection.
     service_instance_id: Option<Uuid>,
+    /// Every instance successfully bound to the new connection (the plural
+    /// successor to `service_instance_id`). Empty when no pins were requested
+    /// or all failed.
+    bound_service_instance_ids: Vec<Uuid>,
     /// Coarse error code when binding the connection to the service
     /// instance failed after the OAuth dance succeeded. The connection
     /// itself is still saved — callers can retry the bind via `PUT
@@ -402,28 +510,24 @@ async fn oauth_callback(
         Err(e) => return AppError::from(e).into_response(),
     };
 
-    // White-label flows carry a custom `redirect_uri`, so the provider redirects
-    // the user to the *partner's* URL — a white-label flow legitimately never
-    // lands here. Refuse to complete it through this unauthenticated callback:
-    // the partner must forward `{code, state}` to the authenticated, org-checked,
-    // single-use `POST /v1/oauth/exchange`. Without this, an attacker holding the
-    // code + opaque flow id could complete the exchange here, sidestepping the
-    // `WriteAcl` org-boundary and single-use guarantees of the exchange path.
-    if flow.redirect_uri.is_some() {
-        return AppError::BadRequest(
-            "this flow uses a custom redirect_uri; complete it via POST /v1/oauth/exchange".into(),
-        )
-        .into_response();
-    }
-
     let redirect_target = resolve_redirect_target(&state, &flow);
 
-    // The default callback `redirect_uri` (legacy/non-white-label flows only —
-    // custom-redirect flows are refused above). Recomputed from config so it
-    // byte-matches what the authorize URL was built with.
+    // The default callback `redirect_uri`. Every flow now completes through this
+    // browser callback — there is no per-flow redirect override any more.
+    // Recomputed from config so it byte-matches what the authorize URL was built
+    // with.
     let redirect_uri = crate::services::platform_connections::default_callback_redirect_uri(
         &state.config.public_url,
     );
+
+    // Merge the singular `service_instance_id` (legacy / in-flight flows) with
+    // the plural `pin_service_instance_ids`, preserving order and de-duping.
+    let mut pin_ids = flow.pin_service_instance_ids.clone();
+    if let Some(sid) = flow.service_instance_id {
+        if !pin_ids.contains(&sid) {
+            pin_ids.insert(0, sid);
+        }
+    }
 
     let outcome = oauth_callback_inner(
         &state,
@@ -437,7 +541,8 @@ async fn oauth_callback(
         flow.pkce_code_verifier.as_deref(),
         flow.actor_identity_id,
         flow.upgrade_connection_id,
-        flow.service_instance_id,
+        &pin_ids,
+        &flow.scopes,
         &redirect_uri,
     )
     .await;
@@ -450,9 +555,8 @@ async fn oauth_callback(
     }
 }
 
-/// The historical `status:"connected"` JSON body for a completed OAuth flow.
-/// Shared by the no-`return_url` branch of [`oauth_callback`] and the
-/// white-label [`oauth_exchange`] endpoint so both stay byte-identical.
+/// The `status:"connected"` JSON body for a completed OAuth flow — the
+/// no-`return_url` branch of [`oauth_callback`].
 fn callback_success_json(payload: &CallbackSuccess) -> serde_json::Value {
     let mut body = serde_json::json!({
         "status": "connected",
@@ -464,98 +568,19 @@ fn callback_success_json(payload: &CallbackSuccess) -> serde_json::Value {
     if let Some(id) = payload.service_instance_id {
         body["service_instance_id"] = serde_json::Value::String(id.to_string());
     }
+    if !payload.bound_service_instance_ids.is_empty() {
+        body["bound_service_instance_ids"] = serde_json::Value::Array(
+            payload
+                .bound_service_instance_ids
+                .iter()
+                .map(|id| serde_json::Value::String(id.to_string()))
+                .collect(),
+        );
+    }
     if let Some(code) = payload.service_instance_bind_error {
         body["service_instance_bind_error"] = serde_json::Value::String(code.into());
     }
     body
-}
-
-#[derive(Deserialize)]
-struct OAuthExchangeRequest {
-    /// The authorization code the provider handed to the partner's callback.
-    code: String,
-    /// The OAuth `state` we emitted at flow creation — the opaque flow-row id.
-    state: String,
-}
-
-/// `POST /v1/oauth/exchange` — server-to-server token exchange for white-label
-/// flows whose provider `redirect_uri` points at a partner-hosted callback
-/// (not `{public_url}/v1/oauth/callback`). The partner receives `{code, state}`
-/// at its own URL and forwards them here with an org API key.
-///
-/// This path deliberately bypasses the browser `/connect-authorize` gate (the
-/// partner ran its own consent UI), so it must enforce single-use itself: it
-/// `consume`s the flow row atomically. The org boundary is enforced by matching
-/// the flow's `org_id` to the caller's. The exchange reuses the flow's persisted
-/// `redirect_uri` (guaranteeing the authorize/exchange match) and returns the
-/// same JSON payload as the JSON branch of `oauth_callback` — no redirect.
-async fn oauth_exchange(
-    State(state): State<AppState>,
-    ReqExt(ext): ReqExt,
-    ip: ClientIp,
-    WriteAcl(acl): WriteAcl,
-    Json(req): Json<OAuthExchangeRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let flow_id = req.state.trim();
-    if flow_id.is_empty() {
-        return Err(AppError::BadRequest("missing state parameter".into()));
-    }
-
-    // Look the flow up first so we can enforce the org boundary *before*
-    // consuming — a cross-org caller (who would have to know the unguessable
-    // flow id anyway) must not be able to burn another org's single-use flow.
-    let flow = oauth_connection_flow::get_by_id(state.db(&ext), flow_id)
-        .await?
-        .ok_or_else(|| AppError::BadRequest("invalid state parameter".into()))?;
-
-    if flow.org_id != acl.org_id {
-        return Err(AppError::Forbidden(
-            "state parameter belongs to another org".into(),
-        ));
-    }
-
-    // Mirror of the `oauth_callback` guard: this endpoint is *only* for
-    // white-label flows (custom `redirect_uri`). A regular flow has no custom
-    // redirect_uri and must complete through the browser `/v1/oauth/callback`.
-    // Rejecting before `consume` keeps the two flow types strictly separated
-    // and avoids burning a regular flow that was never meant for this path.
-    let Some(redirect_uri) = flow.redirect_uri.clone() else {
-        return Err(AppError::BadRequest(
-            "this flow has no custom redirect_uri; complete it via GET /v1/oauth/callback".into(),
-        ));
-    };
-
-    // Single-use: claim the flow atomically. `None` ⇒ expired or already
-    // exchanged (also resolves the concurrent-double-exchange race — only one
-    // caller wins). The gate is bypassed on this path, so we own single-use.
-    let flow = oauth_connection_flow::consume(state.db(&ext), flow_id)
-        .await?
-        .ok_or_else(|| AppError::BadRequest("state parameter is expired or already used".into()))?;
-    debug_assert_eq!(flow.redirect_uri.as_deref(), Some(redirect_uri.as_str()));
-
-    let params = OAuthCallbackParams {
-        code: req.code,
-        state: flow_id.to_string(),
-    };
-
-    let payload = oauth_callback_inner(
-        &state,
-        &ext,
-        &ip,
-        &params,
-        flow.org_id,
-        flow.identity_id,
-        &flow.provider_key,
-        flow.byoc_credential_id,
-        flow.pkce_code_verifier.as_deref(),
-        flow.actor_identity_id,
-        flow.upgrade_connection_id,
-        flow.service_instance_id,
-        &redirect_uri,
-    )
-    .await?;
-
-    Ok(Json(callback_success_json(&payload)))
 }
 
 /// Build a verified redirect target from the flow row, or `None` if any
@@ -591,6 +616,20 @@ fn resolve_redirect_target(
     })
 }
 
+/// Browser-facing success redirect to the tenant's `return_url`.
+///
+/// The query string carries only the *stable key* — `connection_id` — plus a
+/// coarse `service_instance_id`/`service_instance_bind_error` echo kept for
+/// back-compat with single-pin callers. It deliberately does **not** enumerate
+/// the full `bound_service_instance_ids` set: a browser-visible query string is
+/// the wrong transport for authoritative binding state (it can't losslessly
+/// carry a list, and the redirect is user-controllable). The authoritative,
+/// complete binding set is the DB — a partner reads it back with
+/// `GET /v1/connections/{connection_id}` (its `used_by` list), keyed off the
+/// `connection_id` already in this redirect. The JSON branch
+/// ([`callback_success_json`]) still includes the full list as a convenience
+/// for programmatic callers, who receive it in an authenticated response body
+/// rather than a URL.
 fn success_redirect(redir: VerifiedRedirect, payload: &CallbackSuccess) -> Response {
     let mut url = redir.url;
     {
@@ -601,6 +640,8 @@ fn success_redirect(redir: VerifiedRedirect, payload: &CallbackSuccess) -> Respo
         if let Some(email) = payload.account_email.as_deref() {
             pairs.append_pair("account_email", email);
         }
+        // Back-compat single-instance echo only. For the full set, the partner
+        // queries `GET /v1/connections/{connection_id}` (see doc comment above).
         if let Some(id) = payload.service_instance_id {
             pairs.append_pair("service_instance_id", &id.to_string());
         }
@@ -655,7 +696,8 @@ async fn oauth_callback_inner(
     code_verifier: Option<&str>,
     actor_identity_id: Uuid,
     upgrade_connection_id: Option<Uuid>,
-    service_instance_id: Option<Uuid>,
+    service_instance_ids: &[Uuid],
+    requested_scopes: &[String],
     redirect_uri: &str,
 ) -> Result<CallbackSuccess> {
     let provider = overslash_db::repos::oauth_provider::get_by_key(state.db(ext), provider_key)
@@ -698,7 +740,10 @@ async fn oauth_callback_inner(
         oauth::fetch_account_email(&state.http_client, &provider, &tokens.access_token)
             .await
             .unwrap_or(None);
-    let granted_scopes = tokens.granted_scopes();
+    // When the token response omits `scope` entirely (HubSpot always does),
+    // RFC 6749 §5.1 means the requested set was granted verbatim — record
+    // that instead of a known-empty `[]` the scope gate would then enforce.
+    let granted_scopes = tokens.granted_scopes_or_requested(requested_scopes);
 
     // Encrypt tokens
     let encrypted_access = crypto::encrypt(&enc_key, tokens.access_token.as_bytes())?;
@@ -732,14 +777,15 @@ async fn oauth_callback_inner(
                     "state mismatch: upgrade connection does not match identity/provider".into(),
                 ));
             }
-            let merged: Vec<String> = merge_scopes(&existing.scopes, &granted_scopes);
+            let merged: Vec<String> =
+                merge_scopes(existing.scopes.as_deref().unwrap_or(&[]), &granted_scopes);
             let updated = scope
                 .update_connection_tokens_and_scopes(
                     existing_id,
                     &encrypted_access,
                     encrypted_refresh.as_deref(),
                     expires_at,
-                    &merged,
+                    Some(&merged),
                     // Refresh the label too — the provider may have renamed the
                     // account between the original connect and the upgrade.
                     // `COALESCE` on the repo side leaves the existing value
@@ -765,7 +811,10 @@ async fn oauth_callback_inner(
                     encrypted_access_token: &encrypted_access,
                     encrypted_refresh_token: encrypted_refresh.as_deref(),
                     token_expires_at: expires_at,
-                    scopes: &granted_scopes,
+                    // Orchestrated flows always know the granted set (echoed
+                    // by the token response, or the requested set when the
+                    // provider omitted `scope`) — record it, never NULL.
+                    scopes: Some(&granted_scopes),
                     account_email: account_email.as_deref(),
                     byoc_credential_id: effective_byoc_id,
                 })
@@ -834,9 +883,21 @@ async fn oauth_callback_inner(
     // are also rejected here — connections are identity-bound and the
     // create-time `kernel_create_service` validation already forbids
     // pinning a connection to an org-level service.
+    //
+    // Best-effort by design (unlike the fully-atomic `/v1/connections/import`
+    // path): the OAuth token exchange already succeeded and the connection is
+    // valuable, so a bind failure must NOT discard it. We bind each id
+    // independently, keep the connection regardless, and surface the first
+    // failing id's coarse code — callers retry via `PUT /v1/services/{id}/manage`.
     let scope = OrgScope::new(org_id, state.db_pool(ext));
     let mut service_instance_bind_error: Option<&'static str> = None;
-    if let Some(svc_id) = service_instance_id {
+    let mut bound_service_instance_ids: Vec<Uuid> = Vec::new();
+    for &svc_id in service_instance_ids {
+        // Once one bind has failed, stop attempting the rest — the caller must
+        // retry the whole set anyway, and partial binds are already recorded.
+        if service_instance_bind_error.is_some() {
+            break;
+        }
         match scope.get_service_instance(svc_id).await {
             Ok(None) => {
                 service_instance_bind_error = Some("service_instance_not_found");
@@ -850,9 +911,10 @@ async fn oauth_callback_inner(
                     connection_id: Some(Some(connection_id)),
                     secret_name: None,
                     url: None,
+                    use_default_connection: None,
                 };
                 match scope.update_service_instance(svc_id, &bind_input).await {
-                    Ok(Some(_)) => {}
+                    Ok(Some(_)) => bound_service_instance_ids.push(svc_id),
                     Ok(None) => {
                         // Concurrent delete in the gap between the
                         // ownership check above and the UPDATE.
@@ -874,7 +936,10 @@ async fn oauth_callback_inner(
         provider_key: provider_key.to_string(),
         account_email,
         scopes: granted_scopes,
-        service_instance_id: service_instance_id.filter(|_| service_instance_bind_error.is_none()),
+        // Back-compat: surface the first bound id in the singular field the
+        // JSON/redirect shapes have always carried.
+        service_instance_id: bound_service_instance_ids.first().copied(),
+        bound_service_instance_ids,
         service_instance_bind_error,
     })
 }
@@ -882,6 +947,10 @@ async fn oauth_callback_inner(
 #[derive(Serialize)]
 struct ConnectionSummary {
     id: Uuid,
+    /// Owner identity of the connection. Connections are bound to the user
+    /// identity (D22), so this is the user who owns the linked account. The
+    /// dashboard resolves it to a name in the admin "all users" view.
+    owner_identity_id: Uuid,
     provider_key: String,
     account_email: Option<String>,
     /// Scopes the provider actually granted at the last OAuth flow. The
@@ -896,8 +965,62 @@ struct ConnectionSummary {
     created_at: String,
 }
 
-async fn list_connections(scope: UserScope) -> Result<Json<Vec<ConnectionSummary>>> {
-    let rows = scope.list_my_connections().await?;
+/// Query params for `GET /v1/connections`. Mirrors `ListServicesQuery`.
+#[derive(Deserialize, Default)]
+struct ListConnectionsQuery {
+    /// Admin-only: when true, list every connection in the org (all users'
+    /// rows) instead of only the caller's own. Silently ignored for non-admin
+    /// callers so a stale dashboard tab doesn't start 403'ing when an admin
+    /// flag is revoked — same contract as the services list.
+    #[serde(default)]
+    include_user_level: bool,
+    /// Admin-or-self: list connections owned by this specific identity instead
+    /// of the caller's own. The service detail page passes the service's
+    /// `owner_identity_id` so an admin viewing another user's service sees that
+    /// user's bindable connections (connections are identity-scoped). Equal to
+    /// the caller's own identity → self path. A non-admin caller passing a
+    /// *different* identity is silently downgraded to their own list (no 403,
+    /// same contract as `include_user_level`). Takes precedence over
+    /// `include_user_level` when both are set.
+    #[serde(default)]
+    owner_identity_id: Option<Uuid>,
+}
+
+async fn list_connections(
+    scope: UserScope,
+    Query(q): Query<ListConnectionsQuery>,
+) -> Result<Json<Vec<ConnectionSummary>>> {
+    // `include_user_level` is admin-only. Read `is_org_admin` straight off the
+    // identity row (same flag-based check as the services list — `AdminAcl`
+    // would instead require the `overslash` service admin grant). Non-admins
+    // passing the flag fall through to the standard self-scoped listing.
+    let is_org_admin = || async {
+        Ok::<bool, AppError>(
+            scope
+                .org()
+                .get_identity(scope.user_id())
+                .await?
+                .map(|i| i.is_org_admin)
+                .unwrap_or(false),
+        )
+    };
+
+    let rows = if let Some(owner) = q.owner_identity_id {
+        // Owner-scoped listing. Self is always allowed; another identity
+        // requires org admin, else fall through to the caller's own list.
+        if owner == scope.user_id() {
+            scope.list_my_connections().await?
+        } else if is_org_admin().await? {
+            let owner_scope = UserScope::new(scope.org_id(), owner, scope.org().db().clone());
+            owner_scope.list_my_connections().await?
+        } else {
+            scope.list_my_connections().await?
+        }
+    } else if q.include_user_level && is_org_admin().await? {
+        scope.org().list_all_connections().await?
+    } else {
+        scope.list_my_connections().await?
+    };
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     // Usage lookup is org-scoped; downgrade the UserScope to an OrgScope so
     // the service_instances query doesn't need a user bound.
@@ -912,9 +1035,10 @@ async fn list_connections(scope: UserScope) -> Result<Json<Vec<ConnectionSummary
             .map(|r| ConnectionSummary {
                 used_by_service_templates: usage.remove(&r.id).unwrap_or_default(),
                 id: r.id,
+                owner_identity_id: r.identity_id,
                 provider_key: r.provider_key,
                 account_email: r.account_email,
-                scopes: r.scopes,
+                scopes: r.scopes.unwrap_or_default(),
                 is_default: r.is_default,
                 created_at: fmt_time(r.created_at),
             })
@@ -947,15 +1071,32 @@ struct ConnectionDetail {
     used_by: Vec<UsedByService>,
     /// What OAuth client credentials the next refresh will use. Mirrors the
     /// `client_credentials::resolve()` cascade against current state (the
-    /// connection's stored BYOC may have been deleted out from under it).
+    /// connection's stored BYOC may have been deleted out from under it) —
+    /// a pinned BYOC for imported connections, the org/env cascade otherwise.
     credential_source: client_credentials::CredentialSource,
 }
 
 async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<ConnectionDetail>> {
-    let conn = scope
-        .get_my_connection(id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
+    // Caller's own connection takes the fast path. Falling through to an
+    // org-scoped lookup only for org admins lets them open another user's
+    // connection from the "all users" view; everyone else gets a 404.
+    let conn = match scope.get_my_connection(id).await? {
+        Some(c) => c,
+        None => {
+            let org = scope.org();
+            let is_admin = org
+                .get_identity(scope.user_id())
+                .await?
+                .map(|i| i.is_org_admin)
+                .unwrap_or(false);
+            let conn = if is_admin {
+                org.get_connection(id).await?
+            } else {
+                None
+            };
+            conn.ok_or_else(|| AppError::NotFound("connection not found".into()))?
+        }
+    };
 
     // Usage lookup is org-scoped; downgrade to OrgScope like `list_connections`.
     let org = scope.org();
@@ -970,6 +1111,9 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
         })
         .collect();
 
+    // Every connection refreshes via the credential cascade — a pinned BYOC
+    // (imported connections, and orchestrated ones that pinned one) or the
+    // org/env fallback. Describe whichever the next refresh would use.
     let credential_source = client_credentials::describe_source(
         &org,
         &conn.provider_key,
@@ -982,7 +1126,7 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
         id: conn.id,
         provider_key: conn.provider_key,
         account_email: conn.account_email,
-        scopes: conn.scopes,
+        scopes: conn.scopes.unwrap_or_default(),
         is_default: conn.is_default,
         created_at: fmt_time(conn.created_at),
         updated_at: fmt_time(conn.updated_at),
@@ -993,8 +1137,9 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
 
 /// Promote a connection to be the default for its (identity, provider). Demotes
 /// any sibling that held the flag. Identity-scoped: the caller must own the
-/// connection. Low-risk + idempotent — the dashboard fires it from a radio /
-/// toggle with no confirmation.
+/// connection — or be an org admin acting on another user's connection from the
+/// "all users" view. Low-risk + idempotent — the dashboard fires it from a
+/// radio / toggle with no confirmation.
 async fn set_connection_default(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -1006,12 +1151,25 @@ async fn set_connection_default(
         AppError::BadRequest("set_default requires an identity-bound API key".into())
     })?;
 
+    // The caller's own connection takes the identity-scoped path. For a
+    // connection owned by another user, an org admin may still promote it —
+    // the org-scoped path demotes siblings within the *owner's* identity, not
+    // the admin's. Non-owner non-admins get a 404 (the row stays invisible).
     let updated = UserScope::new(acl.org_id, identity_id, state.db_pool(&ext))
         .set_my_connection_default(id)
         .await?;
 
     if !updated {
-        return Err(AppError::NotFound("connection not found".into()));
+        let org = OrgScope::new(acl.org_id, state.db_pool(&ext));
+        let is_admin = org
+            .get_identity(identity_id)
+            .await?
+            .map(|i| i.is_org_admin)
+            .unwrap_or(false);
+        let promoted = is_admin && org.set_connection_default(id).await?;
+        if !promoted {
+            return Err(AppError::NotFound("connection not found".into()));
+        }
     }
 
     let _ = OrgScope::new(acl.org_id, state.db_pool(&ext))
@@ -1035,30 +1193,11 @@ struct UpgradeScopesRequest {
     /// Additional scopes to request on top of the connection's current set.
     /// May overlap the current set — duplicates are deduped.
     scopes: Vec<String>,
-    /// Optional white-label provider `redirect_uri` for the reauth flow. Host
-    /// must be on the org's `oauth_callback_allowed_hosts` allow-list; pairs
-    /// with `POST /v1/oauth/exchange`. See
-    /// [`CreateConnectionInput::redirect_uri`].
-    #[serde(default)]
-    redirect_uri: Option<String>,
-    /// REST-only opt-in: include the raw provider authorize URL alongside
-    /// the proxied form. Intended for white-label integrations that drive
-    /// their own consent UI and exchange via `POST /v1/oauth/exchange`.
-    /// The MCP path never sets this — chat-delivered links go through the gate.
-    #[serde(default)]
-    include_raw: bool,
 }
 
 #[derive(Serialize)]
 struct UpgradeScopesResponse {
     auth_url: String,
-    /// Raw upstream provider authorize URL. Only present when the caller
-    /// opts in via `include_raw: true`. Bypasses the connect gate so a
-    /// white-label partner can run its own consent screen and then complete
-    /// the dance through `POST /v1/oauth/exchange` without the gate
-    /// consuming the single-use flow first.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    raw: Option<String>,
     state: String,
     connection_id: Uuid,
     /// The union of existing + requested scopes the provider will be asked
@@ -1070,12 +1209,8 @@ struct UpgradeScopesResponse {
 /// Start an incremental-scope OAuth flow for an existing connection. Mints a
 /// flow row whose `upgrade_connection_id` points at this connection — the
 /// callback reads that off the row and updates this connection in place
-/// instead of minting a new one.
-///
-/// White-label callers reconnecting through their own consent UI pass
-/// `redirect_uri` (allow-listed host) plus `include_raw: true` to get the
-/// raw provider authorize URL back, then finish via `POST /v1/oauth/exchange`.
-/// Symmetric to `include_raw` on `POST /v1/connections`.
+/// instead of minting a new one. The flow completes through the browser gate
+/// at `/v1/oauth/callback` like every other connect flow.
 async fn upgrade_connection_scopes(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -1095,16 +1230,39 @@ async fn upgrade_connection_scopes(
         .await?
         .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
 
-    if existing.identity_id != caller_identity_id {
+    // Connections live at the owner identity (D22/D23) and are shared by every
+    // agent under it, so the caller may upgrade a connection held by itself or
+    // by its own ceiling user (its `owner_id`) — but not one owned by an
+    // unrelated identity. Accept a legacy agent-owned row (`== caller`) too: the
+    // flow is minted at `existing.identity_id` below, so it heals either way.
+    let ceiling =
+        crate::services::group_ceiling::resolve_ceiling_user_id(&org_scope, caller_identity_id)
+            .await?;
+    if existing.identity_id != caller_identity_id && existing.identity_id != ceiling {
         return Err(AppError::Forbidden(
             "connection belongs to another identity".into(),
+        ));
+    }
+
+    // Headless (white-label) orgs drive their own OAuth flow — the gated
+    // upgrade flow would mint a `/connect-authorize` link their end users can't
+    // open. They broaden the grant on their side and re-import the connection
+    // with the wider scopes via `POST /v1/connections/import`.
+    if overslash_db::repos::org::get_headless(state.db(&ext), acl.org_id)
+        .await?
+        .unwrap_or(false)
+    {
+        return Err(AppError::BadRequest(
+            "this org is headless; scopes can't be upgraded through Overslash — broaden \
+             the grant and re-import the connection via POST /v1/connections/import"
+                .into(),
         ));
     }
 
     // Union existing + requested scopes. Google with `include_granted_scopes=true`
     // would preserve old ones anyway, but sending the full union is what makes
     // non-Google providers work.
-    let merged: Vec<String> = merge_scopes(&existing.scopes, &req.scopes);
+    let merged: Vec<String> = merge_scopes(existing.scopes.as_deref().unwrap_or(&[]), &req.scopes);
 
     // Mirror what `kernel_create_connection_for_identity` will do: union in
     // the provider's identity scopes so `requested_scopes` on the response
@@ -1129,8 +1287,14 @@ async fn upgrade_connection_scopes(
         config: state.config.clone(),
         http_client: state.http_client.clone(),
     };
-    let response = kernel_create_connection(
+    // Mint the upgrade flow at the connection's own identity — the callback
+    // rejects a flow whose identity differs from the row it upgrades. Going
+    // through `kernel_create_connection` would re-home to the caller's ceiling
+    // (D23) and break the upgrade of a legacy agent-owned connection.
+    let response = kernel_create_connection_for_identity(
         ctx,
+        existing.identity_id,
+        caller_identity_id,
         CreateConnectionInput {
             provider: existing.provider_key.clone(),
             scopes: merged.clone(),
@@ -1140,8 +1304,8 @@ async fn upgrade_connection_scopes(
             on_behalf_of: None,
             upgrade_connection_id: Some(id),
             return_url: None,
-            redirect_uri: req.redirect_uri.clone(),
             service_instance_id: None,
+            pin_service_ids: vec![],
         },
         RequestMeta {
             ip: ip.0.as_deref(),
@@ -1150,15 +1314,8 @@ async fn upgrade_connection_scopes(
     )
     .await?;
 
-    // Mirror create's `include_raw` opt-in: the kernel carries `raw` in a
-    // `#[serde(skip)]` field, so only this explicit flag surfaces it. Bypassing
-    // the gate is what lets the white-label `POST /v1/oauth/exchange` follow-up
-    // succeed (the gate would otherwise consume the single-use flow first).
-    let raw = req.include_raw.then(|| response.raw.clone());
-
     Ok(Json(UpgradeScopesResponse {
         auth_url: response.auth_url,
-        raw,
         state: response.state,
         connection_id: id,
         requested_scopes: effective_scopes,
@@ -1173,12 +1330,22 @@ async fn delete_connection(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
-    // Scope delete: if identity-bound, must own the connection.
-    // Org-level keys can delete any connection in the org.
+    // Scope delete: if identity-bound, must own the connection — unless the
+    // caller is an org admin, who may delete any connection in the org (the
+    // "all users" view). Org-level keys can delete any connection in the org.
     let deleted = if let Some(identity_id) = auth.identity_id {
-        UserScope::new(auth.org_id, identity_id, state.db_pool(&ext))
-            .delete_my_connection(id)
-            .await?
+        let user_scope = UserScope::new(auth.org_id, identity_id, state.db_pool(&ext));
+        if user_scope.delete_my_connection(id).await? {
+            true
+        } else {
+            let org = user_scope.org();
+            let is_admin = org
+                .get_identity(identity_id)
+                .await?
+                .map(|i| i.is_org_admin)
+                .unwrap_or(false);
+            is_admin && org.delete_connection(id).await?
+        }
     } else {
         OrgScope::new(auth.org_id, state.db_pool(&ext))
             .delete_connection(id)

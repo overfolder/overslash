@@ -225,7 +225,9 @@ pub(super) async fn resolve_request(
     ext: &axum::http::Extensions,
     auth: &AuthContext,
     scope: &OrgScope,
-    identity_id: Uuid,
+    // Connections + auth recovery resolve at `ceiling_user_id` (the owner, D22);
+    // permission/service resolution below uses `auth.identity_id` (the caller).
+    // There is no remaining need for a separately-threaded caller identity.
     ceiling_user_id: Uuid,
     req: &CallRequest,
     pre_resolved_mode_c: Option<ResolvedModeC>,
@@ -282,7 +284,7 @@ pub(super) async fn resolve_request(
                 state,
                 ext,
                 scope,
-                identity_id,
+                ceiling_user_id,
                 inst,
                 &svc,
                 &req.secrets,
@@ -294,7 +296,7 @@ pub(super) async fn resolve_request(
                 state,
                 ext,
                 scope,
-                identity_id,
+                ceiling_user_id,
                 &svc,
                 &req.secrets,
                 return_url_hint,
@@ -330,6 +332,7 @@ pub(super) async fn resolve_request(
                 disclose: Vec::new(),
                 redact: Vec::new(),
                 params: HashMap::new(),
+                resolved: HashMap::new(),
                 mcp_target: None,
                 platform_target: None,
                 instance_id: instance.as_ref().map(|i| i.id),
@@ -444,7 +447,11 @@ pub(super) async fn resolve_request(
                 }
             };
 
-            // Resolve bearer secret_name: instance wins, template is fallback.
+            // Resolve auth. For Bearer: pick secret_name (instance wins,
+            // template fallback). For OAuth: resolve a live bearer from the
+            // caller's connection now (out-of-band), gating to a fresh auth
+            // URL when no connection exists yet.
+            let mut mcp_oauth_header: Option<overslash_core::types::AuthHeader> = None;
             let resolved_auth = match &mcp_spec.auth {
                 McpAuth::None => McpAuth::None,
                 McpAuth::Bearer {
@@ -470,6 +477,50 @@ pub(super) async fn resolve_request(
                     };
                     McpAuth::Bearer {
                         secret_name: Some(sn),
+                    }
+                }
+                McpAuth::OAuth { provider, scopes } => {
+                    match resolve_mcp_oauth_bearer(
+                        state,
+                        ext,
+                        scope,
+                        ceiling_user_id,
+                        provider,
+                        return_url_hint,
+                    )
+                    .await?
+                    {
+                        Some(header) => mcp_oauth_header = Some(header),
+                        None => {
+                            // No connection yet — mint a gated auth URL and
+                            // hand the agent a `needs_authentication` envelope,
+                            // mirroring the HTTP OAuth path.
+                            let urls = platform_connections::mint_initial_auth_url(
+                                state,
+                                scope.org_id(),
+                                ceiling_user_id,
+                                provider,
+                                scopes,
+                                None,
+                                return_url_hint,
+                            )
+                            .await?;
+                            return Err(AppError::NeedsAuthentication {
+                                service: Some(service_key.clone()),
+                                service_instance_id: instance.as_ref().map(|i| i.id),
+                                connection_id: None,
+                                auth_url: Some(urls.auth_url),
+                                short: urls.short,
+                                provider: Some(provider.clone()),
+                                required_scopes: scopes.clone(),
+                                account_email: None,
+                                headless: false,
+                            });
+                        }
+                    }
+                    McpAuth::OAuth {
+                        provider: provider.clone(),
+                        scopes: scopes.clone(),
                     }
                 }
             };
@@ -514,9 +565,13 @@ pub(super) async fn resolve_request(
                     disclose: action.disclose.clone(),
                     redact: action.redact.clone(),
                     params: req.params.clone(),
+                    // Resolvers don't run for MCP (no HTTP parameter schema),
+                    // so the disclosure projection's `resolved` stays empty.
+                    resolved: HashMap::new(),
                     mcp_target: Some(McpTarget {
                         url: resolved_url,
                         auth: resolved_auth,
+                        auth_header: mcp_oauth_header,
                         tool,
                         arguments,
                     }),
@@ -565,6 +620,7 @@ pub(super) async fn resolve_request(
                     disclose: Vec::new(),
                     redact: Vec::new(),
                     params: HashMap::new(),
+                    resolved: HashMap::new(),
                     mcp_target: None,
                     platform_target: Some(PlatformTarget {
                         action_key: action_key.clone(),
@@ -596,27 +652,35 @@ pub(super) async fn resolve_request(
             format!("https://{host}{path}")
         };
 
+        // Header-located params (e.g. a template-pinned `Notion-Version`) are
+        // routed into the request headers below — they must not leak into the
+        // query string or JSON body like path/query/body params do.
+        let is_header_param = |k: &str| {
+            action
+                .params
+                .get(k)
+                .map(|p| p.location == ParamLocation::Header)
+                .unwrap_or(false)
+        };
+
         let non_path_params: HashMap<String, serde_json::Value> = req
             .params
             .iter()
             .filter(|(k, _)| !action.path.contains(&format!("{{{k}}}")))
+            .filter(|(k, _)| !is_header_param(k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
         let (url, body) = if action.method == "GET" || action.method == "HEAD" {
             // Append non-path params as query string
-            let url = if non_path_params.is_empty() {
+            let pairs = non_path_params
+                .iter()
+                .flat_map(|(k, v)| encode_query_param(k, v))
+                .collect::<Vec<_>>();
+            let url = if pairs.is_empty() {
                 base_url
             } else {
-                let qs = non_path_params
-                    .iter()
-                    .map(|(k, v)| {
-                        let val = v.as_str().unwrap_or(&v.to_string()).to_string();
-                        format!("{k}={}", urlencoding::encode(&val))
-                    })
-                    .collect::<Vec<_>>()
-                    .join("&");
-                format!("{base_url}?{qs}")
+                format!("{base_url}?{}", pairs.join("&"))
             };
             (url, None)
         } else {
@@ -630,18 +694,14 @@ pub(super) async fn resolve_request(
                         .map(|p| p.location == ParamLocation::Query)
                         .unwrap_or(false)
                 });
-            let url = if query_params.is_empty() {
+            let pairs = query_params
+                .iter()
+                .flat_map(|(k, v)| encode_query_param(k, v))
+                .collect::<Vec<_>>();
+            let url = if pairs.is_empty() {
                 base_url
             } else {
-                let qs = query_params
-                    .iter()
-                    .map(|(k, v)| {
-                        let val = v.as_str().unwrap_or(&v.to_string()).to_string();
-                        format!("{k}={}", urlencoding::encode(&val))
-                    })
-                    .collect::<Vec<_>>()
-                    .join("&");
-                format!("{base_url}?{qs}")
+                format!("{base_url}?{}", pairs.join("&"))
             };
             let body = if body_params.is_empty() {
                 None
@@ -659,6 +719,19 @@ pub(super) async fn resolve_request(
         if body.is_some() {
             headers.insert("Content-Type".to_string(), "application/json".to_string());
         }
+        // Template-declared header params (`in: header`) are sent verbatim as
+        // request headers. `apply_defaults` has already filled any that carry a
+        // `default` and were omitted by the caller (e.g. `Notion-Version`), so
+        // this stamps the constant version header on every call.
+        for (k, v) in &req.params {
+            if is_header_param(k) {
+                let val = v
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string());
+                headers.insert(k.clone(), val);
+            }
+        }
 
         // Scope gate: if the action declares `required_scopes`, and the
         // connection we'd use to auth doesn't carry all of them, return
@@ -668,7 +741,7 @@ pub(super) async fn resolve_request(
         check_required_scopes(
             state,
             scope,
-            identity_id,
+            ceiling_user_id,
             instance.as_ref(),
             &svc,
             action,
@@ -686,7 +759,7 @@ pub(super) async fn resolve_request(
                 state,
                 ext,
                 scope,
-                identity_id,
+                ceiling_user_id,
                 inst,
                 &svc,
                 &req.secrets,
@@ -698,7 +771,7 @@ pub(super) async fn resolve_request(
                 state,
                 ext,
                 scope,
-                identity_id,
+                ceiling_user_id,
                 &svc,
                 &req.secrets,
                 return_url_hint,
@@ -722,8 +795,9 @@ pub(super) async fn resolve_request(
         if !resolved_auth.oauth_injected && resolved_auth.secrets.is_empty() {
             if let Some(err) = needs_authentication_for_service(
                 state,
+                ext,
                 scope.org_id(),
-                identity_id,
+                ceiling_user_id,
                 &svc,
                 action,
                 instance.as_ref(),
@@ -753,6 +827,7 @@ pub(super) async fn resolve_request(
         };
         let resolved = crate::services::param_resolver::resolve_display_params(
             &state.http_client,
+            &state.config,
             &resolver_base,
             &resolver_headers,
             action,
@@ -792,6 +867,7 @@ pub(super) async fn resolve_request(
                 disclose: action.disclose.clone(),
                 redact: action.redact.clone(),
                 params: req.params.clone(),
+                resolved,
                 mcp_target: None,
                 platform_target: None,
                 instance_id: instance.as_ref().map(|i| i.id),
@@ -804,4 +880,64 @@ pub(super) async fn resolve_request(
     Err(AppError::BadRequest(
         "request must include 'service' plus either 'action' or ('method' + 'url'/'path')".into(),
     ))
+}
+
+/// Serialize one query param into zero or more URL-encoded `key=value`
+/// pairs. Arrays expand to one pair per element (OpenAPI form/explode
+/// style, e.g. Gmail's repeatable `labelIds`); an empty array emits
+/// nothing. Nested arrays/objects inside an array fall through to their
+/// JSON string encoding — templates only declare arrays of scalars, so
+/// that case is a template bug, not a runtime one.
+fn encode_query_param(key: &str, value: &serde_json::Value) -> Vec<String> {
+    let encode = |v: &serde_json::Value| {
+        let val = v.as_str().unwrap_or(&v.to_string()).to_string();
+        format!("{key}={}", urlencoding::encode(&val))
+    };
+    match value {
+        serde_json::Value::Array(items) => items.iter().map(encode).collect(),
+        other => vec![encode(other)],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_query_param;
+    use serde_json::json;
+
+    #[test]
+    fn array_expands_to_repeated_pairs() {
+        assert_eq!(
+            encode_query_param("labelIds", &json!(["INBOX", "UNREAD"])),
+            vec!["labelIds=INBOX", "labelIds=UNREAD"]
+        );
+    }
+
+    #[test]
+    fn scalars_produce_single_pair() {
+        assert_eq!(encode_query_param("q", &json!("hello")), vec!["q=hello"]);
+        assert_eq!(
+            encode_query_param("maxResults", &json!(50)),
+            vec!["maxResults=50"]
+        );
+        assert_eq!(
+            encode_query_param("includeSpamTrash", &json!(true)),
+            vec!["includeSpamTrash=true"]
+        );
+    }
+
+    #[test]
+    fn empty_array_emits_nothing() {
+        assert_eq!(
+            encode_query_param("labelIds", &json!([])),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn elements_are_url_encoded() {
+        assert_eq!(
+            encode_query_param("q", &json!(["a b&c", "d=e"])),
+            vec!["q=a%20b%26c", "q=d%3De"]
+        );
+    }
 }

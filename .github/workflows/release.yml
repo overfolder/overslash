@@ -25,7 +25,7 @@ jobs:
     name: Build dashboard
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Enforce -test suffix on dispatch
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -71,7 +71,7 @@ jobs:
             runner: windows-latest
             archive_ext: zip
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

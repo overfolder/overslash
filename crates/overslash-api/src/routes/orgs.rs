@@ -32,7 +32,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/v1/orgs/{id}/template-settings",
-            patch(patch_template_settings),
+            get(get_template_settings).patch(patch_template_settings),
         )
         .route(
             "/v1/orgs/{id}/secret-request-settings",
@@ -47,13 +47,17 @@ pub fn router() -> Router<AppState> {
             get(get_audit_settings).patch(patch_audit_settings),
         )
         .route(
-            "/v1/orgs/{id}/oauth-callback-settings",
-            get(get_oauth_callback_settings).patch(patch_oauth_callback_settings),
-        )
-        .route(
             "/v1/orgs/{id}/managed-signin",
             get(get_managed_signin).patch(patch_managed_signin),
         )
+        .route(
+            "/v1/orgs/{id}/headless",
+            get(get_headless).patch(patch_headless),
+        )
+        // Instance-admin-only trial controls. Not org-scoped by AdminAcl —
+        // an instance admin acts on any org by id.
+        .route("/v1/orgs/{id}/trial", post(start_trial).patch(extend_trial))
+        .route("/v1/orgs/{id}/plan", patch(set_org_plan))
 }
 
 // Bounds for sub-agent idle cleanup config (per replan).
@@ -411,6 +415,209 @@ async fn create_free_unlimited_org(
     finalize_new_org(&state, &ext, org, Some(admin.user_id), audit_detail, ip).await
 }
 
+// ---------------------------------------------------------------------------
+// Instance-admin trial controls
+//
+// These put an existing org on (or off) an instance-admin-managed trial —
+// `plan='trial'` + `trial_ends_at`. Enforcement is banner-only (DECISIONS
+// D25): expiry drives dashboard messaging, not API access. `free_unlimited`
+// (e.g. Reveni) is exempt — it is never `plan='trial'`, and `PATCH .../plan`
+// is how a trial org opts out. Self-serve card-backed trials go through Stripe
+// (`/v1/billing/checkout` with `trial: true`), not these endpoints.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct StartTrialRequest {
+    /// Trial length in days. Defaults to `TRIAL_DEFAULT_DURATION_DAYS`.
+    #[serde(default)]
+    duration_days: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct ExtendTrialRequest {
+    /// Days to add to the current window end (or to now, if already past).
+    /// Defaults to `TRIAL_DEFAULT_DURATION_DAYS`.
+    #[serde(default)]
+    extend_days: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct TrialResponse {
+    org_id: Uuid,
+    plan: String,
+    /// Trial window end, unix seconds.
+    trial_ends_at: i64,
+}
+
+/// Resolve a requested duration to a bounded day count, defaulting to config.
+fn resolve_trial_days(requested: Option<u32>, default_days: u32) -> Result<u32> {
+    let days = requested.unwrap_or(default_days);
+    if days == 0 {
+        return Err(AppError::BadRequest(
+            "duration must be at least 1 day".into(),
+        ));
+    }
+    // Guard against absurd windows (and i64 overflow on the timestamp math).
+    if days > 3650 {
+        return Err(AppError::BadRequest(
+            "duration must be at most 3650 days".into(),
+        ));
+    }
+    Ok(days)
+}
+
+/// POST /v1/orgs/{id}/trial — start (or restart) a managed trial on an org.
+async fn start_trial(
+    admin: InstanceAdminAuth,
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<StartTrialRequest>,
+) -> Result<Json<TrialResponse>> {
+    let days = resolve_trial_days(req.duration_days, state.config.trial_default_duration_days)?;
+    let ends_at = OffsetDateTime::now_utc() + time::Duration::days(days as i64);
+
+    if !overslash_db::repos::org::set_trial(state.db(&ext), id, ends_at).await? {
+        return Err(AppError::NotFound("org not found".into()));
+    }
+    // Propagate immediately rather than waiting out the cache TTL.
+    state.free_unlimited_cache(&ext).invalidate(id);
+
+    let _ = overslash_db::OrgScope::new(id, state.db_pool(&ext))
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: None,
+            action: "org.trial_started",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "trial_ends_at": ends_at.unix_timestamp(),
+                "duration_days": days,
+                "set_by_instance_admin": admin.user_id.to_string(),
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(TrialResponse {
+        org_id: id,
+        plan: "trial".into(),
+        trial_ends_at: ends_at.unix_timestamp(),
+    }))
+}
+
+/// PATCH /v1/orgs/{id}/trial — bump an existing trial's end date.
+async fn extend_trial(
+    admin: InstanceAdminAuth,
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ExtendTrialRequest>,
+) -> Result<Json<TrialResponse>> {
+    let days = resolve_trial_days(req.extend_days, state.config.trial_default_duration_days)?;
+
+    let org = overslash_db::repos::org::get_by_id(state.db(&ext), id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    if org.plan != "trial" {
+        return Err(AppError::BadRequest("org is not on a trial".into()));
+    }
+
+    // Extend from the later of (current end, now) so bumping an already-expired
+    // trial still grants a fresh window rather than landing in the past.
+    let now = OffsetDateTime::now_utc();
+    let base = org.trial_ends_at.unwrap_or(now).max(now);
+    let ends_at = base + time::Duration::days(days as i64);
+
+    if !overslash_db::repos::org::extend_trial(state.db(&ext), id, ends_at).await? {
+        // Lost the trial between read and write (raced with an opt-out).
+        return Err(AppError::BadRequest("org is not on a trial".into()));
+    }
+    state.free_unlimited_cache(&ext).invalidate(id);
+
+    let _ = overslash_db::OrgScope::new(id, state.db_pool(&ext))
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: None,
+            action: "org.trial_extended",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "trial_ends_at": ends_at.unix_timestamp(),
+                "extend_days": days,
+                "set_by_instance_admin": admin.user_id.to_string(),
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(TrialResponse {
+        org_id: id,
+        plan: "trial".into(),
+        trial_ends_at: ends_at.unix_timestamp(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct SetPlanRequest {
+    plan: String,
+}
+
+#[derive(Serialize)]
+struct PlanResponse {
+    org_id: Uuid,
+    plan: String,
+}
+
+/// PATCH /v1/orgs/{id}/plan — set an org's billing tier directly. Used to opt a
+/// trial org out (to `free_unlimited`, e.g. Reveni) or back to `standard`.
+/// Starting a trial goes through `POST /v1/orgs/{id}/trial`, so `'trial'` is
+/// intentionally rejected here.
+async fn set_org_plan(
+    admin: InstanceAdminAuth,
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<SetPlanRequest>,
+) -> Result<Json<PlanResponse>> {
+    if !matches!(req.plan.as_str(), "standard" | "free_unlimited") {
+        return Err(AppError::BadRequest(
+            "plan must be 'standard' or 'free_unlimited'".into(),
+        ));
+    }
+
+    if !overslash_db::repos::org::set_plan(state.db(&ext), id, &req.plan).await? {
+        return Err(AppError::NotFound("org not found".into()));
+    }
+    state.free_unlimited_cache(&ext).invalidate(id);
+
+    let _ = overslash_db::OrgScope::new(id, state.db_pool(&ext))
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: None,
+            action: "org.plan.updated",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "plan": &req.plan,
+                "set_by_instance_admin": admin.user_id.to_string(),
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(PlanResponse {
+        org_id: id,
+        plan: req.plan,
+    }))
+}
+
 /// Flip `allow_overslash_managed_signin` to `true` for a freshly-created
 /// corp org. Personal orgs (single-user, no IdP login) skip this — they
 /// stay at the migration default (`false`). Returns the row with the new
@@ -655,12 +862,42 @@ async fn patch_subagent_cleanup_config(
 struct PatchTemplateSettingsRequest {
     allow_user_templates: Option<bool>,
     global_templates_enabled: Option<bool>,
+    /// When false (default), non-admins cannot instantiate global templates
+    /// that fall outside the org's curated catalog.
+    allow_services_outside_catalog: Option<bool>,
 }
 
 #[derive(Serialize)]
 struct TemplateSettingsResponse {
     allow_user_templates: bool,
     global_templates_enabled: bool,
+    allow_services_outside_catalog: bool,
+}
+
+/// Read the org's template/catalog settings. Admin-only: these govern which
+/// global templates members can see and instantiate.
+async fn get_template_settings(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    AdminAcl(acl): AdminAcl,
+    Path(id): Path<Uuid>,
+) -> Result<Json<TemplateSettingsResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot read another org's config".into(),
+        ));
+    }
+
+    let (allow_user_templates, global_templates_enabled, allow_services_outside_catalog) =
+        overslash_db::repos::org::get_template_settings(state.db(&ext), id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+
+    Ok(Json(TemplateSettingsResponse {
+        allow_user_templates,
+        global_templates_enabled,
+        allow_services_outside_catalog,
+    }))
 }
 
 async fn patch_template_settings(
@@ -677,15 +914,19 @@ async fn patch_template_settings(
         ));
     }
 
-    if req.allow_user_templates.is_none() && req.global_templates_enabled.is_none() {
+    if req.allow_user_templates.is_none()
+        && req.global_templates_enabled.is_none()
+        && req.allow_services_outside_catalog.is_none()
+    {
         return Err(AppError::BadRequest("no fields supplied".into()));
     }
 
-    let (allow, globals) = overslash_db::repos::org::update_template_settings(
+    let (allow, globals, outside) = overslash_db::repos::org::update_template_settings(
         state.db(&ext),
         id,
         req.allow_user_templates,
         req.global_templates_enabled,
+        req.allow_services_outside_catalog,
     )
     .await?
     .ok_or_else(|| AppError::NotFound("org not found".into()))?;
@@ -700,6 +941,7 @@ async fn patch_template_settings(
             detail: serde_json::json!({
                 "allow_user_templates": allow,
                 "global_templates_enabled": globals,
+                "allow_services_outside_catalog": outside,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -709,6 +951,7 @@ async fn patch_template_settings(
     Ok(Json(TemplateSettingsResponse {
         allow_user_templates: allow,
         global_templates_enabled: globals,
+        allow_services_outside_catalog: outside,
     }))
 }
 
@@ -948,142 +1191,60 @@ async fn patch_audit_settings(
     }))
 }
 
-// ─── OAuth callback host allow-list (white-label custom redirect_uri) ───
-
-#[derive(Serialize)]
-struct OAuthCallbackSettingsResponse {
-    /// Hosts an org API key may use as a custom OAuth `redirect_uri` when it
-    /// starts a white-label connect flow. Lowercased bare hostnames; empty
-    /// means custom redirect URIs are disabled for the org.
-    allowed_hosts: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct PatchOAuthCallbackSettingsRequest {
-    allowed_hosts: Vec<String>,
-}
-
-/// Maximum number of allow-listed callback hosts per org. Generous — partners
-/// rarely need more than a couple (prod + staging) — but finite.
-const MAX_CALLBACK_HOSTS: usize = 32;
-
-/// Normalize, validate, and dedupe a caller-supplied host list. Each entry must
-/// be a bare hostname (no scheme, path, port, or whitespace); the value is
-/// lowercased and order-preserving-deduped. The result is stored comma-joined.
-fn normalize_callback_hosts(raw: &[String]) -> Result<Vec<String>> {
-    let mut out: Vec<String> = Vec::new();
-    for entry in raw {
-        let host = entry.trim().to_ascii_lowercase();
-        if host.is_empty() {
-            continue;
-        }
-        if host.len() > 253
-            || host.contains('/')
-            || host.contains(':')
-            || host.contains(',')
-            || host.chars().any(char::is_whitespace)
-            || !host
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-        {
-            return Err(AppError::BadRequest(format!(
-                "'{entry}' is not a valid bare hostname (no scheme, path, port, or whitespace)"
-            )));
-        }
-        if !out.contains(&host) {
-            out.push(host);
-        }
-    }
-    if out.len() > MAX_CALLBACK_HOSTS {
-        return Err(AppError::BadRequest(format!(
-            "at most {MAX_CALLBACK_HOSTS} callback hosts allowed"
-        )));
-    }
-    Ok(out)
-}
-
-/// Split a stored comma-joined host list into a vec, skipping blanks.
-fn split_callback_hosts(csv: &str) -> Vec<String> {
-    csv.split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-async fn get_oauth_callback_settings(
-    State(state): State<AppState>,
-    ReqExt(ext): ReqExt,
-    auth: AuthContext,
-    Path(id): Path<Uuid>,
-) -> Result<Json<OAuthCallbackSettingsResponse>> {
-    if id != auth.org_id {
-        return Err(AppError::Forbidden("cannot read another org".into()));
-    }
-    let value = overslash_db::repos::org::get_oauth_callback_allowed_hosts(state.db(&ext), id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
-    Ok(Json(OAuthCallbackSettingsResponse {
-        allowed_hosts: split_callback_hosts(&value),
-    }))
-}
-
-async fn patch_oauth_callback_settings(
-    State(state): State<AppState>,
-    ReqExt(ext): ReqExt,
-    AdminAcl(acl): AdminAcl,
-    ip: ClientIp,
-    Path(id): Path<Uuid>,
-    Json(req): Json<PatchOAuthCallbackSettingsRequest>,
-) -> Result<Json<OAuthCallbackSettingsResponse>> {
-    if id != acl.org_id {
-        return Err(AppError::Forbidden(
-            "cannot mutate another org's config".into(),
-        ));
-    }
-
-    let hosts = normalize_callback_hosts(&req.allowed_hosts)?;
-    let stored = hosts.join(",");
-
-    let updated =
-        overslash_db::repos::org::set_oauth_callback_allowed_hosts(state.db(&ext), id, &stored)
-            .await?;
-    if !updated {
-        return Err(AppError::NotFound("org not found".into()));
-    }
-
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
-        .log_audit(AuditEntry {
-            org_id: id,
-            identity_id: acl.identity_id,
-            action: "org.oauth_callback_settings.updated",
-            resource_type: Some("org"),
-            resource_id: Some(id),
-            detail: serde_json::json!({ "allowed_hosts": hosts }),
-            description: None,
-            ip_address: ip.0.as_deref(),
-        })
-        .await;
-
-    Ok(Json(OAuthCallbackSettingsResponse {
-        allowed_hosts: hosts,
-    }))
-}
-
 // ─── Managed sign-in (Overslash-managed env-var IdPs, invite-gated) ───
 
 #[derive(Serialize)]
 struct ManagedSigninResponse {
     /// When `true`, members can authenticate via Overslash's managed env-var
-    /// OAuth apps (`GOOGLE_AUTH_*`, etc.). Admission is gated by pending
-    /// `org_invites` rows — see migration 066 and
+    /// OAuth apps (`GOOGLE_AUTH_*`, etc.). Admission is then gated by either
+    /// invites or the domain allowlist below — see migration 066/092 and
     /// `crates/overslash-api/src/routes/auth.rs::provision_org_subdomain`.
     allow_overslash_managed_signin: bool,
+    /// When `true` (default), a managed-signin org admits invite-only. When
+    /// `false`, admission falls back to `managed_signin_allowed_domains`.
+    require_invite_admission: bool,
+    /// Org-wide email-domain allowlist for the managed path when
+    /// `require_invite_admission = false`. Empty ⇒ domain admission is
+    /// unconfigured (managed sign-ins are rejected as misconfigured).
+    managed_signin_allowed_domains: Vec<String>,
+}
+
+impl From<&overslash_db::repos::org::OrgRow> for ManagedSigninResponse {
+    fn from(o: &overslash_db::repos::org::OrgRow) -> Self {
+        Self {
+            allow_overslash_managed_signin: o.allow_overslash_managed_signin,
+            require_invite_admission: o.require_invite_admission,
+            managed_signin_allowed_domains: o.managed_signin_allowed_domains.clone(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct PatchManagedSigninRequest {
-    allow_overslash_managed_signin: bool,
+    /// All three fields are optional so the dashboard can flip one toggle at
+    /// a time; a `None` leaves the stored value untouched.
+    allow_overslash_managed_signin: Option<bool>,
+    require_invite_admission: Option<bool>,
+    managed_signin_allowed_domains: Option<Vec<String>>,
+}
+
+/// Normalize an admin-supplied domain list: lowercase, trim surrounding
+/// whitespace, strip a leading `@` (so `@acme.com` and `acme.com` both work),
+/// drop empties, and dedupe while preserving order. Admission compares
+/// case-insensitively, but storing a canonical form keeps the API/UI honest.
+fn normalize_domains(raw: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for d in raw {
+        let cleaned = d.trim().trim_start_matches('@').to_lowercase();
+        if cleaned.is_empty() {
+            continue;
+        }
+        if seen.insert(cleaned.clone()) {
+            out.push(cleaned);
+        }
+    }
+    out
 }
 
 async fn get_managed_signin(
@@ -1095,12 +1256,10 @@ async fn get_managed_signin(
     if id != auth.org_id {
         return Err(AppError::Forbidden("cannot read another org".into()));
     }
-    let value = overslash_db::repos::org::get_allow_overslash_managed_signin(state.db(&ext), id)
+    let org = overslash_db::repos::org::get_by_id(state.db(&ext), id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
-    Ok(Json(ManagedSigninResponse {
-        allow_overslash_managed_signin: value,
-    }))
+    Ok(Json((&org).into()))
 }
 
 async fn patch_managed_signin(
@@ -1117,15 +1276,20 @@ async fn patch_managed_signin(
         ));
     }
 
-    let updated = overslash_db::repos::org::set_allow_overslash_managed_signin(
+    let normalized_domains = req
+        .managed_signin_allowed_domains
+        .as_deref()
+        .map(normalize_domains);
+
+    let org = overslash_db::repos::org::update_managed_admission(
         state.db(&ext),
         id,
         req.allow_overslash_managed_signin,
+        req.require_invite_admission,
+        normalized_domains.as_deref(),
     )
-    .await?;
-    if !updated {
-        return Err(AppError::NotFound("org not found".into()));
-    }
+    .await?
+    .ok_or_else(|| AppError::NotFound("org not found".into()))?;
 
     let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
@@ -1135,14 +1299,85 @@ async fn patch_managed_signin(
             resource_type: Some("org"),
             resource_id: Some(id),
             detail: serde_json::json!({
-                "allow_overslash_managed_signin": req.allow_overslash_managed_signin,
+                "allow_overslash_managed_signin": org.allow_overslash_managed_signin,
+                "require_invite_admission": org.require_invite_admission,
+                "managed_signin_allowed_domains": org.managed_signin_allowed_domains,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
         })
         .await;
 
-    Ok(Json(ManagedSigninResponse {
-        allow_overslash_managed_signin: req.allow_overslash_managed_signin,
+    Ok(Json((&org).into()))
+}
+
+// ─── Headless (white-label, URL-less auth-recovery) ───
+
+#[derive(Serialize)]
+struct HeadlessResponse {
+    /// When `true`, this is a white-label org whose end users have no Overslash
+    /// dashboard session. Auth-recovery on an action call (`reauth_required`,
+    /// `needs_authentication`, `missing_scopes`) returns a typed, URL-less
+    /// envelope (no gated `/connect-authorize` link, no `oauth_connection_flows`
+    /// row); the integration re-runs its own OAuth dance and re-imports via
+    /// `POST /v1/connections/import`. Admin/provisioning-only — a partner
+    /// onboarding capability with no end-user surface (no dashboard toggle).
+    headless: bool,
+}
+
+#[derive(Deserialize)]
+struct PatchHeadlessRequest {
+    headless: bool,
+}
+
+async fn get_headless(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<Json<HeadlessResponse>> {
+    if id != auth.org_id {
+        return Err(AppError::Forbidden("cannot read another org".into()));
+    }
+    let value = overslash_db::repos::org::get_headless(state.db(&ext), id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    Ok(Json(HeadlessResponse { headless: value }))
+}
+
+async fn patch_headless(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    AdminAcl(acl): AdminAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchHeadlessRequest>,
+) -> Result<Json<HeadlessResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot mutate another org's config".into(),
+        ));
+    }
+
+    let updated = overslash_db::repos::org::set_headless(state.db(&ext), id, req.headless).await?;
+    if !updated {
+        return Err(AppError::NotFound("org not found".into()));
+    }
+
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: acl.identity_id,
+            action: "org.headless.updated",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({ "headless": req.headless }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(HeadlessResponse {
+        headless: req.headless,
     }))
 }

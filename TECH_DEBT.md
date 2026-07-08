@@ -4,6 +4,41 @@ Known workarounds and deferred improvements.
 
 ---
 
+## CI seeds ort-sys binaries from a release asset (cdn.pyke.io outage)
+
+Since 2026-07-03, `cdn.pyke.io` answers HTTP 403 (Cloudflare bot challenge) to non-browser clients, so any CI job compiling `ort-sys` 2.0.0-rc.12 (pulled in via `fastembed` for semantic search) from a cold cache fails at the build script's binary download. Workaround: `.github/actions/seed-ort-cache` pre-populates `~/.cache/ort.pyke.io` in the `lint`, `coverage`, and `e2e` jobs from the `ort-sys-cache-ms-1.24.2` release asset (the build script's own hash-verified extraction, re-hosted), which makes the build script skip the download entirely. Remove the action and the release once the CDN is reliable again, and refresh the asset + dist hash whenever `ort-sys` is bumped (`build/download/dist.txt` in the crate lists the current hashes). `release.yml` is not covered — it builds non-Linux targets too and needs per-target assets if the outage persists into a release.
+
+---
+
+## Domain admission does not verify Google's `hd` claim, and two domain lists coexist
+
+Migration 092 added org-wide domain admission for managed sign-in
+(`orgs.managed_signin_allowed_domains`, consulted when
+`require_invite_admission = false`). Two follow-ups:
+
+1. **`hd` not honored.** Domain match splits the verified email on `@`
+   (case-insensitive) in `provision_org_subdomain`
+   (`crates/overslash-api/src/routes/auth.rs`). It does NOT consult Google's
+   `hd`/hosted-domain claim — `OidcUserInfo` doesn't even parse it. A user
+   with a personal Gmail whose *address* ends in an allowlisted domain (e.g.
+   a `@reveni.io` alias not backed by Workspace) would match. Trust boundary:
+   the verified-email domain, not cryptographic Workspace membership. To
+   tighten, parse `hd` from the Google userinfo/ID token and require
+   `hd == domain` on the managed path.
+
+2. **Two allowlists.** The legacy per-org-IdP path still uses
+   `org_idp_configs.allowed_email_domains` (per provider); the managed path
+   uses the new org-wide list. The unwired cross-tenant primitive
+   `OrgIdpConfigRepo::find_by_email_domain` /
+   `find_idp_configs_by_email_domain`
+   (`crates/overslash-db/src/repos/org_idp_config.rs`,
+   `scopes/system_idp_config.rs`) only sees the per-provider list, so it is
+   NOT a router for managed-signin domain admission. If we ever build generic
+   domain→org routing, decide whether it should union both lists (or migrate
+   the per-provider list onto `orgs`).
+
+---
+
 ## MCP OAuth authorization codes are in-process
 
 `POST /oauth/authorize` stashes one-shot authorization codes (60 s TTL, single-use) in a process-local store (`crates/overslash-api/src/services/oauth_as.rs`). This is fine today because codes expire fast and Overslash runs as a single replica. Moving to multi-replica serving either requires sticky-routing the `authorize` / `token` pair to the same instance or promoting the store to Redis. The `AuthCodeStore` facade is deliberately narrow so a Redis-backed implementation can drop in behind the same interface.

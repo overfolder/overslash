@@ -656,6 +656,48 @@ mod tests {
     }
 
     #[test]
+    fn compile_mcp_accepts_oauth_with_provider_and_scopes() {
+        let v = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "x-overslash-key": "t_mcp"},
+            "x-overslash-runtime": "mcp",
+            "paths": {},
+            "x-overslash-mcp": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": { "kind": "oauth", "provider": "hubspot", "scopes": ["crm.objects.contacts.read"] }
+            }
+        });
+        let (svc, _warnings) = compile_service(&v).expect("oauth mcp is valid");
+        match svc.mcp.expect("mcp present").auth {
+            crate::types::McpAuth::OAuth { provider, scopes } => {
+                assert_eq!(provider, "hubspot");
+                assert_eq!(scopes, vec!["crm.objects.contacts.read".to_string()]);
+            }
+            other => panic!("expected oauth auth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_mcp_rejects_non_string_oauth_scope() {
+        let v = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "x-overslash-key": "t_mcp"},
+            "x-overslash-runtime": "mcp",
+            "paths": {},
+            "x-overslash-mcp": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": { "kind": "oauth", "provider": "hubspot", "scopes": ["ok", 123] }
+            }
+        });
+        let err = compile_service(&v).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|e| e.code == "mcp_invalid" && e.path.contains("scopes")),
+            "non-string scope should be rejected, got: {err:?}"
+        );
+    }
+
+    #[test]
     fn compile_mcp_autodiscover_false_requires_input_schema() {
         let v = json!({
             "openapi": "3.1.0",

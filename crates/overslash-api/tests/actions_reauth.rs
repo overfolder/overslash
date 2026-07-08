@@ -144,20 +144,11 @@ async fn mode_c_no_connection_returns_needs_authentication() {
     );
     // service_instance_id should round-trip when one was found.
     assert_eq!(body["service_instance_id"].as_str().unwrap(), svc_id);
-    // The REST envelope carries the upstream provider authorize URL for
-    // white-label integrators that wrap consent in their own UI. The MCP
-    // forwarder strips this — see the sibling assertion in
-    // `mcp_typed_errors.rs::mcp_call_no_connection_returns_typed_needs_authentication`.
-    let raw = body["raw"]
-        .as_str()
-        .expect("REST envelope must include `raw` (upstream provider URL)");
+    // The raw upstream provider authorize URL is never surfaced — white-label
+    // partners import tokens instead of wrapping an Overslash-built URL.
     assert!(
-        raw.starts_with("https://"),
-        "raw should be the upstream provider authorize URL: {raw}"
-    );
-    assert!(
-        !raw.contains("/connect-authorize"),
-        "raw must be the upstream URL, not the gated Overslash URL: {raw}"
+        body.get("raw").is_none_or(Value::is_null),
+        "raw must never appear on the envelope: {body}"
     );
 }
 
@@ -322,12 +313,11 @@ async fn mode_c_missing_provider_row_stays_internal_500() {
 }
 
 /// REST sibling of `mcp_call_expired_no_refresh_returns_typed_reauth_required`:
-/// the action-call REST envelope for `reauth_required` must include the
-/// gated `auth_url` AND the upstream provider `raw` URL. The MCP forwarder
-/// strips `raw`; the REST path always carries it so white-label integrators
-/// can rewrap consent in their own UI.
+/// the action-call REST envelope for `reauth_required` on a normal
+/// (orchestrated / self-refresh) connection carries the gated `auth_url`,
+/// the `provider`, no `headless` discriminator, and never a raw provider URL.
 #[tokio::test]
-async fn reauth_required_rest_envelope_includes_raw_authorize_url() {
+async fn reauth_required_rest_envelope_shape() {
     let pool = common::test_pool().await;
 
     unsafe {
@@ -340,7 +330,11 @@ async fn reauth_required_rest_envelope_includes_raw_authorize_url() {
     let (org_id, ident_id, api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, ident_id, "x").await;
+    // Connections resolve at the owner identity (D22): the calling agent shares
+    // its owner user's connection, so seed it on the owner ("test-user"), not on
+    // the agent. `bootstrap_org_identity` puts the agent under that user.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, owner_id, "x").await;
 
     let create_resp = client
         .post(format!("{base}/v1/services"))
@@ -394,19 +388,16 @@ async fn reauth_required_rest_envelope_includes_raw_authorize_url() {
         auth_url.contains("/connect-authorize?id="),
         "auth_url should be a gated link: {auth_url}"
     );
-
-    // White-label rewrap surface: `raw` must be present on the REST path
-    // and must be the upstream provider URL, not the gated form.
-    let raw = body["raw"]
-        .as_str()
-        .expect("REST envelope must include `raw` (upstream provider URL)");
+    // Normal (non-headless) org: provider present, no `headless` discriminator.
+    assert_eq!(body["provider"], "x");
     assert!(
-        raw.starts_with("https://"),
-        "raw should be the upstream provider authorize URL: {raw}"
+        body.get("headless").is_none(),
+        "headless must not appear on a non-headless reauth envelope: {body}"
     );
+    // The raw upstream provider URL is never surfaced.
     assert!(
-        !raw.contains("/connect-authorize"),
-        "raw must be the upstream URL, not the gated Overslash URL: {raw}"
+        body.get("raw").is_none_or(Value::is_null),
+        "raw must never appear on the envelope: {body}"
     );
 }
 
@@ -490,8 +481,7 @@ async fn wrap_true_returns_200_needs_authentication_envelope() {
 }
 
 /// `?wrap=true` likewise surfaces `reauth_required` as a 200 envelope. Mirrors
-/// `reauth_required_rest_envelope_includes_raw_authorize_url` (which asserts
-/// the default 401 shape).
+/// `reauth_required_rest_envelope_shape` (which asserts the default 401 shape).
 #[tokio::test]
 async fn wrap_true_returns_200_reauth_required_envelope() {
     let pool = common::test_pool().await;
@@ -506,7 +496,11 @@ async fn wrap_true_returns_200_reauth_required_envelope() {
     let (org_id, ident_id, api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, ident_id, "x").await;
+    // Connections resolve at the owner identity (D22): the calling agent shares
+    // its owner user's connection, so seed it on the owner ("test-user"), not on
+    // the agent. `bootstrap_org_identity` puts the agent under that user.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, owner_id, "x").await;
 
     let create_resp = client
         .post(format!("{base}/v1/services"))

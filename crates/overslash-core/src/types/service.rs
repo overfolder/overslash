@@ -133,6 +133,18 @@ pub enum McpAuth {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secret_name: Option<String>,
     },
+    /// `Authorization: Bearer <token>`, where the token is a live OAuth access
+    /// token resolved at call time from the caller's connection for `provider`
+    /// (refreshed via the standard grant, using the org/BYOC OAuth client).
+    /// Mirrors HTTP-runtime `ServiceAuth::OAuth` but for MCP servers that sit
+    /// behind OAuth (e.g. HubSpot's remote MCP). `scopes` is the superset the
+    /// service may request at connect time.
+    #[serde(rename = "oauth")]
+    OAuth {
+        provider: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scopes: Vec<String>,
+    },
 }
 
 /// Alias: a service template is the same as a service definition.
@@ -215,8 +227,8 @@ pub struct ServiceAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<String>,
     /// Labeled jq filters to extract human-readable fields from the resolved
-    /// request (method / url / params / body) at approval-create and audit
-    /// write time. See SPEC §N "Detail disclosure".
+    /// request (method / url / params / body / resolved) at approval-create
+    /// and audit write time. See SPEC §N "Detail disclosure".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disclose: Vec<DisclosureField>,
     /// Dotted paths into the resolved request to replace with `"[REDACTED]"`
@@ -242,10 +254,12 @@ pub struct ServiceAction {
 }
 
 /// One entry in `ServiceAction::disclose`. The `filter` is a jq expression
-/// applied to a `{method, url, params, body}` projection of the resolved
-/// request. `max_chars` optionally clamps long string outputs (e.g. email
-/// bodies); results longer than the clamp are still carried but marked
-/// `truncated` for the dashboard.
+/// applied to a `{method, url, params, body, resolved}` projection of the
+/// resolved request (`resolved` carries the display names produced by
+/// `resolve` declarations, so filters can prefer
+/// `.resolved.fileId // .params.fileId`). `max_chars` optionally clamps long
+/// string outputs (e.g. email bodies); results longer than the clamp are
+/// still carried but marked `truncated` for the dashboard.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisclosureField {
     pub label: String,
@@ -268,10 +282,13 @@ pub struct ParamResolver {
 
 /// Where a parameter is sent on the wire, mirroring the OpenAPI `in:` field.
 ///
-/// Routing only consults `Query`: on non-GET methods, query-located params go
-/// to the URL query string while everything else becomes the JSON body. `Path`
-/// is informational — path interpolation matches `{name}` placeholders in the
-/// path template and never reads this field.
+/// Routing consults `Query` and `Header`: on non-GET methods, query-located
+/// params go to the URL query string, header-located params become request
+/// headers, and everything else becomes the JSON body. A `Header` param with a
+/// `default` (e.g. `Notion-Version: 2022-06-28`) is how a template pins a
+/// constant version/accept header on every call — `apply_defaults` fills it in
+/// when the caller omits it. `Path` is informational — path interpolation
+/// matches `{name}` placeholders in the path template and never reads this field.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ParamLocation {
@@ -279,6 +296,7 @@ pub enum ParamLocation {
     Body,
     Query,
     Path,
+    Header,
 }
 
 impl ParamLocation {
@@ -381,6 +399,10 @@ mod tests {
             serde_json::to_string(&ParamLocation::Path).unwrap(),
             r#""path""#
         );
+        assert_eq!(
+            serde_json::to_string(&ParamLocation::Header).unwrap(),
+            r#""header""#
+        );
 
         assert_eq!(
             serde_json::from_str::<ParamLocation>(r#""body""#).unwrap(),
@@ -394,6 +416,10 @@ mod tests {
             serde_json::from_str::<ParamLocation>(r#""path""#).unwrap(),
             ParamLocation::Path
         );
+        assert_eq!(
+            serde_json::from_str::<ParamLocation>(r#""header""#).unwrap(),
+            ParamLocation::Header
+        );
     }
 
     #[test]
@@ -402,6 +428,7 @@ mod tests {
         assert!(ParamLocation::Body.is_default());
         assert!(!ParamLocation::Query.is_default());
         assert!(!ParamLocation::Path.is_default());
+        assert!(!ParamLocation::Header.is_default());
     }
 
     #[test]
@@ -496,10 +523,45 @@ mod tests {
     }
 
     #[test]
+    fn mcp_auth_oauth_serde() {
+        let a = McpAuth::OAuth {
+            provider: "hubspot".into(),
+            scopes: vec!["crm.objects.contacts.read".into()],
+        };
+        let j = serde_json::to_value(&a).unwrap();
+        assert_eq!(
+            j,
+            serde_json::json!({
+                "kind": "oauth",
+                "provider": "hubspot",
+                "scopes": ["crm.objects.contacts.read"]
+            })
+        );
+        let back: McpAuth = serde_json::from_value(j).unwrap();
+        assert_eq!(back, a);
+    }
+
+    #[test]
+    fn mcp_auth_oauth_without_scopes_serde() {
+        let a = McpAuth::OAuth {
+            provider: "hubspot".into(),
+            scopes: vec![],
+        };
+        let j = serde_json::to_value(&a).unwrap();
+        // Empty scopes are elided; still round-trips.
+        assert_eq!(
+            j,
+            serde_json::json!({ "kind": "oauth", "provider": "hubspot" })
+        );
+        let back: McpAuth = serde_json::from_value(j).unwrap();
+        assert_eq!(back, a);
+    }
+
+    #[test]
     fn mcp_auth_unknown_kind_rejected() {
         // Forward-compat spec: new variants in the enum are additions; *unknown*
         // variants must fail deserialization cleanly so callers know to upgrade.
-        let v = serde_json::json!({ "kind": "oauth", "provider": "google" });
+        let v = serde_json::json!({ "kind": "quantum", "secret_name": "x" });
         assert!(serde_json::from_value::<McpAuth>(v).is_err());
     }
 

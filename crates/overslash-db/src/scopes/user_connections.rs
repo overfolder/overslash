@@ -19,7 +19,8 @@ impl UserScope {
             ConnectionRow,
             "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,
                     c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,
-                    c.byoc_credential_id, c.is_default, c.created_at, c.updated_at
+                    c.byoc_credential_id, c.is_default,
+                    c.created_at, c.updated_at
              FROM connections c
              JOIN identities i ON i.id = c.identity_id
              WHERE c.identity_id = $1 AND i.org_id = $2
@@ -39,7 +40,8 @@ impl UserScope {
             ConnectionRow,
             "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,
                     c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,
-                    c.byoc_credential_id, c.is_default, c.created_at, c.updated_at
+                    c.byoc_credential_id, c.is_default,
+                    c.created_at, c.updated_at
              FROM connections c
              JOIN identities i ON i.id = c.identity_id
              WHERE c.id = $1 AND c.identity_id = $2 AND i.org_id = $3",
@@ -62,7 +64,8 @@ impl UserScope {
             ConnectionRow,
             "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,
                     c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,
-                    c.byoc_credential_id, c.is_default, c.created_at, c.updated_at
+                    c.byoc_credential_id, c.is_default,
+                    c.created_at, c.updated_at
              FROM connections c
              JOIN identities i ON i.id = c.identity_id
              WHERE c.identity_id = $1 AND i.org_id = $2 AND c.provider_key = $3

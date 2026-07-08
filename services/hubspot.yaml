@@ -1,0 +1,391 @@
+# HubSpot CRM via HubSpot's official remote MCP server
+# (https://mcp.hubspot.com), a Streamable-HTTP MCP endpoint that exposes the
+# CRM (contacts, companies, deals, tickets, …), analytics, and property
+# metadata as tools.
+#
+# Auth: HubSpot's remote MCP requires OAuth 2.1 + PKCE against a *custom* OAuth
+# client — a "MCP auth app" the operator creates in HubSpot (Development → MCP
+# Auth Apps), which issues a client_id/client_secret. Bring that client to
+# Overslash as a BYOC credential for the `hubspot` provider; Overslash then
+# runs the connect flow and injects the resulting bearer on every tool call.
+#
+# The tool list below is authored inline (globals ship their tools in-repo)
+# and mirrors the live catalog served by mcp.hubspot.com as of 2026-07-05
+# (17 tools; verified via tools/list). HubSpot REPLACED its original
+# `hubspot-list-objects`-style catalog with this one — calling a retired name
+# returns JSON-RPC -32603 "Unknown tool". If calls start failing that way
+# again, re-run tools/list and re-sync this file. Connector-internal tools
+# (submit_feedback, render_landing_page_ui) and the landing-page CMS editor
+# (manage_landing_page) are intentionally not exposed.
+openapi: 3.1.0
+info:
+  title: HubSpot
+  key: hubspot
+  category: CRM
+  description: >-
+    HubSpot CRM via the official remote MCP server. Search, read, and write
+    contacts, companies, deals, and tickets, query CRM data with SQL, and pull
+    campaign/content analytics through HubSpot's hosted MCP tools. Connect
+    with a custom HubSpot OAuth (MCP auth) app.
+x-overslash-runtime: mcp
+servers: []
+paths: {}
+x-overslash-mcp:
+  url: https://mcp.hubspot.com
+  auth:
+    kind: oauth
+    provider: hubspot
+    # Scopes requested at connect time. HubSpot's authorize endpoint rejects
+    # scopes the operator's MCP auth app doesn't have configured, so this
+    # stays a conservative CRM core; the token HubSpot actually issues carries
+    # the app's full configured scope set regardless (the token response omits
+    # `scope`, so Overslash records this requested set per RFC 6749 §5.1).
+    scopes:
+      - crm.objects.contacts.read
+      - crm.objects.contacts.write
+      - crm.objects.companies.read
+      - crm.objects.companies.write
+      - crm.objects.deals.read
+      - crm.objects.deals.write
+      - crm.schemas.contacts.read
+  autodiscover: false
+  tools:
+    # ── identity & org (read) — HubSpot recommends get_user_details before
+    #    any other tool: it reports which objects/tools this hub can use. ──
+    - name: get_user_details
+      risk: read
+      description: "Get the connected HubSpot user, hub, and tool availability"
+      input_schema:
+        type: object
+        properties:
+          include:
+            type: array
+            items:
+              type: string
+            description: >-
+              Optional sections to include, e.g. USER_INFORMATION. Omit for
+              the default summary.
+        required: []
+
+    - name: get_organization_details
+      risk: read
+      description: "Get organization teams, roles, seats, and account settings"
+      input_schema:
+        type: object
+        properties:
+          include:
+            type: array
+            items:
+              type: string
+            description: >-
+              Optional sections to include: TEAMS, SEATS, … Omit to return
+              the default account summary.
+        required: []
+
+    # ── CRM object reads ────────────────────────────────────────────────
+    - name: search_crm_objects
+      risk: read
+      scope_param: objectType
+      description: "Search {objectType} records by filters or free text"
+      input_schema:
+        type: object
+        properties:
+          objectType:
+            type: string
+            description: "CRM object type, e.g. `contacts`, `companies`, `deals`, `tickets`."
+          query:
+            type: string
+            description: "Free-text search within the object type's default searchable properties."
+          filterGroups:
+            type: array
+            description: >-
+              Filter groups (OR'd); each has `filters`
+              [{propertyName, operator, value}] (AND'd within a group).
+            items:
+              type: object
+          properties:
+            type: array
+            items:
+              type: string
+            description: "Property names to return, e.g. [\"email\", \"firstname\"]."
+          sorts:
+            type: array
+            description: "Sorting rules (only one may be applied)."
+            items:
+              type: object
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+            description: "Max results per page (max 200)."
+          offset:
+            type: integer
+            description: "Paging cursor token from the previous response."
+        required: [objectType]
+
+    - name: get_crm_objects
+      risk: read
+      scope_param: objectType
+      description: "Read up to 100 {objectType} records by id"
+      input_schema:
+        type: object
+        properties:
+          objectType:
+            type: string
+            description: "CRM object type to fetch."
+          objectIds:
+            type: array
+            items:
+              type: string
+            description: "Object IDs to fetch (1–100)."
+          properties:
+            type: array
+            items:
+              type: string
+            description: "Property names to return."
+        required: [objectType]
+
+    - name: query_crm_data
+      risk: read
+      description: "Query CRM data with SQL"
+      input_schema:
+        type: object
+        properties:
+          sql:
+            type: string
+            description: >-
+              SQL query to run against HubSpot CRM data (HubSpot-specific
+              dialect). Call `tool_guidance` for `query_crm_data` before the
+              first query — HubSpot requires it and it documents the dialect.
+          verbosityLevel:
+            type: string
+            enum: [LOW, MEDIUM, HIGH]
+            description: "LOW: data only; MEDIUM/HIGH: adds citation links."
+        required: [sql]
+
+    # ── property metadata (read) ────────────────────────────────────────
+    - name: get_properties
+      risk: read
+      scope_param: objectType
+      description: "Get property definitions for {objectType}"
+      input_schema:
+        type: object
+        properties:
+          objectType:
+            type: string
+            description: "CRM object type, e.g. contacts, companies, deals, tickets."
+          propertyNames:
+            type: array
+            items:
+              type: string
+            description: "Specific property names to retrieve; omit for all."
+        required: [objectType]
+
+    - name: search_properties
+      risk: read
+      scope_param: objectType
+      description: "Find relevant {objectType} property definitions by keyword"
+      input_schema:
+        type: object
+        properties:
+          objectType:
+            type: string
+            description: "CRM object type to search properties for."
+          keywords:
+            type: array
+            items:
+              type: string
+            description: "Up to 5 keywords; omit to list all property definitions."
+        required: [objectType]
+
+    - name: search_owners
+      risk: read
+      description: "List or search owners assignable to CRM records"
+      input_schema:
+        type: object
+        properties:
+          searchQuery:
+            type: string
+            description: "Find owners by name or email; omit to list all."
+          ownerIds:
+            type: array
+            items:
+              type: string
+            description: "Owner IDs to look up directly (search query is then ignored)."
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+            description: "Max results (max 100)."
+          offset:
+            type: integer
+            description: "Pagination offset."
+        required: []
+
+    # ── campaign & content analytics (read) ─────────────────────────────
+    - name: get_campaign_analytics
+      risk: read
+      description: "Get engagement analytics for campaigns"
+      input_schema:
+        type: object
+        properties:
+          requests:
+            type: array
+            description: >-
+              Analytics requests to process (max 20), each a full
+              CampaignAnalyticsRequest.
+            items:
+              type: object
+        required: [requests]
+
+    - name: get_campaign_contacts_by_type
+      risk: read
+      description: "Get contact IDs for a campaign by attribution type"
+      input_schema:
+        type: object
+        properties:
+          campaignCrmObjectId:
+            type: integer
+            description: "The campaign's numeric CRM object ID (hs_object_id)."
+          contactType:
+            type: string
+            enum: [NEW_CONTACTS_FIRST_TOUCH, NEW_CONTACTS_LAST_TOUCH, INFLUENCED_CONTACTS]
+            description: "Contact attribution type."
+          startDate:
+            type: string
+            description: "Optional range start (YYYY-MM-DD); provide with endDate."
+          endDate:
+            type: string
+            description: "Optional range end (YYYY-MM-DD); provide with startDate."
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+            description: "Contacts per page (max 500)."
+          offset:
+            type: integer
+            description: "Zero-based pagination offset."
+        required: [campaignCrmObjectId, contactType]
+
+    - name: get_campaign_asset_metrics
+      risk: read
+      description: "Get metrics for a campaign's associated assets"
+      input_schema:
+        type: object
+        properties:
+          campaignCrmObjectId:
+            type: integer
+            description: "The campaign's numeric CRM object ID (hs_object_id)."
+          assetType:
+            type: string
+            description: "Asset type, e.g. LANDING_PAGE, SITE_PAGE, BLOG_POST, MEETING_EVENT."
+          crmObjectIds:
+            type: array
+            items:
+              type: string
+            description: "Optional asset IDs to scope to; omit for all assets of the type."
+          startDate:
+            type: string
+            description: "Optional range start (YYYY-MM-DD); provide with endDate."
+          endDate:
+            type: string
+            description: "Optional range end (YYYY-MM-DD); provide with startDate."
+        required: [campaignCrmObjectId, assetType]
+
+    - name: get_content_analytics_report
+      risk: read
+      description: "Run a content analytics report ({mode})"
+      input_schema:
+        type: object
+        properties:
+          mode:
+            type: string
+            enum: [TOTALS, TIME_SERIES, SUMMARY, PEOPLE]
+            description: "Report mode."
+          contentIds:
+            type: array
+            items:
+              type: string
+            description: "Content IDs to filter to; empty for all content."
+          start:
+            type: string
+            description: "Window start (ISO 8601); defaults to last 30 days."
+          end:
+            type: string
+            description: "Window end (ISO 8601); defaults to today."
+          period:
+            type: string
+            enum: [DAILY, WEEKLY, MONTHLY, QUARTERLY, YEARLY]
+            description: "Bucket size — required for TIME_SERIES/SUMMARY modes."
+          peopleType:
+            type: string
+            enum: [CONTACTS, VISITORS]
+            description: "Required for PEOPLE mode."
+          search:
+            type: string
+            description: "Free-text filter on content title or URL."
+          limit:
+            type: integer
+            description: "Max rows (default 100)."
+          offset:
+            type: integer
+            description: "Row offset for pagination."
+        required: [mode]
+
+    # ── CRM object writes ───────────────────────────────────────────────
+    - name: manage_crm_objects
+      risk: write
+      description: "Create or update CRM records"
+      input_schema:
+        type: object
+        properties:
+          createRequest:
+            type: object
+            description: >-
+              Create payload: {objectType, objects: [{properties, …}]}.
+              Provide exactly one of createRequest / updateRequest.
+          updateRequest:
+            type: object
+            description: >-
+              Update payload: {objectType, objects: [{id, properties}]}.
+              Provide exactly one of createRequest / updateRequest.
+          confirmationStatus:
+            type: string
+            enum: [CONFIRMED, CONFIRMATION_WAIVED_FOR_SESSION]
+            description: >-
+              HubSpot-side confirmation flag. Overslash's own permission chain
+              and human approvals gate this action; pass CONFIRMED once the
+              Overslash approval (if any) has resolved.
+        required: []
+      # MCP-runtime disclosure input is {runtime, tool, arguments, service,
+      # action}; filters address `.arguments.*`. The upstream sub-schemas are
+      # opaque objects, so disclose the operation, its object type, and the
+      # (truncated) payload itself.
+      disclose:
+        - label: Operation
+          filter: >-
+            [(.arguments.createRequest | if . then "create" else empty end),
+             (.arguments.updateRequest | if . then "update" else empty end)]
+            | join("+")
+        - label: Object type
+          filter: '.arguments.createRequest.objectType // .arguments.updateRequest.objectType // empty'
+        - label: Payload
+          filter: '(.arguments.createRequest // .arguments.updateRequest // empty) | tojson'
+          max_chars: 1000
+
+    # ── meta ────────────────────────────────────────────────────────────
+    - name: tool_guidance
+      risk: read
+      description: "Get HubSpot's usage guidance for specific tools"
+      input_schema:
+        type: object
+        properties:
+          toolNames:
+            type: array
+            items:
+              type: string
+            description: "Tool names to get usage instructions for (e.g. query_crm_data)."
+        required: [toolNames]

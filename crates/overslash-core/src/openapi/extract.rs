@@ -606,11 +606,56 @@ pub(super) fn extract_mcp_spec(root: &Map<String, Value>) -> Result<McpSpec, Vec
                     .map(str::to_string);
                 McpAuth::Bearer { secret_name }
             }
+            Some("oauth") => {
+                let provider = a
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let Some(provider) = provider else {
+                    errors.push(ValidationIssue::new(
+                        "mcp_invalid",
+                        "x-overslash-mcp.auth.provider is required when kind is `oauth`",
+                        "x-overslash-mcp.auth.provider",
+                    ));
+                    return Err(errors);
+                };
+                // Parse, don't validate: a non-string scope is a config error,
+                // surfaced rather than silently dropped (which would grant fewer
+                // permissions than the operator intended).
+                let scopes = match a.get("scopes") {
+                    None => Vec::new(),
+                    Some(Value::Array(arr)) => {
+                        let mut out = Vec::with_capacity(arr.len());
+                        for (i, v) in arr.iter().enumerate() {
+                            let Some(s) = v.as_str() else {
+                                errors.push(ValidationIssue::new(
+                                    "mcp_invalid",
+                                    format!("x-overslash-mcp.auth.scopes[{i}] must be a string"),
+                                    format!("x-overslash-mcp.auth.scopes[{i}]"),
+                                ));
+                                return Err(errors);
+                            };
+                            out.push(s.to_string());
+                        }
+                        out
+                    }
+                    Some(_) => {
+                        errors.push(ValidationIssue::new(
+                            "mcp_invalid",
+                            "x-overslash-mcp.auth.scopes must be an array of strings",
+                            "x-overslash-mcp.auth.scopes",
+                        ));
+                        return Err(errors);
+                    }
+                };
+                McpAuth::OAuth { provider, scopes }
+            }
             Some(other) => {
                 errors.push(ValidationIssue::new(
                     "mcp_invalid",
                     format!(
-                        "x-overslash-mcp.auth.kind must be one of `none`, `bearer` (got {other:?}); future kinds land in a follow-up PR"
+                        "x-overslash-mcp.auth.kind must be one of `none`, `bearer`, `oauth` (got {other:?})"
                     ),
                     "x-overslash-mcp.auth.kind",
                 ));
@@ -788,6 +833,18 @@ pub(super) fn extract_mcp_actions(
         let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, &mut errors);
         let redact = parse_redact(obj.get("x-overslash-redact"), &base, &mut errors);
 
+        // The upstream MCP tool name defaults to the action key, but may be
+        // overridden with `mcp_tool` when the server's tool name isn't a valid
+        // Overslash action key — e.g. a server naming its tools with dashes
+        // (`some-list-tool`), which the action-key grammar `^[a-z][a-z0-9_]*$`
+        // rejects: the key becomes `some_list_tool` and
+        // `mcp_tool: some-list-tool` carries the real name upstream.
+        let mcp_tool = obj
+            .get("mcp_tool")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| name.clone());
+
         sink.insert(
             name.clone(),
             ServiceAction {
@@ -802,7 +859,7 @@ pub(super) fn extract_mcp_actions(
                 permission: None,
                 disclose,
                 redact,
-                mcp_tool: Some(name),
+                mcp_tool: Some(mcp_tool),
                 output_schema,
                 disabled,
             },
@@ -926,6 +983,7 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
         let location = match obj.get("in").and_then(Value::as_str) {
             Some("query") => ParamLocation::Query,
             Some("path") => ParamLocation::Path,
+            Some("header") => ParamLocation::Header,
             _ => ParamLocation::Body,
         };
 
@@ -1643,7 +1701,9 @@ mod tests {
                             {"name": "id", "in": "path", "required": true,
                              "schema": {"type": "string"}},
                             {"name": "sendUpdates", "in": "query",
-                             "schema": {"type": "string"}}
+                             "schema": {"type": "string"}},
+                            {"name": "Notion-Version", "in": "header",
+                             "schema": {"type": "string", "default": "2022-06-28"}}
                         ],
                         "requestBody": {
                             "content": {"application/json": {"schema": {
@@ -1660,6 +1720,13 @@ mod tests {
         assert_eq!(a.params["id"].location, ParamLocation::Path);
         assert_eq!(a.params["sendUpdates"].location, ParamLocation::Query);
         assert_eq!(a.params["summary"].location, ParamLocation::Body);
+        // `in: header` params land on `Header`, carrying their default so
+        // `apply_defaults` can pin a constant version header at call time.
+        assert_eq!(a.params["Notion-Version"].location, ParamLocation::Header);
+        assert_eq!(
+            a.params["Notion-Version"].default,
+            Some(serde_json::json!("2022-06-28"))
+        );
         // Path template is unaffected by location tracking.
         assert_eq!(a.path, "/cal/{id}/events");
     }

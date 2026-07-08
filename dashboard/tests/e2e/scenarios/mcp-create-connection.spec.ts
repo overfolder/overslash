@@ -226,16 +226,14 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 	});
 	expect(positiveRes.status(), 'positive path must complete with 200').toBe(200);
 
-	// Step 6 — bind the new connection. The kernel binds the connection to
-	// the *caller* identity (the agent) when `on_behalf_of` isn't set, so
-	// list connections via the agent's bearer to find it. (Bootstrap-story
-	// follow-up: have agents default to on_behalf_of like create_service
-	// does — out of scope for this slice.)
-	const agentConnections = (await api(adminSession, '/v1/connections', {
-		bearer: apiKey.key
-	})) as ConnectionSummary[];
-	const fresh = agentConnections.find((c) => c.provider_key === 'github');
-	expect(fresh, 'OAuth callback must mint a github connection row').toBeDefined();
+	// Step 6 — bind the new connection. OAuth connections bind to the OWNER
+	// identity (D23) even without an explicit `on_behalf_of`, so the row lands
+	// on the member (the agent's owner) — list via the member session to find
+	// it. The agent shares the owner's connection at execution time (D22), which
+	// is what Steps 7–8 below exercise.
+	const ownerConnections = (await api(memberSession, '/v1/connections')) as ConnectionSummary[];
+	const fresh = ownerConnections.find((c) => c.provider_key === 'github');
+	expect(fresh, 'OAuth callback must mint a github connection row on the owner').toBeDefined();
 
 	const bindMcp = await openMcpSession({
 		auth: { kind: 'bearer', value: apiKey.key },

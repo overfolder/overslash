@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { ApiError, session } from '$lib/session';
+	import { page } from '$app/stores';
 	import type {
 		AuditResponseBodyMode,
 		AuditSettings,
@@ -7,13 +8,13 @@
 		IdpConfig,
 		ManagedSigninSettings,
 		McpClient,
-		OAuthCallbackSettings,
 		OAuthCredential,
 		OrgInfo,
 		OrgInvite,
 		SecretRequestSettings,
 		ServiceKeyCreated,
 		ServiceKeySummary,
+		TemplateSettings,
 		Webhook,
 		WebhookCreated,
 		WebhookDelivery
@@ -43,14 +44,16 @@
 	let auditSettings = $state<AuditSettings | null>(null);
 	let auditSaving = $state(false);
 	let auditError = $state<string | null>(null);
-	let oauthCallbackSettings = $state<OAuthCallbackSettings | null>(null);
-	let oauthCallbackSaving = $state(false);
-	let oauthCallbackError = $state<string | null>(null);
-	// Draft host being typed into the "add" input, separate from the saved list.
-	let oauthCallbackNewHost = $state('');
 	let managedSigninSettings = $state<ManagedSigninSettings | null>(null);
 	let managedSigninSaving = $state(false);
 	let managedSigninError = $state<string | null>(null);
+	// Editable buffer for the allowed-domains list (one per line). Synced
+	// from the server value on load and after each save.
+	let domainsInput = $state('');
+	let domainsDirty = $state(false);
+	let templateSettings = $state<TemplateSettings | null>(null);
+	let templateSettingsSaving = $state(false);
+	let templateSettingsError = $state<string | null>(null);
 	let invites = $state<OrgInvite[]>([]);
 	let showInviteForm = $state(false);
 	let inviteEmail = $state('');
@@ -68,8 +71,10 @@
 		secretRequestSettings = data.secretRequestSettings;
 		executionSettings = data.executionSettings;
 		auditSettings = data.auditSettings;
-		oauthCallbackSettings = data.oauthCallbackSettings;
 		managedSigninSettings = data.managedSigninSettings;
+		domainsInput = data.managedSigninSettings?.managed_signin_allowed_domains.join('\n') ?? '';
+		domainsDirty = false;
+		templateSettings = data.templateSettings;
 		invites = data.invites;
 		subscription = data.subscription;
 	});
@@ -83,6 +88,44 @@
 	// rate limits. Renders a "Courtesy plan" badge in place of billing
 	// controls.
 	const isFreeUnlimited = $derived(subscription?.plan === 'free_unlimited');
+	// Instance-admin trial controls. The flag comes from the layout identity
+	// (merged into page data), not OrgPageData. `is_instance_admin` is granted
+	// only via DB; the sole other capability today is creating free-unlimited
+	// orgs. Enforcement of trials is banner-only (see DECISIONS D25).
+	const isInstanceAdmin = $derived($page.data.user?.is_instance_admin === true);
+	const isTrial = $derived(subscription?.plan === 'trial');
+	let trialDurationDays = $state(30);
+	let trialExtendDays = $state(30);
+	let trialActionBusy = $state(false);
+	let trialActionError = $state<string | null>(null);
+
+	async function runTrialAction(fn: () => Promise<unknown>) {
+		if (!org) return;
+		trialActionBusy = true;
+		trialActionError = null;
+		try {
+			await fn();
+			// Reload so both the Billing card and the layout trial banner refresh.
+			window.location.reload();
+		} catch (e) {
+			trialActionError =
+				e instanceof ApiError
+					? ((e.body as { error?: string } | undefined)?.error ?? `http_${e.status}`)
+					: 'Network error';
+			trialActionBusy = false;
+		}
+	}
+
+	const startTrial = () =>
+		runTrialAction(() =>
+			session.post(`/v1/orgs/${org!.id}/trial`, { duration_days: trialDurationDays })
+		);
+	const extendTrial = () =>
+		runTrialAction(() =>
+			session.patch(`/v1/orgs/${org!.id}/trial`, { extend_days: trialExtendDays })
+		);
+	const setPlan = (plan: string) =>
+		runTrialAction(() => session.patch(`/v1/orgs/${org!.id}/plan`, { plan }));
 	// Corp orgs need at least one enabled IdP before anyone besides the
 	// creator can sign in (via their Overslash-level login). Banner nudges
 	// them to add one so their team can sign in via the corp IdP.
@@ -494,6 +537,23 @@
 		}
 	}
 
+	async function patchTemplateSettings(patch: Partial<TemplateSettings>) {
+		if (!org || !templateSettings) return;
+		templateSettingsSaving = true;
+		templateSettingsError = null;
+		try {
+			const updated = await session.patch<TemplateSettings>(
+				`/v1/orgs/${org.id}/template-settings`,
+				patch
+			);
+			templateSettings = updated;
+		} catch (err) {
+			templateSettingsError = asMessage(err);
+		} finally {
+			templateSettingsSaving = false;
+		}
+	}
+
 	async function setAuditResponseBodyMode(mode: AuditResponseBodyMode) {
 		if (!org || !auditSettings || auditSettings.response_body_mode === mode) return;
 		auditSaving = true;
@@ -508,45 +568,6 @@
 		} finally {
 			auditSaving = false;
 		}
-	}
-
-	// PATCH the full allow-list. The endpoint replaces the list wholesale and
-	// returns the normalized result, so add/remove both just send the next list.
-	async function saveOauthCallbackHosts(nextHosts: string[]) {
-		if (!org) return;
-		oauthCallbackSaving = true;
-		oauthCallbackError = null;
-		try {
-			const updated = await session.patch<OAuthCallbackSettings>(
-				`/v1/orgs/${org.id}/oauth-callback-settings`,
-				{ allowed_hosts: nextHosts }
-			);
-			oauthCallbackSettings = updated;
-		} catch (err) {
-			oauthCallbackError = asMessage(err);
-		} finally {
-			oauthCallbackSaving = false;
-		}
-	}
-
-	async function addOauthCallbackHost(e: Event) {
-		e.preventDefault();
-		const host = oauthCallbackNewHost.trim().toLowerCase();
-		if (!host || !oauthCallbackSettings) return;
-		if (oauthCallbackSettings.allowed_hosts.includes(host)) {
-			oauthCallbackError = `${host} is already on the allow-list.`;
-			return;
-		}
-		await saveOauthCallbackHosts([...oauthCallbackSettings.allowed_hosts, host]);
-		// Only clear the input when the save actually succeeded (no error set).
-		if (!oauthCallbackError) oauthCallbackNewHost = '';
-	}
-
-	async function removeOauthCallbackHost(host: string) {
-		if (!oauthCallbackSettings) return;
-		await saveOauthCallbackHosts(
-			oauthCallbackSettings.allowed_hosts.filter((h) => h !== host)
-		);
 	}
 
 	async function toggleAllowUnsignedSecretProvide(nextValue?: boolean) {
@@ -571,17 +592,22 @@
 		invites = await session.get<OrgInvite[]>('/v1/org-invites');
 	}
 
-	async function toggleManagedSignin(nextValue?: boolean) {
+	// Persist one or more managed-admission fields via the partial PATCH.
+	// `allow_overslash_managed_signin` gates whether managed OAuth apps can
+	// authenticate at all; `require_invite_admission` and
+	// `managed_signin_allowed_domains` choose how admitted.
+	async function saveManagedSignin(patch: Partial<ManagedSigninSettings>) {
 		if (!org || !managedSigninSettings) return;
-		const next = nextValue ?? !managedSigninSettings.allow_overslash_managed_signin;
 		managedSigninSaving = true;
 		managedSigninError = null;
 		try {
 			const updated = await session.patch<ManagedSigninSettings>(
 				`/v1/orgs/${org.id}/managed-signin`,
-				{ allow_overslash_managed_signin: next }
+				patch
 			);
 			managedSigninSettings = updated;
+			domainsInput = updated.managed_signin_allowed_domains.join('\n');
+			domainsDirty = false;
 			// Managed-provider rows in /v1/org-idp-configs are gated on the
 			// flag — refetch so they appear/disappear immediately.
 			await refetchIdp();
@@ -590,6 +616,26 @@
 		} finally {
 			managedSigninSaving = false;
 		}
+	}
+
+	function toggleManagedSignin(nextValue?: boolean) {
+		if (!managedSigninSettings) return;
+		const next = nextValue ?? !managedSigninSettings.allow_overslash_managed_signin;
+		return saveManagedSignin({ allow_overslash_managed_signin: next });
+	}
+
+	function toggleRequireInvite(nextValue?: boolean) {
+		if (!managedSigninSettings) return;
+		const next = nextValue ?? !managedSigninSettings.require_invite_admission;
+		return saveManagedSignin({ require_invite_admission: next });
+	}
+
+	function saveAllowedDomains() {
+		const domains = domainsInput
+			.split(/[\s,]+/)
+			.map((d) => d.trim())
+			.filter((d) => d.length > 0);
+		return saveManagedSignin({ managed_signin_allowed_domains: domains });
 	}
 
 	async function submitInvite(e: Event) {
@@ -856,62 +902,67 @@
 			{/if}
 		</section>
 
-		<!-- White-label OAuth callback hosts -->
+		<!-- Service catalog (curated global templates) -->
 		<section class="card">
-			<h2>OAuth callback hosts</h2>
+			<h2>Service catalog</h2>
 			<p class="section-desc">
-				Hosts an org API key may use as a custom OAuth <code>redirect_uri</code>
-				when starting a white-label connect flow (passed to
-				<code>POST /v1/connections</code> or <code>POST /v1/services</code>). Each
-				host must also be registered as a redirect URI on your provider's OAuth
-				client. The partner backend receives the provider's <code>code</code> and
-				<code>state</code> at its own URL and forwards them to
-				<code>POST /v1/oauth/exchange</code>. An empty list disables custom
-				redirect URIs — connect flows use the default Overslash callback.
+				Controls which global service templates your members can discover and
+				turn into services. Curate the catalog per-template from the
+				<a href="/services?tab=catalog">Services → Catalog</a> tab.
 			</p>
-			{#if oauthCallbackSettings}
-				{#if oauthCallbackSettings.allowed_hosts.length > 0}
-					<ul class="host-list">
-						{#each oauthCallbackSettings.allowed_hosts as host (host)}
-							<li class="host-row">
-								<code class="host-name">{host}</code>
-								<button
-									type="button"
-									class="btn-link danger"
-									disabled={oauthCallbackSaving}
-									onclick={() => removeOauthCallbackHost(host)}
-								>
-									Remove
-								</button>
-							</li>
-						{/each}
-					</ul>
-				{:else}
-					<p class="empty-hint">No callback hosts configured.</p>
-				{/if}
-				<form class="inline-form" onsubmit={addOauthCallbackHost}>
-					<label>
-						Add host
-						<input
-							type="text"
-							bind:value={oauthCallbackNewHost}
-							placeholder="app.overfolder.com"
-							disabled={oauthCallbackSaving}
-						/>
-					</label>
-					{#if oauthCallbackError}
-						<p class="form-error">{oauthCallbackError}</p>
-					{/if}
-					<div class="form-actions">
-						<button
-							type="submit"
-							class="btn btn-primary"
-							disabled={oauthCallbackSaving || !oauthCallbackNewHost.trim()}
-						>
-							{oauthCallbackSaving ? 'Saving…' : 'Add host'}
-						</button>
+			{#if templateSettings}
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Make all global services available</div>
+						<div class="toggle-help">
+							When on (default), every shipped global template is available to
+							members. When off, only the templates you explicitly enable in the
+							Catalog tab appear — everything else is hidden from discovery.
+						</div>
 					</div>
-				</form>
+					<ToggleSwitch
+						checked={templateSettings.global_templates_enabled}
+						onchange={(next) => patchTemplateSettings({ global_templates_enabled: next })}
+						disabled={templateSettingsSaving}
+						label="Make all global services available"
+					/>
+				</div>
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Allow services outside the curated catalog</div>
+						<div class="toggle-help">
+							When off (default), non-admins are blocked from creating a service
+							from a global template that is not in the curated catalog — even if
+							they know its key. When on, curated-out templates stay hidden from
+							discovery but can still be instantiated. Admins are always exempt.
+						</div>
+					</div>
+					<ToggleSwitch
+						checked={templateSettings.allow_services_outside_catalog}
+						onchange={(next) =>
+							patchTemplateSettings({ allow_services_outside_catalog: next })}
+						disabled={templateSettingsSaving}
+						label="Allow services outside the curated catalog"
+					/>
+				</div>
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Allow user-defined templates</div>
+						<div class="toggle-help">
+							Let members define their own user-tier service templates in
+							addition to the org and global catalog.
+						</div>
+					</div>
+					<ToggleSwitch
+						checked={templateSettings.allow_user_templates}
+						onchange={(next) => patchTemplateSettings({ allow_user_templates: next })}
+						disabled={templateSettingsSaving}
+						label="Allow user-defined templates"
+					/>
+				</div>
+				{#if templateSettingsError}
+					<div class="form-error">{templateSettingsError}</div>
+				{/if}
 			{/if}
 		</section>
 
@@ -961,24 +1012,20 @@
 		<section class="card">
 			<h2>Sign-in &amp; members</h2>
 			<p class="section-desc">
-				Decouple authentication from membership. When this is on, every
-				new sign-in to this org — through Overslash's managed OAuth apps
-				(Google, GitHub) <em>or</em> through an Identity Provider you
-				configured below — only admits the user if their verified email
-				is on the invite list. Authentication is separated from
-				membership: the IdP proves who you are, the invite list proves
-				you belong.
+				Decouple authentication from membership. Overslash-managed
+				sign-in lets your team authenticate through Overslash's own
+				OAuth apps (Google, GitHub) with no per-org IdP setup: the IdP
+				proves who someone is. You then choose how they're
+				<em>admitted</em> — invite-only, or by email domain.
 			</p>
 
 			<div class="toggle-row">
 				<div class="toggle-body">
-					<div class="toggle-label">Invite-only admission</div>
+					<div class="toggle-label">Allow Overslash-managed sign-in</div>
 					<div class="toggle-help">
-						When on, every new member must have a pending invite below
-						before they can sign in — regardless of which IdP they
-						authenticate with. When off, the per-IdP
-						<code>allowed_email_domains</code> whitelist is the only
-						gate.
+						When on, members can authenticate through Overslash's
+						managed OAuth apps without you configuring an Identity
+						Provider. Admission is still gated below.
 					</div>
 				</div>
 				<ToggleSwitch
@@ -988,11 +1035,67 @@
 					label="Allow Overslash-managed sign-in"
 				/>
 			</div>
+
+			{#if managedSigninSettings.allow_overslash_managed_signin}
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Require invite</div>
+						<div class="toggle-help">
+							When on, every new member must have a pending invite
+							below before they can sign in. When off, anyone whose
+							verified email domain is on the allowlist self-provisions
+							on first login — no invite needed.
+						</div>
+					</div>
+					<ToggleSwitch
+						checked={managedSigninSettings.require_invite_admission}
+						onchange={toggleRequireInvite}
+						disabled={managedSigninSaving}
+						label="Require invite for admission"
+					/>
+				</div>
+			{/if}
 			{#if managedSigninError}
 				<div class="form-error">{managedSigninError}</div>
 			{/if}
 
-			{#if managedSigninSettings.allow_overslash_managed_signin}
+			{#if managedSigninSettings.allow_overslash_managed_signin && !managedSigninSettings.require_invite_admission}
+				<div class="domains-block">
+					<div class="toggle-label">Allowed email domains</div>
+					<div class="toggle-help">
+						One domain per line (e.g. <code>reveni.io</code>). Any user
+						whose verified email ends in one of these self-provisions on
+						first login. Matching splits the email on <code>@</code> and
+						is case-insensitive; it does not cryptographically verify the
+						Google Workspace <code>hd</code> claim.
+					</div>
+					{#if managedSigninSettings.managed_signin_allowed_domains.length === 0}
+						<div class="idp-warning-banner compact">
+							<strong>Domain admission is open but no domains are set.</strong>
+							Until you add at least one domain, managed sign-ins are
+							rejected — no one can self-provision.
+						</div>
+					{/if}
+					<textarea
+						class="domains-input"
+						rows="3"
+						placeholder="reveni.io"
+						bind:value={domainsInput}
+						oninput={() => (domainsDirty = true)}
+						disabled={managedSigninSaving}
+					></textarea>
+					<button
+						type="button"
+						class="btn btn-primary"
+						onclick={saveAllowedDomains}
+						disabled={managedSigninSaving || !domainsDirty}
+					>
+						{managedSigninSaving ? 'Saving…' : 'Save domains'}
+					</button>
+				</div>
+			{/if}
+
+			{#if managedSigninSettings.allow_overslash_managed_signin && managedSigninSettings.require_invite_admission}
 				<div class="card-head invites-head">
 					<h3>Invites</h3>
 					<button
@@ -1753,6 +1856,67 @@
 			{/if}
 		</section>
 	{/if}
+
+	{#if isInstanceAdmin && !isPersonalOrg && org}
+		<section class="card" id="instance-admin-trial">
+			<h2>Trial <span class="instance-tag">⚡ Instance admin</span></h2>
+			<p class="muted small">
+				Put this org on a managed trial or opt it out. Enforcement is banner-only —
+				an expired trial keeps working; members just see a banner.
+			</p>
+
+			<div class="billing-stat">
+				<span class="billing-label">Current</span>
+				<span class="billing-value">
+					{#if isTrial}
+						Trial · {subscription?.status}{#if subscription?.current_period_end}
+							· ends {new Date(subscription.current_period_end * 1000).toLocaleDateString()}{/if}
+					{:else if isFreeUnlimited}
+						Free Unlimited
+					{:else}
+						{subscription?.plan ?? 'standard'}
+					{/if}
+				</span>
+			</div>
+
+			<div class="trial-admin-controls">
+				<div class="trial-admin-action">
+					<label class="trial-days">
+						Days
+						<input type="number" min="1" max="3650" bind:value={trialDurationDays} disabled={trialActionBusy} />
+					</label>
+					<button type="button" class="btn btn-secondary" disabled={trialActionBusy} onclick={startTrial}>
+						{isTrial ? 'Restart trial' : 'Start trial'}
+					</button>
+				</div>
+
+				{#if isTrial}
+					<div class="trial-admin-action">
+						<label class="trial-days">
+							Extend by
+							<input type="number" min="1" max="3650" bind:value={trialExtendDays} disabled={trialActionBusy} />
+						</label>
+						<button type="button" class="btn btn-secondary" disabled={trialActionBusy} onclick={extendTrial}>
+							Extend
+						</button>
+					</div>
+				{/if}
+
+				<div class="trial-admin-action">
+					<button type="button" class="btn btn-secondary" disabled={trialActionBusy} onclick={() => setPlan('free_unlimited')}>
+						Set Free Unlimited
+					</button>
+					<button type="button" class="btn btn-secondary" disabled={trialActionBusy} onclick={() => setPlan('standard')}>
+						Set Standard
+					</button>
+				</div>
+			</div>
+
+			{#if trialActionError}
+				<p class="form-error">{trialActionError}</p>
+			{/if}
+		</section>
+	{/if}
 </div>
 
 <ConfirmModal
@@ -1994,34 +2158,6 @@
 		color: var(--color-danger, #b42318);
 	}
 
-	.host-list {
-		list-style: none;
-		margin: 0.5rem 0 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-	}
-	.host-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.6rem;
-		padding: 0.45rem 0.6rem;
-		border: 1px solid var(--color-border);
-		border-radius: 4px;
-	}
-	.host-name {
-		font-family: var(--font-mono);
-		font-size: 0.85rem;
-		word-break: break-all;
-	}
-	.empty-hint {
-		margin: 0.5rem 0 0;
-		color: var(--color-text-muted);
-		font-size: 0.85rem;
-		font-style: italic;
-	}
 	.inline-form {
 		margin-top: 1rem;
 		display: flex;
@@ -2142,6 +2278,32 @@
 		font-size: 0.82rem;
 		line-height: 1.45;
 	}
+	.domains-block {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		margin-top: 0.75rem;
+		padding-top: 0.75rem;
+		border-top: 1px solid var(--color-border);
+	}
+	.domains-input {
+		font-family: var(--font-mono, monospace);
+		font-size: 0.85rem;
+		padding: 0.5rem 0.6rem;
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		background: var(--color-surface, #fff);
+		color: var(--color-text);
+		resize: vertical;
+	}
+	.domains-block .btn {
+		align-self: flex-start;
+	}
+	.idp-warning-banner.compact {
+		margin: 0;
+		padding: 0.5rem 0.75rem;
+		font-size: 0.82rem;
+	}
 	.mode-group {
 		display: flex;
 		flex-direction: column;
@@ -2232,5 +2394,49 @@
 		margin: 0.75rem 0 0;
 		font-size: 0.85rem;
 		color: var(--color-text-muted);
+	}
+
+	.instance-tag {
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		vertical-align: middle;
+		margin-left: 0.4rem;
+		padding: 0.1rem 0.45rem;
+		border-radius: var(--radius-pill, 999px);
+		background: var(--color-warning-soft, var(--neutral-100));
+		color: var(--color-warning, #b45309);
+	}
+
+	.trial-admin-controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem;
+		margin-top: 1rem;
+	}
+
+	.trial-admin-action {
+		display: flex;
+		align-items: flex-end;
+		gap: 0.5rem;
+	}
+
+	.trial-days {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
+	}
+
+	.trial-days input {
+		width: 5rem;
+		padding: 0.4rem 0.5rem;
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		background: var(--color-surface);
+		color: var(--color-text);
+		font-size: 0.9rem;
 	}
 </style>

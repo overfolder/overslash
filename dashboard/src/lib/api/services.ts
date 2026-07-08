@@ -20,7 +20,9 @@ import type {
 	ServiceInstanceDetail,
 	ServiceInstanceSummary,
 	ServiceStatus,
+	AdminTemplateSummary,
 	TemplateDetail,
+	TemplateSettings,
 	TemplateSummary,
 	UpdateDraftRequest,
 	UpdateServiceRequest,
@@ -51,6 +53,39 @@ export const updateTemplate = (id: string, patch: UpdateTemplateRequest) =>
 
 export const deleteTemplate = (id: string) =>
 	session.delete<{ deleted: boolean }>(`/v1/templates/${id}/manage`);
+
+// -- Catalog curation (org-admin) --
+
+/** Read the org's template/catalog settings. */
+export const getTemplateSettings = (orgId: string, signal?: AbortSignal) =>
+	session.get<TemplateSettings>(`/v1/orgs/${orgId}/template-settings`, signal);
+
+/** Update the org's template/catalog settings. */
+export const updateTemplateSettings = (orgId: string, patch: Partial<TemplateSettings>) =>
+	session.patch<TemplateSettings>(`/v1/orgs/${orgId}/template-settings`, patch);
+
+/**
+ * Admin compliance view: every template across all tiers, with an `enabled`
+ * flag on global rows reflecting the org's curated-catalog allow-list.
+ */
+export const listAdminTemplates = (signal?: AbortSignal) =>
+	session.get<AdminTemplateSummary[]>('/v1/templates/admin', signal);
+
+/** Global template keys explicitly enabled for this org (the curated allow-list). */
+export const listEnabledGlobals = (signal?: AbortSignal) =>
+	session.get<string[]>('/v1/templates/enabled-globals', signal);
+
+/** Add a global template to the org's curated catalog. */
+export const enableGlobalTemplate = (key: string) =>
+	session.post<{ enabled: boolean; template_key: string }>('/v1/templates/enabled-globals', {
+		template_key: key
+	});
+
+/** Remove a global template from the org's curated catalog. */
+export const disableGlobalTemplate = (key: string) =>
+	session.delete<{ disabled: boolean; template_key: string }>(
+		`/v1/templates/enabled-globals/${encodeURIComponent(key)}`
+	);
 
 // -- OpenAPI import / drafts --
 
@@ -149,8 +184,21 @@ export const listServiceGroups = (serviceId: string, signal?: AbortSignal) =>
 
 // -- OAuth connections --
 
-export const listConnections = (signal?: AbortSignal) =>
-	session.get<ConnectionSummary[]>('/v1/connections', signal);
+export const listConnections = (
+	opts: { includeUserLevel?: boolean; ownerIdentityId?: string } = {},
+	signal?: AbortSignal
+) => {
+	// `include_user_level=true` (admin-only) lists every user's connections
+	// across the org; silently ignored for non-admins by the backend.
+	// `owner_identity_id` lists a specific owner's connections (self always
+	// allowed, another identity is admin-only); the service detail page passes
+	// the service's owner so an admin sees that user's bindable connections.
+	const params = new URLSearchParams();
+	if (opts.includeUserLevel) params.set('include_user_level', 'true');
+	if (opts.ownerIdentityId) params.set('owner_identity_id', opts.ownerIdentityId);
+	const qs = params.toString() ? `?${params}` : '';
+	return session.get<ConnectionSummary[]>(`/v1/connections${qs}`, signal);
+};
 
 export const getConnection = (id: string, signal?: AbortSignal) =>
 	session.get<ConnectionDetail>(`/v1/connections/${id}`, signal);
@@ -169,11 +217,6 @@ export const setConnectionDefault = (id: string) =>
 
 export interface UpgradeScopesResponse {
 	auth_url: string;
-	/**
-	 * Raw upstream provider authorize URL. Only present for REST callers that
-	 * opt in via `include_raw: true`; the in-app reconnect flow uses `auth_url`.
-	 */
-	raw?: string;
 	state: string;
 	connection_id: string;
 	requested_scopes: string[];

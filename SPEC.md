@@ -190,7 +190,9 @@ Users authenticate to Overslash via external Identity Providers (IdPs). Overslas
 - *Corp org, as creator* — an Overslash-backed user creates a corp org via `POST /v1/orgs`; they receive a regular `admin` membership + an admin `identities` row in the new org. An org may stay on the Overslash-level IdP indefinitely (creator is its sole admin) or later configure its own IdP to onboard more humans. The creator's Overslash-level login continues to reach the org in either case — they're just an admin, no special flag.
 - *Corp org, as member* — sign in through any IdP the org has enabled on `<slug>.app.overslash.com` (per-org `org_idp_configs` row, or Overslash's shared OAuth app when the org opts in). Two admission paths, picked by the org admin:
   - **Domain-whitelist path** (default for pre-2026-05 orgs): auto-provisioning is gated by `org_idp_configs.allowed_email_domains` (empty list = trust the IdP entirely).
-  - **Invite-gated path** (`orgs.allow_overslash_managed_signin = true`, default for orgs created after migration 066): every new member must have a pending `org_invites(email, role)` row — regardless of which IdP authenticates them. Authentication is decoupled from membership: the IdP proves who you are, the invite list proves you belong. Membership crossing trust domains is still blocked unless the admin explicitly invites the email.
+  - **Managed sign-in path** (`orgs.allow_overslash_managed_signin = true`, default for orgs created after migration 066): authentication via Overslash's shared OAuth apps is decoupled from membership — the IdP proves who you are, and a second gate proves you belong. Migration 092 makes that gate configurable via `orgs.require_invite_admission` (default `true`):
+    - *Invite-required* (`require_invite_admission = true`, the default): every new member must have a pending `org_invites(email, role)` row — regardless of which IdP authenticates them. Membership crossing trust domains is blocked unless the admin explicitly invites the email.
+    - *Domain-allowlist* (`require_invite_admission = false`): any verified email whose domain is on the org-wide `orgs.managed_signin_allowed_domains` list self-provisions as `member` on first login, no invite needed. An **empty** allowlist here is a misconfiguration, not "admit everyone" — sign-in is rejected. This is distinct from the per-provider `org_idp_configs.allowed_email_domains` used by the domain-whitelist path above; the managed list is org-wide because the managed path admits through multiple env-var providers sharing one trust boundary (the operator's env creds).
 
 **No cross-IdP account linking.** A human who uses Google for personal and Okta for Acme has two distinct `users` rows. This is intentional: Google and Okta are different trust domains and the system treats them as such. See [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md).
 
@@ -655,6 +657,10 @@ OAuth client credentials resolve via a three-tier cascade. At execution time, th
 If no credentials are found at any level, the connect flow shows an error explaining that no OAuth app is configured for this provider.
 
 When a user creates a service from a template that uses OAuth, the connect flow walks them through the OAuth redirect. The resulting token is stored encrypted and bound to that service instance.
+
+**Orchestrated vs. imported connections.** The flow above — overslash builds the authorize URL and completes the dance at `GET /v1/oauth/callback` — is the **orchestrated** path, used by normal orgs and the dashboard's own connect UI; it always uses the default `{public_url}/v1/oauth/callback` redirect. **White-label partners that already own their OAuth** (e.g., Overfolder) instead run the dance themselves and hand overslash the resulting tokens via `POST /v1/connections/import` — overslash is a **token vault**: it stores the tokens (identical connection row), refreshes them, and injects them at execution, but never issues a `redirect_uri`. The import **requires** a `byoc_credential_id` (the partner's registered client; a null pin is a 400): overslash self-refreshes autonomously, hard-pinned to that client — never the env/org `OAUTH_*_CLIENT` cascade, since a refresh token is valid only against the client that issued it.
+
+Auth-recovery for white-label end users is governed by a per-org **`headless`** capability (`orgs.headless`, admin-only via `GET`/`PATCH /v1/orgs/{id}/headless`). A white-label org's end users have no Overslash dashboard session, so the gated `/connect-authorize` link normal orgs receive is a dead end for them. For a headless org, the three auth-recovery envelopes (`reauth_required`, `needs_authentication`, `missing_scopes`) are **URL-less**: they omit `auth_url`/`short` (and `upgrade_url` for `missing_scopes`), carry `headless: true` plus `provider`/`required_scopes`/`account_email`, and mint **no** `oauth_connection_flows` row. The integration reads the envelope, re-runs its own dance, and re-imports. Non-headless orgs keep the gated flow unchanged. (This replaces the removed per-connection `integration_managed` flag, which conflated *who refreshes* with *who runs the user flow*.) Full design in [docs/design/white-label-token-vault.md](docs/design/white-label-token-vault.md).
 
 **Provider-level credentials, not service-level.** OAuth client credentials are scoped to the *provider* (e.g., `google`), not to individual services. Google Calendar, Google Drive, and Gmail all reference `provider: google` in their templates — they all share the same OAuth app credentials. Scopes differ per service, but the OAuth client is the same. This means an org that configures org-level Google credentials gets Calendar, Drive, and Gmail working with one setup.
 
@@ -1291,12 +1297,14 @@ Each disclose filter runs against this projection of the resolved request:
   "method": "POST",
   "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
   "params": { "userId": "me" },
-  "body": { "raw": "VG86IGFsaWNlQGV4YW1wbGUuY29tCg..." }
+  "body": { "raw": "VG86IGFsaWNlQGV4YW1wbGUuY29tCg..." },
+  "resolved": { "userId": "alice@example.com" }
 }
 ```
 
 - `body` is parsed as JSON when the outbound request's `Content-Type` is a JSON media type (`application/json`, `application/*+json`); otherwise it's carried as the raw string.
 - `params` is the post-resolution parameter map — every arg the agent passed, regardless of whether it was bound to the URL path, the query string, or the body.
+- `resolved` is the display-name map produced by the template's `resolve` param declarations (param name → human-readable string, e.g. a Drive `fileId` → the file's name). Only params whose lookup succeeded appear, so filters should fall back explicitly: `.resolved.fileId // .params.fileId`. Resolution runs **once, at resolve time**, and the map rides in the request metadata through execution — a delete action's audit-write disclosure still names the object even though it no longer exists upstream. MCP- and platform-runtime actions keep their own projections unchanged (`{runtime, tool, arguments, service, action}` / `{runtime, action, params, service}`, no `resolved` key): display-param resolvers are HTTP-action-only.
 
 ### Declaration
 
@@ -1315,6 +1323,28 @@ paths:
           max_chars: 2000
       redact:
         - body.raw
+```
+
+A resolver-backed declaration — the disclosed field prefers the human-readable name and degrades to the opaque ID when the lookup failed:
+
+```yaml
+paths:
+  /drive/v3/files/{fileId}:
+    parameters:
+      - name: fileId
+        in: path
+        required: true
+        schema: { type: string }
+        resolve:
+          get: /drive/v3/files/{fileId}
+          pick: name
+    delete:
+      operationId: delete_file
+      summary: "Delete file {fileId}"
+      risk: delete
+      disclose:
+        - label: File
+          filter: '.resolved.fileId // .params.fileId'
 ```
 
 Unprefixed `disclose:` / `redact:` aliases normalize to `x-overslash-disclose` / `x-overslash-redact` like the other operation-level extensions. jq syntax is validated at template register / promote time; a malformed filter rejects the template with a `disclose_invalid_jq` issue.

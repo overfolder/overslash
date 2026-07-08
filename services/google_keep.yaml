@@ -1,0 +1,102 @@
+openapi: 3.1.0
+info:
+  title: Google Keep
+  description: Google Keep — create, list, read, and delete notes (text or checklist).
+  key: google_keep
+  category: Productivity
+servers:
+  - url: https://keep.googleapis.com
+security:
+  - oauth:
+      - https://www.googleapis.com/auth/keep
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: google
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          # A single read/write scope covers every operation. The Keep API also
+          # offers keep.readonly, but the scope gate matches granted scopes
+          # literally (it doesn't know keep ⊇ keep.readonly), so gating reads on
+          # keep.readonly would lock out a connection authorized with full keep.
+          scopes:
+            https://www.googleapis.com/auth/keep: ""
+paths:
+  /v1/notes:
+    get:
+      operationId: list_notes
+      summary: List notes for the authenticated user
+      risk: read
+      parameters:
+        - name: pageSize
+          in: query
+          description: Maximum number of notes to return
+          schema:
+            type: integer
+        - name: pageToken
+          in: query
+          description: Page token returned from a previous list call
+          schema:
+            type: string
+        - name: filter
+          in: query
+          description: "Filter expression, e.g. 'trashed = false' (omit trashed/archived notes)"
+          schema:
+            type: string
+    post:
+      operationId: create_note
+      summary: "Create note '{title}'"
+      risk: write
+      disclose:
+        - label: Title
+          filter: .body.title
+        - label: Text
+          filter: .body.body.text.text // empty
+          max_chars: 2000
+        - label: Checklist
+          filter: '[.body.body.list.listItems[]?.text.text // empty] | select(length > 0) | join("; ")'
+          max_chars: 2000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                title:
+                  type: string
+                  description: Title of the note (max 1,000 characters)
+                body:
+                  type: object
+                  description: >-
+                    Note content (a Section). Provide exactly one of `text` or `list`:
+                    text note  → {text: {text: "..."}};
+                    checklist  → {list: {listItems: [{text: {text: "..."}, checked: false}]}}.
+  /v1/notes/{noteId}:
+    parameters:
+      - name: noteId
+        in: path
+        required: true
+        description: Note identifier (the note's resource name, e.g. 'notes/abc123')
+        schema:
+          type: string
+        resolve:
+          get: /v1/notes/{noteId}
+          pick: title
+    get:
+      operationId: get_note
+      summary: "Get note {noteId}"
+      risk: read
+      scope_param: noteId
+    delete:
+      operationId: delete_note
+      summary: "Delete note {noteId}"
+      risk: delete
+      scope_param: noteId
+      disclose:
+        - label: Note
+          filter: .resolved.noteId // .params.noteId

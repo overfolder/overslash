@@ -60,6 +60,16 @@ async fn test_gmail_e2e() {
 
     // Bootstrap org + identity + API key
     let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Connections resolve at the owner identity (D22): seed the agent's primary
+    // connection on its owner user so the agent's auto-resolved calls find it.
+    // (The compose-only sub-identity below is a standalone user — its own owner.)
+    let owner_id = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_identity(ident_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .owner_id
+        .unwrap();
 
     // Store BYOC credential via API
     let byoc_resp: Value = client
@@ -110,18 +120,18 @@ async fn test_gmail_e2e() {
     let _conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
         .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
-            identity_id: ident_id,
+            identity_id: owner_id,
             provider_key: "google",
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: Some(&encrypted_refresh),
             token_expires_at: Some(expires_at),
-            scopes: &[
+            scopes: Some(&[
                 "https://www.googleapis.com/auth/gmail.readonly".to_string(),
                 "https://www.googleapis.com/auth/gmail.send".to_string(),
                 "https://www.googleapis.com/auth/gmail.modify".to_string(),
                 "https://www.googleapis.com/auth/gmail.compose".to_string(),
                 "https://www.googleapis.com/auth/gmail.metadata".to_string(),
-            ],
+            ]),
             account_email: None,
             byoc_credential_id: Some(byoc_id),
         })
@@ -526,7 +536,7 @@ async fn test_gmail_e2e() {
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: Some(&encrypted_refresh),
             token_expires_at: Some(expires_at),
-            scopes: &["https://www.googleapis.com/auth/gmail.compose".to_string()],
+            scopes: Some(&["https://www.googleapis.com/auth/gmail.compose".to_string()]),
             account_email: None,
             byoc_credential_id: Some(byoc_id),
         })
@@ -619,5 +629,358 @@ async fn test_gmail_e2e() {
     );
     eprintln!("  scope gating: send_message correctly returned missing_scopes");
 
+    // ===== EXTENDED COVERAGE: threads, labels, message modify, untrash =====
+    // These exercise the operations added on top of the original send/read/draft
+    // surface. All run under the primary full-scope `key` identity (Mode C).
+
+    // ===== EXT 1: list_threads (gmail.readonly) =====
+    eprintln!("  [ext 1/7] list_threads ...");
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "list_threads",
+            "params": {"userId": "me", "q": "in:inbox", "maxResults": 5}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    let threads_resp: Value =
+        serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert!(
+        threads_resp["resultSizeEstimate"].is_number(),
+        "list_threads should return resultSizeEstimate, got: {threads_resp}"
+    );
+    let first_thread_id = threads_resp["threads"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|t| t["id"].as_str())
+        .map(String::from);
+    eprintln!(
+        "  list_threads: resultSizeEstimate={}, first_id={:?}",
+        threads_resp["resultSizeEstimate"], first_thread_id
+    );
+
+    // ===== EXT 2: get_thread (gmail.readonly, only if we have a thread) =====
+    if let Some(ref tid) = first_thread_id {
+        eprintln!("  [ext 2/7] get_thread ({tid}) ...");
+        let resp = client
+            .post(format!("{base}/v1/actions/call"))
+            .header(common::auth(&key).0, common::auth(&key).1)
+            .json(&json!({
+                "service": "gmail",
+                "action": "get_thread",
+                "params": {"userId": "me", "id": tid, "format": "metadata"}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "called");
+        let thread: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            thread["id"].as_str(),
+            Some(tid.as_str()),
+            "get_thread should return the requested id"
+        );
+        let msgs = thread["messages"]
+            .as_array()
+            .expect("get_thread should return a messages array");
+        assert!(
+            !msgs.is_empty(),
+            "a thread should contain at least one message"
+        );
+        eprintln!("  get_thread: {} message(s) in thread", msgs.len());
+    } else {
+        eprintln!("  [ext 2/7] get_thread: SKIPPED (no threads in inbox)");
+    }
+
+    // ===== EXT 3: create_label (gmail.modify) =====
+    eprintln!("  [ext 3/7] create_label ...");
+    let label_name = format!("overslash-e2e-{timestamp}");
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "create_label",
+            "params": {
+                "userId": "me",
+                "name": label_name,
+                "labelListVisibility": "labelShow",
+                "messageListVisibility": "show"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    let created_label: Value =
+        serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let label_id = created_label["id"]
+        .as_str()
+        .expect("create_label should return an id")
+        .to_string();
+    assert_eq!(
+        created_label["name"].as_str(),
+        Some(label_name.as_str()),
+        "create_label should echo the requested name"
+    );
+    eprintln!("  create_label: id={label_id} name={label_name}");
+
+    // ===== EXT 4: get_label (gmail.metadata) =====
+    eprintln!("  [ext 4/7] get_label ({label_id}) ...");
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "get_label",
+            "params": {"userId": "me", "id": label_id}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    let fetched_label: Value =
+        serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        fetched_label["id"].as_str(),
+        Some(label_id.as_str()),
+        "get_label should return the same id"
+    );
+    assert_eq!(
+        fetched_label["name"].as_str(),
+        Some(label_name.as_str()),
+        "get_label should return the same name"
+    );
+
+    // ===== EXT 5: modify_message — apply then remove the label (gmail.modify) =====
+    // Re-list live inbox messages so we target a message that has *not* been
+    // trashed earlier in this run (trashed messages drop out of `in:inbox`).
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "list_messages",
+            "params": {"userId": "me", "q": "in:inbox", "maxResults": 1}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let mod_target = resp
+        .json::<Value>()
+        .await
+        .ok()
+        .and_then(|b| serde_json::from_str::<Value>(b["result"]["body"].as_str()?).ok())
+        .and_then(|m| {
+            m["messages"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|msg| msg["id"].as_str())
+                .map(String::from)
+        });
+    if let Some(ref msg_id) = mod_target {
+        eprintln!("  [ext 5/7] modify_message ({msg_id}) apply+remove label ...");
+        // Apply the label.
+        let resp = client
+            .post(format!("{base}/v1/actions/call"))
+            .header(common::auth(&key).0, common::auth(&key).1)
+            .json(&json!({
+                "service": "gmail",
+                "action": "modify_message",
+                "params": {"userId": "me", "id": msg_id, "addLabelIds": [label_id]}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "called");
+        let modified: Value =
+            serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+        let has_label = modified["labelIds"]
+            .as_array()
+            .is_some_and(|ls| ls.iter().any(|l| l.as_str() == Some(label_id.as_str())));
+        assert!(
+            has_label,
+            "modify_message add should attach the label, got: {}",
+            modified["labelIds"]
+        );
+
+        // Remove the label again (restore original state).
+        let resp = client
+            .post(format!("{base}/v1/actions/call"))
+            .header(common::auth(&key).0, common::auth(&key).1)
+            .json(&json!({
+                "service": "gmail",
+                "action": "modify_message",
+                "params": {"userId": "me", "id": msg_id, "removeLabelIds": [label_id]}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: Value = resp.json().await.unwrap();
+        let unmodified: Value =
+            serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+        let still_has_label = unmodified["labelIds"]
+            .as_array()
+            .is_some_and(|ls| ls.iter().any(|l| l.as_str() == Some(label_id.as_str())));
+        assert!(
+            !still_has_label,
+            "modify_message remove should detach the label, got: {}",
+            unmodified["labelIds"]
+        );
+        eprintln!("  modify_message: label applied and removed");
+    } else {
+        eprintln!("  [ext 5/7] modify_message: SKIPPED (no live inbox message)");
+    }
+
+    // ===== EXT 6: delete_label (gmail.modify) — cleanup =====
+    eprintln!("  [ext 6/7] delete_label ({label_id}) ...");
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "delete_label",
+            "params": {"userId": "me", "id": label_id}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "delete_label should succeed");
+    eprintln!("  delete_label: deleted {label_id}");
+
+    // ===== EXT 7: untrash_message (gmail.modify) — restore what TEST 6 trashed =====
+    if let Some(trash_id) = trash_target {
+        eprintln!("  [ext 7/7] untrash_message ({trash_id}) ...");
+        let resp = client
+            .post(format!("{base}/v1/actions/call"))
+            .header(common::auth(&key).0, common::auth(&key).1)
+            .json(&json!({
+                "service": "gmail",
+                "action": "untrash_message",
+                "params": {"userId": "me", "id": trash_id}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "called");
+        let restored: Value =
+            serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+        let still_trashed = restored["labelIds"]
+            .as_array()
+            .is_some_and(|ls| ls.iter().any(|l| l == "TRASH"));
+        assert!(
+            !still_trashed,
+            "untrash_message should remove the TRASH label, got: {}",
+            restored["labelIds"]
+        );
+        eprintln!("  untrash_message: restored {trash_id}");
+    } else {
+        eprintln!("  [ext 7/7] untrash_message: SKIPPED (nothing was trashed)");
+    }
+
     eprintln!("  All Gmail E2E tests completed!");
+}
+
+/// Array-valued query params expand to repeated `key=value` pairs (#419):
+/// `labelIds: ["INBOX","UNREAD"]` must produce `labelIds=INBOX&labelIds=UNREAD`,
+/// not a percent-encoded JSON blob. Runs against a local mock upstream — no
+/// real Google credentials needed.
+#[tokio::test]
+async fn test_gmail_array_query_param_expands_to_repeated_pairs() {
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+    let mock_host = format!("http://{mock_addr}");
+
+    let (base, client) =
+        common::start_api_with_registry(pool.clone(), Some(("gmail", mock_host))).await;
+
+    let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Connections resolve at the owner identity (D22).
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "gmail:*:*"}))
+        .send()
+        .await
+        .unwrap();
+    common::grant_service_to_everyone(&base, &client, &admin_key, "gmail").await;
+
+    // Seed a gmail.readonly connection (list_messages' declared scope).
+    let enc_key = overslash_core::crypto::Keyring::test();
+    let encrypted_token =
+        overslash_core::crypto::encrypt(&enc_key, b"gmail-mock-token-123").unwrap();
+    let future_time = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
+    let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
+    let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_byoc_credential(ident_id, "google", &encrypted_cid, &encrypted_csec)
+        .await
+        .unwrap();
+    overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_connection(overslash_db::repos::connection::CreateConnection {
+            org_id,
+            identity_id: owner_id,
+            provider_key: "google",
+            encrypted_access_token: &encrypted_token,
+            encrypted_refresh_token: None,
+            token_expires_at: Some(future_time),
+            scopes: Some(&["https://www.googleapis.com/auth/gmail.readonly".to_string()]),
+            account_email: None,
+            byoc_credential_id: Some(byoc.id),
+        })
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "list_messages",
+            "params": {"userId": "me", "labelIds": ["INBOX", "UNREAD"], "maxResults": 5}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let uri = echo["uri"].as_str().unwrap();
+    assert!(
+        uri.contains("/gmail/v1/users/me/messages"),
+        "unexpected upstream uri: {uri}"
+    );
+    // Order across keys is HashMap-dependent; assert each pair independently.
+    assert!(
+        uri.contains("labelIds=INBOX") && uri.contains("labelIds=UNREAD"),
+        "array param should expand to repeated pairs: {uri}"
+    );
+    assert!(
+        uri.contains("maxResults=5"),
+        "scalar query param should be unchanged: {uri}"
+    );
+    assert!(
+        !uri.contains("%5B"),
+        "array param must not serialize as a JSON blob: {uri}"
+    );
 }

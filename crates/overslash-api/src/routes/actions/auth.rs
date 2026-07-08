@@ -63,6 +63,22 @@ pub(super) fn classify_oauth(err: &OAuthError) -> OAuthOutcome {
     }
 }
 
+/// Whether `org_id` is a headless (white-label) org: auth-recovery returns
+/// URL-less typed envelopes instead of minting gated `/connect-authorize`
+/// links (and no `oauth_connection_flows` row). A read failure or missing org
+/// defaults to `false` — the safe, gated path for normal dashboard customers.
+///
+/// Pass the request's pool (`state.db(ext)` or `scope.db()`) so the lookup hits
+/// the right database under the shared-router test harness (in production /
+/// per-test routers that is `&state.db`).
+async fn org_is_headless(db: &sqlx::PgPool, org_id: Uuid) -> bool {
+    overslash_db::repos::org::get_headless(db, org_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false)
+}
+
 /// Map an `OAuthError` to the right `AppError` response shape, given a
 /// connection that the user could potentially reauth against. Centralises
 /// the Reauth-vs-Internal-vs-Upstream split so both auth resolvers
@@ -75,8 +91,9 @@ pub(super) fn classify_oauth(err: &OAuthError) -> OAuthOutcome {
 /// non-bailing variant: see [`oauth_error_to_app_error_or_continue`].
 pub(super) async fn oauth_error_to_app_error(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org_id: Uuid,
-    caller_identity_id: Uuid,
+    owner_identity_id: Uuid,
     conn: &overslash_db::repos::connection::ConnectionRow,
     err: OAuthError,
     return_url_hint: Option<&str>,
@@ -85,8 +102,9 @@ pub(super) async fn oauth_error_to_app_error(
         OAuthOutcome::Reauth(reason) => {
             reauth_required_envelope(
                 state,
+                ext,
                 org_id,
-                caller_identity_id,
+                owner_identity_id,
                 conn,
                 reason,
                 &err,
@@ -112,8 +130,9 @@ pub(super) async fn oauth_error_to_app_error(
 /// authentication via provider B.
 pub(super) async fn oauth_error_to_app_error_or_continue(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org_id: Uuid,
-    caller_identity_id: Uuid,
+    owner_identity_id: Uuid,
     conn: &overslash_db::repos::connection::ConnectionRow,
     err: OAuthError,
     return_url_hint: Option<&str>,
@@ -122,8 +141,9 @@ pub(super) async fn oauth_error_to_app_error_or_continue(
         OAuthOutcome::Reauth(reason) => Some(
             reauth_required_envelope(
                 state,
+                ext,
                 org_id,
-                caller_identity_id,
+                owner_identity_id,
                 conn,
                 reason,
                 &err,
@@ -153,19 +173,42 @@ pub(super) async fn oauth_error_to_app_error_or_continue(
 /// and fall back to `Internal` if the URL mint itself fails — at that
 /// point we genuinely can't help the user from this response and the
 /// operator needs to investigate.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn reauth_required_envelope(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org_id: Uuid,
-    caller_identity_id: Uuid,
+    // The connection lives at the owner identity (D22), so mint the gated
+    // upgrade flow against the owner — the human owner is who can heal the
+    // shared credential, and the minted flow/connection must key to the same
+    // identity the resolver read from.
+    owner_identity_id: Uuid,
     conn: &overslash_db::repos::connection::ConnectionRow,
     reason: &'static str,
     underlying: &OAuthError,
     return_url_hint: Option<&str>,
 ) -> AppError {
+    // Headless (white-label) org: the connection's end users have no Overslash
+    // session, so mint no gated link and no flow row. Return a URL-less
+    // envelope keyed by provider/scopes/email; the integration re-runs its own
+    // dance and re-imports. This is the single choke point for reauth, so it
+    // covers both the bailing and the non-bailing callers.
+    if org_is_headless(state.db(ext), org_id).await {
+        return AppError::ReauthRequired {
+            connection_id: conn.id,
+            provider: conn.provider_key.clone(),
+            auth_url: None,
+            short: None,
+            reason: reason.to_string(),
+            required_scopes: conn.scopes.clone().unwrap_or_default(),
+            account_email: conn.account_email.clone(),
+            headless: true,
+        };
+    }
     match platform_connections::mint_upgrade_auth_url(
         state,
         org_id,
-        caller_identity_id,
+        owner_identity_id,
         conn,
         &[],
         return_url_hint,
@@ -174,10 +217,13 @@ pub(super) async fn reauth_required_envelope(
     {
         Ok(urls) => AppError::ReauthRequired {
             connection_id: conn.id,
-            auth_url: urls.auth_url,
+            provider: conn.provider_key.clone(),
+            auth_url: Some(urls.auth_url),
             short: urls.short,
-            raw: Some(urls.raw),
             reason: reason.to_string(),
+            required_scopes: Vec::new(),
+            account_email: conn.account_email.clone(),
+            headless: false,
         },
         Err(mint_err) => {
             // Pass the kernel's typed error through verbatim — wrapping
@@ -212,8 +258,11 @@ pub(super) async fn reauth_required_envelope(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn needs_authentication_for_service(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org_id: Uuid,
-    caller_identity_id: Uuid,
+    // Mint the initial connect flow at the owner (D22) so the connection the
+    // user creates lands on the owner identity and is shared by every agent.
+    owner_identity_id: Uuid,
     svc: &overslash_core::types::ServiceDefinition,
     action: &overslash_core::types::ServiceAction,
     instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
@@ -237,6 +286,23 @@ pub(super) async fn needs_authentication_for_service(
         return Ok(None);
     };
 
+    // Headless (white-label) org: no gated URL, no flow row. Hand back a
+    // URL-less envelope naming the provider + required scopes so the
+    // integration runs its own dance and imports a connection.
+    if org_is_headless(state.db(ext), org_id).await {
+        return Ok(Some(AppError::NeedsAuthentication {
+            service: Some(service_key.to_string()),
+            service_instance_id: instance.map(|i| i.id),
+            connection_id: None,
+            auth_url: None,
+            short: None,
+            provider: Some(provider),
+            required_scopes: action.required_scopes.clone(),
+            account_email: None,
+            headless: true,
+        }));
+    }
+
     // Request the action's declared `required_scopes` up-front so the user
     // only sees one consent screen instead of two (consenting to nothing,
     // then being bounced through `missing_scopes` for the real set). When
@@ -258,7 +324,7 @@ pub(super) async fn needs_authentication_for_service(
     let urls = match platform_connections::mint_initial_auth_url(
         state,
         org_id,
-        caller_identity_id,
+        owner_identity_id,
         &provider,
         &action.required_scopes,
         None,
@@ -293,9 +359,12 @@ pub(super) async fn needs_authentication_for_service(
         service: Some(service_key.to_string()),
         service_instance_id: instance.map(|i| i.id),
         connection_id: None,
-        auth_url: urls.auth_url,
+        auth_url: Some(urls.auth_url),
         short: urls.short,
-        raw: Some(urls.raw),
+        provider: Some(provider),
+        required_scopes: action.required_scopes.clone(),
+        account_email: None,
+        headless: false,
     }))
 }
 
@@ -314,7 +383,12 @@ pub(crate) async fn resolve_service_auth(
     state: &AppState,
     ext: &axum::http::Extensions,
     scope: &OrgScope,
-    identity_id: Uuid,
+    // The connection (and its client credentials / reauth recovery) resolves
+    // at the OWNER identity, not the calling agent (D22): connections are
+    // identity-scoped but shared at the owner, so a child agent inherits the
+    // owner user's connection and one reauth heals every agent. Callers pass
+    // the ceiling user id (`group_ceiling::ceiling_user_id_from_identity`).
+    owner_identity_id: Uuid,
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
     return_url_hint: Option<&str>,
@@ -324,9 +398,11 @@ pub(crate) async fn resolve_service_auth(
     }
 
     let org_id = scope.org_id();
-    // The auto-resolve path is per-identity: build a UserScope so the
-    // connection lookup is bounded by `(org_id, user_id)`.
-    let user_scope = overslash_db::scopes::UserScope::new(org_id, identity_id, scope.db().clone());
+    // Resolve the connection at the owner identity. `UserScope` here is really
+    // an identity scope (its `user_id` field holds any identity_id), so a
+    // UserScope built from the owner selects the owner's connections.
+    let user_scope =
+        overslash_db::scopes::UserScope::new(org_id, owner_identity_id, scope.db().clone());
 
     // Try OAuth first: check if identity has a connection for this service's OAuth provider
     // The encryption key is process-global, so a parse error here can't be
@@ -376,7 +452,7 @@ pub(crate) async fn resolve_service_auth(
                 state.db(ext),
                 &enc_key,
                 org_id,
-                Some(identity_id),
+                Some(owner_identity_id),
                 provider,
                 Some(&conn),
                 None,
@@ -423,8 +499,9 @@ pub(crate) async fn resolve_service_auth(
                     let err_str = e.to_string();
                     if let Some(err) = oauth_error_to_app_error_or_continue(
                         state,
+                        ext,
                         org_id,
-                        identity_id,
+                        owner_identity_id,
                         &conn,
                         e,
                         return_url_hint,
@@ -455,6 +532,98 @@ pub(crate) async fn resolve_service_auth(
     Ok(ResolvedAuth::none())
 }
 
+/// Resolve a live OAuth bearer for an MCP-runtime service whose `mcp.auth`
+/// declares `{ kind: oauth, provider }`. Mirrors the OAuth arm of
+/// [`resolve_service_auth`] but for the single provider named in the MCP
+/// block and always as `Authorization: Bearer <token>` (MCP servers take the
+/// token in that header). Returns:
+/// - `Ok(Some(header))` — a connection exists and a token resolved (refreshed
+///   via the org/BYOC client if the access token had expired).
+/// - `Ok(None)` — no connection for `provider` yet. The caller decides: the
+///   inline resolver mints an auth URL and gates; replay fails the execution.
+/// - `Err(_)` — reauth required (refresh failed / no refresh token) mapped to
+///   the same recovery envelope the HTTP path uses, or a credential/upstream
+///   error.
+pub(crate) async fn resolve_mcp_oauth_bearer(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    scope: &OrgScope,
+    // Owner identity (D22): connections resolve at the owner, shared by every
+    // child agent, so one reauth heals all.
+    owner_identity_id: Uuid,
+    provider: &str,
+    return_url_hint: Option<&str>,
+) -> Result<Option<AuthHeader>, AppError> {
+    let org_id = scope.org_id();
+    let user_scope =
+        overslash_db::scopes::UserScope::new(org_id, owner_identity_id, scope.db().clone());
+    let enc_key = state
+        .config
+        .keyring()
+        .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
+
+    let conn = match user_scope.find_my_connection_by_provider(provider).await {
+        Ok(Some(conn)) => conn,
+        Ok(None) => return Ok(None),
+        Err(e) => {
+            return Err(AppError::Internal(format!(
+                "connection lookup for provider '{provider}' failed: {e}"
+            )));
+        }
+    };
+
+    // Client credentials for refresh — resolves the connection's pinned BYOC,
+    // then the identity/org/env cascade. HubSpot's remote MCP requires a
+    // custom BYOC app, so this is where that client_id/secret is picked up.
+    let creds = crate::services::client_credentials::resolve(
+        state.db(ext),
+        &enc_key,
+        org_id,
+        Some(owner_identity_id),
+        provider,
+        Some(&conn),
+        None,
+    )
+    .await?;
+
+    match crate::services::oauth::resolve_access_token(
+        scope,
+        &state.http_client,
+        &enc_key,
+        &conn,
+        &creds.client_id,
+        &creds.client_secret,
+    )
+    .await
+    {
+        Ok(access_token) => Ok(Some(AuthHeader {
+            name: "Authorization".to_string(),
+            value: format!("Bearer {access_token}"),
+        })),
+        Err(e) => {
+            // RefreshFailed / NoRefreshToken → `ReauthRequired` (gated URL);
+            // other resolver errors have no click-to-fix shape → BadGateway.
+            if let Some(err) = oauth_error_to_app_error_or_continue(
+                state,
+                ext,
+                org_id,
+                owner_identity_id,
+                &conn,
+                e,
+                return_url_hint,
+            )
+            .await
+            {
+                Err(err)
+            } else {
+                Err(AppError::BadGateway(
+                    "OAuth provider returned an error resolving the MCP access token".into(),
+                ))
+            }
+        }
+    }
+}
+
 /// Fail-fast scope gate: before the outgoing request is built, compare the
 /// connection's granted scopes against what this action declares. When a
 /// template doesn't declare `required_scopes`, returns `Ok(())` — preserves
@@ -468,7 +637,10 @@ pub(crate) async fn resolve_service_auth(
 pub(super) async fn check_required_scopes(
     state: &AppState,
     scope: &OrgScope,
-    identity_id: Uuid,
+    // Auto-resolved connections are read at the owner identity (D22), matching
+    // what `resolve_service_auth` will actually use. Explicit instance→
+    // connection bindings still resolve org-scoped via `scope.get_connection`.
+    owner_identity_id: Uuid,
     instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
     svc: &overslash_core::types::ServiceDefinition,
     action: &overslash_core::types::ServiceAction,
@@ -489,15 +661,21 @@ pub(super) async fn check_required_scopes(
     };
 
     let org_id = scope.org_id();
-    let user_scope = overslash_db::scopes::UserScope::new(org_id, identity_id, scope.db().clone());
+    let user_scope =
+        overslash_db::scopes::UserScope::new(org_id, owner_identity_id, scope.db().clone());
 
     // Resolve the connection the exec path would actually use — instance's
     // explicit binding takes precedence, else `find_my_connection_by_provider`.
     let connection = if let Some(inst) = instance {
         if let Some(conn_id) = inst.connection_id {
             scope.get_connection(conn_id).await?
-        } else {
+        } else if inst.use_default_connection {
             user_scope.find_my_connection_by_provider(&provider).await?
+        } else {
+            // Opted out of the default-connection fallback: the exec path
+            // resolves no connection (yields `needs_authentication`), so there
+            // is nothing to gate here. Mirror `resolve_instance_auth`.
+            None
         }
     } else {
         user_scope.find_my_connection_by_provider(&provider).await?
@@ -510,8 +688,16 @@ pub(super) async fn check_required_scopes(
         return Ok(());
     };
 
+    // Unknown granted scopes (a token import that didn't declare them) get the
+    // benefit of the doubt — Overslash can't know what the token covers, so it
+    // doesn't pre-emptively 403; a genuine scope shortfall still surfaces as the
+    // upstream's own error. A known set (orchestrated connections always record
+    // one) is gated precisely.
+    let Some(granted_scopes) = connection.scopes.as_deref() else {
+        return Ok(());
+    };
     let granted: std::collections::HashSet<&str> =
-        connection.scopes.iter().map(String::as_str).collect();
+        granted_scopes.iter().map(String::as_str).collect();
     let missing: Vec<String> = action
         .required_scopes
         .iter()
@@ -521,6 +707,24 @@ pub(super) async fn check_required_scopes(
 
     if missing.is_empty() {
         return Ok(());
+    }
+
+    // Headless (white-label) org: omit both the gated `auth_url` and the
+    // `upgrade_url` — the org's end users can't open either, and minting an
+    // upgrade flow would leave a stray flow row. The integration broadens the
+    // grant against its own client and re-imports the connection.
+    if org_is_headless(scope.db(), org_id).await {
+        return Err(AppError::MissingScopes {
+            connection_id: connection.id,
+            required: action.required_scopes.clone(),
+            missing,
+            upgrade_url: None,
+            auth_url: None,
+            short: None,
+            provider: Some(connection.provider_key.clone()),
+            account_email: connection.account_email.clone(),
+            headless: true,
+        });
     }
 
     // Mint a chat-deliverable gated `/connect-authorize` URL that, when
@@ -537,23 +741,23 @@ pub(super) async fn check_required_scopes(
     // `auth_url` from the body. The dashboard / REST clients will fall
     // back to `upgrade_url`, and the client still gets the correct 403
     // missing_scopes shape.
-    let (auth_url, short, raw) = match platform_connections::mint_upgrade_auth_url(
+    let (auth_url, short) = match platform_connections::mint_upgrade_auth_url(
         state,
         scope.org_id(),
-        identity_id,
+        owner_identity_id,
         &connection,
         &missing,
         return_url_hint,
     )
     .await
     {
-        Ok(urls) => (Some(urls.auth_url), urls.short, Some(urls.raw)),
+        Ok(urls) => (Some(urls.auth_url), urls.short),
         Err(e) => {
             tracing::error!(
                 "missing_scopes: failed to mint upgrade auth url for connection {}: {e}",
                 connection.id
             );
-            (None, None, None)
+            (None, None)
         }
     };
     let upgrade_url = format!(
@@ -563,12 +767,101 @@ pub(super) async fn check_required_scopes(
     );
     Err(AppError::MissingScopes {
         connection_id: connection.id,
+        required: action.required_scopes.clone(),
         missing,
-        upgrade_url,
+        upgrade_url: Some(upgrade_url),
         auth_url,
         short,
-        raw,
+        provider: Some(connection.provider_key.clone()),
+        account_email: connection.account_email.clone(),
+        headless: false,
     })
+}
+
+/// Whether an upstream response body is Google's "metadata scope" denial:
+/// a `PERMISSION_DENIED` (HTTP 403) whose message is
+/// `"Metadata scope does not support 'q' parameter"` (or any other metadata
+/// message). This means the *injected access token was metadata-only* even
+/// though the connection's recorded scopes claimed a broader grant like
+/// `gmail.readonly` — the exact divergence from connection `85844f1a`.
+///
+/// We match on the stable substring `"Metadata scope does not support"` rather
+/// than the full message so a change to the offending parameter name (`'q'` vs
+/// something else) doesn't slip past. Only inspects 403 responses.
+pub(super) fn is_metadata_scope_denial(status_code: u16, body: &str) -> bool {
+    status_code == 403 && body.contains("Metadata scope does not support")
+}
+
+/// Surface a metadata-scope denial (see [`is_metadata_scope_denial`]) as a
+/// typed `reauth_required` envelope instead of a 200 with the upstream 403
+/// buried in the body.
+///
+/// The recorded scopes lie (they say `gmail.readonly` but the token is
+/// metadata-only), and the self-refresh path can't heal it — the stored refresh
+/// token is itself metadata-scoped. The only fix is a fresh consent, so a
+/// reauth envelope is the right shape: for a headless (white-label) org it's a
+/// URL-less signal the partner acts on by re-running its own OAuth dance and
+/// re-importing with a fresh refresh token; for an orchestrated org it mints a
+/// gated reconnect link.
+///
+/// Returns `None` when the service has no OAuth provider or no resolvable
+/// connection — in that unexpected case the caller falls back to returning the
+/// upstream 403 unchanged rather than fabricating a reauth for a connection we
+/// can't name.
+pub(super) async fn metadata_scope_reauth_envelope(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    scope: &OrgScope,
+    ceiling_user_id: Uuid,
+    service_key: &str,
+) -> Option<AppError> {
+    // Resolve the service definition to find its OAuth provider. `None` for a
+    // raw-HTTP shape or a template without OAuth — nothing to reauth.
+    let svc = crate::routes::templates::resolve_template_definition(
+        state,
+        ext,
+        scope.org_id(),
+        Some(ceiling_user_id),
+        service_key,
+    )
+    .await
+    .ok()?;
+
+    let provider = svc.auth.iter().find_map(|a| match a {
+        overslash_core::types::ServiceAuth::OAuth { provider, .. } => Some(provider.clone()),
+        _ => None,
+    })?;
+
+    // Connections resolve at the owner identity (D22).
+    let owner_identity_id =
+        crate::services::group_ceiling::resolve_ceiling_user_id(scope, ceiling_user_id)
+            .await
+            .ok()?;
+    let user_scope =
+        overslash_db::scopes::UserScope::new(scope.org_id(), owner_identity_id, scope.db().clone());
+    let connection = user_scope
+        .find_my_connection_by_provider(&provider)
+        .await
+        .ok()
+        .flatten()?;
+
+    Some(
+        reauth_required_envelope(
+            state,
+            ext,
+            scope.org_id(),
+            owner_identity_id,
+            &connection,
+            "metadata_scope_token",
+            &OAuthError::RefreshFailed(
+                "injected access token is metadata-only despite recorded scopes; \
+                 the stored refresh token cannot self-heal — fresh consent required"
+                    .into(),
+            ),
+            None,
+        )
+        .await,
+    )
 }
 
 /// Re-resolve the live OAuth header for an approval replay.
@@ -621,10 +914,16 @@ pub(crate) async fn resolve_replay_auth_header(
         ))
     })?;
 
+    // Connections resolve at the owner identity (D22). The replay path only
+    // carries the requester's identity, so derive the owner here (template
+    // tier resolution above stays per-caller).
+    let owner_identity_id =
+        crate::services::group_ceiling::resolve_ceiling_user_id(scope, identity_id).await?;
+
     let resolved = if let Some(ref inst) = instance {
-        resolve_instance_auth(state, ext, scope, identity_id, inst, &svc, &[], None).await?
+        resolve_instance_auth(state, ext, scope, owner_identity_id, inst, &svc, &[], None).await?
     } else {
-        resolve_service_auth(state, ext, scope, identity_id, &svc, &[], None).await?
+        resolve_service_auth(state, ext, scope, owner_identity_id, &svc, &[], None).await?
     };
 
     resolved.auth_header.ok_or_else(|| {
@@ -642,7 +941,10 @@ pub(crate) async fn resolve_instance_auth(
     state: &AppState,
     ext: &axum::http::Extensions,
     scope: &OrgScope,
-    identity_id: Uuid,
+    // Owner identity (D22). Used for client-credential resolution, reauth
+    // recovery, and the template auto-resolve fall-through. The explicit
+    // instance→connection binding below stays org-scoped (`scope.get_connection`).
+    owner_identity_id: Uuid,
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
@@ -690,7 +992,7 @@ pub(crate) async fn resolve_instance_auth(
                 state.db(ext),
                 &enc_key,
                 org_id,
-                Some(identity_id),
+                Some(owner_identity_id),
                 &conn.provider_key,
                 Some(&conn),
                 None,
@@ -753,8 +1055,9 @@ pub(crate) async fn resolve_instance_auth(
                     // `needs_authentication` 401.
                     return Err(oauth_error_to_app_error(
                         state,
+                        ext,
                         org_id,
-                        identity_id,
+                        owner_identity_id,
                         &conn,
                         e,
                         return_url_hint,
@@ -786,12 +1089,29 @@ pub(crate) async fn resolve_instance_auth(
         }
     }
 
-    // No bound credentials on instance — fall back to auto-resolve
+    // No bound credentials on instance. Before falling back to auto-resolve
+    // (which would grab the identity's *default* connection for the provider
+    // via `find_my_connection_by_provider`), honor the instance's opt-out: with
+    // `use_default_connection = false`, an unbound OAuth instance must NOT
+    // silently borrow the default. Return `none()` — the caller renders this as
+    // `needs_authentication`, prompting a connect-and-pin. Only short-circuits
+    // OAuth-backed templates (the only ones that resolve a default connection);
+    // ApiKey/env resolution below is unaffected because such templates declare
+    // no OAuth provider.
+    if !instance.use_default_connection
+        && svc
+            .auth
+            .iter()
+            .any(|a| matches!(a, overslash_core::types::ServiceAuth::OAuth { .. }))
+    {
+        return Ok(ResolvedAuth::none());
+    }
+
     resolve_service_auth(
         state,
         ext,
         scope,
-        identity_id,
+        owner_identity_id,
         svc,
         explicit_secrets,
         return_url_hint,
@@ -802,6 +1122,21 @@ pub(crate) async fn resolve_instance_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_scope_denial_detected_only_on_403() {
+        let body = r#"{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Metadata scope does not support 'q' parameter"}}"#;
+        assert!(is_metadata_scope_denial(403, body));
+        // Same body on a non-403 status is not the metadata-scope signal.
+        assert!(!is_metadata_scope_denial(200, body));
+        assert!(!is_metadata_scope_denial(500, body));
+    }
+
+    #[test]
+    fn metadata_scope_denial_ignores_unrelated_403() {
+        let body = r#"{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Request had insufficient authentication scopes."}}"#;
+        assert!(!is_metadata_scope_denial(403, body));
+    }
 
     #[test]
     fn classify_oauth_reauth_signals() {

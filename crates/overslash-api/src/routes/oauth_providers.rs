@@ -8,7 +8,11 @@
 
 use std::collections::HashSet;
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    routing::get,
+};
 use serde::Serialize;
 
 use overslash_db::OrgScope;
@@ -16,13 +20,15 @@ use overslash_db::repos::oauth_provider;
 
 use crate::{
     AppState,
-    error::Result,
+    error::{AppError, Result},
     extractors::{ReqExt, WriteAcl},
     services::client_credentials::oauth_secret_names,
 };
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/v1/oauth-providers", get(list_providers))
+    Router::new()
+        .route("/v1/oauth-providers", get(list_providers))
+        .route("/v1/oauth-providers/{key}", get(get_provider))
 }
 
 #[derive(Serialize)]
@@ -125,4 +131,58 @@ async fn list_providers(
     }
 
     Ok(Json(rows))
+}
+
+/// Full OAuth metadata for a single provider — everything a white-label
+/// partner (e.g. Overfolder) needs to run the authorize + code-exchange dance
+/// against its own OAuth client and then `POST /v1/connections/import` the
+/// resulting tokens (token-vault model, DECISIONS D20). Read-only catalog
+/// data; the secrets (client_id/secret) stay on the partner side. The partner
+/// never duplicates this metadata — it reads it here so a new provider is a
+/// `oauth_providers` row, not partner code.
+#[derive(Serialize)]
+struct ProviderDetail {
+    key: String,
+    display_name: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    userinfo_endpoint: Option<String>,
+    supports_pkce: bool,
+    supports_refresh: bool,
+    /// `client_secret_post` | `client_secret_basic` | `none` — how the partner
+    /// must authenticate the token-endpoint request.
+    token_auth_method: String,
+    /// Provider-specific authorize-URL params the partner must append verbatim
+    /// (e.g. Google's `access_type=offline` + `prompt=consent` to mint a
+    /// refresh token, tenant routing, etc.).
+    extra_auth_params: serde_json::Value,
+    /// Identity scopes the partner must union into every authorize request so
+    /// the imported token can resolve `account_email` via `userinfo_endpoint`.
+    default_identity_scopes: Vec<String>,
+}
+
+/// `GET /v1/oauth-providers/{key}` — full OAuth metadata for one provider.
+async fn get_provider(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    WriteAcl(_acl): WriteAcl,
+    Path(key): Path<String>,
+) -> Result<Json<ProviderDetail>> {
+    let p = oauth_provider::get_by_key(state.db(&ext), &key)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("provider '{key}' not found")))?;
+
+    Ok(Json(ProviderDetail {
+        key: p.key,
+        display_name: p.display_name,
+        authorization_endpoint: p.authorization_endpoint,
+        token_endpoint: p.token_endpoint,
+        userinfo_endpoint: p.userinfo_endpoint,
+        supports_pkce: p.supports_pkce,
+        supports_refresh: p.supports_refresh,
+        token_auth_method: p.token_auth_method,
+        extra_auth_params: p.extra_auth_params,
+        default_identity_scopes: p.default_identity_scopes,
+    }))
 }

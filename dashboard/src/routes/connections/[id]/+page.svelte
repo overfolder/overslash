@@ -228,7 +228,12 @@
 					Which OAuth client credentials this connection will use on its next refresh.
 				</span>
 			</div>
-			{#if conn.credential_source.kind === 'byoc'}
+			{#if conn.credential_source.kind === 'integration_managed'}
+				<div class="cred-row">
+					<span class="cred-chip">Integration-managed</span>
+					<span class="cred-desc">Imported via the token vault with no shared OAuth client. Overslash never refreshes this connection — it injects the stored token until it expires, then signals the integration (which refreshes and re-imports). No Overslash reconnect link is offered.</span>
+				</div>
+			{:else if conn.credential_source.kind === 'byoc'}
 				<div class="cred-row">
 					<span class="cred-chip">BYOC</span>
 					<span class="cred-desc">Using a bring-your-own-credentials OAuth app pinned to this connection.</span>

@@ -21,7 +21,7 @@ use crate::types::ActionRequest;
 /// Sentinel string written in place of redacted values.
 pub const REDACTED: &str = "[REDACTED]";
 
-/// Build the jq input: `{ method, url, params, body }`.
+/// Build the jq input: `{ method, url, params, body, resolved }`.
 ///
 /// `body` is parsed as JSON when the request `Content-Type` is a JSON media
 /// type (`application/json`, `application/…+json`); otherwise it's carried
@@ -29,7 +29,19 @@ pub const REDACTED: &str = "[REDACTED]";
 ///
 /// `params` is the original, post-resolution parameter map so filters can
 /// reference path/query args without re-parsing the URL.
-pub fn build_jq_input(req: &ActionRequest, params: &HashMap<String, Value>) -> Value {
+///
+/// `resolved` is the display-name map produced by the template's `resolve`
+/// declarations (param name → human-readable string, e.g. a Drive `fileId`
+/// → the file's name). Only successfully resolved params appear, so filters
+/// should fall back explicitly: `.resolved.fileId // .params.fileId`.
+/// Resolution runs once, at resolve time, and rides in the request metadata —
+/// so a delete action's audit-write disclosure still names the object even
+/// though it no longer exists upstream.
+pub fn build_jq_input(
+    req: &ActionRequest,
+    params: &HashMap<String, Value>,
+    resolved: &HashMap<String, String>,
+) -> Value {
     let body = match req.body.as_deref() {
         None => Value::Null,
         Some(raw) => {
@@ -48,11 +60,19 @@ pub fn build_jq_input(req: &ActionRequest, params: &HashMap<String, Value>) -> V
         }
         Value::Object(m)
     };
-    let mut root = Map::with_capacity(4);
+    let resolved_json = {
+        let mut m = Map::with_capacity(resolved.len());
+        for (k, v) in resolved {
+            m.insert(k.clone(), Value::String(v.clone()));
+        }
+        Value::Object(m)
+    };
+    let mut root = Map::with_capacity(5);
     root.insert("method".into(), Value::String(req.method.clone()));
     root.insert("url".into(), Value::String(req.url.clone()));
     root.insert("params".into(), params_json);
     root.insert("body".into(), body);
+    root.insert("resolved".into(), resolved_json);
     Value::Object(root)
 }
 
@@ -73,7 +93,7 @@ fn is_json_content_type(headers: &HashMap<String, String>) -> bool {
 /// Path grammar is the same dotted form used in extension parsing:
 /// `body.api_key`, `params.userId`. Paths can only address the projection
 /// keys produced by [`build_jq_input`] — currently `method`, `url`,
-/// `params`, and `body`. Headers are intentionally not exposed: Mode C
+/// `params`, `body`, and `resolved`. Headers are intentionally not exposed: Mode C
 /// OAuth auth injects plaintext access tokens into the header map at this
 /// point, and surfacing them through either `disclose` or `redact` would
 /// risk leaks. Array indices are not supported (templates should redact
@@ -128,7 +148,7 @@ mod tests {
             &[("Content-Type", "application/json")],
             Some(r##"{"channel":"#general","text":"hi"}"##),
         );
-        let v = build_jq_input(&r, &HashMap::new());
+        let v = build_jq_input(&r, &HashMap::new(), &HashMap::new());
         assert_eq!(v["body"]["channel"], "#general");
         assert_eq!(v["body"]["text"], "hi");
     }
@@ -141,7 +161,7 @@ mod tests {
             &[("Content-Type", "application/vnd.api+json")],
             Some(r#"{"a":1}"#),
         );
-        let v = build_jq_input(&r, &HashMap::new());
+        let v = build_jq_input(&r, &HashMap::new(), &HashMap::new());
         assert_eq!(v["body"]["a"], 1);
     }
 
@@ -153,14 +173,14 @@ mod tests {
             &[("Content-Type", "application/x-www-form-urlencoded")],
             Some("a=1&b=2"),
         );
-        let v = build_jq_input(&r, &HashMap::new());
+        let v = build_jq_input(&r, &HashMap::new(), &HashMap::new());
         assert_eq!(v["body"], "a=1&b=2");
     }
 
     #[test]
     fn build_jq_input_no_body_is_null() {
         let r = req("GET", "https://x", &[], None);
-        let v = build_jq_input(&r, &HashMap::new());
+        let v = build_jq_input(&r, &HashMap::new(), &HashMap::new());
         assert!(v["body"].is_null());
     }
 
@@ -169,8 +189,22 @@ mod tests {
         let r = req("GET", "https://x", &[], None);
         let mut p = HashMap::new();
         p.insert("userId".into(), json!("alice"));
-        let v = build_jq_input(&r, &p);
+        let v = build_jq_input(&r, &p, &HashMap::new());
         assert_eq!(v["params"]["userId"], "alice");
+        assert_eq!(v["resolved"], json!({}), "no resolvers → empty object");
+    }
+
+    #[test]
+    fn build_jq_input_includes_resolved_display_names() {
+        let r = req("DELETE", "https://x/files/f-123", &[], None);
+        let mut p = HashMap::new();
+        p.insert("fileId".into(), json!("f-123"));
+        let mut resolved = HashMap::new();
+        resolved.insert("fileId".to_string(), "Q3 Budget.xlsx".to_string());
+        let v = build_jq_input(&r, &p, &resolved);
+        assert_eq!(v["resolved"]["fileId"], "Q3 Budget.xlsx");
+        // The raw param is still there for `// .params.fileId` fallbacks.
+        assert_eq!(v["params"]["fileId"], "f-123");
     }
 
     #[test]
@@ -181,7 +215,7 @@ mod tests {
             &[("content-type", "APPLICATION/JSON; charset=utf-8")],
             Some(r#"{"a":1}"#),
         );
-        let v = build_jq_input(&r, &HashMap::new());
+        let v = build_jq_input(&r, &HashMap::new(), &HashMap::new());
         assert_eq!(v["body"]["a"], 1);
     }
 
@@ -210,7 +244,7 @@ mod tests {
     #[test]
     fn apply_redactions_multiple_paths() {
         // Shape mirrors what `build_jq_input` actually produces in
-        // production: method/url/params/body (no headers — they're
+        // production: method/url/params/body/resolved (no headers — they're
         // deliberately kept out of the projection so Mode C OAuth tokens
         // don't leak).
         let mut v = json!({
@@ -218,6 +252,7 @@ mod tests {
             "url": "https://x",
             "params": {"token": "pt"},
             "body": {"a": "1", "b": "2"},
+            "resolved": {},
         });
         apply_redactions(&mut v, &["body.a".into(), "params.token".into()]);
         assert_eq!(v["body"]["a"], REDACTED);

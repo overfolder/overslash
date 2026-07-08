@@ -22,6 +22,14 @@ export interface OrgInfo {
  */
 export interface ManagedSigninSettings {
   allow_overslash_managed_signin: boolean;
+  /** When true (default), a managed-signin org admits invite-only. When
+   * false, admission falls back to the `managed_signin_allowed_domains`
+   * allowlist below. Independent of `allow_overslash_managed_signin`. */
+  require_invite_admission: boolean;
+  /** Org-wide email-domain allowlist consulted on the managed path when
+   * `require_invite_admission` is false. Empty ⇒ domain admission is
+   * unconfigured (managed sign-ins rejected as misconfigured, NOT open). */
+  managed_signin_allowed_domains: string[];
 }
 
 /**
@@ -69,16 +77,6 @@ export type AuditResponseBodyMode = 'off' | 'errors_only' | 'all';
 
 export interface AuditSettings {
   response_body_mode: AuditResponseBodyMode;
-}
-
-/**
- * Shape of GET/PATCH /v1/orgs/{id}/oauth-callback-settings. `allowed_hosts`
- * is the per-org allow-list of bare hostnames an org API key may use as a
- * custom OAuth `redirect_uri` when starting a white-label connect flow.
- * Empty means custom redirect URIs are disabled for the org.
- */
-export interface OAuthCallbackSettings {
-  allowed_hosts: string[];
 }
 
 export interface IdpConfig {
@@ -225,6 +223,30 @@ export interface TemplateSummary {
   hidden?: boolean;
 }
 
+/**
+ * Admin compliance view (`GET /v1/templates/admin`): every template across all
+ * tiers. Global rows carry an `enabled` flag reflecting the org's curated-catalog
+ * allow-list; org/user rows are always enabled.
+ */
+export interface AdminTemplateSummary extends TemplateSummary {
+  id?: string | null;
+  owner_identity_id?: string | null;
+  /** For global rows: whether the template is in the org's curated catalog. */
+  enabled: boolean;
+}
+
+/**
+ * Org-level template/catalog settings (`/v1/orgs/{id}/template-settings`).
+ */
+export interface TemplateSettings {
+  /** Allow members to define their own user-tier templates. */
+  allow_user_templates: boolean;
+  /** When true, every global template is available; when false, only curated ones. */
+  global_templates_enabled: boolean;
+  /** When false (default), non-admins cannot instantiate globals outside the curated catalog. */
+  allow_services_outside_catalog: boolean;
+}
+
 export interface TemplateDetail {
   key: string;
   display_name: string;
@@ -351,10 +373,14 @@ export type ServiceRuntime = 'http' | 'mcp';
 export interface McpDetail {
   /** Absent when the template has no default URL (operator must supply one at instance creation). */
   url?: string;
-  /** v1: `none` | `bearer`. */
-  auth_kind: 'none' | 'bearer';
+  /** `none` | `bearer` | `oauth`. */
+  auth_kind: 'none' | 'bearer' | 'oauth';
   /** `true` when the template has a hard-coded `secret_name`; `false` means the operator must supply one at instance creation. */
   has_default_secret_name: boolean;
+  /** OAuth provider key when `auth_kind === 'oauth'` (D24); drives the connect affordance. */
+  provider?: string;
+  /** Superset OAuth scopes requested at connect time when `auth_kind === 'oauth'`. */
+  scopes?: string[];
   autodiscover: boolean;
   /** ISO-8601 of the most recent `tools/list` sync; absent until first resync. */
   discovered_at?: string;
@@ -411,6 +437,8 @@ export interface ServiceInstanceSummary {
   secret_name?: string;
   /** Per-instance MCP server URL override. Present only for MCP runtime services. */
   url?: string;
+  /** When `false`, an unbound instance won't fall back to the identity's default connection for the provider. Defaults to `true`. */
+  use_default_connection: boolean;
   groups?: ServiceGroupRef[];
   credentials_status?: CredentialsStatus;
 }
@@ -430,6 +458,8 @@ export interface CreateServiceRequest {
   url?: string;
   status?: ServiceStatus;
   user_level?: boolean;
+  /** When `false`, this instance won't fall back to the default connection for its provider. Defaults to `true` server-side. */
+  use_default_connection?: boolean;
 }
 
 export interface UpdateServiceRequest {
@@ -437,6 +467,7 @@ export interface UpdateServiceRequest {
   connection_id?: string | null;
   secret_name?: string | null;
   url?: string | null;
+  use_default_connection?: boolean;
 }
 
 // -- OAuth --
@@ -497,9 +528,6 @@ export interface InitiateConnectionResponse {
   auth_url: string;
   /// Optional shortened form (only present if the shortener is configured).
   short?: string;
-  /// Raw provider authorize URL. Only included when the request set
-  /// `include_raw: true`.
-  raw?: string;
   state: string;
   provider: string;
   expires_at: string;
@@ -551,6 +579,9 @@ export interface ActionParam {
 
 export interface ConnectionSummary {
   id: string;
+  /** Owner identity (the user the linked account belongs to). The admin
+   *  "all users' connections" view resolves this to a display name. */
+  owner_identity_id: string;
   provider_key: string;
   account_email: string | null;
   scopes: string[];
@@ -569,11 +600,15 @@ export interface UsedByService {
 /**
  * What OAuth client credentials a connection will use on its next refresh.
  * Mirrors the `client_credentials::resolve()` cascade against current state.
+ * `integration_managed` is reported for imported token-vault connections that
+ * have no shared client — Overslash never refreshes them; the integration
+ * refreshes and re-imports.
  */
 export type CredentialSource =
   | { kind: 'byoc' }
   | { kind: 'org_secret' }
   | { kind: 'system' }
+  | { kind: 'integration_managed' }
   | { kind: 'missing' };
 
 /** Full connection detail from `GET /v1/connections/{id}`. */
@@ -583,6 +618,12 @@ export interface ConnectionDetail {
   account_email: string | null;
   scopes: string[];
   is_default: boolean;
+  /**
+   * `true` for imported (token-vault) connections whose refresh the
+   * integration owns. Overslash injects the stored token until expiry, then
+   * signals reauth with no reconnect link (the partner refreshes & re-imports).
+   */
+  integration_managed: boolean;
   created_at: string;
   /** Advances on an in-place reconnect — the detail page polls it. */
   updated_at: string;

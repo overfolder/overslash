@@ -19,6 +19,7 @@ use overslash_core::template_validation::{
 };
 use overslash_core::types::{ActionParam, Risk, ServiceDefinition};
 
+use crate::services::platform_services::{ScopeCoverage, ScopeKnowledge, action_scope_coverage};
 use crate::services::platform_templates::{
     self, MAX_TEMPLATE_YAML_BYTES, delete_active_template_inner, kernel_import_template,
     load_draft_for_write_inner,
@@ -137,6 +138,11 @@ struct TemplateDetail {
     /// Compiled actions view for rendering the service detail page without
     /// re-parsing on the client.
     actions: Vec<ActionSummary>,
+    /// Union of every action's `required_scopes` — the OAuth scopes a caller
+    /// must request so the connection covers this service. White-label
+    /// partners read this to build their own authorize URL (token-vault
+    /// model); the dashboard renders them as the service-specific scope chips.
+    scopes: Vec<String>,
     tier: String,
     /// DB id for org/user templates; None for global.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -157,11 +163,21 @@ struct McpDetail {
     /// must supply a URL at creation time.
     #[serde(skip_serializing_if = "Option::is_none")]
     url: Option<String>,
-    /// `none` or `bearer`. The dashboard uses this to gate the secret-name UI.
+    /// `none`, `bearer`, or `oauth`. The dashboard uses this to gate the
+    /// credential UI (secret-name field for bearer, connect prompt for oauth).
     auth_kind: String,
     /// `true` when the template has a hard-coded `secret_name`; `false` when
     /// the operator must supply one at instance creation time.
     has_default_secret_name: bool,
+    /// The OAuth provider key when `auth_kind == "oauth"`; the dashboard
+    /// renders a "connect <provider>" affordance. `None` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    /// Superset OAuth scopes requested at connect time when `auth_kind ==
+    /// "oauth"`. The dashboard passes these to `initiateOAuth` — without them
+    /// the connect flow would request no scopes and mint a useless token.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    scopes: Vec<String>,
     autodiscover: bool,
     /// ISO-8601 timestamp of the most recent tools/list sync. `None` if never.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -207,6 +223,15 @@ pub(crate) struct ActionSummary {
     /// `/v1/actions/call` rejects invocation at resolve time.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     disabled: bool,
+    /// Per-action OAuth scope coverage against the bound connection's granted
+    /// scopes. Only populated when listing actions *for a configured instance*
+    /// (`list_service_actions`) and the action declares scopes; absent on the
+    /// bare template-key listing. `needs_reconnect` means calling it will 403.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope_coverage: Option<ScopeCoverage>,
+    /// Missing-scope delta when `scope_coverage == needs_reconnect`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    missing_scopes: Vec<String>,
 }
 
 /// Full action details including the parameter schema — used by the API
@@ -281,19 +306,71 @@ fn is_global_visible(filter: &Option<HashSet<String>>, key: &str) -> bool {
     }
 }
 
+/// Union the OAuth scopes that fully cover this template into a sorted, deduped
+/// list — every action's `required_scopes` plus, for MCP-runtime `auth.kind:
+/// oauth` templates, the service-level `McpAuth::OAuth { scopes }` (MCP tools
+/// carry no per-action scopes). Mirrors `platform_services::template_action_scopes`;
+/// surfaced on `TemplateDetail` so white-label partners (token-vault import)
+/// request exactly these.
+fn template_required_scopes(def: &ServiceDefinition) -> Vec<String> {
+    use overslash_core::types::McpAuth;
+    let mut scopes: std::collections::BTreeSet<String> = def
+        .actions
+        .values()
+        .flat_map(|a| a.required_scopes.iter().cloned())
+        .collect();
+    if let Some(McpAuth::OAuth {
+        scopes: mcp_scopes, ..
+    }) = def.mcp.as_ref().map(|m| &m.auth)
+    {
+        scopes.extend(mcp_scopes.iter().cloned());
+    }
+    scopes.into_iter().collect()
+}
+
 fn actions_from_definition(def: &ServiceDefinition) -> Vec<ActionSummary> {
+    actions_from_definition_inner(def, None)
+}
+
+/// Like [`actions_from_definition`] but annotates each scope-bearing action with
+/// its coverage against a configured instance's bound connection. Used by
+/// `list_service_actions` so an agent sees `needs_reconnect` at discovery time.
+pub(crate) fn actions_from_definition_with_coverage(
+    def: &ServiceDefinition,
+    scopes: ScopeKnowledge<'_>,
+) -> Vec<ActionSummary> {
+    actions_from_definition_inner(def, Some(scopes))
+}
+
+fn actions_from_definition_inner(
+    def: &ServiceDefinition,
+    scopes: Option<ScopeKnowledge<'_>>,
+) -> Vec<ActionSummary> {
     let mut out: Vec<ActionSummary> = def
         .actions
         .iter()
-        .map(|(k, a)| ActionSummary {
-            key: k.clone(),
-            method: a.method.clone(),
-            path: a.path.clone(),
-            description: a.description.clone(),
-            risk: a.risk,
-            mcp_tool: a.mcp_tool.clone(),
-            output_schema: a.output_schema.clone(),
-            disabled: a.disabled,
+        .map(|(k, a)| {
+            // Only scope-bearing (OAuth) actions get a coverage annotation, and
+            // only when resolving for a concrete instance.
+            let (scope_coverage, missing_scopes) = match scopes {
+                Some(knowledge) if !a.required_scopes.is_empty() => {
+                    let (c, m) = action_scope_coverage(a, knowledge);
+                    (Some(c), m)
+                }
+                _ => (None, Vec::new()),
+            };
+            ActionSummary {
+                key: k.clone(),
+                method: a.method.clone(),
+                path: a.path.clone(),
+                description: a.description.clone(),
+                risk: a.risk,
+                mcp_tool: a.mcp_tool.clone(),
+                output_schema: a.output_schema.clone(),
+                disabled: a.disabled,
+                scope_coverage,
+                missing_scopes,
+            }
         })
         .collect();
     out.sort_by(|a, b| a.key.cmp(&b.key));
@@ -321,6 +398,7 @@ fn db_row_to_detail(t: service_template::ServiceTemplateRow, tier: &str) -> Resu
         auth,
         openapi: openapi_yaml,
         actions: actions_from_definition(&def),
+        scopes: template_required_scopes(&def),
         tier: tier.into(),
         id: Some(t.id),
         runtime,
@@ -341,9 +419,22 @@ fn runtime_string(def: &ServiceDefinition) -> String {
 fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Option<McpDetail> {
     use overslash_core::types::McpAuth;
     let spec = def.mcp.as_ref()?;
-    let (auth_kind, has_default_secret_name) = match &spec.auth {
-        McpAuth::None => ("none".to_string(), false),
-        McpAuth::Bearer { secret_name } => ("bearer".to_string(), secret_name.is_some()),
+    let (auth_kind, has_default_secret_name, provider, scopes) = match &spec.auth {
+        McpAuth::None => ("none".to_string(), false, None, Vec::new()),
+        McpAuth::Bearer { secret_name } => (
+            "bearer".to_string(),
+            secret_name.is_some(),
+            None,
+            Vec::new(),
+        ),
+        // OAuth MCP servers don't carry a default secret — auth comes from the
+        // caller's connection for the named provider, with these scopes.
+        McpAuth::OAuth { provider, scopes } => (
+            "oauth".to_string(),
+            false,
+            Some(provider.clone()),
+            scopes.clone(),
+        ),
     };
     let discovered_at = openapi
         .get("x-overslash-mcp")
@@ -354,6 +445,8 @@ fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Opti
         url: spec.url.clone(),
         auth_kind,
         has_default_secret_name,
+        provider,
+        scopes,
         autodiscover: spec.autodiscover,
         discovered_at,
     })
@@ -579,6 +672,7 @@ async fn get_template(
         auth,
         openapi: openapi_yaml,
         actions: actions_from_definition(svc),
+        scopes: template_required_scopes(svc),
         tier: "global".into(),
         id: None,
         runtime,
@@ -1965,6 +2059,17 @@ async fn resync_mcp_tools(
         McpAuth::Bearer { .. } => {
             crate::services::mcp_auth::resolve_headers(&state, &scope, &mcp.auth).await?
         }
+        // Resync (tools/list) for an OAuth MCP would need a specific connected
+        // user's token, which the admin resync path doesn't carry. OAuth MCP
+        // templates ship their tool list inline (authoritative); live
+        // discovery isn't supported here.
+        McpAuth::OAuth { .. } => {
+            return Err(AppError::BadRequest(
+                "tools/list resync is not supported for oauth-authenticated MCP servers; \
+                 the template's inline tool list is authoritative"
+                    .into(),
+            ));
+        }
     };
 
     // SSRF guard: resolve-once and pin the validated IP on the outbound
@@ -2063,6 +2168,34 @@ mod tests {
     use super::*;
     use axum::{Router, routing::get};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    // Shipped global templates never pass through the register/import
+    // routes above, so without this test a typo'd disclose filter in
+    // services/*.yaml would only surface at approval time in production.
+    #[test]
+    fn shipped_service_disclose_filters_compile() {
+        let services_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        for entry in std::fs::read_dir(&services_dir).unwrap() {
+            let path = entry.unwrap().path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext != "yaml" && ext != "yml" {
+                continue;
+            }
+            let yaml = std::fs::read_to_string(&path).unwrap();
+            if let Err(report) = parse_normalize_compile_and_check_disclose(&yaml) {
+                panic!(
+                    "shipped template {} failed disclose jq validation: {:?}",
+                    path.display(),
+                    report.errors
+                );
+            }
+        }
+    }
     use tokio::net::TcpListener;
 
     // ── is_disallowed_ip: every branch in the SSRF guard ─────────────

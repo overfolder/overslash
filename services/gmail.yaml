@@ -69,6 +69,108 @@ paths:
           resolve:
             get: /gmail/v1/users/{userId}/profile
             pick: emailAddress
+    post:
+      operationId: create_label
+      summary: "Create label '{name}' for {userId}"
+      risk: write
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.modify
+      disclose:
+        - label: Name
+          filter: .body.name
+        - label: Mailbox
+          filter: .resolved.userId // .params.userId
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: "Display name of the label (e.g. 'Overslash')"
+                labelListVisibility:
+                  type: string
+                  description: Whether the label is shown in the label list in the mailbox
+                  enum: [labelShow, labelShowIfUnread, labelHide]
+                messageListVisibility:
+                  type: string
+                  description: Whether messages with this label are shown in the message list
+                  enum: [show, hide]
+  /gmail/v1/users/{userId}/labels/{id}:
+    get:
+      operationId: get_label
+      summary: "Get label {id} for {userId}"
+      risk: read
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.metadata
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: id
+          in: path
+          required: true
+          description: The ID of the label to retrieve
+          schema:
+            type: string
+    delete:
+      operationId: delete_label
+      summary: "Delete label {id} for {userId}"
+      risk: delete
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.modify
+      disclose:
+        - label: Label
+          filter: .resolved.id // .params.id
+        - label: Mailbox
+          filter: .resolved.userId // .params.userId
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: id
+          in: path
+          required: true
+          description: The ID of the label to delete
+          schema:
+            type: string
+          resolve:
+            get: /gmail/v1/users/{userId}/labels/{id}
+            pick: name
   /gmail/v1/users/{userId}/messages:
     get:
       operationId: list_messages
@@ -96,7 +198,7 @@ paths:
             type: string
         - name: labelIds
           in: query
-          description: "Filter by label ID (e.g. 'INBOX', 'UNREAD', 'STARRED')"
+          description: "Filter by label ID (e.g. 'INBOX', 'UNREAD', 'STARRED'). Pass an array to require multiple labels (AND)."
           schema:
             type: string
         - name: maxResults
@@ -151,6 +253,178 @@ paths:
           description: "When format is 'metadata', a header name to include (e.g. 'Subject', 'From')"
           schema:
             type: string
+  /gmail/v1/users/{userId}/messages/{id}/modify:
+    post:
+      operationId: modify_message
+      summary: "Modify labels on message {id} for {userId}"
+      risk: write
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.modify
+      # Surface which labels are being added/removed so a human resolver can
+      # see the effect before approving — e.g. archiving (removeLabelIds:
+      # [INBOX]), marking read (removeLabelIds: [UNREAD]), or applying a
+      # custom label. `// []` guards the absent-field case so the jq/jaq
+      # `join` never runs against null.
+      disclose:
+        - label: Message
+          filter: .resolved.id // .params.id
+          max_chars: 200
+        - label: Add labels
+          filter: '(.body.addLabelIds // []) | join(", ")'
+        - label: Remove labels
+          filter: '(.body.removeLabelIds // []) | join(", ")'
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: id
+          in: path
+          required: true
+          description: The ID of the message to modify
+          schema:
+            type: string
+          resolve:
+            get: /gmail/v1/users/{userId}/messages/{id}?format=metadata&metadataHeaders=Subject
+            pick: payload.headers.0.value
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                addLabelIds:
+                  type: array
+                  description: "Label IDs to add (e.g. ['STARRED', 'IMPORTANT'] or a custom label ID)"
+                removeLabelIds:
+                  type: array
+                  description: "Label IDs to remove (e.g. ['UNREAD'] to mark read, ['INBOX'] to archive)"
+  /gmail/v1/users/{userId}/messages/{id}/untrash:
+    post:
+      operationId: untrash_message
+      summary: "Restore message {id} from trash for {userId}"
+      risk: write
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.modify
+      disclose:
+        - label: Message
+          filter: .resolved.id // .params.id
+          max_chars: 200
+        - label: Mailbox
+          filter: .resolved.userId // .params.userId
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: id
+          in: path
+          required: true
+          description: The ID of the message to restore from trash
+          schema:
+            type: string
+          resolve:
+            get: /gmail/v1/users/{userId}/messages/{id}?format=metadata&metadataHeaders=Subject
+            pick: payload.headers.0.value
+  /gmail/v1/users/{userId}/threads:
+    get:
+      operationId: list_threads
+      summary: "Search threads (conversations) for {userId}"
+      risk: read
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.readonly
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: q
+          in: query
+          description: "Search query (Gmail search syntax, e.g. 'from:user@example.com subject:hello')"
+          schema:
+            type: string
+        - name: labelIds
+          in: query
+          description: "Filter by label ID (e.g. 'INBOX', 'UNREAD', 'STARRED'). Pass an array to require multiple labels (AND)."
+          schema:
+            type: string
+        - name: maxResults
+          in: query
+          description: Maximum number of threads to return (default 100, max 500)
+          schema:
+            type: integer
+        - name: pageToken
+          in: query
+          description: Page token from a previous list request
+          schema:
+            type: string
+        - name: includeSpamTrash
+          in: query
+          description: Include threads from SPAM and TRASH in results
+          schema:
+            type: boolean
+  /gmail/v1/users/{userId}/threads/{id}:
+    get:
+      operationId: get_thread
+      summary: "Get thread {id} (full conversation) for {userId}"
+      risk: read
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.readonly
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: id
+          in: path
+          required: true
+          description: The ID of the thread to retrieve
+          schema:
+            type: string
+        - name: format
+          in: query
+          description: The format to return the messages in
+          schema:
+            type: string
+            enum: [full, metadata, minimal]
+        - name: metadataHeaders
+          in: query
+          description: "When format is 'metadata', a header name to include (e.g. 'Subject', 'From')"
+          schema:
+            type: string
   /gmail/v1/users/{userId}/messages/send:
     post:
       operationId: send_message
@@ -170,6 +444,11 @@ paths:
       # `_`→`/`, and right-pads to a multiple of 4 with `=`. The shared
       # prelude is inlined into each filter rather than factored out
       # because jq/jaq has no way to declare reusable snippets per-action.
+      #
+      # `body.raw` is deliberately NOT redacted: it is user content (not a
+      # credential), and the raw MIME is the only place a reviewer can see
+      # Cc/Bcc/attachments that the filters above don't extract. (SPEC §12a
+      # shows `redact: [body.raw]` as an illustration, not a requirement.)
       disclose:
         - label: To
           filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^To:\\s*(?<v>[^\\r\\n]+)").v'
@@ -209,6 +488,12 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/gmail.modify
+      disclose:
+        - label: Message
+          filter: .resolved.id // .params.id
+          max_chars: 200
+        - label: Mailbox
+          filter: .resolved.userId // .params.userId
       parameters:
         - name: userId
           in: path
@@ -226,6 +511,9 @@ paths:
           description: The ID of the message to move to trash
           schema:
             type: string
+          resolve:
+            get: /gmail/v1/users/{userId}/messages/{id}?format=metadata&metadataHeaders=Subject
+            pick: payload.headers.0.value
   /gmail/v1/users/{userId}/drafts:
     get:
       operationId: list_drafts
@@ -404,6 +692,14 @@ paths:
       security:
         - oauth:
             - https://www.googleapis.com/auth/gmail.compose
+      disclose:
+        # Drafts don't support metadataHeaders filtering, so resolve to the
+        # message snippet (first ~100 chars) instead of the Subject header.
+        - label: Draft
+          filter: .resolved.id // .params.id
+          max_chars: 200
+        - label: Mailbox
+          filter: .resolved.userId // .params.userId
       parameters:
         - name: userId
           in: path
@@ -421,6 +717,9 @@ paths:
           description: The ID of the draft to delete
           schema:
             type: string
+          resolve:
+            get: /gmail/v1/users/{userId}/drafts/{id}?format=metadata
+            pick: message.snippet
   /gmail/v1/users/{userId}/drafts/send:
     post:
       operationId: send_draft
@@ -432,11 +731,13 @@ paths:
             - https://www.googleapis.com/auth/gmail.compose
       # The send_draft request body only references the draft by id; the
       # actual To/Subject/Body content was set at create_draft / update_draft
-      # time and is not visible in this payload. Disclose the draft id so the
-      # reviewer can correlate the send with the previously-disclosed draft.
+      # time and is not visible in this payload. Resolve the id to the draft's
+      # snippet so the reviewer sees what is about to be sent, falling back to
+      # the raw id when resolution fails.
       disclose:
         - label: Draft
-          filter: '.body.id'
+          filter: '.resolved.id // .body.id'
+          max_chars: 200
       parameters:
         - name: userId
           in: path
@@ -459,3 +760,8 @@ paths:
                 id:
                   type: string
                   description: The ID of the draft to send
+                  # Body-schema properties bypass alias normalization (it only
+                  # walks `parameters` arrays), so use the canonical key here.
+                  x-overslash-resolve:
+                    get: /gmail/v1/users/{userId}/drafts/{id}?format=metadata
+                    pick: message.snippet

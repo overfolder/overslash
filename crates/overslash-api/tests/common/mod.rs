@@ -599,6 +599,10 @@ where
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(), // unused, we pass pool directly
+        db_max_connections: 5,
+        db_min_connections: 1,
+        db_acquire_timeout_secs: 10,
+        db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
         secrets_encryption_key_active_id: 1,
@@ -625,6 +629,7 @@ where
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
+        trial_default_duration_days: 30,
         single_org_mode: None,
         app_host_suffix: None,
         api_host_suffix: None,
@@ -703,6 +708,7 @@ where
         .merge(overslash_api::routes::dev_e2e::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
+        .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
@@ -778,6 +784,10 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
+        db_max_connections: 5,
+        db_min_connections: 1,
+        db_acquire_timeout_secs: 10,
+        db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
         secrets_encryption_key_active_id: 1,
@@ -804,6 +814,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
+        trial_default_duration_days: 30,
         single_org_mode: None,
         app_host_suffix: None,
         api_host_suffix: None,
@@ -879,6 +890,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::dev_e2e::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
+        .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
@@ -910,6 +922,10 @@ pub async fn start_api_with_auth_providers(
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
+        db_max_connections: 5,
+        db_min_connections: 1,
+        db_acquire_timeout_secs: 10,
+        db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
         secrets_encryption_key_active_id: 1,
@@ -936,6 +952,7 @@ pub async fn start_api_with_auth_providers(
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
+        trial_default_duration_days: 30,
         single_org_mode: None,
         app_host_suffix: None,
         api_host_suffix: None,
@@ -1013,6 +1030,7 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
+        .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .with_state(state);
 
@@ -1040,6 +1058,20 @@ pub async fn start_mock() -> SocketAddr {
     // the prior in-process implementation that never shut its spawn down.
     Box::leak(Box::new(handle));
     addr
+}
+
+/// The owner user ("test-user") that [`bootstrap_org_identity`] creates and
+/// parents the returned agent under. OAuth connections resolve at the owner
+/// identity (DECISIONS.md D22), so tests that exercise the auto-resolve path
+/// must seed connections here, not on the calling agent.
+pub async fn owner_user_id(pool: &PgPool, org_id: Uuid) -> Uuid {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM identities WHERE org_id = $1 AND kind = 'user' AND name = 'test-user'",
+    )
+    .bind(org_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 /// Bootstrap org + identity + identity-bound API key.
@@ -1396,6 +1428,10 @@ where
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
+        db_max_connections: 5,
+        db_min_connections: 1,
+        db_acquire_timeout_secs: 10,
+        db_background_max_connections: 2,
         secrets_encryption_key: enc_key_hex,
         secrets_encryption_key_previous: None,
         secrets_encryption_key_active_id: 1,
@@ -1422,6 +1458,7 @@ where
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
+        trial_default_duration_days: 30,
         single_org_mode: None,
         app_host_suffix: None,
         api_host_suffix: None,
@@ -1497,6 +1534,7 @@ where
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
+        .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
@@ -1534,6 +1572,10 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
+        db_max_connections: 5,
+        db_min_connections: 1,
+        db_acquire_timeout_secs: 10,
+        db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
         secrets_encryption_key_active_id: 1,
@@ -1560,6 +1602,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
+        trial_default_duration_days: 30,
         single_org_mode: None,
         app_host_suffix: None,
         api_host_suffix: None,
@@ -1643,6 +1686,10 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
+        db_max_connections: 5,
+        db_min_connections: 1,
+        db_acquire_timeout_secs: 10,
+        db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
         secrets_encryption_key_active_id: 1,
@@ -1669,6 +1716,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
+        trial_default_duration_days: 30,
         single_org_mode: None,
         app_host_suffix: None,
         api_host_suffix: None,
@@ -1743,6 +1791,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
+        .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
@@ -1883,6 +1932,28 @@ pub async fn seed_oauth_flow(
     provider_key: &str,
     byoc_credential_id: Option<Uuid>,
 ) -> String {
+    seed_oauth_flow_with_scopes(
+        pool,
+        org_id,
+        identity_id,
+        provider_key,
+        byoc_credential_id,
+        &[],
+    )
+    .await
+}
+
+/// [`seed_oauth_flow`] with explicit requested scopes on the flow row — for
+/// tests exercising the RFC 6749 §5.1 fallback (token response omits `scope`
+/// → the requested set is recorded as granted).
+pub async fn seed_oauth_flow_with_scopes(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    provider_key: &str,
+    byoc_credential_id: Option<Uuid>,
+    scopes: &[String],
+) -> String {
     use overslash_db::repos::oauth_connection_flow::{self, CreateOauthConnectionFlow};
     use time::{Duration, OffsetDateTime};
 
@@ -1896,16 +1967,16 @@ pub async fn seed_oauth_flow(
             actor_identity_id: identity_id,
             provider_key,
             byoc_credential_id,
-            scopes: &[],
+            scopes,
             pkce_code_verifier: None,
             upstream_authorize_url: "https://example.test/authorize",
             expires_at: OffsetDateTime::now_utc() + Duration::minutes(10),
             created_ip: None,
             created_user_agent: None,
             return_url: None,
-            redirect_uri: None,
             upgrade_connection_id: None,
             service_instance_id: None,
+            pin_service_instance_ids: &[],
         },
     )
     .await

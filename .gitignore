@@ -57,3 +57,6 @@ infra/*.tfplan
 infra/terraform.tfvars
 .vercel
 /trees/
+
+# Local Metabase MCP exploration (secrets)
+docker/metabase/.env.metabase

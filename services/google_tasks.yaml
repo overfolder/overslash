@@ -1,0 +1,287 @@
+openapi: 3.1.0
+info:
+  title: Google Tasks
+  key: google_tasks
+  category: Productivity
+servers:
+  - url: https://tasks.googleapis.com
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: google
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            https://www.googleapis.com/auth/tasks: ""
+            https://www.googleapis.com/auth/tasks.readonly: ""
+paths:
+  /tasks/v1/users/@me/lists:
+    get:
+      operationId: list_tasklists
+      summary: List all task lists for the authenticated user
+      risk: read
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/tasks.readonly
+      parameters:
+        - name: maxResults
+          in: query
+          description: Maximum number of task lists returned (default 20, max 100)
+          schema:
+            type: integer
+    post:
+      operationId: create_tasklist
+      summary: "Create task list '{title}'"
+      risk: write
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: Title
+          filter: .body.title
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+                  description: Title of the task list
+  /tasks/v1/users/@me/lists/{tasklist}:
+    parameters:
+      - name: tasklist
+        in: path
+        required: true
+        description: "Task list identifier (use '@default' for the default list)"
+        schema:
+          type: string
+          default: "@default"
+        resolve:
+          get: /tasks/v1/users/@me/lists/{tasklist}
+          pick: title
+    get:
+      operationId: get_tasklist
+      summary: "Get task list {tasklist}"
+      risk: read
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/tasks.readonly
+    patch:
+      operationId: update_tasklist
+      summary: "Update task list {tasklist}"
+      risk: write
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: Task list
+          filter: .resolved.tasklist // .params.tasklist
+        - label: New title
+          filter: .body.title // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  description: Title of the task list
+    delete:
+      operationId: delete_tasklist
+      summary: "Delete task list {tasklist}"
+      risk: delete
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: Task list
+          filter: .resolved.tasklist // .params.tasklist
+  /tasks/v1/lists/{tasklist}/tasks:
+    parameters:
+      - name: tasklist
+        in: path
+        required: true
+        description: "Task list identifier (use '@default' for the default list)"
+        schema:
+          type: string
+          default: "@default"
+        resolve:
+          get: /tasks/v1/users/@me/lists/{tasklist}
+          pick: title
+    get:
+      operationId: list_tasks
+      summary: "List tasks in list {tasklist}"
+      risk: read
+      scope_param: tasklist
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/tasks.readonly
+      parameters:
+        - name: showCompleted
+          in: query
+          description: Whether to include completed tasks (default true)
+          schema:
+            type: boolean
+        - name: showHidden
+          in: query
+          description: Whether to include hidden tasks
+          schema:
+            type: boolean
+        - name: maxResults
+          in: query
+          description: Maximum number of tasks returned (default 20, max 100)
+          schema:
+            type: integer
+        - name: dueMin
+          in: query
+          description: Lower bound (RFC3339 timestamp) for a task's due date
+          schema:
+            type: string
+        - name: dueMax
+          in: query
+          description: Upper bound (RFC3339 timestamp) for a task's due date
+          schema:
+            type: string
+    post:
+      operationId: create_task
+      summary: "Create task '{title}' in list {tasklist}"
+      risk: write
+      scope_param: tasklist
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: List
+          filter: .resolved.tasklist // .params.tasklist
+        - label: Title
+          filter: .body.title
+        - label: Notes
+          filter: .body.notes // empty
+          max_chars: 1000
+        - label: Due
+          filter: .body.due // empty
+        - label: Status
+          filter: .body.status // empty
+      parameters:
+        - name: parent
+          in: query
+          description: Parent task identifier; the new task becomes a subtask of it
+          schema:
+            type: string
+        - name: previous
+          in: query
+          description: Previous sibling task identifier; the new task is placed after it
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+                  description: Title of the task
+                notes:
+                  type: string
+                  description: Notes describing the task
+                due:
+                  type: string
+                  description: "Due date (RFC3339 timestamp; only the date portion is used)"
+                status:
+                  type: string
+                  description: Status of the task
+                  enum: [needsAction, completed]
+  /tasks/v1/lists/{tasklist}/tasks/{task}:
+    parameters:
+      - name: tasklist
+        in: path
+        required: true
+        description: Task list identifier
+        schema:
+          type: string
+          default: "@default"
+        resolve:
+          get: /tasks/v1/users/@me/lists/{tasklist}
+          pick: title
+      - name: task
+        in: path
+        required: true
+        description: Task identifier
+        schema:
+          type: string
+        resolve:
+          get: /tasks/v1/lists/{tasklist}/tasks/{task}
+          pick: title
+    get:
+      operationId: get_task
+      summary: "Get task {task} in list {tasklist}"
+      risk: read
+      scope_param: tasklist
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/tasks.readonly
+    patch:
+      operationId: update_task
+      summary: "Update task {task} in list {tasklist}"
+      risk: write
+      scope_param: tasklist
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: List
+          filter: .resolved.tasklist // .params.tasklist
+        - label: Task
+          filter: .resolved.task // .params.task
+        - label: New title
+          filter: .body.title // empty
+        - label: Notes
+          filter: .body.notes // empty
+          max_chars: 1000
+        - label: Due
+          filter: .body.due // empty
+        - label: Status
+          filter: .body.status // empty
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  description: Title of the task
+                notes:
+                  type: string
+                  description: Notes describing the task
+                due:
+                  type: string
+                  description: "Due date (RFC3339 timestamp; only the date portion is used)"
+                status:
+                  type: string
+                  description: "Status of the task; set to 'completed' to mark it done"
+                  enum: [needsAction, completed]
+    delete:
+      operationId: delete_task
+      summary: "Delete task {task} in list {tasklist}"
+      risk: delete
+      scope_param: tasklist
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/tasks
+      disclose:
+        - label: List
+          filter: .resolved.tasklist // .params.tasklist
+        - label: Task
+          filter: .resolved.task // .params.task

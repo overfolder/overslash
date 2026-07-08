@@ -51,6 +51,7 @@
 	let editConnection = $state('');
 	let editSecret = $state('');
 	let editUrl = $state('');
+	let editUseDefaultConnection = $state(true);
 	let availableSecrets = $state<SecretSummary[]>([]);
 	let secretsLoading = $state(false);
 	let secretsLoaded = false;
@@ -94,11 +95,21 @@
 	const oauthAuth = $derived(
 		(template?.auth ?? []).find((a: any) => a?.type === 'oauth') as any
 	);
-	const usesOAuth = $derived(!!oauthAuth);
+	const isMcp = $derived(template?.runtime === 'mcp');
+	// MCP-runtime templates with `auth.kind: oauth` (D24) resolve through the
+	// same provider connection as HTTP OAuth, so they reuse the whole connect
+	// surface. `oauthProvider`/`oauthScopes` unify both sources.
+	const mcpOAuthProvider = $derived(
+		isMcp && template?.mcp?.auth_kind === 'oauth' ? template?.mcp?.provider : undefined
+	);
+	const oauthProvider = $derived<string | undefined>(oauthAuth?.provider ?? mcpOAuthProvider);
+	// MCP-oauth scopes live on the mcp block; without them the connect flow would
+	// request nothing and mint a token missing every permission.
+	const oauthScopes = $derived<string[]>(oauthAuth?.scopes ?? template?.mcp?.scopes ?? []);
+	const usesOAuth = $derived(!!oauthProvider);
 	const usesApiKey = $derived(
 		(template?.auth ?? []).some((a: any) => a?.type === 'api_key')
 	);
-	const isMcp = $derived(template?.runtime === 'mcp');
 	const isSystem = $derived(!!svc?.is_system);
 	const ownerDisplay = $derived.by(() => {
 		const s = svc;
@@ -174,7 +185,7 @@
 		}
 	}
 	const matchingConnections = $derived(
-		oauthAuth ? connections.filter((c) => c.provider_key === oauthAuth.provider) : connections
+		oauthProvider ? connections.filter((c) => c.provider_key === oauthProvider) : connections
 	);
 	const currentConnection = $derived.by(() => {
 		const cid = svc?.connection_id;
@@ -189,7 +200,7 @@
 	// The template's superset scopes — what it *might* want at full power.
 	// If the connection's granted scopes don't cover this set, the dashboard
 	// prompts for an incremental upgrade.
-	const templateScopes = $derived<string[]>(oauthAuth?.scopes ?? []);
+	const templateScopes = $derived<string[]>(oauthScopes);
 	const missingScopes = $derived.by<string[]>(() => {
 		if (!currentConnection || templateScopes.length === 0) return [];
 		const granted = new Set(currentConnection.scopes);
@@ -219,12 +230,18 @@
 			editConnection = fresh.connection_id ?? '';
 			editSecret = fresh.secret_name ?? '';
 			editUrl = fresh.url ?? '';
+			editUseDefaultConnection = fresh.use_default_connection;
 			const [tpl, acts, conns, ids, sGroups, gs] = await Promise.all([
 				getTemplate(fresh.template_key, ctrl.signal).catch(() => null),
 				// Use svc.id (not name) so user-shadows-org can't return actions
 				// from a same-named user instance.
 				getServiceActions(fresh.id, ctrl.signal).catch(() => [] as ActionSummary[]),
-				listConnections(ctrl.signal).catch(() => [] as ConnectionSummary[]),
+				// Scope to the service owner so an admin viewing another user's
+				// service sees that user's (bindable) connections, not their own.
+				listConnections(
+					{ ownerIdentityId: fresh.owner_identity_id },
+					ctrl.signal
+				).catch(() => [] as ConnectionSummary[]),
 				session
 					.get<Identity[]>('/v1/identities', ctrl.signal)
 					.catch(() => [] as Identity[]),
@@ -271,7 +288,11 @@
 				secret_name:
 					editSecret !== (svc.secret_name ?? '') ? editSecret || null : undefined,
 				url:
-					editUrl !== (svc.url ?? '') ? editUrl.trim() || null : undefined
+					editUrl !== (svc.url ?? '') ? editUrl.trim() || null : undefined,
+				use_default_connection:
+					editUseDefaultConnection !== svc.use_default_connection
+						? editUseDefaultConnection
+						: undefined
 			});
 			svc = updated;
 		} catch (e) {
@@ -291,7 +312,7 @@
 	}
 
 	async function reconnect() {
-		if (!oauthAuth) return;
+		if (!oauthProvider) return;
 		// Cancel any prior in-flight polling loop.
 		reconnectAbort?.abort();
 		const ctrl = new AbortController();
@@ -301,7 +322,7 @@
 		try {
 			const beforeIds = new Set(connections.map((c) => c.id));
 			const resp = await initiateOAuth(
-				{ provider: oauthAuth.provider, scopes: oauthAuth.scopes ?? [] },
+				{ provider: oauthProvider, scopes: oauthScopes },
 				ctrl.signal
 			);
 			if (ctrl.signal.aborted) return;
@@ -323,12 +344,15 @@
 				await new Promise((r) => setTimeout(r, 1500));
 				if (ctrl.signal.aborted) return;
 				try {
-					connections = await listConnections(ctrl.signal);
+					connections = await listConnections(
+							{ ownerIdentityId: svc?.owner_identity_id },
+							ctrl.signal
+						);
 				} catch {
 					if (ctrl.signal.aborted) return;
 				}
 				const fresh = connections.find(
-					(c) => !beforeIds.has(c.id) && c.provider_key === oauthAuth.provider
+					(c) => !beforeIds.has(c.id) && c.provider_key === oauthProvider
 				);
 				if (fresh) {
 					editConnection = fresh.id;
@@ -392,7 +416,10 @@
 				await new Promise((r) => setTimeout(r, 1500));
 				if (ctrl.signal.aborted) return;
 				try {
-					connections = await listConnections(ctrl.signal);
+					connections = await listConnections(
+							{ ownerIdentityId: svc?.owner_identity_id },
+							ctrl.signal
+						);
 				} catch {
 					if (ctrl.signal.aborted) return;
 				}
@@ -795,7 +822,7 @@
 				{#if usesOAuth}
 					<div class="row">
 						<span class="label">Provider</span>
-						<span>{oauthAuth.provider}</span>
+						<span>{oauthProvider}</span>
 					</div>
 					<div class="row">
 						<span class="label">Status</span>
@@ -849,6 +876,24 @@
 							{/each}
 						</select>
 					</div>
+					{#if !isSystem}
+						<div class="field toggle-field">
+							<ToggleSwitch
+								checked={editUseDefaultConnection}
+								onchange={(v) => (editUseDefaultConnection = v)}
+								labelledby="edit-use-default-connection-label"
+							/>
+							<span id="edit-use-default-connection-label">
+								Fall back to the default connection for this provider when none is pinned
+							</span>
+						</div>
+						{#if !editUseDefaultConnection}
+							<small class="hint">
+								Off: calls fail with <code>needs_authentication</code> until a connection is
+								explicitly bound. Used for white-label services with a dedicated connection.
+							</small>
+						{/if}
+					{/if}
 					<div class="actions">
 						<button type="button" class="btn" onclick={reconnect} disabled={connecting}>
 							{connecting ? 'Waiting…' : 'Connect new'}
@@ -892,7 +937,10 @@
 								{/if}
 							</span>
 						</div>
-						{#if template.mcp?.autodiscover !== false && template.tier !== 'global'}
+						<!-- Resync isn't supported for oauth-auth MCP servers (the admin
+						     resync path carries no per-user token) — the backend 400s, so
+						     don't offer the button even if autodiscover is left on. -->
+						{#if template.mcp?.autodiscover !== false && template.tier !== 'global' && template.mcp?.auth_kind !== 'oauth'}
 							<button
 								type="button"
 								class="btn"

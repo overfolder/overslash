@@ -16,6 +16,11 @@ pub struct ServiceInstanceRow {
     /// Per-instance MCP server URL. Overrides the template's `mcp.url` at
     /// execution time. Required when the template declares no default URL.
     pub url: Option<String>,
+    /// When `false`, an instance with no explicit `connection_id` must NOT fall
+    /// back to the identity's default connection for the provider at execution
+    /// time — it requires an explicit binding. Defaults to `true` (legacy
+    /// fallback behavior). See migration 090.
+    pub use_default_connection: bool,
     pub status: String,
     pub is_system: bool,
     pub created_at: OffsetDateTime,
@@ -35,6 +40,9 @@ pub struct CreateServiceInstance<'a> {
     pub secret_name: Option<&'a str>,
     /// Per-instance MCP URL override. See `ServiceInstanceRow::url`.
     pub url: Option<&'a str>,
+    /// See `ServiceInstanceRow::use_default_connection`. Defaults to `true` at
+    /// the API layer when the caller omits it.
+    pub use_default_connection: bool,
     pub status: &'a str,
 }
 
@@ -45,6 +53,8 @@ pub struct UpdateServiceInstance<'a> {
     /// Outer `Some` = field is present in the request (update it);
     /// inner `Option` = nullable value (set to NULL when `None`).
     pub url: Option<Option<&'a str>>,
+    /// `Some` = update the flag; `None` = leave unchanged.
+    pub use_default_connection: Option<bool>,
 }
 
 pub(crate) async fn create(
@@ -54,10 +64,10 @@ pub(crate) async fn create(
     sqlx::query_as!(
         ServiceInstanceRow,
         "INSERT INTO service_instances (org_id, owner_identity_id, name, template_source, \
-         template_key, template_id, connection_id, secret_name, url, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+         template_key, template_id, connection_id, secret_name, url, use_default_connection, status) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at",
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at",
         input.org_id,
         input.owner_identity_id,
         input.name,
@@ -67,6 +77,7 @@ pub(crate) async fn create(
         input.connection_id,
         input.secret_name,
         input.url,
+        input.use_default_connection,
         input.status,
     )
     .fetch_one(pool)
@@ -81,15 +92,56 @@ pub(crate) async fn get_by_id(
     org_id: Uuid,
     id: Uuid,
 ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
+    get_by_id_with(pool, org_id, id).await
+}
+
+/// Executor-generic variant of [`get_by_id`], so the lookup can run inside a
+/// caller-supplied transaction (the atomic connection-pin flow validates
+/// ownership in the same tx as the bind).
+pub(crate) async fn get_by_id_with<'e, E>(
+    executor: E,
+    org_id: Uuid,
+    id: Uuid,
+) -> Result<Option<ServiceInstanceRow>, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances WHERE id = $1 AND org_id = $2",
         id,
         org_id,
     )
-    .fetch_optional(pool)
+    .fetch_optional(executor)
+    .await
+}
+
+/// Bind (or rebind) a service instance to a connection, scoped to an org.
+/// Executor-generic so it can participate in the atomic connection-pin
+/// transaction. Returns the updated row, or `None` if the id belongs to
+/// another org / was deleted. Ownership validation is the caller's job.
+pub(crate) async fn bind_connection_with<'e, E>(
+    executor: E,
+    org_id: Uuid,
+    id: Uuid,
+    connection_id: Uuid,
+) -> Result<Option<ServiceInstanceRow>, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    sqlx::query_as!(
+        ServiceInstanceRow,
+        "UPDATE service_instances SET connection_id = $3, updated_at = now() \
+         WHERE id = $1 AND org_id = $2 \
+         RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at",
+        id,
+        org_id,
+        connection_id,
+    )
+    .fetch_optional(executor)
     .await
 }
 
@@ -103,7 +155,7 @@ pub(crate) async fn get_by_name(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND name = $3",
         org_id,
@@ -140,7 +192,7 @@ pub(crate) async fn resolve_by_name(
         return sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2 AND status = 'active'",
             org_id,
@@ -155,7 +207,7 @@ pub(crate) async fn resolve_by_name(
         let caller_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3 AND status = 'active'",
             org_id,
@@ -176,7 +228,7 @@ pub(crate) async fn resolve_by_name(
         let user_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3 AND status = 'active'",
             org_id,
@@ -194,7 +246,7 @@ pub(crate) async fn resolve_by_name(
     let org_instance = sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2 AND status = 'active'",
         org_id,
@@ -213,8 +265,8 @@ pub(crate) async fn resolve_by_name(
         return sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, \
-             si.template_id, si.connection_id, si.secret_name, si.url, si.status, si.is_system, \
-             si.created_at, si.updated_at \
+             si.template_id, si.connection_id, si.secret_name, si.url, si.use_default_connection, \
+             si.status, si.is_system, si.created_at, si.updated_at \
              FROM service_instances si \
              WHERE si.org_id = $1 AND si.name = $2 AND si.status = 'active' \
                AND EXISTS ( \
@@ -253,7 +305,7 @@ pub async fn resolve_by_name_any_status(
         return sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2",
             org_id,
@@ -267,7 +319,7 @@ pub async fn resolve_by_name_any_status(
         let caller_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3",
             org_id,
@@ -287,7 +339,7 @@ pub async fn resolve_by_name_any_status(
         let user_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3",
             org_id,
@@ -304,7 +356,7 @@ pub async fn resolve_by_name_any_status(
     let org_instance = sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2",
         org_id,
@@ -321,8 +373,8 @@ pub async fn resolve_by_name_any_status(
         return sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, \
-             si.template_id, si.connection_id, si.secret_name, si.url, si.status, si.is_system, \
-             si.created_at, si.updated_at \
+             si.template_id, si.connection_id, si.secret_name, si.url, si.use_default_connection, \
+             si.status, si.is_system, si.created_at, si.updated_at \
              FROM service_instances si \
              WHERE si.org_id = $1 AND si.name = $2 \
                AND EXISTS ( \
@@ -354,7 +406,7 @@ pub(crate) async fn list_by_org(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NULL ORDER BY name",
         org_id,
@@ -372,7 +424,7 @@ pub(crate) async fn list_by_user(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id = $2 ORDER BY name",
         org_id,
@@ -397,7 +449,7 @@ pub(crate) async fn list_available(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 \
            AND (owner_identity_id IS NULL \
@@ -431,7 +483,7 @@ pub(crate) async fn list_available_with_groups(
             sqlx::query_as!(
                 ServiceInstanceRow,
                 "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-                 template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+                 template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
                  FROM service_instances \
                  WHERE org_id = $1 AND id = ANY($2) \
                  ORDER BY name",
@@ -456,7 +508,7 @@ pub(crate) async fn list_all_in_org(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 \
          ORDER BY name",
@@ -481,7 +533,7 @@ pub(crate) async fn update_status(
         "UPDATE service_instances SET status = $3, updated_at = now() \
          WHERE id = $1 AND org_id = $2 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at",
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at",
         id,
         org_id,
         status,
@@ -507,6 +559,8 @@ pub(crate) async fn update(
     let secret = input.secret_name.flatten();
     let update_url = input.url.is_some();
     let url = input.url.flatten();
+    let update_udc = input.use_default_connection.is_some();
+    let udc = input.use_default_connection.unwrap_or(true);
 
     sqlx::query_as!(
         ServiceInstanceRow,
@@ -515,10 +569,11 @@ pub(crate) async fn update(
          connection_id = CASE WHEN $4 THEN $5 ELSE connection_id END, \
          secret_name = CASE WHEN $6 THEN $7 ELSE secret_name END, \
          url = CASE WHEN $8 THEN $9 ELSE url END, \
+         use_default_connection = CASE WHEN $10 THEN $11 ELSE use_default_connection END, \
          updated_at = now() \
          WHERE id = $1 AND org_id = $2 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at",
+         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at",
         id,
         org_id,
         input.name,
@@ -528,6 +583,8 @@ pub(crate) async fn update(
         secret,
         update_url,
         url,
+        update_udc,
+        udc,
     )
     .fetch_optional(pool)
     .await

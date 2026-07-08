@@ -90,6 +90,13 @@ paths:
       operationId: create_folder
       summary: "Create folder '{name}'"
       risk: write
+      disclose:
+        - label: Name
+          filter: .body.name
+        # `[]` is truthy in jq, so `// empty` alone would disclose an empty
+        # string for `parents: []`; drop empty arrays before joining.
+        - label: Parent folders
+          filter: '.body.parents // [] | select(length > 0) | join(", ")'
       requestBody:
         required: true
         content:
@@ -146,6 +153,19 @@ paths:
       summary: "Update metadata for file {fileId}[: rename to '{name}']"
       risk: write
       scope_param: fileId
+      disclose:
+        - label: File
+          filter: .resolved.fileId // .params.fileId
+        - label: New name
+          filter: .body.name // empty
+        - label: New description
+          filter: .body.description // empty
+          max_chars: 500
+        # `//` would swallow `false` (untrash/unstar), so probe with has().
+        - label: Trashed
+          filter: '.body // {} | if has("trashed") then .trashed else empty end'
+        - label: Starred
+          filter: '.body // {} | if has("starred") then .starred else empty end'
       parameters:
         - name: supportsAllDrives
           in: query
@@ -178,6 +198,9 @@ paths:
       summary: "Permanently delete file {fileId}"
       risk: delete
       scope_param: fileId
+      disclose:
+        - label: File
+          filter: .resolved.fileId // .params.fileId
       parameters:
         - name: supportsAllDrives
           in: query
@@ -221,6 +244,13 @@ paths:
       summary: "Copy file {fileId}[ as '{name}']"
       risk: write
       scope_param: fileId
+      disclose:
+        - label: File
+          filter: .resolved.fileId // .params.fileId
+        - label: Copy name
+          filter: .body.name // empty
+        - label: Destination folders
+          filter: '.body.parents // [] | select(length > 0) | join(", ")'
       parameters:
         - name: fileId
           in: path
@@ -290,6 +320,18 @@ paths:
       summary: "Grant {role} permission on file {fileId}[ to {emailAddress}]"
       risk: write
       scope_param: fileId
+      disclose:
+        - label: File
+          filter: .resolved.fileId // .params.fileId
+        - label: Role
+          filter: .body.role
+        - label: Grantee type
+          filter: .body.type
+        - label: Grantee
+          filter: .body.emailAddress // .body.domain // empty
+        # `//` would swallow `false`, so probe with has().
+        - label: Transfer ownership
+          filter: '.body // {} | if has("transferOwnership") then .transferOwnership else empty end'
       parameters:
         - name: supportsAllDrives
           in: query
@@ -330,6 +372,11 @@ paths:
       summary: "Revoke permission {permissionId} from file {fileId}"
       risk: delete
       scope_param: fileId
+      disclose:
+        - label: File
+          filter: .resolved.fileId // .params.fileId
+        - label: Grantee
+          filter: .resolved.permissionId // .params.permissionId
       parameters:
         - name: fileId
           in: path
@@ -346,6 +393,12 @@ paths:
           description: The ID of the permission to revoke
           schema:
             type: string
+          # emailAddress is not in the default field mask, so request it
+          # explicitly. Domain/anyone grants have no email — resolution then
+          # falls back to the raw permission id.
+          resolve:
+            get: /drive/v3/files/{fileId}/permissions/{permissionId}?fields=emailAddress&supportsAllDrives=true
+            pick: emailAddress
         - name: supportsAllDrives
           in: query
           description: Whether the requesting application supports both My Drives and shared drives

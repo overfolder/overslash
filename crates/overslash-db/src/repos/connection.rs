@@ -11,7 +11,12 @@ pub struct ConnectionRow {
     pub encrypted_access_token: Vec<u8>,
     pub encrypted_refresh_token: Option<Vec<u8>>,
     pub token_expires_at: Option<OffsetDateTime>,
-    pub scopes: Vec<String>,
+    /// Granted OAuth scopes. `None` means *unknown* (a token import that didn't
+    /// declare them) — the action scope-gate treats unknown as covering
+    /// everything (benefit of the doubt). `Some(vec)` is the known granted set
+    /// (possibly empty); orchestrated connections always record this from the
+    /// token response.
+    pub scopes: Option<Vec<String>>,
     pub account_email: Option<String>,
     pub byoc_credential_id: Option<Uuid>,
     pub is_default: bool,
@@ -28,7 +33,8 @@ pub struct CreateConnection<'a> {
     pub encrypted_access_token: &'a [u8],
     pub encrypted_refresh_token: Option<&'a [u8]>,
     pub token_expires_at: Option<OffsetDateTime>,
-    pub scopes: &'a [String],
+    /// `None` stores SQL NULL — "scopes unknown" (see [`ConnectionRow::scopes`]).
+    pub scopes: Option<&'a [String]>,
     pub account_email: Option<&'a str>,
     pub byoc_credential_id: Option<Uuid>,
 }
@@ -37,6 +43,19 @@ pub(crate) async fn create(
     pool: &PgPool,
     input: &CreateConnection<'_>,
 ) -> Result<ConnectionRow, sqlx::Error> {
+    create_with(pool, input).await
+}
+
+/// Executor-generic variant of [`create`], so the insert can run inside a
+/// caller-supplied transaction (e.g. the atomic `create_connection_and_pin`
+/// flow that binds the new connection to service instances in one commit).
+pub(crate) async fn create_with<'e, E>(
+    executor: E,
+    input: &CreateConnection<'_>,
+) -> Result<ConnectionRow, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     // `is_default` is computed, not defaulted: a new connection becomes the
     // provider default only when the identity has none yet. The column's
     // `DEFAULT true` (migration 009) predates the single-default invariant
@@ -63,11 +82,49 @@ pub(crate) async fn create(
         input.encrypted_access_token,
         input.encrypted_refresh_token as Option<&[u8]>,
         input.token_expires_at,
-        input.scopes,
+        input.scopes as Option<&[String]>,
         input.account_email,
         input.byoc_credential_id,
     )
-    .fetch_one(pool)
+    .fetch_one(executor)
+    .await
+}
+
+/// Find the connection a token import should update in place, scoped to an
+/// (org, identity, provider). When `account_email` is given the match is keyed
+/// on it (multi-account: a partner can vault several accounts of one provider
+/// for the same user); otherwise the identity's default-most connection for the
+/// provider is returned. `None` means "no existing connection — create one".
+///
+/// This is what keeps re-import idempotent: a white-label connection is
+/// re-imported whenever the partner re-runs its OAuth dance, so without an
+/// in-place update each cycle would accrete a duplicate row.
+pub(crate) async fn find_for_import(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    provider_key: &str,
+    account_email: Option<&str>,
+) -> Result<Option<ConnectionRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ConnectionRow,
+        // `scopes AS "scopes?"`: force the nullable override — a single-table
+        // SELECT trips a sqlx-macro quirk that decodes the nullable `scopes`
+        // (migration 083) as non-`Option` and panics on a NULL. See `get_by_id`.
+        "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
+                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
+                account_email, byoc_credential_id, is_default, created_at, updated_at
+         FROM connections
+         WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3
+           AND ($4::text IS NULL OR account_email IS NOT DISTINCT FROM $4)
+         ORDER BY is_default DESC, created_at DESC
+         LIMIT 1",
+        org_id,
+        identity_id,
+        provider_key,
+        account_email,
+    )
+    .fetch_optional(pool)
     .await
 }
 
@@ -80,14 +137,39 @@ pub(crate) async fn get_by_id(
 ) -> Result<Option<ConnectionRow>, sqlx::Error> {
     sqlx::query_as!(
         ConnectionRow,
+        // `scopes` is nullable (migration 083). The single-table SELECT trips a
+        // sqlx-macro nullability quirk that decodes it as non-`Option` and panics
+        // on a NULL (an import that didn't declare scopes), so force the override
+        // explicitly. See `scopes/user_connections.rs` (its JOIN sidesteps this).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
-                encrypted_refresh_token, token_expires_at, scopes, account_email,
-                byoc_credential_id, is_default, created_at, updated_at
+                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
+                account_email, byoc_credential_id, is_default, created_at, updated_at
          FROM connections WHERE id = $1 AND org_id = $2",
         id,
         org_id,
     )
     .fetch_optional(pool)
+    .await
+}
+
+/// List every connection in an org, across all identities. Powers the
+/// dashboard's admin-only "show all users' connections" view — the per-user
+/// listing lives on `UserScope::list_my_connections`. Ordered newest-first to
+/// match that per-user query.
+pub(crate) async fn list_all_in_org(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Vec<ConnectionRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ConnectionRow,
+        // `scopes AS "scopes?"`: force the nullable override (see `get_by_id`).
+        "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
+                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
+                account_email, byoc_credential_id, is_default, created_at, updated_at
+         FROM connections WHERE org_id = $1 ORDER BY created_at DESC",
+        org_id,
+    )
+    .fetch_all(pool)
     .await
 }
 
@@ -140,7 +222,7 @@ pub(crate) async fn update_tokens_and_scopes(
     encrypted_access_token: &[u8],
     encrypted_refresh_token: Option<&[u8]>,
     token_expires_at: Option<OffsetDateTime>,
-    scopes: &[String],
+    scopes: Option<&[String]>,
     account_email: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
@@ -154,7 +236,7 @@ pub(crate) async fn update_tokens_and_scopes(
         encrypted_access_token,
         encrypted_refresh_token as Option<&[u8]>,
         token_expires_at,
-        scopes,
+        scopes as Option<&[String]>,
         account_email,
     )
     .execute(pool)
@@ -179,9 +261,10 @@ pub(crate) async fn get_by_ids(
     }
     sqlx::query_as!(
         ConnectionRow,
+        // `scopes AS "scopes?"`: force the nullable override (see `get_by_id`).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
-                encrypted_refresh_token, token_expires_at, scopes, account_email,
-                byoc_credential_id, is_default, created_at, updated_at
+                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
+                account_email, byoc_credential_id, is_default, created_at, updated_at
          FROM connections WHERE org_id = $1 AND id = ANY($2)",
         org_id,
         ids,

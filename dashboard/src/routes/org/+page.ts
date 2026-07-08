@@ -6,12 +6,12 @@ import type {
 	IdpConfig,
 	ManagedSigninSettings,
 	McpClient,
-	OAuthCallbackSettings,
 	OAuthCredential,
 	OrgInfo,
 	OrgInvite,
 	SecretRequestSettings,
 	ServiceKeySummary,
+	TemplateSettings,
 	Webhook
 } from '$lib/types';
 
@@ -46,8 +46,8 @@ export interface OrgPageData {
 	secretRequestSettings: SecretRequestSettings | null;
 	executionSettings: ExecutionSettings | null;
 	auditSettings: AuditSettings | null;
-	oauthCallbackSettings: OAuthCallbackSettings | null;
 	managedSigninSettings: ManagedSigninSettings | null;
+	templateSettings: TemplateSettings | null;
 	invites: OrgInvite[];
 	subscription: OrgSubscription | null;
 	error: { status: number; message: string } | null;
@@ -75,8 +75,8 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				secretRequestSettings: null,
 				executionSettings: null,
 				auditSettings: null,
-				oauthCallbackSettings: null,
 				managedSigninSettings: null,
+				templateSettings: null,
 				invites: [],
 				subscription: null,
 				error: { status: 403, message: 'Admin access required to view org settings.' }
@@ -93,8 +93,8 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			secretRequestSettings,
 			executionSettings,
 			auditSettings,
-			oauthCallbackSettings,
 			managedSigninSettings,
+			templateSettings,
 			invites
 		] = await Promise.all([
 			orgId
@@ -115,10 +115,10 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				? session.get<AuditSettings>(`/v1/orgs/${orgId}/audit-settings`)
 				: Promise.resolve(null),
 			orgId
-				? session.get<OAuthCallbackSettings>(`/v1/orgs/${orgId}/oauth-callback-settings`)
+				? session.get<ManagedSigninSettings>(`/v1/orgs/${orgId}/managed-signin`)
 				: Promise.resolve(null),
 			orgId
-				? session.get<ManagedSigninSettings>(`/v1/orgs/${orgId}/managed-signin`)
+				? session.get<TemplateSettings>(`/v1/orgs/${orgId}/template-settings`)
 				: Promise.resolve(null),
 			session.get<OrgInvite[]>('/v1/org-invites')
 		]);
@@ -144,8 +144,8 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			secretRequestSettings,
 			executionSettings,
 			auditSettings,
-			oauthCallbackSettings,
 			managedSigninSettings,
+			templateSettings,
 			invites,
 			subscription,
 			error: null
@@ -165,8 +165,8 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			secretRequestSettings: null,
 			executionSettings: null,
 			auditSettings: null,
-			oauthCallbackSettings: null,
 			managedSigninSettings: null,
+			templateSettings: null,
 			invites: [],
 			subscription: null,
 			error: { status, message }

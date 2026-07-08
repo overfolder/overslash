@@ -3,43 +3,148 @@ info:
   title: Slack
   key: slack
   category: Communication
-servers:
-  - url: https://slack.com
-  - url: https://api.slack.com
-components:
-  securitySchemes:
-    oauth:
-      type: oauth2
-      provider: slack
-      flows:
-        authorizationCode:
-          authorizationUrl: https://slack.com/oauth/v2/authorize
-          tokenUrl: https://slack.com/api/oauth.v2.access
-          scopes:
-            chat:write: ""
-            channels:read: ""
-paths:
-  /api/chat.postMessage:
-    post:
-      operationId: send_message
-      summary: Send a message to Slack channel {channel}
+  description: >
+    Slack via its official first-party MCP server (https://mcp.slack.com/mcp,
+    GA Feb 2026). Overslash acts as the MCP *client*: it wraps Slack's tools,
+    resolves a Slack OAuth connection into the outbound bearer, and layers its
+    permission chain + human approvals + audit on top. Slack's MCP auth server
+    does not support Dynamic Client Registration, so the DCR-based
+    nested-upstream-OAuth path can't be used — this template instead reuses the
+    standard `oauth_providers` + `connections` machinery via `auth.kind: oauth`.
+x-overslash-runtime: mcp
+servers: []
+paths: {}
+x-overslash-mcp:
+  url: https://mcp.slack.com/mcp
+  # OAuth: inject `Authorization: Bearer <token>` from the caller's owner
+  # `slack` connection (D22), refreshed as needed — the same provider row the
+  # dashboard/`create_connection` flow populates. `scopes` is the superset
+  # requested at connect time (Slack ultimately gates by the user's own
+  # permissions + what the app exposes).
+  auth:
+    kind: oauth
+    provider: slack
+    scopes:
+      - chat:write
+      - channels:read
+      - groups:read
+      - channels:history
+      - groups:history
+      - users:read
+      - search:read
+  # Tool list is authored inline (from Slack's published MCP capability docs,
+  # Feb–May 2026 changelogs) and is authoritative. `autodiscover: false`
+  # because `tools/list` resync isn't supported for oauth-auth MCP servers
+  # (the admin resync path carries no per-user token) — matching hubspot.yaml.
+  # Every tool therefore declares `input_schema`.
+  autodiscover: false
+  tools:
+    # ── messaging (write — the tool that most benefits from disclosure) ──
+    - name: send_message
       risk: write
       scope_param: channel
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [channel, text]
-              properties:
-                channel:
-                  type: string
-                  description: Channel ID
-                text:
-                  type: string
-                  description: Message text
-  /api/conversations.list:
-    get:
-      operationId: list_channels
-      summary: List Slack channels
+      description: 'Post Slack message "{text}" to {channel}'
+      input_schema:
+        type: object
+        properties:
+          channel:
+            type: string
+            description: "Channel ID (e.g. C0123456789) or name (#general), or a user ID for a DM"
+          text:
+            type: string
+            minLength: 1
+            description: "Message text (Slack mrkdwn)."
+          thread_ts:
+            type: string
+            description: "Parent message ts to reply in-thread."
+        required: [channel, text]
+      # MCP-runtime disclosure projects {runtime, tool, arguments, service,
+      # action}, so filters address `.arguments.*` (not the HTTP `.body.*`
+      # shape). Surfaces the target + message in the approval UI and audit log.
+      disclose:
+        - label: "Channel"
+          filter: ".arguments.channel"
+        - label: "Message"
+          filter: ".arguments.text"
+          max_chars: 2000
+        - label: "Thread"
+          filter: ".arguments.thread_ts // empty"
+
+    # ── channels (read) ──
+    - name: list_channels
+      risk: read
+      description: "List channels in the Slack workspace"
+      input_schema:
+        type: object
+        properties:
+          types:
+            type: string
+            description: "Comma-separated channel types (public_channel, private_channel, mpim, im)."
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+          cursor:
+            type: string
+            description: "Pagination cursor from a previous response."
+        required: []
+
+    # ── conversation history (read, scoped to the channel it reads) ──
+    - name: read_channel_history
+      risk: read
+      scope_param: channel
+      description: "Read recent message history for {channel}"
+      input_schema:
+        type: object
+        properties:
+          channel:
+            type: string
+            minLength: 1
+            description: "Channel ID to read history for."
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 50
+          cursor:
+            type: string
+          oldest:
+            type: string
+            description: "Only include messages after this Unix ts."
+          latest:
+            type: string
+            description: "Only include messages before this Unix ts."
+        required: [channel]
+
+    # ── users (read, scoped to the user it looks up) ──
+    - name: get_user
+      risk: read
+      scope_param: user
+      description: "Look up the Slack user {user}"
+      input_schema:
+        type: object
+        properties:
+          user:
+            type: string
+            minLength: 1
+            description: "User ID (e.g. U0123456789)."
+        required: [user]
+
+    # ── search (read) — Slack MCP's headline capability ──
+    - name: search_messages
+      risk: read
+      description: "Search Slack messages matching {query}"
+      input_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            minLength: 1
+            description: "Search query (Slack search operators supported, e.g. `in:#general from:@me`)."
+          count:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        required: [query]

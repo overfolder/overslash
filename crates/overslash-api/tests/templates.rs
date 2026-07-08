@@ -387,6 +387,171 @@ async fn test_selective_global_enable() {
 }
 
 // ---------------------------------------------------------------------------
+// Curated-catalog enforcement at instantiation — `allow_services_outside_catalog`.
+// The allow-list already hides curated-out globals from discovery; these tests
+// cover the *hard* restriction: non-admins cannot instantiate a global template
+// outside the curated catalog unless the org opts into the soft (discovery-only)
+// mode. Admins are always exempt.
+// ---------------------------------------------------------------------------
+
+/// GET /v1/orgs/{id}/template-settings returns all three flags and reflects
+/// PATCH updates to the new `allow_services_outside_catalog` field.
+#[tokio::test]
+async fn test_template_settings_get_and_patch_roundtrip() {
+    let (base, client, org_id, admin_key, _write_key, _, _, _) = bootstrap(true).await;
+
+    // Defaults: globals on, user templates off, catalog restriction on.
+    let settings: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settings["global_templates_enabled"], true);
+    assert_eq!(settings["allow_user_templates"], false);
+    assert_eq!(settings["allow_services_outside_catalog"], false);
+
+    let updated: Value = client
+        .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"allow_services_outside_catalog": true}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(updated["allow_services_outside_catalog"], true);
+
+    let settings: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settings["allow_services_outside_catalog"], true);
+}
+
+/// Read-only and write callers must not read org template settings.
+#[tokio::test]
+async fn test_template_settings_get_requires_admin() {
+    let (base, client, org_id, _admin_key, write_key, _, _, _) = bootstrap(true).await;
+
+    let resp = client
+        .get(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
+
+/// With curation on and `allow_services_outside_catalog=false` (default), a
+/// non-admin gets 403 creating a service from a curated-out global, but can
+/// create one from a curated-in global. Admins are exempt.
+#[tokio::test]
+async fn test_curated_out_global_instantiation_blocked_for_non_admin() {
+    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(true).await;
+
+    // Restrict the catalog to just `github`.
+    client
+        .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"global_templates_enabled": false}))
+        .send()
+        .await
+        .unwrap();
+    let resp = client
+        .post(format!("{base}/v1/templates/enabled-globals"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"template_key": "github"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Non-admin: curated-out global (gmail) is blocked.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .json(&json!({"template_key": "gmail", "name": "blocked-gmail"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "non-admin should be blocked from curated-out global"
+    );
+
+    // Non-admin: curated-in global (github) succeeds.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .json(&json!({"template_key": "github", "name": "ok-github"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "curated-in global should be creatable: {}",
+        resp.status()
+    );
+
+    // Admin is exempt: can instantiate the curated-out global.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"template_key": "gmail", "name": "admin-gmail"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "admin should be exempt from catalog restriction: {}",
+        resp.status()
+    );
+}
+
+/// Flipping `allow_services_outside_catalog=true` downgrades curation to a
+/// discovery-only filter: a non-admin can then instantiate a curated-out global.
+#[tokio::test]
+async fn test_soft_catalog_allows_outside_instantiation() {
+    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(true).await;
+
+    client
+        .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "global_templates_enabled": false,
+            "allow_services_outside_catalog": true
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // gmail is curated out (not in the empty allow-list) but soft mode permits it.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .json(&json!({"template_key": "gmail", "name": "soft-gmail"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "soft catalog should allow curated-out instantiation: {}",
+        resp.status()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Hidden templates (`x-overslash-hidden`) — flagged on dashboard surfaces,
 // reachable by key. Agent-facing exclusion is covered in search.rs and
 // platform_dispatch.rs.
@@ -835,4 +1000,72 @@ async fn test_enable_nonexistent_global_returns_404() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
+}
+
+// ---------------------------------------------------------------------------
+// TemplateDetail.scopes — union of every action's required_scopes, surfaced
+// on GET /v1/templates/{key} for white-label partners (token-vault import).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_global_template_detail_includes_scopes() {
+    let (base, client, _, admin_key, _, _, _, _) = bootstrap(true).await;
+
+    // google_calendar declares a root-level OAuth scope, so the union is
+    // non-empty and deterministic.
+    let resp = client
+        .get(format!("{base}/v1/templates/google_calendar"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+
+    let scopes: Vec<&str> = body["scopes"]
+        .as_array()
+        .expect("scopes field missing on global template detail")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        scopes.contains(&"https://www.googleapis.com/auth/calendar"),
+        "expected calendar scope in union, got {scopes:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_org_template_detail_includes_scopes() {
+    let (base, client, _, admin_key, _, _, _, _) = bootstrap(false).await;
+
+    // Create an org (DB-tier) template so we exercise db_row_to_detail.
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "openapi": minimal_openapi("scoped-internal", "Scoped Internal"),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let created: Value = resp.json().await.unwrap();
+    // The create response is itself a TemplateDetail and carries the field.
+    assert!(
+        created["scopes"].is_array(),
+        "create response missing scopes array: {created}"
+    );
+
+    let resp = client
+        .get(format!("{base}/v1/templates/scoped-internal"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["scopes"].is_array(),
+        "org template detail missing scopes array: {body}"
+    );
 }

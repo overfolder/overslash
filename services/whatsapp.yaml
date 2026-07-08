@@ -31,6 +31,13 @@ x-overslash-mcp:
     - name: pairing_start
       risk: write
       description: "Open a WhatsApp pair flow and return the first event (rotating QR payload, plus a phone-link code if {phone} is given)"
+      # Both args are optional; a bare pairing_start legitimately shows an
+      # empty summary (zero-output filters omit their field).
+      disclose:
+        - label: Phone
+          filter: .arguments.phone // empty
+        - label: Device name
+          filter: .arguments.device_name // empty
       input_schema:
         type: object
         properties:
@@ -45,6 +52,9 @@ x-overslash-mcp:
     - name: pairing_complete
       risk: write
       description: "Poll the in-progress pair flow; blocks up to {wait_seconds} for a terminal event"
+      disclose:
+        - label: Wait seconds
+          filter: .arguments.wait_seconds // empty
       input_schema:
         type: object
         properties:
@@ -484,6 +494,10 @@ x-overslash-mcp:
     - name: cache_sync
       risk: write
       description: "Trigger reconciliation of the local cache against authoritative whatsmeow endpoints; returns immediately with a `sync_id`"
+      # `//` would swallow `false`, so probe with has().
+      disclose:
+        - label: Force
+          filter: '.arguments // {} | if has("force") then .force else empty end'
       input_schema:
         type: object
         properties:

@@ -149,7 +149,6 @@ pub(super) async fn call_action_impl(
         &ext,
         &auth,
         &scope,
-        identity_id,
         ceiling_user_id,
         &req,
         pre_resolved_mode_c,
@@ -526,6 +525,7 @@ pub(super) async fn call_action_impl(
             &mcp_target.auth,
             &mcp_target.tool,
             &mcp_target.arguments,
+            mcp_target.auth_header.as_ref(),
         )
         .await
         {
@@ -986,6 +986,29 @@ pub(super) async fn call_action_impl(
             ip_address: ip.0.as_deref(),
         })
         .await;
+
+    // Google's metadata-scope denial (403 `"Metadata scope does not support…"`)
+    // means the injected access token is metadata-only even though the
+    // connection's recorded scopes claim a broader grant (connection
+    // `85844f1a`). Returning the upstream 403 inside a 200 `Called` envelope
+    // makes the partner's agent loop forever — the recorded scopes pass the
+    // scope-gate so it keeps retrying. Surface a typed `reauth_required`
+    // instead so the loop breaks and the partner re-consents.
+    if super::auth::is_metadata_scope_denial(result.status_code, &result.body) {
+        if let Some(service_key) = req.service.as_deref() {
+            if let Some(err) = super::auth::metadata_scope_reauth_envelope(
+                &state,
+                &ext,
+                &scope,
+                ceiling_user_id,
+                service_key,
+            )
+            .await
+            {
+                return Err(err);
+            }
+        }
+    }
 
     let mut resp = (
         StatusCode::OK,

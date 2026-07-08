@@ -59,7 +59,7 @@ use validate::validate_action_impl;
 
 // Used by the approval-replay path to re-mint the OAuth credential that
 // replay payloads deliberately don't persist.
-pub(crate) use auth::resolve_replay_auth_header;
+pub(crate) use auth::{resolve_mcp_oauth_bearer, resolve_replay_auth_header};
 
 /// Cap on the number of instance names we surface in `ServiceResolution`
 /// error payloads. Agents only need a handful to disambiguate; the full
@@ -123,9 +123,12 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
             connection_id,
             auth_url,
             short,
-            raw,
+            provider,
+            required_scopes,
+            account_email,
+            headless,
         } => {
-            let mut body = json!({ "status": "needs_authentication", "auth_url": auth_url });
+            let mut body = json!({ "status": "needs_authentication" });
             if let Some(s) = service {
                 body["service"] = json!(s);
             }
@@ -135,32 +138,54 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
             if let Some(id) = connection_id {
                 body["connection_id"] = json!(id);
             }
-            if let Some(s) = short {
-                body["short"] = json!(s);
-            }
-            if let Some(r) = raw {
-                body["raw"] = json!(r);
+            if *headless {
+                body["headless"] = json!(true);
+                if let Some(p) = provider {
+                    body["provider"] = json!(p);
+                }
+                body["required_scopes"] = json!(required_scopes);
+                if let Some(e) = account_email {
+                    body["account_email"] = json!(e);
+                }
+            } else {
+                if let Some(url) = auth_url {
+                    body["auth_url"] = json!(url);
+                }
+                if let Some(s) = short {
+                    body["short"] = json!(s);
+                }
             }
             Some((StatusCode::OK, Json(body)).into_response())
         }
         AppError::ReauthRequired {
             connection_id,
+            provider,
             auth_url,
             short,
-            raw,
             reason,
+            required_scopes,
+            account_email,
+            headless,
         } => {
             let mut body = json!({
                 "status": "reauth_required",
                 "connection_id": connection_id,
-                "auth_url": auth_url,
+                "provider": provider,
                 "reason": reason,
             });
-            if let Some(s) = short {
-                body["short"] = json!(s);
-            }
-            if let Some(r) = raw {
-                body["raw"] = json!(r);
+            if *headless {
+                body["headless"] = json!(true);
+                body["required_scopes"] = json!(required_scopes);
+                if let Some(e) = account_email {
+                    body["account_email"] = json!(e);
+                }
+            } else {
+                if let Some(url) = auth_url {
+                    body["auth_url"] = json!(url);
+                }
+                if let Some(s) = short {
+                    body["short"] = json!(s);
+                }
             }
             Some((StatusCode::OK, Json(body)).into_response())
         }
@@ -476,6 +501,14 @@ struct ResolvedMeta {
     /// Original resolved params (before url/body assembly), retained for the
     /// disclosure `.params.*` projection. Empty for verb / `http` shapes.
     params: HashMap<String, serde_json::Value>,
+    /// Display names from the template's `resolve` declarations (param name →
+    /// human-readable string), feeding both description interpolation and the
+    /// disclosure `.resolved.*` projection. Populated for the HTTP action
+    /// shape only — resolvers are HTTP-only today, so verb / MCP / platform
+    /// shapes carry an empty map. Resolution happens once, at resolve time,
+    /// and rides here across execution: audit-write disclosure for a delete
+    /// action still names the object even though it's gone upstream.
+    resolved: HashMap<String, String>,
     /// When the resolved service has `runtime: Mcp`, dispatch skips the HTTP
     /// executor and goes through `mcp_caller::invoke` with this payload.
     mcp_target: Option<McpTarget>,
@@ -493,6 +526,10 @@ struct McpTarget {
     url: String,
     /// Resolved auth — for Bearer, secret_name is always Some at this point.
     auth: McpAuth,
+    /// Live OAuth bearer for `McpAuth::OAuth`, resolved out-of-band from the
+    /// caller's connection (never persisted in the request). `None` for
+    /// `None`/`Bearer` auth. Merged into the outbound MCP headers at send time.
+    auth_header: Option<overslash_core::types::AuthHeader>,
     tool: String,
     arguments: serde_json::Value,
 }

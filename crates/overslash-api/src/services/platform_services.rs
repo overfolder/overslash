@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_core::permissions::AccessLevel;
-use overslash_core::types::{McpAuth, Runtime, ServiceAuth, ServiceDefinition};
+use overslash_core::types::{McpAuth, Runtime, ServiceAction, ServiceAuth, ServiceDefinition};
 use overslash_db::repos::group::ServiceGroupRow;
+use overslash_db::repos::org as org_repo;
 use overslash_db::repos::service_instance::{
     CreateServiceInstance, ServiceInstanceRow, UpdateServiceInstance,
 };
@@ -48,6 +49,14 @@ pub struct CreateServiceInput {
     /// pinned or when the template is not OAuth-backed.
     #[serde(default)]
     pub skip_connect: Option<bool>,
+    /// When `false`, this instance must never fall back to the identity's
+    /// default connection for the provider at execution time — it requires an
+    /// explicit `connection_id`. Defaults to `true` (legacy fallback). White-
+    /// label callers that mint a dedicated connection per service set this
+    /// `false` and pin the connection via `pin_service_ids` on connection
+    /// creation. See `service_instances.use_default_connection` (migration 090).
+    #[serde(default)]
+    pub use_default_connection: Option<bool>,
     /// Tenant-supplied URL the OAuth callback redirects back to once the
     /// dance finishes. Only consulted when the kernel auto-initiates a
     /// flow (OAuth template + no pinned connection + not opted out). See
@@ -55,24 +64,6 @@ pub struct CreateServiceInput {
     /// for the validation contract.
     #[serde(default)]
     pub connect_return_url: Option<String>,
-    /// White-label provider `redirect_uri` for the auto-initiated OAuth flow.
-    /// Only consulted when the kernel auto-initiates a flow; the host must be on
-    /// the org's `oauth_callback_allowed_hosts` allow-list. See
-    /// [`crate::services::platform_connections::CreateConnectionInput::redirect_uri`].
-    #[serde(default)]
-    pub connect_redirect_uri: Option<String>,
-    /// REST-only opt-in: surface the raw upstream provider authorize URL
-    /// (e.g. `https://accounts.google.com/...`) on the `connect` bundle
-    /// in addition to the Overslash-gated `auth_url`. White-label
-    /// integrators wrap the raw URL in their own consent UI so users
-    /// never see Overslash branding. Mirrors `include_raw` on
-    /// `POST /v1/connections` — same Obsidian threat-model gating: PKCE +
-    /// state binding still hold either way, but raw delivery skips the
-    /// chat-delivery hardening that `connect-authorize` provides. The
-    /// MCP `CreateServiceHandler` strips this field so agents can't ever
-    /// hand the user a raw provider URL over chat.
-    #[serde(default)]
-    pub connect_include_raw: Option<bool>,
 }
 
 fn default_status() -> String {
@@ -85,6 +76,8 @@ pub struct UpdateServiceInput {
     pub connection_id: Option<Option<Uuid>>,
     pub secret_name: Option<Option<String>>,
     pub url: Option<Option<String>>,
+    /// `Some` = update the flag; `None` = leave unchanged.
+    pub use_default_connection: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -113,6 +106,9 @@ pub struct ServiceInstanceSummary {
     /// Per-instance MCP server URL override. Overrides the template's `mcp.url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// When `false`, an unbound instance won't fall back to the default
+    /// connection. See `service_instances.use_default_connection`.
+    pub use_default_connection: bool,
     #[serde(default)]
     pub groups: Vec<ServiceGroupRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -161,6 +157,9 @@ pub struct ServiceInstanceDetail {
     pub secret_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// When `false`, an unbound instance won't fall back to the default
+    /// connection. See `service_instances.use_default_connection`.
+    pub use_default_connection: bool,
     pub status: String,
     pub is_system: bool,
     pub created_at: String,
@@ -177,23 +176,14 @@ pub struct ServiceInstanceDetail {
 }
 
 /// OAuth bootstrap bundle returned alongside a freshly-created service
-/// instance. `raw` mirrors the same opt-in field on `POST /v1/connections`
-/// (`include_raw`) — surfaced here as `connect_include_raw` on the
-/// request — for white-label integrators that wrap the upstream provider
-/// URL in their own consent UI. Default callers see only the gated
-/// `auth_url`.
+/// instance. Callers hand the gated `auth_url` to the user; the raw upstream
+/// provider URL is never surfaced.
 #[derive(Serialize, Debug)]
 pub struct ConnectBundle {
     pub auth_url: String,
     pub state: String,
     pub flow_id: String,
     pub expires_at: time::OffsetDateTime,
-    /// Raw upstream provider authorize URL. Only populated when the
-    /// REST caller set `connect_include_raw: true` on the request. The
-    /// MCP path always strips that opt-in, so this field stays `None`
-    /// on every agent-driven flow.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw: Option<String>,
 }
 
 /// Derived credential-health state for a service instance.
@@ -290,13 +280,20 @@ pub async fn kernel_list_services(
     // identity's connection for the template's provider. Resolve those here
     // (deduped by (owner, provider)) so the badge matches a real call instead
     // of falsely reading "needs setup".
-    let mut conn_by_owner_provider: HashMap<(Uuid, String), Vec<String>> = HashMap::new();
+    let mut conn_by_owner_provider: HashMap<(Uuid, String), Option<Vec<String>>> = HashMap::new();
     // Track looked-up pairs separately from found ones: an owner with no
     // connection for the provider must still be cached, or each of its unbound
     // instances would re-query (N+1 on the no-connection path).
     let mut looked_up: HashSet<(Uuid, String)> = HashSet::new();
     for row in &rows {
         if row.connection_id.is_some() {
+            continue;
+        }
+        // Opted out of the default-connection fallback: execution won't resolve
+        // a connection for this unbound instance, so the classifier must not
+        // either — otherwise the badge would read "ok" while calls 401. Leave it
+        // out of `conn_by_owner_provider` so it classifies NoConnection below.
+        if !row.use_default_connection {
             continue;
         }
         let (Some(owner), Some(tpl)) = (
@@ -326,16 +323,26 @@ pub async fn kernel_list_services(
             let tpl_key = (row.owner_identity_id, row.template_key.clone());
             let template = templates.get(&tpl_key);
             let credentials_status = template.and_then(|tpl| {
-                let scopes: Option<&[String]> = if let Some(cid) = row.connection_id {
-                    connections_by_id.get(&cid).map(|c| c.scopes.as_slice())
+                let scopes: ScopeKnowledge = if let Some(cid) = row.connection_id {
+                    match connections_by_id.get(&cid) {
+                        Some(c) => scope_knowledge(c.scopes.as_deref()),
+                        None => ScopeKnowledge::NoConnection,
+                    }
+                } else if !row.use_default_connection {
+                    // Opted out of the default fallback and nothing pinned:
+                    // execution resolves no connection, so the badge is
+                    // NoConnection regardless of what the owner has for the
+                    // provider (a sibling instance may have populated the cache).
+                    ScopeKnowledge::NoConnection
                 } else if let (Some(owner), Some(provider)) =
                     (row.owner_identity_id, template_oauth_provider(tpl))
                 {
-                    conn_by_owner_provider
-                        .get(&(owner, provider.to_string()))
-                        .map(|s| s.as_slice())
+                    match conn_by_owner_provider.get(&(owner, provider.to_string())) {
+                        Some(opt) => scope_knowledge(opt.as_deref()),
+                        None => ScopeKnowledge::NoConnection,
+                    }
                 } else {
-                    None
+                    ScopeKnowledge::NoConnection
                 };
                 derive_credentials_status(tpl, scopes, row.secret_name.as_deref())
             });
@@ -444,6 +451,31 @@ pub async fn kernel_create_service(
     )
     .await?;
 
+    // Curated-catalog enforcement. A global template the org has curated out is
+    // hidden from discovery already; here we also block *instantiating* it
+    // unless the org opts into a soft (discovery-only) catalog via
+    // `allow_services_outside_catalog`. Org admins are always exempt. Only the
+    // global tier is curated — org/user templates are in-catalog by definition.
+    if template_source == "global" && ctx.access_level < AccessLevel::Admin {
+        let curated_out = super::platform_templates::is_global_curated_out(
+            &ctx.db,
+            ctx.org_id,
+            &input.template_key,
+        )
+        .await?;
+        if curated_out {
+            let allow_outside = org_repo::get_allow_services_outside_catalog(&ctx.db, ctx.org_id)
+                .await?
+                .unwrap_or(false);
+            if !allow_outside {
+                return Err(AppError::Forbidden(format!(
+                    "service '{}' is not in your organization's curated catalog",
+                    input.template_key
+                )));
+            }
+        }
+    }
+
     if !["draft", "active", "archived"].contains(&input.status.as_str()) {
         return Err(AppError::BadRequest(format!(
             "invalid status '{}'; must be draft, active, or archived",
@@ -482,10 +514,10 @@ pub async fn kernel_create_service(
             ));
         }
 
-        let expected_provider = template_def.auth.iter().find_map(|a| match a {
-            ServiceAuth::OAuth { provider, .. } => Some(provider.clone()),
-            _ => None,
-        });
+        // Covers both an HTTP `oauth` scheme and an MCP `auth.kind: oauth`
+        // provider — a pinned connection on an mcp-oauth template (HubSpot,
+        // Slack) must validate the same as an HTTP OAuth template.
+        let expected_provider = template_oauth_provider(&template_def).map(str::to_string);
         match expected_provider {
             Some(tpl_provider) if tpl_provider != connection.provider_key => {
                 return Err(AppError::BadRequest(format!(
@@ -570,6 +602,7 @@ pub async fn kernel_create_service(
         connection_id: input.connection_id,
         secret_name: input.secret_name.as_deref(),
         url: input.url.as_deref(),
+        use_default_connection: input.use_default_connection.unwrap_or(true),
         status: &input.status,
     };
 
@@ -598,7 +631,7 @@ pub async fn kernel_create_service(
     let credentials_status = derive_credentials_status(
         &template_def,
         // No connection bulk-fetch here; if pinned, look it up.
-        None,
+        ScopeKnowledge::NoConnection,
         row.secret_name.as_deref(),
     );
     // If a connection was pinned at create time, refine via real scopes.
@@ -611,7 +644,7 @@ pub async fn kernel_create_service(
             .and_then(|conn| {
                 derive_credentials_status(
                     &template_def,
-                    Some(conn.scopes.as_slice()),
+                    scope_knowledge(conn.scopes.as_deref()),
                     row.secret_name.as_deref(),
                 )
             })
@@ -675,8 +708,8 @@ pub async fn kernel_create_service(
             on_behalf_of,
             upgrade_connection_id: None,
             return_url: input.connect_return_url.clone(),
-            redirect_uri: input.connect_redirect_uri.clone(),
             service_instance_id: Some(row_id),
+            pin_service_ids: vec![],
         };
         match crate::services::platform_connections::kernel_create_connection(
             connect_ctx,
@@ -686,17 +719,11 @@ pub async fn kernel_create_service(
         .await
         {
             Ok(resp) => {
-                let raw = if input.connect_include_raw.unwrap_or(false) {
-                    Some(resp.raw.clone())
-                } else {
-                    None
-                };
                 detail.connect = Some(ConnectBundle {
                     auth_url: resp.auth_url,
                     state: resp.state,
                     flow_id: resp.flow_id,
                     expires_at: resp.expires_at,
-                    raw,
                 });
             }
             Err(err) => {
@@ -772,6 +799,7 @@ pub async fn kernel_update_service(
         connection_id: input.connection_id,
         secret_name: input.secret_name.as_ref().map(|o| o.as_deref()),
         url: input.url.as_ref().map(|o| o.as_deref()),
+        use_default_connection: input.use_default_connection,
     };
 
     let row = scope
@@ -798,6 +826,7 @@ pub fn row_to_summary(
         connection_id: row.connection_id,
         secret_name: row.secret_name,
         url: row.url,
+        use_default_connection: row.use_default_connection,
         groups,
         credentials_status: None,
     }
@@ -815,6 +844,7 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
         connection_id: row.connection_id,
         secret_name: row.secret_name,
         url: row.url,
+        use_default_connection: row.use_default_connection,
         status: row.status,
         is_system: row.is_system,
         created_at: fmt_time(row.created_at),
@@ -828,24 +858,43 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
 /// Returns `None` for templates that don't declare an OAuth auth (api-key
 /// only, MCP bearer only, no auth, etc.) — in which case the auto-connect
 /// orchestration in `kernel_create_service` is a no-op.
-fn template_oauth_provider(def: &ServiceDefinition) -> Option<&str> {
-    def.auth.iter().find_map(|a| match a {
+pub(crate) fn template_oauth_provider(def: &ServiceDefinition) -> Option<&str> {
+    // HTTP-runtime OAuth scheme first…
+    if let Some(provider) = def.auth.iter().find_map(|a| match a {
         ServiceAuth::OAuth { provider, .. } => Some(provider.as_str()),
         _ => None,
-    })
+    }) {
+        return Some(provider);
+    }
+    // …then an MCP-runtime `auth.kind: oauth` provider — both resolve through
+    // the same connection machinery, so auto-connect orchestration, pinned-
+    // connection validation, and credentials-status surfacing treat them
+    // identically. Covers HubSpot + Slack (remote OAuth MCP servers).
+    match def.mcp.as_ref().map(|m| &m.auth) {
+        Some(McpAuth::OAuth { provider, .. }) => Some(provider.as_str()),
+        _ => None,
+    }
 }
 
-/// Union every action's `required_scopes` into a sorted, deduped list.
-/// Same `BTreeSet` flatten that the previous `resolve_template_scopes`
-/// helper on the connection kernel used — now lives next to the only
-/// remaining caller (auto-connect orchestration in `kernel_create_service`).
+/// Union the scopes the auto-connect flow should request into a sorted, deduped
+/// list. For HTTP-runtime templates this is every action's `required_scopes`.
+/// For MCP-runtime `auth.kind: oauth` templates the scopes live at the service
+/// level in `McpAuth::OAuth { scopes }` (MCP tools carry no per-action scopes),
+/// so include those too — otherwise the connect flow requests an empty scope
+/// set and the minted token lacks the permissions every tool needs.
 fn template_action_scopes(def: &ServiceDefinition) -> Vec<String> {
-    def.actions
+    let mut scopes: std::collections::BTreeSet<String> = def
+        .actions
         .values()
         .flat_map(|a| a.required_scopes.iter().cloned())
-        .collect::<std::collections::BTreeSet<String>>()
-        .into_iter()
-        .collect()
+        .collect();
+    if let Some(McpAuth::OAuth {
+        scopes: mcp_scopes, ..
+    }) = def.mcp.as_ref().map(|m| &m.auth)
+    {
+        scopes.extend(mcp_scopes.iter().cloned());
+    }
+    scopes.into_iter().collect()
 }
 
 /// Resolve the [`ServiceDefinition`] for a template key across user/org/global tiers.
@@ -921,11 +970,11 @@ pub async fn compute_credentials_status(
             .await
             .ok()?;
     let conn_scopes = resolve_effective_scopes(db, scope, &template, row).await;
-    derive_credentials_status(
-        &template,
-        conn_scopes.as_deref(),
-        row.secret_name.as_deref(),
-    )
+    let scopes = match &conn_scopes {
+        None => ScopeKnowledge::NoConnection,
+        Some(opt) => scope_knowledge(opt.as_deref()),
+    };
+    derive_credentials_status(&template, scopes, row.secret_name.as_deref())
 }
 
 /// Granted scopes of the connection the *execution* path would actually use.
@@ -938,12 +987,14 @@ pub async fn compute_credentials_status(
 /// auto-resolve (e.g. a `google_calendar` instance with `connection_id = NULL`
 /// when the owner has a Google connection) was misreported as needing setup —
 /// both on the dashboard badge and on the agent-facing `service_status`.
-async fn resolve_effective_scopes(
+/// Returns `None` when no connection backs the instance, `Some(None)` when one
+/// does but its scopes are unknown, and `Some(Some(scopes))` for a known set.
+pub(crate) async fn resolve_effective_scopes(
     db: &sqlx::PgPool,
     scope: &OrgScope,
     template: &ServiceDefinition,
     row: &ServiceInstanceRow,
-) -> Option<Vec<String>> {
+) -> Option<Option<Vec<String>>> {
     if let Some(conn_id) = row.connection_id {
         return scope
             .get_connection(conn_id)
@@ -951,6 +1002,13 @@ async fn resolve_effective_scopes(
             .ok()
             .flatten()
             .map(|c| c.scopes);
+    }
+    // Opted out of the default-connection fallback: execution resolves no
+    // connection, so the classifier reports NoConnection (mirrors
+    // `resolve_instance_auth`). Without this the badge would read "ok" while
+    // calls 401.
+    if !row.use_default_connection {
+        return None;
     }
     let provider = template_oauth_provider(template)?;
     let owner = row.owner_identity_id?;
@@ -962,18 +1020,99 @@ async fn resolve_effective_scopes(
         .map(|c| c.scopes)
 }
 
-/// Pure classifier: takes a template + (optional) granted scopes + secret name
-/// and returns a [`CredentialsStatus`] or `None` when the template has no auth
+/// What is known about a connection's granted scopes when classifying a
+/// service instance's credential health. Distinguishes "no connection at all"
+/// from "a connection exists but its granted scopes are unknown" (an imported
+/// token vaulted without declaring scopes) — the latter gets the benefit of the
+/// doubt, mirroring the call-time scope-gate.
+#[derive(Debug, Clone, Copy)]
+pub enum ScopeKnowledge<'a> {
+    /// No connection is bound and none auto-resolves.
+    NoConnection,
+    /// A connection exists but its granted scopes weren't recorded.
+    Unknown,
+    /// The known granted scope set (possibly empty).
+    Known(&'a [String]),
+}
+
+/// Map a *present* connection's optional scopes to [`ScopeKnowledge`]. Call
+/// sites that reach here have already established the connection exists, so
+/// `None` scopes means "recorded as unknown", not "no connection".
+fn scope_knowledge(scopes: Option<&[String]>) -> ScopeKnowledge<'_> {
+    match scopes {
+        Some(s) => ScopeKnowledge::Known(s),
+        None => ScopeKnowledge::Unknown,
+    }
+}
+
+/// Per-action scope coverage, surfaced at discovery time so an agent can see
+/// an action is uncovered *before* calling it (instead of after a raw upstream
+/// 403). Mirrors the call-time gate in `routes/actions/auth.rs`.
+#[derive(Serialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeCoverage {
+    /// Every required scope is granted (or the action declares none).
+    Covered,
+    /// At least one required scope is missing — calling it will 403.
+    NeedsReconnect,
+    /// A connection exists but its granted scopes weren't recorded — same
+    /// benefit-of-the-doubt the call-time gate gives, surfaced honestly.
+    Unknown,
+}
+
+/// Coverage of a single action's `required_scopes` against the connection's
+/// scope knowledge, plus the missing-scope delta (empty unless
+/// [`ScopeCoverage::NeedsReconnect`]). Shared by [`derive_credentials_status`]
+/// and the discovery endpoints (`search`, `list_service_actions`) so the
+/// classification stays identical at discovery time and call time.
+pub fn action_scope_coverage(
+    action: &ServiceAction,
+    scopes: ScopeKnowledge<'_>,
+) -> (ScopeCoverage, Vec<String>) {
+    if action.required_scopes.is_empty() {
+        return (ScopeCoverage::Covered, Vec::new());
+    }
+    let granted = match scopes {
+        ScopeKnowledge::Known(list) => list,
+        // No bound connection, or one whose scopes weren't recorded: we can't
+        // prove a gap, so don't cry wolf — report Unknown.
+        ScopeKnowledge::NoConnection | ScopeKnowledge::Unknown => {
+            return (ScopeCoverage::Unknown, Vec::new());
+        }
+    };
+    let granted_set: HashSet<&str> = granted.iter().map(String::as_str).collect();
+    let missing: Vec<String> = action
+        .required_scopes
+        .iter()
+        .filter(|s| !granted_set.contains(s.as_str()))
+        .cloned()
+        .collect();
+    if missing.is_empty() {
+        (ScopeCoverage::Covered, Vec::new())
+    } else {
+        (ScopeCoverage::NeedsReconnect, missing)
+    }
+}
+
+/// Pure classifier: takes a template + scope knowledge + secret name and
+/// returns a [`CredentialsStatus`] or `None` when the template has no auth
 /// scheme to evaluate.
 pub fn derive_credentials_status(
     template: &ServiceDefinition,
-    granted_scopes: Option<&[String]>,
+    scopes: ScopeKnowledge<'_>,
     secret_name: Option<&str>,
 ) -> Option<CredentialsStatus> {
-    let has_oauth = template
-        .auth
-        .iter()
-        .any(|a| matches!(a, ServiceAuth::OAuth { .. }));
+    // An OAuth MCP server (mcp.auth kind: oauth) needs the same connection
+    // dance as an HTTP OAuth template, so fold it into `has_oauth`.
+    let mcp_oauth = matches!(
+        template.mcp.as_ref().map(|m| &m.auth),
+        Some(McpAuth::OAuth { .. })
+    );
+    let has_oauth = mcp_oauth
+        || template
+            .auth
+            .iter()
+            .any(|a| matches!(a, ServiceAuth::OAuth { .. }));
     let has_api_key = template
         .auth
         .iter()
@@ -982,50 +1121,71 @@ pub fn derive_credentials_status(
         template.mcp.as_ref().map(|m| &m.auth),
         Some(McpAuth::Bearer { .. })
     );
-
-    // No connection bound and no inline secret: a freshly-instantiated service
-    // for an auth-bearing template needs the OAuth dance / secret to be
-    // provided. Surface that explicitly so the agent doesn't need to guess.
-    let no_connection = granted_scopes.is_none();
     let no_secret = secret_name.is_none() || secret_name == Some("");
-    if no_connection {
-        if has_oauth {
-            return Some(CredentialsStatus::NeedsAuthentication);
-        }
-        if has_api_key || mcp_bearer {
-            return Some(if no_secret {
-                CredentialsStatus::NeedsAuthentication
-            } else {
-                CredentialsStatus::Ok
-            });
-        }
-    }
 
-    // No granted scopes to compare against: nothing more to classify.
-    let granted_list = granted_scopes?;
+    let granted_list = match scopes {
+        // No connection bound and no inline secret: a freshly-instantiated
+        // service for an auth-bearing template needs the OAuth dance / secret to
+        // be provided. Surface that explicitly so the agent doesn't guess.
+        ScopeKnowledge::NoConnection => {
+            if has_oauth {
+                return Some(CredentialsStatus::NeedsAuthentication);
+            }
+            if has_api_key || mcp_bearer {
+                return Some(if no_secret {
+                    CredentialsStatus::NeedsAuthentication
+                } else {
+                    CredentialsStatus::Ok
+                });
+            }
+            return None;
+        }
+        // A connection exists but we don't know its scopes — benefit of the
+        // doubt (same as the call-time gate). Classify as Ok for OAuth.
+        ScopeKnowledge::Unknown => {
+            return if has_oauth {
+                Some(CredentialsStatus::Ok)
+            } else {
+                None
+            };
+        }
+        ScopeKnowledge::Known(list) => list,
+    };
 
     if !has_oauth {
         return None;
     }
 
-    let granted: std::collections::HashSet<&str> =
-        granted_list.iter().map(String::as_str).collect();
+    // MCP-oauth templates carry their scopes at the service level, not per
+    // action, so the per-action loop below is a no-op that would always report
+    // `Ok`. Check the mcp scopes against the connection's granted set directly
+    // (all-or-nothing — there's one scope set, no per-action granularity) so
+    // the backend status agrees with the dashboard's missing-scope warning.
+    if let Some(McpAuth::OAuth {
+        scopes: mcp_scopes, ..
+    }) = template.mcp.as_ref().map(|m| &m.auth)
+    {
+        if mcp_scopes.is_empty() {
+            return Some(CredentialsStatus::Ok);
+        }
+        let granted: std::collections::HashSet<&str> =
+            granted_list.iter().map(String::as_str).collect();
+        let all_covered = mcp_scopes.iter().all(|s| granted.contains(s.as_str()));
+        return Some(if all_covered {
+            CredentialsStatus::Ok
+        } else {
+            CredentialsStatus::NeedsReconnect
+        });
+    }
 
     let mut any_ok = false;
     let mut any_gap = false;
     for action in template.actions.values() {
-        if action.required_scopes.is_empty() {
-            any_ok = true;
-            continue;
-        }
-        let covered = action
-            .required_scopes
-            .iter()
-            .all(|s| granted.contains(s.as_str()));
-        if covered {
-            any_ok = true;
-        } else {
-            any_gap = true;
+        match action_scope_coverage(action, ScopeKnowledge::Known(granted_list)).0 {
+            ScopeCoverage::Covered => any_ok = true,
+            ScopeCoverage::NeedsReconnect => any_gap = true,
+            // Known scopes never yield Unknown.
+            ScopeCoverage::Unknown => {}
         }
     }
 
@@ -1061,6 +1221,71 @@ mod tests {
                 autodiscover: false,
             }),
         }
+    }
+
+    fn mcp_oauth_template(provider: &str, scopes: &[&str]) -> ServiceDefinition {
+        ServiceDefinition {
+            key: "t".into(),
+            display_name: "T".into(),
+            description: None,
+            hosts: vec![],
+            category: None,
+            hidden: false,
+            auth: vec![],
+            // MCP tools carry no per-action required_scopes; scopes live on the
+            // service-level oauth block.
+            actions: HashMap::new(),
+            runtime: Runtime::Mcp,
+            mcp: Some(McpSpec {
+                url: Some("https://mcp.example.com/mcp".into()),
+                auth: McpAuth::OAuth {
+                    provider: provider.to_string(),
+                    scopes: scopes.iter().map(|s| s.to_string()).collect(),
+                },
+                autodiscover: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn mcp_oauth_provider_and_scopes_surface_for_auto_connect() {
+        let def = mcp_oauth_template("slack", &["chat:write", "channels:read"]);
+        // Provider must resolve so auto-connect / pinned-connection validation fire.
+        assert_eq!(template_oauth_provider(&def), Some("slack"));
+        // Scopes come from the mcp.auth block, not (empty) per-action scopes —
+        // otherwise the connect flow requests nothing and the token is useless.
+        assert_eq!(
+            template_action_scopes(&def),
+            vec!["channels:read".to_string(), "chat:write".to_string()]
+        );
+    }
+
+    #[test]
+    fn mcp_oauth_credentials_status_checks_service_level_scopes() {
+        let def = mcp_oauth_template("slack", &["chat:write", "channels:read"]);
+        // No connection → must connect.
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::NoConnection, None),
+            Some(CredentialsStatus::NeedsAuthentication)
+        );
+        // Connection covers every mcp scope → Ok.
+        let full = ["chat:write".to_string(), "channels:read".to_string()];
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::Known(&full), None),
+            Some(CredentialsStatus::Ok)
+        );
+        // Connection missing a scope → NeedsReconnect (not a false Ok from the
+        // per-action loop, which is empty for MCP tools).
+        let partial = ["channels:read".to_string()];
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::Known(&partial), None),
+            Some(CredentialsStatus::NeedsReconnect)
+        );
+        // Unknown granted scopes → benefit of the doubt (Ok), matching the gate.
+        assert_eq!(
+            derive_credentials_status(&def, ScopeKnowledge::Unknown, None),
+            Some(CredentialsStatus::Ok)
+        );
     }
 
     fn api_key_template() -> ServiceDefinition {
@@ -1140,7 +1365,7 @@ mod tests {
     fn needs_authentication_when_oauth_template_has_no_connection() {
         let tpl = oauth_template(vec![("a", vec!["s1"])]);
         assert_eq!(
-            derive_credentials_status(&tpl, None, None),
+            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, None),
             Some(CredentialsStatus::NeedsAuthentication)
         );
     }
@@ -1159,7 +1384,7 @@ mod tests {
             runtime: Runtime::Http,
             mcp: None,
         };
-        assert!(derive_credentials_status(&tpl, None, None).is_none());
+        assert!(derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, None).is_none());
     }
 
     #[test]
@@ -1167,7 +1392,7 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
         let granted = scopes(&["s1", "s2"]);
         assert_eq!(
-            derive_credentials_status(&tpl, Some(&granted), None),
+            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
             Some(CredentialsStatus::Ok)
         );
     }
@@ -1177,7 +1402,19 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec![]), ("b", vec![])]);
         let granted = scopes(&[]);
         assert_eq!(
-            derive_credentials_status(&tpl, Some(&granted), None),
+            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
+            Some(CredentialsStatus::Ok)
+        );
+    }
+
+    #[test]
+    fn ok_when_connection_scopes_unknown_benefit_of_the_doubt() {
+        // An imported connection with no declared scopes classifies as Ok, not
+        // degraded — mirrors the call-time scope-gate giving it the benefit of
+        // the doubt.
+        let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
+        assert_eq!(
+            derive_credentials_status(&tpl, ScopeKnowledge::Unknown, None),
             Some(CredentialsStatus::Ok)
         );
     }
@@ -1187,7 +1424,7 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
         let granted = scopes(&["s1"]);
         assert_eq!(
-            derive_credentials_status(&tpl, Some(&granted), None),
+            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
             Some(CredentialsStatus::PartiallyDegraded)
         );
     }
@@ -1197,7 +1434,7 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
         let granted = scopes(&["other"]);
         assert_eq!(
-            derive_credentials_status(&tpl, Some(&granted), None),
+            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
             Some(CredentialsStatus::NeedsReconnect)
         );
     }
@@ -1206,7 +1443,11 @@ mod tests {
     fn ok_when_mcp_bearer_has_secret_and_no_connection() {
         let tpl = mcp_bearer_template(None);
         assert_eq!(
-            derive_credentials_status(&tpl, None, Some("whatsapp_mcp_token")),
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::NoConnection,
+                Some("whatsapp_mcp_token")
+            ),
             Some(CredentialsStatus::Ok)
         );
     }
@@ -1215,11 +1456,11 @@ mod tests {
     fn needs_authentication_when_mcp_bearer_has_no_secret_and_no_connection() {
         let tpl = mcp_bearer_template(None);
         assert_eq!(
-            derive_credentials_status(&tpl, None, None),
+            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, None),
             Some(CredentialsStatus::NeedsAuthentication)
         );
         assert_eq!(
-            derive_credentials_status(&tpl, None, Some("")),
+            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, Some("")),
             Some(CredentialsStatus::NeedsAuthentication)
         );
     }
@@ -1228,8 +1469,54 @@ mod tests {
     fn ok_when_api_key_template_has_secret_and_no_connection() {
         let tpl = api_key_template();
         assert_eq!(
-            derive_credentials_status(&tpl, None, Some("my_api_key")),
+            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, Some("my_api_key")),
             Some(CredentialsStatus::Ok)
         );
+    }
+
+    fn scoped_action(required: &[&str]) -> ServiceAction {
+        let tpl = oauth_template(vec![("a", required.to_vec())]);
+        tpl.actions.get("a").unwrap().clone()
+    }
+
+    #[test]
+    fn coverage_covered_when_all_required_granted() {
+        let action = scoped_action(&["s1", "s2"]);
+        let granted = scopes(&["s1", "s2", "s3"]);
+        let (cov, missing) = action_scope_coverage(&action, ScopeKnowledge::Known(&granted));
+        assert_eq!(cov, ScopeCoverage::Covered);
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn coverage_needs_reconnect_lists_only_missing() {
+        let action = scoped_action(&["s1", "s2"]);
+        let granted = scopes(&["s1"]);
+        let (cov, missing) = action_scope_coverage(&action, ScopeKnowledge::Known(&granted));
+        assert_eq!(cov, ScopeCoverage::NeedsReconnect);
+        assert_eq!(missing, vec!["s2".to_string()]);
+    }
+
+    #[test]
+    fn coverage_unknown_for_unrecorded_or_absent_connection() {
+        let action = scoped_action(&["s1"]);
+        assert_eq!(
+            action_scope_coverage(&action, ScopeKnowledge::Unknown).0,
+            ScopeCoverage::Unknown
+        );
+        assert_eq!(
+            action_scope_coverage(&action, ScopeKnowledge::NoConnection).0,
+            ScopeCoverage::Unknown
+        );
+    }
+
+    #[test]
+    fn coverage_covered_when_action_requires_no_scopes() {
+        let action = scoped_action(&[]);
+        // Even with an unrecorded grant, an action that declares no scopes is
+        // always covered.
+        let (cov, missing) = action_scope_coverage(&action, ScopeKnowledge::Unknown);
+        assert_eq!(cov, ScopeCoverage::Covered);
+        assert!(missing.is_empty());
     }
 }

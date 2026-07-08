@@ -66,7 +66,7 @@ export async function connectViaPopup(opts: {
 		}
 		let rows: ConnectionSummary[];
 		try {
-			rows = await listConnections(signal);
+			rows = await listConnections({}, signal);
 		} catch {
 			if (signal.aborted) {
 				closePopup();

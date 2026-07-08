@@ -52,6 +52,10 @@ async fn test_google_calendar_three_modes() {
 
     // Bootstrap org + identity + API key
     let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Connections resolve at the owner identity (D22): the agent shares its
+    // owner user's connection, so the OAuth connection below is created on the
+    // owner ("test-user") that `bootstrap_org_identity` puts the agent under.
+    let owner_id = common::owner_user_id(&pool, org_id).await;
 
     // Create broad permission rules: http:** for raw HTTP, google_calendar:*:* for service shapes
     client
@@ -127,12 +131,12 @@ async fn test_google_calendar_three_modes() {
     let _conn = overslash_db::scopes::OrgScope::new(org_id, pool_for_setup)
         .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
-            identity_id: ident_id,
+            identity_id: owner_id,
             provider_key: "google",
             encrypted_access_token: &encrypted_token,
             encrypted_refresh_token: None,
             token_expires_at: Some(future_time),
-            scopes: &["https://www.googleapis.com/auth/calendar".to_string()],
+            scopes: Some(&["https://www.googleapis.com/auth/calendar".to_string()]),
             account_email: None,
             byoc_credential_id: Some(byoc.id),
         })
@@ -441,7 +445,7 @@ async fn test_google_calendar_real_byoc() {
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: Some(&encrypted_refresh),
             token_expires_at: Some(expires_at),
-            scopes: &["https://www.googleapis.com/auth/calendar".to_string()],
+            scopes: Some(&["https://www.googleapis.com/auth/calendar".to_string()]),
             account_email: Some("angel.overspiral@gmail.com"),
             byoc_credential_id: Some(byoc_id),
         })

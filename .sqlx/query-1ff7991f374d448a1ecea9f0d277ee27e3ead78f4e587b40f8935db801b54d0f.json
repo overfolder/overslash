@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT allow_user_templates, global_templates_enabled, allow_services_outside_catalog FROM orgs WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "allow_user_templates",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "allow_user_templates"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "global_templates_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "global_templates_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "allow_services_outside_catalog",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "allow_services_outside_catalog"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1ff7991f374d448a1ecea9f0d277ee27e3ead78f4e587b40f8935db801b54d0f"
+}

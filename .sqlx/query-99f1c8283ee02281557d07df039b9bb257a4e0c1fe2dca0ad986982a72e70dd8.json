@@ -1,0 +1,196 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at\n         FROM orgs WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "slug",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "slug"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "subagent_idle_timeout_secs",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "subagent_idle_timeout_secs"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "subagent_archive_retention_days",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "subagent_archive_retention_days"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "is_personal",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "is_personal"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "plan",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "plan"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "default_deferred_execution",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "default_deferred_execution"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "allow_overslash_managed_signin",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "allow_overslash_managed_signin"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "require_invite_admission",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "require_invite_admission"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "managed_signin_allowed_domains",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "managed_signin_allowed_domains"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "creator_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "creator_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "trial_ends_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "trial_ends_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "99f1c8283ee02281557d07df039b9bb257a4e0c1fe2dca0ad986982a72e70dd8"
+}

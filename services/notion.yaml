@@ -1,0 +1,192 @@
+openapi: 3.1.0
+info:
+  title: Notion
+  key: notion
+  category: Productivity
+servers:
+  - url: https://api.notion.com
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: notion
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.notion.com/v1/oauth/authorize
+          tokenUrl: https://api.notion.com/v1/oauth/token
+          # Notion has no OAuth scopes — an integration's capabilities are
+          # configured on the integration itself, not requested per-token.
+          scopes: {}
+paths:
+  /v1/search:
+    # Notion requires a versioned API header on every request. Declaring it as
+    # a header parameter with a default pins it on all calls without the caller
+    # ever supplying it (the default is applied before request resolution).
+    parameters:
+      - name: Notion-Version
+        in: header
+        required: true
+        description: Notion API version (pinned by the template)
+        schema:
+          type: string
+          default: "2022-06-28"
+    post:
+      operationId: search
+      summary: "Search all pages and databases shared with the integration[ matching '{query}']"
+      risk: read
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                  description: Text to match against page and database titles
+                filter:
+                  type: object
+                  description: "Restrict results by object type: {value: 'page'|'database', property: 'object'}"
+                sort:
+                  type: object
+                  description: "Sort order: {direction: 'ascending'|'descending', timestamp: 'last_edited_time'}"
+                start_cursor:
+                  type: string
+                  description: Opaque cursor from a previous response for pagination
+                page_size:
+                  type: integer
+                  description: Number of results to return (max 100)
+  /v1/databases/{database_id}/query:
+    parameters:
+      - name: database_id
+        in: path
+        required: true
+        description: Identifier of the database to query
+        schema:
+          type: string
+      - name: Notion-Version
+        in: header
+        required: true
+        description: Notion API version (pinned by the template)
+        schema:
+          type: string
+          default: "2022-06-28"
+    post:
+      operationId: query_database
+      summary: "Query rows of database {database_id}"
+      risk: read
+      scope_param: database_id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filter:
+                  type: object
+                  description: "Filter conditions on database properties (Notion filter object)"
+                sorts:
+                  type: array
+                  description: "List of sort objects, e.g. [{property: 'Name', direction: 'ascending'}]"
+                start_cursor:
+                  type: string
+                  description: Opaque cursor from a previous response for pagination
+                page_size:
+                  type: integer
+                  description: Number of rows to return (max 100)
+  /v1/pages:
+    parameters:
+      - name: Notion-Version
+        in: header
+        required: true
+        description: Notion API version (pinned by the template)
+        schema:
+          type: string
+          default: "2022-06-28"
+    post:
+      operationId: create_page
+      summary: "Create a page under parent {parent}"
+      risk: write
+      # No generic "Title" path exists: subpages carry it under
+      # properties.title, database rows under whatever the DB schema names
+      # it — so disclose the whole properties object (auto-stringified as
+      # compact JSON, clamped) rather than guess the wrong key.
+      disclose:
+        - label: Parent
+          filter: .body.parent.database_id // .body.parent.page_id // empty
+        - label: Properties
+          filter: .body.properties
+          max_chars: 1000
+        - label: Content blocks
+          filter: .body.children // empty | length
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [parent, properties]
+              properties:
+                parent:
+                  type: object
+                  description: "Parent location: {database_id} to add a database row, or {page_id} for a subpage"
+                properties:
+                  type: object
+                  description: "Page properties keyed by name. For a subpage use {title: {title: [{text: {content: '...'}}]}}; for a database row, keys must match the database schema"
+                children:
+                  type: array
+                  description: "Optional list of block objects to add as page content"
+                icon:
+                  type: object
+                  description: "Optional page icon: {emoji: '📄'} or {external: {url}}"
+                cover:
+                  type: object
+                  description: "Optional page cover: {external: {url}}"
+  /v1/blocks/{block_id}/children:
+    parameters:
+      - name: block_id
+        in: path
+        required: true
+        description: Identifier of the parent block or page to append content to
+        schema:
+          type: string
+        # In the common case block_id is a page ID; the blocks endpoint then
+        # reports it as a child_page block whose title we can surface. For
+        # non-page blocks the pick path misses and resolution silently falls
+        # back to the raw id.
+        resolve:
+          get: /v1/blocks/{block_id}
+          pick: child_page.title
+      - name: Notion-Version
+        in: header
+        required: true
+        description: Notion API version (pinned by the template)
+        schema:
+          type: string
+          default: "2022-06-28"
+    patch:
+      operationId: append_block_children
+      summary: "Append content blocks to {block_id}"
+      risk: write
+      scope_param: block_id
+      disclose:
+        - label: Block
+          filter: .resolved.block_id // .params.block_id
+        - label: Content
+          filter: .body.children
+          max_chars: 2000
+        - label: Insert after
+          filter: .body.after // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [children]
+              properties:
+                children:
+                  type: array
+                  description: "List of block objects to append, e.g. [{object: 'block', type: 'paragraph', paragraph: {rich_text: [{text: {content: 'Hello'}}]}}]"
+                after:
+                  type: string
+                  description: Optional id of an existing block to insert the new children after

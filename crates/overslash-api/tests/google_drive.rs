@@ -99,6 +99,15 @@ async fn test_google_drive_e2e() {
 
     // Bootstrap org + identity + API key.
     let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    // Connections resolve at the owner identity (D22): seed on the agent's owner
+    // user so the agent's auto-resolved action calls find the connection.
+    let owner_id = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_identity(ident_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .owner_id
+        .unwrap();
 
     // Store BYOC credential via API.
     let byoc_resp: Value = client
@@ -127,14 +136,14 @@ async fn test_google_drive_e2e() {
     let _conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
         .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
-            identity_id: ident_id,
+            identity_id: owner_id,
             // provider_key matches the `provider:` field in the service auth stanza
             // (shared across google_calendar and google_drive).
             provider_key: "google",
             encrypted_access_token: &encrypted_access,
             encrypted_refresh_token: None,
             token_expires_at: None,
-            scopes: &["https://www.googleapis.com/auth/drive".to_string()],
+            scopes: Some(&["https://www.googleapis.com/auth/drive".to_string()]),
             account_email: None,
             byoc_credential_id: Some(byoc_id),
         })

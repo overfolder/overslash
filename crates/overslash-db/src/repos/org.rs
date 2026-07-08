@@ -18,20 +18,40 @@ pub struct OrgRow {
     /// an invite row. Default `false` for existing orgs; new corp orgs are
     /// flipped to `true` at create time so login works out-of-the-box.
     pub allow_overslash_managed_signin: bool,
+    /// When `true` (the default), a managed-signin org admits members
+    /// invite-only: the IdP authenticates but membership requires a pending
+    /// `org_invites` row. When `false`, admission falls back to the
+    /// `managed_signin_allowed_domains` allowlist below. Independent of
+    /// `allow_overslash_managed_signin` — see migration 092 and
+    /// `crates/overslash-api/src/routes/auth.rs::provision_org_subdomain`.
+    pub require_invite_admission: bool,
+    /// Org-wide email-domain allowlist consulted on the managed-signin path
+    /// when `require_invite_admission = false`. Empty = domain admission is
+    /// unconfigured (admission rejected as misconfigured, NOT open to all).
+    /// Distinct from the per-provider `org_idp_configs.allowed_email_domains`
+    /// used by the legacy per-org-IdP path.
+    pub managed_signin_allowed_domains: Vec<String>,
     /// User who created this org via `POST /v1/orgs` (or the free-unlimited
     /// admin path). `None` for anonymous creator paths and for orgs created
     /// before migration 067 whose `org.created` audit row had no resolvable
     /// `user_id`. Used by the `membership.removed` audit event to flag
     /// departures by the founder.
     pub creator_user_id: Option<Uuid>,
+    /// End of an instance-admin-managed trial window. `Some` only when
+    /// `plan = 'trial'`; the org is "on trial" while this is in the future and
+    /// "expired" once it passes. `None` for every non-trial org. Enforcement is
+    /// banner-only (see DECISIONS D25). Self-serve Stripe trials do NOT use this
+    /// field — they carry a `status='trialing'` subscription instead.
+    pub trial_ends_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
 
 /// Insert a new org. `plan` must be one of the values allowed by the
-/// `orgs.plan` CHECK constraint (today: `'standard'` or `'free_unlimited'`).
+/// `orgs.plan` CHECK constraint (`'standard'`, `'free_unlimited'`, `'trial'`).
 /// Most callers pass `"standard"`; the instance-admin path passes
-/// `"free_unlimited"` to skip Stripe.
+/// `"free_unlimited"` to skip Stripe. A brand-new org is never created directly
+/// on `'trial'` — trials are applied afterward via [`set_trial`].
 pub async fn create(
     pool: &PgPool,
     name: &str,
@@ -41,7 +61,7 @@ pub async fn create(
     sqlx::query_as!(
         OrgRow,
         "INSERT INTO orgs (name, slug, plan) VALUES ($1, $2, $3)
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at",
         name,
         slug,
         plan,
@@ -53,7 +73,7 @@ pub async fn create(
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at
          FROM orgs WHERE id = $1",
         id,
     )
@@ -61,14 +81,74 @@ pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::
     .await
 }
 
-/// Read just the `plan` field for an org. Used by the rate-limit hot path
-/// to decide whether to bypass limits without dragging the full `OrgRow`
-/// shape into the cache. Returns `None` if the org doesn't exist.
-pub async fn get_plan(pool: &PgPool, id: Uuid) -> Result<Option<String>, sqlx::Error> {
-    let row = sqlx::query!("SELECT plan FROM orgs WHERE id = $1", id)
+/// Read `(plan, trial_ends_at)` for an org in one query. Used by the
+/// billing-tier cache to answer both the `free_unlimited` bypass and the
+/// trial-status render without two round-trips. Returns `None` if the org
+/// doesn't exist.
+pub async fn get_billing(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<(String, Option<OffsetDateTime>)>, sqlx::Error> {
+    let row = sqlx::query!("SELECT plan, trial_ends_at FROM orgs WHERE id = $1", id)
         .fetch_optional(pool)
         .await?;
-    Ok(row.map(|r| r.plan))
+    Ok(row.map(|r| (r.plan, r.trial_ends_at)))
+}
+
+/// Put an org on an instance-admin-managed trial: set `plan = 'trial'` and the
+/// trial window end. Overwrites any existing trial. Returns `false` if the org
+/// doesn't exist. Callers must invalidate the billing-tier cache afterward.
+pub async fn set_trial(
+    pool: &PgPool,
+    id: Uuid,
+    ends_at: OffsetDateTime,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET plan = 'trial', trial_ends_at = $2, updated_at = now() WHERE id = $1",
+        id,
+        ends_at,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Bump the trial window end. Only affects orgs currently on `plan = 'trial'`
+/// (the `AND plan = 'trial'` guard means a non-trial org returns `false` rather
+/// than silently gaining a `trial_ends_at`). Callers must invalidate the cache.
+pub async fn extend_trial(
+    pool: &PgPool,
+    id: Uuid,
+    ends_at: OffsetDateTime,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET trial_ends_at = $2, updated_at = now()
+         WHERE id = $1 AND plan = 'trial'",
+        id,
+        ends_at,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Set an org's plan tier directly (instance-admin opt-out path, e.g. flipping
+/// a trial org to `free_unlimited` or back to `standard`). Clears
+/// `trial_ends_at` whenever the target plan is not `'trial'`. `plan` must be a
+/// CHECK-allowed value. Callers must invalidate the cache.
+pub async fn set_plan(pool: &PgPool, id: Uuid, plan: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs
+         SET plan = $2,
+             trial_ends_at = CASE WHEN $2 = 'trial' THEN trial_ends_at ELSE NULL END,
+             updated_at = now()
+         WHERE id = $1",
+        id,
+        plan,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Read just the `approval_auto_bubble_secs` setting for an org.
@@ -157,6 +237,42 @@ pub async fn set_global_templates_enabled(
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Read the `allow_services_outside_catalog` setting for an org.
+pub async fn get_allow_services_outside_catalog(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT allow_services_outside_catalog FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.allow_services_outside_catalog))
+}
+
+/// Read all three template/catalog settings for an org in one shot.
+/// Returns `(allow_user_templates, global_templates_enabled, allow_services_outside_catalog)`.
+pub async fn get_template_settings(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<(bool, bool, bool)>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT allow_user_templates, global_templates_enabled, allow_services_outside_catalog \
+         FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| {
+        (
+            r.allow_user_templates,
+            r.global_templates_enabled,
+            r.allow_services_outside_catalog,
+        )
+    }))
 }
 
 /// Read the `allow_unsigned_secret_provide` setting for an org.
@@ -256,69 +372,42 @@ pub async fn set_audit_response_body_mode(
     Ok(result.rows_affected() > 0)
 }
 
-/// Read the `oauth_callback_allowed_hosts` setting for an org — a
-/// comma-separated, lowercased host allow-list governing which custom OAuth
-/// `redirect_uri` values an org API key may use in a white-label connect flow.
-/// Empty string means custom redirect URIs are disabled for the org. Returns
-/// `None` if the org doesn't exist.
-pub async fn get_oauth_callback_allowed_hosts(
-    pool: &PgPool,
-    id: Uuid,
-) -> Result<Option<String>, sqlx::Error> {
-    let row = sqlx::query!(
-        "SELECT oauth_callback_allowed_hosts FROM orgs WHERE id = $1",
-        id,
-    )
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|r| r.oauth_callback_allowed_hosts))
-}
-
-/// Update the `oauth_callback_allowed_hosts` setting for an org. The caller is
-/// expected to have normalized the value (lowercased, trimmed, deduped,
-/// comma-joined) at the request boundary.
-pub async fn set_oauth_callback_allowed_hosts(
-    pool: &PgPool,
-    id: Uuid,
-    hosts: &str,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!(
-        "UPDATE orgs SET oauth_callback_allowed_hosts = $2, updated_at = now() WHERE id = $1",
-        id,
-        hosts,
-    )
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
-}
-
 /// Atomically update template settings and return the new values.
 pub async fn update_template_settings(
     pool: &PgPool,
     id: Uuid,
     allow_user_templates: Option<bool>,
     global_templates_enabled: Option<bool>,
-) -> Result<Option<(bool, bool)>, sqlx::Error> {
+    allow_services_outside_catalog: Option<bool>,
+) -> Result<Option<(bool, bool, bool)>, sqlx::Error> {
     let row = sqlx::query!(
         "UPDATE orgs SET \
          allow_user_templates = COALESCE($2, allow_user_templates), \
          global_templates_enabled = COALESCE($3, global_templates_enabled), \
+         allow_services_outside_catalog = COALESCE($4, allow_services_outside_catalog), \
          updated_at = now() \
          WHERE id = $1 \
-         RETURNING allow_user_templates, global_templates_enabled",
+         RETURNING allow_user_templates, global_templates_enabled, allow_services_outside_catalog",
         id,
         allow_user_templates,
         global_templates_enabled,
+        allow_services_outside_catalog,
     )
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r| (r.allow_user_templates, r.global_templates_enabled)))
+    Ok(row.map(|r| {
+        (
+            r.allow_user_templates,
+            r.global_templates_enabled,
+            r.allow_services_outside_catalog,
+        )
+    }))
 }
 
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at
          FROM orgs WHERE slug = $1",
         slug,
     )
@@ -378,6 +467,60 @@ pub async fn set_allow_overslash_managed_signin(
     Ok(result.rows_affected() > 0)
 }
 
+/// Atomically update the managed-signin admission settings, COALESCEing so a
+/// `None` leaves the current value untouched (partial PATCH). Callers
+/// normalize `allowed_domains` (lowercase/trim/dedupe) before persisting.
+/// Returns the updated row, or `None` if the org doesn't exist.
+pub async fn update_managed_admission(
+    pool: &PgPool,
+    id: Uuid,
+    allow_overslash_managed_signin: Option<bool>,
+    require_invite_admission: Option<bool>,
+    allowed_domains: Option<&[String]>,
+) -> Result<Option<OrgRow>, sqlx::Error> {
+    sqlx::query_as!(
+        OrgRow,
+        "UPDATE orgs SET
+            allow_overslash_managed_signin = COALESCE($2, allow_overslash_managed_signin),
+            require_invite_admission = COALESCE($3, require_invite_admission),
+            managed_signin_allowed_domains = COALESCE($4, managed_signin_allowed_domains),
+            updated_at = now()
+         WHERE id = $1
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at",
+        id,
+        allow_overslash_managed_signin,
+        require_invite_admission,
+        allowed_domains,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Read the `headless` flag for an org. `true` ⇒ white-label org whose end
+/// users have no Overslash session, so auth-recovery returns URL-less envelopes
+/// instead of gated `/connect-authorize` links. `None` (org missing) and the
+/// default are both treated as `false` by callers.
+pub async fn get_headless(pool: &PgPool, id: Uuid) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!("SELECT headless FROM orgs WHERE id = $1", id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.headless))
+}
+
+/// Flip the `headless` flag for an org. Admin/provisioning-only — a
+/// white-label partner onboarding capability, not an end-user self-service
+/// toggle.
+pub async fn set_headless(pool: &PgPool, id: Uuid, value: bool) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET headless = $2, updated_at = now() WHERE id = $1",
+        id,
+        value,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Update an org's sub-agent cleanup configuration. Bounds validated by caller.
 pub async fn update_subagent_cleanup_config(
     pool: &PgPool,
@@ -392,7 +535,7 @@ pub async fn update_subagent_cleanup_config(
              subagent_archive_retention_days = $3,
              updated_at = now()
          WHERE id = $1
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, require_invite_admission, managed_signin_allowed_domains, creator_user_id, trial_ends_at, created_at, updated_at",
         id,
         idle_timeout_secs,
         archive_retention_days,

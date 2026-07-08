@@ -87,9 +87,9 @@ async fn seed_flow(
             created_ip: None,
             created_user_agent: None,
             return_url,
-            redirect_uri: None,
             upgrade_connection_id: None,
             service_instance_id: None,
+            pin_service_instance_ids: &[],
         },
     )
     .await

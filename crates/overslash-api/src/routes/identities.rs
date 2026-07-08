@@ -353,6 +353,12 @@ struct IdentityResponse {
     depth: i32,
     owner_id: Option<Uuid>,
     inherit_permissions: bool,
+    /// Org-admin fast-path flag. `true` for user identities that hold org
+    /// admin authorization (kept in lock-step with `Admins`-group membership
+    /// by `identity::set_is_org_admin` / `set_org_member_admin`). Always
+    /// `false` for agents/sub-agents. Drives the Members page admin badge and
+    /// promote/demote control.
+    is_org_admin: bool,
     /// When `true` (default), resolving an approval for this identity as
     /// `allow`/`allow_remember` automatically replays the underlying call.
     /// Flipping to `false` puts the agent in "deferred execution" mode —
@@ -392,6 +398,7 @@ impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
             depth: r.depth,
             owner_id: r.owner_id,
             inherit_permissions: r.inherit_permissions,
+            is_org_admin: r.is_org_admin,
             auto_call_on_approve: r.auto_call_on_approve,
             created_at: fmt_time(r.created_at),
             last_active_at: fmt_time(r.last_active_at),

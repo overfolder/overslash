@@ -144,7 +144,7 @@ CREATE TABLE public.connections (
     encrypted_access_token bytea NOT NULL,
     encrypted_refresh_token bytea,
     token_expires_at timestamp with time zone,
-    scopes text[] DEFAULT '{}'::text[] NOT NULL,
+    scopes text[],
     account_email text,
     byoc_credential_id uuid,
     is_default boolean DEFAULT true NOT NULL,
@@ -389,8 +389,7 @@ CREATE TABLE public.oauth_connection_flows (
     created_user_agent text,
     return_url text,
     upgrade_connection_id uuid,
-    service_instance_id uuid,
-    redirect_uri text
+    service_instance_id uuid
 );
 
 
@@ -551,7 +550,8 @@ CREATE TABLE public.orgs (
     allow_overslash_managed_signin boolean DEFAULT false NOT NULL,
     creator_user_id uuid,
     audit_response_body_mode text DEFAULT 'off'::text NOT NULL,
-    oauth_callback_allowed_hosts text DEFAULT ''::text NOT NULL,
+    headless boolean DEFAULT false NOT NULL,
+    allow_services_outside_catalog boolean DEFAULT false NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_audit_response_body_mode_check CHECK ((audit_response_body_mode = ANY (ARRAY['off'::text, 'errors_only'::text, 'all'::text]))),
     CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))
