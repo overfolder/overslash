@@ -1010,7 +1010,7 @@ My Scraper API      You             2         Custom            [+ New] [Edit] [
 - **`[Share]`** — proposes sharing a user template to org level
 
 Two buttons in the catalog header:
-- `[Import OpenAPI]` — always visible, opens the OpenAPI import wizard (see below). Non-admins can still import, but org-level drafts require admin and user-level drafts require `allow_user_templates`.
+- `[Import OpenAPI]` — always visible, opens the OpenAPI import wizard (see below). Non-admins can still import, but org-level drafts require admin and user-level drafts require `user_template_policy` to allow them.
 - `[+ New Template]` — opens the blank template editor. Only visible if the org allows user-created templates (admin) or to admins for org-level templates.
 
 If the caller has any open drafts, a **Drafts** card renders above this table; see *Template Catalog — Drafts section* below.

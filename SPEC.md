@@ -746,9 +746,11 @@ Templates live in a three-tier registry:
 
 **Org**: Org-admins create templates for the org's internal or niche APIs. Visible to all org members (templates are blueprints — visibility doesn't grant access, creating a service instance does).
 
-**User**: Users create personal templates for APIs only they use. Gated by org setting (`allow_user_templates`). Private by default. Users can **propose sharing** a template to org level — org-admin reviews and approves or denies.
+**User**: Users create personal templates for APIs only they use. Gated by org setting (`user_template_policy`: `none` | `restrictive` (reserved) | `full`). Private by default. Users can **propose sharing** a template to org level — org-admin reviews and approves or denies.
 
 **Org-admin visibility**: Org-admins can see all templates in the org (global + org + user-created) in a read-only list for security/compliance — they need to know what external APIs their users are connecting to.
+
+**Layers (`extends`/`delta`).** Each org/user template row is a **layer**. A **standalone** layer (`extends` NULL) holds a full OpenAPI doc (the classic org/user template). A **derived** layer (`extends` set) holds a *delta* over a base template named by `extends` (resolved by key: DB rows then the global registry), and its effective template is the **fold** `resolve(layer) = apply(delta, resolve(extends))`. The delta's **masks** are restrictive and order-independent — action `allowlist` (∩) / `denylist` (\), per-action `risk` clamp-**up**-only, additive `disclose`, relabel, template `hidden` — so `resolve(child) ⊆ resolve(base)` (a child can never re-expose what a parent hid); its **extensions** add new actions/hosts only (no auth, no rebinding). `extends` is a **live pointer**: editing a base (or Overslash shipping a new global version) propagates to every descendant immediately. `extends` and the layer's own `key` are decoupled — reusing the base key shadows it (curation that agents get transparently), a distinct key is a separate catalog entry alongside the base. Discovery, instantiation, and **execution** all resolve through the fold, so a masked-out action is unreachable everywhere. See [DECISIONS.md D26](DECISIONS.md) and [docs/design/layered-service-templates.md](docs/design/layered-service-templates.md).
 
 ### Template Definition
 
@@ -1180,7 +1182,7 @@ When two instances share the same `account_email` (two services pinned to one OA
 
 **Action definitions are DRY; rows are not.** Actions are defined once on the template (in the global YAML under `services/` or in `service_templates.openapi`). A keyword match against `(template, action)` fans out into one row per visible instance so the agent can pick a callable directly; the underlying definition is shared.
 
-**Visibility** matches the rest of the API: identity-bound calls apply Layer 1 group ceiling and tier visibility (global / org / user with `allow_user_templates`). Hidden global templates and out-of-ceiling instances never appear in either default or `include_catalog=true` output.
+**Visibility** matches the rest of the API: identity-bound calls apply Layer 1 group ceiling and tier visibility (global / org / user, gated by `user_template_policy`). Hidden global templates and out-of-ceiling instances never appear in either default or `include_catalog=true` output.
 
 Search is **cheap and idempotent** by design. Agents are expected to re-query rather than maintain client-side state. There is no subscribe API for service catalog changes — re-call search after any state-changing operation (e.g. after `create_service_from_template` returns active).
 

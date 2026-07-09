@@ -13,6 +13,7 @@ use overslash_core::openapi::{
     import::{ImportOptions, ImportWarning, OperationInfo, prepare_from_value},
 };
 use overslash_core::permissions::AccessLevel;
+use overslash_core::service_layer::{self, Delta};
 use overslash_core::template_validation::{
     ValidationIssue, ValidationReport, parse_normalize_compile_yaml, prepare_draft_from_value,
     validate_template_yaml,
@@ -77,6 +78,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/templates/search", get(search_templates))
         // Fixed-path routes MUST come before the `{key}` wildcard.
         .route("/v1/templates/validate", post(validate_template))
+        .route("/v1/templates/validate-delta", post(validate_delta_route))
         .route("/v1/templates/import", post(import_template))
         .route("/v1/templates/drafts", get(list_drafts))
         .route(
@@ -120,6 +122,17 @@ struct TemplateSummary {
     /// `x-overslash-hidden` — dashboard surfaces show hidden templates
     /// flagged; agent-facing surfaces (`/v1/search`, MCP) omit them.
     hidden: bool,
+    /// Base template key when this row is a derived layer (lets the catalog
+    /// route its editor to the layer editor). Omitted for standalone/global.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extends: Option<String>,
+    /// Count of fold-time resolution warnings, if any — the catalog badges it.
+    #[serde(skip_serializing_if = "is_zero")]
+    warnings: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[derive(Serialize)]
@@ -155,6 +168,32 @@ struct TemplateDetail {
     mcp: Option<McpDetail>,
     /// `x-overslash-hidden` — see [`TemplateSummary::hidden`].
     hidden: bool,
+    /// Base template key this layer derives from (a **derived** layer). `None`
+    /// for a standalone layer or a global template.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extends: Option<String>,
+    /// The stored delta for a derived layer (masks + extensions). `None` for a
+    /// standalone layer. The dashboard layer editor reads this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delta: Option<serde_json::Value>,
+    /// Non-blocking resolution warnings computed during the fold
+    /// (`shadowed_extension`, `dead_*`, `unreviewed_new_actions`). Recomputed on
+    /// every read, so drift surfaces the moment an upstream base changes.
+    #[serde(skip_serializing_if = "ResolutionReport::is_empty")]
+    resolution_report: ResolutionReport,
+}
+
+/// The resolution-warning report attached to a resolved template. Mirrors the
+/// `{warnings}` half of the template `ValidationReport` shape.
+#[derive(Serialize, Default)]
+struct ResolutionReport {
+    warnings: Vec<overslash_core::template_validation::ValidationIssue>,
+}
+
+impl ResolutionReport {
+    fn is_empty(&self) -> bool {
+        self.warnings.is_empty()
+    }
 }
 
 #[derive(Serialize)]
@@ -202,6 +241,17 @@ struct AdminTemplateSummary {
     enabled: bool,
     /// `x-overslash-hidden` — see [`TemplateSummary::hidden`].
     hidden: bool,
+    /// Base template key when this row is a derived layer. Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extends: Option<String>,
+    /// The raw stored delta for a derived layer, so the admin catalog can
+    /// toggle `hidden` (and other masks) without a second fetch. Omitted for
+    /// standalone/global rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delta: Option<serde_json::Value>,
+    /// Count of fold-time resolution warnings, if any.
+    #[serde(skip_serializing_if = "is_zero")]
+    warnings: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -257,20 +307,44 @@ struct SearchQuery {
 
 #[derive(Deserialize)]
 struct CreateTemplateRequest {
-    /// Raw OpenAPI 3.1 YAML source. Must include `info.key` (or
-    /// `info.x-overslash-key`) as the template key and enough structure to
-    /// compile a service definition.
-    openapi: String,
+    /// Raw OpenAPI 3.1 YAML source for a **standalone** layer. Must include
+    /// `info.key` (or `info.x-overslash-key`) as the template key. Mutually
+    /// exclusive with `extends`/`delta`.
+    #[serde(default)]
+    openapi: Option<String>,
     /// If true, create as a user-level template (requires identity-bound key).
     #[serde(default)]
     user_level: bool,
+    /// Base template key for a **derived** layer. When set, `delta` is required
+    /// and `openapi` must be absent.
+    #[serde(default)]
+    extends: Option<String>,
+    /// The derived-layer delta (masks + extensions). Required iff `extends` is set.
+    #[serde(default)]
+    delta: Option<serde_json::Value>,
+    /// Layer key for a derived layer. Defaults to `extends` (shadow-with-delta);
+    /// set a distinct key for a separate catalog entry. Ignored for standalone
+    /// layers (their key comes from the OpenAPI doc).
+    #[serde(default)]
+    key: Option<String>,
+    /// Display name for a derived layer. Optional (falls back to the delta's
+    /// relabel or the base's name). Ignored for standalone layers.
+    #[serde(default)]
+    display_name: Option<String>,
+    /// Category for a derived layer. Optional. Ignored for standalone layers.
+    #[serde(default)]
+    category: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct UpdateTemplateRequest {
-    /// Replacement OpenAPI 3.1 YAML source. The template `key` must match the
-    /// existing template's key — it cannot be changed via update.
-    openapi: String,
+    /// Replacement OpenAPI 3.1 YAML source for a standalone layer. The template
+    /// `key` must match the existing key — it cannot be changed via update.
+    #[serde(default)]
+    openapi: Option<String>,
+    /// Replacement delta for a derived layer.
+    #[serde(default)]
+    delta: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -377,33 +451,58 @@ fn actions_from_definition_inner(
     out
 }
 
-fn db_row_to_detail(t: service_template::ServiceTemplateRow, tier: &str) -> Result<TemplateDetail> {
-    // Re-compile the stored openapi doc to produce the actions summary for
-    // the dashboard. The stored doc is already normalized on write, so
-    // compile should not surface new issues.
-    let def = compile_row(&t)?;
-    let openapi_yaml = openapi::to_yaml_string(&t.openapi).unwrap_or_default();
+/// Render a stored template row to its dashboard detail. Resolves through the
+/// layered-template fold: a **standalone** layer compiles its own openapi doc; a
+/// **derived** layer folds its delta over the live base, so `actions`/`hosts`/
+/// `hidden` reflect the effective surface and `resolution_report` carries any
+/// drift warnings.
+async fn db_row_to_detail(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    t: service_template::ServiceTemplateRow,
+    tier: &str,
+) -> Result<TemplateDetail> {
+    let resolved =
+        crate::services::template_resolve::resolve_row(state.db(ext), &state.registry, &t).await?;
+    let def = &resolved.definition;
+    // Standalone layers expose their editable OpenAPI YAML; derived layers are
+    // edited through their `delta`, so `openapi` is empty for them.
+    let openapi_yaml = t
+        .openapi
+        .as_ref()
+        .map(|doc| openapi::to_yaml_string(doc).unwrap_or_default())
+        .unwrap_or_default();
     let auth = serde_json::to_value(&def.auth)
         .ok()
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
-    let runtime = runtime_string(&def);
-    let mcp = mcp_detail_from(&def, &t.openapi);
+    let runtime = runtime_string(def);
+    // Build the MCP detail from the *resolved* def so a derived MCP layer (which
+    // has no openapi of its own) still returns a `mcp` object consistent with
+    // `runtime: "mcp"`. The openapi doc only supplies `discovered_at`; a derived
+    // layer has none, so pass `Null` and let it resolve to `None`.
+    let mcp_doc = t.openapi.clone().unwrap_or(serde_json::Value::Null);
+    let mcp = mcp_detail_from(def, &mcp_doc);
     Ok(TemplateDetail {
         key: t.key,
-        display_name: t.display_name,
-        description: Some(t.description).filter(|s| !s.is_empty()),
-        category: Some(t.category).filter(|s| !s.is_empty()),
-        hosts: t.hosts,
+        display_name: def.display_name.clone(),
+        description: def.description.clone().filter(|s| !s.is_empty()),
+        category: def.category.clone().filter(|s| !s.is_empty()),
+        hosts: def.hosts.clone(),
         auth,
         openapi: openapi_yaml,
-        actions: actions_from_definition(&def),
-        scopes: template_required_scopes(&def),
+        actions: actions_from_definition(def),
+        scopes: template_required_scopes(def),
         tier: tier.into(),
         id: Some(t.id),
         runtime,
         mcp,
         hidden: def.hidden,
+        extends: t.extends,
+        delta: t.delta,
+        resolution_report: ResolutionReport {
+            warnings: resolved.warnings,
+        },
     })
 }
 
@@ -477,8 +576,18 @@ fn preserve_mcp_discovered_fields(old: &serde_json::Value, new: &mut serde_json:
     }
 }
 
+/// Compile a **standalone** layer row's openapi doc. Errors on a derived layer
+/// (no doc) — callers that may see derived rows must resolve through the fold
+/// ([`crate::services::template_resolve`]) instead. Used by standalone-only
+/// paths (MCP resync, draft handling).
 fn compile_row(t: &service_template::ServiceTemplateRow) -> Result<ServiceDefinition> {
-    let (def, _warnings) = openapi::compile_service(&t.openapi).map_err(|errors| {
+    let doc = t.openapi.as_ref().ok_or_else(|| {
+        AppError::BadRequest(format!(
+            "template '{}' is a derived layer and has no OpenAPI document",
+            t.key
+        ))
+    })?;
+    let (def, _warnings) = openapi::compile_service(doc).map_err(|errors| {
         AppError::Internal(format!(
             "stored openapi for '{}' failed to compile: {:?}",
             t.key, errors
@@ -513,6 +622,8 @@ async fn list_templates(
             action_count: svc.actions.len(),
             tier: "global".into(),
             hidden: svc.hidden,
+            extends: None,
+            warnings: 0,
         });
     }
 
@@ -527,23 +638,70 @@ async fn list_templates(
         if is_user_tier && !user_templates_allowed {
             continue;
         }
-        let (action_count, hidden) = openapi::compile_service(&t.openapi)
-            .map(|(def, _)| (def.actions.len(), def.hidden))
-            .unwrap_or((0, false));
+        let s = resolved_summary(&state, &ext, &t).await;
         let tier = if is_user_tier { "user" } else { "org" };
         templates.push(TemplateSummary {
             key: t.key,
-            display_name: t.display_name,
-            description: Some(t.description).filter(|s| !s.is_empty()),
-            category: Some(t.category).filter(|s| !s.is_empty()),
-            hosts: t.hosts,
-            action_count,
+            display_name: s.display_name,
+            description: s.description,
+            category: s.category,
+            hosts: s.hosts,
+            action_count: s.action_count,
             tier: tier.into(),
-            hidden,
+            hidden: s.hidden,
+            extends: t.extends,
+            warnings: s.warnings,
         });
     }
 
     Ok(Json(templates))
+}
+
+/// A stored row summarized through its **effective** (folded) template — the
+/// single source of truth for list/search rows. For a derived layer this
+/// reflects the live base + delta (so a relabel in the delta, or an upstream
+/// base change, is never stale against the denormalized columns); for a
+/// standalone layer it equals the compiled openapi. Falls back to the row's
+/// denormalized columns if resolution fails.
+struct RowSummary {
+    display_name: String,
+    description: Option<String>,
+    category: Option<String>,
+    hosts: Vec<String>,
+    action_count: usize,
+    hidden: bool,
+    warnings: usize,
+}
+
+async fn resolved_summary(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    t: &service_template::ServiceTemplateRow,
+) -> RowSummary {
+    match crate::services::template_resolve::resolve_row(state.db(ext), &state.registry, t).await {
+        Ok(r) => {
+            let d = r.definition;
+            RowSummary {
+                display_name: d.display_name,
+                description: d.description.filter(|s| !s.is_empty()),
+                category: d.category.filter(|s| !s.is_empty()),
+                hosts: d.hosts,
+                action_count: d.actions.len(),
+                hidden: d.hidden,
+                warnings: r.warnings.len(),
+            }
+        }
+        // Fall back to the denormalized columns so a broken base still lists.
+        Err(_) => RowSummary {
+            display_name: t.display_name.clone(),
+            description: Some(t.description.clone()).filter(|s| !s.is_empty()),
+            category: Some(t.category.clone()).filter(|s| !s.is_empty()),
+            hosts: t.hosts.clone(),
+            action_count: 0,
+            hidden: false,
+            warnings: 0,
+        },
+    }
 }
 
 /// Search templates across all tiers by query string.
@@ -572,6 +730,8 @@ async fn search_templates(
             action_count: svc.actions.len(),
             tier: "global".into(),
             hidden: svc.hidden,
+            extends: None,
+            warnings: 0,
         });
     }
 
@@ -586,23 +746,30 @@ async fn search_templates(
         if is_user_tier && !user_templates_allowed {
             continue;
         }
+        // Match on the effective (resolved) fields, not the possibly-stale
+        // denormalized columns, so a derived layer relabeled in its delta is
+        // findable by its effective name.
+        let s = resolved_summary(&state, &ext, &t).await;
         if t.key.to_lowercase().contains(&q)
-            || t.display_name.to_lowercase().contains(&q)
-            || t.description.to_lowercase().contains(&q)
+            || s.display_name.to_lowercase().contains(&q)
+            || s.description
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&q)
         {
-            let (action_count, hidden) = openapi::compile_service(&t.openapi)
-                .map(|(def, _)| (def.actions.len(), def.hidden))
-                .unwrap_or((0, false));
             let tier = if is_user_tier { "user" } else { "org" };
             results.push(TemplateSummary {
                 key: t.key,
-                display_name: t.display_name,
-                description: Some(t.description).filter(|s| !s.is_empty()),
-                category: Some(t.category).filter(|s| !s.is_empty()),
-                hosts: t.hosts,
-                action_count,
+                display_name: s.display_name,
+                description: s.description,
+                category: s.category,
+                hosts: s.hosts,
+                action_count: s.action_count,
                 tier: tier.into(),
-                hidden,
+                hidden: s.hidden,
+                extends: t.extends,
+                warnings: s.warnings,
             });
         }
     }
@@ -629,14 +796,14 @@ async fn get_template(
                 service_template::get_by_key(state.db(&ext), auth.org_id, Some(identity_id), &key)
                     .await?
             {
-                return Ok(Json(db_row_to_detail(t, "user")?));
+                return Ok(Json(db_row_to_detail(&state, &ext, t, "user").await?));
             }
         }
     }
 
     // Try org tier
     if let Some(t) = service_template::get_by_key(state.db(&ext), auth.org_id, None, &key).await? {
-        return Ok(Json(db_row_to_detail(t, "org")?));
+        return Ok(Json(db_row_to_detail(&state, &ext, t, "org").await?));
     }
 
     // Try global tier (respect visibility filter)
@@ -678,6 +845,9 @@ async fn get_template(
         runtime,
         mcp,
         hidden: svc.hidden,
+        extends: None,
+        delta: None,
+        resolution_report: ResolutionReport::default(),
     }))
 }
 
@@ -808,7 +978,100 @@ async fn validate_template(auth: AuthContext, body: String) -> Result<Json<Valid
     Ok(Json(validate_template_yaml(&body)))
 }
 
-/// Create a new org or user template.
+#[derive(Deserialize)]
+struct ValidateDeltaRequest {
+    /// Base template key the delta layers over.
+    extends: String,
+    /// The derived-layer delta to validate.
+    delta: serde_json::Value,
+    /// Whether the layer being authored is user-namespace (`true`) or
+    /// org-namespace (`false`, default). Controls the base-resolution identity
+    /// context so the preview folds over the *same* base create/update will —
+    /// an org layer resolves the base with no user tier (org → global), a user
+    /// layer resolves user → org → global.
+    #[serde(default)]
+    user_level: bool,
+}
+
+/// POST /v1/templates/validate-delta
+///
+/// Lint a derived-layer `delta` against its resolved base without persisting.
+/// Powers the layer editor's live validation. Returns the same
+/// `{valid, errors, warnings}` `ValidationReport` shape as `/validate`, plus the
+/// fold's resolution warnings so the editor can preview drift.
+async fn validate_delta_route(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    auth: AuthContext,
+    Json(req): Json<ValidateDeltaRequest>,
+) -> Result<Json<ValidationReport>> {
+    let delta: Delta = match serde_json::from_value(req.delta) {
+        Ok(d) => d,
+        Err(e) => {
+            return Ok(Json(ValidationReport {
+                valid: false,
+                errors: vec![ValidationIssue::new(
+                    "malformed_delta",
+                    e.to_string(),
+                    "delta",
+                )],
+                warnings: Vec::new(),
+            }));
+        }
+    };
+    // Mirror create/update's owner context: an org-namespace layer resolves the
+    // base with no user tier; a user-namespace layer resolves in the caller's
+    // identity context.
+    let base_identity = if req.user_level {
+        auth.identity_id
+    } else {
+        None
+    };
+    let base = crate::services::template_resolve::resolve(
+        state.db(&ext),
+        &state.registry,
+        auth.org_id,
+        base_identity,
+        &req.extends,
+    )
+    .await
+    .map_err(|_| AppError::BadRequest(format!("base template '{}' not found", req.extends)))?;
+
+    let mut report = service_layer::validate_delta(&delta, &base.definition);
+    // Fold this delta over the base and surface the resolution warnings too, so
+    // the editor previews shadowed extensions / dead entries live.
+    let (_def, resolution_warnings) = service_layer::apply_delta(&delta, &base.definition);
+    report.warnings.extend(resolution_warnings);
+    Ok(Json(report))
+}
+
+/// Resolve the owner identity + authority for a template-create request, shared
+/// by the standalone and derived paths. Org-namespace (`user_level=false`) →
+/// admin; user-namespace → `user_template_policy` gate.
+async fn authorize_template_create(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    acl: &crate::extractors::OrgAcl,
+    user_level: bool,
+) -> Result<Option<Uuid>> {
+    if user_level {
+        let identity_id = acl.identity_id.ok_or_else(|| {
+            AppError::BadRequest("user-level templates require an identity-bound API key".into())
+        })?;
+        platform_templates::enforce_user_template_policy(state.db(ext), acl.org_id).await?;
+        Ok(Some(identity_id))
+    } else {
+        if acl.access_level < AccessLevel::Admin {
+            return Err(AppError::Forbidden(
+                "admin access required to create org-level templates".into(),
+            ));
+        }
+        Ok(None)
+    }
+}
+
+/// Create a new org or user template — either a **standalone** layer (full
+/// OpenAPI doc) or a **derived** layer (`extends` a base + a `delta`).
 async fn create_template(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -816,31 +1079,17 @@ async fn create_template(
     ip: ClientIp,
     Json(req): Json<CreateTemplateRequest>,
 ) -> Result<Json<TemplateDetail>> {
-    let owner_identity_id = if req.user_level {
-        // User-level: need identity + org setting check
-        let identity_id = acl.identity_id.ok_or_else(|| {
-            AppError::BadRequest("user-level templates require an identity-bound API key".into())
-        })?;
-        let allowed = org_repo::get_allow_user_templates(state.db(&ext), acl.org_id)
-            .await?
-            .unwrap_or(false);
-        if !allowed {
-            return Err(AppError::Forbidden(
-                "user templates are not enabled for this org".into(),
-            ));
-        }
-        Some(identity_id)
-    } else {
-        // Org-level: require admin
-        if acl.access_level < AccessLevel::Admin {
-            return Err(AppError::Forbidden(
-                "admin access required to create org-level templates".into(),
-            ));
-        }
-        None
-    };
+    let owner_identity_id = authorize_template_create(&state, &ext, &acl, req.user_level).await?;
 
-    let (doc, def) = parse_normalize_compile_and_check_disclose(&req.openapi)
+    if req.extends.is_some() {
+        return create_derived_layer(&state, &ext, &acl, ip, owner_identity_id, req).await;
+    }
+
+    // ── Standalone layer ──────────────────────────────────────────────────
+    let openapi_yaml = req.openapi.as_deref().ok_or_else(|| {
+        AppError::BadRequest("a standalone template requires `openapi` (or set `extends`)".into())
+    })?;
+    let (doc, def) = parse_normalize_compile_and_check_disclose(openapi_yaml)
         .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     if def.key.is_empty() {
@@ -849,7 +1098,9 @@ async fn create_template(
         ));
     }
 
-    // Check that key doesn't collide with a global template
+    // Check that key doesn't collide with a global template. (A derived layer
+    // MAY reuse a global key — that's shadow-with-delta — but a standalone copy
+    // reusing a global key is disallowed to avoid an unreviewed full override.)
     if state.registry.get(&def.key).is_some() {
         return Err(AppError::Conflict(format!(
             "template key '{}' conflicts with a global template",
@@ -865,7 +1116,9 @@ async fn create_template(
         description: def.description.as_deref().unwrap_or(""),
         category: def.category.as_deref().unwrap_or(""),
         hosts: &def.hosts,
-        openapi: doc,
+        openapi: Some(doc),
+        extends: None,
+        delta: None,
         status: "active",
     };
 
@@ -889,22 +1142,7 @@ async fn create_template(
         "org"
     };
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
-        .log_audit(AuditEntry {
-            org_id: acl.org_id,
-            identity_id: acl.identity_id,
-            action: "template.created",
-            resource_type: Some("template"),
-            resource_id: Some(row.id),
-            detail: serde_json::json!({
-                "key": &row.key,
-                "tier": tier,
-                "owner_identity_id": row.owner_identity_id,
-            }),
-            description: None,
-            ip_address: ip.0.as_deref(),
-        })
-        .await;
+    log_template_created(&state, &ext, &acl, &row, tier, ip.0.as_deref()).await;
 
     crate::services::embedding_backfill::refresh_template(
         state.db(&ext),
@@ -916,7 +1154,160 @@ async fn create_template(
     )
     .await;
 
-    Ok(Json(db_row_to_detail(row, tier)?))
+    Ok(Json(db_row_to_detail(&state, &ext, row, tier).await?))
+}
+
+/// Create a **derived** layer: validate the delta against its resolved base,
+/// then persist `extends`/`delta`. The base is resolved in the layer's own
+/// identity context (a user layer may extend a global, an org-namespace layer,
+/// or its own user layers; an org layer may extend a global or org-namespace
+/// layer — never another user's private layer, which the resolution context
+/// makes structurally unreachable).
+async fn create_derived_layer(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    acl: &crate::extractors::OrgAcl,
+    ip: ClientIp,
+    owner_identity_id: Option<Uuid>,
+    req: CreateTemplateRequest,
+) -> Result<Json<TemplateDetail>> {
+    if req.openapi.is_some() {
+        return Err(AppError::BadRequest(
+            "a derived layer sets `extends`+`delta`, not `openapi`".into(),
+        ));
+    }
+    let extends = req.extends.expect("checked by caller");
+    let delta_value = req
+        .delta
+        .ok_or_else(|| AppError::BadRequest("a derived layer requires `delta`".into()))?;
+    let delta: Delta = serde_json::from_value(delta_value.clone())
+        .map_err(|e| AppError::BadRequest(format!("malformed delta: {e}")))?;
+
+    // The layer's own catalog key: distinct key → separate entry; default to the
+    // base key → shadow-with-delta.
+    let key = req.key.clone().unwrap_or_else(|| extends.clone());
+
+    // Resolve the base (target-exists + chain-soundness guard) in the layer's
+    // own identity context.
+    let base = crate::services::template_resolve::resolve(
+        state.db(ext),
+        &state.registry,
+        acl.org_id,
+        owner_identity_id,
+        &extends,
+    )
+    .await
+    .map_err(|e| match e {
+        AppError::NotFound(_) => AppError::BadRequest(format!(
+            "base template '{extends}' not found or not visible to this layer"
+        )),
+        other => other,
+    })?;
+
+    // Write-time delta validation against the resolved base.
+    let report = service_layer::validate_delta(&delta, &base.definition);
+    if !report.valid {
+        return Err(AppError::TemplateValidationFailed { report });
+    }
+
+    let display_name = req.display_name.clone().unwrap_or_else(|| {
+        delta
+            .display_name
+            .clone()
+            .unwrap_or_else(|| base.definition.display_name.clone())
+    });
+    let category = req.category.clone().unwrap_or_default();
+
+    let input = CreateServiceTemplate {
+        org_id: acl.org_id,
+        owner_identity_id,
+        key: &key,
+        display_name: &display_name,
+        description: "",
+        category: &category,
+        hosts: &[],
+        openapi: None,
+        extends: Some(&extends),
+        delta: Some(delta_value),
+        status: "active",
+    };
+
+    let row = service_template::create(state.db(ext), &input)
+        .await
+        .map_err(|e| {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.constraint().is_some() {
+                    return AppError::Conflict(format!("template key '{key}' already exists"));
+                }
+            }
+            AppError::Database(e)
+        })?;
+
+    let tier = if row.owner_identity_id.is_some() {
+        "user"
+    } else {
+        "org"
+    };
+    log_template_created(state, ext, acl, &row, tier, ip.0.as_deref()).await;
+    refresh_layer_embeddings(state, ext, &row, tier).await;
+
+    Ok(Json(db_row_to_detail(state, ext, row, tier).await?))
+}
+
+/// Index a **derived** layer's *effective* (folded) surface for semantic search,
+/// mirroring the `refresh_template` call standalone create/update make. Uses the
+/// resolved definition so masked actions stay out of the index and extensions
+/// are included. Best-effort: a layer whose base fails to resolve is skipped
+/// (keyword search still works through the fold at query time). Note: because
+/// `extends` is a live pointer, a later base change is not cascaded into these
+/// embeddings — re-saving the layer re-indexes it (cascade re-embedding is a
+/// documented deferred item, same bucket as the materialized resolved cache).
+async fn refresh_layer_embeddings(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    row: &service_template::ServiceTemplateRow,
+    tier: &'static str,
+) {
+    if let Ok(resolved) =
+        crate::services::template_resolve::resolve_row(state.db(ext), &state.registry, row).await
+    {
+        crate::services::embedding_backfill::refresh_template(
+            state.db(ext),
+            state.embedder.as_ref(),
+            tier,
+            Some(row.org_id),
+            row.owner_identity_id,
+            &resolved.definition,
+        )
+        .await;
+    }
+}
+
+async fn log_template_created(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    acl: &crate::extractors::OrgAcl,
+    row: &service_template::ServiceTemplateRow,
+    tier: &str,
+    ip: Option<&str>,
+) {
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(ext))
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "template.created",
+            resource_type: Some("template"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({
+                "key": &row.key,
+                "tier": tier,
+                "owner_identity_id": row.owner_identity_id,
+                "extends": &row.extends,
+            }),
+            description: None,
+            ip_address: ip,
+        })
+        .await;
 }
 
 /// Update a DB-stored template by id.
@@ -953,7 +1344,27 @@ async fn update_template(
         }
     }
 
-    let (mut doc, def) = parse_normalize_compile_and_check_disclose(&req.openapi)
+    // A non-admin editing their own **user-namespace** layer must still satisfy
+    // the org's `user_template_policy` — mirroring create. Forward-only downgrade
+    // keeps existing layers *executing* (the fold never checks policy), but it
+    // must not let a member edit one into a broader grant (e.g. add an extension
+    // host under `none`), which would bypass the very restriction the policy
+    // exists to enforce. Admins keep edit rights for compliance management
+    // (pruning is delete; tightening is an admin edit).
+    if existing.owner_identity_id.is_some() && acl.access_level < AccessLevel::Admin {
+        platform_templates::enforce_user_template_policy(state.db(&ext), acl.org_id).await?;
+    }
+
+    // Derived layers are edited through their `delta` (their `extends` binding
+    // is immutable, which also keeps the inheritance graph acyclic).
+    if existing.extends.is_some() {
+        return update_derived_layer(&state, &ext, &acl, ip, existing, req).await;
+    }
+
+    let openapi_yaml = req.openapi.as_deref().ok_or_else(|| {
+        AppError::BadRequest("updating a standalone template requires `openapi`".into())
+    })?;
+    let (mut doc, def) = parse_normalize_compile_and_check_disclose(openapi_yaml)
         .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     // Template key cannot change via update — the unique index pins it.
@@ -969,7 +1380,9 @@ async fn update_template(
     // x-overslash-mcp.discovered_tools / discovered_at — those are owned
     // by the resync flow. Wiping them on update would silently invalidate
     // every discovered-only tool until the admin hits resync again.
-    preserve_mcp_discovered_fields(&existing.openapi, &mut doc);
+    if let Some(existing_doc) = &existing.openapi {
+        preserve_mcp_discovered_fields(existing_doc, &mut doc);
+    }
 
     let input = UpdateServiceTemplate {
         display_name: Some(&def.display_name),
@@ -978,6 +1391,7 @@ async fn update_template(
         hosts: Some(&def.hosts),
         openapi: Some(doc),
         key: None,
+        delta: None,
     };
 
     let row = service_template::update(state.db(&ext), id, &input)
@@ -1016,7 +1430,80 @@ async fn update_template(
     )
     .await;
 
-    Ok(Json(db_row_to_detail(row, tier)?))
+    Ok(Json(db_row_to_detail(&state, &ext, row, tier).await?))
+}
+
+/// Update a **derived** layer's delta. Re-validates the new delta against the
+/// (live) base and rejects an invalid one; `extends` is never changed.
+async fn update_derived_layer(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    acl: &crate::extractors::OrgAcl,
+    ip: ClientIp,
+    existing: service_template::ServiceTemplateRow,
+    req: UpdateTemplateRequest,
+) -> Result<Json<TemplateDetail>> {
+    if req.openapi.is_some() {
+        return Err(AppError::BadRequest(
+            "a derived layer is edited via `delta`, not `openapi`".into(),
+        ));
+    }
+    let delta_value = req
+        .delta
+        .ok_or_else(|| AppError::BadRequest("updating a derived layer requires `delta`".into()))?;
+    let delta: Delta = serde_json::from_value(delta_value.clone())
+        .map_err(|e| AppError::BadRequest(format!("malformed delta: {e}")))?;
+
+    let extends = existing
+        .extends
+        .as_deref()
+        .expect("derived layer has extends");
+    let base = crate::services::template_resolve::resolve(
+        state.db(ext),
+        &state.registry,
+        acl.org_id,
+        existing.owner_identity_id,
+        extends,
+    )
+    .await?;
+    let report = service_layer::validate_delta(&delta, &base.definition);
+    if !report.valid {
+        return Err(AppError::TemplateValidationFailed { report });
+    }
+
+    let input = UpdateServiceTemplate {
+        display_name: None,
+        description: None,
+        category: None,
+        hosts: None,
+        openapi: None,
+        key: None,
+        delta: Some(delta_value),
+    };
+    let row = service_template::update(state.db(ext), existing.id, &input)
+        .await?
+        .ok_or_else(|| AppError::NotFound("template not found".into()))?;
+
+    let tier = if row.owner_identity_id.is_some() {
+        "user"
+    } else {
+        "org"
+    };
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(ext))
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "template.updated",
+            resource_type: Some("template"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({ "key": &row.key, "tier": tier, "extends": &row.extends }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+    refresh_layer_embeddings(state, ext, &row, tier).await;
+
+    Ok(Json(db_row_to_detail(state, ext, row, tier).await?))
 }
 
 /// Delete a DB-stored template by id (cannot delete global templates).
@@ -1115,15 +1602,16 @@ async fn list_templates_admin(
             owner_identity_id: None,
             enabled,
             hidden: svc.hidden,
+            extends: None,
+            delta: None,
+            warnings: 0,
         });
     }
 
     // ALL DB templates (org + all users')
     let db_templates = service_template::list_all_by_org(state.db(&ext), acl.org_id).await?;
     for t in db_templates {
-        let (action_count, hidden) = openapi::compile_service(&t.openapi)
-            .map(|(def, _)| (def.actions.len(), def.hidden))
-            .unwrap_or((0, false));
+        let s = resolved_summary(&state, &ext, &t).await;
         let tier = if t.owner_identity_id.is_some() {
             "user"
         } else {
@@ -1131,16 +1619,19 @@ async fn list_templates_admin(
         };
         templates.push(AdminTemplateSummary {
             key: t.key,
-            display_name: t.display_name,
-            description: Some(t.description).filter(|s| !s.is_empty()),
-            category: Some(t.category).filter(|s| !s.is_empty()),
-            hosts: t.hosts,
-            action_count,
+            display_name: s.display_name,
+            description: s.description,
+            category: s.category,
+            hosts: s.hosts,
+            action_count: s.action_count,
             tier: tier.into(),
             id: Some(t.id),
             owner_identity_id: t.owner_identity_id,
             enabled: true, // org/user templates are always "enabled"
-            hidden,
+            hidden: s.hidden,
+            extends: t.extends,
+            delta: t.delta,
+            warnings: s.warnings,
         });
     }
 
@@ -1508,6 +1999,7 @@ async fn update_draft(
         hosts: Some(&scalars.hosts),
         openapi: Some(canonical_doc),
         key: Some(&scalars.key),
+        delta: None,
     };
 
     let row = service_template::update(state.db(&ext), existing.id, &update)
@@ -1560,7 +2052,12 @@ async fn promote_draft(
 
     // Re-serialize the stored doc to YAML and hand it to the strict validator,
     // so promotion uses the exact same code path as `POST /v1/templates`.
-    let yaml_source = openapi::to_yaml_string(&existing.openapi).map_err(|i| {
+    // Drafts are always standalone imports, so `openapi` is present.
+    let existing_doc = existing
+        .openapi
+        .as_ref()
+        .ok_or_else(|| AppError::BadRequest("derived layers are not drafted/promoted".into()))?;
+    let yaml_source = openapi::to_yaml_string(existing_doc).map_err(|i| {
         AppError::Internal(format!("stored draft serializer failed: {}", i.message))
     })?;
     let (_doc, def) = parse_normalize_compile_and_check_disclose(&yaml_source)
@@ -1630,7 +2127,7 @@ async fn promote_draft(
     )
     .await;
 
-    Ok(Json(db_row_to_detail(promoted, tier)?))
+    Ok(Json(db_row_to_detail(&state, &ext, promoted, tier).await?))
 }
 
 /// DELETE /v1/templates/drafts/{id}
@@ -1697,8 +2194,11 @@ fn row_to_draft_detail(row: service_template::ServiceTemplateRow) -> DraftTempla
     // warnings, then feed its output to the lenient validator. This avoids
     // walking+normalizing the document twice per draft (hot path for
     // `GET /v1/templates/drafts`).
-    let canonical_yaml = openapi::to_yaml_string(&row.openapi).unwrap_or_default();
-    let prep = prepare_from_value(row.openapi, &ImportOptions::default());
+    // Drafts are always standalone imports (they carry an openapi doc, never a
+    // delta), so this is present in practice; default defensively.
+    let doc = row.openapi.unwrap_or_default();
+    let canonical_yaml = openapi::to_yaml_string(&doc).unwrap_or_default();
+    let prep = prepare_from_value(doc, &ImportOptions::default());
     let (_canonical_doc, compiled, validation) = prepare_draft_from_value(prep.doc);
     DraftTemplateDetail {
         id: row.id,
@@ -1902,35 +2402,21 @@ pub(crate) async fn resolve_template_actions(
     auth: &AuthContext,
     key: &str,
 ) -> Result<Vec<ActionSummary>> {
-    // Try user tier
-    if let Some(identity_id) = auth.identity_id {
-        if let Some(t) =
-            service_template::get_by_key(state.db(ext), auth.org_id, Some(identity_id), key).await?
-        {
-            let def = compile_row(&t)?;
-            return Ok(actions_from_definition(&def));
-        }
-    }
-
-    // Try org tier
-    if let Some(t) = service_template::get_by_key(state.db(ext), auth.org_id, None, key).await? {
-        let def = compile_row(&t)?;
-        return Ok(actions_from_definition(&def));
-    }
-
-    // Try global
-    let svc = state
-        .registry
-        .get(key)
-        .ok_or_else(|| AppError::NotFound(format!("template '{key}' not found")))?;
-
-    Ok(actions_from_definition(svc))
+    // Resolve through the layered-template fold so a derived layer reports its
+    // effective (masked/extended) action set — `compile_row` would 400 on a
+    // derived layer, which carries no OpenAPI doc.
+    let def = resolve_template_definition(state, ext, auth.org_id, auth.identity_id, key).await?;
+    Ok(actions_from_definition(&def))
 }
 
 /// Resolve a ServiceDefinition from a template key across all tiers.
 /// Used by action execution when resolving through a service instance.
 /// NOTE: Does NOT apply global_templates_enabled filtering — hidden globals
 /// remain resolvable so existing service instances keep working.
+/// Resolve a template key to its effective [`ServiceDefinition`] through the
+/// layered-template fold (user → org → global precedence, derived layers folded
+/// over their base). Thin wrapper over the shared resolver so every call site
+/// reads the same effective surface.
 pub(crate) async fn resolve_template_definition(
     state: &AppState,
     ext: &axum::http::Extensions,
@@ -1938,26 +2424,14 @@ pub(crate) async fn resolve_template_definition(
     identity_id: Option<Uuid>,
     key: &str,
 ) -> Result<ServiceDefinition> {
-    // Try user tier
-    if let Some(identity_id) = identity_id {
-        if let Some(t) =
-            service_template::get_by_key(state.db(ext), org_id, Some(identity_id), key).await?
-        {
-            return compile_row(&t);
-        }
-    }
-
-    // Try org tier
-    if let Some(t) = service_template::get_by_key(state.db(ext), org_id, None, key).await? {
-        return compile_row(&t);
-    }
-
-    // Try global
-    state
-        .registry
-        .get(key)
-        .cloned()
-        .ok_or_else(|| AppError::NotFound(format!("template '{key}' not found")))
+    crate::services::template_resolve::resolve_definition(
+        state.db(ext),
+        &state.registry,
+        org_id,
+        identity_id,
+        key,
+    )
+    .await
 }
 
 // ── MCP discovery (resync tools) ─────────────────────────────────────────
@@ -2111,7 +2585,11 @@ async fn resync_mcp_tools(
         })
         .collect();
 
-    let mut openapi = row.openapi.clone();
+    // Resync only applies to MCP-runtime standalone layers, which carry an
+    // openapi doc; a derived layer has none.
+    let mut openapi = row.openapi.clone().ok_or_else(|| {
+        AppError::BadRequest("derived layers cannot be resynced (no openapi document)".into())
+    })?;
     let mcp_obj = openapi
         .get_mut("x-overslash-mcp")
         .and_then(|v| v.as_object_mut())
@@ -2135,6 +2613,7 @@ async fn resync_mcp_tools(
             hosts: None,
             openapi: Some(openapi),
             key: None,
+            delta: None,
         },
     )
     .await?;

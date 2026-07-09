@@ -614,7 +614,7 @@ async fn template_update_refreshes_embeddings() {
     let _ = client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({ "allow_user_templates": true }))
+        .json(&json!({ "user_template_policy": "full" }))
         .send()
         .await
         .unwrap();

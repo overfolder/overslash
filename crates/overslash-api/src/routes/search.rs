@@ -28,7 +28,7 @@ use overslash_db::scopes::{OrgScope, UserScope};
 
 use crate::{
     AppState,
-    error::{AppError, Result},
+    error::Result,
     extractors::{AuthContext, ReqExt},
     services::group_ceiling,
     services::platform_services::{
@@ -544,13 +544,16 @@ async fn collect_visible_templates(
         if is_user_tier && !user_templates_allowed {
             continue;
         }
-        let (def, _warnings) =
-            overslash_core::openapi::compile_service(&t.openapi).map_err(|errors| {
-                AppError::Internal(format!(
-                    "template '{}' failed to compile: {errors:?}",
-                    t.key
-                ))
-            })?;
+        // Resolve through the layered-template fold so a derived layer's masked
+        // surface (and hidden actions) are what search advertises.
+        let def = crate::services::template_resolve::resolve_definition(
+            state.db(ext),
+            &state.registry,
+            auth.org_id,
+            auth.identity_id,
+            &t.key,
+        )
+        .await?;
         templates.push(TemplateCandidate {
             tier: if is_user_tier { "user" } else { "org" },
             def,

@@ -182,27 +182,45 @@ pub async fn set_approval_auto_bubble_secs(
     Ok(result.rows_affected() > 0)
 }
 
-/// Read the `allow_user_templates` setting for an org.
+/// Read the `user_template_policy` setting for an org
+/// (`'none' | 'restrictive' | 'full'`, enforced by a CHECK constraint).
+/// Governs whether org members may create user-namespace layers. Returns
+/// `None` if the org doesn't exist.
+pub async fn get_user_template_policy(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query!("SELECT user_template_policy FROM orgs WHERE id = $1", id,)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.user_template_policy))
+}
+
+/// Visibility gate: whether user-namespace layers exist / may be created at all
+/// (`user_template_policy != 'none'`). Read-side callers (list/get/search) use
+/// this to decide whether to surface user-tier templates; the *creation*
+/// authority path reads the full [`get_user_template_policy`] tri-state so it
+/// can reject the reserved `restrictive` tier.
 pub async fn get_allow_user_templates(
     pool: &PgPool,
     id: Uuid,
 ) -> Result<Option<bool>, sqlx::Error> {
-    let row = sqlx::query!("SELECT allow_user_templates FROM orgs WHERE id = $1", id,)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|r| r.allow_user_templates))
+    Ok(get_user_template_policy(pool, id)
+        .await?
+        .map(|p| p != "none"))
 }
 
-/// Update the `allow_user_templates` setting for an org.
-pub async fn set_allow_user_templates(
+/// Update the `user_template_policy` setting for an org. The caller must pass
+/// one of the CHECK-allowed values (`none` | `restrictive` | `full`).
+pub async fn set_user_template_policy(
     pool: &PgPool,
     id: Uuid,
-    allow: bool,
+    policy: &str,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
-        "UPDATE orgs SET allow_user_templates = $2, updated_at = now() WHERE id = $1",
+        "UPDATE orgs SET user_template_policy = $2, updated_at = now() WHERE id = $1",
         id,
-        allow,
+        policy,
     )
     .execute(pool)
     .await?;
@@ -253,25 +271,31 @@ pub async fn get_allow_services_outside_catalog(
     Ok(row.map(|r| r.allow_services_outside_catalog))
 }
 
-/// Read all three template/catalog settings for an org in one shot.
-/// Returns `(allow_user_templates, global_templates_enabled, allow_services_outside_catalog)`.
+/// All template/catalog settings for an org.
+pub struct TemplateSettings {
+    /// `'none' | 'restrictive' | 'full'` — whether members may create
+    /// user-namespace layers.
+    pub user_template_policy: String,
+    pub global_templates_enabled: bool,
+    pub allow_services_outside_catalog: bool,
+}
+
+/// Read all template/catalog settings for an org in one shot.
 pub async fn get_template_settings(
     pool: &PgPool,
     id: Uuid,
-) -> Result<Option<(bool, bool, bool)>, sqlx::Error> {
+) -> Result<Option<TemplateSettings>, sqlx::Error> {
     let row = sqlx::query!(
-        "SELECT allow_user_templates, global_templates_enabled, allow_services_outside_catalog \
+        "SELECT user_template_policy, global_templates_enabled, allow_services_outside_catalog \
          FROM orgs WHERE id = $1",
         id,
     )
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r| {
-        (
-            r.allow_user_templates,
-            r.global_templates_enabled,
-            r.allow_services_outside_catalog,
-        )
+    Ok(row.map(|r| TemplateSettings {
+        user_template_policy: r.user_template_policy,
+        global_templates_enabled: r.global_templates_enabled,
+        allow_services_outside_catalog: r.allow_services_outside_catalog,
     }))
 }
 
@@ -372,35 +396,35 @@ pub async fn set_audit_response_body_mode(
     Ok(result.rows_affected() > 0)
 }
 
-/// Atomically update template settings and return the new values.
+/// Atomically update template settings and return the new values. Pass `None`
+/// for a field to leave it unchanged. `user_template_policy`, when supplied,
+/// must be one of `none` | `restrictive` | `full` (enforced by the CHECK).
 pub async fn update_template_settings(
     pool: &PgPool,
     id: Uuid,
-    allow_user_templates: Option<bool>,
+    user_template_policy: Option<&str>,
     global_templates_enabled: Option<bool>,
     allow_services_outside_catalog: Option<bool>,
-) -> Result<Option<(bool, bool, bool)>, sqlx::Error> {
+) -> Result<Option<TemplateSettings>, sqlx::Error> {
     let row = sqlx::query!(
         "UPDATE orgs SET \
-         allow_user_templates = COALESCE($2, allow_user_templates), \
+         user_template_policy = COALESCE($2, user_template_policy), \
          global_templates_enabled = COALESCE($3, global_templates_enabled), \
          allow_services_outside_catalog = COALESCE($4, allow_services_outside_catalog), \
          updated_at = now() \
          WHERE id = $1 \
-         RETURNING allow_user_templates, global_templates_enabled, allow_services_outside_catalog",
+         RETURNING user_template_policy, global_templates_enabled, allow_services_outside_catalog",
         id,
-        allow_user_templates,
+        user_template_policy,
         global_templates_enabled,
         allow_services_outside_catalog,
     )
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r| {
-        (
-            r.allow_user_templates,
-            r.global_templates_enabled,
-            r.allow_services_outside_catalog,
-        )
+    Ok(row.map(|r| TemplateSettings {
+        user_template_policy: r.user_template_policy,
+        global_templates_enabled: r.global_templates_enabled,
+        allow_services_outside_catalog: r.allow_services_outside_catalog,
     }))
 }
 

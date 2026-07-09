@@ -437,11 +437,11 @@ export async function setManagedSignin(session, settings) {
 
 /**
  * Patch the org's template/catalog settings. Accepts any subset of
- * `allow_user_templates`, `global_templates_enabled`,
+ * `user_template_policy` (`none`|`restrictive`|`full`), `global_templates_enabled`,
  * `allow_services_outside_catalog`.
  *
  * @param {import('./auth.mjs').Session} session
- * @param {{ allow_user_templates?: boolean, global_templates_enabled?: boolean, allow_services_outside_catalog?: boolean }} patch
+ * @param {{ user_template_policy?: 'none'|'restrictive'|'full', global_templates_enabled?: boolean, allow_services_outside_catalog?: boolean }} patch
  */
 export async function setTemplateSettings(session, patch) {
 	return api(session, `/v1/orgs/${session.orgId}/template-settings`, {
@@ -461,4 +461,31 @@ export async function enableGlobalTemplate(session, templateKey) {
 		method: 'POST',
 		body: { template_key: templateKey }
 	});
+}
+
+/**
+ * Fetch a template's resolved detail (actions, extends, delta, tier).
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {string} key
+ */
+export async function getTemplate(session, key) {
+	return api(session, `/v1/templates/${encodeURIComponent(key)}`);
+}
+
+/**
+ * Create a derived layer over `extends`. Degrades gracefully if the key already
+ * exists (409) by returning the existing detail, so screenshot scripts re-run
+ * cleanly against the shared stack.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {{ extends: string, key: string, delta: object, display_name?: string, user_level?: boolean }} input
+ */
+export async function seedDerivedLayer(session, input) {
+	try {
+		return await api(session, `/v1/templates`, { method: 'POST', body: input });
+	} catch (e) {
+		if (/** @type {any} */ (e)?.status === 409) return getTemplate(session, input.key);
+		throw e;
+	}
 }

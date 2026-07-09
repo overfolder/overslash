@@ -23,7 +23,7 @@ const session = await login('admin');
 await setTemplateSettings(session, {
 	global_templates_enabled: true,
 	allow_services_outside_catalog: false,
-	allow_user_templates: false
+	user_template_policy: 'none'
 });
 
 const snap = await makeSnapper(session);

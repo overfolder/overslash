@@ -58,14 +58,14 @@ async fn bootstrap(
 }
 
 // ---------------------------------------------------------------------------
-// User template CRUD — gated by allow_user_templates
+// User template CRUD — gated by user_template_policy
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_user_template_blocked_when_setting_off() {
     let (base, client, _org_id, _admin_key, write_key, _, _, _) = bootstrap(false).await;
 
-    // Default: allow_user_templates is false
+    // Default: user_template_policy is 'none'
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
@@ -87,13 +87,13 @@ async fn test_user_template_crud_when_setting_on() {
     let resp = client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"allow_user_templates": true}))
+        .json(&json!({"user_template_policy": "full"}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["allow_user_templates"], true);
+    assert_eq!(body["user_template_policy"], "full");
 
     // Write user creates a user-level template
     let resp = client
@@ -190,7 +190,7 @@ async fn test_user_cannot_modify_other_users_template() {
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"allow_user_templates": true}))
+        .json(&json!({"user_template_policy": "full"}))
         .send()
         .await
         .unwrap();
@@ -411,7 +411,7 @@ async fn test_template_settings_get_and_patch_roundtrip() {
         .await
         .unwrap();
     assert_eq!(settings["global_templates_enabled"], true);
-    assert_eq!(settings["allow_user_templates"], false);
+    assert_eq!(settings["user_template_policy"], "none");
     assert_eq!(settings["allow_services_outside_catalog"], false);
 
     let updated: Value = client
@@ -665,7 +665,7 @@ async fn test_admin_compliance_view() {
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"allow_user_templates": true}))
+        .json(&json!({"user_template_policy": "full"}))
         .send()
         .await
         .unwrap();
@@ -792,7 +792,7 @@ async fn test_template_operations_produce_audit_entries() {
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"allow_user_templates": true}))
+        .json(&json!({"user_template_policy": "full"}))
         .send()
         .await
         .unwrap();
@@ -854,7 +854,7 @@ async fn test_template_settings_write_user_forbidden() {
     let resp = client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&write_key).0, auth(&write_key).1)
-        .json(&json!({"allow_user_templates": true}))
+        .json(&json!({"user_template_policy": "full"}))
         .send()
         .await
         .unwrap();

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, status, created_at, updated_at FROM service_templates WHERE org_id = $1 AND (owner_identity_id IS NULL OR owner_identity_id = $2) AND status = 'active' ORDER BY key",
+  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, extends, delta, status, created_at, updated_at FROM service_templates WHERE org_id = $1 AND extends = $2 AND status = 'active' ORDER BY key",
   "describe": {
     "columns": [
       {
@@ -104,6 +104,28 @@
       },
       {
         "ordinal": 9,
+        "name": "extends",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "extends"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "delta",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "delta"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "status",
         "type_info": "Text",
         "origin": {
@@ -114,7 +136,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +147,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -139,7 +161,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Text"
       ]
     },
     "nullable": [
@@ -151,11 +173,13 @@
       false,
       false,
       false,
-      false,
+      true,
+      true,
+      true,
       false,
       false,
       false
     ]
   },
-  "hash": "c16fb3a453cbc0ab6432bd1c1b32251edc051f1531c7b7591f85b8fd0dfb5775"
+  "hash": "ada7dab2a3a39e9b0b62f04cdb76eab4de57c8614aa420d2e2411556f3594dcd"
 }

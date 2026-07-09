@@ -1,7 +1,26 @@
 # Layered service templates — one primitive for forks and catalog overlays
 
-**Status:** Draft — proposed (buildable spec). Supersedes the earlier "org catalog overlay" draft.
+**Status:** Approved — implemented (v1). Supersedes the earlier "org catalog overlay" draft.
 **Date:** 2026-07-08
+
+> **Implementation note (v1 shipped).** Migration 097 (`extends`/`delta`, nullable
+> `openapi`, shape CHECK, `user_template_policy`). The pure fold lives in
+> `crates/overslash-core/src/service_layer.rs` (`apply_delta` + `validate_delta`);
+> the recursive I/O walker in `crates/overslash-api/src/services/template_resolve.rs`
+> unifies the two former `resolve_template_definition` copies, so discovery,
+> instantiation, and execution all read the effective surface. Layer CRUD +
+> authority + the delete guard live in `routes/templates.rs` /
+> `services/platform_templates.rs`; the dashboard layer editor is
+> `dashboard/src/routes/services/templates/layer/`. Tests:
+> `crates/overslash-api/tests/layered_templates.rs` + the `service_layer` unit tests.
+>
+> **Two refinements settled during implementation:**
+> 1. **`extends` and `key` are decoupled.** `key == extends` → shadow-with-delta
+>    (the fold resolves the base one tier up, never itself); `key != extends` → a
+>    distinct catalog entry alongside the base. Both are supported.
+> 2. **Curation coexists** with layers to hide the raw global: the recommended
+>    corporate pattern is a derived layer (any key) **+ the #435 catalog gate**
+>    hiding the base global. The delta's template-level `hidden` hides *that layer*.
 **Related:** [Feedback 2026-07-08 — refocus/adapt-to-corporate](../feedback/2026-07-08-refocus-adapt-to-corporate.md), SPEC §9 (Service Templates and Services), PR #435 (curated catalogs + hard instantiation gate), PR #431/#432 (`use_default_connection`), #100 (three-tier template registry), #418/#416/#428 (remote-MCP autodiscovered services)
 
 > **Handover note.** This document is written to be built by an implementer with no prior context. It settles the model; §"Implementation map" points at the code that changes. Decisions were fixed in a design interview — where a plausible alternative was rejected, the rejection is stated so it isn't relitigated.
@@ -49,7 +68,7 @@ A **layer** is a `service_templates` row. Its `extends` field decides its nature
 
 Global (Overslash-shipped) templates remain an **in-memory registry loaded from `services/*.yaml`** — they are *not* rows (that's why `extends` holds a base **key**, resolved against the registry, and is **not an FK**). Org and user layers are `service_templates` rows as today.
 
-### Migration 095 (`095_layered_service_templates`)
+### Migration 097 (`097_layered_service_templates`)
 
 ```sql
 ALTER TABLE service_templates ADD COLUMN extends text;          -- base template key; NULL = standalone
@@ -185,7 +204,7 @@ Generalize the existing boolean to a three-valued org enum, migrated in place (`
 
 - Define all three enum values in the schema **now** so the classifier is a pure-compute add later with **no migration**.
 - **Rationale for gating user templating at all:** an *expansive* user-namespace layer adds a host/auth = a new egress channel through the org's gateway. Orgs must be able to forbid (`none`) or, later, restrict (`restrictive`) that.
-- **Policy downgrade is forward-only.** Flipping `full → none` blocks *new* user-layer creation, leaves existing user layers working, and surfaces them in the admin compliance view for deliberate pruning. It never yanks live layers out from under agents.
+- **Policy downgrade is forward-only.** Flipping `full → none` blocks *new* user-layer creation, leaves existing user layers **executing** (the fold never consults policy, so agents mid-workflow are never cut off), and surfaces them in the admin compliance view for deliberate pruning. **Editing is gated, execution is not:** a non-admin *modifying* an existing user-namespace layer must re-satisfy the policy — otherwise a downgraded member could edit their grandfathered layer into a broader grant (e.g. add an extension host under `none`), bypassing the restriction. Admins keep edit rights for compliance (pruning is delete; tightening is an admin edit).
 
 > **Rejected — a classifier in v1.** Its only job is to enforce the `restrictive` tier (non-admins creating org-safe curation). No corporate ask needs that yet, and because deltas are stored structurally, adding the classifier later classifies existing deltas by pure computation — no migration. Deferring costs nothing.
 
@@ -218,7 +237,7 @@ Two validation moments, both reusing the existing `POST /v1/templates/validate` 
 ## 8. v1 scope vs deferred
 
 **In v1:**
-- Layer model (`extends` + `delta`) + absorption of the existing org/user tier (migration 095).
+- Layer model (`extends` + `delta`) + absorption of the existing org/user tier (migration 097).
 - The fold, with live-pointer `extends` and `global → org → user` chains (cycle + target guards, cascade invalidation).
 - Masks: action `allowlist`/`denylist`, `risk` clamp-up, `disclose` add, relabel, template `hidden`.
 - Extensions: new actions + hosts (no auth, no rebinding); collision handling.
@@ -237,7 +256,7 @@ Two validation moments, both reusing the existing `POST /v1/templates/validate` 
 
 ## 9. Implementation map
 
-- **Schema/repo:** migration 095; `crates/overslash-db/src/repos/` template repo gains `extends`/`delta` read/write + cycle/target validation. `user_template_policy` migration off `allow_user_templates`.
+- **Schema/repo:** migration 097; `crates/overslash-db/src/repos/` template repo gains `extends`/`delta` read/write + cycle/target validation. `user_template_policy` migration off `allow_user_templates`.
 - **Registry + resolver:** the in-memory global loader (`services/*.yaml`) is unchanged as the base source; add a pure **`resolve(layer)` fold** (new module in `overslash-core`, no I/O — testable in isolation) and a resolved-template **cache with cascade invalidation** keyed on `(org, layer, base-version)`.
 - **Discovery/execution read effective templates:** `platform_templates.rs` / `platform_services.rs` (`GET /v1/templates`, `overslash_search`) and `kernel_create_service` + the action resolver in `routes/actions/call.rs` all resolve through the fold — hidden actions vanish everywhere, including execution (`unknown_action`), for free.
 - **Validation:** extend `overslash-core::template_validation` with delta validation; add the resolution-warning pass (reuses the report shape).

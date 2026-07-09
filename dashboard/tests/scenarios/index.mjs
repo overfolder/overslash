@@ -36,7 +36,9 @@ export {
 	setAuditResponseBodyMode,
 	setManagedSignin,
 	setTemplateSettings,
-	enableGlobalTemplate
+	enableGlobalTemplate,
+	getTemplate,
+	seedDerivedLayer
 } from './seed.mjs';
 export { makeSnapper } from './snap.mjs';
 export { connectGithubService } from './connect.mjs';

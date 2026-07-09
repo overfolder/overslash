@@ -19,6 +19,17 @@ impl Risk {
         !matches!(self, Risk::Read)
     }
 
+    /// Monotonic severity ordering: `read < write < delete`. Used by the
+    /// layered-template fold to clamp risk **upward only** (a mask may add
+    /// approvals, never remove them).
+    pub fn severity(self) -> u8 {
+        match self {
+            Risk::Read => 0,
+            Risk::Write => 1,
+            Risk::Delete => 2,
+        }
+    }
+
     /// Infer risk from an HTTP method.
     pub fn from_http_method(method: &str) -> Risk {
         match method.to_uppercase().as_str() {

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, status, created_at, updated_at FROM service_templates WHERE org_id = $1 AND owner_identity_id IS NULL AND status = 'active' ORDER BY key",
+  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, extends, delta, status, created_at, updated_at FROM service_templates WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND key = $3 AND status = 'active'",
   "describe": {
     "columns": [
       {
@@ -104,6 +104,28 @@
       },
       {
         "ordinal": 9,
+        "name": "extends",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "extends"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "delta",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "delta"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "status",
         "type_info": "Text",
         "origin": {
@@ -114,7 +136,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +147,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -138,7 +160,9 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -150,11 +174,13 @@
       false,
       false,
       false,
-      false,
+      true,
+      true,
+      true,
       false,
       false,
       false
     ]
   },
-  "hash": "a87ede791bf165341eb98c3d35c5140e467992f80020c5309c0f872af096d0eb"
+  "hash": "ade53272f03a3960c67a19d7a5f52d98d65b315024fb0624cd7e0720edf0a251"
 }

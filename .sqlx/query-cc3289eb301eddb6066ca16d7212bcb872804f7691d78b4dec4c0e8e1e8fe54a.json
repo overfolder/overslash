@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, status, created_at, updated_at FROM service_templates WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND key = $3 AND status = 'active'",
+  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, extends, delta, status, created_at, updated_at FROM service_templates WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -104,6 +104,28 @@
       },
       {
         "ordinal": 9,
+        "name": "extends",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "extends"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "delta",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "delta"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "status",
         "type_info": "Text",
         "origin": {
@@ -114,7 +136,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +147,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -138,9 +160,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -152,11 +172,13 @@
       false,
       false,
       false,
-      false,
+      true,
+      true,
+      true,
       false,
       false,
       false
     ]
   },
-  "hash": "a575c8e6807d2cb07cedc7efae1c66a878e25f51cb2ba49cc6350858b1b89ec4"
+  "hash": "cc3289eb301eddb6066ca16d7212bcb872804f7691d78b4dec4c0e8e1e8fe54a"
 }

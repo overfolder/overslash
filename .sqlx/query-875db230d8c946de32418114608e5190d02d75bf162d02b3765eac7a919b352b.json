@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE service_templates SET display_name = COALESCE($2, display_name), description = COALESCE($3, description), category = COALESCE($4, category), hosts = COALESCE($5, hosts), openapi = COALESCE($6, openapi), key = COALESCE($7, key), updated_at = now() WHERE id = $1 RETURNING id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, status, created_at, updated_at",
+  "query": "UPDATE service_templates SET status = 'active', updated_at = now() WHERE id = $1 AND status = 'draft' RETURNING id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, extends, delta, status, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -104,6 +104,28 @@
       },
       {
         "ordinal": 9,
+        "name": "extends",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "extends"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "delta",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "delta"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "status",
         "type_info": "Text",
         "origin": {
@@ -114,7 +136,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +147,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -138,13 +160,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text",
-        "Text",
-        "Text",
-        "TextArray",
-        "Jsonb",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -156,11 +172,13 @@
       false,
       false,
       false,
-      false,
+      true,
+      true,
+      true,
       false,
       false,
       false
     ]
   },
-  "hash": "b2cbf1c1a7cb4290b96bdf220b574c85ba62ccdb5cac69b8368eef55d86d4a84"
+  "hash": "875db230d8c946de32418114608e5190d02d75bf162d02b3765eac7a919b352b"
 }

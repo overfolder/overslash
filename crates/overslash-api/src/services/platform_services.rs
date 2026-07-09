@@ -897,7 +897,9 @@ fn template_action_scopes(def: &ServiceDefinition) -> Vec<String> {
     scopes.into_iter().collect()
 }
 
-/// Resolve the [`ServiceDefinition`] for a template key across user/org/global tiers.
+/// Resolve the [`ServiceDefinition`] for a template key through the
+/// layered-template fold (user/org/global tiers, derived layers folded over
+/// their base). Thin wrapper over the shared resolver.
 pub async fn resolve_template_definition(
     db: &sqlx::PgPool,
     registry: &overslash_core::registry::ServiceRegistry,
@@ -905,29 +907,8 @@ pub async fn resolve_template_definition(
     identity_id: Option<Uuid>,
     key: &str,
 ) -> Result<ServiceDefinition, AppError> {
-    if let Some(identity_id) = identity_id {
-        if let Some(t) = service_template::get_by_key(db, org_id, Some(identity_id), key).await? {
-            return compile_row(&t);
-        }
-    }
-    if let Some(t) = service_template::get_by_key(db, org_id, None, key).await? {
-        return compile_row(&t);
-    }
-    registry
-        .get(key)
-        .cloned()
-        .ok_or_else(|| AppError::NotFound(format!("template '{key}' not found")))
-}
-
-fn compile_row(t: &service_template::ServiceTemplateRow) -> Result<ServiceDefinition, AppError> {
-    overslash_core::openapi::compile_service(&t.openapi)
-        .map(|(def, _)| def)
-        .map_err(|errors| {
-            AppError::Internal(format!(
-                "stored openapi for '{}' failed to compile: {:?}",
-                t.key, errors
-            ))
-        })
+    crate::services::template_resolve::resolve_definition(db, registry, org_id, identity_id, key)
+        .await
 }
 
 /// Determine the template source tier and optional DB template id for a given key.
