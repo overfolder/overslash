@@ -427,7 +427,8 @@ CREATE TABLE public.oauth_mcp_clients (
     capabilities jsonb,
     client_info jsonb,
     protocol_version text,
-    last_session_id uuid
+    last_session_id uuid,
+    org_id uuid
 );
 
 
@@ -978,11 +979,11 @@ ALTER TABLE ONLY public.mcp_client_agent_bindings
 
 
 --
--- Name: mcp_client_agent_bindings mcp_client_agent_bindings_user_identity_id_client_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_user_client_org_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.mcp_client_agent_bindings
-    ADD CONSTRAINT mcp_client_agent_bindings_user_identity_id_client_id_key UNIQUE (user_identity_id, client_id);
+    ADD CONSTRAINT mcp_client_agent_bindings_user_client_org_key UNIQUE (user_identity_id, client_id, org_id);
 
 
 --
@@ -1592,6 +1593,13 @@ CREATE INDEX idx_oauth_handoff_codes_expires ON public.oauth_handoff_codes USING
 --
 
 CREATE INDEX idx_oauth_mcp_clients_active ON public.oauth_mcp_clients USING btree (created_at DESC) WHERE (is_revoked = false);
+
+
+--
+-- Name: idx_oauth_mcp_clients_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_mcp_clients_org ON public.oauth_mcp_clients USING btree (org_id);
 
 
 --
@@ -2264,6 +2272,14 @@ ALTER TABLE ONLY public.oauth_connection_flows
 
 ALTER TABLE ONLY public.oauth_connection_flows
     ADD CONSTRAINT oauth_connection_flows_service_instance_id_fkey FOREIGN KEY (service_instance_id) REFERENCES public.service_instances(id) ON DELETE SET NULL;
+
+
+--
+-- Name: oauth_mcp_clients oauth_mcp_clients_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_mcp_clients
+    ADD CONSTRAINT oauth_mcp_clients_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
 
 
 --
