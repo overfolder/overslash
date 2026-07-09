@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, created_at, updated_at\n         FROM connections WHERE id = $1 AND org_id = $2",
+  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, keep, created_at, updated_at\n         FROM connections WHERE org_id = $1 AND id = ANY($2)",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,17 @@
       },
       {
         "ordinal": 11,
+        "name": "keep",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "keep"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -150,7 +161,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "UuidArray"
       ]
     },
     "nullable": [
@@ -166,8 +177,9 @@
       true,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "33a2d858834e64d427f398fc997006a402136cf0944fc3b64f8b0462851b7dff"
+  "hash": "5a07e4b466141908ad822897d0308c44b288a7795d5c65737dc972bcae762e6d"
 }

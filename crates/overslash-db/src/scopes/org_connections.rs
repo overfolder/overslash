@@ -217,6 +217,23 @@ impl OrgScope {
         connection::delete_by_org(self.db(), id, self.org_id()).await
     }
 
+    /// Atomically delete a connection for the service-deletion auto-cleanup —
+    /// only when it isn't marked `keep` and no service instance (any status)
+    /// still references it. Returns whether it deleted. See
+    /// [`connection::delete_if_orphaned`].
+    pub async fn delete_connection_if_orphaned(
+        &self,
+        connection_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        connection::delete_if_orphaned(self.db(), self.org_id(), connection_id).await
+    }
+
+    /// Set or clear the `keep` preserve flag on a connection, scoped to this
+    /// org. Returns `false` if the id belongs to another tenant.
+    pub async fn set_connection_keep(&self, id: Uuid, keep: bool) -> Result<bool, sqlx::Error> {
+        connection::set_keep(self.db(), self.org_id(), id, keep).await
+    }
+
     /// Promote a connection to be the default for its provider, scoped to this
     /// org — demoting any sibling that held the flag *within the connection's
     /// own owner identity*, not the caller's. Powers an org-admin setting the

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, created_at, updated_at\n         FROM connections WHERE org_id = $1 ORDER BY created_at DESC",
+  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, keep, created_at, updated_at\n         FROM connections WHERE org_id = $1 ORDER BY created_at DESC",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,17 @@
       },
       {
         "ordinal": 11,
+        "name": "keep",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "keep"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -165,8 +176,9 @@
       true,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "a699726dfe46e87e67b58e1beb6270e9e47d043710bf1cbed24303aa525c1b0b"
+  "hash": "598c4184790f3971cc5634a2afc2b0f6875e47820720e181e072215c4432c413"
 }

@@ -11,7 +11,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, OrgAcl, ReqExt, WriteAcl},
+    extractors::{AuthContext, ClientIp, OrgAcl, ReqExt, WriteAcl},
     services::{
         group_ceiling,
         platform_caller::PlatformCallContext,
@@ -352,11 +352,28 @@ async fn update_service_status(
     Ok(Json(platform_services::row_to_detail(row)))
 }
 
-/// Delete a service instance.
+/// Query params for `DELETE /v1/services/{name}`.
+#[derive(Deserialize, Default)]
+struct DeleteServiceQuery {
+    /// Opt out of the connection auto-cleanup. When true, the OAuth connection
+    /// the service was bound to is left intact even if nothing else references
+    /// it. Default (false) deletes an orphaned, unprotected connection.
+    #[serde(default)]
+    keep_connection: bool,
+}
+
+/// Delete a service instance. By default this also cleans up the OAuth
+/// connection the service was bound to, but only when it is safe: the caller
+/// did not pass `keep_connection=true`, the connection is not marked `keep`,
+/// and no other service instance (any status) still references it.
 async fn delete_service(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
+    ip: ClientIp,
     scope: OrgScope,
     Path(name): Path<String>,
+    Query(q): Query<DeleteServiceQuery>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
     // Destructive op: intentionally do NOT reach up to the ceiling user for
@@ -382,11 +399,66 @@ async fn delete_service(
 
     require_owner_or_admin(&instance, &auth)?;
 
+    // Capture the bound connection before deleting — the row is about to go.
+    let conn_id = instance.connection_id;
+
     let deleted = scope.delete_service_instance(instance.id).await?;
     if !deleted {
         return Err(AppError::NotFound("service instance not found".into()));
     }
-    Ok(Json(serde_json::json!({ "deleted": true })))
+
+    // Cascade: clean up the now-possibly-orphaned connection. Best-effort — the
+    // service is already deleted, so a cleanup error must not fail the request;
+    // log it and report the connection as not deleted.
+    let mut connection_deleted = false;
+    if let (Some(cid), false) = (conn_id, q.keep_connection) {
+        connection_deleted =
+            cleanup_orphaned_connection(&state, &ext, &scope, &auth, ip.0.as_deref(), cid)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        connection_id = %cid,
+                        error = %e,
+                        "service delete: orphaned-connection cleanup failed"
+                    );
+                    false
+                });
+    }
+
+    Ok(Json(
+        serde_json::json!({ "deleted": true, "connection_deleted": connection_deleted }),
+    ))
+}
+
+/// Best-effort cleanup of the OAuth connection a just-deleted service was bound
+/// to. Deletes it only when the connection isn't marked `keep` and no other
+/// service instance (any status) references it — leaving a shared or protected
+/// connection intact. The eligibility check and the delete are one atomic
+/// statement (see [`OrgScope::delete_connection_if_orphaned`]) so a concurrent
+/// re-bind can't be silently nulled by the `ON DELETE SET NULL` FK. Returns
+/// whether the connection was deleted; errors are surfaced to the caller for
+/// logging but never undo the service delete.
+async fn cleanup_orphaned_connection(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    scope: &OrgScope,
+    auth: &OrgAcl,
+    ip: Option<&str>,
+    connection_id: Uuid,
+) -> Result<bool> {
+    if scope.delete_connection_if_orphaned(connection_id).await? {
+        super::connections::fire_connection_deleted(
+            state,
+            ext,
+            auth.org_id,
+            auth.identity_id,
+            ip,
+            connection_id,
+        )
+        .await;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// List actions for a service instance (delegates to the underlying template).

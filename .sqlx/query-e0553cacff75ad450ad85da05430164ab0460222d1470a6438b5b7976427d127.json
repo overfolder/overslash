@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, created_at, updated_at\n         FROM connections\n         WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3\n           AND ($4::text IS NULL OR account_email IS NOT DISTINCT FROM $4)\n         ORDER BY is_default DESC, created_at DESC\n         LIMIT 1",
+  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, keep, created_at, updated_at\n         FROM connections WHERE id = $1 AND org_id = $2",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,17 @@
       },
       {
         "ordinal": 11,
+        "name": "keep",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "keep"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -150,9 +161,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -168,8 +177,9 @@
       true,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "65930eb86677c4de9fc43e377e847fdab1746ab441f77a9fbf32b64355b5c936"
+  "hash": "e0553cacff75ad450ad85da05430164ab0460222d1470a6438b5b7976427d127"
 }

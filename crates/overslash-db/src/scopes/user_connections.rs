@@ -19,7 +19,7 @@ impl UserScope {
             ConnectionRow,
             "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,
                     c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,
-                    c.byoc_credential_id, c.is_default,
+                    c.byoc_credential_id, c.is_default, c.keep,
                     c.created_at, c.updated_at
              FROM connections c
              JOIN identities i ON i.id = c.identity_id
@@ -40,7 +40,7 @@ impl UserScope {
             ConnectionRow,
             "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,
                     c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,
-                    c.byoc_credential_id, c.is_default,
+                    c.byoc_credential_id, c.is_default, c.keep,
                     c.created_at, c.updated_at
              FROM connections c
              JOIN identities i ON i.id = c.identity_id
@@ -64,7 +64,7 @@ impl UserScope {
             ConnectionRow,
             "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,
                     c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,
-                    c.byoc_credential_id, c.is_default,
+                    c.byoc_credential_id, c.is_default, c.keep,
                     c.created_at, c.updated_at
              FROM connections c
              JOIN identities i ON i.id = c.identity_id

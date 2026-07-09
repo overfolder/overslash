@@ -84,6 +84,9 @@
 	let loadAbort: AbortController | null = null;
 	let destroyed = false;
 	let confirmDelete = $state(false);
+	// When the service is bound to a connection, offer to preserve it. Default
+	// off → the backend cleans up the connection if nothing else uses it.
+	let keepConnection = $state(false);
 	let activeTab = $state<'overview' | 'credentials' | 'actions'>('overview');
 
 	// Group-assignment form state
@@ -448,7 +451,7 @@
 		if (!svc) return;
 		confirmDelete = false;
 		try {
-			await deleteService(svc.id);
+			await deleteService(svc.id, { keepConnection });
 			await goto('/services');
 		} catch (e) {
 			error = e instanceof ApiError ? `Delete failed (${e.status})` : 'Delete failed';
@@ -616,7 +619,14 @@
 							Activate
 						</button>
 					{/if}
-					<button type="button" class="btn danger" onclick={() => (confirmDelete = true)}>Delete</button>
+					<button
+						type="button"
+						class="btn danger"
+						onclick={() => {
+							keepConnection = false;
+							confirmDelete = true;
+						}}>Delete</button
+					>
 				{/if}
 			</div>
 		</header>
@@ -1011,15 +1021,37 @@
 	open={confirmDelete}
 	title="Delete service?"
 	message={svc
-		? `Delete ${svc.name}? Agents using this service will lose access. This cannot be undone.`
+		? `Delete ${svc.name}? Agents using this service will lose access. This cannot be undone.` +
+			(svc.connection_id
+				? ' Its OAuth connection is also removed if no other service uses it.'
+				: '')
 		: ''}
 	confirmLabel="Delete"
 	danger
 	onconfirm={doDelete}
 	oncancel={() => (confirmDelete = false)}
-/>
+>
+	{#if svc?.connection_id}
+		<label class="keep-conn">
+			<input type="checkbox" bind:checked={keepConnection} />
+			<span>Keep the OAuth connection (don't remove even if unused)</span>
+		</label>
+	{/if}
+</ConfirmDialog>
 
 <style>
+	.keep-conn {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.5rem;
+		margin: -0.5rem 0 1.25rem;
+		font-size: 0.85rem;
+		color: var(--color-text-muted);
+		cursor: pointer;
+	}
+	.keep-conn input {
+		margin-top: 0.15rem;
+	}
 	.page {
 		max-width: 1000px;
 	}
