@@ -472,7 +472,12 @@ async fn db_row_to_detail(
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
     let runtime = runtime_string(def);
-    let mcp = t.openapi.as_ref().and_then(|doc| mcp_detail_from(def, doc));
+    // Build the MCP detail from the *resolved* def so a derived MCP layer (which
+    // has no openapi of its own) still returns a `mcp` object consistent with
+    // `runtime: "mcp"`. The openapi doc only supplies `discovered_at`; a derived
+    // layer has none, so pass `Null` and let it resolve to `None`.
+    let mcp_doc = t.openapi.clone().unwrap_or(serde_json::Value::Null);
+    let mcp = mcp_detail_from(def, &mcp_doc);
     Ok(TemplateDetail {
         key: t.key,
         display_name: def.display_name.clone(),

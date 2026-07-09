@@ -601,6 +601,69 @@ async fn delete_guard_does_not_over_block_across_users() {
     );
 }
 
+// ── A derived layer over an MCP base keeps a consistent mcp detail ─────────
+
+#[tokio::test]
+async fn derived_mcp_layer_reports_mcp_detail() {
+    let (base, client, _org, admin_key, _write) = bootstrap().await;
+
+    // Pinned MCP base (autodiscover: false → no upstream call on create).
+    let mcp_yaml = r#"openapi: 3.1.0
+info:
+  title: MCP Base
+  x-overslash-key: mcpbase
+x-overslash-runtime: mcp
+paths: {}
+x-overslash-mcp:
+  url: https://mcp.example.com/mcp
+  auth: { kind: none }
+  autodiscover: false
+  tools:
+    - name: echo
+      risk: read
+      description: Echo
+      input_schema:
+        type: object
+        properties: { x: { type: string } }
+        required: [x]
+"#;
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "openapi": mcp_yaml }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "mcp base create: {:?}",
+        resp.text().await
+    );
+
+    // Derived layer over the MCP base.
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "extends": "mcpbase", "key": "mcpbase_d", "delta": {} }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // The derived layer has no openapi of its own, but its effective def is MCP,
+    // so `runtime: "mcp"` must come with a non-null `mcp` object.
+    let detail = get_template(&base, &client, "mcpbase_d", &admin_key).await;
+    assert_eq!(detail["runtime"], "mcp");
+    assert!(
+        detail["mcp"].is_object(),
+        "derived MCP layer must return an mcp object, got: {}",
+        detail["mcp"]
+    );
+    assert_eq!(detail["mcp"]["url"], "https://mcp.example.com/mcp");
+    assert_eq!(detail["mcp"]["auth_kind"], "none");
+}
+
 // ── validate-delta resolves the base in the layer's owner context ──────────
 
 #[tokio::test]
