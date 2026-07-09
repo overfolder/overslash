@@ -244,6 +244,11 @@ struct AdminTemplateSummary {
     /// Base template key when this row is a derived layer. Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     extends: Option<String>,
+    /// The raw stored delta for a derived layer, so the admin catalog can
+    /// toggle `hidden` (and other masks) without a second fetch. Omitted for
+    /// standalone/global rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delta: Option<serde_json::Value>,
     /// Count of fold-time resolution warnings, if any.
     #[serde(skip_serializing_if = "is_zero")]
     warnings: usize,
@@ -1587,6 +1592,7 @@ async fn list_templates_admin(
             enabled,
             hidden: svc.hidden,
             extends: None,
+            delta: None,
             warnings: 0,
         });
     }
@@ -1613,6 +1619,7 @@ async fn list_templates_admin(
             enabled: true, // org/user templates are always "enabled"
             hidden: s.hidden,
             extends: t.extends,
+            delta: t.delta,
             warnings: s.warnings,
         });
     }

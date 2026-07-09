@@ -906,27 +906,11 @@
 		<section class="card">
 			<h2>Service catalog</h2>
 			<p class="section-desc">
-				Controls which global service templates your members can discover and
-				turn into services. Curate the catalog per-template from the
-				<a href="/services?tab=catalog">Services → Catalog</a> tab.
+				Which services members can discover — including the “make all global
+				services available” default and per-service visibility — is curated from
+				the <a href="/services?tab=catalog">Services → Catalog</a> tab.
 			</p>
 			{#if templateSettings}
-				<div class="toggle-row">
-					<div class="toggle-body">
-						<div class="toggle-label">Make all global services available</div>
-						<div class="toggle-help">
-							When on (default), every shipped global template is available to
-							members. When off, only the templates you explicitly enable in the
-							Catalog tab appear — everything else is hidden from discovery.
-						</div>
-					</div>
-					<ToggleSwitch
-						checked={templateSettings.global_templates_enabled}
-						onchange={(next) => patchTemplateSettings({ global_templates_enabled: next })}
-						disabled={templateSettingsSaving}
-						label="Make all global services available"
-					/>
-				</div>
 				<div class="toggle-row">
 					<div class="toggle-body">
 						<div class="toggle-label">Allow services outside the curated catalog</div>

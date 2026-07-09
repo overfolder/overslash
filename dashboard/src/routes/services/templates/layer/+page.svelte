@@ -4,6 +4,7 @@
 	import { createTemplate, updateTemplate, deleteTemplate, validateDelta } from '$lib/api/services';
 	import type { Delta, ValidationResult, ActionSummary } from '$lib/types';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	let { data } = $props();
 
@@ -27,12 +28,18 @@
 	// ── Editable state, seeded from the existing delta when editing ──────────
 	// svelte-ignore state_referenced_locally
 	let layerKey = $state(data.layer?.key ?? baseKey);
+	// The key is only editable while creating; it's part of the title with an
+	// inline pencil rather than a form field.
+	let keyEditing = $state(false);
 	// svelte-ignore state_referenced_locally
 	let displayName = $state(data.layer?.display_name ?? base?.display_name ?? '');
 	// svelte-ignore state_referenced_locally
-	let hidden = $state(existingDelta.hidden ?? false);
-	// svelte-ignore state_referenced_locally
 	let scope = $state<'org' | 'user'>('org');
+
+	// Catalog visibility (`delta.hidden`) is now managed from the catalog admin
+	// view, not this editor. Carry any existing value forward so saving the
+	// delta here never silently un-hides a layer.
+	const inheritedHidden = existingDelta.hidden ?? false;
 
 	// Allowed action keys. Seed: an existing allowlist, else all base actions
 	// minus any denylist. Toggling a checkbox off excludes the action.
@@ -102,7 +109,8 @@
 			}
 		}
 		if (Object.keys(patch).length) delta.action_patch = patch;
-		if (hidden) delta.hidden = true;
+		// Visibility is toggled from the catalog; preserve any existing value.
+		if (inheritedHidden) delta.hidden = true;
 		if (displayName && displayName !== base?.display_name) delta.display_name = displayName;
 		if (extensionsText.trim()) {
 			delta.extensions = JSON.parse(extensionsText);
@@ -116,7 +124,6 @@
 		// Track the inputs so this re-runs on change.
 		void allowed;
 		void riskOverride;
-		void hidden;
 		void displayName;
 		void extensionsText;
 		void scope;
@@ -203,13 +210,39 @@
 		<div class="breadcrumb">
 			<a href="/services?tab=catalog" class="back">Catalog</a>
 			<span class="sep">/</span>
-			<span>{editing ? 'Edit layer' : 'Customize'}:</span>
-			<span class="name">{base?.display_name ?? baseKey}</span>
+			<span>{editing ? 'Edit layer' : 'Customize'}: {base?.display_name ?? baseKey}</span>
+		</div>
+		<div class="title-row">
+			{#if keyEditing}
+				<input
+					class="key-input"
+					type="text"
+					bind:value={layerKey}
+					placeholder={baseKey}
+					onblur={() => (keyEditing = false)}
+					onkeydown={(e) => {
+						if (e.key === 'Enter' || e.key === 'Escape') keyEditing = false;
+					}}
+				/>
+			{:else}
+				<h1 class="layer-key">{layerKey}</h1>
+				{#if !editing}
+					<button
+						type="button"
+						class="key-edit"
+						title="Edit key"
+						aria-label="Edit layer key"
+						onclick={() => (keyEditing = true)}
+					>
+						✎
+					</button>
+				{/if}
+			{/if}
 		</div>
 		<p class="subtitle">
 			A <strong>layer</strong> curates its base
 			(<code>{baseKey}</code>) while tracking upstream updates. Trim actions, raise
-			risk, hide it, or relabel — the base is never copied.
+			risk, or relabel — the base is never copied.
 		</p>
 	</header>
 
@@ -222,24 +255,9 @@
 		<section class="card">
 			<div class="field-row">
 				<label class="field">
-					<span class="lbl">Layer key</span>
-					<input
-						type="text"
-						bind:value={layerKey}
-						disabled={editing}
-						placeholder={baseKey}
-					/>
-					<span class="hint">
-						Same as <code>{baseKey}</code> → replaces it in the catalog (shadow). A
-						distinct key → a separate curated entry alongside the base.
-					</span>
-				</label>
-				<label class="field">
 					<span class="lbl">Display name</span>
 					<input type="text" bind:value={displayName} placeholder={base.display_name} />
 				</label>
-			</div>
-			<div class="field-row">
 				{#if !editing}
 					<label class="field narrow">
 						<span class="lbl">Scope</span>
@@ -249,10 +267,6 @@
 						</select>
 					</label>
 				{/if}
-				<label class="checkbox-field">
-					<input type="checkbox" bind:checked={hidden} />
-					<span>Hide this layer from the catalog</span>
-				</label>
 			</div>
 		</section>
 
@@ -265,22 +279,23 @@
 				</div>
 			</div>
 			<p class="card-desc">
-				Unchecked actions are removed from the effective template — they vanish
+				Actions toggled off are removed from the effective template — they vanish
 				from discovery <em>and</em> execution. New tools an autodiscovered base adds
 				later stay excluded until you allow them.
 			</p>
 			<ul class="action-list">
 				{#each baseActions as a (a.key)}
 					<li class="action-row" class:excluded={!allowed.has(a.key)}>
-						<label class="action-main">
-							<input
-								type="checkbox"
+						<div class="action-main">
+							<ToggleSwitch
 								checked={allowed.has(a.key)}
-								onchange={(e) => toggleAction(a.key, (e.currentTarget as HTMLInputElement).checked)}
+								onchange={(next) => toggleAction(a.key, next)}
+								size="sm"
+								label={`Include ${a.key}`}
 							/>
 							<span class="action-key">{a.key}</span>
 							<span class="action-desc">{a.description}</span>
-						</label>
+						</div>
 						<div class="action-risk">
 							<span class="base-risk risk-{a.risk}">{a.risk}</span>
 							{#if allowed.has(a.key) && clampOptions(a.risk).length > 1}
@@ -384,8 +399,42 @@
 	.sep {
 		color: var(--color-text-muted);
 	}
-	.name {
-		font-weight: 600;
+	.title-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-top: 0.4rem;
+	}
+	.layer-key {
+		margin: 0;
+		font-family: var(--font-mono, monospace);
+		font-size: 1.4rem;
+		font-weight: 700;
+	}
+	.key-edit {
+		background: none;
+		border: none;
+		cursor: pointer;
+		font-size: 1rem;
+		color: var(--color-text-muted);
+		padding: 0.1rem 0.3rem;
+		border-radius: 4px;
+		line-height: 1;
+	}
+	.key-edit:hover {
+		color: var(--color-primary, #6366f1);
+		background: var(--color-bg-muted, rgba(0, 0, 0, 0.04));
+	}
+	.key-input {
+		font-family: var(--font-mono, monospace);
+		font-size: 1.3rem;
+		font-weight: 700;
+		padding: 0.15rem 0.4rem;
+		border: 1px solid var(--color-primary, #6366f1);
+		border-radius: 5px;
+		background: var(--color-bg, #fff);
+		color: inherit;
+		min-width: 12rem;
 	}
 	.subtitle {
 		margin: 0.5rem 0 0;
@@ -424,9 +473,6 @@
 		gap: 1rem;
 		flex-wrap: wrap;
 	}
-	.field-row + .field-row {
-		margin-top: 0.75rem;
-	}
 	.field {
 		display: flex;
 		flex-direction: column;
@@ -455,17 +501,6 @@
 	}
 	.field input:disabled {
 		opacity: 0.6;
-	}
-	.hint {
-		font-size: 0.72rem;
-		color: var(--color-text-muted);
-	}
-	.checkbox-field {
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
-		font-size: 0.85rem;
-		align-self: flex-end;
 	}
 	.bulk {
 		display: flex;

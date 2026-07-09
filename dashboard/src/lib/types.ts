@@ -237,6 +237,9 @@ export interface AdminTemplateSummary extends TemplateSummary {
   owner_identity_id?: string | null;
   /** For global rows: whether the template is in the org's curated catalog. */
   enabled: boolean;
+  /** Raw stored delta for a derived layer, so the catalog can toggle `hidden`
+   * without a second fetch. Absent for standalone/global rows. */
+  delta?: Delta;
 }
 
 /** Whether org members may create user-namespace layers. `restrictive` is
