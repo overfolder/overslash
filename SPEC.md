@@ -1182,7 +1182,7 @@ When two instances share the same `account_email` (two services pinned to one OA
 
 **Action definitions are DRY; rows are not.** Actions are defined once on the template (in the global YAML under `services/` or in `service_templates.openapi`). A keyword match against `(template, action)` fans out into one row per visible instance so the agent can pick a callable directly; the underlying definition is shared.
 
-**Visibility** matches the rest of the API: identity-bound calls apply Layer 1 group ceiling and tier visibility (global / org / user with `allow_user_templates`). Hidden global templates and out-of-ceiling instances never appear in either default or `include_catalog=true` output.
+**Visibility** matches the rest of the API: identity-bound calls apply Layer 1 group ceiling and tier visibility (global / org / user, gated by `user_template_policy`). Hidden global templates and out-of-ceiling instances never appear in either default or `include_catalog=true` output.
 
 Search is **cheap and idempotent** by design. Agents are expected to re-query rather than maintain client-side state. There is no subscribe API for service catalog changes — re-call search after any state-changing operation (e.g. after `create_service_from_template` returns active).
 

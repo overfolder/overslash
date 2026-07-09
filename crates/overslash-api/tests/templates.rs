@@ -58,14 +58,14 @@ async fn bootstrap(
 }
 
 // ---------------------------------------------------------------------------
-// User template CRUD — gated by allow_user_templates
+// User template CRUD — gated by user_template_policy
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_user_template_blocked_when_setting_off() {
     let (base, client, _org_id, _admin_key, write_key, _, _, _) = bootstrap(false).await;
 
-    // Default: allow_user_templates is false
+    // Default: user_template_policy is 'none'
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)

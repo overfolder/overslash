@@ -62,10 +62,10 @@ test('agent authors a user-level template via MCP and is rejected when publishin
 	const session = await login('admin');
 
 	// Org must allow user templates for `user_level:true` to succeed.
-	// Idempotent — re-runs against the same stack just re-set the flag.
+	// Idempotent — re-runs against the same stack just re-set the policy.
 	await api(session, `/v1/orgs/${session.orgId}/template-settings`, {
 		method: 'PATCH',
-		body: { allow_user_templates: true }
+		body: { user_template_policy: 'full' }
 	});
 
 	// Seed a regular (non-admin) user as the agent's owner. The platform
