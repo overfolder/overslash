@@ -102,7 +102,7 @@
 	const serviceLabel = $derived(primaryKey ? humanize(primaryKey.service) : '—');
 
 	const disclosedSplit = $derived(splitDisclosed(current.disclosed_fields));
-	const primaryDisclosed = $derived(disclosedSplit.primary);
+	const primaryDisclosed = $derived(disclosedSplit.primaries);
 	const remainingDisclosed = $derived(disclosedSplit.remaining);
 
 	const agentName = $derived(extractAgentName(current.identity_path, current.requesting_identity_id));
@@ -155,15 +155,17 @@
 				<h2 class="title">
 					Allow <code class="mono mono-accent">{agentName}</code> to {current.action_summary}?
 				</h2>
-				{#if primaryDisclosed && primaryDisclosed.value !== null}
-					<div class="subtext">
-						<span class="muted">{primaryDisclosed.label}: </span>
-						<em>"{primaryDisclosed.value}"</em>
-						{#if primaryDisclosed.truncated}
-							<span class="muted small"> (truncated)</span>
-						{/if}
-					</div>
-				{/if}
+				{#each primaryDisclosed as p}
+					{#if p.value !== null}
+						<div class="subtext">
+							<span class="muted">{p.label}: </span>
+							<em>"{p.value}"</em>
+							{#if p.truncated}
+								<span class="muted small"> (truncated)</span>
+							{/if}
+						</div>
+					{/if}
+				{/each}
 			</div>
 
 			<div class="actions">

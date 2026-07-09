@@ -87,15 +87,22 @@ export function utf8ByteLength(s: string): number {
 	return utf8Encoder.encode(s).byteLength;
 }
 
-/** Split disclosed fields into the principal (first renderable) field and the rest. */
+/**
+ * Split disclosed fields into the template-designated "hero" fields and the
+ * rest. A field is a hero only when the template explicitly marked its
+ * `disclose[]` entry `primary` (and it resolved to a value). Multiple fields
+ * may be primary — they are returned in declaration order. When no field is
+ * marked primary, `primaries` is empty and every field falls into `remaining`,
+ * so the UI renders a uniform table with nothing highlighted.
+ */
 export function splitDisclosed(fields: DisclosedField[] | null): {
-	primary: DisclosedField | null;
+	primaries: DisclosedField[];
 	remaining: DisclosedField[];
 } {
 	const all = fields ?? [];
-	const primary = all.find((f) => f.value !== null && !f.error) ?? null;
-	const remaining = primary ? all.filter((f) => f !== primary) : all;
-	return { primary, remaining };
+	const primaries = all.filter((f) => f.primary && f.value !== null && !f.error);
+	const remaining = primaries.length ? all.filter((f) => !primaries.includes(f)) : all;
+	return { primaries, remaining };
 }
 
 /**

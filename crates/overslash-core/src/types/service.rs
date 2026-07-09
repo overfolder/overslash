@@ -266,6 +266,11 @@ pub struct DisclosureField {
     pub filter: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_chars: Option<usize>,
+    /// When true, this field is rendered as a prominent "hero" value on the
+    /// approval detail screen rather than collapsed into the parameter table.
+    /// Multiple fields may be primary — they render in declaration order.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub primary: bool,
 }
 
 /// Describes how to resolve an opaque ID into a human-readable display name.

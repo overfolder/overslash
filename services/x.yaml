@@ -33,6 +33,7 @@ paths:
       risk: write
       disclose:
         - label: Text
+          primary: true
           filter: .body.text
           max_chars: 500
       requestBody:

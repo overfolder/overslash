@@ -230,6 +230,11 @@ export interface DisclosedField {
 	/** True when the value hit the per-field `max_chars` clamp or a 10 KB
 	 *  hard ceiling. The returned `value` is still the prefix. */
 	truncated: boolean;
+	/** True when the template marked this disclose entry `primary`. The detail
+	 *  screen renders primary fields as prominent "hero" values (multiple
+	 *  primaries render in declaration order); unmarked fields form the table.
+	 *  Omitted (falsy) when false — the backend skips serializing it. */
+	primary?: boolean;
 }
 
 /** Mirrors crates/overslash-api/src/routes/approvals.rs ApprovalResponse */
