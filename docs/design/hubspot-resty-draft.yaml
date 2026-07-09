@@ -1,0 +1,203 @@
+# ─────────────────────────────────────────────────────────────────────────
+# DRAFT — HubSpot RESTy / scoped / monotype tools (proposal, not loaded)
+#
+# This augments the EXISTING services/hubspot.yaml. The 14 raw MCP tools there
+# (search_crm_objects, get_crm_objects, manage_crm_objects, …) stay as-is —
+# they remain the escape hatch for object types we don't wrap and for advanced
+# filterGroups/SQL. This file adds a second, higher-level surface: one small,
+# single-purpose tool per (object-type × operation), so an agent calls
+# `get_contact(id)` instead of `get_crm_objects(objectType:"contacts", objectIds:[id])`.
+#
+# Two tiers, by what the runtime supports:
+#
+#   TIER 1 — WORKS TODAY. Alias the action to a raw tool via `mcp_tool`, and
+#     pin the discriminator (objectType) with a param `default`. No runtime
+#     change. Limitation: the discriminator stays VISIBLE in the schema and is
+#     agent-overridable (it's a default, not a lock); param names/shapes must
+#     stay identical to the upstream tool (objectIds is still an array, writes
+#     still use the createRequest/updateRequest envelope), because args are
+#     forwarded verbatim.
+#
+#   TIER 2 — NEEDS `x-overslash-transform` (new). A per-action jq program that
+#     rewrites the agent's params into the upstream tool's arguments before
+#     tools/call. This is what buys true REST shapes: scalar `id` → `objectIds:[id]`,
+#     a locked/hidden objectType, flat `properties` → nested createRequest, and
+#     auto-injection of HubSpot's `chatInsights` telemetry the agent shouldn't
+#     have to fill. Seam: crates/overslash-api/src/routes/actions/resolve.rs,
+#     replace `let arguments = serde_json::to_value(&req.params)` with
+#     `apply_transform(action, &req.params)` (reuse the jq engine already used by
+#     x-overslash-disclose). Absent transform → verbatim (today's behaviour).
+#
+# Availability gating (from get_user_details on the live hub) decides which
+# verbs each resource gets: contacts/companies/deals/tickets = full CRUD;
+# invoices/quotes/subscriptions = read-only (search+get, no create/update);
+# payment_links = write-only (create, no get).
+# ─────────────────────────────────────────────────────────────────────────
+
+# NOTE: these entries slot into `x-overslash-mcp.tools:` alongside the raw tools.
+
+# ═══ TIER 1 — scoped monotype tools that work with today's runtime ═══════════
+
+- name: search_contacts
+  mcp_tool: search_crm_objects
+  x-overslash-risk: read
+  description: "Search contacts by free text or property filters"
+  input_schema:
+    type: object
+    properties:
+      # Pinned via default; apply_defaults fills it when the agent omits it.
+      objectType: { type: string, default: "contacts", description: "Locked to contacts — leave unset." }
+      query: { type: string, description: "Free-text over email/name/phone/company." }
+      filterGroups: { type: array, items: { type: object }, description: "Advanced filters (see raw search_crm_objects)." }
+      properties: { type: array, items: { type: string }, description: "Property names to return." }
+      sorts: { type: array, items: { type: object } }
+      limit: { type: integer, default: 100, minimum: 1, maximum: 200 }
+      offset: { type: integer }
+    required: []
+
+- name: search_deals
+  mcp_tool: search_crm_objects
+  x-overslash-risk: read
+  description: "Search deals by free text or property filters"
+  input_schema:
+    type: object
+    properties:
+      objectType: { type: string, default: "deals", description: "Locked to deals — leave unset." }
+      query: { type: string }
+      filterGroups: { type: array, items: { type: object } }
+      properties: { type: array, items: { type: string } }
+      sorts: { type: array, items: { type: object } }
+      limit: { type: integer, default: 100, minimum: 1, maximum: 200 }
+      offset: { type: integer }
+    required: []
+
+# ═══ TIER 2 — true REST shapes (require x-overslash-transform) ══════════════════
+
+- name: get_contact
+  mcp_tool: get_crm_objects
+  x-overslash-risk: read
+  description: "Fetch a single contact by id"
+  input_schema:
+    type: object
+    properties:
+      id: { type: string, description: "Contact record id (hs_object_id)." }
+      properties: { type: array, items: { type: string }, description: "Property names to return; omit for defaults." }
+    required: [id]
+  # {id:"123"} → {objectType:"contacts", objectIds:["123"], properties:[...]}
+  x-overslash-transform: |
+    { objectType: "contacts",
+      objectIds: [ .id ],
+      properties: ( .properties // [] ) }
+
+- name: get_deal
+  mcp_tool: get_crm_objects
+  x-overslash-risk: read
+  description: "Fetch a single deal by id"
+  input_schema:
+    type: object
+    properties:
+      id: { type: string, description: "Deal record id (hs_object_id)." }
+      properties: { type: array, items: { type: string } }
+    required: [id]
+  x-overslash-transform: |
+    { objectType: "deals",
+      objectIds: [ .id ],
+      properties: ( .properties // [ "dealname","amount","deal_currency_code","dealstage","pipeline","closedate" ] ) }
+
+- name: create_contact
+  mcp_tool: manage_crm_objects
+  x-overslash-risk: write
+  description: "Create a contact from a flat property map"
+  input_schema:
+    type: object
+    properties:
+      properties: { type: object, description: "Property values, e.g. {email, firstname, lastname, phone}." }
+      associations: { type: array, items: { type: object }, description: "Optional [{targetObjectId,targetObjectType,labels}]." }
+    required: [properties]
+  # Flat input → nested createRequest envelope; Overslash's own approval chain
+  # gates the write, so CONFIRMED is safe to pin (mirrors raw manage_crm_objects).
+  x-overslash-transform: |
+    { createRequest: { objects: [ {
+        objectType: "contacts",
+        properties: .properties,
+        associations: ( .associations // [] ) } ] },
+      confirmationStatus: "CONFIRMED" }
+  x-overslash-disclose:
+    - label: Object type
+      filter: '"contacts"'
+    - label: Payload
+      filter: '.arguments.createRequest.objects[0].properties | tojson'
+      max_chars: 1000
+
+- name: update_deal_stage
+  mcp_tool: manage_crm_objects
+  x-overslash-risk: write
+  description: "Move a deal to a new stage"
+  input_schema:
+    type: object
+    properties:
+      id: { type: string, description: "Deal record id (hs_object_id)." }
+      dealstage: { type: string, description: "Target stage internal value, e.g. closedwon." }
+    required: [id, dealstage]
+  x-overslash-transform: |
+    { updateRequest: { objects: [ {
+        objectType: "deals",
+        objectId: ( .id | tonumber ),
+        properties: { dealstage: .dealstage } } ] },
+      confirmationStatus: "CONFIRMED" }
+  x-overslash-disclose:
+    - label: Deal
+      filter: '.arguments.updateRequest.objects[0].objectId | tostring'
+    - label: New stage
+      filter: '.arguments.updateRequest.objects[0].properties.dealstage'
+
+- name: create_ticket_from_email
+  mcp_tool: manage_crm_objects
+  x-overslash-risk: write
+  description: "Open a support ticket, optionally linked to an email and contact"
+  input_schema:
+    type: object
+    properties:
+      subject: { type: string, description: "Ticket name/summary." }
+      content: { type: string, description: "Ticket description / email body." }
+      priority: { type: string, enum: [LOW, MEDIUM, HIGH, URGENT], default: MEDIUM }
+      emailId: { type: string, description: "Optional email engagement id to associate." }
+      contactId: { type: string, description: "Optional contact id to associate." }
+    required: [subject]
+  # source_type EMAIL + fan associations out from the two optional ids.
+  x-overslash-transform: |
+    { createRequest: { objects: [ {
+        objectType: "tickets",
+        properties: ( { subject: .subject, source_type: "EMAIL", hs_ticket_priority: (.priority // "MEDIUM") }
+                       + ( if .content then { content: .content } else {} end) ),
+        associations: ( [ ( if .emailId  then {targetObjectType:"emails",  targetObjectId:(.emailId|tonumber)}  else empty end),
+                          ( if .contactId then {targetObjectType:"contacts",targetObjectId:(.contactId|tonumber)} else empty end) ] ) } ] },
+      confirmationStatus: "CONFIRMED" }
+
+# ═══ Availability-gated resources (shape the verb set per object type) ════════
+
+- name: get_invoice          # read-only family: search+get only, NO create/update
+  mcp_tool: get_crm_objects
+  x-overslash-risk: read
+  description: "Fetch a single invoice by id (read-only object)"
+  input_schema:
+    type: object
+    properties:
+      id: { type: string }
+      properties: { type: array, items: { type: string } }
+    required: [id]
+  x-overslash-transform: |
+    { objectType: "invoices", objectIds: [ .id ], properties: ( .properties // [] ) }
+
+- name: create_payment_link  # write-only family: create only, NO get
+  mcp_tool: manage_crm_objects
+  x-overslash-risk: write
+  description: "Create a payment link (write-only object — cannot be read back)"
+  input_schema:
+    type: object
+    properties:
+      properties: { type: object, description: "Payment link property values." }
+    required: [properties]
+  x-overslash-transform: |
+    { createRequest: { objects: [ { objectType: "payment_links", properties: .properties } ] },
+      confirmationStatus: "CONFIRMED" }
