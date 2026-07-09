@@ -26,7 +26,8 @@ const PROVIDER_BRAND: Record<string, ProviderBrand> = {
 	slack: { letter: 'S', bg: '#4a154b', fg: '#ffffff' },
 	x: { letter: 'X', bg: '#0f1419', fg: '#ffffff' },
 	eventbrite: { letter: 'E', bg: '#f05537', fg: '#ffffff' },
-	linkedin: { letter: 'in', bg: '#0a66c2', fg: '#ffffff' }
+	linkedin: { letter: 'in', bg: '#0a66c2', fg: '#ffffff' },
+	microsoft: { letter: 'M', bg: '#0078d4', fg: '#ffffff' }
 };
 
 /** Brand tile metadata for a provider key, falling back to a neutral tile that

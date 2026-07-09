@@ -422,6 +422,58 @@ paths:
     }
 
     #[test]
+    fn shipped_services_have_no_silent_skips() {
+        // `load_from_dir` logs-and-skips any file that fails to
+        // parse/compile/validate, so a broken template silently disappears from
+        // the registry (and `shipped_services_load_clean` still passes because
+        // it only checks non-emptiness). Assert every shipped `*.yaml` both
+        // validates AND lands in the registry under its declared key, so a
+        // validation regression fails loudly here instead of at call time.
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+
+        for entry in std::fs::read_dir(&services_dir).unwrap() {
+            let path = entry.unwrap().path();
+            let is_yaml = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e == "yaml" || e == "yml");
+            if !is_yaml {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let report = crate::template_validation::validate_template_yaml(&source);
+            assert!(
+                report.valid,
+                "{} failed validation (would be silently skipped): {:#?}",
+                path.display(),
+                report.errors
+            );
+            // The compiled key must be registered — proves the file wasn't dropped.
+            let key = crate::openapi::parse_yaml(&source)
+                .ok()
+                .and_then(|mut doc| {
+                    crate::openapi::normalize_aliases(&mut doc);
+                    doc.get("info")
+                        .and_then(|i| i.get("x-overslash-key"))
+                        .and_then(|k| k.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| panic!("{}: missing info.key", path.display()));
+            assert!(
+                reg.get(&key).is_some(),
+                "{} declares key '{key}' but it is not in the registry",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
     fn shipped_mutating_actions_declare_disclose() {
         // Escape hatch for actions where disclosure is intentionally
         // omitted. Format: "service_key:action_key". Keep empty; add

@@ -34,7 +34,8 @@ const HUMANIZED: Record<string, string> = {
 	github: 'GitHub',
 	gitlab: 'GitLab',
 	google_calendar: 'Google Calendar',
-	gmail: 'Gmail'
+	gmail: 'Gmail',
+	outlook: 'Outlook'
 };
 
 /** Turn a service/action slug into a display label ("google_calendar" → "Google Calendar"). */
