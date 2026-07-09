@@ -433,8 +433,11 @@ async fn delete_service(
 /// Best-effort cleanup of the OAuth connection a just-deleted service was bound
 /// to. Deletes it only when the connection isn't marked `keep` and no other
 /// service instance (any status) references it — leaving a shared or protected
-/// connection intact. Returns whether the connection was deleted; errors are
-/// surfaced to the caller for logging but never undo the service delete.
+/// connection intact. The eligibility check and the delete are one atomic
+/// statement (see [`OrgScope::delete_connection_if_orphaned`]) so a concurrent
+/// re-bind can't be silently nulled by the `ON DELETE SET NULL` FK. Returns
+/// whether the connection was deleted; errors are surfaced to the caller for
+/// logging but never undo the service delete.
 async fn cleanup_orphaned_connection(
     state: &AppState,
     ext: &axum::http::Extensions,
@@ -443,19 +446,7 @@ async fn cleanup_orphaned_connection(
     ip: Option<&str>,
     connection_id: Uuid,
 ) -> Result<bool> {
-    // Marked keep, or already gone → leave it.
-    match scope.get_connection(connection_id).await? {
-        Some(conn) if conn.keep => return Ok(false),
-        Some(_) => {}
-        None => return Ok(false),
-    }
-
-    // Still referenced by another service (any status) → leave it.
-    if scope.connection_has_any_binding(connection_id).await? {
-        return Ok(false);
-    }
-
-    if scope.delete_connection(connection_id).await? {
+    if scope.delete_connection_if_orphaned(connection_id).await? {
         super::connections::fire_connection_deleted(
             state,
             ext,

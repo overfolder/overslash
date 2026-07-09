@@ -217,14 +217,15 @@ impl OrgScope {
         connection::delete_by_org(self.db(), id, self.org_id()).await
     }
 
-    /// Whether any service instance in this org still references the connection,
-    /// across all statuses. The reference count that gates service-deletion
-    /// auto-cleanup. See [`connection::has_any_binding`].
-    pub async fn connection_has_any_binding(
+    /// Atomically delete a connection for the service-deletion auto-cleanup —
+    /// only when it isn't marked `keep` and no service instance (any status)
+    /// still references it. Returns whether it deleted. See
+    /// [`connection::delete_if_orphaned`].
+    pub async fn delete_connection_if_orphaned(
         &self,
         connection_id: Uuid,
     ) -> Result<bool, sqlx::Error> {
-        connection::has_any_binding(self.db(), self.org_id(), connection_id).await
+        connection::delete_if_orphaned(self.db(), self.org_id(), connection_id).await
     }
 
     /// Set or clear the `keep` preserve flag on a connection, scoped to this

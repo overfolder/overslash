@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM connections c\n         WHERE c.id = $1 AND c.org_id = $2 AND c.keep = false\n           AND NOT EXISTS (\n               SELECT 1 FROM service_instances si WHERE si.connection_id = c.id\n           )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f00369ba6719d57e441147c26a57e91ae329aced235f6cb0cf6138316c968647"
+}

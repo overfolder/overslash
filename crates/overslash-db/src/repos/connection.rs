@@ -393,29 +393,35 @@ pub(crate) async fn delete_by_org(
     Ok(result.rows_affected() > 0)
 }
 
-/// Whether any service instance in the org still references this connection,
-/// across *all* statuses (draft/active/archived). This is the reference count
-/// that gates service-deletion auto-cleanup: a connection is only eligible for
-/// deletion once nothing points at it. Distinct from [`usage_by_template`] /
-/// [`usage_instances_by_connection`], which filter to `status = 'active'` for
-/// the dashboard's usage views — for cleanup we must not orphan a draft or
-/// archived service that is still bound.
-pub(crate) async fn has_any_binding(
+/// Atomically delete a connection for the service-deletion auto-cleanup, but
+/// only when it is eligible: not marked `keep` and referenced by no service
+/// instance in the org (across *all* statuses — draft/active/archived, so a
+/// non-active bound service is never orphaned). Returns whether it deleted.
+///
+/// The reference check (`NOT EXISTS`) and the delete are a **single** statement
+/// on purpose. A two-step "check `has_any_binding`, then `delete`" leaves a
+/// TOCTOU window where a concurrent request binds a new service to this
+/// connection after the check passes but before the delete — the
+/// `ON DELETE SET NULL` FK would then silently null that fresh binding. As one
+/// statement, the delete's exclusive row lock and the FK `KEY SHARE` lock a
+/// concurrent bind takes on this row serialize the two, closing the window.
+pub(crate) async fn delete_if_orphaned(
     pool: &PgPool,
     org_id: Uuid,
-    connection_id: Uuid,
+    id: Uuid,
 ) -> Result<bool, sqlx::Error> {
-    let exists = sqlx::query_scalar!(
-        "SELECT EXISTS(
-             SELECT 1 FROM service_instances
-             WHERE org_id = $1 AND connection_id = $2
-         )",
+    let result = sqlx::query!(
+        "DELETE FROM connections c
+         WHERE c.id = $1 AND c.org_id = $2 AND c.keep = false
+           AND NOT EXISTS (
+               SELECT 1 FROM service_instances si WHERE si.connection_id = c.id
+           )",
+        id,
         org_id,
-        connection_id,
     )
-    .fetch_one(pool)
+    .execute(pool)
     .await?;
-    Ok(exists.unwrap_or(false))
+    Ok(result.rows_affected() > 0)
 }
 
 /// Set (or clear) the `keep` preserve flag on a connection, scoped to its org.
