@@ -79,6 +79,7 @@ paths:
             - https://www.googleapis.com/auth/gmail.modify
       disclose:
         - label: Name
+          primary: true
           filter: .body.name
         - label: Mailbox
           filter: .resolved.userId // .params.userId
@@ -453,8 +454,10 @@ paths:
         - label: To
           filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^To:\\s*(?<v>[^\\r\\n]+)").v'
         - label: Subject
+          primary: true
           filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^Subject:\\s*(?<v>[^\\r\\n]+)").v'
         - label: Body
+          primary: true
           filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | split("\r\n\r\n")[1:] | join("\r\n\r\n")'
           max_chars: 2000
       parameters:
@@ -568,8 +571,10 @@ paths:
         - label: To
           filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^To:\\s*(?<v>[^\\r\\n]+)").v'
         - label: Subject
+          primary: true
           filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^Subject:\\s*(?<v>[^\\r\\n]+)").v'
         - label: Body
+          primary: true
           filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | split("\r\n\r\n")[1:] | join("\r\n\r\n")'
           max_chars: 2000
       parameters:
@@ -645,8 +650,10 @@ paths:
         - label: To
           filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^To:\\s*(?<v>[^\\r\\n]+)").v'
         - label: Subject
+          primary: true
           filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^Subject:\\s*(?<v>[^\\r\\n]+)").v'
         - label: Body
+          primary: true
           filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | split("\r\n\r\n")[1:] | join("\r\n\r\n")'
           max_chars: 2000
       parameters:

@@ -32,8 +32,10 @@ paths:
         - label: From
           filter: .body.from
         - label: Subject
+          primary: true
           filter: .body.subject
         - label: Body (HTML)
+          primary: true
           filter: .body.html // empty
           max_chars: 2000
       requestBody:

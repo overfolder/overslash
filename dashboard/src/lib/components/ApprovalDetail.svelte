@@ -94,7 +94,7 @@
 	const targetArg = $derived(primaryKey?.arg ?? '*');
 
 	const disclosedSplit = $derived(splitDisclosed(current.disclosed_fields));
-	const primaryDisclosed = $derived(disclosedSplit.primary);
+	const primaryDisclosed = $derived(disclosedSplit.primaries);
 	const remainingDisclosed = $derived(disclosedSplit.remaining);
 
 	// Parse the SPIFFE-ish identity_path into (kind, name) units to render the
@@ -269,21 +269,31 @@
 						{#if primaryKey}<span class="tag">{primaryKey.action}</span>{/if}
 					</div>
 					<div class="aq-hero-body">
-						{#if primaryDisclosed && primaryDisclosed.value !== null}
-							<div class="aq-principal-key">
-								<span class="k">{primaryDisclosed.label}</span>
-								<span class="type-chip">read-only</span>
-							</div>
-							<div class="aq-posttext ro">{primaryDisclosed.value}</div>
+						{#if primaryDisclosed.length > 0}
+							{#each primaryDisclosed as p, i}
+								<div class="aq-principal-key">
+									<span class="k">{p.label}</span>
+									{#if i === 0}<span class="type-chip">read-only</span>{/if}
+								</div>
+								<div class="aq-posttext ro">{p.value}</div>
+							{/each}
 							<div class="aq-edit-row">
 								<span class="aq-edit-label">
 									Read-only · approve replays it as sent
-									{#if primaryDisclosed.truncated}<span class="muted small">(truncated)</span>{/if}
+									{#if primaryDisclosed.some((p) => p.truncated)}<span class="muted small"
+											>(truncated)</span
+										>{/if}
 								</span>
 							</div>
-						{:else}
+						{:else if remainingDisclosed.length === 0}
 							<div class="aq-principal-empty">
 								No disclosed content for this request. See the raw payload below.
+							</div>
+						{/if}
+
+						{#if primaryDisclosed.length === 0 && remainingDisclosed.length > 0}
+							<div class="aq-edit-row">
+								<span class="aq-edit-label">Read-only · approve replays it as sent</span>
 							</div>
 						{/if}
 
@@ -291,7 +301,9 @@
 							<div class="aq-params">
 								<div class="aq-params-cap">
 									{remainingDisclosed.length}
-									{primaryDisclosed ? 'more ' : ''}parameter{remainingDisclosed.length > 1 ? 's' : ''}
+									{primaryDisclosed.length > 0 ? 'more ' : ''}parameter{remainingDisclosed.length > 1
+										? 's'
+										: ''}
 								</div>
 								{#each remainingDisclosed as f}
 									<div class="aq-prow">

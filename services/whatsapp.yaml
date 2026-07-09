@@ -93,6 +93,7 @@ x-overslash-mcp:
         - label: "Recipient"
           filter: ".arguments.recipient"
         - label: "Message"
+          primary: true
           filter: ".arguments.text"
         - label: "Reply to"
           filter: ".arguments.reply_to_id // empty"

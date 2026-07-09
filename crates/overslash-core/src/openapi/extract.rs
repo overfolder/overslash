@@ -525,10 +525,12 @@ fn parse_disclose(
             .get("max_chars")
             .and_then(Value::as_u64)
             .map(|n| n as usize);
+        let primary = obj.get("primary").and_then(Value::as_bool).unwrap_or(false);
         out.push(DisclosureField {
             label,
             filter,
             max_chars,
+            primary,
         });
     }
     out
