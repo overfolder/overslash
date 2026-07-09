@@ -12,6 +12,7 @@
 		discardDraft,
 		getTemplateSettings,
 		updateTemplateSettings,
+		listEnabledGlobals,
 		enableGlobalTemplate,
 		disableGlobalTemplate
 	} from '$lib/api/services';
@@ -157,17 +158,25 @@
 			if (canCurate && orgId) {
 				// Admins load the full compliance view so curated-out globals remain
 				// visible and re-enableable, plus the org setting that decides whether
-				// per-template toggles are active.
-				const [admin, settings] = await Promise.all([
+				// per-template toggles are active, plus the real curated allow-list.
+				const [admin, settings, enabledGlobals] = await Promise.all([
 					listAdminTemplates(),
-					getTemplateSettings(orgId)
+					getTemplateSettings(orgId),
+					listEnabledGlobals()
 				]);
 				templates = admin;
 				globalTemplatesEnabled = settings.global_templates_enabled;
+				// Per-row state reflects the *real* allow-list membership, not the
+				// admin list's `enabled` flag (which is masked to `true` for every
+				// global while "make all available" is on). Combined with
+				// `globalTemplatesEnabled` in the toggle's `checked` as
+				// `visible || global_visible`, this keeps rows honest so toggling
+				// one off never issues a DELETE for a key that has no row (404).
+				const enabledSet = new Set(enabledGlobals);
 				catalogEnabled = Object.fromEntries(
 					admin
 						.filter((t) => t.tier === 'global')
-						.map((t) => [t.key, (t as AdminTemplateSummary).enabled])
+						.map((t) => [t.key, enabledSet.has(t.key)])
 				);
 			} else {
 				templates = await listTemplates();
@@ -399,18 +408,13 @@
 	{#if !loading && canCurate}
 		<div class="catalog-default">
 			<div class="catalog-default-body">
-				<div class="catalog-default-label">Make all global services available by default</div>
-				<div class="catalog-default-help">
-					When on, every shipped global service is available to members. Turn it off
-					to curate the catalog — then use each row's <strong>Visible</strong> toggle
-					to choose exactly which services members see.
-				</div>
+				<div class="catalog-default-label">Make all global services available</div>
 			</div>
 			<ToggleSwitch
 				checked={globalTemplatesEnabled}
 				onchange={setGlobalDefault}
 				disabled={globalDefaultSaving}
-				label="Make all global services available by default"
+				label="Make all global services available"
 			/>
 		</div>
 	{/if}
@@ -803,11 +807,6 @@
 	.catalog-default-label {
 		font-size: 0.9rem;
 		font-weight: 600;
-	}
-	.catalog-default-help {
-		font-size: 0.8rem;
-		color: var(--color-text-muted);
-		margin-top: 0.15rem;
 	}
 	.actions-col {
 		text-align: right;
