@@ -88,7 +88,7 @@ CREATE TABLE oauth_tokens (
 | GitHub | Yes | Not implemented |
 | Slack | Yes | Not implemented |
 | Notion | Yes | Not implemented |
-| Microsoft 365/Outlook | Yes | Not implemented |
+| Microsoft 365/Outlook | Yes | `outlook` service (Graph mail) shipped — `provider: microsoft` |
 | Todoist | Yes | Not implemented |
 | Linear/Jira | Yes | Not implemented |
 

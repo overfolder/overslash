@@ -421,8 +421,16 @@ pub async fn fetch_account_email(
 }
 
 fn extract_email(body: &serde_json::Value, provider_key: &str) -> Option<String> {
-    // Direct hits at the root — covers Google, Microsoft (mail), most OIDC.
-    for field in ["email", "mail", "emailAddress", "preferred_username"] {
+    // Direct hits at the root — covers Google, Microsoft, most OIDC.
+    // Microsoft Graph /me returns `userPrincipalName` for every account but
+    // `mail` only when a mailbox is licensed, so keep it in the fallback chain.
+    for field in [
+        "email",
+        "mail",
+        "emailAddress",
+        "userPrincipalName",
+        "preferred_username",
+    ] {
         if let Some(s) = body.get(field).and_then(|v| v.as_str()) {
             if !s.is_empty() {
                 return Some(s.to_string());
