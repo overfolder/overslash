@@ -7,7 +7,8 @@
 		cancelLabel = 'Cancel',
 		danger = false,
 		onconfirm,
-		oncancel
+		oncancel,
+		children
 	}: {
 		open: boolean;
 		title: string;
@@ -17,6 +18,9 @@
 		danger?: boolean;
 		onconfirm: () => void;
 		oncancel: () => void;
+		/** Optional extra content rendered between the message and the actions
+		 *  (e.g. an options checkbox). */
+		children?: import('svelte').Snippet;
 	} = $props();
 </script>
 
@@ -34,6 +38,7 @@
 		>
 			<h2 id="confirm-title">{title}</h2>
 			<p>{message}</p>
+			{#if children}{@render children()}{/if}
 			<div class="actions">
 				<button type="button" class="btn" onclick={oncancel}>{cancelLabel}</button>
 				<button

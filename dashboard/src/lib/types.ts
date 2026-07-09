@@ -587,6 +587,9 @@ export interface ConnectionSummary {
   scopes: string[];
   used_by_service_templates: string[];
   is_default: boolean;
+  /** When true, this connection is preserved when a service bound to it is
+   *  deleted, even if nothing else references it. */
+  keep: boolean;
   created_at: string;
 }
 
@@ -618,6 +621,9 @@ export interface ConnectionDetail {
   account_email: string | null;
   scopes: string[];
   is_default: boolean;
+  /** When true, this connection is preserved from the service-deletion
+   *  auto-cleanup (toggled via `setConnectionKeep`). */
+  keep: boolean;
   /**
    * `true` for imported (token-vault) connections whose refresh the
    * integration owns. Overslash injects the stored token until expiry, then

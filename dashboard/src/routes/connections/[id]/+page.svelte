@@ -6,6 +6,7 @@
 	import {
 		getConnection,
 		setConnectionDefault,
+		setConnectionKeep,
 		deleteConnection,
 		upgradeConnectionScopes
 	} from '$lib/api/services';
@@ -27,6 +28,7 @@
 	let error = $state<string | null>(null);
 
 	let settingDefault = $state(false);
+	let settingKeep = $state(false);
 	let reconnecting = $state(false);
 	let reconnectAbort: AbortController | null = null;
 
@@ -63,6 +65,25 @@
 			error = 'Failed to set default connection';
 		} finally {
 			settingDefault = false;
+		}
+	}
+
+	// Toggle the `keep` flag: when on, this connection is preserved even when a
+	// service bound to it is deleted and nothing else references it. Optimistic,
+	// reverting on error (same shape as `makeDefault`).
+	async function toggleKeep() {
+		if (!conn || settingKeep) return;
+		settingKeep = true;
+		const prev = conn.keep;
+		const next = !prev;
+		conn = { ...conn, keep: next };
+		try {
+			await setConnectionKeep(conn.id, next);
+		} catch {
+			if (conn) conn = { ...conn, keep: prev };
+			error = 'Failed to update keep setting';
+		} finally {
+			settingKeep = false;
 		}
 	}
 
@@ -176,6 +197,18 @@
 								label="Make default for {displayName(conn.provider_key)}"
 							/>
 							<span class="toggle-text">{conn.is_default ? 'Yes' : 'No'}</span>
+						</div>
+					</div>
+					<div class="meta-item">
+						<span class="meta-label">Keep on service delete</span>
+						<div class="toggle-row">
+							<ToggleSwitch
+								checked={conn.keep}
+								disabled={settingKeep}
+								onchange={() => toggleKeep()}
+								label="Keep this connection when services bound to it are deleted"
+							/>
+							<span class="toggle-text">{conn.keep ? 'Yes' : 'No'}</span>
 						</div>
 					</div>
 					<div class="meta-item">

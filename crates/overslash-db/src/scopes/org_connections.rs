@@ -217,6 +217,22 @@ impl OrgScope {
         connection::delete_by_org(self.db(), id, self.org_id()).await
     }
 
+    /// Whether any service instance in this org still references the connection,
+    /// across all statuses. The reference count that gates service-deletion
+    /// auto-cleanup. See [`connection::has_any_binding`].
+    pub async fn connection_has_any_binding(
+        &self,
+        connection_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        connection::has_any_binding(self.db(), self.org_id(), connection_id).await
+    }
+
+    /// Set or clear the `keep` preserve flag on a connection, scoped to this
+    /// org. Returns `false` if the id belongs to another tenant.
+    pub async fn set_connection_keep(&self, id: Uuid, keep: bool) -> Result<bool, sqlx::Error> {
+        connection::set_keep(self.db(), self.org_id(), id, keep).await
+    }
+
     /// Promote a connection to be the default for its provider, scoped to this
     /// org — demoting any sibling that held the flag *within the connection's
     /// own owner identity*, not the caller's. Powers an org-admin setting the

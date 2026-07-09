@@ -20,6 +20,9 @@ pub struct ConnectionRow {
     pub account_email: Option<String>,
     pub byoc_credential_id: Option<Uuid>,
     pub is_default: bool,
+    /// When true, this connection is preserved (never auto-deleted) when a
+    /// service instance bound to it is deleted, regardless of reference count.
+    pub keep: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -75,7 +78,7 @@ where
                  ))
          RETURNING id, org_id, identity_id, provider_key, encrypted_access_token,
                    encrypted_refresh_token, token_expires_at, scopes, account_email,
-                   byoc_credential_id, is_default, created_at, updated_at",
+                   byoc_credential_id, is_default, keep, created_at, updated_at",
         input.org_id,
         input.identity_id,
         input.provider_key,
@@ -113,7 +116,7 @@ pub(crate) async fn find_for_import(
         // (migration 083) as non-`Option` and panics on a NULL. See `get_by_id`.
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, created_at, updated_at
+                account_email, byoc_credential_id, is_default, keep, created_at, updated_at
          FROM connections
          WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3
            AND ($4::text IS NULL OR account_email IS NOT DISTINCT FROM $4)
@@ -143,7 +146,7 @@ pub(crate) async fn get_by_id(
         // explicitly. See `scopes/user_connections.rs` (its JOIN sidesteps this).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, created_at, updated_at
+                account_email, byoc_credential_id, is_default, keep, created_at, updated_at
          FROM connections WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -165,7 +168,7 @@ pub(crate) async fn list_all_in_org(
         // `scopes AS "scopes?"`: force the nullable override (see `get_by_id`).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, created_at, updated_at
+                account_email, byoc_credential_id, is_default, keep, created_at, updated_at
          FROM connections WHERE org_id = $1 ORDER BY created_at DESC",
         org_id,
     )
@@ -264,7 +267,7 @@ pub(crate) async fn get_by_ids(
         // `scopes AS "scopes?"`: force the nullable override (see `get_by_id`).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, created_at, updated_at
+                account_email, byoc_credential_id, is_default, keep, created_at, updated_at
          FROM connections WHERE org_id = $1 AND id = ANY($2)",
         org_id,
         ids,
@@ -384,6 +387,51 @@ pub(crate) async fn delete_by_org(
         "DELETE FROM connections WHERE id = $1 AND org_id = $2",
         id,
         org_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Whether any service instance in the org still references this connection,
+/// across *all* statuses (draft/active/archived). This is the reference count
+/// that gates service-deletion auto-cleanup: a connection is only eligible for
+/// deletion once nothing points at it. Distinct from [`usage_by_template`] /
+/// [`usage_instances_by_connection`], which filter to `status = 'active'` for
+/// the dashboard's usage views — for cleanup we must not orphan a draft or
+/// archived service that is still bound.
+pub(crate) async fn has_any_binding(
+    pool: &PgPool,
+    org_id: Uuid,
+    connection_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let exists = sqlx::query_scalar!(
+        "SELECT EXISTS(
+             SELECT 1 FROM service_instances
+             WHERE org_id = $1 AND connection_id = $2
+         )",
+        org_id,
+        connection_id,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(exists.unwrap_or(false))
+}
+
+/// Set (or clear) the `keep` preserve flag on a connection, scoped to its org.
+/// Returns `false` when the id isn't in this org.
+pub(crate) async fn set_keep(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+    keep: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE connections SET keep = $3, updated_at = now()
+         WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+        keep,
     )
     .execute(pool)
     .await?;

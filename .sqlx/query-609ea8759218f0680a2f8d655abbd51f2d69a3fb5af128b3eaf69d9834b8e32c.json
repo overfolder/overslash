@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,\n                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,\n                    c.byoc_credential_id, c.is_default,\n                    c.created_at, c.updated_at\n             FROM connections c\n             JOIN identities i ON i.id = c.identity_id\n             WHERE c.identity_id = $1 AND i.org_id = $2\n             ORDER BY c.created_at DESC",
+  "query": "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,\n                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,\n                    c.byoc_credential_id, c.is_default, c.keep,\n                    c.created_at, c.updated_at\n             FROM connections c\n             JOIN identities i ON i.id = c.identity_id\n             WHERE c.id = $1 AND c.identity_id = $2 AND i.org_id = $3",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,17 @@
       },
       {
         "ordinal": 11,
+        "name": "keep",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "keep"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -149,6 +160,7 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid",
         "Uuid"
       ]
@@ -166,8 +178,9 @@
       true,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "995166e7e504972f10142a1c2f0c6515cbf2dcf3576e109d79998c1e48fe3169"
+  "hash": "609ea8759218f0680a2f8d655abbd51f2d69a3fb5af128b3eaf69d9834b8e32c"
 }

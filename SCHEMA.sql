@@ -149,7 +149,8 @@ CREATE TABLE public.connections (
     byoc_credential_id uuid,
     is_default boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    keep boolean DEFAULT false NOT NULL
 );
 
 

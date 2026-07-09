@@ -172,9 +172,15 @@ export const setServiceStatus = (id: string, status: ServiceStatus) =>
  * because the backend's name-based resolution uses user-shadows-org semantics
  * and would delete a user-owned instance that happens to share a name with the
  * org-level row the user actually clicked.
+ *
+ * By default the OAuth connection the service was bound to is also cleaned up
+ * when it becomes orphaned (no other service uses it and it isn't marked
+ * `keep`). Pass `{ keepConnection: true }` to preserve the connection.
  */
-export const deleteService = (id: string) =>
-	session.delete<{ deleted: boolean }>(`/v1/services/${id}`);
+export const deleteService = (id: string, opts: { keepConnection?: boolean } = {}) =>
+	session.delete<{ deleted: boolean; connection_deleted: boolean }>(
+		`/v1/services/${id}${opts.keepConnection ? '?keep_connection=true' : ''}`
+	);
 
 export const getServiceActions = (name: string, signal?: AbortSignal) =>
 	session.get<ActionSummary[]>(`/v1/services/${encodeURIComponent(name)}/actions`, signal);
@@ -214,6 +220,14 @@ export const deleteConnection = (id: string) => session.delete<void>(`/v1/connec
  */
 export const setConnectionDefault = (id: string) =>
 	session.post<{ is_default: boolean }>(`/v1/connections/${id}/set_default`, {});
+
+/**
+ * Set (or clear) the `keep` flag on a connection. When `keep` is true the
+ * connection is preserved from the service-deletion auto-cleanup even when no
+ * service references it. Owner-or-admin gated; fired from the detail toggle.
+ */
+export const setConnectionKeep = (id: string, keep: boolean) =>
+	session.post<{ keep: boolean }>(`/v1/connections/${id}/keep`, { keep });
 
 export interface UpgradeScopesResponse {
 	auth_url: string;

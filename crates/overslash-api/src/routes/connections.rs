@@ -50,6 +50,7 @@ pub fn router() -> Router<AppState> {
             "/v1/connections/{id}/set_default",
             post(set_connection_default),
         )
+        .route("/v1/connections/{id}/keep", post(set_connection_keep))
         .route(
             "/v1/connections/{id}/upgrade_scopes",
             post(upgrade_connection_scopes),
@@ -962,6 +963,9 @@ struct ConnectionSummary {
     /// connection that *isn't* already in use for the template being created.
     used_by_service_templates: Vec<String>,
     is_default: bool,
+    /// When true, this connection is preserved from the service-deletion
+    /// auto-cleanup — the dashboard renders it as a "kept" toggle.
+    keep: bool,
     created_at: String,
 }
 
@@ -1040,6 +1044,7 @@ async fn list_connections(
                 account_email: r.account_email,
                 scopes: r.scopes.unwrap_or_default(),
                 is_default: r.is_default,
+                keep: r.keep,
                 created_at: fmt_time(r.created_at),
             })
             .collect(),
@@ -1066,6 +1071,9 @@ struct ConnectionDetail {
     account_email: Option<String>,
     scopes: Vec<String>,
     is_default: bool,
+    /// When true, this connection is preserved from the service-deletion
+    /// auto-cleanup (see `POST /v1/connections/{id}/keep`).
+    keep: bool,
     created_at: String,
     updated_at: String,
     used_by: Vec<UsedByService>,
@@ -1128,6 +1136,7 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
         account_email: conn.account_email,
         scopes: conn.scopes.unwrap_or_default(),
         is_default: conn.is_default,
+        keep: conn.keep,
         created_at: fmt_time(conn.created_at),
         updated_at: fmt_time(conn.updated_at),
         used_by,
@@ -1186,6 +1195,68 @@ async fn set_connection_default(
         .await;
 
     Ok(Json(serde_json::json!({ "is_default": true })))
+}
+
+#[derive(Deserialize)]
+struct SetKeepRequest {
+    /// Whether to preserve this connection from the service-deletion auto-cleanup.
+    keep: bool,
+}
+
+/// Set (or clear) the `keep` preserve flag on a connection. When `keep` is true
+/// the connection survives service deletion even when no service references it.
+/// Owner-or-admin gated, mirroring `set_connection_default`: the caller must own
+/// the connection, or be an org admin acting on another user's connection from
+/// the "all users" view; a non-owner non-admin gets a 404 (the row stays
+/// invisible). Low-risk + idempotent — the dashboard fires it from a toggle.
+async fn set_connection_keep(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    WriteAcl(acl): WriteAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<SetKeepRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let org = OrgScope::new(acl.org_id, state.db_pool(&ext));
+
+    // Ownership gate: an identity-bound caller must own the connection or be an
+    // org admin. An org-level (identity-less) key may set it on any connection
+    // in the org — same authority as the org-scoped delete path.
+    let allowed = if let Some(identity_id) = acl.identity_id {
+        let owns = UserScope::new(acl.org_id, identity_id, state.db_pool(&ext))
+            .get_my_connection(id)
+            .await?
+            .is_some();
+        owns || org
+            .get_identity(identity_id)
+            .await?
+            .map(|i| i.is_org_admin)
+            .unwrap_or(false)
+    } else {
+        true
+    };
+    if !allowed {
+        return Err(AppError::NotFound("connection not found".into()));
+    }
+
+    if !org.set_connection_keep(id, req.keep).await? {
+        return Err(AppError::NotFound("connection not found".into()));
+    }
+
+    let _ = org
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "connection.keep_updated",
+            resource_type: Some("connection"),
+            resource_id: Some(id),
+            detail: serde_json::json!({ "keep": req.keep }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(serde_json::json!({ "keep": req.keep })))
 }
 
 #[derive(Deserialize)]
@@ -1353,39 +1424,61 @@ async fn delete_connection(
     };
 
     if deleted {
-        let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
-            .log_audit(AuditEntry {
-                org_id: auth.org_id,
-                identity_id: auth.identity_id,
-                action: "connection.deleted",
-                resource_type: Some("connection"),
-                resource_id: Some(id),
-                detail: serde_json::json!({}),
-                description: None,
-                ip_address: ip.0.as_deref(),
-            })
-            .await;
-
-        let db = state.db_pool(&ext);
-        let client = state.http_client.clone();
-        let org_id = auth.org_id;
-        let identity_id = auth.identity_id;
-        tokio::spawn(async move {
-            let payload = serde_json::json!({
-                "connection_id": id,
-                "org_id": org_id,
-                "identity_id": identity_id,
-            });
-            crate::services::webhook_dispatcher::dispatch(
-                &db,
-                &client,
-                org_id,
-                "connection.deleted",
-                payload,
-            )
-            .await;
-        });
+        fire_connection_deleted(
+            &state,
+            &ext,
+            auth.org_id,
+            auth.identity_id,
+            ip.0.as_deref(),
+            id,
+        )
+        .await;
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))
+}
+
+/// Fire the side effects of a connection deletion: the `connection.deleted`
+/// audit log entry and the `connection.deleted` webhook. Shared by the direct
+/// `DELETE /v1/connections/{id}` handler and the service-deletion cascade that
+/// cleans up an orphaned connection. Call only after the row was actually
+/// deleted.
+pub(crate) async fn fire_connection_deleted(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: Uuid,
+    identity_id: Option<Uuid>,
+    ip: Option<&str>,
+    connection_id: Uuid,
+) {
+    let _ = OrgScope::new(org_id, state.db_pool(ext))
+        .log_audit(AuditEntry {
+            org_id,
+            identity_id,
+            action: "connection.deleted",
+            resource_type: Some("connection"),
+            resource_id: Some(connection_id),
+            detail: serde_json::json!({}),
+            description: None,
+            ip_address: ip,
+        })
+        .await;
+
+    let db = state.db_pool(ext);
+    let client = state.http_client.clone();
+    tokio::spawn(async move {
+        let payload = serde_json::json!({
+            "connection_id": connection_id,
+            "org_id": org_id,
+            "identity_id": identity_id,
+        });
+        crate::services::webhook_dispatcher::dispatch(
+            &db,
+            &client,
+            org_id,
+            "connection.deleted",
+            payload,
+        )
+        .await;
+    });
 }
