@@ -1344,6 +1344,17 @@ async fn update_template(
         }
     }
 
+    // A non-admin editing their own **user-namespace** layer must still satisfy
+    // the org's `user_template_policy` — mirroring create. Forward-only downgrade
+    // keeps existing layers *executing* (the fold never checks policy), but it
+    // must not let a member edit one into a broader grant (e.g. add an extension
+    // host under `none`), which would bypass the very restriction the policy
+    // exists to enforce. Admins keep edit rights for compliance management
+    // (pruning is delete; tightening is an admin edit).
+    if existing.owner_identity_id.is_some() && acl.access_level < AccessLevel::Admin {
+        platform_templates::enforce_user_template_policy(state.db(&ext), acl.org_id).await?;
+    }
+
     // Derived layers are edited through their `delta` (their `extends` binding
     // is immutable, which also keeps the inheritance graph acyclic).
     if existing.extends.is_some() {

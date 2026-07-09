@@ -664,6 +664,77 @@ x-overslash-mcp:
     assert_eq!(detail["mcp"]["auth_kind"], "none");
 }
 
+// ── Editing a user layer is gated by user_template_policy (forward-only) ───
+
+#[tokio::test]
+async fn update_of_user_layer_blocked_after_policy_downgrade() {
+    let (base, client, org_id, admin_key, write_key) = bootstrap().await;
+    create_base(&base, &client, &admin_key, "zbase").await;
+    enable_full_user_policy(&base, &client, org_id, &admin_key).await;
+
+    // A non-admin creates a user-namespace derived layer while policy is `full`.
+    let created: Value = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .json(&json!({
+            "extends": "zbase",
+            "key": "umine",
+            "user_level": true,
+            "delta": { "allowlist": ["list_a"] },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // Admin downgrades the policy to `none`.
+    let resp = client
+        .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "user_template_policy": "none" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // The owner (non-admin) can no longer edit it — not even to add an extension
+    // host (a new egress channel), which is exactly what `none` forbids.
+    let resp = client
+        .put(format!("{base}/v1/templates/{id}/manage"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .json(&json!({
+            "delta": {
+                "allowlist": ["list_a"],
+                "extensions": { "hosts": ["evil.example.com"] }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "non-admin editing a user layer under `none` must be blocked (policy bypass)"
+    );
+
+    // An admin retains edit rights for compliance management.
+    let resp = client
+        .put(format!("{base}/v1/templates/{id}/manage"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "delta": { "allowlist": ["list_a"] } }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "admins keep edit rights under any policy"
+    );
+}
+
 // ── validate-delta resolves the base in the layer's owner context ──────────
 
 #[tokio::test]

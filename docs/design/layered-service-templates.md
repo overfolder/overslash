@@ -204,7 +204,7 @@ Generalize the existing boolean to a three-valued org enum, migrated in place (`
 
 - Define all three enum values in the schema **now** so the classifier is a pure-compute add later with **no migration**.
 - **Rationale for gating user templating at all:** an *expansive* user-namespace layer adds a host/auth = a new egress channel through the org's gateway. Orgs must be able to forbid (`none`) or, later, restrict (`restrictive`) that.
-- **Policy downgrade is forward-only.** Flipping `full → none` blocks *new* user-layer creation, leaves existing user layers working, and surfaces them in the admin compliance view for deliberate pruning. It never yanks live layers out from under agents.
+- **Policy downgrade is forward-only.** Flipping `full → none` blocks *new* user-layer creation, leaves existing user layers **executing** (the fold never consults policy, so agents mid-workflow are never cut off), and surfaces them in the admin compliance view for deliberate pruning. **Editing is gated, execution is not:** a non-admin *modifying* an existing user-namespace layer must re-satisfy the policy — otherwise a downgraded member could edit their grandfathered layer into a broader grant (e.g. add an extension host under `none`), bypassing the restriction. Admins keep edit rights for compliance (pruning is delete; tightening is an admin edit).
 
 > **Rejected — a classifier in v1.** Its only job is to enforce the `restrictive` tier (non-admins creating org-safe curation). No corporate ask needs that yet, and because deltas are stored structurally, adding the classifier later classifies existing deltas by pure computation — no migration. Deferring costs nothing.
 
