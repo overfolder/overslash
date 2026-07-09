@@ -601,6 +601,86 @@ async fn delete_guard_does_not_over_block_across_users() {
     );
 }
 
+// ── validate-delta resolves the base in the layer's owner context ──────────
+
+#[tokio::test]
+async fn validate_delta_respects_owner_context() {
+    let (base, client, org_id, admin_key, write_key) = bootstrap().await;
+    enable_full_user_policy(&base, &client, org_id, &admin_key).await;
+
+    // Org base `zbase` has 3 actions (incl. create_b).
+    create_base(&base, &client, &admin_key, "zbase").await;
+
+    // The write user has a PRIVATE standalone `zbase` with only `list_a`,
+    // shadowing the org base by key.
+    let user_openapi = r#"openapi: 3.1.0
+info:
+  title: zbase user
+  key: zbase
+servers:
+  - url: https://zbase.example.com
+paths:
+  /a:
+    get:
+      operationId: list_a
+      summary: List A
+      risk: read
+"#;
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .json(&json!({ "openapi": user_openapi, "user_level": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let validate = |user_level: bool| {
+        let base = base.clone();
+        let client = client.clone();
+        let write_key = write_key.clone();
+        async move {
+            let report: Value = client
+                .post(format!("{base}/v1/templates/validate-delta"))
+                .header(auth(&write_key).0, auth(&write_key).1)
+                .json(&json!({
+                    "extends": "zbase",
+                    "delta": { "allowlist": ["create_b"] },
+                    "user_level": user_level,
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            report
+        }
+    };
+
+    fn has_dead_allowlist(report: &Value) -> bool {
+        report["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["code"] == "dead_allowlist_entry")
+    }
+
+    // Org context → base is the org zbase (has create_b) → no dead entry.
+    let org_ctx = validate(false).await;
+    assert!(
+        !has_dead_allowlist(&org_ctx),
+        "org base has create_b: {org_ctx:?}"
+    );
+
+    // User context → base is the write user's zbase (only list_a) → dead entry.
+    let user_ctx = validate(true).await;
+    assert!(
+        has_dead_allowlist(&user_ctx),
+        "user base lacks create_b, expected dead_allowlist_entry: {user_ctx:?}"
+    );
+}
+
 // ── Extensions: add a new action + host ────────────────────────────────────
 
 #[tokio::test]

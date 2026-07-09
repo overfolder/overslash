@@ -119,11 +119,12 @@
 		void hidden;
 		void displayName;
 		void extensionsText;
+		void scope;
 		clearTimeout(validateTimer);
 		validateTimer = setTimeout(async () => {
 			try {
 				const delta = buildDelta();
-				validation = await validateDelta(baseKey, delta);
+				validation = await validateDelta(baseKey, delta, scope === 'user');
 			} catch {
 				validation = {
 					valid: false,

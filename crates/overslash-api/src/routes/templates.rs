@@ -974,6 +974,13 @@ struct ValidateDeltaRequest {
     extends: String,
     /// The derived-layer delta to validate.
     delta: serde_json::Value,
+    /// Whether the layer being authored is user-namespace (`true`) or
+    /// org-namespace (`false`, default). Controls the base-resolution identity
+    /// context so the preview folds over the *same* base create/update will —
+    /// an org layer resolves the base with no user tier (org → global), a user
+    /// layer resolves user → org → global.
+    #[serde(default)]
+    user_level: bool,
 }
 
 /// POST /v1/templates/validate-delta
@@ -1002,11 +1009,19 @@ async fn validate_delta_route(
             }));
         }
     };
+    // Mirror create/update's owner context: an org-namespace layer resolves the
+    // base with no user tier; a user-namespace layer resolves in the caller's
+    // identity context.
+    let base_identity = if req.user_level {
+        auth.identity_id
+    } else {
+        None
+    };
     let base = crate::services::template_resolve::resolve(
         state.db(&ext),
         &state.registry,
         auth.org_id,
-        auth.identity_id,
+        base_identity,
         &req.extends,
     )
     .await

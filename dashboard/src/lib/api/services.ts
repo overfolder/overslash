@@ -136,15 +136,19 @@ export async function validateTemplate(yaml: string): Promise<ValidationResult |
 	}
 }
 
-/** Lint a derived-layer delta against its resolved base (live editor feedback). */
+/** Lint a derived-layer delta against its resolved base (live editor feedback).
+ * `userLevel` must match the scope the layer will be created at so the preview
+ * folds over the same base the server will. */
 export async function validateDelta(
 	extendsKey: string,
-	delta: Delta
+	delta: Delta,
+	userLevel = false
 ): Promise<ValidationResult | null> {
 	try {
 		return await session.post<ValidationResult>('/v1/templates/validate-delta', {
 			extends: extendsKey,
-			delta
+			delta,
+			user_level: userLevel
 		});
 	} catch (e) {
 		if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
