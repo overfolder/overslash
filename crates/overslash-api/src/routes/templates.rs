@@ -1329,8 +1329,18 @@ async fn update_template(
         .ok_or_else(|| AppError::NotFound("template not found".into()))?;
 
     if existing.owner_identity_id.is_some() {
-        // User-level: caller must own it or be admin
-        if existing.owner_identity_id != acl.identity_id && acl.access_level < AccessLevel::Admin {
+        // User-level: caller must own it, be an ancestor of the owner (the
+        // parent→child ceiling allowance — a user managing its agents'
+        // templates), or be admin.
+        let scope = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext));
+        if !crate::services::permission_chain::caller_may_manage_owned(
+            &scope,
+            existing.owner_identity_id,
+            acl.identity_id,
+            acl.access_level,
+        )
+        .await?
+        {
             return Err(AppError::Forbidden(
                 "you can only modify your own templates".into(),
             ));

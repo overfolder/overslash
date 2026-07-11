@@ -2,7 +2,7 @@
 	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { ApiError, session } from '$lib/session';
+	import { ApiError, apiErrorReason, session } from '$lib/session';
 	import {
 		listServices,
 		listConnections,
@@ -249,7 +249,14 @@
 			await deleteService(target.id);
 			services = services.filter((s) => s.id !== target.id);
 		} catch (e) {
-			error = e instanceof ApiError ? `Failed to delete (${e.status})` : 'Failed to delete service';
+			if (e instanceof ApiError && e.status === 403) {
+				error =
+					apiErrorReason(e) ??
+					'You do not have permission to delete this service — admin access required.';
+			} else {
+				error =
+					e instanceof ApiError ? `Failed to delete (${e.status})` : 'Failed to delete service';
+			}
 		}
 	}
 

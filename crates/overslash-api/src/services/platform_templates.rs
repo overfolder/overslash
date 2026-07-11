@@ -397,7 +397,19 @@ pub(crate) async fn delete_active_template_inner(
     access_level: AccessLevel,
 ) -> Result<(String, &'static str, Uuid), AppError> {
     if row.owner_identity_id.is_some() {
-        if row.owner_identity_id != caller_identity_id && access_level < AccessLevel::Admin {
+        // Caller must own it, be an ancestor of the owner (parent→child ceiling
+        // allowance — a user managing its agents' templates), or be admin. This
+        // path is shared by the HTTP handler and the MCP kernel, so the allowance
+        // applies consistently across both surfaces.
+        let scope = overslash_db::OrgScope::new(row.org_id, db.clone());
+        if !crate::services::permission_chain::caller_may_manage_owned(
+            &scope,
+            row.owner_identity_id,
+            caller_identity_id,
+            access_level,
+        )
+        .await?
+        {
             return Err(AppError::Forbidden(
                 "you can only delete your own templates".into(),
             ));
@@ -486,7 +498,17 @@ pub(crate) async fn load_draft_for_write_inner(
         .ok_or_else(|| AppError::NotFound("draft not found".into()))?;
 
     if existing.owner_identity_id.is_some() {
-        if existing.owner_identity_id != caller_identity_id && access_level < AccessLevel::Admin {
+        // Own it, be an ancestor of the owner (parent→child ceiling allowance),
+        // or be admin.
+        let scope = overslash_db::OrgScope::new(org_id, db.clone());
+        if !crate::services::permission_chain::caller_may_manage_owned(
+            &scope,
+            existing.owner_identity_id,
+            caller_identity_id,
+            access_level,
+        )
+        .await?
+        {
             return Err(AppError::Forbidden(
                 "you can only modify your own drafts".into(),
             ));
