@@ -7,6 +7,8 @@ updates:
       interval: "weekly"
     target-branch: "dev"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       cargo-deps:
         patterns: ["*"]
@@ -18,6 +20,8 @@ updates:
       interval: "weekly"
     target-branch: "dev"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       dashboard-deps:
         patterns: ["*"]
@@ -28,6 +32,8 @@ updates:
     schedule:
       interval: "weekly"
     target-branch: "dev"
+    cooldown:
+      default-days: 7
     groups:
       github-actions-deps:
         patterns: ["*"]
