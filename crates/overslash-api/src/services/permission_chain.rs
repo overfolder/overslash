@@ -16,7 +16,9 @@
 
 use uuid::Uuid;
 
-use overslash_core::permissions::{PermissionKey, PermissionResult, check_permissions};
+use overslash_core::permissions::{
+    AccessLevel, PermissionKey, PermissionResult, check_permissions,
+};
 use overslash_core::types::{PermissionEffect, PermissionRule};
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::identity::IdentityRow;
@@ -522,6 +524,27 @@ pub async fn is_self_or_ancestor(
     }
     let chain = scope.get_identity_ancestor_chain(target).await?;
     Ok(chain.iter().any(|c| c.id == candidate))
+}
+
+/// Owner-or-ancestor-or-admin verdict for an owned resource (service/template).
+/// `owner`/`caller` are the resource owner and the acting identity. Returns true
+/// when the caller owns it, is an ancestor of the owner (parent→child ceiling
+/// allowance — a user managing its agents' resources), or is org Admin. One-
+/// directional: an agent is not an ancestor of its owner-user, and org-level
+/// resources (owner `None`) never match the ancestry branch, so both still need Admin.
+pub async fn caller_may_manage_owned(
+    scope: &OrgScope,
+    owner: Option<Uuid>,
+    caller: Option<Uuid>,
+    access_level: AccessLevel,
+) -> Result<bool, AppError> {
+    if owner == caller || access_level >= AccessLevel::Admin {
+        return Ok(true);
+    }
+    if let (Some(caller), Some(owner)) = (caller, owner) {
+        return is_self_or_ancestor(scope, caller, owner).await;
+    }
+    Ok(false)
 }
 
 /// Caller↔requester relationship for an approval. The split between

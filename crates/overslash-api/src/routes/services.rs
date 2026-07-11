@@ -283,22 +283,31 @@ async fn create_service(
 
 /// Authorize a mutation (delete/update/status) of a service instance.
 ///
-/// Write-level callers may mutate a service they own; mutating another
-/// identity's service, or an org-level (`owner_identity_id IS NULL`) service,
-/// requires Admin. This is strict identity equality — deliberately NOT a
-/// ceiling/family check, so an agent cannot reach its owner-user's or a
-/// sibling agent's services through the API (those are managed on the
-/// integrating app's dashboard). Mirrors `update_template` (templates.rs).
-fn require_owner_or_admin(
+/// Write-level callers may mutate a service they own, or one owned by an
+/// identity they are an ancestor of — the parent→child ceiling allowance that
+/// lets a user manage its own agents'/sub-agents' services (the dashboard runs
+/// as the user identity). This is one-directional: an agent is NOT an ancestor
+/// of its owner-user, so it still cannot reach up to a parent's or a sibling's
+/// services through the API. Org-level (`owner_identity_id IS NULL`) services
+/// never match the ancestry branch and still require Admin. Mirrors the
+/// template checks (templates.rs / platform_templates.rs) via the shared
+/// `caller_may_manage_owned` helper.
+async fn require_owner_or_admin(
+    scope: &OrgScope,
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
     acl: &OrgAcl,
 ) -> Result<()> {
-    if instance.owner_identity_id != acl.identity_id
-        && acl.access_level < overslash_core::permissions::AccessLevel::Admin
+    if crate::services::permission_chain::caller_may_manage_owned(
+        scope,
+        instance.owner_identity_id,
+        acl.identity_id,
+        acl.access_level,
+    )
+    .await?
     {
-        return Err(AppError::Forbidden("admin access required".into()));
+        return Ok(());
     }
-    Ok(())
+    Err(AppError::Forbidden("admin access required".into()))
 }
 
 async fn update_service(
@@ -316,7 +325,7 @@ async fn update_service(
     if instance.is_system {
         return Err(AppError::BadRequest("cannot modify system service".into()));
     }
-    require_owner_or_admin(&instance, &acl)?;
+    require_owner_or_admin(&scope, &instance, &acl).await?;
 
     let ctx = ctx_from_acl(&state, &ext, &acl)?;
     let detail = platform_services::kernel_update_service(ctx, id, req).await?;
@@ -336,7 +345,7 @@ async fn update_service_status(
     if existing.is_system {
         return Err(AppError::BadRequest("cannot modify system service".into()));
     }
-    require_owner_or_admin(&existing, &acl)?;
+    require_owner_or_admin(&scope, &existing, &acl).await?;
 
     if !["draft", "active", "archived"].contains(&req.status.as_str()) {
         return Err(AppError::BadRequest(format!(
@@ -378,9 +387,9 @@ async fn delete_service(
     let auth = acl;
     // Destructive op: intentionally do NOT reach up to the ceiling user for
     // name resolution. An agent must not be able to target its owner user's
-    // services via the shadowing lookup; callers that really mean to delete a
-    // parent-owned service can address it by UUID (and still need Admin — see
-    // the ownership check below).
+    // services via the shadowing lookup (child→parent). Callers that mean to
+    // manage a service owned lower in their own subtree address it by UUID; the
+    // ownership check below then applies the parent→child ceiling allowance.
     let instance = if let Ok(uuid) = name.parse::<Uuid>() {
         scope
             .get_service_instance(uuid)
@@ -397,7 +406,7 @@ async fn delete_service(
         return Err(AppError::BadRequest("cannot delete system service".into()));
     }
 
-    require_owner_or_admin(&instance, &auth)?;
+    require_owner_or_admin(&scope, &instance, &auth).await?;
 
     // Capture the bound connection before deleting — the row is about to go.
     let conn_id = instance.connection_id;

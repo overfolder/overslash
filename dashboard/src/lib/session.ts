@@ -16,6 +16,22 @@ export class ApiError extends Error {
 	}
 }
 
+/**
+ * Pull the human-readable reason out of an error response body. The backend's
+ * simple errors serialize as `{ "error": "<message>" }` (see AppError
+ * IntoResponse), so surface that string when present — lets callers show the
+ * server's actual reason (e.g. "admin access required") instead of a bare
+ * status code.
+ */
+export function apiErrorReason(e: unknown): string | undefined {
+	if (e instanceof ApiError && e.body && typeof e.body === 'object') {
+		const b = e.body as { error?: unknown; message?: unknown };
+		if (typeof b.error === 'string') return b.error;
+		if (typeof b.message === 'string') return b.message;
+	}
+	return undefined;
+}
+
 async function request<T>(
 	method: string,
 	path: string,
