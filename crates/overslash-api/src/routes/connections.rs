@@ -966,6 +966,9 @@ struct ConnectionSummary {
     /// When true, this connection is preserved from the service-deletion
     /// auto-cleanup — the dashboard renders it as a "kept" toggle.
     keep: bool,
+    /// When true, the connection must be re-authorized before use (e.g. its
+    /// pinned BYOC client was replaced) — the dashboard renders a warning badge.
+    reauth_required: bool,
     created_at: String,
 }
 
@@ -1045,6 +1048,7 @@ async fn list_connections(
                 scopes: r.scopes.unwrap_or_default(),
                 is_default: r.is_default,
                 keep: r.keep,
+                reauth_required: r.reauth_required,
                 created_at: fmt_time(r.created_at),
             })
             .collect(),
@@ -1074,6 +1078,9 @@ struct ConnectionDetail {
     /// When true, this connection is preserved from the service-deletion
     /// auto-cleanup (see `POST /v1/connections/{id}/keep`).
     keep: bool,
+    /// When true, the connection must be re-authorized before use (e.g. its
+    /// pinned BYOC client was replaced). Cleared on the next successful reconnect.
+    reauth_required: bool,
     created_at: String,
     updated_at: String,
     used_by: Vec<UsedByService>,
@@ -1137,6 +1144,7 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
         scopes: conn.scopes.unwrap_or_default(),
         is_default: conn.is_default,
         keep: conn.keep,
+        reauth_required: conn.reauth_required,
         created_at: fmt_time(conn.created_at),
         updated_at: fmt_time(conn.updated_at),
         used_by,

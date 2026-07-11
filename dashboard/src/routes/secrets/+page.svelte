@@ -18,6 +18,7 @@
 	import OwnerCell from '$lib/components/secrets/OwnerCell.svelte';
 	import NewSecretModal from '$lib/components/secrets/NewSecretModal.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import ReplaceByocModal from '$lib/components/services/ReplaceByocModal.svelte';
 	import { formatTime } from '$lib/utils/time';
 
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
@@ -32,6 +33,11 @@
 	let creating = $state(false);
 	let byocBusy = $state<string | null>(null);
 	let confirmDelete = $state<ByocCredentialSummary | null>(null);
+	let replaceEntry = $state<ByocCredentialSummary | null>(null);
+
+	function metadataEntries(md: Record<string, string> | undefined): [string, string][] {
+		return md ? Object.entries(md) : [];
+	}
 
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 	const providerByKey = $derived(new Map(providers.map((p) => [p.key, p])));
@@ -210,6 +216,7 @@
 							<tr>
 								<th class="name-col">Provider</th>
 								<th>Owner</th>
+								<th>Tags</th>
 								<th class="created-col">Created</th>
 								<th class="action-col"></th>
 							</tr>
@@ -228,8 +235,29 @@
 											{currentUserId}
 										/>
 									</td>
+									<td>
+										{#if metadataEntries(b.metadata).length > 0}
+											<span class="tags">
+												{#each metadataEntries(b.metadata) as [key, value] (key)}
+													<span class="tag" title={`${key}=${value}`}>
+														<span class="tag-k">{key}</span>{value}
+													</span>
+												{/each}
+											</span>
+										{:else}
+											<span class="muted">—</span>
+										{/if}
+									</td>
 									<td class="created">{formatTime(b.created_at)}</td>
 									<td class="action">
+										<button
+											type="button"
+											class="btn-link"
+											disabled={byocBusy === b.id}
+											onclick={() => (replaceEntry = b)}
+										>
+											Replace
+										</button>
 										<button
 											type="button"
 											class="btn-link danger"
@@ -269,6 +297,23 @@
 	onConfirm={performByocDelete}
 	onCancel={() => (confirmDelete = null)}
 />
+
+{#if replaceEntry}
+	{@const p = providerByKey.get(replaceEntry.provider_key)}
+	<ReplaceByocModal
+		open={true}
+		credentialId={replaceEntry.id}
+		provider={replaceEntry.provider_key}
+		providerDisplayName={p?.display_name ?? replaceEntry.provider_key}
+		redirectUri={p?.oauth_redirect_uri ?? ''}
+		jsOrigin={p?.oauth_js_origin ?? ''}
+		onClose={() => (replaceEntry = null)}
+		onSaved={() => {
+			replaceEntry = null;
+			void load();
+		}}
+	/>
+{/if}
 
 <style>
 	.page {
@@ -491,6 +536,37 @@
 		cursor: not-allowed;
 	}
 
+	/* Read-only BYOC metadata tags (key=value). */
+	.tags {
+		display: inline-flex;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+	.tag {
+		display: inline-flex;
+		align-items: center;
+		padding: 1px 6px;
+		border-radius: 4px;
+		background: var(--color-primary-bg);
+		color: var(--color-text);
+		font-family: var(--font-mono);
+		font-size: 11px;
+		max-width: 16rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.tag-k {
+		color: var(--color-primary);
+		font-weight: 600;
+		margin-right: 3px;
+	}
+	.tag-k::after {
+		content: '=';
+		color: var(--color-text-muted);
+		margin-left: 1px;
+	}
+
 	@media (max-width: 780px) {
 		thead {
 			display: none;
@@ -545,7 +621,7 @@
 			padding: 10px 12px;
 			display: grid;
 			grid-template-columns: 1fr auto;
-			grid-template-areas: 'provider action' 'owner action' 'created action';
+			grid-template-areas: 'provider action' 'owner action' 'tags action' 'created action';
 			gap: 4px 10px;
 			align-items: center;
 		}
@@ -559,10 +635,14 @@
 			text-align: left !important;
 		}
 		.oauth-apps tr.byoc-row td:nth-child(3) {
-			grid-area: created;
+			grid-area: tags;
 			text-align: left !important;
 		}
 		.oauth-apps tr.byoc-row td:nth-child(4) {
+			grid-area: created;
+			text-align: left !important;
+		}
+		.oauth-apps tr.byoc-row td:nth-child(5) {
 			grid-area: action;
 			align-self: center;
 			text-align: right !important;

@@ -170,7 +170,13 @@ async fn seed_hubspot_connection(
     let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
     let future = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(ident_id, "hubspot", &encrypted_cid, &encrypted_csec)
+        .create_byoc_credential(
+            ident_id,
+            "hubspot",
+            &encrypted_cid,
+            &encrypted_csec,
+            &serde_json::json!({}),
+        )
         .await
         .unwrap();
     let scopes = crm_scopes();
@@ -605,7 +611,13 @@ async fn test_hubspot_mcp_needs_authentication_without_connection() {
     let encrypted_csec =
         overslash_core::crypto::encrypt(&enc_key, b"mcp-auth-app-client-secret").unwrap();
     overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(owner_id, "hubspot", &encrypted_cid, &encrypted_csec)
+        .create_byoc_credential(
+            owner_id,
+            "hubspot",
+            &encrypted_cid,
+            &encrypted_csec,
+            &serde_json::json!({}),
+        )
         .await
         .unwrap();
 

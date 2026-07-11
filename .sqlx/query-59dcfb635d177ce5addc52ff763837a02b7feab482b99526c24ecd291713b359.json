@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, provider_key,\n                encrypted_client_id, encrypted_client_secret, created_at, updated_at\n         FROM byoc_credentials WHERE id = $1",
+  "query": "INSERT INTO byoc_credentials (org_id, identity_id, provider_key,\n         encrypted_client_id, encrypted_client_secret, metadata)\n         VALUES ($1, $2, $3, $4, $5, $6)\n         RETURNING id, org_id, identity_id, provider_key,\n                   encrypted_client_id, encrypted_client_secret, metadata, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,17 @@
       },
       {
         "ordinal": 6,
+        "name": "metadata",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "byoc_credentials",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -94,7 +105,12 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Bytea",
+        "Jsonb"
       ]
     },
     "nullable": [
@@ -105,8 +121,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "7c593711dc588ebd4a6023d0cbfe4815bbbe3f33b1dfd3a402c230290a0717c1"
+  "hash": "59dcfb635d177ce5addc52ff763837a02b7feab482b99526c24ecd291713b359"
 }

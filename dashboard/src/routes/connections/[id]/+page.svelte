@@ -184,7 +184,17 @@
 						<div class="eyebrow">{displayName(conn.provider_key)}</div>
 						<h1 class="account">{conn.account_email ?? '—'}</h1>
 					</div>
+					{#if conn.reauth_required}
+						<span class="cred-chip warn reauth-chip">Reauth required</span>
+					{/if}
 				</div>
+
+				{#if conn.reauth_required}
+					<p class="reauth-note" role="alert">
+						This connection's OAuth app was replaced. Its stored tokens can no longer be
+						refreshed — re-authorize it before its next use.
+					</p>
+				{/if}
 
 				<div class="meta">
 					<div class="meta-item">
@@ -593,6 +603,19 @@
 	.cred-chip.warn {
 		background: rgba(229, 56, 54, 0.1);
 		color: var(--color-danger);
+	}
+	.reauth-chip {
+		margin-left: 8px;
+		align-self: center;
+	}
+	.reauth-note {
+		margin: 10px 0 0;
+		padding: 10px 12px;
+		border-radius: 8px;
+		background: rgba(229, 56, 54, 0.08);
+		color: var(--color-danger);
+		font-size: 13px;
+		line-height: 1.4;
 	}
 	.cred-desc {
 		font-size: 13px;

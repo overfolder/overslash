@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, keep, created_at, updated_at\n         FROM connections WHERE org_id = $1 AND id = ANY($2)",
+  "query": "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,\n                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,\n                    c.byoc_credential_id, c.is_default, c.keep, c.reauth_required,\n                    c.created_at, c.updated_at\n             FROM connections c\n             JOIN identities i ON i.id = c.identity_id\n             WHERE c.identity_id = $1 AND i.org_id = $2\n             ORDER BY c.created_at DESC",
   "describe": {
     "columns": [
       {
@@ -82,7 +82,7 @@
       },
       {
         "ordinal": 7,
-        "name": "scopes?: Vec<String>",
+        "name": "scopes",
         "type_info": "TextArray",
         "origin": {
           "Table": {
@@ -137,6 +137,17 @@
       },
       {
         "ordinal": 12,
+        "name": "reauth_required",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "reauth_required"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -161,7 +172,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "UuidArray"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -178,8 +189,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "5a07e4b466141908ad822897d0308c44b288a7795d5c65737dc972bcae762e6d"
+  "hash": "6409a27bd0b3f01974be06ab4e0c478f4365f976533120581b65e9fc73b330b2"
 }

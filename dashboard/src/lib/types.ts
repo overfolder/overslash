@@ -587,8 +587,21 @@ export interface ByocCredentialSummary {
   org_id: string;
   identity_id: string;
   provider_key: string;
+  /** Opaque caller-supplied provenance tag (key=value), echoed verbatim. */
+  metadata: Record<string, string>;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * Body of `PUT /v1/byoc-credentials/{id}` — replaces the client id/secret in
+ * place (the credential id and its connection pins survive). Replacing marks
+ * every pinned connection `reauth_required`.
+ */
+export interface UpdateByocCredentialRequest {
+  client_id: string;
+  client_secret: string;
+  metadata?: Record<string, string>;
 }
 
 export interface InitiateConnectionResponse {
@@ -662,6 +675,9 @@ export interface ConnectionSummary {
   /** When true, this connection is preserved when a service bound to it is
    *  deleted, even if nothing else references it. */
   keep: boolean;
+  /** When true, the connection must be re-authorized before use (e.g. its
+   *  pinned BYOC client was replaced). Cleared on the next successful reconnect. */
+  reauth_required: boolean;
   created_at: string;
 }
 
@@ -702,6 +718,9 @@ export interface ConnectionDetail {
    * signals reauth with no reconnect link (the partner refreshes & re-imports).
    */
   integration_managed: boolean;
+  /** When true, the connection must be re-authorized before use (e.g. its
+   *  pinned BYOC client was replaced). Cleared on the next successful reconnect. */
+  reauth_required: boolean;
   created_at: string;
   /** Advances on an in-place reconnect — the detail page polls it. */
   updated_at: string;

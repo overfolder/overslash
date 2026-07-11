@@ -64,6 +64,111 @@ async fn seed_connection_no_refresh_expired(
     row.0
 }
 
+/// Seed an OAuth connection with a **valid, non-expired** access token but the
+/// persisted `reauth_required` flag set. Without the flag this connection would
+/// inject its token and the call would proceed; with it, the auth path must
+/// short-circuit to `reauth_required` before ever touching the token. Drives the
+/// `OAuthError::ReauthRequired → Reauth("credential_replaced")` gate added for
+/// BYOC replace.
+async fn seed_connection_reauth_required(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    provider_key: &str,
+) -> Uuid {
+    let enc_key = crypto::Keyring::test();
+    let access = crypto::encrypt(&enc_key, b"mock_valid_access_token").unwrap();
+    let future = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    let row: (Uuid,) = sqlx::query_as(
+        "INSERT INTO connections (org_id, identity_id, provider_key,
+         encrypted_access_token, token_expires_at, scopes, account_email, reauth_required)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING id",
+    )
+    .bind(org_id)
+    .bind(identity_id)
+    .bind(provider_key)
+    .bind(&access)
+    .bind(future)
+    .bind::<Vec<String>>(vec!["tweet.read".into(), "users.read".into()])
+    .bind(Some("mock@x"))
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    row.0
+}
+
+/// A connection flagged `reauth_required` (its BYOC client was replaced) makes
+/// the action call return the `reauth_required` envelope even though its access
+/// token is still valid — the gate fires before injection.
+#[tokio::test]
+async fn reauth_required_flag_short_circuits_action_call() {
+    let pool = common::test_pool().await;
+
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var("OAUTH_X_CLIENT_ID", "x_test_client");
+        std::env::set_var("OAUTH_X_CLIENT_SECRET", "x_test_secret");
+    }
+
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    // Seed the flagged connection on the owner identity (D22).
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    let connection_id = seed_connection_reauth_required(&pool, org_id, owner_id, "x").await;
+
+    let create_resp = client
+        .post(format!("{base}/v1/services"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({
+            "template_key": "x",
+            "name": "x",
+            "user_level": false,
+            "status": "active",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(create_resp.status().is_success());
+
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "x:*:*"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&api_key).0, common::auth(&api_key).1)
+        .json(&json!({ "service": "x", "action": "get_me", "params": {} }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "expected 401 reauth_required, got: {:?}",
+        resp.text().await
+    );
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "reauth_required");
+    assert_eq!(
+        body["connection_id"].as_str().unwrap(),
+        connection_id.to_string()
+    );
+    assert_eq!(body["reason"], "credential_replaced");
+    assert!(
+        body["auth_url"]
+            .as_str()
+            .expect("auth_url required")
+            .contains("/connect-authorize?id="),
+    );
+}
+
 /// When the agent calls a service whose template declares
 /// OAuth and the calling identity has no connection for that provider,
 /// the action handler returns 401 `needs_authentication` with a

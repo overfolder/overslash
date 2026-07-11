@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, keep, created_at, updated_at\n         FROM connections WHERE org_id = $1 ORDER BY created_at DESC",
+  "query": "INSERT INTO connections (org_id, identity_id, provider_key, encrypted_access_token,\n         encrypted_refresh_token, token_expires_at, scopes, account_email, byoc_credential_id,\n         is_default)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,\n                 NOT EXISTS (\n                     SELECT 1 FROM connections\n                     WHERE identity_id = $2 AND provider_key = $3 AND is_default\n                 ))\n         RETURNING id, org_id, identity_id, provider_key, encrypted_access_token,\n                   encrypted_refresh_token, token_expires_at, scopes, account_email,\n                   byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -82,7 +82,7 @@
       },
       {
         "ordinal": 7,
-        "name": "scopes?: Vec<String>",
+        "name": "scopes",
         "type_info": "TextArray",
         "origin": {
           "Table": {
@@ -137,6 +137,17 @@
       },
       {
         "ordinal": 12,
+        "name": "reauth_required",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "reauth_required"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -160,6 +171,14 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Bytea",
+        "Timestamptz",
+        "TextArray",
+        "Text",
         "Uuid"
       ]
     },
@@ -177,8 +196,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "598c4184790f3971cc5634a2afc2b0f6875e47820720e181e072215c4432c413"
+  "hash": "888cffbbe858baecb17e1d4f93ec4e3dec11dec6fa5be9817e545f45e896df64"
 }
