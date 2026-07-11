@@ -181,6 +181,16 @@ pub async fn resolve_access_token(
     client_secret: &str,
 ) -> Result<String, OAuthError> {
     let pool: &PgPool = scope.db();
+
+    // Proactive reauth gate: a connection flagged `reauth_required` (its pinned
+    // BYOC client was replaced) holds tokens minted under the old OAuth app.
+    // Short-circuit before injecting/refreshing so every caller uniformly
+    // surfaces the `reauth_required` recovery envelope (with a fresh reconnect
+    // URL) instead of the injected token silently 401'ing upstream later.
+    if conn.reauth_required {
+        return Err(OAuthError::ReauthRequired("byoc_client_replaced".into()));
+    }
+
     let access_token = String::from_utf8(
         crypto::decrypt(enc_key, &conn.encrypted_access_token)
             .map_err(|e| OAuthError::CryptoError(e.to_string()))?,
@@ -647,4 +657,9 @@ pub enum OAuthError {
     NoRefreshToken,
     #[error("provider not found: {0}")]
     ProviderNotFound(String),
+    /// The connection is flagged `reauth_required` (e.g. its pinned BYOC client
+    /// was replaced), so its stored tokens can no longer be refreshed. Carries a
+    /// short reason for the recovery envelope.
+    #[error("reauth required: {0}")]
+    ReauthRequired(String),
 }

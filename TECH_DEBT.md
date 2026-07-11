@@ -72,9 +72,20 @@ IdP credentials fall back to `GOOGLE_AUTH_CLIENT_ID` / `GITHUB_AUTH_CLIENT_ID` (
 
 ---
 
-## Dashboard: no BYOC replacement UX
+## Dashboard: no BYOC replacement UX — RESOLVED
 
-The Create Service form surfaces user-level BYOC state via `has_user_byoc_credential` (from `/v1/oauth-providers`) and `ByocSection` renders a read-only "✓ Your {provider} OAuth app is configured" card when present. There is no in-place replace action: silently swapping the BYOC would invalidate every existing `connections` row authorized against the old client_id (tokens minted by one OAuth app are not redeemable by another). A proper replace flow needs (a) a settings page listing BYOC credentials with explicit delete, (b) a warning that lists impacted connections, and ideally (c) re-auth prompts or a dual-creds overlap window. Until then, users have to delete + recreate via `DELETE /v1/byoc-credentials/{id}` from profile/settings.
+~~The Create Service form surfaces user-level BYOC state via `has_user_byoc_credential`…~~
+
+Resolved by the §6 token-vault work (`docs/design/agent-credential-provisioning.md`):
+`PUT /v1/byoc-credentials/{id}` replaces the encrypted client pair **in place** so the
+credential id — and every `connections` row pinned to it — survives the rotation. Because
+tokens minted under the old OAuth app can't be redeemed by the new one, the replace path
+proactively sets the persisted `connections.reauth_required` flag on every pinned connection;
+the action auth path short-circuits a flagged connection to the existing `reauth_required`
+recovery envelope, and a fresh reconnect clears the flag. The dashboard exposes this as a
+**Replace** action on each app in the profile's "My OAuth apps" list, and connections render a
+"Reauth required" badge. (A dual-creds overlap window remains a possible future refinement, but
+is not needed for correctness.)
 
 ---
 

@@ -218,6 +218,230 @@ async fn list_byoc_filters_to_own_identity_for_non_admin() {
 }
 
 #[tokio::test]
+async fn create_and_get_byoc_echo_metadata() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    let created: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "provider": "github",
+            "client_id": "gh_id",
+            "client_secret": "gh_secret",
+            "identity_id": agent_ident,
+            "metadata": { "source": "overfolder", "vault_secret_id": "vs-123" },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+    // Echoed verbatim on create.
+    assert_eq!(created["metadata"]["source"], "overfolder");
+    assert_eq!(created["metadata"]["vault_secret_id"], "vs-123");
+
+    // Echoed on GET /{id}.
+    let got: Value = client
+        .get(format!("{base}/v1/byoc-credentials/{id}"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got["metadata"]["source"], "overfolder");
+
+    // Echoed on list.
+    let list: Vec<Value> = client
+        .get(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list[0]["metadata"]["vault_secret_id"], "vs-123");
+
+    // Omitted metadata on create defaults to an empty object, not null.
+    let bare: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "provider": "slack",
+            "client_id": "s_id", "client_secret": "s_secret",
+            "identity_id": agent_ident,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(bare["metadata"], json!({}));
+}
+
+#[tokio::test]
+async fn replace_byoc_updates_metadata_and_marks_connections_reauth() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_id = fx.org_id;
+
+    // Create a BYOC with a provenance tag.
+    let created: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "provider": "github",
+            "client_id": "old_id", "client_secret": "old_secret",
+            "identity_id": agent_ident,
+            "metadata": { "vault_secret_id": "old-vault" },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let byoc_id: Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let created_updated_at = created["updated_at"].as_str().unwrap().to_string();
+
+    // Insert a connection pinned to that credential directly (a full OAuth
+    // dance isn't needed to exercise the reauth-marking path).
+    let conn_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO connections (id, org_id, identity_id, provider_key,
+            encrypted_access_token, byoc_credential_id, reauth_required)
+         VALUES ($1, $2, $3, 'github', $4, $5, false)",
+    )
+    .bind(conn_id)
+    .bind(org_id)
+    .bind(agent_ident)
+    .bind(vec![1u8, 2, 3])
+    .bind(byoc_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Replace the client pair; supply new metadata.
+    let replaced: Value = client
+        .put(format!("{base}/v1/byoc-credentials/{byoc_id}"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "client_id": "new_id",
+            "client_secret": "new_secret",
+            "metadata": { "vault_secret_id": "new-vault" },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // id preserved, metadata rewritten, timestamp advanced.
+    assert_eq!(replaced["id"].as_str().unwrap(), byoc_id.to_string());
+    assert_eq!(replaced["metadata"]["vault_secret_id"], "new-vault");
+    assert_ne!(replaced["updated_at"].as_str().unwrap(), created_updated_at);
+
+    // The pinned connection is now flagged for reauth.
+    let reauth: bool = sqlx::query_scalar("SELECT reauth_required FROM connections WHERE id = $1")
+        .bind(conn_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(reauth, "pinned connection should be marked reauth_required");
+}
+
+#[tokio::test]
+async fn replace_byoc_clears_omitted_metadata() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    let created: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "provider": "github",
+            "client_id": "id", "client_secret": "secret",
+            "identity_id": agent_ident,
+            "metadata": { "vault_secret_id": "stale" },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    // Replace without metadata → the stale claim must be cleared, not preserved.
+    let replaced: Value = client
+        .put(format!("{base}/v1/byoc-credentials/{id}"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({ "client_id": "id2", "client_secret": "secret2" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(replaced["metadata"], json!({}));
+}
+
+#[tokio::test]
+async fn agent_cannot_replace_another_identitys_byoc() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_user, _agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
+    let (bystander_ident, _bystander_key) =
+        create_second_user_with_key(&base, &client, &admin_key, org_id).await;
+
+    // Admin provisions a BYOC for the bystander.
+    let created: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "provider": "slack",
+            "client_id": "by_id", "client_secret": "by_secret",
+            "identity_id": bystander_ident,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    // Agent (non-admin) tries to replace it → 403.
+    let resp = client
+        .put(format!("{base}/v1/byoc-credentials/{id}"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({ "client_id": "x", "client_secret": "y" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test]
 async fn oauth_providers_lists_known_providers() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;

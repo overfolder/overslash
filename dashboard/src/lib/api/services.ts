@@ -25,6 +25,7 @@ import type {
 	TemplateSettings,
 	TemplateSummary,
 	UpdateDraftRequest,
+	UpdateByocCredentialRequest,
 	UpdateServiceRequest,
 	UpdateTemplateRequest,
 	ValidationResult
@@ -264,6 +265,12 @@ export const listByocCredentials = (signal?: AbortSignal) =>
 
 export const createByocCredential = (req: CreateByocCredentialRequest) =>
 	session.post<ByocCredentialSummary>('/v1/byoc-credentials', req);
+
+// Replace an existing credential's client id/secret in place. The credential id
+// (and every connection pinned to it) survives; pinned connections are marked
+// `reauth_required` server-side.
+export const updateByocCredential = (id: string, req: UpdateByocCredentialRequest) =>
+	session.put<ByocCredentialSummary>(`/v1/byoc-credentials/${id}`, req);
 
 export const deleteByocCredential = (id: string) =>
 	session.delete<{ deleted: boolean }>(`/v1/byoc-credentials/${id}`);

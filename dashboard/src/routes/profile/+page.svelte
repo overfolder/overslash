@@ -4,6 +4,7 @@
 	import { formatTime, ttlRemaining } from '$lib/utils/time';
 	import { goto, invalidateAll } from '$app/navigation';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import ReplaceByocModal from '$lib/components/services/ReplaceByocModal.svelte';
 	import { deleteByocCredential } from '$lib/api/services';
 	import type { ByocCredentialSummary, OAuthProviderInfo } from '$lib/types';
 
@@ -88,6 +89,18 @@
 				}
 			}
 		);
+	}
+
+	// BYOC replace (rotate) modal — the entry currently being replaced, or null.
+	let replaceEntry = $state<ByocCredentialSummary | null>(null);
+
+	function metadataEntries(md: Record<string, string> | undefined): [string, string][] {
+		return md ? Object.entries(md) : [];
+	}
+
+	async function onReplaceSaved() {
+		replaceEntry = null;
+		await invalidateAll();
 	}
 
 	function deleteByoc(entry: ByocCredentialSummary) {
@@ -234,14 +247,32 @@
 							<div class="row-sub">
 								<span>Created {formatTime(entry.created_at)}</span>
 							</div>
+							{#if metadataEntries(entry.metadata).length > 0}
+								<div class="tags">
+									{#each metadataEntries(entry.metadata) as [key, value] (key)}
+										<span class="tag" title={`${key}=${value}`}>
+											<span class="tag-k">{key}</span>{value}
+										</span>
+									{/each}
+								</div>
+							{/if}
 						</div>
-						<button
-							class="btn btn-danger"
-							disabled={busy === `byoc:${entry.id}`}
-							onclick={() => deleteByoc(entry)}
-						>
-							Delete
-						</button>
+						<div class="row-actions">
+							<button
+								class="btn"
+								disabled={busy === `byoc:${entry.id}`}
+								onclick={() => (replaceEntry = entry)}
+							>
+								Replace
+							</button>
+							<button
+								class="btn btn-danger"
+								disabled={busy === `byoc:${entry.id}`}
+								onclick={() => deleteByoc(entry)}
+							>
+								Delete
+							</button>
+						</div>
 					</li>
 				{/each}
 			</ul>
@@ -312,6 +343,20 @@
 	onConfirm={runConfirm}
 	onCancel={() => (confirmOpen = false)}
 />
+
+{#if replaceEntry}
+	{@const p = providerByKey.get(replaceEntry.provider_key) as OAuthProviderInfo | undefined}
+	<ReplaceByocModal
+		open={true}
+		credentialId={replaceEntry.id}
+		provider={replaceEntry.provider_key}
+		providerDisplayName={p?.display_name ?? replaceEntry.provider_key}
+		redirectUri={p?.oauth_redirect_uri ?? ''}
+		jsOrigin={p?.oauth_js_origin ?? ''}
+		onClose={() => (replaceEntry = null)}
+		onSaved={onReplaceSaved}
+	/>
+{/if}
 
 <style>
 	.page {
@@ -453,6 +498,38 @@
 	.row-actions {
 		display: flex;
 		gap: 0.5rem;
+	}
+
+	/* Read-only metadata tags (key=value) on a BYOC row. */
+	.tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+		margin-top: 0.4rem;
+	}
+	.tag {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.1rem 0.45rem;
+		border-radius: 4px;
+		background: var(--color-primary-bg);
+		color: var(--color-text);
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		max-width: 20rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.tag-k {
+		color: var(--color-primary);
+		font-weight: 600;
+		margin-right: 0.25rem;
+	}
+	.tag-k::after {
+		content: '=';
+		color: var(--color-text-muted);
+		margin-left: 0.1rem;
 	}
 
 	.mono {

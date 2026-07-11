@@ -55,6 +55,7 @@ pub(super) fn classify_oauth(err: &OAuthError) -> OAuthOutcome {
     match err {
         OAuthError::RefreshFailed(_) => OAuthOutcome::Reauth("refresh_token_failed"),
         OAuthError::NoRefreshToken => OAuthOutcome::Reauth("no_refresh_token"),
+        OAuthError::ReauthRequired(_) => OAuthOutcome::Reauth("credential_replaced"),
         OAuthError::CryptoError(_)
         | OAuthError::DbError(_)
         | OAuthError::ParseError(_)
@@ -1146,6 +1147,12 @@ mod tests {
         }
         match classify_oauth(&OAuthError::NoRefreshToken) {
             OAuthOutcome::Reauth(reason) => assert_eq!(reason, "no_refresh_token"),
+            other => panic!("expected Reauth, got {other:?}"),
+        }
+        // A connection flagged `reauth_required` (its BYOC client was replaced)
+        // maps to the distinct `credential_replaced` reason.
+        match classify_oauth(&OAuthError::ReauthRequired("byoc_client_replaced".into())) {
+            OAuthOutcome::Reauth(reason) => assert_eq!(reason, "credential_replaced"),
             other => panic!("expected Reauth, got {other:?}"),
         }
     }

@@ -10,6 +10,9 @@ pub struct ByocCredentialRow {
     pub provider_key: String,
     pub encrypted_client_id: Vec<u8>,
     pub encrypted_client_secret: Vec<u8>,
+    /// Opaque caller-supplied provenance tag (§6.2). Echoed verbatim; cleared or
+    /// rewritten whenever the encrypted client pair is replaced.
+    pub metadata: serde_json::Value,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -20,6 +23,7 @@ pub struct CreateByocCredential<'a> {
     pub provider_key: &'a str,
     pub encrypted_client_id: &'a [u8],
     pub encrypted_client_secret: &'a [u8],
+    pub metadata: &'a serde_json::Value,
 }
 
 pub(crate) async fn create(
@@ -29,17 +33,50 @@ pub(crate) async fn create(
     sqlx::query_as!(
         ByocCredentialRow,
         "INSERT INTO byoc_credentials (org_id, identity_id, provider_key,
-         encrypted_client_id, encrypted_client_secret)
-         VALUES ($1, $2, $3, $4, $5)
+         encrypted_client_id, encrypted_client_secret, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id, org_id, identity_id, provider_key,
-                   encrypted_client_id, encrypted_client_secret, created_at, updated_at",
+                   encrypted_client_id, encrypted_client_secret, metadata, created_at, updated_at",
         input.org_id,
         input.identity_id,
         input.provider_key,
         input.encrypted_client_id,
         input.encrypted_client_secret,
+        input.metadata,
     )
     .fetch_one(pool)
+    .await
+}
+
+/// Replace a BYOC credential's encrypted client pair (and metadata) in place,
+/// scoped to `org_id`. The row id is preserved so connections pinned to it
+/// survive the rotation. `metadata` uses **replace** semantics — the caller
+/// supplies the full new value (`{}` to clear) — so a stale provenance claim
+/// can never outlive the client material it described. Returns `None` when no
+/// row matches `(id, org_id)`.
+pub(crate) async fn update(
+    pool: &PgPool,
+    id: Uuid,
+    org_id: Uuid,
+    encrypted_client_id: &[u8],
+    encrypted_client_secret: &[u8],
+    metadata: &serde_json::Value,
+) -> Result<Option<ByocCredentialRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ByocCredentialRow,
+        "UPDATE byoc_credentials
+         SET encrypted_client_id = $3, encrypted_client_secret = $4,
+             metadata = $5, updated_at = now()
+         WHERE id = $1 AND org_id = $2
+         RETURNING id, org_id, identity_id, provider_key,
+                   encrypted_client_id, encrypted_client_secret, metadata, created_at, updated_at",
+        id,
+        org_id,
+        encrypted_client_id,
+        encrypted_client_secret,
+        metadata,
+    )
+    .fetch_optional(pool)
     .await
 }
 
@@ -50,7 +87,7 @@ pub(crate) async fn get_by_id(
     sqlx::query_as!(
         ByocCredentialRow,
         "SELECT id, org_id, identity_id, provider_key,
-                encrypted_client_id, encrypted_client_secret, created_at, updated_at
+                encrypted_client_id, encrypted_client_secret, metadata, created_at, updated_at
          FROM byoc_credentials WHERE id = $1",
         id,
     )
@@ -65,7 +102,7 @@ pub(crate) async fn list_by_org(
     sqlx::query_as!(
         ByocCredentialRow,
         "SELECT id, org_id, identity_id, provider_key,
-                encrypted_client_id, encrypted_client_secret, created_at, updated_at
+                encrypted_client_id, encrypted_client_secret, metadata, created_at, updated_at
          FROM byoc_credentials WHERE org_id = $1 ORDER BY created_at DESC",
         org_id,
     )
@@ -100,7 +137,7 @@ pub(crate) async fn resolve(
     sqlx::query_as!(
         ByocCredentialRow,
         "SELECT id, org_id, identity_id, provider_key,
-                encrypted_client_id, encrypted_client_secret, created_at, updated_at
+                encrypted_client_id, encrypted_client_secret, metadata, created_at, updated_at
          FROM byoc_credentials
          WHERE org_id = $1 AND provider_key = $3 AND identity_id = $2
          LIMIT 1",

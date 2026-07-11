@@ -126,7 +126,13 @@ async fn test_linkedin_mock_read_and_write() {
     let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
     let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(ident_id, "linkedin", &encrypted_cid, &encrypted_csec)
+        .create_byoc_credential(
+            ident_id,
+            "linkedin",
+            &encrypted_cid,
+            &encrypted_csec,
+            &serde_json::json!({}),
+        )
         .await
         .unwrap();
     overslash_db::scopes::OrgScope::new(org_id, pool.clone())
@@ -238,7 +244,13 @@ async fn test_linkedin_create_post_routes_through_approval() {
     let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
     let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(ident_id, "linkedin", &encrypted_cid, &encrypted_csec)
+        .create_byoc_credential(
+            ident_id,
+            "linkedin",
+            &encrypted_cid,
+            &encrypted_csec,
+            &serde_json::json!({}),
+        )
         .await
         .unwrap();
     overslash_db::scopes::OrgScope::new(org_id, pool.clone())

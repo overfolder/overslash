@@ -245,6 +245,16 @@ impl OrgScope {
         };
         connection::set_default(self.db(), self.org_id(), conn.identity_id, id).await
     }
+
+    /// Flag every connection pinned to `byoc_credential_id` as requiring
+    /// re-authorization, scoped to this org. Called when the BYOC client pair is
+    /// replaced. Returns the number of connections flagged.
+    pub async fn mark_connections_reauth_by_byoc(
+        &self,
+        byoc_credential_id: Uuid,
+    ) -> Result<u64, sqlx::Error> {
+        connection::mark_reauth_by_byoc(self.db(), self.org_id(), byoc_credential_id).await
+    }
 }
 
 /// Validate ownership and bind each pinned service instance to `connection_id`

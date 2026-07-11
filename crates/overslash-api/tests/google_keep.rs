@@ -100,7 +100,13 @@ async fn test_google_keep_mock() {
     let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
     let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(ident_id, "google", &encrypted_cid, &encrypted_csec)
+        .create_byoc_credential(
+            ident_id,
+            "google",
+            &encrypted_cid,
+            &encrypted_csec,
+            &serde_json::json!({}),
+        )
         .await
         .unwrap();
     let _conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())

@@ -19,6 +19,7 @@ impl OrgScope {
         provider_key: &str,
         encrypted_client_id: &[u8],
         encrypted_client_secret: &[u8],
+        metadata: &serde_json::Value,
     ) -> Result<ByocCredentialRow, sqlx::Error> {
         let input = CreateByocCredential {
             org_id: self.org_id(),
@@ -26,8 +27,30 @@ impl OrgScope {
             provider_key,
             encrypted_client_id,
             encrypted_client_secret,
+            metadata,
         };
         crate::repos::byoc_credential::create(self.db(), &input).await
+    }
+
+    /// Replace a BYOC credential's encrypted client pair and metadata in place,
+    /// scoped to this org. The row id is preserved. Returns `None` if the row
+    /// belongs to another tenant or does not exist.
+    pub async fn update_byoc_credential(
+        &self,
+        id: Uuid,
+        encrypted_client_id: &[u8],
+        encrypted_client_secret: &[u8],
+        metadata: &serde_json::Value,
+    ) -> Result<Option<ByocCredentialRow>, sqlx::Error> {
+        crate::repos::byoc_credential::update(
+            self.db(),
+            id,
+            self.org_id(),
+            encrypted_client_id,
+            encrypted_client_secret,
+            metadata,
+        )
+        .await
     }
 
     /// Look up a BYOC credential by id, scoped to this org. Returns `None`

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,\n                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,\n                    c.byoc_credential_id, c.is_default, c.keep,\n                    c.created_at, c.updated_at\n             FROM connections c\n             JOIN identities i ON i.id = c.identity_id\n             WHERE c.identity_id = $1 AND i.org_id = $2 AND c.provider_key = $3\n             ORDER BY c.is_default DESC, c.created_at DESC LIMIT 1",
+  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at\n         FROM connections WHERE org_id = $1 AND id = ANY($2)",
   "describe": {
     "columns": [
       {
@@ -82,7 +82,7 @@
       },
       {
         "ordinal": 7,
-        "name": "scopes",
+        "name": "scopes?: Vec<String>",
         "type_info": "TextArray",
         "origin": {
           "Table": {
@@ -137,6 +137,17 @@
       },
       {
         "ordinal": 12,
+        "name": "reauth_required",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "reauth_required"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -161,8 +172,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text"
+        "UuidArray"
       ]
     },
     "nullable": [
@@ -179,8 +189,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "94507ab246fbbb5834f906a1bc8334b9b9df87809d93779ed880dcfedb35aa5b"
+  "hash": "6d8a4ab1dab7b82817b2109abd9075c5949f1d2c4c7d6ef709412aec8e621c58"
 }

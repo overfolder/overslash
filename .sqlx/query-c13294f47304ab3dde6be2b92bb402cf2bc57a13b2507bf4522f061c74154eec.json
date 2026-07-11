@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE connections SET reauth_required = true, updated_at = now()\n         WHERE org_id = $1 AND byoc_credential_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c13294f47304ab3dde6be2b92bb402cf2bc57a13b2507bf4522f061c74154eec"
+}

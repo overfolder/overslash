@@ -143,7 +143,7 @@ async fn seed_slack_connection(
     let csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
     let future = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(owner_id, "slack", &cid, &csec)
+        .create_byoc_credential(owner_id, "slack", &cid, &csec, &serde_json::json!({}))
         .await
         .unwrap();
     overslash_db::scopes::OrgScope::new(org_id, pool.clone())
