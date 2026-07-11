@@ -255,7 +255,11 @@ async fn update_byoc(
 
     // The old client's tokens can't refresh — force reauth on every pinned
     // connection now instead of letting a refresh fail at some later call.
-    let reauth_marked = scope.mark_connections_reauth_by_byoc(id).await.unwrap_or(0);
+    // Propagate a DB failure rather than swallow it: if this doesn't run, the
+    // pinned connections are left silently un-flagged (the exact "fail later"
+    // outcome §6.1 exists to prevent), so surface it and let the caller retry
+    // the idempotent replace.
+    let reauth_marked = scope.mark_connections_reauth_by_byoc(id).await?;
 
     let _ = scope
         .log_audit(AuditEntry {
