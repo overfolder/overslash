@@ -98,3 +98,9 @@ The dashboard's approvals list shows the timestamp as `Requested Invalid Date`. 
 ## Reusing existing Google OAuth connections fails
 
 Choosing a previously-authorized Google connection on a newly-created Google service does not bind the service to the existing token; the connection stays unlinked and the service remains in `pending_credentials`. Suspected cause: the service-instance → connection mapping does not match by `(provider, subject)` — probably by `connection_id` only — so the dashboard's "reuse existing" picker writes a binding the backend doesn't honor. Relates to the broader 2026-04-20 review ask to support reusing connections across services sharing a provider. Tracked under card `c2575`.
+
+---
+
+## Manual `cargo update` is not covered by the 7-day dependency cooldown
+
+D30 gates automated dependency bumps behind Dependabot's 7-day `cooldown`, but a manual `cargo update` on the stable toolchain can still pull a version published minutes ago. Cargo's client-side gate (`min-publish-age`, RFC 3923) is nightly-only as of 2026-07, and the forward-compatible `.cargo/config.toml` staging used in overfolder isn't possible here because `.cargo/` is gitignored (reserved for developers' local mold-linker config). When `min-publish-age` stabilizes, either commit a tracked `.cargo/config.toml` (migrating the mold convention to e.g. `.cargo/config.local.toml` isn't a thing — cargo reads a fixed filename — so this means un-ignoring the path and folding mold config in, or documenting `CARGO_*` env vars instead) or set `CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE` in CI. Low urgency: updates normally flow through Dependabot, which does enforce the window.
