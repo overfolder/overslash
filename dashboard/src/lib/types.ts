@@ -321,6 +321,10 @@ export interface TemplateDetail {
   mcp?: McpDetail;
   /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
   hidden?: boolean;
+  /** True when the endpoint URL is set per instance (MCP servers, or HTTP
+   * gateways like the `email` Mailbox Gateway). The instance form reveals a
+   * URL field when this is set. */
+  configurable_url?: boolean;
   /** Base template key when this is a derived layer; absent for standalone/global. */
   extends?: string;
   /** The stored delta for a derived layer; absent for standalone/global. */

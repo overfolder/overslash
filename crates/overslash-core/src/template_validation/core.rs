@@ -7,8 +7,8 @@ use std::collections::HashSet;
 
 use crate::description_grammar::{iter_placeholders, validate_flat_brackets};
 use crate::types::{
-    ActionParam, McpAuth, Risk, Runtime, ServiceAction, ServiceAuth, ServiceDefinition,
-    TokenInjection,
+    ActionParam, McpAuth, Risk, Runtime, SecretSource, ServiceAction, ServiceAuth,
+    ServiceDefinition, TokenInjection,
 };
 
 use super::{Issues, ValidationReport};
@@ -109,6 +109,7 @@ fn is_valid_hostname(s: &str) -> bool {
 // --- auth ------------------------------------------------------------------
 
 fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
+    let mut instance_apikey_count = 0usize;
     for (i, entry) in auth.iter().enumerate() {
         match entry {
             ServiceAuth::OAuth {
@@ -132,6 +133,7 @@ fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
             ServiceAuth::ApiKey {
                 default_secret_name,
                 injection,
+                secret_source,
             } => {
                 if default_secret_name.trim().is_empty() {
                     issues.err(
@@ -140,9 +142,23 @@ fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
                         format!("auth[{i}].default_secret_name"),
                     );
                 }
+                if matches!(secret_source, SecretSource::Instance) {
+                    instance_apikey_count += 1;
+                }
                 check_token_injection(injection, &format!("auth[{i}].injection"), issues);
             }
         }
+    }
+    // An instance binds a single `secret_name`, so only one apiKey scheme can
+    // draw from it. Additional apiKey schemes must be `secret_source: org`
+    // (resolved from the fixed `default_secret_name`).
+    if instance_apikey_count > 1 {
+        issues.err(
+            "multiple_instance_secrets",
+            "at most one apiKey security scheme may use secret_source=instance \
+             (an instance binds a single secret_name); mark the others secret_source=org",
+            "auth".to_string(),
+        );
     }
 }
 
@@ -665,7 +681,9 @@ mod tests {
                     header_name: Some("Authorization".into()),
                     query_param: None,
                     prefix: Some("Bearer ".into()),
+                    encode: None,
                 },
+                secret_source: SecretSource::Instance,
             }],
             actions: {
                 let mut m = HashMap::new();
@@ -895,7 +913,9 @@ mod tests {
                 header_name: None,
                 query_param: None,
                 prefix: None,
+                encode: None,
             },
+            secret_source: SecretSource::Instance,
         }];
         let r = run(&d);
         assert!(
@@ -915,7 +935,9 @@ mod tests {
                 header_name: None,
                 query_param: None,
                 prefix: None,
+                encode: None,
             },
+            secret_source: SecretSource::Instance,
         }];
         let r = run(&d);
         assert!(
@@ -1126,7 +1148,9 @@ mod tests {
                 header_name: Some("Authorization".into()),
                 query_param: None,
                 prefix: None,
+                encode: None,
             },
+            secret_source: SecretSource::Instance,
         }];
         let r = run(&d);
         assert!(

@@ -1,0 +1,141 @@
+openapi: 3.1.0
+info:
+  title: Email (Mailbox Gateway)
+  key: email
+  category: Communication
+  # Generic, provider-agnostic mailbox access over any standard IMAP/SMTP
+  # provider (Migadu, Fastmail, iCloud, Zoho, corporate Dovecot/Cyrus, …).
+  # Backed by overfwd (https://github.com/overspiral/overfwd), a stateless REST
+  # Mailbox Gateway that holds no credentials or mail at rest. Not for
+  # Gmail/Outlook — those ship as native REST services (gmail.yaml / outlook).
+  #
+  # Two credentials ride every request:
+  #   • gateway  — a per-deployment key (Authorization: Bearer), shared across
+  #                the org, resolved from the org vault (secret_source: org).
+  #   • mailbox  — the per-user IMAP/SMTP login `user:pass`, presented as
+  #                `X-Mailbox-Auth: Basic base64(user:pass)`, bound per instance
+  #                (secret_source: instance, encode: base64).
+  #
+  # The overfwd deployment URL is set per instance (`service_instances.url`),
+  # so each org points its catalog entry at its own gateway; `servers` below is
+  # only the fallback default (the shared Overslash Cloud gateway).
+servers:
+  - url: https://mailbox.overslash.com
+security:
+  - gateway: []
+    mailbox: []
+components:
+  securitySchemes:
+    gateway:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      x-overslash-secret_source: org
+      default_secret_name: overfwd_gateway_key
+    mailbox:
+      type: apiKey
+      in: header
+      name: X-Mailbox-Auth
+      x-overslash-prefix: "Basic "
+      x-overslash-encode: base64
+      x-overslash-secret_source: instance
+      default_secret_name: mailbox_credential
+paths:
+  /email/search:
+    post:
+      operationId: search
+      summary: "Search mailbox folder '{folder}' for {query}"
+      risk: read
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                folder:
+                  type: string
+                  description: Mailbox folder to search. Defaults to INBOX.
+                query:
+                  type: string
+                  description: >-
+                    Raw IMAP SEARCH key (e.g. ALL, UNSEEN, SUBJECT "hi",
+                    FROM "a@b.com"). Defaults to ALL.
+                limit:
+                  type: integer
+                  description: Cap on summaries returned (newest first).
+  /email/get:
+    post:
+      operationId: get
+      summary: "Fetch message {uid} from folder '{folder}'"
+      risk: read
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uid]
+              properties:
+                folder:
+                  type: string
+                  description: Mailbox folder holding the message. Defaults to INBOX.
+                uid:
+                  type: integer
+                  description: Mailbox-unique id of the message (from a prior search).
+  /email/send:
+    post:
+      operationId: send
+      summary: "Send email '{subject}' to {to}"
+      risk: write
+      # The mailbox credential rides as an injected SecretRef resolved only at
+      # send time, so it never lands in the persisted approval/audit payload —
+      # no `redact` needed for it. These fields disclose the human-meaningful
+      # parts of the outgoing message on the approval screen.
+      disclose:
+        - label: To
+          filter: '.body.to | if type == "array" then join(", ") else . end'
+        - label: From
+          filter: .body.from
+        - label: Subject
+          primary: true
+          filter: .body.subject
+        - label: Body
+          primary: true
+          filter: .body.text // .body.html // empty
+          max_chars: 2000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to, subject]
+              properties:
+                from:
+                  type: string
+                  description: Envelope + header From address.
+                to:
+                  type: array
+                  items:
+                    type: string
+                  description: Primary recipients (To). Must be non-empty.
+                cc:
+                  type: array
+                  items:
+                    type: string
+                  description: Carbon-copy recipients.
+                bcc:
+                  type: array
+                  items:
+                    type: string
+                  description: Blind-carbon-copy recipients.
+                subject:
+                  type: string
+                  description: The Subject header.
+                text:
+                  type: string
+                  description: A text/plain body (at least one of text/html required).
+                html:
+                  type: string
+                  description: A text/html body (at least one of text/html required).

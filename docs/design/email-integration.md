@@ -1,6 +1,38 @@
 # Email Integration — overfwd (Mailbox Gateway)
 
-**Status**: Draft — design settled (grilling session 2026-07-08/09), pending build.
+**Status**: Implemented (Inline-mode core path, 2026-07-13). Own-inbox, real-time
+inbound, and overfwd Portfolio/Session modes remain deferred (see below).
+
+## Implementation notes (2026-07-13)
+
+Built as designed — overfwd is consumed as an ordinary HTTP service via the shipped
+`services/email.yaml` template. The three core changes the design anticipated landed as:
+
+1. **`x-overslash-encode: base64` on an apiKey security scheme** (Core-change #1). The
+   decrypted secret is base64'd *before* the `x-overslash-prefix` is prepended, so a
+   `user:pass` secret with `prefix: "Basic "` emits `X-Mailbox-Auth: Basic base64(user:pass)`.
+   The prefix stays generic — `base64` never includes `"Basic "`. (`SecretRef::encode`,
+   `secret_injection::inject_secrets`.)
+2. **Multi-injection via `x-overslash-secret_source: instance | org`** (Core-change #2).
+   `ServiceDefinition.auth` was already a `Vec`; `resolve_instance_auth` now emits a
+   `SecretRef` per apiKey scheme. `instance` (default, backward-compatible) resolves the
+   instance's bound `secret_name` (the per-mailbox `user:pass`); `org` resolves the scheme's
+   fixed `default_secret_name` from the org vault (the shared gateway key). A template may
+   declare at most one `instance`-source apiKey scheme (validated).
+3. **Per-instance `url` override promoted to HTTP Mode C** — the URL piece of the deferred
+   Core-change #3, pulled forward. The HTTP resolver now prefers `service_instances.url`
+   (verbatim base, scheme + port preserved) over the template host, mirroring the MCP fork.
+   This is how an org points its catalog entry at its own overfwd deployment. A derived
+   `configurable_url` flag on the templates API drives the dashboard to reveal a "Gateway URL"
+   field. The generic per-instance `config jsonb` (for host/port param overrides) remains
+   deferred; autoconfig covers the common providers.
+
+Coverage: `search`/`get` (`read`, auto-approvable) + `send` (`write`, gated, discloses
+To/From/Subject). End-to-end test: `crates/overslash-api/tests/email_overfwd.rs`.
+
+---
+
+**Original design** (settled grilling session 2026-07-08/09):
 
 Direct email integration for Overslash: let agents **send** and **read/search** mail
 across arbitrary providers, without adding a non-HTTP execution path to the core. The

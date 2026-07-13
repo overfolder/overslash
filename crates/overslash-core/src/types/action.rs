@@ -13,6 +13,22 @@ pub struct SecretRef {
     pub query_param: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prefix: Option<String>,
+    /// Optional transform applied to the decrypted value **before** the
+    /// `prefix` is prepended. `Some(Base64)` turns a raw `user:pass` secret
+    /// into `Basic <base64(user:pass)>` when paired with `prefix: "Basic "`.
+    /// `None` (the default) injects the value verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encode: Option<SecretEncoding>,
+}
+
+/// How to transform a decrypted secret value before injection.
+///
+/// Extensible on purpose — today only `base64` (for HTTP `Basic` auth over a
+/// `user:pass` secret) is defined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretEncoding {
+    Base64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

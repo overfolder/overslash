@@ -168,6 +168,10 @@ struct TemplateDetail {
     mcp: Option<McpDetail>,
     /// `x-overslash-hidden` — see [`TemplateSummary::hidden`].
     hidden: bool,
+    /// True when the endpoint URL is set per service instance rather than baked
+    /// into the template. The dashboard reveals a URL field on the
+    /// instance-create/edit form when this is set. See [`configurable_url`].
+    configurable_url: bool,
     /// Base template key this layer derives from (a **derived** layer). `None`
     /// for a standalone layer or a global template.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -498,12 +502,32 @@ async fn db_row_to_detail(
         runtime,
         mcp,
         hidden: def.hidden,
+        configurable_url: configurable_url(def),
         extends: t.extends,
         delta: t.delta,
         resolution_report: ResolutionReport {
             warnings: resolved.warnings,
         },
     })
+}
+
+/// True when a service's endpoint URL is set per instance rather than baked
+/// into the template: MCP-runtime services (their `mcp.url`) and HTTP gateways
+/// that pair a shared org gateway key (`secret_source: org`) with a per-instance
+/// credential — e.g. the `email` Mailbox Gateway (overfwd). Drives whether the
+/// dashboard shows a URL field on the instance form.
+fn configurable_url(def: &ServiceDefinition) -> bool {
+    use overslash_core::types::{Runtime, SecretSource, ServiceAuth};
+    def.runtime == Runtime::Mcp
+        || def.auth.iter().any(|a| {
+            matches!(
+                a,
+                ServiceAuth::ApiKey {
+                    secret_source: SecretSource::Org,
+                    ..
+                }
+            )
+        })
 }
 
 fn runtime_string(def: &ServiceDefinition) -> String {
@@ -845,6 +869,7 @@ async fn get_template(
         runtime,
         mcp,
         hidden: svc.hidden,
+        configurable_url: configurable_url(svc),
         extends: None,
         delta: None,
         resolution_report: ResolutionReport::default(),

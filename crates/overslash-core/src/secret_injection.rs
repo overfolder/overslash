@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::types::{ActionRequest, InjectAs};
+use base64::Engine as _;
+
+use crate::types::{ActionRequest, InjectAs, SecretEncoding};
 
 /// Resolve secret refs in an action request, injecting decrypted values into headers or query params.
 /// Returns the modified URL (with query params if any) and modified headers.
@@ -16,9 +18,17 @@ pub fn inject_secrets(
             .get(&secret_ref.name)
             .ok_or_else(|| InjectionError::SecretNotFound(secret_ref.name.clone()))?;
 
-        let prefixed = match &secret_ref.prefix {
-            Some(p) => format!("{p}{value}"),
+        // Encoding is applied to the raw value first, then the prefix is
+        // prepended — so a `user:pass` secret with `encode: base64` and
+        // `prefix: "Basic "` yields `Basic <base64(user:pass)>`.
+        let encoded = match secret_ref.encode {
+            Some(SecretEncoding::Base64) => base64::engine::general_purpose::STANDARD.encode(value),
             None => value.clone(),
+        };
+
+        let prefixed = match &secret_ref.prefix {
+            Some(p) => format!("{p}{encoded}"),
+            None => encoded,
         };
 
         match secret_ref.inject_as {
@@ -69,6 +79,7 @@ mod tests {
                 header_name: Some("Authorization".into()),
                 query_param: None,
                 prefix: Some("Bearer ".into()),
+                encode: None,
             }],
         };
         let mut values = HashMap::new();
@@ -92,6 +103,7 @@ mod tests {
                 header_name: None,
                 query_param: Some("api_key".into()),
                 prefix: None,
+                encode: None,
             }],
         };
         let mut values = HashMap::new();
@@ -99,6 +111,36 @@ mod tests {
 
         let (url, _) = inject_secrets(&request, &values).unwrap();
         assert_eq!(url, "https://api.example.com/data?api_key=secret123");
+    }
+
+    #[test]
+    fn base64_encode_then_prefix_yields_basic_auth() {
+        // A `user:pass` secret with `encode: base64` and `prefix: "Basic "`
+        // must emit `Basic <base64(user:pass)>` — the overfwd `X-Mailbox-Auth`
+        // shape. Encoding is applied before the prefix.
+        let request = ActionRequest {
+            method: "POST".into(),
+            url: "https://gw.example.com/email/search".into(),
+            headers: HashMap::new(),
+            body: None,
+            secrets: vec![SecretRef {
+                name: "mailbox".into(),
+                inject_as: InjectAs::Header,
+                header_name: Some("X-Mailbox-Auth".into()),
+                query_param: None,
+                prefix: Some("Basic ".into()),
+                encode: Some(SecretEncoding::Base64),
+            }],
+        };
+        let mut values = HashMap::new();
+        values.insert("mailbox".into(), "user@example.com:app-password".into());
+
+        let (_url, headers) = inject_secrets(&request, &values).unwrap();
+        // base64("user@example.com:app-password")
+        assert_eq!(
+            headers["X-Mailbox-Auth"],
+            "Basic dXNlckBleGFtcGxlLmNvbTphcHAtcGFzc3dvcmQ="
+        );
     }
 
     #[test]
@@ -114,6 +156,7 @@ mod tests {
                 header_name: Some("X-Key".into()),
                 query_param: None,
                 prefix: None,
+                encode: None,
             }],
         };
         let result = inject_secrets(&request, &HashMap::new());

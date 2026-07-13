@@ -24,6 +24,7 @@ time = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
 aes-gcm = "0.11"
+base64 = "0.22"
 glob-match = "0.2"
 serde_yaml = { version = "0.9", optional = true }
 tracing = { workspace = true }

@@ -1069,25 +1069,52 @@ pub(crate) async fn resolve_instance_auth(
         }
     }
 
-    // If instance has a bound secret_name AND the template declares ApiKey auth, use it.
-    // OAuth-only templates never reach the ApiKey branch; `secret_name` would be either
-    // already NULL (migration 037) or blocked at create/update by the services API.
-    if let Some(ref secret_name) = instance.secret_name {
-        for service_auth in &svc.auth {
-            if let overslash_core::types::ServiceAuth::ApiKey { injection, .. } = service_auth {
-                return Ok(ResolvedAuth::secrets_only(vec![SecretRef {
-                    name: secret_name.clone(),
-                    inject_as: if injection.inject_as == "query" {
-                        InjectAs::Query
-                    } else {
-                        InjectAs::Header
-                    },
-                    header_name: injection.header_name.clone(),
-                    query_param: injection.query_param.clone(),
-                    prefix: injection.prefix.clone(),
-                }]));
+    // Build a SecretRef per apiKey scheme the template declares. A template
+    // may mix a per-instance credential (`secret_source: instance` → the
+    // instance's bound `secret_name`) with static per-deployment credentials
+    // (`secret_source: org` → the scheme's fixed `default_secret_name`, from
+    // the org vault). That is what lets one overfwd instance carry both the
+    // per-mailbox `X-Mailbox-Auth: Basic …` and the gateway
+    // `Authorization: Bearer …` on the same request. OAuth-only templates
+    // declare no apiKey scheme and fall through; single-apiKey templates keep
+    // the historical behaviour (one Instance-source scheme → `secret_name`).
+    let mut secret_refs: Vec<SecretRef> = Vec::new();
+    for service_auth in &svc.auth {
+        if let overslash_core::types::ServiceAuth::ApiKey {
+            default_secret_name,
+            injection,
+            secret_source,
+        } = service_auth
+        {
+            let name = match secret_source {
+                overslash_core::types::SecretSource::Org => default_secret_name.clone(),
+                overslash_core::types::SecretSource::Instance => match &instance.secret_name {
+                    Some(n) => n.clone(),
+                    // Instance-source scheme with nothing bound yet — skip it;
+                    // an empty `secret_refs` falls through to the auto-resolve /
+                    // `needs_authentication` path below.
+                    None => continue,
+                },
+            };
+            if name.is_empty() {
+                continue;
             }
+            secret_refs.push(SecretRef {
+                name,
+                inject_as: if injection.inject_as == "query" {
+                    InjectAs::Query
+                } else {
+                    InjectAs::Header
+                },
+                header_name: injection.header_name.clone(),
+                query_param: injection.query_param.clone(),
+                prefix: injection.prefix.clone(),
+                encode: injection.encode,
+            });
         }
+    }
+    if !secret_refs.is_empty() {
+        return Ok(ResolvedAuth::secrets_only(secret_refs));
     }
 
     // No bound credentials on instance. Before falling back to auto-resolve
