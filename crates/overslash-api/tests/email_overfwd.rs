@@ -83,20 +83,27 @@ async fn start_mock_overfwd() -> (String, Sink) {
 }
 
 /// Boot the API with the shipped registry (so `services/email.yaml` loads),
-/// seed both secrets, create an `email` instance pointed at `gateway_url`, and
-/// grant it to Everyone (admin + auto-approve reads). Returns
-/// `(base, agent_key)` for issuing action calls.
-async fn setup_email_instance(pool: sqlx::PgPool, gateway_url: &str) -> (String, String) {
+/// seed the gateway key (and the mailbox credential iff `mailbox_secret` is
+/// `Some`), create an `email` instance pointed at `gateway_url` (binding
+/// `secret_name` iff `mailbox_secret` is `Some`), and grant it to Everyone
+/// (admin + auto-approve reads). Returns `(base, agent_key)`.
+async fn setup_email_instance(
+    pool: sqlx::PgPool,
+    gateway_url: &str,
+    mailbox_secret: Option<&str>,
+) -> (String, String) {
     let (base, client) = start_api_with_registry(pool, None).await;
     let (_org_id, _ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
-    // The gateway key is an org-vault secret referenced by the template's
-    // fixed `default_secret_name` (secret_source: org); the mailbox credential
-    // is the per-instance bound secret (secret_source: instance).
-    for (name, value) in [
-        ("overfwd_gateway_key", GATEWAY_KEY),
-        ("mailbox_credential", MAILBOX_CRED),
-    ] {
+    // The gateway key is an org-vault secret referenced by the template's fixed
+    // `default_secret_name` (secret_source: org). The mailbox credential is the
+    // per-instance bound secret (secret_source: instance) — seeded only when the
+    // instance will bind it.
+    let mut secrets = vec![("overfwd_gateway_key", GATEWAY_KEY)];
+    if let Some(name) = mailbox_secret {
+        secrets.push((name, MAILBOX_CRED));
+    }
+    for (name, value) in secrets {
         let resp = client
             .put(format!("{base}/v1/secrets/{name}"))
             .header("Authorization", format!("Bearer {admin_key}"))
@@ -112,17 +119,20 @@ async fn setup_email_instance(pool: sqlx::PgPool, gateway_url: &str) -> (String,
     }
 
     // Per-instance url override → the org's own overfwd deployment.
+    let mut body = json!({
+        "template_key": "email",
+        "name": "email",
+        "url": gateway_url,
+        "user_level": false,
+        "status": "active",
+    });
+    if let Some(name) = mailbox_secret {
+        body["secret_name"] = json!(name);
+    }
     let instance: Value = client
         .post(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({
-            "template_key": "email",
-            "name": "email",
-            "url": gateway_url,
-            "secret_name": "mailbox_credential",
-            "user_level": false,
-            "status": "active",
-        }))
+        .json(&body)
         .send()
         .await
         .unwrap()
@@ -172,7 +182,8 @@ async fn setup_email_instance(pool: sqlx::PgPool, gateway_url: &str) -> (String,
 async fn email_search_dual_injects_auth_and_routes_to_instance_url() {
     let pool = common::test_pool().await;
     let (gateway_url, sink) = start_mock_overfwd().await;
-    let (base, agent_key) = setup_email_instance(pool, &gateway_url).await;
+    let (base, agent_key) =
+        setup_email_instance(pool, &gateway_url, Some("mailbox_credential")).await;
 
     // `search` is a read → auto-approved by the grant → executes inline.
     let resp = reqwest::Client::new()
@@ -223,7 +234,8 @@ async fn email_search_dual_injects_auth_and_routes_to_instance_url() {
 async fn email_send_is_write_gated_and_discloses_message() {
     let pool = common::test_pool().await;
     let (gateway_url, sink) = start_mock_overfwd().await;
-    let (base, agent_key) = setup_email_instance(pool, &gateway_url).await;
+    let (base, agent_key) =
+        setup_email_instance(pool, &gateway_url, Some("mailbox_credential")).await;
 
     // `send` is a write → gated: the call returns a pending approval BEFORE any
     // HTTP request is made, and the approval discloses the message.
@@ -274,4 +286,41 @@ async fn email_send_is_write_gated_and_discloses_message() {
 
     // Gated before any HTTP call — the gateway saw nothing.
     assert_eq!(sink.lock().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn email_unbound_mailbox_never_injects_gateway_key_alone() {
+    // Regression: the email template pairs an org-source gateway key with an
+    // instance-source mailbox credential. When the instance has no mailbox
+    // secret bound, auth must NOT resolve to the gateway key alone — a partial
+    // injection would send `Authorization: Bearer` without `X-Mailbox-Auth`,
+    // failing at the gateway instead of surfacing as needs-authentication.
+    // The fix falls through to the empty-auth / needs-auth path, so the gateway
+    // key is never injected on its own.
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    // Only the org gateway key exists; the instance binds no mailbox secret.
+    let (base, agent_key) = setup_email_instance(pool, &gateway_url, None).await;
+
+    let _ = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "email",
+            "action": "search",
+            "params": { "query": "UNSEEN" }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // No request may carry the gateway `Authorization` header without the
+    // mailbox credential — the partial-credential bug this guards against.
+    for req in sink.lock().unwrap().iter() {
+        assert!(
+            req.authorization.is_none(),
+            "gateway key injected without the mailbox credential (partial auth): {:?}",
+            req.authorization
+        );
+    }
 }

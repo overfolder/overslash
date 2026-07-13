@@ -1079,6 +1079,7 @@ pub(crate) async fn resolve_instance_auth(
     // declare no apiKey scheme and fall through; single-apiKey templates keep
     // the historical behaviour (one Instance-source scheme → `secret_name`).
     let mut secret_refs: Vec<SecretRef> = Vec::new();
+    let mut instance_secret_missing = false;
     for service_auth in &svc.auth {
         if let overslash_core::types::ServiceAuth::ApiKey {
             default_secret_name,
@@ -1090,10 +1091,16 @@ pub(crate) async fn resolve_instance_auth(
                 overslash_core::types::SecretSource::Org => default_secret_name.clone(),
                 overslash_core::types::SecretSource::Instance => match &instance.secret_name {
                     Some(n) => n.clone(),
-                    // Instance-source scheme with nothing bound yet — skip it;
-                    // an empty `secret_refs` falls through to the auto-resolve /
-                    // `needs_authentication` path below.
-                    None => continue,
+                    // The template requires a per-instance credential but the
+                    // instance has none bound. Record it so we DON'T return the
+                    // org-source keys alone — a partial injection would send an
+                    // incomplete request (e.g. gateway Bearer without the
+                    // mailbox `X-Mailbox-Auth`) that fails downstream instead of
+                    // cleanly prompting the caller to bind the credential.
+                    None => {
+                        instance_secret_missing = true;
+                        continue;
+                    }
                 },
             };
             if name.is_empty() {
@@ -1113,7 +1120,11 @@ pub(crate) async fn resolve_instance_auth(
             });
         }
     }
-    if !secret_refs.is_empty() {
+    // Only return credentials when the full set the template requires is
+    // available. A missing instance-source secret falls through to the
+    // auto-resolve / `needs_authentication` path below (matching the historical
+    // single-apiKey behaviour: an unbound instance was never partially injected).
+    if !instance_secret_missing && !secret_refs.is_empty() {
         return Ok(ResolvedAuth::secrets_only(secret_refs));
     }
 
