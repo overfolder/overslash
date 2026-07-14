@@ -19,6 +19,11 @@ pub enum ArgErrorDto {
         suggestion: Option<String>,
         expected: Vec<String>,
     },
+    NotInEnum {
+        field: String,
+        value: String,
+        allowed: Vec<String>,
+    },
 }
 
 impl From<ArgError> for ArgErrorDto {
@@ -33,6 +38,15 @@ impl From<ArgError> for ArgErrorDto {
                 field,
                 suggestion,
                 expected,
+            },
+            ArgError::NotInEnum {
+                field,
+                value,
+                allowed,
+            } => Self::NotInEnum {
+                field,
+                value,
+                allowed,
             },
         }
     }

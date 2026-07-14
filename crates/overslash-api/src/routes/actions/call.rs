@@ -108,6 +108,12 @@ pub(super) async fn call_action_impl(
         &pre_meta.validation_params,
         &mut req.params,
     );
+    // Repair fixable shape problems (int→string, enum case) in place before
+    // validating — the coerced value is what gets approved and executed.
+    overslash_core::openapi::validate_input::coerce_args(
+        &pre_meta.validation_params,
+        &mut req.params,
+    );
     if let Err(errors) = overslash_core::openapi::validate_input::validate_args(
         &pre_meta.validation_params,
         &req.params,

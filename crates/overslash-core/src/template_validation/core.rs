@@ -306,7 +306,12 @@ fn check_mcp(def: &ServiceDefinition, issues: &mut Issues) {
 // --- per-action ------------------------------------------------------------
 
 const VALID_HTTP_METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
-const VALID_PARAM_TYPES: &[&str] = &["string", "number", "integer", "boolean", "array", "object"];
+// `""` is the "type unspecified" sentinel produced by the OpenAPI loader for
+// params with no concrete `type` (anyOf/oneOf/untyped); it is valid and simply
+// opts the param out of runtime type checks.
+const VALID_PARAM_TYPES: &[&str] = &[
+    "", "string", "number", "integer", "boolean", "array", "object",
+];
 const VALID_RESPONSE_TYPES: &[&str] = &["json", "binary"];
 
 fn check_action(key: &str, action: &ServiceAction, issues: &mut Issues) {

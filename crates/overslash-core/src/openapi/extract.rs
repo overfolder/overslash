@@ -487,10 +487,12 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
     raw.iter()
         .filter_map(|(name, spec)| {
             let obj = spec.as_object()?;
+            // Empty = type unspecified (see `schema_fields`) — runtime type
+            // checks skip it rather than guess "string".
             let param_type = obj
                 .get("type")
                 .and_then(Value::as_str)
-                .unwrap_or("string")
+                .unwrap_or("")
                 .to_string();
             let required = obj
                 .get("required")
@@ -939,10 +941,13 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
     };
     for (name, pv) in props {
         let Some(po) = pv.as_object() else { continue };
+        // Empty when no concrete `type` is declared (e.g. anyOf/oneOf/untyped)
+        // — a sentinel that keeps runtime type checks from guessing "string"
+        // and false-rejecting a param that legitimately accepts other types.
         let param_type = po
             .get("type")
             .and_then(Value::as_str)
-            .unwrap_or("string")
+            .unwrap_or("")
             .to_string();
         let description = po
             .get("description")
@@ -1109,13 +1114,16 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
 fn schema_fields(
     schema: Option<&Map<String, Value>>,
 ) -> (String, Option<Vec<String>>, Option<Value>) {
+    // Empty `param_type` is the "type unspecified" sentinel (no schema, or a
+    // schema with no concrete `type` such as anyOf/oneOf) — runtime type
+    // checks skip these rather than guess "string".
     let Some(s) = schema else {
-        return ("string".into(), None, None);
+        return (String::new(), None, None);
     };
     let param_type = s
         .get("type")
         .and_then(Value::as_str)
-        .unwrap_or("string")
+        .unwrap_or("")
         .to_string();
     let enum_values = s.get("enum").and_then(Value::as_array).map(|a| {
         a.iter()
@@ -1703,7 +1711,10 @@ mod tests {
     }
 
     #[test]
-    fn parameter_without_schema_defaults_to_string() {
+    fn parameter_without_schema_has_unspecified_type() {
+        // No `schema` → no concrete `type`, so `param_type` is the empty
+        // "unspecified" sentinel (opts the param out of runtime type checks)
+        // rather than a fabricated "string".
         let doc = json!({
             "info": {"title": "T", "x-overslash-key": "t"},
             "paths": {"/x": {"get": {
@@ -1712,7 +1723,7 @@ mod tests {
             }}}
         });
         let (svc, _) = compile_service(&doc).unwrap();
-        assert_eq!(svc.actions["x"].params["q"].param_type, "string");
+        assert_eq!(svc.actions["x"].params["q"].param_type, "");
     }
 
     #[test]
