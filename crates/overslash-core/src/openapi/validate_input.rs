@@ -3,12 +3,18 @@
 //! The OpenAPI loader compiles every action's `input_schema` into a
 //! `HashMap<String, ActionParam>` (see `extract::lower_input_schema`). At
 //! call time we re-use that compiled shape to enforce the contract the
-//! template advertised: required fields must be present, and unknown keys
-//! are rejected (mirrors `additionalProperties: false`).
+//! template advertised: required fields must be present, unknown keys are
+//! rejected (mirrors `additionalProperties: false`), declared scalar types
+//! must match, and `enum` members must be respected.
 //!
-//! Type/format/enum checking is intentionally out of scope here — the goal
-//! is to catch the `jid` vs `recipient` typo class that silently rendered
-//! `{recipient}` in descriptions and collapsed permission scopes to `*`.
+//! The checks run in two passes. [`coerce_args`] first repairs the obvious
+//! fixable cases in place — an integer where a `string` is declared is
+//! stringified, an enum value is case-normalized to its canonical member — so
+//! a well-intentioned call just works instead of burning an approval on a
+//! knowable failure. [`validate_args`] then rejects what coercion could not
+//! rescue (a bad enum member, a structural type mismatch) with a 400 the agent
+//! can self-correct. Params whose type is unspecified (empty `param_type` — the
+//! `anyOf`/`oneOf`/untyped case) are left untouched by both passes.
 
 use std::collections::HashMap;
 
@@ -30,6 +36,24 @@ pub enum ArgError {
         field: String,
         suggestion: Option<String>,
         expected: Vec<String>,
+    },
+    /// A supplied value's JSON type does not match the param's declared
+    /// scalar/structural type and could not be coerced (e.g. an object sent
+    /// where a `string` is declared, or a non-numeric string for an
+    /// `integer`). `expected` is the declared `type`; `got` names the JSON
+    /// type actually supplied.
+    TypeMismatch {
+        field: String,
+        expected: String,
+        got: String,
+    },
+    /// A supplied value is not one of the param's declared `enum` members
+    /// (after case-normalization). `value` is the offending value (stringified
+    /// for non-string inputs); `allowed` is the full member list.
+    NotInEnum {
+        field: String,
+        value: String,
+        allowed: Vec<String>,
     },
 }
 
@@ -56,6 +80,23 @@ impl ArgError {
                     }
                 }
             },
+            ArgError::TypeMismatch {
+                field,
+                expected,
+                got,
+            } => format!("argument `{field}` must be a {expected} (got {got})"),
+            ArgError::NotInEnum {
+                field,
+                value,
+                allowed,
+            } => {
+                let list = allowed
+                    .iter()
+                    .map(|s| format!("`{s}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("argument `{field}` value `{value}` is not one of: {list}")
+            }
         }
     }
 }
@@ -102,13 +143,86 @@ pub fn validate_args(
         }
     }
 
+    // Type / enum contract for supplied values. Runs after `coerce_args` has
+    // had its chance to repair the fixable cases, so anything reaching here is
+    // a genuine mismatch. `null` is handled by the required pass above; an
+    // unspecified (empty) `param_type` opts the field out of type checking.
+    for (name, p) in params {
+        let Some(v) = args.get(name) else { continue };
+        if v.is_null() {
+            continue;
+        }
+        // An empty member list is not a constraint: the loader collects enum
+        // members via `as_str`, so a numeric/boolean enum (e.g. `[200, 404]`)
+        // lowers to `Some(vec![])`. Treat that as unconstrained rather than
+        // rejecting every value against an empty allow-list.
+        if let Some(allowed) = p.enum_values.as_ref().filter(|a| !a.is_empty()) {
+            let is_member = v.as_str().is_some_and(|s| allowed.iter().any(|a| a == s));
+            if !is_member {
+                errors.push(ArgError::NotInEnum {
+                    field: name.clone(),
+                    value: value_to_plain_string(v),
+                    allowed: allowed.clone(),
+                });
+                // One diagnostic per field — a non-member string would also
+                // trip the type check below, but the enum message is clearer.
+                continue;
+            }
+        }
+        if !p.param_type.is_empty() && !type_matches(&p.param_type, v) {
+            errors.push(ArgError::TypeMismatch {
+                field: name.clone(),
+                expected: p.param_type.clone(),
+                got: json_type_name(v).to_string(),
+            });
+        }
+    }
+
     if errors.is_empty() {
         Ok(())
     } else {
-        // Stable ordering helps callers (and tests) — Missing first by
-        // field name, then Unknown by field name.
+        // Stable ordering helps callers (and tests) — Missing, then Unknown,
+        // then TypeMismatch, then NotInEnum, each alphabetical by field.
         errors.sort_by(|a, b| key(a).cmp(&key(b)));
         Err(errors)
+    }
+}
+
+/// Does `v` satisfy a param's declared scalar/structural `type`? An `integer`
+/// accepts any JSON integer (or an integral float); a `number` accepts any
+/// JSON number. An unrecognized or empty type does not constrain the value.
+fn type_matches(param_type: &str, v: &Value) -> bool {
+    match param_type {
+        "string" => v.is_string(),
+        "boolean" => v.is_boolean(),
+        "number" => v.is_number(),
+        "integer" => v.is_i64() || v.is_u64() || v.as_f64().is_some_and(|f| f.fract() == 0.0),
+        "object" => v.is_object(),
+        "array" => v.is_array(),
+        _ => true,
+    }
+}
+
+/// JSON type name for diagnostics — integers and floats are distinguished so
+/// the error reads naturally (`must be a string (got integer)`).
+fn json_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(n) if n.is_f64() => "number",
+        Value::Number(_) => "integer",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// Render a value for an error message: a string yields its raw contents (no
+/// surrounding quotes), anything else its compact JSON form.
+fn value_to_plain_string(v: &Value) -> String {
+    match v.as_str() {
+        Some(s) => s.to_string(),
+        None => v.to_string(),
     }
 }
 
@@ -130,6 +244,91 @@ pub fn apply_defaults(params: &HashMap<String, ActionParam>, args: &mut HashMap<
     }
 }
 
+/// Repair the obvious, fixable argument-shape problems in place so a
+/// well-intentioned call succeeds instead of burning an approval on a knowable
+/// failure. Best-effort: anything it can't safely coerce is left untouched for
+/// [`validate_args`] to reject.
+///
+/// Two nudges per supplied value:
+/// 1. **Scalar type** — toward the param's declared type: a number/bool sent to
+///    a `string` param is stringified (`612616872` → `"612616872"`); a numeric
+///    string sent to an `integer`/`number` param is parsed; `"true"`/`"false"`
+///    sent to a `boolean` param becomes a bool.
+/// 2. **Enum** — a string that matches a declared `enum` member only up to case
+///    is normalized to the canonical member (`"html"` → `"HTML"`), but only when
+///    the match is unambiguous.
+///
+/// Params with an unspecified (empty) `param_type` are never scalar-coerced —
+/// they are the `anyOf`/`oneOf`/untyped case, where guessing a target type
+/// could corrupt a legitimately non-string value.
+///
+/// Call this *after* [`apply_defaults`] and *before* [`validate_args`] and
+/// request resolution, so the coerced value is what gets validated, approved,
+/// stored in the replay payload, and executed.
+pub fn coerce_args(params: &HashMap<String, ActionParam>, args: &mut HashMap<String, Value>) {
+    for (name, p) in params {
+        let Some(original) = args.get(name).cloned() else {
+            continue;
+        };
+        if original.is_null() {
+            continue;
+        }
+        let mut v = original.clone();
+        if let Some(scalar) = coerce_scalar(&p.param_type, &v) {
+            v = scalar;
+        }
+        if let Some(canon) = coerce_enum(p.enum_values.as_deref(), &v) {
+            v = canon;
+        }
+        if v != original {
+            args.insert(name.clone(), v);
+        }
+    }
+}
+
+/// Nudge a scalar `v` toward `param_type`. Returns `Some` only when a coercion
+/// was applied. An empty/unrecognized `param_type` never coerces.
+fn coerce_scalar(param_type: &str, v: &Value) -> Option<Value> {
+    match param_type {
+        "string" => match v {
+            Value::Number(n) => Some(Value::String(n.to_string())),
+            Value::Bool(b) => Some(Value::String(b.to_string())),
+            _ => None,
+        },
+        "integer" => v
+            .as_str()
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .map(Value::from),
+        "number" => v
+            .as_str()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number),
+        "boolean" => match v.as_str().map(str::trim) {
+            Some("true") => Some(Value::Bool(true)),
+            Some("false") => Some(Value::Bool(false)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Case-normalize a string enum value to its canonical member. Returns `Some`
+/// only when `v` is a string that isn't already a member but uniquely matches
+/// one ignoring case.
+fn coerce_enum(allowed: Option<&[String]>, v: &Value) -> Option<Value> {
+    let allowed = allowed?;
+    let s = v.as_str()?;
+    if allowed.iter().any(|a| a == s) {
+        return None;
+    }
+    let mut matches = allowed.iter().filter(|a| a.eq_ignore_ascii_case(s));
+    match (matches.next(), matches.next()) {
+        (Some(canon), None) => Some(Value::String(canon.clone())),
+        _ => None,
+    }
+}
+
 /// Format a list of errors into a single human-readable line.
 pub fn format_errors(errors: &[ArgError]) -> String {
     errors
@@ -143,6 +342,8 @@ fn key(e: &ArgError) -> (u8, &str) {
     match e {
         ArgError::Missing { field } => (0, field.as_str()),
         ArgError::Unknown { field, .. } => (1, field.as_str()),
+        ArgError::TypeMismatch { field, .. } => (2, field.as_str()),
+        ArgError::NotInEnum { field, .. } => (3, field.as_str()),
     }
 }
 
@@ -211,6 +412,13 @@ mod tests {
         ActionParam {
             default: Some(default),
             ..p(t, required)
+        }
+    }
+
+    fn p_enum(members: &[&str], required: bool) -> ActionParam {
+        ActionParam {
+            enum_values: Some(members.iter().map(|s| s.to_string()).collect()),
+            ..p("string", required)
         }
     }
 
@@ -390,7 +598,10 @@ mod tests {
         let fields: Vec<&str> = err
             .iter()
             .map(|e| match e {
-                ArgError::Missing { field } | ArgError::Unknown { field, .. } => field.as_str(),
+                ArgError::Missing { field }
+                | ArgError::Unknown { field, .. }
+                | ArgError::TypeMismatch { field, .. }
+                | ArgError::NotInEnum { field, .. } => field.as_str(),
             })
             .collect();
         assert_eq!(fields, vec!["a", "b", "y", "z"]);
@@ -412,5 +623,172 @@ mod tests {
         assert!(s.contains("missing required argument `recipient`"));
         assert!(s.contains("unknown argument `jid` (did you mean `recipient`?)"));
         assert!(s.contains(';'));
+    }
+
+    // ── coercion ──────────────────────────────────────────────────────
+
+    #[test]
+    fn coerce_int_to_string_for_string_param() {
+        // The burned `chat_id: 612616872` case: an integer sent to a `string`
+        // param is stringified so the call succeeds instead of failing upstream.
+        let s = schema(&[("chat_id", p("string", true))]);
+        let mut a = args(&[("chat_id", json!(612616872))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("chat_id"), Some(&json!("612616872")));
+        assert!(validate_args(&s, &a).is_ok());
+    }
+
+    #[test]
+    fn coerce_bool_to_string_for_string_param() {
+        let s = schema(&[("flag", p("string", false))]);
+        let mut a = args(&[("flag", json!(true))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("flag"), Some(&json!("true")));
+    }
+
+    #[test]
+    fn coerce_enum_case_normalizes_to_canonical_member() {
+        // The burned `parse_mode` case: a case-only mismatch is repaired.
+        let s = schema(&[(
+            "parse_mode",
+            p_enum(&["HTML", "Markdown", "MarkdownV2"], false),
+        )]);
+        let mut a = args(&[("parse_mode", json!("html"))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("parse_mode"), Some(&json!("HTML")));
+        assert!(validate_args(&s, &a).is_ok());
+    }
+
+    #[test]
+    fn coerce_numeric_string_to_integer() {
+        let s = schema(&[("count", p("integer", false))]);
+        let mut a = args(&[("count", json!("5"))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("count"), Some(&json!(5)));
+        assert!(validate_args(&s, &a).is_ok());
+    }
+
+    #[test]
+    fn coerce_string_to_boolean() {
+        let s = schema(&[("enabled", p("boolean", false))]);
+        let mut a = args(&[("enabled", json!("false"))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("enabled"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn coerce_leaves_unspecified_type_untouched() {
+        // Empty param_type (anyOf/untyped) must never be scalar-coerced — the
+        // integer stays an integer.
+        let s = schema(&[("val", p("", false))]);
+        let mut a = args(&[("val", json!(42))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("val"), Some(&json!(42)));
+        assert!(validate_args(&s, &a).is_ok());
+    }
+
+    // ── type / enum rejection ─────────────────────────────────────────
+
+    #[test]
+    fn type_mismatch_object_for_string_param() {
+        let s = schema(&[("recipient", p("string", true))]);
+        let a = args(&[("recipient", json!({"nested": 1}))]);
+        let err = validate_args(&s, &a).unwrap_err();
+        assert_eq!(
+            err,
+            vec![ArgError::TypeMismatch {
+                field: "recipient".into(),
+                expected: "string".into(),
+                got: "object".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn type_mismatch_non_numeric_string_for_integer_param() {
+        // Coercion can't rescue a non-numeric string → reported as a mismatch.
+        let s = schema(&[("count", p("integer", false))]);
+        let mut a = args(&[("count", json!("abc"))]);
+        coerce_args(&s, &mut a);
+        let err = validate_args(&s, &a).unwrap_err();
+        assert_eq!(
+            err,
+            vec![ArgError::TypeMismatch {
+                field: "count".into(),
+                expected: "integer".into(),
+                got: "string".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn not_in_enum_reported_for_non_member() {
+        let s = schema(&[("parse_mode", p_enum(&["HTML", "Markdown"], false))]);
+        let mut a = args(&[("parse_mode", json!("Fancy"))]);
+        coerce_args(&s, &mut a);
+        let err = validate_args(&s, &a).unwrap_err();
+        assert_eq!(
+            err,
+            vec![ArgError::NotInEnum {
+                field: "parse_mode".into(),
+                value: "Fancy".into(),
+                allowed: vec!["HTML".into(), "Markdown".into()],
+            }]
+        );
+    }
+
+    #[test]
+    fn empty_enum_list_is_unconstrained() {
+        // A numeric enum (`enum: [200, 404, 500]`) lowers to `Some(vec![])`
+        // because the loader keeps only string members. That empty list must
+        // NOT reject every value — the param is effectively unconstrained.
+        let param = ActionParam {
+            enum_values: Some(vec![]),
+            ..p("integer", false)
+        };
+        let s = schema(&[("status", param)]);
+        assert!(validate_args(&s, &args(&[("status", json!(404))])).is_ok());
+    }
+
+    #[test]
+    fn unspecified_type_accepts_any_scalar() {
+        // Empty param_type opts out of the type check entirely — no false
+        // positive on a legitimately non-string value.
+        let s = schema(&[("val", p("", false))]);
+        assert!(validate_args(&s, &args(&[("val", json!(7))])).is_ok());
+        assert!(validate_args(&s, &args(&[("val", json!(true))])).is_ok());
+        assert!(validate_args(&s, &args(&[("val", json!("x"))])).is_ok());
+    }
+
+    #[test]
+    fn integer_param_accepts_json_integer() {
+        let s = schema(&[("count", p("integer", false))]);
+        assert!(validate_args(&s, &args(&[("count", json!(3))])).is_ok());
+    }
+
+    #[test]
+    fn errors_ordered_type_and_enum_after_missing_unknown() {
+        // Full sort order: Missing, Unknown, TypeMismatch, NotInEnum.
+        let s = schema(&[
+            ("req", p("string", true)),
+            ("num", p("integer", false)),
+            ("mode", p_enum(&["a", "b"], false)),
+        ]);
+        let a = args(&[
+            ("zzz", json!(1)),        // Unknown
+            ("num", json!({"x": 1})), // TypeMismatch
+            ("mode", json!("nope")),  // NotInEnum
+        ]);
+        let err = validate_args(&s, &a).unwrap_err();
+        let tags: Vec<&str> = err
+            .iter()
+            .map(|e| match e {
+                ArgError::Missing { .. } => "missing",
+                ArgError::Unknown { .. } => "unknown",
+                ArgError::TypeMismatch { .. } => "type",
+                ArgError::NotInEnum { .. } => "enum",
+            })
+            .collect();
+        assert_eq!(tags, vec!["missing", "unknown", "type", "enum"]);
     }
 }

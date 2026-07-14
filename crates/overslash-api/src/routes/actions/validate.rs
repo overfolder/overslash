@@ -81,6 +81,9 @@ pub(super) async fn validate_action_impl(
         &meta.validation_params,
         &mut req.params,
     );
+    // Coerce in lockstep with `/call` so the dry-run validates the same value
+    // the real call would execute, keeping the 400 bodies byte-identical.
+    overslash_core::openapi::validate_input::coerce_args(&meta.validation_params, &mut req.params);
 
     // Argument validation runs before the risk gate so a request with
     // both bad params and a wrong-risk assertion produces the same

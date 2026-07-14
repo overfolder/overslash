@@ -19,6 +19,16 @@ pub enum ArgErrorDto {
         suggestion: Option<String>,
         expected: Vec<String>,
     },
+    TypeMismatch {
+        field: String,
+        expected: String,
+        got: String,
+    },
+    NotInEnum {
+        field: String,
+        value: String,
+        allowed: Vec<String>,
+    },
 }
 
 impl From<ArgError> for ArgErrorDto {
@@ -33,6 +43,24 @@ impl From<ArgError> for ArgErrorDto {
                 field,
                 suggestion,
                 expected,
+            },
+            ArgError::TypeMismatch {
+                field,
+                expected,
+                got,
+            } => Self::TypeMismatch {
+                field,
+                expected,
+                got,
+            },
+            ArgError::NotInEnum {
+                field,
+                value,
+                allowed,
+            } => Self::NotInEnum {
+                field,
+                value,
+                allowed,
             },
         }
     }
