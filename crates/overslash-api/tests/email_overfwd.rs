@@ -91,15 +91,19 @@ async fn setup_email_instance(
     pool: sqlx::PgPool,
     gateway_url: &str,
     mailbox_secret: Option<&str>,
+    seed_gateway_key: bool,
 ) -> (String, String) {
     let (base, client) = start_api_with_registry(pool, None).await;
     let (_org_id, _ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     // The gateway key is an org-vault secret referenced by the template's fixed
-    // `default_secret_name` (secret_source: org). The mailbox credential is the
-    // per-instance bound secret (secret_source: instance) — seeded only when the
-    // instance will bind it.
-    let mut secrets = vec![("overfwd_gateway_key", GATEWAY_KEY)];
+    // `default_secret_name` (secret_source: org, optional). A keyless overfwd
+    // deployment omits it. The mailbox credential is the per-instance bound
+    // secret (secret_source: instance) — seeded only when the instance binds it.
+    let mut secrets = Vec::new();
+    if seed_gateway_key {
+        secrets.push(("overfwd_gateway_key", GATEWAY_KEY));
+    }
     if let Some(name) = mailbox_secret {
         secrets.push((name, MAILBOX_CRED));
     }
@@ -183,7 +187,7 @@ async fn email_search_dual_injects_auth_and_routes_to_instance_url() {
     let pool = common::test_pool().await;
     let (gateway_url, sink) = start_mock_overfwd().await;
     let (base, agent_key) =
-        setup_email_instance(pool, &gateway_url, Some("mailbox_credential")).await;
+        setup_email_instance(pool, &gateway_url, Some("mailbox_credential"), true).await;
 
     // `search` is a read → auto-approved by the grant → executes inline.
     let resp = reqwest::Client::new()
@@ -235,7 +239,7 @@ async fn email_send_is_write_gated_and_discloses_message() {
     let pool = common::test_pool().await;
     let (gateway_url, sink) = start_mock_overfwd().await;
     let (base, agent_key) =
-        setup_email_instance(pool, &gateway_url, Some("mailbox_credential")).await;
+        setup_email_instance(pool, &gateway_url, Some("mailbox_credential"), true).await;
 
     // `send` is a write → gated: the call returns a pending approval BEFORE any
     // HTTP request is made, and the approval discloses the message.
@@ -300,7 +304,7 @@ async fn email_unbound_mailbox_never_injects_gateway_key_alone() {
     let pool = common::test_pool().await;
     let (gateway_url, sink) = start_mock_overfwd().await;
     // Only the org gateway key exists; the instance binds no mailbox secret.
-    let (base, agent_key) = setup_email_instance(pool, &gateway_url, None).await;
+    let (base, agent_key) = setup_email_instance(pool, &gateway_url, None, true).await;
 
     let _ = reqwest::Client::new()
         .post(format!("{base}/v1/actions/call"))
@@ -323,4 +327,51 @@ async fn email_unbound_mailbox_never_injects_gateway_key_alone() {
             req.authorization
         );
     }
+}
+
+#[tokio::test]
+async fn email_keyless_gateway_omits_authorization_but_still_sends_mailbox_auth() {
+    // A self-hosted overfwd running with OVERFWD_REQUIRE_API_KEY=false needs no
+    // gateway key. The `gateway` scheme is `optional`, so when the org has NOT
+    // stored `overfwd_gateway_key` the request omits `Authorization` entirely
+    // (rather than failing on a missing secret) while still injecting the
+    // per-mailbox `X-Mailbox-Auth`.
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    // Bind the mailbox credential but do NOT seed the gateway key.
+    let (base, agent_key) =
+        setup_email_instance(pool, &gateway_url, Some("mailbox_credential"), false).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "email",
+            "action": "search",
+            "params": { "query": "ALL" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "keyless read should auto-execute: {}",
+        resp.text().await.unwrap()
+    );
+
+    let captured = sink.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        1,
+        "gateway should receive exactly one request"
+    );
+    let req = &captured[0];
+    // Optional gateway key not configured → no Authorization header.
+    assert_eq!(
+        req.authorization, None,
+        "keyless deployment must not send a gateway Authorization header"
+    );
+    // The mailbox credential still rides.
+    assert_eq!(req.mailbox_auth.as_deref(), Some(MAILBOX_BASIC));
 }

@@ -134,6 +134,7 @@ fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
                 default_secret_name,
                 injection,
                 secret_source,
+                ..
             } => {
                 if default_secret_name.trim().is_empty() {
                     issues.err(
@@ -684,6 +685,7 @@ mod tests {
                     encode: None,
                 },
                 secret_source: SecretSource::Instance,
+                optional: false,
             }],
             actions: {
                 let mut m = HashMap::new();
@@ -916,6 +918,7 @@ mod tests {
                 encode: None,
             },
             secret_source: SecretSource::Instance,
+            optional: false,
         }];
         let r = run(&d);
         assert!(
@@ -938,6 +941,7 @@ mod tests {
                 encode: None,
             },
             secret_source: SecretSource::Instance,
+            optional: false,
         }];
         let r = run(&d);
         assert!(
@@ -1151,6 +1155,7 @@ mod tests {
                 encode: None,
             },
             secret_source: SecretSource::Instance,
+            optional: false,
         }];
         let r = run(&d);
         assert!(

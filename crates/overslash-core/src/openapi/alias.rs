@@ -113,6 +113,10 @@ pub(super) const APIKEY_HTTP_SEC_ALIASES: &[Alias] = &[
         alias: "secret_source",
         canonical: "x-overslash-secret_source",
     },
+    Alias {
+        alias: "optional",
+        canonical: "x-overslash-optional",
+    },
 ];
 
 pub(super) const HTTP_METHODS: &[&str] = &[

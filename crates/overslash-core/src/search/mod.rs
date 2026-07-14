@@ -184,6 +184,7 @@ mod tests {
                     encode: None,
                 },
                 secret_source: crate::types::SecretSource::Instance,
+                optional: false,
             }],
             actions: HashMap::new(),
             runtime: crate::types::Runtime::Http,

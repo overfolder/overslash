@@ -198,6 +198,14 @@ pub enum ServiceAuth {
         /// may declare at most one `Instance`-source apiKey scheme.
         #[serde(default)]
         secret_source: SecretSource,
+        /// When true, this credential is injected only if its secret is
+        /// configured; a missing secret is skipped rather than failing the
+        /// request. Meaningful for an `Org`-source static credential the
+        /// deployment may not need — e.g. an overfwd gateway key when the
+        /// gateway runs with `OVERFWD_REQUIRE_API_KEY=false`. Default `false`:
+        /// a missing required secret still surfaces as an error at send time.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
     },
 }
 

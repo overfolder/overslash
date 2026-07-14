@@ -1287,6 +1287,7 @@ mod tests {
                     encode: None,
                 },
                 secret_source: overslash_core::types::SecretSource::Instance,
+                optional: false,
             }],
             actions: HashMap::new(),
             runtime: Runtime::Http,

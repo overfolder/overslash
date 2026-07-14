@@ -18,7 +18,12 @@ Built as designed — overfwd is consumed as an ordinary HTTP service via the sh
    `SecretRef` per apiKey scheme. `instance` (default, backward-compatible) resolves the
    instance's bound `secret_name` (the per-mailbox `user:pass`); `org` resolves the scheme's
    fixed `default_secret_name` from the org vault (the shared gateway key). A template may
-   declare at most one `instance`-source apiKey scheme (validated).
+   declare at most one `instance`-source apiKey scheme (validated). The gateway scheme is
+   marked **`x-overslash-optional: true`**: it is injected only when the org has stored the
+   secret, so a self-hosted overfwd with `OVERFWD_REQUIRE_API_KEY=false` needs no gateway key
+   (the `Authorization` header is simply omitted rather than failing on a missing secret).
+   A missing instance-source credential instead falls through to `needs_authentication` — a
+   partial (gateway-only) injection is never sent.
 3. **Per-instance `url` override promoted to HTTP Mode C** — the URL piece of the deferred
    Core-change #3, pulled forward. The HTTP resolver now prefers `service_instances.url`
    (verbatim base, scheme + port preserved) over the template host, mirroring the MCP fork.

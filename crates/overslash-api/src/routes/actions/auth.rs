@@ -1085,10 +1085,27 @@ pub(crate) async fn resolve_instance_auth(
             default_secret_name,
             injection,
             secret_source,
+            optional,
         } = service_auth
         {
             let name = match secret_source {
-                overslash_core::types::SecretSource::Org => default_secret_name.clone(),
+                overslash_core::types::SecretSource::Org => {
+                    // An optional org credential (e.g. an overfwd gateway key
+                    // when the gateway runs with OVERFWD_REQUIRE_API_KEY=false)
+                    // is injected only if the org has configured it — a keyless
+                    // deployment simply omits it rather than failing on a
+                    // missing secret. Required org schemes fall through to the
+                    // send-time `secret not found` error as before.
+                    if *optional
+                        && scope
+                            .get_current_secret_value(default_secret_name)
+                            .await?
+                            .is_none()
+                    {
+                        continue;
+                    }
+                    default_secret_name.clone()
+                }
                 overslash_core::types::SecretSource::Instance => match &instance.secret_name {
                     Some(n) => n.clone(),
                     // The template requires a per-instance credential but the

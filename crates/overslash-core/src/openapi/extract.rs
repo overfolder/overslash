@@ -187,6 +187,18 @@ fn extract_api_key(
         }
     };
 
+    let optional = match obj.get("x-overslash-optional") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(other) => {
+            return Err(vec![ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!("x-overslash-optional must be a boolean (got {other})"),
+                format!("{base}.x-overslash-optional"),
+            )]);
+        }
+    };
+
     let injection = match inject_as {
         "header" => TokenInjection {
             inject_as: "header".into(),
@@ -218,6 +230,7 @@ fn extract_api_key(
         default_secret_name,
         injection,
         secret_source,
+        optional,
     })
 }
 
@@ -248,6 +261,7 @@ fn extract_http_auth(
             encode: None,
         },
         secret_source: crate::types::SecretSource::Instance,
+        optional: false,
     })
 }
 
@@ -1252,6 +1266,7 @@ mod tests {
                 default_secret_name,
                 injection,
                 secret_source: _,
+                optional: _,
             } => {
                 assert_eq!(default_secret_name, "t_token");
                 assert_eq!(injection.inject_as, "query");
@@ -1326,6 +1341,7 @@ mod tests {
                 default_secret_name,
                 injection,
                 secret_source: _,
+                optional: _,
             } => {
                 assert_eq!(default_secret_name, "t_token");
                 assert_eq!(injection.inject_as, "header");
