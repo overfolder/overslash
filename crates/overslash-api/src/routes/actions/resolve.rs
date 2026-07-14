@@ -631,11 +631,6 @@ pub(super) async fn resolve_request(
             ));
         }
 
-        let host = svc
-            .hosts
-            .first()
-            .ok_or_else(|| AppError::Internal(format!("service '{service_key}' has no hosts")))?;
-
         let mut path = action.path.clone();
         for (k, v) in &req.params {
             let placeholder = format!("{{{k}}}");
@@ -645,12 +640,28 @@ pub(super) async fn resolve_request(
             }
         }
 
-        // Support hosts with explicit scheme (e.g. "http://localhost:1234" for tests)
-        let base_url = if host.contains("://") {
-            format!("{host}{path}")
-        } else {
-            format!("https://{host}{path}")
+        // Base URL resolution. A per-instance `url` wins (parity with the MCP
+        // fork above), letting an org point its catalog instance at its own
+        // deployment — e.g. a self-hosted overfwd Mailbox Gateway on a custom
+        // host or port. The instance URL is used verbatim (scheme and port
+        // preserved), unlike `hosts`, which `url_to_host` reduces to a bare
+        // hostname. Falling back, the template's first host is used with the
+        // scheme forced to https unless the stored host already carries one (a
+        // test affordance, e.g. "http://localhost:1234").
+        let base = match instance.as_ref().and_then(|i| i.url.as_deref()) {
+            Some(u) => u.trim_end_matches('/').to_string(),
+            None => {
+                let host = svc.hosts.first().ok_or_else(|| {
+                    AppError::Internal(format!("service '{service_key}' has no hosts"))
+                })?;
+                if host.contains("://") {
+                    host.clone()
+                } else {
+                    format!("https://{host}")
+                }
+            }
         };
+        let base_url = format!("{base}{path}");
 
         // Header-located params (e.g. a template-pinned `Notion-Version`) are
         // routed into the request headers below — they must not leak into the
@@ -810,11 +821,9 @@ pub(super) async fn resolve_request(
             }
         }
 
-        let resolver_base = if host.contains("://") {
-            host.to_string()
-        } else {
-            format!("https://{host}")
-        };
+        // Reuse the same base the action URL resolved to (instance override or
+        // template host) so display-param GETs hit the same deployment.
+        let resolver_base = base.clone();
         // Display-param resolution makes authenticated GETs against the
         // provider — merge the live auth header into a throwaway map for
         // those calls only; it never lands on the ActionRequest itself.

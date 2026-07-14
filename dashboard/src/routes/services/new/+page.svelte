@@ -71,6 +71,10 @@
 		!selectedDetail?.mcp?.has_default_secret_name
 	);
 
+	// HTTP gateways (e.g. the `email` Mailbox Gateway) set their endpoint per
+	// instance too — reveal the same URL field the MCP path uses.
+	const httpNeedsUrl = $derived(!isMcp && selectedDetail?.configurable_url === true);
+
 	const searchKeys = $derived<SearchKey[]>([
 		{
 			name: 'tier',
@@ -670,12 +674,24 @@
 						<small>Leave blank to use the template's default.</small>
 					{/if}
 				</label>
+			{:else if httpNeedsUrl}
+				<label class="field">
+					<span class="label">Gateway URL</span>
+					<input
+						type="text"
+						bind:value={urlInput}
+						placeholder={selectedDetail?.hosts?.[0]
+							? `https://${selectedDetail.hosts[0]}`
+							: 'https://mailbox.your-org.com'}
+					/>
+					<small>Point this instance at your own deployment. Leave blank to use the default.</small>
+				</label>
 			{/if}
 
 			{#if (usesApiKey && !usesOAuth) || mcpNeedsSecret}
 				<div class="field">
 					<label class="label" for="new-service-secret">
-						{mcpNeedsSecret ? 'Bearer token secret name' : 'API key secret name'}
+						{#if mcpNeedsSecret}Bearer token secret name{:else if httpNeedsUrl}Credential secret name{:else}API key secret name{/if}
 					</label>
 					<SecretNamePicker
 						id="new-service-secret"
@@ -685,6 +701,8 @@
 					/>
 					{#if mcpNeedsSecret}
 						<small>Vault key holding the MCP server's bearer token. Required — this template has no default.</small>
+					{:else if httpNeedsUrl}
+						<small>The per-instance credential this gateway presents (e.g. a mailbox <code>user:pass</code>). Any shared gateway key is a separate org secret.</small>
 					{:else}
 						<small>Pick an existing secret from your vault, or type a new name to use later.</small>
 					{/if}

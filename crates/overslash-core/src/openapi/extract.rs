@@ -140,6 +140,7 @@ fn extract_oauth2(
             header_name: Some("Authorization".into()),
             query_param: None,
             prefix: Some("Bearer ".into()),
+            encode: None,
         });
 
     Ok(ServiceAuth::OAuth {
@@ -162,6 +163,42 @@ fn extract_api_key(
     let inject_as = obj.get("in").and_then(Value::as_str).unwrap_or("header");
     let name = obj.get("name").and_then(Value::as_str).map(str::to_string);
 
+    let encode = match obj.get("x-overslash-encode").and_then(Value::as_str) {
+        Some("base64") => Some(crate::types::SecretEncoding::Base64),
+        None => None,
+        Some(other) => {
+            return Err(vec![ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!("x-overslash-encode must be `base64` (got {other:?})"),
+                format!("{base}.x-overslash-encode"),
+            )]);
+        }
+    };
+
+    let secret_source = match obj.get("x-overslash-secret_source").and_then(Value::as_str) {
+        Some("org") => crate::types::SecretSource::Org,
+        Some("instance") | None => crate::types::SecretSource::Instance,
+        Some(other) => {
+            return Err(vec![ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!("x-overslash-secret_source must be `instance` or `org` (got {other:?})"),
+                format!("{base}.x-overslash-secret_source"),
+            )]);
+        }
+    };
+
+    let optional = match obj.get("x-overslash-optional") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(other) => {
+            return Err(vec![ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!("x-overslash-optional must be a boolean (got {other})"),
+                format!("{base}.x-overslash-optional"),
+            )]);
+        }
+    };
+
     let injection = match inject_as {
         "header" => TokenInjection {
             inject_as: "header".into(),
@@ -171,12 +208,14 @@ fn extract_api_key(
                 .get("x-overslash-prefix")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            encode,
         },
         "query" => TokenInjection {
             inject_as: "query".into(),
             header_name: None,
             query_param: name,
             prefix: None,
+            encode,
         },
         other => {
             return Err(vec![ValidationIssue::new(
@@ -190,6 +229,8 @@ fn extract_api_key(
     Ok(ServiceAuth::ApiKey {
         default_secret_name,
         injection,
+        secret_source,
+        optional,
     })
 }
 
@@ -217,7 +258,10 @@ fn extract_http_auth(
             header_name: Some("Authorization".into()),
             query_param: None,
             prefix: Some("Bearer ".into()),
+            encode: None,
         },
+        secret_source: crate::types::SecretSource::Instance,
+        optional: false,
     })
 }
 
@@ -241,6 +285,7 @@ fn parse_token_injection(v: Option<&Value>) -> Option<TokenInjection> {
             .get("prefix")
             .and_then(Value::as_str)
             .map(str::to_string),
+        encode: None,
     })
 }
 
@@ -1220,6 +1265,8 @@ mod tests {
             ServiceAuth::ApiKey {
                 default_secret_name,
                 injection,
+                secret_source: _,
+                optional: _,
             } => {
                 assert_eq!(default_secret_name, "t_token");
                 assert_eq!(injection.inject_as, "query");
@@ -1293,6 +1340,8 @@ mod tests {
             ServiceAuth::ApiKey {
                 default_secret_name,
                 injection,
+                secret_source: _,
+                optional: _,
             } => {
                 assert_eq!(default_secret_name, "t_token");
                 assert_eq!(injection.inject_as, "header");

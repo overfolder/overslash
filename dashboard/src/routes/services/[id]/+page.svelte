@@ -670,10 +670,20 @@
 							<small>The URL of the MCP server endpoint.</small>
 						{/if}
 					</label>
+				{:else if template?.configurable_url && !isSystem}
+					<label class="field">
+						<span class="label">Gateway URL</span>
+						<input
+							type="text"
+							bind:value={editUrl}
+							placeholder={template?.hosts?.[0] ? `https://${template.hosts[0]}` : 'https://mailbox.your-org.com'}
+						/>
+						<small>Point this instance at your own deployment. Leave blank to use the default.</small>
+					</label>
 				{/if}
 				{#if (usesApiKey && !usesOAuth && !isSystem) || (isMcp && template?.mcp?.auth_kind === 'bearer' && !isSystem)}
 					<div class="field">
-						<label class="label" for="edit-service-secret">{isMcp ? 'Bearer token secret name' : 'API key secret name'}</label>
+						<label class="label" for="edit-service-secret">{#if isMcp}Bearer token secret name{:else if template?.configurable_url}Credential secret name{:else}API key secret name{/if}</label>
 						<SecretNamePicker
 							id="edit-service-secret"
 							bind:value={editSecret}
@@ -920,7 +930,7 @@
 					</div>
 				{:else if usesApiKey || (isMcp && template?.mcp?.auth_kind === 'bearer')}
 					<div class="field">
-						<label class="label" for="edit-service-secret">{isMcp ? 'Bearer token secret name' : 'API key secret name'}</label>
+						<label class="label" for="edit-service-secret">{#if isMcp}Bearer token secret name{:else if template?.configurable_url}Credential secret name{:else}API key secret name{/if}</label>
 						<SecretNamePicker
 							id="edit-service-secret"
 							bind:value={editSecret}

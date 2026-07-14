@@ -188,7 +188,37 @@ pub enum ServiceAuth {
     ApiKey {
         default_secret_name: String,
         injection: TokenInjection,
+        /// Where the injected secret's value comes from at execution time.
+        /// `Instance` (default) resolves the instance's bound `secret_name`
+        /// (the existing single-secret behaviour). `Org` resolves the fixed
+        /// `default_secret_name` from the org vault, independent of instance
+        /// binding — used for a static per-deployment credential that sits
+        /// alongside a per-request instance credential (e.g. an overfwd
+        /// gateway key next to the per-mailbox `X-Mailbox-Auth`). A template
+        /// may declare at most one `Instance`-source apiKey scheme.
+        #[serde(default)]
+        secret_source: SecretSource,
+        /// When true, this credential is injected only if its secret is
+        /// configured; a missing secret is skipped rather than failing the
+        /// request. Meaningful for an `Org`-source static credential the
+        /// deployment may not need — e.g. an overfwd gateway key when the
+        /// gateway runs with `OVERFWD_REQUIRE_API_KEY=false`. Default `false`:
+        /// a missing required secret still surfaces as an error at send time.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
     },
+}
+
+/// Which secret a compiled apiKey injection resolves at execution time.
+/// See [`ServiceAuth::ApiKey::secret_source`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretSource {
+    /// The instance's bound `secret_name` (per-instance credential).
+    #[default]
+    Instance,
+    /// The scheme's fixed `default_secret_name`, from the org vault.
+    Org,
 }
 
 /// How to inject a token/key into the HTTP request.
@@ -202,6 +232,11 @@ pub struct TokenInjection {
     pub query_param: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prefix: Option<String>,
+    /// Transform applied to the secret value before the `prefix` (mirrors
+    /// [`crate::types::SecretRef::encode`]). Carried from the security
+    /// scheme's `x-overslash-encode` into the runtime `SecretRef`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encode: Option<crate::types::SecretEncoding>,
 }
 
 /// An action within a service (maps to an HTTP request template).

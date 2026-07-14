@@ -100,10 +100,24 @@ pub(super) const OAUTH2_SEC_ALIASES: &[Alias] = &[Alias {
     canonical: "x-overslash-provider",
 }];
 
-pub(super) const APIKEY_HTTP_SEC_ALIASES: &[Alias] = &[Alias {
-    alias: "default_secret_name",
-    canonical: "x-overslash-default_secret_name",
-}];
+pub(super) const APIKEY_HTTP_SEC_ALIASES: &[Alias] = &[
+    Alias {
+        alias: "default_secret_name",
+        canonical: "x-overslash-default_secret_name",
+    },
+    Alias {
+        alias: "encode",
+        canonical: "x-overslash-encode",
+    },
+    Alias {
+        alias: "secret_source",
+        canonical: "x-overslash-secret_source",
+    },
+    Alias {
+        alias: "optional",
+        canonical: "x-overslash-optional",
+    },
+];
 
 pub(super) const HTTP_METHODS: &[&str] = &[
     "get", "put", "post", "delete", "options", "head", "patch", "trace",
