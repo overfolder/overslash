@@ -372,6 +372,15 @@ pub struct ActionParam {
     /// Optional resolver to convert an opaque ID into a human-readable name for descriptions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolve: Option<ParamResolver>,
+    /// Alternate caller-facing names for this parameter. A call that supplies
+    /// one of these keys instead of the canonical name has it rewritten to the
+    /// canonical name before validation (see
+    /// `crate::openapi::validate_input::apply_aliases`), so a well-known
+    /// synonym (`to` for `recipient`, `body` for `text`) is accepted rather
+    /// than rejected as an unknown argument. Authored via the
+    /// `x-overslash-aliases` (or unprefixed `aliases`) parameter extension.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     /// Where this parameter is sent (body/query/path). Omitted when `body` (the default).
     #[serde(default, skip_serializing_if = "ParamLocation::is_default")]
     pub location: ParamLocation,
@@ -491,6 +500,7 @@ mod tests {
             enum_values: None,
             default: None,
             resolve: None,
+            aliases: Vec::new(),
             location: ParamLocation::Body,
         };
         let json = serde_json::to_value(&p).unwrap();
