@@ -18,7 +18,10 @@ Built as designed — overfwd is consumed as an ordinary HTTP service via the sh
    `SecretRef` per apiKey scheme. `instance` (default, backward-compatible) resolves the
    instance's bound `secret_name` (the per-mailbox `user:pass`); `org` resolves the scheme's
    fixed `default_secret_name` from the org vault (the shared gateway key). A template may
-   declare at most one `instance`-source apiKey scheme (validated). The gateway scheme is
+   declare at most one `instance`-source apiKey scheme (validated). *(Since D32 / migration
+   100, `secret_source` is a fallback policy: every apiKey scheme is per-instance bindable
+   via `service_instances.credentials[scheme]`, and the at-most-one-instance-scheme
+   validation is gone.)* The gateway scheme is
    marked **`x-overslash-optional: true`**: it is injected only when the org has stored the
    secret, so a self-hosted overfwd with `OVERFWD_REQUIRE_API_KEY=false` needs no gateway key
    (the `Authorization` header is simply omitted rather than failing on a missing secret).
@@ -154,7 +157,9 @@ Unipile. Overslash is just one consumer.
 `secret_injection` already loops over a `Vec<SecretRef>` (headers/query, prefix-only — **no
 encode, no body injection**); `ServiceAuth` (`types/service.rs:171`) declares a **single**
 injection; and a `service_instance` carries only `url` + `secret_name` + `connection_id`
-(**no generic per-instance config**, migrations 016/048/090). Three bounded changes — but
+(**no generic per-instance config**, migrations 016/048/090). *(Since superseded in part:
+migration 100 / D32 adds `service_instances.credentials` — per-scheme secret NAME bindings,
+deliberately not a generic config map.)* Three bounded changes — but
 only the first two are built now:
 
 1. **`encode: base64` option on `SecretRef`** — emit `Basic base64(user:pass)`. Reusable for

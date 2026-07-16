@@ -275,11 +275,21 @@ pub(crate) async fn list_services_using_secret(
     org_id: Uuid,
     name: &str,
 ) -> Result<Vec<ServiceUsingSecret>, sqlx::Error> {
+    // A secret is "used" when the legacy scalar names it OR any per-scheme
+    // binding in the `credentials` map does (map values are secret names —
+    // see migration 100). Org-source overrides and multi-instance-scheme
+    // bindings never mirror into the scalar, so the jsonb match is load-
+    // bearing, not belt-and-braces.
     sqlx::query_as!(
         ServiceUsingSecret,
         "SELECT id, name, status
          FROM service_instances
-         WHERE org_id = $1 AND secret_name = $2
+         WHERE org_id = $1 AND (
+             secret_name = $2
+             OR EXISTS (
+                 SELECT 1 FROM jsonb_each_text(credentials) kv WHERE kv.value = $2
+             )
+         )
          ORDER BY name",
         org_id,
         name,

@@ -848,13 +848,19 @@ pub async fn kernel_update_service(
 
         // Base map: an explicit `credentials` is a whole-map replace; a
         // scalar-only request patches the existing map so the two stay in
-        // sync. `secret_name: null` clears the sole instance-source slot.
+        // sync. On a scalar-only request the stored slot value is what the
+        // alias is REPLACING, not a competing caller intent — drop it before
+        // the fold or `reconcile_credentials` would flag every legacy rebind
+        // as a conflict (the create path mirrors the scalar into the map, so
+        // the slot is always populated). `secret_name: null` clears the slot.
+        // When both fields ride one request, the slot stays so a disagreement
+        // between them still 400s.
         let instance_slots = instance_scheme_keys(&template_def);
         let mut base = match input.credentials.as_ref() {
             Some(explicit) => explicit.clone(),
             None => existing.credentials.0.clone(),
         };
-        if input.secret_name.as_ref().is_some_and(|o| o.is_none()) {
+        if input.credentials.is_none() && input.secret_name.is_some() {
             if let [sole] = instance_slots.as_slice() {
                 base.remove(*sole);
             }

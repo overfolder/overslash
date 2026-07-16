@@ -870,7 +870,7 @@ Clicking a secret row navigates to the full-screen detail page (push, not modal 
 - **Secret name** — page title
 - **Owner** — identity that owns this secret (see *Owner* above)
 - **Created / Updated** — timestamps
-- **Used by** — list of service instances whose `secret_name` matches this secret. Each row links to `/services/{name}`. Empty state: "No services use this secret yet."
+- **Used by** — list of service instances that reference this secret, via the legacy scalar `secret_name` or any per-scheme binding in `credentials` (D32). Each row links to `/services/{name}`. Empty state: "No services use this secret yet."
 - **`[Update value]`** — opens a small dialog with a password-type input. Submission creates a new version (`PUT /v1/secrets/{name}`).
 - **`[Delete]`** — soft-deletes the secret entirely (all versions). Confirmation dialog warns which services reference it.
 

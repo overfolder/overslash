@@ -397,6 +397,7 @@ async fn email_keyless_gateway_omits_authorization_but_still_sends_mailbox_auth(
 #[tokio::test]
 async fn email_credentials_map_binds_both_schemes_with_custom_gateway_key() {
     let pool = common::test_pool().await;
+    let pool2 = pool.clone();
     let (gateway_url, sink) = start_mock_overfwd().await;
     let (base, agent_key, _admin_key, instance) = setup_email_instance_custom(
         pool,
@@ -454,6 +455,25 @@ async fn email_credentials_map_binds_both_schemes_with_custom_gateway_key() {
         "credentials[gateway] must override the overfwd_gateway_key fallback"
     );
     assert_eq!(req.mailbox_auth.as_deref(), Some(MAILBOX_BASIC));
+
+    // The gateway binding never mirrors into the scalar `secret_name`, so the
+    // secret detail's "Used by" must find it through the credentials map.
+    // (The HTTP detail endpoint is dashboard-session-only, so assert at the
+    // scope layer the route delegates to.)
+    let org_id = instance["org_id"]
+        .as_str()
+        .unwrap()
+        .parse::<uuid::Uuid>()
+        .unwrap();
+    let scope = overslash_db::scopes::OrgScope::new(org_id, pool2);
+    let used_by = scope
+        .list_services_using_secret("my_own_gateway_token")
+        .await
+        .unwrap();
+    assert!(
+        used_by.iter().any(|s| s.name == "email"),
+        "map-only binding must surface in used_by: {used_by:?}"
+    );
 }
 
 /// A `credentials` key that names no securityScheme of the template is a
@@ -510,9 +530,30 @@ async fn email_update_secret_name_alias_syncs_credentials_map() {
         json!({ "mailbox": "mailbox_credential" })
     );
 
+    // A scalar-only rebind must land in the map — and must NOT trip the
+    // both-fields conflict check against the mirrored slot the create path
+    // wrote (regression: the stored mirror is what the alias replaces, not a
+    // competing caller intent).
+    let client = reqwest::Client::new();
+    let rebound: Value = client
+        .put(format!("{base}/v1/services/{svc_id}/manage"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "secret_name": "scalar_rebound" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        rebound["credentials"],
+        json!({ "mailbox": "scalar_rebound" }),
+        "scalar-only rebind must replace the mirrored slot: {rebound:?}"
+    );
+    assert_eq!(rebound["secret_name"], json!("scalar_rebound"));
+
     // Whole-map replace: rebind mailbox and unbind nothing else; the mirrored
     // scalar follows the instance-source slot.
-    let client = reqwest::Client::new();
     let updated: Value = client
         .put(format!("{base}/v1/services/{svc_id}/manage"))
         .header("Authorization", format!("Bearer {admin_key}"))
