@@ -422,6 +422,34 @@ paths:
     }
 
     #[test]
+    fn shipped_telegram_send_message_declares_param_aliases() {
+        // Pin the ergonomics fix from the burned-approval traces: the Telegram
+        // `send_message` tool must accept `text`/`body` as aliases for its
+        // canonical `message` param (agents reach for Telegram's Bot-API field
+        // name `text`) and `to`/`chat` for `chat_id`. If a resync or edit drops
+        // these, this fails loudly instead of at call time.
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let tg = reg.get("telegram").expect("telegram template registered");
+        let send = &tg.actions["send_message"];
+        assert!(
+            send.params["message"].aliases.contains(&"text".to_string()),
+            "send_message.message must alias `text`, got {:?}",
+            send.params["message"].aliases
+        );
+        assert!(
+            send.params["chat_id"].aliases.contains(&"to".to_string()),
+            "send_message.chat_id must alias `to`, got {:?}",
+            send.params["chat_id"].aliases
+        );
+    }
+
+    #[test]
     fn shipped_services_have_no_silent_skips() {
         // `load_from_dir` logs-and-skips any file that fails to
         // parse/compile/validate, so a broken template silently disappears from
