@@ -299,6 +299,13 @@
 		try {
 			selectedDetail = await getTemplate(t.key);
 			nameInput = t.key;
+			// Seed one entry per apiKey scheme so the per-scheme pickers bind
+			// to defined slots on the configure step's first render.
+			const seeded: Record<string, string> = {};
+			for (const a of selectedDetail?.auth ?? []) {
+				if (a.type === 'api_key' && a.scheme) seeded[a.scheme] = '';
+			}
+			credentialsInput = seeded;
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to load template (${e.status})` : 'Failed to load template';
 		} finally {

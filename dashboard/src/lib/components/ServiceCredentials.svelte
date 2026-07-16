@@ -26,9 +26,15 @@
 	const showSchemeLabels = $derived(schemes.length > 1);
 	const vaultNames = $derived(new Set(available.map((s) => s.name)));
 
-	// Every scheme key gets an entry so the pickers bind to real slots even
-	// when the caller seeded nothing (e.g. the create page). Writes only when
-	// missing, so it converges.
+	// Every scheme key must hold a string BEFORE the pickers render — binding
+	// an undefined map slot into SecretNamePicker's fallback-valued `value`
+	// prop is a Svelte error (props_invalid_value). Init-time loop covers the
+	// first render; the effect covers `schemes` changing under a live map.
+	// svelte-ignore state_referenced_locally
+	for (const s of schemes) {
+		const k = s.scheme ?? '';
+		if (k && credentials[k] === undefined) credentials[k] = '';
+	}
 	$effect(() => {
 		for (const s of schemes) {
 			const k = s.scheme ?? '';
