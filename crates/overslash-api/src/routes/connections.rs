@@ -911,6 +911,7 @@ async fn oauth_callback_inner(
                     name: None,
                     connection_id: Some(Some(connection_id)),
                     secret_name: None,
+                    credentials: None,
                     url: None,
                     use_default_connection: None,
                 };

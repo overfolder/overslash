@@ -186,16 +186,26 @@ pub enum ServiceAuth {
     },
     #[serde(rename = "api_key")]
     ApiKey {
+        /// The securitySchemes key this was compiled from (`gateway`,
+        /// `mailbox`, …). Identifies the credential slot: it keys the
+        /// instance's per-scheme `credentials` bindings and labels the
+        /// credential in the dashboard, so a template with several apiKey
+        /// schemes doesn't present them as one anonymous field.
+        #[serde(default)]
+        scheme: String,
+        /// The standard OpenAPI securityScheme `description`, verbatim.
+        /// Help text for the credential's row in the dashboard.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
         default_secret_name: String,
         injection: TokenInjection,
-        /// Where the injected secret's value comes from at execution time.
-        /// `Instance` (default) resolves the instance's bound `secret_name`
-        /// (the existing single-secret behaviour). `Org` resolves the fixed
-        /// `default_secret_name` from the org vault, independent of instance
-        /// binding — used for a static per-deployment credential that sits
-        /// alongside a per-request instance credential (e.g. an overfwd
-        /// gateway key next to the per-mailbox `X-Mailbox-Auth`). A template
-        /// may declare at most one `Instance`-source apiKey scheme.
+        /// Fallback policy when the instance has no explicit per-scheme
+        /// binding in `credentials[scheme]`. `Instance` (default): fall back
+        /// to the instance's legacy scalar `secret_name`; unbound means the
+        /// credential is missing. `Org`: fall back to the fixed
+        /// `default_secret_name` in the org vault — a sensible org-wide
+        /// default for a shared credential (e.g. an overfwd gateway key)
+        /// that any instance may still override per deployment.
         #[serde(default)]
         secret_source: SecretSource,
         /// When true, this credential is injected only if its secret is
@@ -209,12 +219,14 @@ pub enum ServiceAuth {
     },
 }
 
-/// Which secret a compiled apiKey injection resolves at execution time.
+/// Which secret a compiled apiKey injection falls back to at execution time
+/// when the instance has no explicit `credentials[scheme]` binding.
 /// See [`ServiceAuth::ApiKey::secret_source`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SecretSource {
-    /// The instance's bound `secret_name` (per-instance credential).
+    /// The instance's legacy scalar `secret_name` (per-instance credential,
+    /// no org-wide default name).
     #[default]
     Instance,
     /// The scheme's fixed `default_secret_name`, from the org vault.

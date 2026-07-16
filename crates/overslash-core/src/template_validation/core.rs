@@ -7,8 +7,8 @@ use std::collections::HashSet;
 
 use crate::description_grammar::{iter_placeholders, validate_flat_brackets};
 use crate::types::{
-    ActionParam, McpAuth, Risk, Runtime, SecretSource, ServiceAction, ServiceAuth,
-    ServiceDefinition, TokenInjection,
+    ActionParam, McpAuth, Risk, Runtime, ServiceAction, ServiceAuth, ServiceDefinition,
+    TokenInjection,
 };
 
 use super::{Issues, ValidationReport};
@@ -109,7 +109,7 @@ fn is_valid_hostname(s: &str) -> bool {
 // --- auth ------------------------------------------------------------------
 
 fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
-    let mut instance_apikey_count = 0usize;
+    let mut seen_schemes: Vec<&str> = Vec::new();
     for (i, entry) in auth.iter().enumerate() {
         match entry {
             ServiceAuth::OAuth {
@@ -131,9 +131,9 @@ fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
                 );
             }
             ServiceAuth::ApiKey {
+                scheme,
                 default_secret_name,
                 injection,
-                secret_source,
                 ..
             } => {
                 if default_secret_name.trim().is_empty() {
@@ -143,23 +143,26 @@ fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
                         format!("auth[{i}].default_secret_name"),
                     );
                 }
-                if matches!(secret_source, SecretSource::Instance) {
-                    instance_apikey_count += 1;
+                // Instances bind secrets per scheme key (`credentials[scheme]`),
+                // so any number of apiKey schemes is fine — but the keys must be
+                // unambiguous. Unique by construction when compiled from a
+                // securitySchemes map; guard the programmatic construction paths.
+                if !scheme.is_empty() {
+                    if seen_schemes.contains(&scheme.as_str()) {
+                        issues.err(
+                            "duplicate_scheme_key",
+                            format!(
+                                "security scheme key {scheme:?} appears more than once; \
+                                 per-instance credential bindings are keyed by scheme"
+                            ),
+                            format!("auth[{i}].scheme"),
+                        );
+                    }
+                    seen_schemes.push(scheme.as_str());
                 }
                 check_token_injection(injection, &format!("auth[{i}].injection"), issues);
             }
         }
-    }
-    // An instance binds a single `secret_name`, so only one apiKey scheme can
-    // draw from it. Additional apiKey schemes must be `secret_source: org`
-    // (resolved from the fixed `default_secret_name`).
-    if instance_apikey_count > 1 {
-        issues.err(
-            "multiple_instance_secrets",
-            "at most one apiKey security scheme may use secret_source=instance \
-             (an instance binds a single secret_name); mark the others secret_source=org",
-            "auth".to_string(),
-        );
     }
 }
 
@@ -667,8 +670,8 @@ fn has_unclosed_brace(s: &str) -> bool {
 mod tests {
     use super::*;
     use crate::types::{
-        ActionParam, ParamResolver, Risk, Runtime, ServiceAction, ServiceAuth, ServiceDefinition,
-        TokenInjection,
+        ActionParam, ParamResolver, Risk, Runtime, SecretSource, ServiceAction, ServiceAuth,
+        ServiceDefinition, TokenInjection,
     };
     use std::collections::HashMap;
 
@@ -681,6 +684,8 @@ mod tests {
             category: None,
             hidden: false,
             auth: vec![ServiceAuth::ApiKey {
+                scheme: String::new(),
+                description: String::new(),
                 default_secret_name: "svc_token".into(),
                 injection: TokenInjection {
                     inject_as: "header".into(),
@@ -915,6 +920,8 @@ mod tests {
     fn incomplete_token_injection_header() {
         let mut d = minimal_valid();
         d.auth = vec![ServiceAuth::ApiKey {
+            scheme: String::new(),
+            description: String::new(),
             default_secret_name: "x".into(),
             injection: TokenInjection {
                 inject_as: "header".into(),
@@ -938,6 +945,8 @@ mod tests {
     fn incomplete_token_injection_query() {
         let mut d = minimal_valid();
         d.auth = vec![ServiceAuth::ApiKey {
+            scheme: String::new(),
+            description: String::new(),
             default_secret_name: "x".into(),
             injection: TokenInjection {
                 inject_as: "query".into(),
@@ -954,6 +963,52 @@ mod tests {
             r.errors
                 .iter()
                 .any(|e| e.code == "incomplete_token_injection")
+        );
+    }
+
+    fn api_key(scheme: &str, source: SecretSource) -> ServiceAuth {
+        ServiceAuth::ApiKey {
+            scheme: scheme.into(),
+            description: String::new(),
+            default_secret_name: "x".into(),
+            injection: TokenInjection {
+                inject_as: "header".into(),
+                header_name: Some("Authorization".into()),
+                query_param: None,
+                prefix: None,
+                encode: None,
+            },
+            secret_source: source,
+            optional: false,
+        }
+    }
+
+    #[test]
+    fn several_instance_source_schemes_are_valid() {
+        // Instances bind secrets per scheme key (`credentials[scheme]`), so a
+        // template may declare any number of instance-source apiKey schemes —
+        // the old `multiple_instance_secrets` scalar-storage rule is gone.
+        let mut d = minimal_valid();
+        d.auth = vec![
+            api_key("first", SecretSource::Instance),
+            api_key("second", SecretSource::Instance),
+        ];
+        let r = run(&d);
+        assert!(r.valid, "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn duplicate_scheme_keys_are_rejected() {
+        let mut d = minimal_valid();
+        d.auth = vec![
+            api_key("token", SecretSource::Instance),
+            api_key("token", SecretSource::Org),
+        ];
+        let r = run(&d);
+        assert!(
+            r.errors.iter().any(|e| e.code == "duplicate_scheme_key"),
+            "errors: {:?}",
+            r.errors
         );
     }
 
@@ -1153,6 +1208,8 @@ mod tests {
     fn mcp_rejects_http_auth() {
         let mut d = minimal_mcp(McpAuth::None);
         d.auth = vec![ServiceAuth::ApiKey {
+            scheme: String::new(),
+            description: String::new(),
             default_secret_name: "k".into(),
             injection: TokenInjection {
                 inject_as: "header".into(),

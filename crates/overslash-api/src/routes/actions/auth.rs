@@ -1069,56 +1069,71 @@ pub(crate) async fn resolve_instance_auth(
         }
     }
 
-    // Build a SecretRef per apiKey scheme the template declares. A template
-    // may mix a per-instance credential (`secret_source: instance` → the
-    // instance's bound `secret_name`) with static per-deployment credentials
-    // (`secret_source: org` → the scheme's fixed `default_secret_name`, from
-    // the org vault). That is what lets one overfwd instance carry both the
-    // per-mailbox `X-Mailbox-Auth: Basic …` and the gateway
-    // `Authorization: Bearer …` on the same request. OAuth-only templates
-    // declare no apiKey scheme and fall through; single-apiKey templates keep
-    // the historical behaviour (one Instance-source scheme → `secret_name`).
+    // Build a SecretRef per apiKey scheme the template declares. Each scheme
+    // resolves its secret name independently:
+    //   1. the instance's explicit per-scheme binding (`credentials[scheme]`),
+    //   2. else the legacy scalar `secret_name` (instance-source schemes only),
+    //   3. else the scheme's fixed `default_secret_name` from the org vault
+    //      (org-source schemes only — a shared org-wide default).
+    // That is what lets one overfwd instance carry both the per-mailbox
+    // `X-Mailbox-Auth: Basic …` and its own gateway `Authorization: Bearer …`
+    // on the same request. OAuth-only templates declare no apiKey scheme and
+    // fall through; existing instances (empty `credentials`) keep the
+    // historical behaviour exactly (steps 2 and 3).
     let mut secret_refs: Vec<SecretRef> = Vec::new();
     let mut instance_secret_missing = false;
     for service_auth in &svc.auth {
         if let overslash_core::types::ServiceAuth::ApiKey {
+            scheme,
             default_secret_name,
             injection,
             secret_source,
             optional,
+            ..
         } = service_auth
         {
-            let name = match secret_source {
-                overslash_core::types::SecretSource::Org => {
-                    // An optional org credential (e.g. an overfwd gateway key
-                    // when the gateway runs with OVERFWD_REQUIRE_API_KEY=false)
-                    // is injected only if the org has configured it — a keyless
-                    // deployment simply omits it rather than failing on a
-                    // missing secret. Required org schemes fall through to the
-                    // send-time `secret not found` error as before.
-                    if *optional
-                        && scope
-                            .get_current_secret_value(default_secret_name)
-                            .await?
-                            .is_none()
-                    {
-                        continue;
+            let name = if let Some(bound) = instance.credentials.get(scheme) {
+                // Explicitly bound per instance. An explicit binding on an
+                // `optional` scheme makes it required: the user asked for this
+                // credential, so a missing secret surfaces as a send-time
+                // error instead of being silently skipped.
+                bound.clone()
+            } else {
+                match secret_source {
+                    overslash_core::types::SecretSource::Org => {
+                        // An optional org credential (e.g. an overfwd gateway key
+                        // when the gateway runs with OVERFWD_REQUIRE_API_KEY=false)
+                        // is injected only if the org has configured it — a keyless
+                        // deployment simply omits it rather than failing on a
+                        // missing secret. Required org schemes fall through to the
+                        // send-time `secret not found` error as before.
+                        if *optional
+                            && scope
+                                .get_current_secret_value(default_secret_name)
+                                .await?
+                                .is_none()
+                        {
+                            continue;
+                        }
+                        default_secret_name.clone()
                     }
-                    default_secret_name.clone()
+                    overslash_core::types::SecretSource::Instance => match &instance.secret_name {
+                        Some(n) => n.clone(),
+                        // The template requires a per-instance credential but the
+                        // instance has none bound. Record it so we DON'T return the
+                        // org-source keys alone — a partial injection would send an
+                        // incomplete request (e.g. gateway Bearer without the
+                        // mailbox `X-Mailbox-Auth`) that fails downstream instead of
+                        // cleanly prompting the caller to bind the credential.
+                        None => {
+                            if *optional {
+                                continue;
+                            }
+                            instance_secret_missing = true;
+                            continue;
+                        }
+                    },
                 }
-                overslash_core::types::SecretSource::Instance => match &instance.secret_name {
-                    Some(n) => n.clone(),
-                    // The template requires a per-instance credential but the
-                    // instance has none bound. Record it so we DON'T return the
-                    // org-source keys alone — a partial injection would send an
-                    // incomplete request (e.g. gateway Bearer without the
-                    // mailbox `X-Mailbox-Auth`) that fails downstream instead of
-                    // cleanly prompting the caller to bind the credential.
-                    None => {
-                        instance_secret_missing = true;
-                        continue;
-                    }
-                },
             };
             if name.is_empty() {
                 continue;

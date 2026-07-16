@@ -511,6 +511,8 @@ export interface ServiceInstanceSummary {
   owner_identity_id?: string;
   connection_id?: string;
   secret_name?: string;
+  /** Per-scheme secret bindings: securityScheme key → secret NAME in the org vault. */
+  credentials?: Record<string, string>;
   /** Per-instance MCP server URL override. Present only for MCP runtime services. */
   url?: string;
   /** When `false`, an unbound instance won't fall back to the identity's default connection for the provider. Defaults to `true`. */
@@ -531,6 +533,8 @@ export interface CreateServiceRequest {
   name?: string;
   connection_id?: string;
   secret_name?: string;
+  /** Per-scheme secret bindings: securityScheme key → secret NAME in the org vault. */
+  credentials?: Record<string, string>;
   url?: string;
   status?: ServiceStatus;
   user_level?: boolean;
@@ -542,6 +546,8 @@ export interface UpdateServiceRequest {
   name?: string;
   connection_id?: string | null;
   secret_name?: string | null;
+  /** Per-scheme secret bindings: whole-map replace ({} clears every binding); omit to leave unchanged. */
+  credentials?: Record<string, string>;
   url?: string | null;
   use_default_connection?: boolean;
 }
@@ -640,13 +646,30 @@ export interface ServiceDetail {
 
 export type ServiceAuth =
   | { type: 'oauth'; provider: string; scopes?: string[]; token_injection: TokenInjection }
-  | { type: 'api_key'; default_secret_name: string; injection: TokenInjection };
+  | {
+      type: 'api_key';
+      /** The securitySchemes key this credential slot was compiled from (e.g. `gateway`, `mailbox`). */
+      scheme?: string;
+      /** The OpenAPI securityScheme `description` — help text for the credential's row. */
+      description?: string;
+      default_secret_name: string;
+      injection: TokenInjection;
+      /**
+       * Fallback when the instance has no explicit `credentials[scheme]` binding:
+       * `instance` (default) → the legacy scalar `secret_name`; `org` → the fixed
+       * `default_secret_name` from the org vault.
+       */
+      secret_source?: 'instance' | 'org';
+      /** When true, an unbound credential is skipped instead of failing the request. */
+      optional?: boolean;
+    };
 
 export interface TokenInjection {
   as: string;
   header_name?: string;
   query_param?: string;
   prefix?: string;
+  encode?: string;
 }
 
 export interface ServiceAction {

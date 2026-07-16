@@ -93,9 +93,6 @@ async fn setup_email_instance(
     mailbox_secret: Option<&str>,
     seed_gateway_key: bool,
 ) -> (String, String) {
-    let (base, client) = start_api_with_registry(pool, None).await;
-    let (_org_id, _ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
-
     // The gateway key is an org-vault secret referenced by the template's fixed
     // `default_secret_name` (secret_source: org, optional). A keyless overfwd
     // deployment omits it. The mailbox credential is the per-instance bound
@@ -107,6 +104,32 @@ async fn setup_email_instance(
     if let Some(name) = mailbox_secret {
         secrets.push((name, MAILBOX_CRED));
     }
+    let mut body = json!({
+        "template_key": "email",
+        "name": "email",
+        "url": gateway_url,
+        "user_level": false,
+        "status": "active",
+    });
+    if let Some(name) = mailbox_secret {
+        body["secret_name"] = json!(name);
+    }
+    let (base, agent_key, _admin_key, _instance) =
+        setup_email_instance_custom(pool, &secrets, body).await;
+    (base, agent_key)
+}
+
+/// Generalized variant: seed arbitrary org secrets and create the `email`
+/// instance from a caller-supplied body (so tests can exercise the per-scheme
+/// `credentials` map). Returns `(base, agent_key, admin_key, create_response)`.
+async fn setup_email_instance_custom(
+    pool: sqlx::PgPool,
+    secrets: &[(&str, &str)],
+    body: Value,
+) -> (String, String, String, Value) {
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, _ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+
     for (name, value) in secrets {
         let resp = client
             .put(format!("{base}/v1/secrets/{name}"))
@@ -122,17 +145,6 @@ async fn setup_email_instance(
         );
     }
 
-    // Per-instance url override → the org's own overfwd deployment.
-    let mut body = json!({
-        "template_key": "email",
-        "name": "email",
-        "url": gateway_url,
-        "user_level": false,
-        "status": "active",
-    });
-    if let Some(name) = mailbox_secret {
-        body["secret_name"] = json!(name);
-    }
     let instance: Value = client
         .post(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -179,7 +191,7 @@ async fn setup_email_instance(
         grant.status()
     );
 
-    (base, agent_key)
+    (base, agent_key, admin_key, instance)
 }
 
 #[tokio::test]
@@ -374,4 +386,188 @@ async fn email_keyless_gateway_omits_authorization_but_still_sends_mailbox_auth(
     );
     // The mailbox credential still rides.
     assert_eq!(req.mailbox_auth.as_deref(), Some(MAILBOX_BASIC));
+}
+
+// ── Per-scheme credential bindings (`service_instances.credentials`) ────────
+
+/// Both schemes bound explicitly through the `credentials` map — including a
+/// per-instance gateway key under a NON-default name, which the org-fixed
+/// `overfwd_gateway_key` fallback could never express. No legacy
+/// `secret_name` in sight.
+#[tokio::test]
+async fn email_credentials_map_binds_both_schemes_with_custom_gateway_key() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, agent_key, _admin_key, instance) = setup_email_instance_custom(
+        pool,
+        &[
+            ("my_own_gateway_token", "instance-gw-key"),
+            ("angel_mailbox_login", MAILBOX_CRED),
+        ],
+        json!({
+            "template_key": "email",
+            "name": "email",
+            "url": gateway_url,
+            "user_level": false,
+            "status": "active",
+            "credentials": {
+                "gateway": "my_own_gateway_token",
+                "mailbox": "angel_mailbox_login",
+            },
+        }),
+    )
+    .await;
+
+    // The create response exposes the bindings (names only) and mirrors the
+    // sole instance-source scheme into the legacy scalar for rolling deploys.
+    assert_eq!(
+        instance["credentials"],
+        json!({ "gateway": "my_own_gateway_token", "mailbox": "angel_mailbox_login" })
+    );
+    assert_eq!(instance["secret_name"], json!("angel_mailbox_login"));
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "email",
+            "action": "search",
+            "params": { "query": "UNSEEN" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "read should auto-execute: {}",
+        resp.text().await.unwrap()
+    );
+
+    let captured = sink.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1);
+    let req = &captured[0];
+    // The explicit per-instance binding beats the org-fixed default name.
+    assert_eq!(
+        req.authorization.as_deref(),
+        Some("Bearer instance-gw-key"),
+        "credentials[gateway] must override the overfwd_gateway_key fallback"
+    );
+    assert_eq!(req.mailbox_auth.as_deref(), Some(MAILBOX_BASIC));
+}
+
+/// A `credentials` key that names no securityScheme of the template is a
+/// caller bug — reject at the boundary instead of storing a dead binding.
+#[tokio::test]
+async fn email_create_rejects_unknown_credential_scheme() {
+    let pool = common::test_pool().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, _ident_id, _agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "email",
+            "name": "email",
+            "user_level": false,
+            "credentials": { "gatway": "typo_key" },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "unknown scheme key must 400");
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("gatway") && body.contains("gateway"),
+        "error should name the bad key and the declared schemes: {body}"
+    );
+}
+
+/// The legacy `secret_name` alias keeps working and lands in the map: the
+/// dashboard contract is that scalar writes and per-scheme reads agree.
+#[tokio::test]
+async fn email_update_secret_name_alias_syncs_credentials_map() {
+    let pool = common::test_pool().await;
+    let (gateway_url, _sink) = start_mock_overfwd().await;
+    let (base, _agent_key, admin_key, instance) = setup_email_instance_custom(
+        pool,
+        &[("mailbox_credential", MAILBOX_CRED)],
+        json!({
+            "template_key": "email",
+            "name": "email",
+            "url": gateway_url,
+            "user_level": false,
+            "status": "active",
+            "secret_name": "mailbox_credential",
+        }),
+    )
+    .await;
+    let svc_id = instance["id"].as_str().unwrap();
+    // Legacy scalar create landed in the map slot too.
+    assert_eq!(
+        instance["credentials"],
+        json!({ "mailbox": "mailbox_credential" })
+    );
+
+    // Whole-map replace: rebind mailbox and unbind nothing else; the mirrored
+    // scalar follows the instance-source slot.
+    let client = reqwest::Client::new();
+    let updated: Value = client
+        .put(format!("{base}/v1/services/{svc_id}/manage"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "credentials": { "mailbox": "other_login" } }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(updated["credentials"], json!({ "mailbox": "other_login" }));
+    assert_eq!(updated["secret_name"], json!("other_login"));
+
+    // Clearing: an explicit empty map unbinds everything, and the mirrored
+    // scalar follows. (A literal `"secret_name": null` can't clear — plain
+    // serde folds explicit null into "absent" for Option<Option<T>>, a
+    // pre-existing tri-state limitation; the map is the canonical clear.)
+    let cleared: Value = client
+        .put(format!("{base}/v1/services/{svc_id}/manage"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "credentials": {} }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cleared["credentials"], json!(null), "empty map is omitted");
+    assert_eq!(cleared["secret_name"], json!(null));
+}
+
+/// The dashboard renders one row per apiKey scheme keyed by `scheme` — pin
+/// the template serialization contract it depends on.
+#[tokio::test]
+async fn email_template_serializes_scheme_keys_and_sources() {
+    let pool = common::test_pool().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, _ident_id, _agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+
+    let tpl: Value = client
+        .get(format!("{base}/v1/templates/email"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let auth = tpl["auth"].as_array().expect("auth array");
+    assert_eq!(auth.len(), 2, "email declares gateway + mailbox: {auth:?}");
+    // extract_auth sorts scheme keys for determinism: gateway, mailbox.
+    assert_eq!(auth[0]["scheme"], json!("gateway"));
+    assert_eq!(auth[0]["secret_source"], json!("org"));
+    assert_eq!(auth[0]["optional"], json!(true));
+    assert_eq!(auth[1]["scheme"], json!("mailbox"));
+    // `instance` is the default source; it serializes explicitly.
+    assert_eq!(auth[1]["secret_source"], json!("instance"));
 }

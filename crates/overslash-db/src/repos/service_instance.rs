@@ -1,6 +1,14 @@
+use std::collections::BTreeMap;
+
 use sqlx::PgPool;
+use sqlx::types::Json;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// Per-scheme credential bindings: securityScheme key → secret NAME in the
+/// org vault. Values are vault references by construction, never secret
+/// values. Typed at the DB boundary so callers never touch raw jsonb.
+pub type CredentialsMap = BTreeMap<String, String>;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ServiceInstanceRow {
@@ -13,6 +21,11 @@ pub struct ServiceInstanceRow {
     pub template_id: Option<Uuid>,
     pub connection_id: Option<Uuid>,
     pub secret_name: Option<String>,
+    /// Per-scheme secret bindings keyed by the template's securityScheme key
+    /// (e.g. `{"gateway": "my_gateway_key", "mailbox": "my_mailbox_login"}`).
+    /// An empty map falls back to the legacy scalar `secret_name` for the
+    /// template's sole instance-source scheme. See migration 100.
+    pub credentials: Json<CredentialsMap>,
     /// Per-instance MCP server URL. Overrides the template's `mcp.url` at
     /// execution time. Required when the template declares no default URL.
     pub url: Option<String>,
@@ -38,6 +51,8 @@ pub struct CreateServiceInstance<'a> {
     pub template_id: Option<Uuid>,
     pub connection_id: Option<Uuid>,
     pub secret_name: Option<&'a str>,
+    /// Per-scheme secret bindings. See `ServiceInstanceRow::credentials`.
+    pub credentials: &'a CredentialsMap,
     /// Per-instance MCP URL override. See `ServiceInstanceRow::url`.
     pub url: Option<&'a str>,
     /// See `ServiceInstanceRow::use_default_connection`. Defaults to `true` at
@@ -50,6 +65,9 @@ pub struct UpdateServiceInstance<'a> {
     pub name: Option<&'a str>,
     pub connection_id: Option<Option<Uuid>>,
     pub secret_name: Option<Option<&'a str>>,
+    /// `Some` = whole-map replace (an empty map clears every binding);
+    /// `None` = leave unchanged. See `ServiceInstanceRow::credentials`.
+    pub credentials: Option<&'a CredentialsMap>,
     /// Outer `Some` = field is present in the request (update it);
     /// inner `Option` = nullable value (set to NULL when `None`).
     pub url: Option<Option<&'a str>>,
@@ -64,10 +82,10 @@ pub(crate) async fn create(
     sqlx::query_as!(
         ServiceInstanceRow,
         "INSERT INTO service_instances (org_id, owner_identity_id, name, template_source, \
-         template_key, template_id, connection_id, secret_name, url, use_default_connection, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+         template_key, template_id, connection_id, secret_name, credentials, url, use_default_connection, status) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at",
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at",
         input.org_id,
         input.owner_identity_id,
         input.name,
@@ -76,6 +94,7 @@ pub(crate) async fn create(
         input.template_id,
         input.connection_id,
         input.secret_name,
+        Json(input.credentials) as _,
         input.url,
         input.use_default_connection,
         input.status,
@@ -109,7 +128,7 @@ where
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -136,7 +155,7 @@ where
         "UPDATE service_instances SET connection_id = $3, updated_at = now() \
          WHERE id = $1 AND org_id = $2 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at",
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at",
         id,
         org_id,
         connection_id,
@@ -155,7 +174,7 @@ pub(crate) async fn get_by_name(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND name = $3",
         org_id,
@@ -192,7 +211,7 @@ pub(crate) async fn resolve_by_name(
         return sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2 AND status = 'active'",
             org_id,
@@ -207,7 +226,7 @@ pub(crate) async fn resolve_by_name(
         let caller_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3 AND status = 'active'",
             org_id,
@@ -228,7 +247,7 @@ pub(crate) async fn resolve_by_name(
         let user_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3 AND status = 'active'",
             org_id,
@@ -246,7 +265,7 @@ pub(crate) async fn resolve_by_name(
     let org_instance = sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2 AND status = 'active'",
         org_id,
@@ -265,7 +284,7 @@ pub(crate) async fn resolve_by_name(
         return sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, \
-             si.template_id, si.connection_id, si.secret_name, si.url, si.use_default_connection, \
+             si.template_id, si.connection_id, si.secret_name, si.credentials as \"credentials: Json<CredentialsMap>\", si.url, si.use_default_connection, \
              si.status, si.is_system, si.created_at, si.updated_at \
              FROM service_instances si \
              WHERE si.org_id = $1 AND si.name = $2 AND si.status = 'active' \
@@ -305,7 +324,7 @@ pub async fn resolve_by_name_any_status(
         return sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2",
             org_id,
@@ -319,7 +338,7 @@ pub async fn resolve_by_name_any_status(
         let caller_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3",
             org_id,
@@ -339,7 +358,7 @@ pub async fn resolve_by_name_any_status(
         let user_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3",
             org_id,
@@ -356,7 +375,7 @@ pub async fn resolve_by_name_any_status(
     let org_instance = sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2",
         org_id,
@@ -373,7 +392,7 @@ pub async fn resolve_by_name_any_status(
         return sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, \
-             si.template_id, si.connection_id, si.secret_name, si.url, si.use_default_connection, \
+             si.template_id, si.connection_id, si.secret_name, si.credentials as \"credentials: Json<CredentialsMap>\", si.url, si.use_default_connection, \
              si.status, si.is_system, si.created_at, si.updated_at \
              FROM service_instances si \
              WHERE si.org_id = $1 AND si.name = $2 \
@@ -406,7 +425,7 @@ pub(crate) async fn list_by_org(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NULL ORDER BY name",
         org_id,
@@ -424,7 +443,7 @@ pub(crate) async fn list_by_user(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id = $2 ORDER BY name",
         org_id,
@@ -449,7 +468,7 @@ pub(crate) async fn list_available(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 \
            AND (owner_identity_id IS NULL \
@@ -483,7 +502,7 @@ pub(crate) async fn list_available_with_groups(
             sqlx::query_as!(
                 ServiceInstanceRow,
                 "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-                 template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+                 template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
                  FROM service_instances \
                  WHERE org_id = $1 AND id = ANY($2) \
                  ORDER BY name",
@@ -508,7 +527,7 @@ pub(crate) async fn list_all_in_org(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 \
          ORDER BY name",
@@ -533,7 +552,7 @@ pub(crate) async fn update_status(
         "UPDATE service_instances SET status = $3, updated_at = now() \
          WHERE id = $1 AND org_id = $2 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at",
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at",
         id,
         org_id,
         status,
@@ -557,6 +576,9 @@ pub(crate) async fn update(
     let conn_id = input.connection_id.flatten();
     let update_secret = input.secret_name.is_some();
     let secret = input.secret_name.flatten();
+    let update_creds = input.credentials.is_some();
+    let empty_creds = CredentialsMap::new();
+    let creds = input.credentials.unwrap_or(&empty_creds);
     let update_url = input.url.is_some();
     let url = input.url.flatten();
     let update_udc = input.use_default_connection.is_some();
@@ -568,12 +590,13 @@ pub(crate) async fn update(
          name = COALESCE($3, name), \
          connection_id = CASE WHEN $4 THEN $5 ELSE connection_id END, \
          secret_name = CASE WHEN $6 THEN $7 ELSE secret_name END, \
-         url = CASE WHEN $8 THEN $9 ELSE url END, \
-         use_default_connection = CASE WHEN $10 THEN $11 ELSE use_default_connection END, \
+         credentials = CASE WHEN $8 THEN $9 ELSE credentials END, \
+         url = CASE WHEN $10 THEN $11 ELSE url END, \
+         use_default_connection = CASE WHEN $12 THEN $13 ELSE use_default_connection END, \
          updated_at = now() \
          WHERE id = $1 AND org_id = $2 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, url, use_default_connection, status, is_system, created_at, updated_at",
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at",
         id,
         org_id,
         input.name,
@@ -581,6 +604,8 @@ pub(crate) async fn update(
         conn_id,
         update_secret,
         secret,
+        update_creds,
+        Json(creds) as _,
         update_url,
         url,
         update_udc,

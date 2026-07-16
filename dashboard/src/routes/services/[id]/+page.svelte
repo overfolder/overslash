@@ -22,6 +22,7 @@
 		ConnectionSummary,
 		Identity,
 		SecretSummary,
+		ServiceAuth,
 		ServiceGroupRef,
 		ServiceInstanceDetail,
 		ServiceStatus,
@@ -31,7 +32,10 @@
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
+	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+
+	type ApiKeyScheme = Extract<ServiceAuth, { type: 'api_key' }>;
 
 	const id = $derived($page.params.id ?? '');
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
@@ -50,6 +54,10 @@
 	let editName = $state('');
 	let editConnection = $state('');
 	let editSecret = $state('');
+	// Per-scheme secret bindings, keyed by the template's securityScheme keys
+	// ("gateway", "mailbox"). Seeded from svc.credentials with the legacy
+	// scalar secret_name mapped into its instance-source slot for display.
+	let editCredentials = $state<Record<string, string>>({});
 	let editUrl = $state('');
 	let editUseDefaultConnection = $state(true);
 	let availableSecrets = $state<SecretSummary[]>([]);
@@ -110,9 +118,16 @@
 	// request nothing and mint a token missing every permission.
 	const oauthScopes = $derived<string[]>(oauthAuth?.scopes ?? template?.mcp?.scopes ?? []);
 	const usesOAuth = $derived(!!oauthProvider);
-	const usesApiKey = $derived(
-		(template?.auth ?? []).some((a: any) => a?.type === 'api_key')
+	// Every apiKey credential slot the template declares — a template may have
+	// several (e.g. email's org-wide `gateway` key + per-instance `mailbox`
+	// login), each bound independently via `credentials[scheme]`.
+	const apiKeySchemes = $derived(
+		(template?.auth ?? []).filter((a: any) => a?.type === 'api_key') as ApiKeyScheme[]
 	);
+	const usesApiKey = $derived(apiKeySchemes.length > 0);
+	// An API from before per-scheme bindings omits `scheme` — fall back to the
+	// legacy single scalar field in that case.
+	const schemeKeyed = $derived(usesApiKey && apiKeySchemes.every((s) => !!s.scheme));
 	const isSystem = $derived(!!svc?.is_system);
 	const ownerDisplay = $derived.by(() => {
 		const s = svc;
@@ -212,6 +227,38 @@
 	let upgrading = $state(false);
 	let upgradeAbort: AbortController | null = null;
 
+	// Build the editable per-scheme map: one entry per apiKey scheme, seeded
+	// from svc.credentials. A legacy row (empty map, scalar secret_name set)
+	// shows its scalar in the sole instance-source slot so nothing looks
+	// unbound that isn't.
+	function seedCredentials(
+		tpl: TemplateDetail | null,
+		s: ServiceInstanceDetail
+	): Record<string, string> {
+		const schemes = ((tpl?.auth ?? []).filter(
+			(a: any) => a?.type === 'api_key'
+		) as ApiKeyScheme[]).filter((sch) => !!sch.scheme);
+		const map: Record<string, string> = {};
+		for (const sch of schemes) map[sch.scheme!] = s.credentials?.[sch.scheme!] ?? '';
+		const instanceSlots = schemes.filter(
+			(sch) => (sch.secret_source ?? 'instance') === 'instance'
+		);
+		if (instanceSlots.length === 1 && !map[instanceSlots[0].scheme!] && s.secret_name) {
+			map[instanceSlots[0].scheme!] = s.secret_name;
+		}
+		return map;
+	}
+
+	// Whole-map replace payload: trimmed, blank entries dropped (blank =
+	// unbind / fall back to the scheme's default resolution).
+	function cleanedCredentials(): Record<string, string> {
+		return Object.fromEntries(
+			Object.entries(editCredentials)
+				.map(([k, v]) => [k, (v ?? '').trim()])
+				.filter(([, v]) => v)
+		);
+	}
+
 	async function load() {
 		// Cancel any in-flight load from a previous service navigation so
 		// stale responses can't clobber the newly-loaded state.
@@ -257,6 +304,7 @@
 			]);
 			if (ctrl.signal.aborted) return;
 			template = tpl;
+			editCredentials = seedCredentials(tpl, fresh);
 			actions = acts;
 			connections = conns;
 			identities = ids;
@@ -282,14 +330,23 @@
 		saving = true;
 		error = null;
 		try {
+			// Per-scheme bindings ride the `credentials` map (the server mirrors
+			// the legacy scalar). The scalar `secret_name` is only sent on the
+			// paths that still edit it directly — MCP bearer, or an apiKey
+			// template from an API without scheme keys — never alongside the
+			// map, so the two can't conflict.
+			const sendCredentials = schemeKeyed && !usesOAuth && !isSystem;
 			const updated = await updateService(svc.id, {
 				name: trimmedName !== svc.name ? trimmedName : undefined,
 				connection_id:
 					editConnection !== (svc.connection_id ?? '')
 						? editConnection || null
 						: undefined,
+				credentials: sendCredentials ? cleanedCredentials() : undefined,
 				secret_name:
-					editSecret !== (svc.secret_name ?? '') ? editSecret || null : undefined,
+					!sendCredentials && editSecret !== (svc.secret_name ?? '')
+						? editSecret || null
+						: undefined,
 				url:
 					editUrl !== (svc.url ?? '') ? editUrl.trim() || null : undefined,
 				use_default_connection:
@@ -298,6 +355,7 @@
 						: undefined
 			});
 			svc = updated;
+			editCredentials = seedCredentials(template, updated);
 		} catch (e) {
 			error = e instanceof ApiError ? `Save failed (${e.status})` : 'Save failed';
 		} finally {
@@ -681,7 +739,18 @@
 						<small>Point this instance at your own deployment. Leave blank to use the default.</small>
 					</label>
 				{/if}
-				{#if (usesApiKey && !usesOAuth && !isSystem) || (isMcp && template?.mcp?.auth_kind === 'bearer' && !isSystem)}
+				{#if usesApiKey && !usesOAuth && !isSystem && schemeKeyed}
+					<ServiceCredentials
+						schemes={apiKeySchemes}
+						bind:credentials={editCredentials}
+						available={availableSecrets}
+						loading={secretsLoading}
+						singleLabel={template?.configurable_url
+							? 'Credential secret name'
+							: 'API key secret name'}
+						idPrefix="edit-service-cred"
+					/>
+				{:else if (usesApiKey && !usesOAuth && !isSystem) || (isMcp && template?.mcp?.auth_kind === 'bearer' && !isSystem)}
 					<div class="field">
 						<label class="label" for="edit-service-secret">{#if isMcp}Bearer token secret name{:else if template?.configurable_url}Credential secret name{:else}API key secret name{/if}</label>
 						<SecretNamePicker
@@ -924,6 +993,22 @@
 						<button type="button" class="btn" onclick={reconnect} disabled={connecting}>
 							{connecting ? 'Waiting…' : 'Connect new'}
 						</button>
+						<button type="button" class="btn primary" onclick={save} disabled={saving}>
+							{saving ? 'Saving…' : 'Save'}
+						</button>
+					</div>
+				{:else if usesApiKey && schemeKeyed}
+					<ServiceCredentials
+						schemes={apiKeySchemes}
+						bind:credentials={editCredentials}
+						available={availableSecrets}
+						loading={secretsLoading}
+						singleLabel={template?.configurable_url
+							? 'Credential secret name'
+							: 'API key secret name'}
+						idPrefix="cred-tab"
+					/>
+					<div class="actions">
 						<button type="button" class="btn primary" onclick={save} disabled={saving}>
 							{saving ? 'Saving…' : 'Save'}
 						</button>
