@@ -212,7 +212,15 @@ pub fn apply_aliases(params: &HashMap<String, ActionParam>, args: &mut HashMap<S
             }
             alias_map
                 .entry(a.as_str())
-                .and_modify(|slot| *slot = None)
+                // Only a *different* param claiming the same alias is
+                // ambiguous. A duplicate within one param's own list
+                // (`aliases: [to, to]`) still resolves to that one param —
+                // re-asserting the same canonical must not poison it to `None`.
+                .and_modify(|slot| {
+                    if *slot != Some(canonical.as_str()) {
+                        *slot = None;
+                    }
+                })
                 .or_insert(Some(canonical.as_str()));
         }
     }
@@ -830,6 +838,17 @@ mod tests {
         apply_aliases(&s, &mut a);
         assert_eq!(a.get("body"), Some(&json!("hello")));
         assert!(!a.contains_key("text"));
+    }
+
+    #[test]
+    fn duplicate_alias_within_one_param_still_applies() {
+        // A param that lists the same alias twice is NOT ambiguous — both point
+        // at the same canonical field, so the alias must still be rewritten.
+        let s = schema(&[("recipient", p_alias("string", true, &["to", "to"]))]);
+        let mut a = args(&[("to", json!("x@s.whatsapp.net"))]);
+        apply_aliases(&s, &mut a);
+        assert_eq!(a.get("recipient"), Some(&json!("x@s.whatsapp.net")));
+        assert!(!a.contains_key("to"));
     }
 
     #[test]

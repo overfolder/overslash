@@ -1159,10 +1159,14 @@ fn parse_aliases(obj: Option<&Map<String, Value>>, name: &str) -> Vec<String> {
     obj.and_then(|o| o.get("x-overslash-aliases"))
         .and_then(Value::as_array)
         .map(|a| {
+            // Dedup within one param's list (order-preserving): `[to, to]` is
+            // a single alias, not an ambiguity.
+            let mut seen = std::collections::HashSet::new();
             a.iter()
                 .filter_map(Value::as_str)
                 .map(str::trim)
                 .filter(|s| !s.is_empty() && *s != name)
+                .filter(|s| seen.insert(*s))
                 .map(str::to_string)
                 .collect()
         })
@@ -1193,6 +1197,13 @@ mod tests {
         aliases.sort();
         assert_eq!(aliases, vec!["dest".to_string(), "to".to_string()]);
         assert!(params["text"].aliases.is_empty());
+    }
+
+    #[test]
+    fn parse_aliases_dedups_within_one_param() {
+        let obj = json!({ "x-overslash-aliases": ["to", "to", "dest", "to"] });
+        let aliases = parse_aliases(obj.as_object(), "recipient");
+        assert_eq!(aliases, vec!["to".to_string(), "dest".to_string()]);
     }
 
     #[test]
