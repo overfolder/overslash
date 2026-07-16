@@ -90,10 +90,16 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
     },
 ];
 
-pub(super) const PARAMETER_ALIASES: &[Alias] = &[Alias {
-    alias: "resolve",
-    canonical: "x-overslash-resolve",
-}];
+pub(super) const PARAMETER_ALIASES: &[Alias] = &[
+    Alias {
+        alias: "resolve",
+        canonical: "x-overslash-resolve",
+    },
+    Alias {
+        alias: "aliases",
+        canonical: "x-overslash-aliases",
+    },
+];
 
 pub(super) const OAUTH2_SEC_ALIASES: &[Alias] = &[Alias {
     alias: "provider",
@@ -245,6 +251,22 @@ mod tests {
         let p0 = &v["paths"]["/x/{id}"]["get"]["parameters"][0];
         assert!(p0.get("x-overslash-resolve").is_some());
         assert!(p0.get("resolve").is_none());
+    }
+
+    #[test]
+    fn rewrites_operation_parameter_aliases() {
+        let mut v = doc(json!({
+            "paths": {"/send": {"post": {
+                "operationId": "send",
+                "parameters": [{"name": "recipient", "in": "query", "required": true,
+                 "aliases": ["to", "dest"]}]
+            }}}
+        }));
+        let issues = normalize_aliases(&mut v);
+        assert!(issues.is_empty(), "{issues:?}");
+        let p0 = &v["paths"]["/send"]["post"]["parameters"][0];
+        assert_eq!(p0["x-overslash-aliases"], json!(["to", "dest"]));
+        assert!(p0.get("aliases").is_none());
     }
 
     #[test]

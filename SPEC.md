@@ -754,7 +754,7 @@ Templates live in a three-tier registry:
 
 ### Template Definition
 
-Templates are authored as OpenAPI 3.1 documents. Five AI-gateway-specific fields that OpenAPI cannot express natively live under the `x-overslash-*` vendor-extension namespace: `risk`, `scope_param`, `resolve`, `provider`, `default_secret_name`. For authoring ergonomics, the same keys may also be written without the prefix (just `risk:`, `scope_param:`, etc.) — the backend normalizes aliases to their canonical `x-overslash-*` form on load and before persist. Ambiguous documents (both forms present on the same object) are rejected with a stable `ambiguous_alias` error.
+Templates are authored as OpenAPI 3.1 documents. Six AI-gateway-specific fields that OpenAPI cannot express natively live under the `x-overslash-*` vendor-extension namespace: `risk`, `scope_param`, `resolve`, `aliases`, `provider`, `default_secret_name`. For authoring ergonomics, the same keys may also be written without the prefix (just `risk:`, `scope_param:`, etc.) — the backend normalizes aliases to their canonical `x-overslash-*` form on load and before persist. Ambiguous documents (both forms present on the same object) are rejected with a stable `ambiguous_alias` error.
 
 ```yaml
 openapi: 3.1.0
@@ -787,6 +787,7 @@ paths:
         resolve:                    # alias for x-overslash-resolve
           get: /calendar/v3/calendars/{calendarId}
           pick: summary
+        aliases: [calendar, cal]    # alias for x-overslash-aliases
     post:
       operationId: create_event
       summary: "Create event '{summary}' on calendar {calendarId}"
@@ -809,6 +810,7 @@ paths:
 - **`x-overslash-risk` / `risk:`** — enum: `read`, `write`, `delete`. Defaults to a value inferred from the HTTP method (GET/HEAD/OPTIONS → read, DELETE → delete, else write). Influences auto-approve-reads behavior.
 - **`x-overslash-scope_param` / `scope_param:`** — which parameter provides the `{arg}` segment in permission keys. Without it, the arg is `*`.
 - **`x-overslash-resolve` / `resolve:`** — on a parameter, fetch a human-readable name for an opaque ID. Runs a follow-up GET against the service and extracts a field. Used in agent-facing descriptions.
+- **`x-overslash-aliases` / `aliases:`** — on a parameter, a list of alternate caller-facing names (e.g. `[to, dest]` on a `recipient` param). A call that supplies an alias key instead of the canonical name has it rewritten to the canonical name before validation, so a well-known synonym is accepted rather than rejected as an unknown argument. A declared field always wins over an alias that collides with it, and an alias claimed by two params is ambiguous and ignored (the caller gets the normal unknown-argument error, with a Levenshtein "did you mean" suggestion). The unprefixed `aliases:` form is normalized on `parameters[]` entries; body-schema properties use the canonical `x-overslash-aliases` key (same as `resolve`).
 - **`x-overslash-provider` / `provider:`** — on an `oauth2` security scheme, the symbolic OAuth provider name (`google`, `slack`, `github`, ...). Decoupled from OAuth URLs so the gateway can resolve credentials independently.
 - **`x-overslash-default_secret_name` / `default_secret_name:`** — on an `apiKey` or `http` security scheme, the canonical secret name for auto-wiring. Templates are expected to declare **either** an OAuth scheme **or** an apiKey/http scheme with this field — OAuth templates don't fall back to an API key secret.
 - **Platform-namespace actions** — `x-overslash-platform_actions` (alias `platform_actions:`) at the top level declares permission anchors with no HTTP binding (e.g. the `overslash` meta service's admin actions).

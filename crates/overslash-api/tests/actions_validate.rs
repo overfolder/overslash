@@ -660,3 +660,125 @@ async fn bad_enum_400_is_byte_equivalent_across_call_and_validate() {
     assert_eq!(call_body, validate_body, "400 bodies must match exactly");
     assert_eq!(call_body["error"], "invalid_action_args");
 }
+
+/// A telegram-shaped template whose `chat_id`/`text` params declare
+/// caller-facing aliases (`chat`/`to`, `body`/`message`). Exercises the
+/// `x-overslash-aliases` extension end-to-end through the loader.
+fn telegram_aliased_template_yaml(key: &str, url: &str, secret_name: &str) -> String {
+    format!(
+        r#"openapi: "3.1.0"
+info:
+  title: Telegram Aliased Stub
+  x-overslash-key: {key}
+x-overslash-runtime: mcp
+paths: {{}}
+x-overslash-mcp:
+  url: {url}
+  auth: {{ kind: bearer, secret_name: {secret_name} }}
+  autodiscover: false
+  tools:
+    - name: send_message
+      risk: write
+      scope_param: chat_id
+      input_schema:
+        type: object
+        properties:
+          chat_id: {{ type: string, x-overslash-aliases: [chat, to] }}
+          text: {{ type: string, x-overslash-aliases: [body, message] }}
+        required: [chat_id, text]
+"#
+    )
+}
+
+/// A call that supplies the aliases instead of the canonical param names is
+/// rewritten to canonical before validation — so it clears the arg gate and
+/// reaches the approval branch (202) instead of a 400 unknown-argument error.
+#[tokio::test]
+async fn call_accepts_param_aliases() {
+    let fx = setup_with_yaml("telegram_alias", |url| {
+        telegram_aliased_template_yaml("telegram_alias", url, "whatsapp_token")
+    })
+    .await;
+
+    let resp = fx
+        .client
+        .post(format!("{}/v1/actions/call", fx.base))
+        .header(auth_header(&fx.agent_key).0, auth_header(&fx.agent_key).1)
+        .json(&json!({
+            "service": "telegram_alias",
+            "action": "send_message",
+            "params": {
+                "chat": "612616872",
+                "body": "hi"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        202,
+        "aliased call should validate and reach approval, got: {:?}",
+        resp.text().await
+    );
+
+    let count: i64 = sqlx::query("SELECT COUNT(*)::bigint AS c FROM approvals")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap()
+        .get("c");
+    assert_eq!(count, 1, "aliased call should reach the approval branch");
+}
+
+/// An unknown key that is *not* a declared alias is still rejected — and the
+/// 400 is byte-identical across `/call` and `/validate`.
+#[tokio::test]
+async fn unknown_non_alias_key_still_rejected_byte_equivalent() {
+    let fx = setup_with_yaml("telegram_alias_neg", |url| {
+        telegram_aliased_template_yaml("telegram_alias_neg", url, "whatsapp_token")
+    })
+    .await;
+
+    let bad_body = json!({
+        "service": "telegram_alias_neg",
+        "action": "send_message",
+        "params": {
+            "chat": "612616872",
+            "body": "hi",
+            "nonsense": "x"
+        }
+    });
+
+    let call_resp = fx
+        .client
+        .post(format!("{}/v1/actions/call", fx.base))
+        .header(auth_header(&fx.agent_key).0, auth_header(&fx.agent_key).1)
+        .json(&bad_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(call_resp.status(), 400);
+    let call_body: Value = call_resp.json().await.unwrap();
+
+    let validate_resp = fx
+        .client
+        .post(format!("{}/v1/actions/validate", fx.base))
+        .header(auth_header(&fx.agent_key).0, auth_header(&fx.agent_key).1)
+        .json(&bad_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(validate_resp.status(), 400);
+    let validate_body: Value = validate_resp.json().await.unwrap();
+
+    assert_eq!(call_body, validate_body, "400 bodies must match exactly");
+    assert_eq!(call_body["error"], "invalid_action_args");
+    // Only `nonsense` is unknown — the aliased keys were accepted.
+    let fields: Vec<&str> = call_body["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["field"].as_str())
+        .collect();
+    assert_eq!(fields, vec!["nonsense"]);
+}

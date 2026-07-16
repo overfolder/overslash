@@ -100,6 +100,13 @@ pub(super) async fn call_action_impl(
     // the template / instance from the DB.
     let (pre_meta, pre_resolved_mode_c) =
         resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
+    // Rewrite template-declared parameter aliases (e.g. `to` → `recipient`) to
+    // their canonical names first, so defaults, coercion, validation, the
+    // approval replay payload, and resolution all see canonical keys only.
+    overslash_core::openapi::validate_input::apply_aliases(
+        &pre_meta.validation_params,
+        &mut req.params,
+    );
     // Fill in template-declared defaults (e.g. `calendarId: primary`) before
     // validation so a `required` param with a default isn't rejected as
     // missing, and before resolution so the default flows into the outgoing

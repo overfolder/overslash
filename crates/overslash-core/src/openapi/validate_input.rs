@@ -178,6 +178,78 @@ fn value_to_plain_string(v: &Value) -> String {
     }
 }
 
+/// Rewrite caller-supplied argument keys that match a declared param's
+/// `aliases` to that param's canonical name, in place, so a well-known synonym
+/// (`to` for `recipient`, `body` for `text`) is accepted instead of rejected
+/// as an unknown argument.
+///
+/// Only keys that are *not themselves* declared params are candidates — a real
+/// param name is never treated as another param's alias, so a declared field
+/// always wins over an alias that happens to collide with it. An alias claimed
+/// by two different params is ambiguous and left untouched (the caller gets the
+/// usual unknown-argument error, with a Levenshtein suggestion). When the
+/// caller supplied both the alias and the canonical key, the canonical value
+/// wins and the alias is dropped.
+///
+/// Call this *first* — before [`apply_defaults`], [`coerce_args`], and
+/// [`validate_args`] — so the rest of the pipeline (defaults, coercion,
+/// validation, resolution, the approval replay payload) only ever sees
+/// canonical names. When `params` is empty (no declared contract) this is a
+/// no-op: without a schema there are no canonical names to rewrite toward.
+pub fn apply_aliases(params: &HashMap<String, ActionParam>, args: &mut HashMap<String, Value>) {
+    if params.is_empty() {
+        return;
+    }
+
+    // alias → canonical, where `None` marks an alias claimed by more than one
+    // param (ambiguous — never rewritten). Aliases that collide with a real
+    // param name are skipped entirely: the declared field wins.
+    let mut alias_map: HashMap<&str, Option<&str>> = HashMap::new();
+    for (canonical, p) in params {
+        for a in &p.aliases {
+            if params.contains_key(a) {
+                continue;
+            }
+            alias_map
+                .entry(a.as_str())
+                // Only a *different* param claiming the same alias is
+                // ambiguous. A duplicate within one param's own list
+                // (`aliases: [to, to]`) still resolves to that one param —
+                // re-asserting the same canonical must not poison it to `None`.
+                .and_modify(|slot| {
+                    if *slot != Some(canonical.as_str()) {
+                        *slot = None;
+                    }
+                })
+                .or_insert(Some(canonical.as_str()));
+        }
+    }
+    if alias_map.is_empty() {
+        return;
+    }
+
+    // Collect first (can't mutate `args` while iterating its keys). Sorted so a
+    // caller that redundantly supplies two aliases for the same field resolves
+    // deterministically — same value approved, stored, and executed every time.
+    let mut rewrites: Vec<(String, String)> = args
+        .keys()
+        .filter(|k| !params.contains_key(k.as_str()))
+        .filter_map(|k| match alias_map.get(k.as_str()) {
+            Some(Some(canonical)) => Some((k.clone(), (*canonical).to_string())),
+            _ => None,
+        })
+        .collect();
+    rewrites.sort();
+
+    for (alias, canonical) in rewrites {
+        let Some(val) = args.remove(&alias) else {
+            continue;
+        };
+        // Canonical wins when both were supplied — insert only if absent.
+        args.entry(canonical).or_insert(val);
+    }
+}
+
 /// Fill `args` with each declared param's `default` where the caller omitted
 /// it (key absent) or passed an explicit null. Applies to params of any
 /// `required`-ness and any location — OpenAPI treats a `default` as the value
@@ -355,7 +427,15 @@ mod tests {
             enum_values: None,
             default: None,
             resolve: None,
+            aliases: Vec::new(),
             location: crate::types::ParamLocation::Body,
+        }
+    }
+
+    fn p_alias(t: &str, required: bool, aliases: &[&str]) -> ActionParam {
+        ActionParam {
+            aliases: aliases.iter().map(|s| s.to_string()).collect(),
+            ..p(t, required)
         }
     }
 
@@ -721,5 +801,100 @@ mod tests {
             })
             .collect();
         assert_eq!(tags, vec!["missing", "unknown", "enum"]);
+    }
+
+    // ── apply_aliases ─────────────────────────────────────────────────
+
+    #[test]
+    fn alias_key_rewritten_to_canonical() {
+        let s = schema(&[("recipient", p_alias("string", true, &["to", "dest"]))]);
+        let mut a = args(&[("to", json!("x@s.whatsapp.net"))]);
+        apply_aliases(&s, &mut a);
+        assert_eq!(a.get("recipient"), Some(&json!("x@s.whatsapp.net")));
+        assert!(!a.contains_key("to"));
+        // And the rewritten call now validates clean.
+        assert!(validate_args(&s, &a).is_ok());
+    }
+
+    #[test]
+    fn canonical_key_untouched_and_wins_over_alias() {
+        let s = schema(&[("recipient", p_alias("string", true, &["to"]))]);
+        // Both supplied: canonical value wins, alias dropped.
+        let mut a = args(&[("recipient", json!("canon")), ("to", json!("alias"))]);
+        apply_aliases(&s, &mut a);
+        assert_eq!(a.get("recipient"), Some(&json!("canon")));
+        assert!(!a.contains_key("to"));
+    }
+
+    #[test]
+    fn declared_field_never_shadowed_by_an_alias() {
+        // `body` is a real param AND an alias of `text` — the real field wins:
+        // a `body` arg stays put, it is not stolen into `text`.
+        let s = schema(&[
+            ("text", p_alias("string", false, &["body"])),
+            ("body", p("string", false)),
+        ]);
+        let mut a = args(&[("body", json!("hello"))]);
+        apply_aliases(&s, &mut a);
+        assert_eq!(a.get("body"), Some(&json!("hello")));
+        assert!(!a.contains_key("text"));
+    }
+
+    #[test]
+    fn duplicate_alias_within_one_param_still_applies() {
+        // A param that lists the same alias twice is NOT ambiguous — both point
+        // at the same canonical field, so the alias must still be rewritten.
+        let s = schema(&[("recipient", p_alias("string", true, &["to", "to"]))]);
+        let mut a = args(&[("to", json!("x@s.whatsapp.net"))]);
+        apply_aliases(&s, &mut a);
+        assert_eq!(a.get("recipient"), Some(&json!("x@s.whatsapp.net")));
+        assert!(!a.contains_key("to"));
+    }
+
+    #[test]
+    fn ambiguous_alias_left_untouched() {
+        // `x` is claimed by two params — refuse to guess. The caller gets the
+        // normal unknown-argument path (with a Levenshtein suggestion).
+        let s = schema(&[
+            ("alpha", p_alias("string", false, &["x"])),
+            ("beta", p_alias("string", false, &["x"])),
+        ]);
+        let mut a = args(&[("x", json!(1))]);
+        apply_aliases(&s, &mut a);
+        assert_eq!(a.get("x"), Some(&json!(1)));
+        assert!(!a.contains_key("alpha") && !a.contains_key("beta"));
+        assert!(matches!(
+            validate_args(&s, &a).unwrap_err().as_slice(),
+            [ArgError::Unknown { field, .. }] if field == "x"
+        ));
+    }
+
+    #[test]
+    fn non_alias_unknown_key_is_left_for_validation() {
+        let s = schema(&[("recipient", p_alias("string", true, &["to"]))]);
+        let mut a = args(&[("recipient", json!("a")), ("bogus", json!(1))]);
+        apply_aliases(&s, &mut a);
+        assert!(a.contains_key("bogus"));
+    }
+
+    #[test]
+    fn no_schema_is_a_noop() {
+        let s: HashMap<String, ActionParam> = HashMap::new();
+        let mut a = args(&[("to", json!("x"))]);
+        apply_aliases(&s, &mut a);
+        assert_eq!(a.get("to"), Some(&json!("x")));
+    }
+
+    #[test]
+    fn alias_pipeline_feeds_defaults_and_coercion() {
+        // `chat` aliases `chat_id` (a string param); the caller sends a number
+        // under the alias. After alias→canonical rewrite, coercion still fires
+        // on the canonical key, so the value lands stringified.
+        let s = schema(&[("chat_id", p_alias("string", true, &["chat"]))]);
+        let mut a = args(&[("chat", json!(612616872))]);
+        apply_aliases(&s, &mut a);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("chat_id"), Some(&json!("612616872")));
+        assert!(validate_args(&s, &a).is_ok());
     }
 }

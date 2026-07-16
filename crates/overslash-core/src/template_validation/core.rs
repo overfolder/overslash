@@ -728,6 +728,7 @@ mod tests {
             enum_values: None,
             default: None,
             resolve: None,
+            aliases: Vec::new(),
             location: crate::types::ParamLocation::Body,
         }
     }
@@ -1041,6 +1042,7 @@ mod tests {
                             enum_values: None,
                             default: None,
                             resolve: None,
+                            aliases: Vec::new(),
                             location: crate::types::ParamLocation::Body,
                         },
                     );

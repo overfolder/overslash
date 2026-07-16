@@ -503,6 +503,7 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
+            let aliases = parse_aliases(Some(obj), name);
             Some((
                 name.clone(),
                 ActionParam {
@@ -512,6 +513,7 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     enum_values: None,
                     default: None,
                     resolve: None,
+                    aliases,
                     location: ParamLocation::Body,
                 },
             ))
@@ -960,6 +962,7 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
                 .collect()
         });
         let default = po.get("default").cloned();
+        let aliases = parse_aliases(Some(po), name);
         out.insert(
             name.clone(),
             ActionParam {
@@ -969,6 +972,7 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
                 enum_values,
                 default,
                 resolve: None,
+                aliases,
                 location: ParamLocation::Body,
             },
         );
@@ -1031,6 +1035,7 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
         let (param_type, enum_values, default) = schema_fields(schema);
 
         let resolve = obj.get("x-overslash-resolve").and_then(parse_resolver);
+        let aliases = parse_aliases(Some(obj), name);
 
         let location = match obj.get("in").and_then(Value::as_str) {
             Some("query") => ParamLocation::Query,
@@ -1048,6 +1053,7 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
                 enum_values,
                 default,
                 resolve,
+                aliases,
                 location,
             },
         );
@@ -1095,6 +1101,7 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
         let resolve = pobj
             .and_then(|o| o.get("x-overslash-resolve"))
             .and_then(parse_resolver);
+        let aliases = parse_aliases(pobj, name);
 
         out.insert(
             name.clone(),
@@ -1105,6 +1112,7 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
                 enum_values,
                 default,
                 resolve,
+                aliases,
                 location: ParamLocation::Body,
             },
         );
@@ -1141,12 +1149,73 @@ fn parse_resolver(v: &Value) -> Option<ParamResolver> {
     Some(ParamResolver { get, pick })
 }
 
+/// Read a parameter's `x-overslash-aliases` — a list of alternate caller-facing
+/// names — off its object (a `parameters[]` entry, a schema property, or a
+/// platform-action param spec). Non-string entries and blanks are dropped, and
+/// an alias equal to the canonical `name` is skipped (it would be a no-op
+/// rewrite). Returns an empty `Vec` when the extension is absent or malformed —
+/// aliases are a convenience, never a load-time error.
+fn parse_aliases(obj: Option<&Map<String, Value>>, name: &str) -> Vec<String> {
+    obj.and_then(|o| o.get("x-overslash-aliases"))
+        .and_then(Value::as_array)
+        .map(|a| {
+            // Dedup within one param's list (order-preserving): `[to, to]` is
+            // a single alias, not an ambiguity.
+            let mut seen = std::collections::HashSet::new();
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && *s != name)
+                .filter(|s| seen.insert(*s))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::compile_service;
     use super::*;
     use crate::types::{Risk, ServiceAuth};
     use serde_json::json;
+
+    // ── parse_aliases / lower_input_schema ───────────────────────────
+
+    #[test]
+    fn lower_input_schema_reads_param_aliases() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "recipient": { "type": "string", "x-overslash-aliases": ["to", "dest"] },
+                "text": { "type": "string" }
+            },
+            "required": ["recipient"]
+        });
+        let params = lower_input_schema(&schema);
+        let mut aliases = params["recipient"].aliases.clone();
+        aliases.sort();
+        assert_eq!(aliases, vec!["dest".to_string(), "to".to_string()]);
+        assert!(params["text"].aliases.is_empty());
+    }
+
+    #[test]
+    fn parse_aliases_dedups_within_one_param() {
+        let obj = json!({ "x-overslash-aliases": ["to", "to", "dest", "to"] });
+        let aliases = parse_aliases(obj.as_object(), "recipient");
+        assert_eq!(aliases, vec!["to".to_string(), "dest".to_string()]);
+    }
+
+    #[test]
+    fn parse_aliases_drops_blanks_self_and_non_strings() {
+        let obj = json!({
+            "x-overslash-aliases": ["to", "", "  ", "recipient", 7, "dest"]
+        });
+        let aliases = parse_aliases(obj.as_object(), "recipient");
+        // Blank, whitespace-only, the canonical name itself, and non-strings
+        // are dropped.
+        assert_eq!(aliases, vec!["to".to_string(), "dest".to_string()]);
+    }
 
     // ── url_to_host / extract_hosts ──────────────────────────────────
 

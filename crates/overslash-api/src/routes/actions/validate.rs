@@ -74,6 +74,12 @@ pub(super) async fn validate_action_impl(
     )
     .await?;
 
+    // Rewrite parameter aliases to canonical names in lockstep with `/call`
+    // so the dry-run validates the exact keys the real call would execute.
+    overslash_core::openapi::validate_input::apply_aliases(
+        &meta.validation_params,
+        &mut req.params,
+    );
     // Fill template-declared defaults before validating — mirrors `/call`
     // so a defaulted-required param (e.g. `calendarId: primary`) omitted by
     // the caller validates here exactly as it would execute there.

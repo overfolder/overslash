@@ -1,0 +1,311 @@
+openapi: 3.1.0
+info:
+  title: Telegram
+  key: telegram
+  category: Communication
+  description: >
+    Read and send Telegram messages via a self-hosted fast-mcp-telegram
+    container (https://github.com/leshchenko1979/fast-mcp-telegram), which
+    connects to a personal Telegram account over MTProto (Telethon) and
+    exposes its tools over Streamable HTTP MCP with mandatory bearer auth.
+    Each container holds one Telegram session (one phone number); operators
+    run one container per end-user/account.
+x-overslash-runtime: mcp
+servers: []
+paths: {}
+x-overslash-mcp:
+  # url and secret_name are not set here — operators must provide both when
+  # creating a service instance from this template:
+  #   url        — the hosted fast-mcp-telegram endpoint (e.g. http://host:8000/mcp)
+  #   secret_name — vault key that holds the container's bearer AUTH_TOKEN
+  auth:
+    kind: bearer
+  # Tools are authored inline (globals ship their tool list in-repo and are not
+  # resync-able). When an operator promotes this template to org/user tier,
+  # `autodiscover: true` lets `POST /v1/templates/telegram/mcp/resync` populate
+  # `discovered_tools` and merge on top of these entries; the authored
+  # `input_schema` still wins field-by-field, so the aliases below survive.
+  #
+  # `x-overslash-aliases` on a parameter accepts a caller-facing synonym and
+  # rewrites it to the canonical name before validation. Added here because
+  # agents reach for Telegram's Bot-API field name `text` (this MTProto MCP
+  # calls it `message`) and burned real approvals on the `text`→400 mismatch.
+  # Property-level extensions use the canonical `x-overslash-*` key (the
+  # unprefixed-alias normalizer only rewrites tool-level and `parameters[]`
+  # forms, not MCP tool `input_schema` properties).
+  autodiscover: true
+  tools:
+    # ── read ──
+    - name: search_messages_globally
+      risk: read
+      description: "Search all Telegram chats at once for {query} (comma-separated terms, OR-style); filter by date, chat kind, or public flag"
+      input_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "Search terms, comma-separated for OR-style global search. Required."
+          limit:
+            type: integer
+            default: 50
+            description: "Maximum messages to return (recommended 50 or less)."
+          public:
+            type: boolean
+            description: "If true, prefer chats with a public username; if false, without. Omit to skip."
+          max_date:
+            type: string
+            description: "Inclusive maximum date filter (ISO 8601 date or datetime). Omit for no upper bound."
+          min_date:
+            type: string
+            description: "Inclusive minimum date filter (ISO 8601 date or datetime). Omit for no lower bound."
+          chat_type:
+            type: string
+            description: "Comma-separated chat kinds: private, bot, group, channel."
+          auto_expand_batches:
+            type: integer
+            default: 2
+            description: "Extra search batches when filters narrow results. Higher = more matches, more latency."
+        required: [query]
+
+    - name: get_messages
+      risk: read
+      scope_param: chat_id
+      description: "Read or search messages in {chat_id}: browse latest, search text, fetch by ids, or load replies/threads"
+      input_schema:
+        type: object
+        properties:
+          chat_id:
+            type: string
+            x-overslash-aliases: [chat, chat_name, username]
+            description: "Target chat: numeric id (e.g. -100…), username without @, or 'me' for Saved Messages."
+          limit:
+            type: integer
+            default: 50
+            description: "Maximum messages to return (recommended 50 or less)."
+          query:
+            type: string
+            description: "Search within this chat; comma-separated terms. Omit to browse latest or use message_ids/reply_to_id."
+          max_date:
+            type: string
+            description: "Inclusive maximum date (ISO 8601). Omit for no upper bound."
+          min_date:
+            type: string
+            description: "Inclusive minimum date (ISO 8601). Omit for no lower bound."
+          message_ids:
+            type: array
+            items:
+              type: integer
+            description: "Exact message ids to fetch. Mutually exclusive with query and reply_to_id."
+          reply_to_id:
+            type: integer
+            description: "Anchor message id for thread/topic loading. Use with thread_scope."
+          thread_scope:
+            type: string
+            enum: [auto, full, direct]
+            default: auto
+            description: "'auto': full forum topic or channel comment thread; 'full': nested branch; 'direct': immediate replies only."
+          include_total_count:
+            type: boolean
+            default: false
+            description: "If true, response may include total_count where supported."
+        required: [chat_id]
+
+    - name: find_chats
+      risk: read
+      description: "Find users/groups/channels by name, username, or phone {query}; filter by chat type, activity dates, or folder"
+      input_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "Name, username (no @), phone (+country…), or comma-separated multi-queries. Required unless using min_date/max_date or folder alone."
+          limit:
+            type: integer
+            default: 20
+            description: "Maximum chats to return (recommended 50 or less)."
+          folder:
+            type: string
+            description: "Telegram folder name (case-insensitive). Filters by saved dialog filter."
+          public:
+            type: boolean
+            description: "If true, prefer chats with a public username; if false, without."
+          max_date:
+            type: string
+            description: "Inclusive maximum last-activity date (ISO 8601)."
+          min_date:
+            type: string
+            description: "Inclusive minimum last-activity date (ISO 8601)."
+          chat_type:
+            type: string
+            description: "Comma-separated kinds: private, bot, group, channel."
+        required: []
+
+    - name: get_chat_info
+      risk: read
+      scope_param: chat_id
+      description: "Load profile and metadata for {chat_id} (user, bot, group, channel, or forum)"
+      input_schema:
+        type: object
+        properties:
+          chat_id:
+            type: string
+            x-overslash-aliases: [chat, chat_name, username]
+            description: "Target chat: numeric id, username without @, or 'me'."
+          topics_limit:
+            type: integer
+            default: 20
+            description: "Max forum topics to list when the chat is a forum."
+        required: [chat_id]
+
+    # ── write ──
+    - name: send_message
+      risk: write
+      scope_param: chat_id
+      description: 'Send "{message}" to {chat_id}[, replying to {reply_to_id}][, with {files}]'
+      input_schema:
+        type: object
+        properties:
+          chat_id:
+            type: string
+            # `to`/`chat`/`recipient` are the names agents reach for when
+            # addressing a chat; rewrite them to the canonical `chat_id`.
+            x-overslash-aliases: [to, chat, recipient, chat_name, username]
+            description: "Target chat: numeric id, username without @, or 'me'."
+          message:
+            type: string
+            # Telegram's Bot API calls this `text`; `body` is a common synonym.
+            # This MTProto MCP names it `message` — accept the synonyms.
+            x-overslash-aliases: [text, body]
+            description: "Message text. When sending files, used as caption."
+          parse_mode:
+            type: string
+            enum: [markdown, html, auto]
+            default: auto
+            description: "'markdown', 'html', or 'auto' (detect from content). Case-insensitive — 'HTML' is normalized to 'html'."
+          reply_to_id:
+            type: integer
+            description: "Telegram message id to reply to. Omit for a new top-level message."
+          files:
+            type: array
+            items:
+              type: string
+            description: "List of attachment URLs (local paths work in stdio mode only)."
+        required: [chat_id, message]
+      disclose:
+        - label: "Chat"
+          filter: ".arguments.chat_id"
+        - label: "Message"
+          primary: true
+          filter: ".arguments.message"
+        - label: "Reply to"
+          filter: ".arguments.reply_to_id // empty"
+
+    - name: edit_message
+      risk: write
+      scope_param: chat_id
+      description: 'Replace text of message {message_id} in {chat_id} with "{message}"'
+      input_schema:
+        type: object
+        properties:
+          chat_id:
+            type: string
+            x-overslash-aliases: [to, chat, recipient, chat_name, username]
+            description: "Target chat: numeric id, username without @, or 'me'."
+          message_id:
+            type: integer
+            description: "Message id in this chat to edit."
+          message:
+            type: string
+            x-overslash-aliases: [text, body]
+            description: "New message text."
+          parse_mode:
+            type: string
+            enum: [markdown, html, auto]
+            default: auto
+            description: "'markdown', 'html', or 'auto'. Case-insensitive — 'HTML' is normalized to 'html'."
+        required: [chat_id, message_id, message]
+      disclose:
+        - label: "Chat"
+          filter: ".arguments.chat_id"
+        - label: "Message id"
+          filter: ".arguments.message_id"
+        - label: "New text"
+          primary: true
+          filter: ".arguments.message"
+
+    - name: send_message_to_phone
+      risk: write
+      scope_param: phone_number
+      description: 'Send "{message}" to Telegram user at {phone_number}; auto-creates a temporary contact if needed'
+      input_schema:
+        type: object
+        properties:
+          phone_number:
+            type: string
+            x-overslash-aliases: [phone, to]
+            description: "E.164 phone number with country code, e.g. +1234567890 (must be on Telegram)."
+          message:
+            type: string
+            x-overslash-aliases: [text, body]
+            description: "Message text. When sending files, used as caption."
+          parse_mode:
+            type: string
+            enum: [markdown, html, auto]
+            default: auto
+          first_name:
+            type: string
+            default: Contact
+            description: "First name when creating a temporary contact."
+          last_name:
+            type: string
+            default: Name
+            description: "Last name when creating a temporary contact."
+          reply_to_msg_id:
+            type: integer
+            description: "Reply to this message id in the target chat after resolve."
+          remove_if_new:
+            type: boolean
+            default: false
+            description: "If true, delete the contact after send when it was created only for this send."
+          files:
+            type: array
+            items:
+              type: string
+            description: "List of attachment URLs."
+        required: [phone_number, message]
+      disclose:
+        - label: "Phone"
+          filter: ".arguments.phone_number"
+        - label: "Message"
+          primary: true
+          filter: ".arguments.message"
+
+    - name: invoke_mtproto
+      risk: write
+      description: "Low-level Telegram API (MTProto) invoke for methods not wrapped by other tools; set allow_dangerous=true to unblock destructive methods"
+      input_schema:
+        type: object
+        properties:
+          method_full_name:
+            type: string
+            description: 'Telegram API method, e.g. "messages.GetHistory" or "users.GetFullUser" (normalization applied).'
+          params_json:
+            type: string
+            description: 'JSON object string of TL parameters; nested TL uses "_": "typeName" discriminator.'
+          resolve:
+            type: boolean
+            default: true
+            description: "If true, resolve string/int peer-like fields to TL Input* entities before invoke."
+          allow_dangerous:
+            type: boolean
+            default: false
+            description: "If false, destructive methods (e.g. deletes) are blocked. Set true only when intended."
+        required: [method_full_name, params_json]
+      disclose:
+        - label: "Method"
+          primary: true
+          filter: ".arguments.method_full_name"
+        - label: "Params"
+          filter: ".arguments.params_json"
+        - label: "Allow dangerous"
+          filter: ".arguments.allow_dangerous"
