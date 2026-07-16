@@ -104,3 +104,14 @@ Choosing a previously-authorized Google connection on a newly-created Google ser
 ## Manual `cargo update` is not covered by the 7-day dependency cooldown
 
 D30 gates automated dependency bumps behind Dependabot's 7-day `cooldown`, but a manual `cargo update` on the stable toolchain can still pull a version published minutes ago. Cargo's client-side gate (`min-publish-age`, RFC 3923) is nightly-only as of 2026-07, and the forward-compatible `.cargo/config.toml` staging used in overfolder isn't possible here because `.cargo/` is gitignored (reserved for developers' local mold-linker config). When `min-publish-age` stabilizes, either commit a tracked `.cargo/config.toml` (migrating the mold convention to e.g. `.cargo/config.local.toml` isn't a thing — cargo reads a fixed filename — so this means un-ignoring the path and folding mold config in, or documenting `CARGO_*` env vars instead) or set `CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE` in CI. Low urgency: updates normally flow through Dependabot, which does enforce the window.
+
+---
+
+## Two SHA-pinned actions track branches, so Dependabot won't bump them
+
+D31 pins every third-party action in `.github/workflows/*.yml` to a commit SHA so D30's `cooldown` applies. Two of those pins freeze a *moving pointer* rather than a release tag, and Dependabot's version-update logic tracks tags/releases — so it will not reliably propose bumps for either:
+
+- `dtolnay/rust-toolchain@4be7066` — its ref is the `stable` **branch**, not a semver tag; the branch tip is what we froze. (Overfolder carries the same debt.)
+- `rui314/setup-mold@9c9c13b` — the repo publishes no semver releases at all, only a mutable `v1` tag that moves.
+
+Both still behave correctly at runtime — rustup resolves `stable` and installs the current stable toolchain; mold installs normally. Only the *action code* is frozen, so upstream fixes won't be picked up automatically and the pins can drift stale silently with no PR. Low risk (both actions are small and stable), but they're untracked pins. Ideal fix: re-pin each to its current tip by hand periodically (e.g. quarterly), or switch to a version-tagged equivalent with the same ergonomics if one appears, so Dependabot can manage it.
