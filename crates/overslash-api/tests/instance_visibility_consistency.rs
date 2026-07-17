@@ -96,6 +96,7 @@ async fn make_instance(scope: &OrgScope, name: &str, owner: Option<Uuid>) -> Ser
             template_id: None,
             connection_id: None,
             secret_name: None,
+            credentials: &Default::default(),
             url: None,
             use_default_connection: true,
             status: "active",

@@ -123,6 +123,10 @@ pub(super) const APIKEY_HTTP_SEC_ALIASES: &[Alias] = &[
         alias: "optional",
         canonical: "x-overslash-optional",
     },
+    Alias {
+        alias: "label",
+        canonical: "x-overslash-label",
+    },
 ];
 
 pub(super) const HTTP_METHODS: &[&str] = &[

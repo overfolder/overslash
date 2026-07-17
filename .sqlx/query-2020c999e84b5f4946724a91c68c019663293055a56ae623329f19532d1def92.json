@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, status\n         FROM service_instances\n         WHERE org_id = $1 AND secret_name = $2\n         ORDER BY name",
+  "query": "SELECT id, name, status\n         FROM service_instances\n         WHERE org_id = $1 AND (\n             secret_name = $2\n             OR EXISTS (\n                 SELECT 1 FROM jsonb_each_text(credentials) kv WHERE kv.value = $2\n             )\n         )\n         ORDER BY name",
   "describe": {
     "columns": [
       {
@@ -49,5 +49,5 @@
       false
     ]
   },
-  "hash": "54786c5cc586b2958ac1362fd14f23ca3fd01b754e77ce035e47bb278188cd75"
+  "hash": "2020c999e84b5f4946724a91c68c019663293055a56ae623329f19532d1def92"
 }

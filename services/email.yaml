@@ -32,6 +32,12 @@ components:
       type: apiKey
       in: header
       name: Authorization
+      # Short display label for the dashboard row; `description` renders as
+      # help text under the picker.
+      x-overslash-label: Overfwd API Token
+      description: >-
+        Bearer token for the overfwd deployment itself — leave blank when
+        the gateway runs without require_api_key.
       x-overslash-prefix: "Bearer "
       x-overslash-secret_source: org
       # Optional: injected only if the org has stored `overfwd_gateway_key`.
@@ -43,6 +49,10 @@ components:
       type: apiKey
       in: header
       name: X-Mailbox-Auth
+      x-overslash-label: Mailbox Auth user:pass
+      description: >-
+        The mailbox's IMAP/SMTP user:password, stored as one secret value
+        and sent base64-encoded.
       x-overslash-prefix: "Basic "
       x-overslash-encode: base64
       x-overslash-secret_source: instance

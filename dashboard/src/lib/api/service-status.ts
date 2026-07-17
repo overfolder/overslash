@@ -39,5 +39,6 @@ export function credentialStatus(
 	// `credentials_status` absent: classify structurally.
 	if (instance.connection_id) return 'connected';
 	if (instance.secret_name) return 'connected';
+	if (Object.keys(instance.credentials ?? {}).length > 0) return 'connected';
 	return 'needs-setup';
 }

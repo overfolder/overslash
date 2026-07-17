@@ -714,6 +714,7 @@ CREATE TABLE public.service_instances (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     is_system boolean DEFAULT false NOT NULL,
     url text,
+    credentials jsonb DEFAULT '{}'::jsonb NOT NULL,
     CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text]))),
     CONSTRAINT service_instances_template_source_check CHECK ((template_source = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
 );

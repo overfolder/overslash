@@ -81,11 +81,11 @@ pub(super) fn extract_auth(
                 Ok(a) => out.push(a),
                 Err(mut es) => errors.append(&mut es),
             },
-            "apiKey" => match extract_api_key(obj, &base) {
+            "apiKey" => match extract_api_key(obj, &base, name) {
                 Ok(a) => out.push(a),
                 Err(mut es) => errors.append(&mut es),
             },
-            "http" => match extract_http_auth(obj, &base) {
+            "http" => match extract_http_auth(obj, &base, name) {
                 Ok(a) => out.push(a),
                 Err(mut es) => errors.append(&mut es),
             },
@@ -153,6 +153,9 @@ fn extract_oauth2(
 fn extract_api_key(
     obj: &Map<String, Value>,
     base: &str,
+    // The securitySchemes map key (`gateway`, `mailbox`, …) — NOT the scheme
+    // object's `name` field, which is the HTTP header/query-param name.
+    scheme_key: &str,
 ) -> Result<ServiceAuth, Vec<ValidationIssue>> {
     let default_secret_name = obj
         .get("x-overslash-default_secret_name")
@@ -226,7 +229,22 @@ fn extract_api_key(
         }
     };
 
+    let label = match obj.get("x-overslash-label") {
+        None => String::new(),
+        Some(Value::String(s)) => s.trim().to_string(),
+        Some(other) => {
+            return Err(vec![ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!("x-overslash-label must be a string (got {other})"),
+                format!("{base}.x-overslash-label"),
+            )]);
+        }
+    };
+
     Ok(ServiceAuth::ApiKey {
+        scheme: scheme_key.to_string(),
+        label,
+        description: scheme_description(obj),
         default_secret_name,
         injection,
         secret_source,
@@ -237,6 +255,9 @@ fn extract_api_key(
 fn extract_http_auth(
     obj: &Map<String, Value>,
     base: &str,
+    // The securitySchemes map key — NOT the `scheme` field below, which is
+    // the HTTP auth scheme (`bearer`).
+    scheme_key: &str,
 ) -> Result<ServiceAuth, Vec<ValidationIssue>> {
     let scheme = obj.get("scheme").and_then(Value::as_str).unwrap_or("");
     if scheme != "bearer" {
@@ -252,6 +273,14 @@ fn extract_http_auth(
         .unwrap_or("")
         .to_string();
     Ok(ServiceAuth::ApiKey {
+        scheme: scheme_key.to_string(),
+        label: obj
+            .get("x-overslash-label")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        description: scheme_description(obj),
         default_secret_name,
         injection: TokenInjection {
             inject_as: "header".into(),
@@ -263,6 +292,16 @@ fn extract_http_auth(
         secret_source: crate::types::SecretSource::Instance,
         optional: false,
     })
+}
+
+/// The standard OpenAPI securityScheme `description`, verbatim (empty when
+/// absent). Surfaces as help text for the credential's dashboard row.
+fn scheme_description(obj: &Map<String, Value>) -> String {
+    obj.get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn parse_token_injection(v: Option<&Value>) -> Option<TokenInjection> {
@@ -1307,6 +1346,72 @@ mod tests {
     }
 
     #[test]
+    fn auth_carries_scheme_keys_and_descriptions_in_sorted_order() {
+        // Two apiKey schemes à la services/email.yaml: the securitySchemes map
+        // KEY (`gateway`/`mailbox`) — not the header `name` — must ride into
+        // `ServiceAuth::ApiKey.scheme`, in the deterministic sorted order the
+        // dashboard's per-scheme credential rows key off.
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {"securitySchemes": {
+                "mailbox": {
+                    "type": "apiKey", "in": "header", "name": "X-Mailbox-Auth",
+                    "description": "Per-mailbox IMAP/SMTP login.",
+                    "x-overslash-prefix": "Basic ",
+                    "x-overslash-encode": "base64",
+                    "x-overslash-default_secret_name": "mailbox_credential"
+                },
+                "gateway": {
+                    "type": "apiKey", "in": "header", "name": "Authorization",
+                    "x-overslash-label": "Overfwd API Token",
+                    "x-overslash-prefix": "Bearer ",
+                    "x-overslash-secret_source": "org",
+                    "x-overslash-optional": true,
+                    "x-overslash-default_secret_name": "overfwd_gateway_key"
+                }
+            }}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert_eq!(svc.auth.len(), 2);
+        match &svc.auth[0] {
+            ServiceAuth::ApiKey {
+                scheme,
+                label,
+                description,
+                secret_source,
+                optional,
+                ..
+            } => {
+                assert_eq!(scheme, "gateway");
+                assert_eq!(label, "Overfwd API Token");
+                assert!(description.is_empty());
+                assert_eq!(*secret_source, crate::types::SecretSource::Org);
+                assert!(optional);
+            }
+            other => panic!("expected ApiKey, got {other:?}"),
+        }
+        match &svc.auth[1] {
+            ServiceAuth::ApiKey {
+                scheme,
+                label,
+                description,
+                secret_source,
+                injection,
+                ..
+            } => {
+                assert_eq!(scheme, "mailbox");
+                assert!(label.is_empty());
+                assert_eq!(description, "Per-mailbox IMAP/SMTP login.");
+                assert_eq!(*secret_source, crate::types::SecretSource::Instance);
+                // The header name stays injection config — proves the scheme
+                // key wasn't confused with the scheme object's `name` field.
+                assert_eq!(injection.header_name.as_deref(), Some("X-Mailbox-Auth"));
+            }
+            other => panic!("expected ApiKey, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn auth_skips_non_object_scheme_value() {
         let doc = json!({
             "info": {"title": "T", "x-overslash-key": "t"},
@@ -1342,8 +1447,7 @@ mod tests {
             ServiceAuth::ApiKey {
                 default_secret_name,
                 injection,
-                secret_source: _,
-                optional: _,
+                ..
             } => {
                 assert_eq!(default_secret_name, "t_token");
                 assert_eq!(injection.inject_as, "query");
@@ -1417,8 +1521,7 @@ mod tests {
             ServiceAuth::ApiKey {
                 default_secret_name,
                 injection,
-                secret_source: _,
-                optional: _,
+                ..
             } => {
                 assert_eq!(default_secret_name, "t_token");
                 assert_eq!(injection.inject_as, "header");

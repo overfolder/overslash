@@ -15,6 +15,7 @@
 		ConnectionSummary,
 		OAuthProviderInfo,
 		SecretSummary,
+		ServiceAuth,
 		TemplateDetail,
 		TemplateSummary
 	} from '$lib/types';
@@ -25,7 +26,10 @@
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
+	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+
+	type ApiKeyScheme = Extract<ServiceAuth, { type: 'api_key' }>;
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean } } = $props();
 
@@ -51,6 +55,8 @@
 	let nameInput = $state('');
 	let connectionId = $state<string>('');
 	let secretName = $state('');
+	// Per-scheme secret bindings, keyed by the template's securityScheme keys.
+	let credentialsInput = $state<Record<string, string>>({});
 	let urlInput = $state('');
 	let userLevel = $state(true);
 	let useDefaultConnection = $state(true);
@@ -130,6 +136,14 @@
 		(selectedDetail?.auth ?? []).map((a: any) => a?.type as string).filter(Boolean)
 	);
 	const usesApiKey = $derived(authModes.includes('api_key'));
+	// Every apiKey credential slot the template declares — one picker each,
+	// bound via `credentials[scheme]` (e.g. email's `gateway` + `mailbox`).
+	const apiKeySchemes = $derived(
+		(selectedDetail?.auth ?? []).filter((a: any) => a?.type === 'api_key') as ApiKeyScheme[]
+	);
+	// An API from before per-scheme bindings omits `scheme` — fall back to the
+	// legacy single scalar field in that case.
+	const schemeKeyed = $derived(usesApiKey && apiKeySchemes.every((s) => !!s.scheme));
 	// An HTTP `oauth` scheme, or an MCP-runtime `auth.kind: oauth` provider
 	// (D24) normalized to the same {provider, scopes} shape so the connect
 	// surface below is shared. MCP OAuth declares no template-level scopes.
@@ -285,6 +299,13 @@
 		try {
 			selectedDetail = await getTemplate(t.key);
 			nameInput = t.key;
+			// Seed one entry per apiKey scheme so the per-scheme pickers bind
+			// to defined slots on the configure step's first render.
+			const seeded: Record<string, string> = {};
+			for (const a of selectedDetail?.auth ?? []) {
+				if (a.type === 'api_key' && a.scheme) seeded[a.scheme] = '';
+			}
+			credentialsInput = seeded;
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to load template (${e.status})` : 'Failed to load template';
 		} finally {
@@ -410,11 +431,22 @@
 					return;
 				}
 			}
+			// Per-scheme bindings ride the `credentials` map (the server mirrors
+			// the legacy scalar); the scalar `secret_name` is only sent for the
+			// paths still editing it directly (MCP bearer, pre-scheme APIs).
+			const cleanedCredentials = Object.fromEntries(
+				Object.entries(credentialsInput)
+					.map(([k, v]) => [k, (v ?? '').trim()])
+					.filter(([, v]) => v)
+			);
+			const sendCredentials =
+				schemeKeyed && !usesOAuth && Object.keys(cleanedCredentials).length > 0;
 			const created = await createService({
 				template_key: selectedDetail.key,
 				name: nameInput.trim() || undefined,
 				connection_id: connectionId || undefined,
-				secret_name: secretName.trim() || undefined,
+				credentials: sendCredentials ? cleanedCredentials : undefined,
+				secret_name: !sendCredentials ? secretName.trim() || undefined : undefined,
 				url: urlInput.trim() || undefined,
 				status: 'active',
 				user_level: userLevel,
@@ -688,7 +720,16 @@
 				</label>
 			{/if}
 
-			{#if (usesApiKey && !usesOAuth) || mcpNeedsSecret}
+			{#if usesApiKey && !usesOAuth && schemeKeyed}
+				<ServiceCredentials
+					schemes={apiKeySchemes}
+					bind:credentials={credentialsInput}
+					available={availableSecrets}
+					loading={secretsLoading}
+					singleLabel={httpNeedsUrl ? 'Credential secret name' : 'API key secret name'}
+					idPrefix="new-service-cred"
+				/>
+			{:else if (usesApiKey && !usesOAuth) || mcpNeedsSecret}
 				<div class="field">
 					<label class="label" for="new-service-secret">
 						{#if mcpNeedsSecret}Bearer token secret name{:else if httpNeedsUrl}Credential secret name{:else}API key secret name{/if}
