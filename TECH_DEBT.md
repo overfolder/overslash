@@ -134,3 +134,25 @@ therefore rejects any `SecretRef` still carrying `encode` with "re-issue the
 call". In practice this is the one `email`/`mailbox` shape, whose instances
 must be rebound to two slots anyway (see D35 rollout). Drop the field once no
 pending approval predates the deploy.
+
+## Non-JSON `requestBody` media types are parsed but never sent
+
+`ServiceAction::request_body` records whatever media type a template declares
+under `requestBody.content` (`crates/overslash-core/src/openapi/extract.rs`,
+`parse_request_body`), but two places still only understand JSON:
+
+- `collect_body_parameters` reads the schema from `content["application/json"]`
+  only, so a form-encoded or multipart body extracts **zero** params — the
+  action shows no body fields to agents, and validation has nothing to check.
+- Routing (`crates/overslash-api/src/routes/actions/resolve.rs`) sends a body
+  only when `RequestBodySpec::is_json()`, so a declared non-JSON body results in
+  no body and no `Content-Type` at all.
+
+This is latent: every shipped template in `services/` declares
+`application/json`. Before, such a body would have been silently re-serialised
+*as JSON* under a `Content-Type: application/json` the template never asked for;
+recording the real media type at least makes the mismatch legible rather than
+wrong-on-the-wire. To actually support one (a multipart attachment upload is the
+likely first caller), teach `collect_body_parameters` to pick the schema for the
+declared media type and give routing an encoder per type, keyed off
+`RequestBodySpec::content_type`.

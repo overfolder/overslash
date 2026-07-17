@@ -652,21 +652,35 @@ pub(super) async fn resolve_request(
             } else {
                 format!("{base_url}?{}", pairs.join("&"))
             };
-            let body = if body_params.is_empty() {
-                None
-            } else {
-                let map: serde_json::Map<String, serde_json::Value> = body_params
-                    .into_iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                Some(serde_json::to_string(&map).unwrap_or_default())
-            };
+            // Whether a body is sent follows the template's declared
+            // `requestBody`, not whether the caller happened to supply fields.
+            // An operation whose fields are all optional (`POST /email/search`)
+            // still sends `{}` — a strict upstream extractor checks
+            // `Content-Type` before it ever looks at the body, so omitting the
+            // body omits the header and the call is rejected outright.
+            let body = action
+                .request_body
+                .as_ref()
+                .filter(|rb| rb.is_json())
+                .map(|_| {
+                    let map: serde_json::Map<String, serde_json::Value> = body_params
+                        .into_iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    serde_json::to_string(&map).unwrap_or_default()
+                });
             (url, body)
         };
 
         let mut headers = HashMap::new();
+        // `Content-Type` describes the payload, so it is emitted with the body
+        // and only with the body — never on a bodyless GET, and never without
+        // one. Template-chosen headers travel their own channel (`in: header`
+        // params and `securitySchemes`), so the two never contend.
         if body.is_some() {
-            headers.insert("Content-Type".to_string(), "application/json".to_string());
+            if let Some(rb) = &action.request_body {
+                headers.insert("Content-Type".to_string(), rb.content_type.clone());
+            }
         }
         // Template-declared header params (`in: header`) are sent verbatim as
         // request headers. `apply_defaults` has already filled any that carry a

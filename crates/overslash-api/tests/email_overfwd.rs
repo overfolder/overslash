@@ -47,6 +47,7 @@ struct Captured {
     /// to autoconfig.
     imap: Option<String>,
     smtp: Option<String>,
+    content_type: Option<String>,
     body: Value,
 }
 
@@ -77,6 +78,7 @@ async fn start_mock_overfwd() -> (String, Sink) {
             mailbox_auth: header("x-mailbox-auth"),
             imap: header("x-mailbox-imap"),
             smtp: header("x-mailbox-smtp"),
+            content_type: header("content-type"),
             body: serde_json::from_slice(&body).unwrap_or(Value::Null),
         });
         Json(json!({ "messages": [], "sent": true }))
@@ -287,6 +289,191 @@ async fn email_search_dual_injects_auth_and_routes_to_instance_url() {
     );
     // The search key made it into the JSON body.
     assert_eq!(req.body["query"], json!("UNSEEN"));
+}
+
+/// Regression: `search` declares a `requestBody` whose every field is optional,
+/// so "search my inbox" with no arguments is a legitimate call. Overslash used
+/// to infer "no body params supplied" ⇒ "no body" ⇒ "no `Content-Type`", and
+/// overfwd's `Json<T>` extractor checks the header *before* it looks at the
+/// body — so the call died upstream with `Expected request with Content-Type:
+/// application/json` before reaching the mailbox.
+///
+/// Whether a body is sent follows the template's declared `requestBody`, not
+/// what the caller happened to pass.
+#[tokio::test]
+async fn email_search_without_params_still_sends_json_body_and_content_type() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, agent_key) = setup_email_instance(pool, &gateway_url, true, true).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "email",
+            "action": "search",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "zero-arg search should auto-execute: {}",
+        resp.text().await.unwrap()
+    );
+
+    let captured = sink.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1);
+    let req = &captured[0];
+
+    assert_eq!(req.path, "/email/search");
+    assert_eq!(
+        req.content_type.as_deref(),
+        Some("application/json"),
+        "a declared requestBody must send Content-Type even with no args — \
+         omitting it is what overfwd's Json extractor rejects"
+    );
+    // A JSON object, not an absent/empty body. The template's `default`s fill
+    // folder/query, so an argument-free call still expresses the intent.
+    assert!(
+        req.body.is_object(),
+        "body must be a JSON object, got {:?}",
+        req.body
+    );
+    assert_eq!(req.body["folder"], json!("INBOX"));
+    assert_eq!(req.body["query"], json!("ALL"));
+}
+
+/// The same guarantee, isolated from `email.yaml`'s `default`s.
+///
+/// The test above cannot fail for the *routing* reason once the template
+/// supplies defaults — they populate the body on their own. This one declares a
+/// body whose fields are all optional AND undefaulted, so nothing fills it: the
+/// only thing that can produce `{}` + `Content-Type` is routing keying off the
+/// declared `requestBody`. That is what protects every other service, not just
+/// this one.
+#[tokio::test]
+async fn declared_request_body_is_sent_even_when_no_field_resolves() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, _ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+
+    // Reuses the mock's /email/search route; every field optional, no defaults.
+    let openapi = r#"
+openapi: 3.1.0
+info:
+  title: Opt Body
+  key: optbody
+servers:
+  - url: https://optbody.example.com
+paths:
+  /email/search:
+    post:
+      operationId: search
+      summary: Search with no required fields
+      risk: read
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q:
+                  type: string
+"#;
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "openapi": openapi }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "template create failed: {}",
+        resp.text().await.unwrap()
+    );
+
+    let instance: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "optbody",
+            "name": "optbody",
+            "url": gateway_url,
+            "user_level": false,
+            "status": "active",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let svc_id = instance["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("optbody instance create failed: {instance:?}"));
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .and_then(|g| g["id"].as_str())
+        .expect("Everyone group not found");
+    let grant = client
+        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id,
+            "access_level": "admin",
+            "auto_approve_reads": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        grant.status() == 200 || grant.status() == 409,
+        "grant failed: {}",
+        grant.status()
+    );
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({ "service": "optbody", "action": "search", "params": {} }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "zero-arg call should execute: {}",
+        resp.text().await.unwrap()
+    );
+
+    let captured = sink.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        captured[0].content_type.as_deref(),
+        Some("application/json"),
+        "a declared requestBody must send Content-Type even when no field resolves"
+    );
+    assert_eq!(
+        captured[0].body,
+        json!({}),
+        "an empty JSON object, not an absent body"
+    );
 }
 
 #[tokio::test]

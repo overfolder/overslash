@@ -21,7 +21,8 @@ use serde_json::{Map, Value};
 use crate::template_validation::ValidationIssue;
 use crate::types::{
     ActionParam, CredentialTemplate, DisclosureField, McpAuth, McpSpec, ParamLocation,
-    ParamResolver, Risk, SecretSlot, ServiceAction, ServiceAuth, ServiceDefinition, TokenInjection,
+    ParamResolver, RequestBodySpec, Risk, SecretSlot, ServiceAction, ServiceAuth,
+    ServiceDefinition, TokenInjection,
 };
 
 // ── servers → hosts ──────────────────────────────────────────────────
@@ -662,6 +663,7 @@ pub(super) fn extract_http_action(
         collect_parameters(arr, &mut params);
     }
     collect_body_parameters(op.get("requestBody"), &mut params);
+    let request_body = parse_request_body(op.get("requestBody"));
 
     // Per-action OAuth scopes. The operation's own `security` key, when present
     // (even as an empty array `[]`, which OpenAPI 3.1 treats as an explicit
@@ -697,6 +699,7 @@ pub(super) fn extract_http_action(
             mcp_tool: None,
             output_schema: None,
             disabled: false,
+            request_body,
         },
     );
 
@@ -760,6 +763,8 @@ pub(super) fn extract_platform_action(
         mcp_tool: None,
         output_schema: None,
         disabled: false,
+        // Platform actions are dispatched in-process, never over HTTP.
+        request_body: None,
     })
 }
 
@@ -1218,6 +1223,9 @@ fn lower_mcp_tool(
         mcp_tool: Some(mcp_tool),
         output_schema,
         disabled,
+        // MCP tool calls are framed by the MCP client (which sets its own
+        // JSON-RPC content type), never routed through `resolve`.
+        request_body: None,
     })
 }
 
@@ -1394,6 +1402,30 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
             },
         );
     }
+}
+
+/// Parse an operation's `requestBody` into the spec routing needs. Returns
+/// `None` when the operation declares no body, or declares one with no usable
+/// media type — routing then sends neither body nor `Content-Type`.
+///
+/// The media type is taken from the declared `content` key rather than assumed,
+/// so a non-JSON body surfaces as itself instead of being silently re-sent as
+/// JSON. `application/json` wins when several are offered, since that is the
+/// only shape `collect_body_parameters` can extract fields from.
+fn parse_request_body(body: Option<&Value>) -> Option<RequestBodySpec> {
+    let b = body.and_then(Value::as_object)?;
+    let content = b.get("content").and_then(Value::as_object)?;
+
+    let content_type = if content.contains_key("application/json") {
+        "application/json".to_string()
+    } else {
+        content.keys().next()?.clone()
+    };
+
+    Some(RequestBodySpec {
+        content_type,
+        required: b.get("required").and_then(Value::as_bool).unwrap_or(false),
+    })
 }
 
 fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, ActionParam>) {
@@ -2627,6 +2659,93 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         assert!(svc.actions["x"].params.is_empty());
+
+        // The media type is still carried verbatim rather than coerced to
+        // JSON, so routing can tell it apart instead of silently re-sending an
+        // XML body as `application/json`.
+        let rb = svc.actions["x"].request_body.as_ref().unwrap();
+        assert_eq!(rb.content_type, "application/xml");
+        assert!(!rb.is_json());
+    }
+
+    #[test]
+    fn request_body_records_json_media_type() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x": {"post": {
+                "operationId": "x",
+                "requestBody": {
+                    "required": true,
+                    "content": {"application/json": {
+                        "schema": {"type": "object", "properties": {"foo": {"type": "string"}}}
+                    }}
+                }
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let rb = svc.actions["x"].request_body.as_ref().unwrap();
+        assert_eq!(rb.content_type, "application/json");
+        assert!(rb.required);
+        assert!(rb.is_json());
+    }
+
+    #[test]
+    fn request_body_absent_when_operation_declares_none() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x/{id}": {"post": {"operationId": "x"}}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        // No `requestBody` in the contract ⇒ routing sends neither body nor
+        // `Content-Type`.
+        assert!(svc.actions["x"].request_body.is_none());
+    }
+
+    #[test]
+    fn request_body_optional_fields_still_declared() {
+        // The `POST /email/search` shape: a body whose every field is optional.
+        // The spec must still record it, or routing omits the body, omits
+        // `Content-Type`, and a strict upstream rejects the call.
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x": {"post": {
+                "operationId": "x",
+                "requestBody": {
+                    "content": {"application/json": {
+                        "schema": {"type": "object", "properties": {"q": {"type": "string"}}}
+                    }}
+                }
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let rb = svc.actions["x"].request_body.as_ref().unwrap();
+        assert_eq!(rb.content_type, "application/json");
+        assert!(!rb.required);
+    }
+
+    #[test]
+    fn request_body_prefers_json_when_several_offered() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x": {"post": {
+                "operationId": "x",
+                "requestBody": {
+                    "content": {
+                        "application/xml": {"schema": {"type": "object"}},
+                        "application/json": {"schema": {
+                            "type": "object", "properties": {"foo": {"type": "string"}}
+                        }}
+                    }
+                }
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        // JSON wins — it is the only shape whose fields we can extract.
+        assert_eq!(
+            svc.actions["x"].request_body.as_ref().unwrap().content_type,
+            "application/json"
+        );
+        assert!(svc.actions["x"].params.contains_key("foo"));
     }
 
     #[test]

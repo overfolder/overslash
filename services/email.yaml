@@ -121,6 +121,11 @@ paths:
       summary: "Search mailbox folder '{folder}' for {query}"
       risk: read
       requestBody:
+        # Every field is optional — a bare "search my inbox" is a legitimate
+        # call. `required` reflects that the gateway still parses a JSON body on
+        # every request, and the `default`s below make the fallbacks part of the
+        # contract rather than prose only the gateway knows.
+        required: true
         content:
           application/json:
             schema:

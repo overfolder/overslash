@@ -214,6 +214,7 @@ mod tests {
             mcp_tool: None,
             output_schema: None,
             disabled: false,
+            request_body: None,
         }
     }
 
