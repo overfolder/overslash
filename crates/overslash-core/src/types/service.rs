@@ -193,6 +193,12 @@ pub enum ServiceAuth {
         /// schemes doesn't present them as one anonymous field.
         #[serde(default)]
         scheme: String,
+        /// Short human-readable display name for the credential slot, from
+        /// `x-overslash-label` (alias `label`) — e.g. "Overfwd API Token".
+        /// The dashboard uses it as the row label; absent falls back to the
+        /// scheme key.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        label: String,
         /// The standard OpenAPI securityScheme `description`, verbatim.
         /// Help text for the credential's row in the dashboard.
         #[serde(default, skip_serializing_if = "String::is_empty")]

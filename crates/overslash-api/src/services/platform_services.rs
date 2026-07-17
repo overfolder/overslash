@@ -1526,6 +1526,7 @@ mod tests {
             hidden: false,
             auth: vec![ServiceAuth::ApiKey {
                 scheme: String::new(),
+                label: String::new(),
                 description: String::new(),
                 default_secret_name: "default".into(),
                 injection: TokenInjection {
@@ -1771,6 +1772,7 @@ mod tests {
         tpl.auth = vec![
             ServiceAuth::ApiKey {
                 scheme: "gateway".into(),
+                label: String::new(),
                 description: String::new(),
                 default_secret_name: "overfwd_gateway_key".into(),
                 injection: injection.clone(),
@@ -1779,6 +1781,7 @@ mod tests {
             },
             ServiceAuth::ApiKey {
                 scheme: "mailbox".into(),
+                label: String::new(),
                 description: String::new(),
                 default_secret_name: "mailbox_credential".into(),
                 injection,

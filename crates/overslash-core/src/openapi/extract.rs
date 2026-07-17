@@ -229,8 +229,21 @@ fn extract_api_key(
         }
     };
 
+    let label = match obj.get("x-overslash-label") {
+        None => String::new(),
+        Some(Value::String(s)) => s.trim().to_string(),
+        Some(other) => {
+            return Err(vec![ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!("x-overslash-label must be a string (got {other})"),
+                format!("{base}.x-overslash-label"),
+            )]);
+        }
+    };
+
     Ok(ServiceAuth::ApiKey {
         scheme: scheme_key.to_string(),
+        label,
         description: scheme_description(obj),
         default_secret_name,
         injection,
@@ -261,6 +274,12 @@ fn extract_http_auth(
         .to_string();
     Ok(ServiceAuth::ApiKey {
         scheme: scheme_key.to_string(),
+        label: obj
+            .get("x-overslash-label")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string(),
         description: scheme_description(obj),
         default_secret_name,
         injection: TokenInjection {
@@ -1344,6 +1363,7 @@ mod tests {
                 },
                 "gateway": {
                     "type": "apiKey", "in": "header", "name": "Authorization",
+                    "x-overslash-label": "Overfwd API Token",
                     "x-overslash-prefix": "Bearer ",
                     "x-overslash-secret_source": "org",
                     "x-overslash-optional": true,
@@ -1356,12 +1376,14 @@ mod tests {
         match &svc.auth[0] {
             ServiceAuth::ApiKey {
                 scheme,
+                label,
                 description,
                 secret_source,
                 optional,
                 ..
             } => {
                 assert_eq!(scheme, "gateway");
+                assert_eq!(label, "Overfwd API Token");
                 assert!(description.is_empty());
                 assert_eq!(*secret_source, crate::types::SecretSource::Org);
                 assert!(optional);
@@ -1371,12 +1393,14 @@ mod tests {
         match &svc.auth[1] {
             ServiceAuth::ApiKey {
                 scheme,
+                label,
                 description,
                 secret_source,
                 injection,
                 ..
             } => {
                 assert_eq!(scheme, "mailbox");
+                assert!(label.is_empty());
                 assert_eq!(description, "Per-mailbox IMAP/SMTP login.");
                 assert_eq!(*secret_source, crate::types::SecretSource::Instance);
                 // The header name stays injection config — proves the scheme

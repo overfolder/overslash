@@ -35,7 +35,7 @@ const instance = await seedService(session, {
 const snap = await makeSnapper(session);
 try {
 	// 1. /services/new → pick the Email template → configure step: one row per
-	// scheme ("gateway secret name" + "mailbox secret name").
+	// scheme ("Overfwd API Token" + "Mailbox Auth user:pass" — x-overslash-label).
 	const { page, ctx } = await snap.navigateAndSnap('email-configure', '/services/new', {
 		viewport: { width: 1200, height: 1100 },
 		fullPage: false,
@@ -45,8 +45,8 @@ try {
 			await p.getByText('Email (Mailbox Gateway)', { exact: false }).first().click();
 			await p.getByRole('button', { name: 'Use this template' }).click();
 			// Configure step: both per-scheme credential rows must render.
-			await p.getByText('gateway secret name', { exact: false }).first().waitFor({ timeout: 15_000 });
-			await p.getByText('mailbox secret name', { exact: false }).first().waitFor({ timeout: 15_000 });
+			await p.getByText('Overfwd API Token', { exact: false }).first().waitFor({ timeout: 15_000 });
+			await p.getByText('Mailbox Auth user:pass', { exact: false }).first().waitFor({ timeout: 15_000 });
 			await p.waitForTimeout(400);
 		}
 	});
@@ -60,7 +60,7 @@ try {
 			viewport: { width: 1200, height: 1100 },
 			waitFor: async (p) => {
 				await p.getByText('Gateway URL', { exact: false }).first().waitFor({ timeout: 15_000 });
-				await p.getByText('gateway secret name', { exact: false }).first().waitFor({ timeout: 15_000 });
+				await p.getByText('Overfwd API Token', { exact: false }).first().waitFor({ timeout: 15_000 });
 				await p.waitForTimeout(300);
 			}
 		});
@@ -71,7 +71,7 @@ try {
 			viewport: { width: 1200, height: 900 },
 			waitFor: async (p) => {
 				await p.getByRole('button', { name: /credentials/i }).click();
-				await p.getByText('mailbox secret name', { exact: false }).first().waitFor({ timeout: 15_000 });
+				await p.getByText('Mailbox Auth user:pass', { exact: false }).first().waitFor({ timeout: 15_000 });
 				await p.waitForTimeout(300);
 			}
 		});

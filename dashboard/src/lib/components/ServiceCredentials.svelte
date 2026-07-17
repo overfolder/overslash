@@ -26,6 +26,16 @@
 	const showSchemeLabels = $derived(schemes.length > 1);
 	const vaultNames = $derived(new Set(available.map((s) => s.name)));
 
+	// Human-readable row naming, taken from the template YAML: the scheme's
+	// `x-overslash-label` ("Overfwd API Token") names the row; the standard
+	// OpenAPI `description` renders as help text under the picker. No label
+	// falls back to the scheme key ("gateway secret name") / `singleLabel`.
+	function rowLabel(s: ApiKeyScheme): string {
+		const l = (s.label ?? '').trim();
+		if (l) return l;
+		return showSchemeLabels ? `${s.scheme} secret name` : singleLabel;
+	}
+
 	// Every scheme key must hold a string BEFORE the pickers render — binding
 	// an undefined map slot into SecretNamePicker's fallback-valued `value`
 	// prop is a Svelte error (props_invalid_value). Init-time loop covers the
@@ -49,7 +59,7 @@
 	{@const bound = (credentials[key] ?? '').trim().length > 0}
 	<div class="field">
 		<label class="label" for="{idPrefix}-{key}">
-			{showSchemeLabels ? `${key} secret name` : singleLabel}
+			{rowLabel(s)}
 			{#if s.optional}<span class="cred-badge">optional</span>{/if}
 		</label>
 		<SecretNamePicker

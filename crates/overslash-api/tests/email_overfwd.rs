@@ -342,6 +342,52 @@ async fn email_unbound_mailbox_never_injects_gateway_key_alone() {
 }
 
 #[tokio::test]
+async fn email_blank_stored_binding_is_missing_not_partial() {
+    // The API rejects blank bindings, so a blank map value can only be
+    // corrupted/manually-edited storage. A required scheme resolving to ""
+    // must behave like an unbound credential (no partial injection of the
+    // remaining schemes) — not be silently skipped.
+    let pool = common::test_pool().await;
+    let pool2 = pool.clone();
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, agent_key) =
+        setup_email_instance(pool, &gateway_url, Some("mailbox_credential"), true).await;
+
+    // Corrupt the stored map behind the API's back: required mailbox → "".
+    sqlx::query(
+        r#"UPDATE service_instances
+           SET credentials = '{"mailbox": ""}'::jsonb, secret_name = NULL
+           WHERE name = 'email'"#,
+    )
+    .execute(&pool2)
+    .await
+    .unwrap();
+
+    let _ = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "email",
+            "action": "search",
+            "params": { "query": "UNSEEN" }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Same contract as the unbound case: the gateway key must never ride
+    // alone. Without the fix the blank slot is skipped as if bound, and the
+    // org gateway key IS injected — a partially-authenticated request.
+    for req in sink.lock().unwrap().iter() {
+        assert!(
+            req.authorization.is_none(),
+            "gateway key injected despite blank required mailbox binding: {:?}",
+            req.authorization
+        );
+    }
+}
+
+#[tokio::test]
 async fn email_keyless_gateway_omits_authorization_but_still_sends_mailbox_auth() {
     // A self-hosted overfwd running with OVERFWD_REQUIRE_API_KEY=false needs no
     // gateway key. The `gateway` scheme is `optional`, so when the org has NOT

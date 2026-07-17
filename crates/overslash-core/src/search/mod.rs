@@ -176,6 +176,7 @@ mod tests {
             hidden: false,
             auth: vec![ServiceAuth::ApiKey {
                 scheme: String::new(),
+                label: String::new(),
                 description: String::new(),
                 default_secret_name: "k".into(),
                 injection: TokenInjection {

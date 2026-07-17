@@ -650,6 +650,8 @@ export type ServiceAuth =
       type: 'api_key';
       /** The securitySchemes key this credential slot was compiled from (e.g. `gateway`, `mailbox`). */
       scheme?: string;
+      /** Short display name from `x-overslash-label` (e.g. "Overfwd API Token") — the row's label. */
+      label?: string;
       /** The OpenAPI securityScheme `description` — help text for the credential's row. */
       description?: string;
       default_secret_name: string;

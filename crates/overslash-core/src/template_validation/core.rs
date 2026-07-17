@@ -685,6 +685,7 @@ mod tests {
             hidden: false,
             auth: vec![ServiceAuth::ApiKey {
                 scheme: String::new(),
+                label: String::new(),
                 description: String::new(),
                 default_secret_name: "svc_token".into(),
                 injection: TokenInjection {
@@ -921,6 +922,7 @@ mod tests {
         let mut d = minimal_valid();
         d.auth = vec![ServiceAuth::ApiKey {
             scheme: String::new(),
+            label: String::new(),
             description: String::new(),
             default_secret_name: "x".into(),
             injection: TokenInjection {
@@ -946,6 +948,7 @@ mod tests {
         let mut d = minimal_valid();
         d.auth = vec![ServiceAuth::ApiKey {
             scheme: String::new(),
+            label: String::new(),
             description: String::new(),
             default_secret_name: "x".into(),
             injection: TokenInjection {
@@ -969,6 +972,7 @@ mod tests {
     fn api_key(scheme: &str, source: SecretSource) -> ServiceAuth {
         ServiceAuth::ApiKey {
             scheme: scheme.into(),
+            label: String::new(),
             description: String::new(),
             default_secret_name: "x".into(),
             injection: TokenInjection {
@@ -1209,6 +1213,7 @@ mod tests {
         let mut d = minimal_mcp(McpAuth::None);
         d.auth = vec![ServiceAuth::ApiKey {
             scheme: String::new(),
+            label: String::new(),
             description: String::new(),
             default_secret_name: "k".into(),
             injection: TokenInjection {

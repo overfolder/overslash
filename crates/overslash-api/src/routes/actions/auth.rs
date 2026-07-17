@@ -1135,7 +1135,15 @@ pub(crate) async fn resolve_instance_auth(
                     },
                 }
             };
+            // A blank resolved name can only come from corrupted stored data
+            // (API validation rejects blank bindings and blank org defaults).
+            // For a required scheme treat it like an unbound credential —
+            // silently skipping would inject the OTHER schemes and send a
+            // partially-authenticated request downstream.
             if name.is_empty() {
+                if !*optional {
+                    instance_secret_missing = true;
+                }
                 continue;
             }
             secret_refs.push(SecretRef {
