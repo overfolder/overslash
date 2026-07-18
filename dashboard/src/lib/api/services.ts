@@ -115,14 +115,18 @@ export const discardDraft = (id: string) =>
 // -- MCP tools resync --
 
 export interface McpResyncResponse {
-	key: string;
+	service_id: string;
 	tool_count: number;
 	discovered_at: string;
 }
 
-export const resyncMcpTemplate = (key: string) =>
+// Resync runs against a service *instance* (which carries the url/secret or
+// OAuth connection needed to reach the MCP server); the result is stored per
+// instance. An OAuth instance with no connection yields a `needs_authentication`
+// envelope (ApiError) the caller drives through the connect flow.
+export const resyncMcpService = (id: string) =>
 	session.post<McpResyncResponse>(
-		`/v1/templates/${encodeURIComponent(key)}/mcp/resync`,
+		`/v1/services/${encodeURIComponent(id)}/mcp/resync`,
 		{}
 	);
 

@@ -1462,7 +1462,7 @@ async fn execute_claimed_approval(
                         }
                     };
                     match crate::routes::actions::resolve_mcp_oauth_bearer(
-                        state, ext, scope, owner, provider, None,
+                        state, ext, scope, owner, None, provider, None,
                     )
                     .await
                     {

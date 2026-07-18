@@ -162,6 +162,37 @@ x-overslash-mcp:
     )
 }
 
+/// Telegram-shaped template: MCP runtime, `autodiscover: true`, but **no**
+/// `url` and no bearer `secret_name` — both are supplied per service instance.
+/// `auth_kind` is "none" or "bearer".
+fn mcp_template_yaml_no_url(key: &str, auth_kind: &str) -> String {
+    let auth_block = match auth_kind {
+        "bearer" => "  auth: { kind: bearer }".to_string(),
+        _ => "  auth: { kind: none }".to_string(),
+    };
+    format!(
+        r#"openapi: 3.1.0
+info:
+  title: Stub MCP (no url)
+  x-overslash-key: {key}
+x-overslash-runtime: mcp
+paths: {{}}
+x-overslash-mcp:
+{auth_block}
+  autodiscover: true
+  tools:
+    - name: echo
+      risk: read
+      description: Echo a string
+      input_schema:
+        type: object
+        properties:
+          x: {{ type: string }}
+        required: [x]
+"#
+    )
+}
+
 struct SetupCtx<'a> {
     base: &'a str,
     client: &'a Client,
@@ -520,8 +551,11 @@ async fn mcp_missing_secret_returns_400_before_upstream_call() {
     assert!(stub.last_auth().is_none());
 }
 
+/// A telegram-shaped template ships no `url`/`secret_name` — the instance
+/// supplies both. Resync resolves them from the instance, reaches the server
+/// with the instance's bearer, and stores the tools on the instance.
 #[tokio::test]
-async fn mcp_resync_populates_discovered_tools() {
+async fn mcp_resync_bearer_instance_populates_discovered_tools() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, stub) = start_stub().await;
     stub.set_tools(vec![json!({
@@ -535,61 +569,192 @@ async fn mcp_resync_populates_discovered_tools() {
     let base = format!("http://{base}");
     let org_key = fx.org_key.clone();
 
+    // Template carries no url / secret_name (both deferred to the instance).
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"openapi": mcp_template_yaml_no_url("stub_tel", "bearer")}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "template: {:?}", resp.text().await);
+
+    // Bearer secret in the vault, referenced by the instance.
+    let resp = client
+        .put(format!("{base}/v1/secrets/tel_token"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"value": "s3cr3t"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "secret: {:?}", resp.text().await);
+
+    // Instance supplies url + secret_name.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&org_key).0, auth(&org_key).1)
         .json(&json!({
-            "openapi": mcp_template_yaml("stub_mcp_sync", &stub_url, None),
+            "name": "stub_tel_1",
+            "template_key": "stub_tel",
+            "url": stub_url,
+            "secret_name": "tel_token",
         }))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    let inst: Value = resp.json().await.unwrap();
+    let instance_id = inst["id"].as_str().expect("instance id").to_string();
 
-    // Resync.
+    // Resync resolves url + secret_name from the instance.
     let resp = client
-        .post(format!("{base}/v1/templates/stub_mcp_sync/mcp/resync"))
+        .post(format!("{base}/v1/services/{instance_id}/mcp/resync"))
         .header(auth(&org_key).0, auth(&org_key).1)
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+    assert_eq!(resp.status(), 200, "resync: {:?}", resp.text().await);
     let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["service_id"], instance_id);
     assert_eq!(body["tool_count"], 1);
     assert!(body["discovered_at"].is_string());
 
-    // Template JSON now contains discovered_tools.
+    // The upstream saw the instance's bearer token.
+    assert_eq!(stub.last_auth().as_deref(), Some("Bearer s3cr3t"));
+
+    // The instance's action list now includes the discovered `search_docs`
+    // (overlaid) alongside the authored `echo`.
     let resp = client
-        .get(format!("{base}/v1/templates/stub_mcp_sync"))
+        .get(format!("{base}/v1/services/{instance_id}/actions"))
         .header(auth(&org_key).0, auth(&org_key).1)
         .send()
         .await
         .unwrap();
-    let detail: Value = resp.json().await.unwrap();
-    assert_eq!(detail["runtime"], "mcp");
-    assert!(detail["mcp"]["discovered_at"].is_string());
-
-    // The actions list now includes search_docs (from discovered_tools).
-    let names: Vec<&str> = detail["actions"]
+    let actions: Value = resp.json().await.unwrap();
+    let names: Vec<&str> = actions
         .as_array()
         .unwrap()
         .iter()
         .map(|a| a["key"].as_str().unwrap())
         .collect();
-    assert!(names.contains(&"search_docs"));
-    assert!(names.contains(&"echo"));
+    assert!(names.contains(&"search_docs"), "actions: {names:?}");
+    assert!(names.contains(&"echo"), "actions: {names:?}");
 
-    assert_eq!(stub.list_calls(), 1);
+    // The instance detail surfaces `discovered_at`.
+    let resp = client
+        .get(format!(
+            "{base}/v1/services/stub_tel_1?include_inactive=true"
+        ))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .send()
+        .await
+        .unwrap();
+    let detail: Value = resp.json().await.unwrap();
+    assert!(detail["discovered_at"].is_string());
 }
 
+/// Resync mutates an instance and drives an outbound call with its configured
+/// URL + credential, so it requires the same owner/admin gate as every other
+/// mutating instance route. A write-level identity in the same org must not be
+/// able to resync someone else's instance.
 #[tokio::test]
-async fn mcp_resync_rejected_on_http_runtime_template() {
+async fn mcp_resync_requires_owner_or_admin() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, stub) = start_stub().await;
+    stub.set_tools(vec![json!({
+        "name": "peeked",
+        "description": "should not be reachable by a non-owner",
+        "inputSchema": { "type": "object", "properties": {} }
+    })]);
+    let stub_url = format!("http://{addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let org_key = fx.org_key.clone();
+
+    let (_user_a, _agent_a, key_a) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (_user_b, _agent_b, key_b) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"openapi": mcp_template_yaml_no_url("stub_authz", "none")}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "template: {:?}", resp.text().await);
+
+    // Agent A owns the instance.
+    let inst: Value = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&key_a).0, auth(&key_a).1)
+        .json(&json!({"name": "stub_authz_a", "template_key": "stub_authz", "url": stub_url}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let instance_id = inst["id"].as_str().expect("instance id").to_string();
+
+    // Agent B (write access, but not the owner and not an admin) is refused
+    // before any upstream call happens.
+    let resp = client
+        .post(format!("{base}/v1/services/{instance_id}/mcp/resync"))
+        .header(auth(&key_b).0, auth(&key_b).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "{:?}", resp.text().await);
+    assert_eq!(stub.list_calls(), 0, "upstream must not be contacted");
+
+    // The owner can.
+    let resp = client
+        .post(format!("{base}/v1/services/{instance_id}/mcp/resync"))
+        .header(auth(&key_a).0, auth(&key_a).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "owner resync: {:?}", resp.text().await);
+}
+
+/// A no-url MCP template can't be instantiated without a `url` — instance
+/// creation enforces it, so resync never sees a url-less active instance (its
+/// own missing-url 400 is a defensive backstop). This documents that guard.
+#[tokio::test]
+async fn mcp_instance_requires_url_when_template_has_none() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
     let org_key = fx.org_key.clone();
 
-    // Plain HTTP-runtime template.
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"openapi": mcp_template_yaml_no_url("stub_nourl", "none")}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "template: {:?}", resp.text().await);
+
+    // Creating an instance with no url override is rejected up front.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"name": "stub_nourl_1", "template_key": "stub_nourl"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "{:?}", resp.text().await);
+}
+
+/// Resync against an instance of a non-MCP (HTTP) template → 400.
+#[tokio::test]
+async fn mcp_resync_rejected_on_http_runtime_instance() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let org_key = fx.org_key.clone();
+
     let yaml = r#"openapi: 3.1.0
 info:
   title: Plain
@@ -612,7 +777,17 @@ paths:
     assert_eq!(resp.status(), 200);
 
     let resp = client
-        .post(format!("{base}/v1/templates/plain_http/mcp/resync"))
+        .post(format!("{base}/v1/services"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"name": "plain_http_1", "template_key": "plain_http"}))
+        .send()
+        .await
+        .unwrap();
+    let inst: Value = resp.json().await.unwrap();
+    let instance_id = inst["id"].as_str().expect("instance id").to_string();
+
+    let resp = client
+        .post(format!("{base}/v1/services/{instance_id}/mcp/resync"))
         .header(auth(&org_key).0, auth(&org_key).1)
         .send()
         .await
@@ -620,6 +795,7 @@ paths:
     assert_eq!(resp.status(), 400);
 }
 
+/// Resync disabled when the template sets `autodiscover: false` → 400.
 #[tokio::test]
 async fn mcp_resync_rejected_when_autodiscover_false() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
@@ -661,12 +837,210 @@ x-overslash-mcp:
     assert_eq!(resp.status(), 200);
 
     let resp = client
-        .post(format!("{base}/v1/templates/stub_pinned/mcp/resync"))
+        .post(format!("{base}/v1/services"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"name": "stub_pinned_1", "template_key": "stub_pinned"}))
+        .send()
+        .await
+        .unwrap();
+    let inst: Value = resp.json().await.unwrap();
+    let instance_id = inst["id"].as_str().expect("instance id").to_string();
+
+    let resp = client
+        .post(format!("{base}/v1/services/{instance_id}/mcp/resync"))
         .header(auth(&org_key).0, auth(&org_key).1)
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
+}
+
+/// Per-instance isolation: resyncing one instance must not change a sibling
+/// instance's action list. Each instance points at its own server.
+#[tokio::test]
+async fn mcp_resync_is_per_instance() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr_a, stub_a) = start_stub().await;
+    stub_a.set_tools(vec![json!({
+        "name": "only_on_a",
+        "description": "A-only tool",
+        "inputSchema": { "type": "object", "properties": {} }
+    })]);
+    let url_a = format!("http://{addr_a}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let org_key = fx.org_key.clone();
+
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"openapi": mcp_template_yaml_no_url("stub_iso", "none")}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "template: {:?}", resp.text().await);
+
+    // Two instances of the same template.
+    let mk_instance = |name: &str, url: &str| {
+        client
+            .post(format!("{base}/v1/services"))
+            .header(auth(&org_key).0, auth(&org_key).1)
+            .json(&json!({"name": name, "template_key": "stub_iso", "url": url}))
+    };
+    let a: Value = mk_instance("stub_iso_a", &url_a)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let b: Value = mk_instance("stub_iso_b", &url_a)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id_a = a["id"].as_str().unwrap().to_string();
+    let id_b = b["id"].as_str().unwrap().to_string();
+
+    // Resync only instance A.
+    let resp = client
+        .post(format!("{base}/v1/services/{id_a}/mcp/resync"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "resync: {:?}", resp.text().await);
+
+    let action_names = |actions: Value| -> Vec<String> {
+        actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["key"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // A has the discovered tool; B does not.
+    let acts_a: Value = client
+        .get(format!("{base}/v1/services/{id_a}/actions"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let acts_b: Value = client
+        .get(format!("{base}/v1/services/{id_b}/actions"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let names_a = action_names(acts_a);
+    let names_b = action_names(acts_b);
+    assert!(names_a.contains(&"only_on_a".to_string()), "A: {names_a:?}");
+    assert!(
+        !names_b.contains(&"only_on_a".to_string()),
+        "B: {names_b:?}"
+    );
+}
+
+/// Search must surface a tool discovered on an instance — but only to callers
+/// who can see that instance. A second identity without access must not find
+/// the instance-only tool.
+#[tokio::test]
+async fn mcp_instance_discovered_tool_search_visibility() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, stub) = start_stub().await;
+    stub.set_tools(vec![json!({
+        "name": "zzwidgetlookup",
+        "description": "Look up a widget by id",
+        "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }
+    })]);
+    let stub_url = format!("http://{addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let org_key = fx.org_key.clone();
+
+    // Two independent agents (each under its own owner user).
+    let (_user_a, _agent_a, key_a) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (_user_b, _agent_b, key_b) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    // Org-tier MCP template with no url (instance supplies it).
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"openapi": mcp_template_yaml_no_url("stub_vis", "none")}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "template: {:?}", resp.text().await);
+
+    // Agent A creates its own instance and resyncs it.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&key_a).0, auth(&key_a).1)
+        .json(&json!({"name": "stub_vis_a", "template_key": "stub_vis", "url": stub_url}))
+        .send()
+        .await
+        .unwrap();
+    let inst: Value = resp.json().await.unwrap();
+    let instance_id = inst["id"].as_str().expect("instance id").to_string();
+
+    let resp = client
+        .post(format!("{base}/v1/services/{instance_id}/mcp/resync"))
+        .header(auth(&key_a).0, auth(&key_a).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "resync: {:?}", resp.text().await);
+
+    let tool_in_search = |body: Value| -> bool {
+        body["results"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .any(|r| r["action"].as_str() == Some("zzwidgetlookup"))
+            })
+            .unwrap_or(false)
+    };
+
+    // Agent A (owner) finds the instance-discovered tool.
+    let resp = client
+        .get(format!("{base}/v1/search?q=zzwidgetlookup"))
+        .header(auth(&key_a).0, auth(&key_a).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body_a: Value = resp.json().await.unwrap();
+    assert!(
+        tool_in_search(body_a.clone()),
+        "owner should find instance-discovered tool: {body_a}"
+    );
+
+    // Agent B (no access to A's instance) must not.
+    let resp = client
+        .get(format!(
+            "{base}/v1/search?q=zzwidgetlookup&include_catalog=true"
+        ))
+        .header(auth(&key_b).0, auth(&key_b).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body_b: Value = resp.json().await.unwrap();
+    assert!(
+        !tool_in_search(body_b.clone()),
+        "non-owner must not see instance-only tool: {body_b}"
+    );
 }
 
 #[tokio::test]
@@ -895,23 +1269,52 @@ async fn mcp_call_audit_is_error_true_on_tool_failure() {
     assert_eq!(executed["detail"]["is_error"], true);
 }
 
-/// Updating an MCP template's YAML must NOT wipe the system-managed
-/// `discovered_tools` / `discovered_at` fields populated by /mcp/resync.
+/// Editing an MCP template's YAML must NOT wipe `discovered_tools` /
+/// `discovered_at` that the stored openapi already carries (e.g. a global that
+/// ships its tool list in-repo). `preserve_mcp_discovered_fields` copies them
+/// from the previous doc when the new YAML omits them.
 /// Regression for vet finding: "Template update wipes discovered_tools".
 #[tokio::test]
 async fn mcp_template_update_preserves_discovered_tools() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (addr, _stub) = start_stub().await;
-    let stub_url = format!("http://{addr}/mcp");
-
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
     let org_key = fx.org_key.clone();
 
+    // Author discovered_tools + discovered_at directly in the template YAML.
+    let seeded_at = "2024-01-02T03:04:05Z";
+    let yaml_with_discovered = format!(
+        r#"openapi: 3.1.0
+info:
+  title: Keep
+  x-overslash-key: stub_mcp_keep
+x-overslash-runtime: mcp
+paths: {{}}
+x-overslash-mcp:
+  auth: {{ kind: none }}
+  autodiscover: true
+  discovered_at: "{seeded_at}"
+  discovered_tools:
+    - name: search_docs
+      description: Search indexed docs
+      input_schema:
+        type: object
+        properties: {{ q: {{ type: string }} }}
+        required: [q]
+  tools:
+    - name: echo
+      risk: read
+      description: Echo a string
+      input_schema:
+        type: object
+        properties: {{ x: {{ type: string }} }}
+        required: [x]
+"#
+    );
     let create_resp: Value = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&org_key).0, auth(&org_key).1)
-        .json(&json!({"openapi": mcp_template_yaml("stub_mcp_keep", &stub_url, None)}))
+        .json(&json!({"openapi": yaml_with_discovered}))
         .send()
         .await
         .unwrap()
@@ -920,24 +1323,27 @@ async fn mcp_template_update_preserves_discovered_tools() {
         .unwrap();
     let template_id = create_resp["id"].as_str().unwrap().to_string();
 
-    // Resync first — populates discovered_tools.
-    let resync_resp: Value = client
-        .post(format!("{base}/v1/templates/stub_mcp_keep/mcp/resync"))
-        .header(auth(&org_key).0, auth(&org_key).1)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let initial_tool_count = resync_resp["tool_count"].as_u64().unwrap();
-    assert!(initial_tool_count >= 1);
-    let initial_discovered_at = resync_resp["discovered_at"].as_str().unwrap().to_string();
-
-    // Edit the YAML (same key, tweak description). This exercises the
-    // PUT /v1/templates/:id/manage code path that re-compiles the openapi.
-    let updated_yaml = mcp_template_yaml("stub_mcp_keep", &stub_url, None)
-        .replace("Echo a string", "Echo a string (edited)");
+    // Edit the YAML WITHOUT the discovered fields (tweak a description). This
+    // exercises the PUT /v1/templates/:id/manage path that re-compiles the
+    // openapi and must carry the discovered fields forward.
+    let updated_yaml = r#"openapi: 3.1.0
+info:
+  title: Keep
+  x-overslash-key: stub_mcp_keep
+x-overslash-runtime: mcp
+paths: {}
+x-overslash-mcp:
+  auth: { kind: none }
+  autodiscover: true
+  tools:
+    - name: echo
+      risk: read
+      description: Echo a string (edited)
+      input_schema:
+        type: object
+        properties: { x: { type: string } }
+        required: [x]
+"#;
     let resp = client
         .put(format!("{base}/v1/templates/{template_id}/manage"))
         .header(auth(&org_key).0, auth(&org_key).1)
@@ -947,7 +1353,7 @@ async fn mcp_template_update_preserves_discovered_tools() {
         .unwrap();
     assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
 
-    // discovered_tools + discovered_at must survive the edit.
+    // discovered_at must survive the edit.
     let detail: Value = client
         .get(format!("{base}/v1/templates/stub_mcp_keep"))
         .header(auth(&org_key).0, auth(&org_key).1)
@@ -957,9 +1363,7 @@ async fn mcp_template_update_preserves_discovered_tools() {
         .json()
         .await
         .unwrap();
-    assert_eq!(detail["mcp"]["discovered_at"], initial_discovered_at);
-    // Compiled action list still includes `echo` (authored) AND anything the
-    // stub's tools/list returns — so action_count stays >= initial tool_count.
+    assert_eq!(detail["mcp"]["discovered_at"], seeded_at);
     let actions = detail["actions"].as_array().unwrap();
     assert!(!actions.is_empty());
 }

@@ -10,7 +10,7 @@
 		listConnections,
 		listServiceGroups,
 		initiateOAuth,
-		resyncMcpTemplate,
+		resyncMcpService,
 		updateService,
 		setServiceStatus,
 		deleteService,
@@ -69,22 +69,51 @@
 	let resyncing = $state(false);
 	let resyncError = $state<string | null>(null);
 
+	function isNeedsAuth(e: unknown): boolean {
+		return (
+			e instanceof ApiError &&
+			e.status === 401 &&
+			!!e.body &&
+			typeof e.body === 'object' &&
+			(e.body as { error?: unknown }).error === 'needs_authentication'
+		);
+	}
+
+	async function doResync() {
+		if (!svc) return;
+		await resyncMcpService(svc.id);
+		// Refresh actions + the instance itself to reflect the resync: actions
+		// come from the instance id (not name/key) so user-shadows-org can't
+		// surface a different instance's actions, and `svc.discovered_at`
+		// drives the "last resync" line.
+		actions = await getServiceActions(svc.id);
+		svc = await getService(svc.id);
+	}
+
 	async function resyncMcpTools() {
-		if (!template) return;
+		if (!svc) return;
 		resyncing = true;
 		resyncError = null;
 		try {
-			await resyncMcpTemplate(template.key);
-			// Reload template + actions to pick up the refreshed discovered_tools.
-			// Actions must come from the service instance id (not name/key) — same
-			// invariant as load(): user-shadows-org mustn't return a different
-			// instance's actions.
-			const tpl = await getTemplate(template.key);
-			const acts = svc ? await getServiceActions(svc.id) : [];
-			template = tpl;
-			actions = acts;
+			await doResync();
 		} catch (e) {
-			resyncError = e instanceof ApiError ? e.message : String(e);
+			// OAuth instance with no/expired connection: drive the same connect
+			// popup the reconnect button uses, then retry the resync once.
+			if (isNeedsAuth(e) && oauthProvider) {
+				await reconnect();
+				if (error) {
+					resyncError = error;
+					error = null;
+					return;
+				}
+				try {
+					await doResync();
+				} catch (e2) {
+					resyncError = (e2 instanceof ApiError ? apiErrorReason(e2) : null) ?? String(e2);
+				}
+			} else {
+				resyncError = (e instanceof ApiError ? apiErrorReason(e) : null) ?? String(e);
+			}
 		} finally {
 			resyncing = false;
 		}
@@ -1041,17 +1070,18 @@
 							<span class="muted">
 								{#if template.mcp?.autodiscover === false}
 									discovery disabled
-								{:else if template.mcp?.discovered_at}
-									last resync: {template.mcp.discovered_at}
+								{:else if svc?.discovered_at}
+									last resync: {svc.discovered_at}
 								{:else}
 									never resynced
 								{/if}
 							</span>
 						</div>
-						<!-- Resync isn't supported for oauth-auth MCP servers (the admin
-						     resync path carries no per-user token) — the backend 400s, so
-						     don't offer the button even if autodiscover is left on. -->
-						{#if template.mcp?.autodiscover !== false && template.tier !== 'global' && template.mcp?.auth_kind !== 'oauth'}
+						<!-- Resync runs against this instance (which carries the url/
+						     secret or OAuth connection), so it works for global-template
+						     instances and OAuth servers too — offer it whenever autodiscover
+						     is on and an effective URL exists. -->
+						{#if template.mcp?.autodiscover !== false && (svc?.url || template.mcp?.url)}
 							<button
 								type="button"
 								class="btn"

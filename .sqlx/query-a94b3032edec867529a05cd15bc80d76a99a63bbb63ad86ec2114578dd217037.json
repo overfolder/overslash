@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, owner_identity_id, name, template_source, template_key, template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at FROM service_instances WHERE org_id = $1 AND (owner_identity_id IS NULL OR owner_identity_id = $2 OR owner_identity_id = $3) ORDER BY name",
+  "query": "UPDATE service_instances SET connection_id = $3, updated_at = now() WHERE id = $1 AND org_id = $2 RETURNING id, org_id, owner_identity_id, name, template_source, template_key, template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at",
   "describe": {
     "columns": [
       {
@@ -178,6 +178,28 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 16,
+        "name": "discovered_tools?: Json<Vec<serde_json::Value>>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "discovered_tools"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "discovered_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "discovered_at"
+          }
+        }
       }
     ],
     "parameters": {
@@ -203,8 +225,10 @@
       false,
       false,
       false,
-      false
+      false,
+      true,
+      true
     ]
   },
-  "hash": "a9d51864d7d693055ae0e1a11bfc313b2ccf1432c89e981715e252f017133626"
+  "hash": "a94b3032edec867529a05cd15bc80d76a99a63bbb63ad86ec2114578dd217037"
 }

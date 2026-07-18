@@ -38,6 +38,14 @@ pub struct ServiceInstanceRow {
     pub is_system: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+    /// MCP tools/list result for this instance, populated by
+    /// `POST /v1/services/{id}/mcp/resync`. `None` = never resynced (distinct
+    /// from an empty list). Each element is `{name, description, input_schema,
+    /// output_schema}`. Overlaid on the template's authored `tools:` at read
+    /// time (authored wins field-by-field). See migration 101.
+    pub discovered_tools: Option<Json<Vec<serde_json::Value>>>,
+    /// When the instance was last resynced (RFC3339 surfaced to the UI).
+    pub discovered_at: Option<OffsetDateTime>,
 }
 
 crate::repos::impl_org_owned!(ServiceInstanceRow);
@@ -85,7 +93,7 @@ pub(crate) async fn create(
          template_key, template_id, connection_id, secret_name, credentials, url, use_default_connection, status) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at",
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at",
         input.org_id,
         input.owner_identity_id,
         input.name,
@@ -128,7 +136,7 @@ where
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
          FROM service_instances WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -155,7 +163,7 @@ where
         "UPDATE service_instances SET connection_id = $3, updated_at = now() \
          WHERE id = $1 AND org_id = $2 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at",
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at",
         id,
         org_id,
         connection_id,
@@ -174,7 +182,7 @@ pub(crate) async fn get_by_name(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND name = $3",
         org_id,
@@ -211,7 +219,7 @@ pub(crate) async fn resolve_by_name(
         return sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2 AND status = 'active'",
             org_id,
@@ -226,7 +234,7 @@ pub(crate) async fn resolve_by_name(
         let caller_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3 AND status = 'active'",
             org_id,
@@ -247,7 +255,7 @@ pub(crate) async fn resolve_by_name(
         let user_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3 AND status = 'active'",
             org_id,
@@ -265,7 +273,7 @@ pub(crate) async fn resolve_by_name(
     let org_instance = sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2 AND status = 'active'",
         org_id,
@@ -285,7 +293,8 @@ pub(crate) async fn resolve_by_name(
             ServiceInstanceRow,
             "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, \
              si.template_id, si.connection_id, si.secret_name, si.credentials as \"credentials: Json<CredentialsMap>\", si.url, si.use_default_connection, \
-             si.status, si.is_system, si.created_at, si.updated_at \
+             si.status, si.is_system, si.created_at, si.updated_at, \
+             si.discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", si.discovered_at \
              FROM service_instances si \
              WHERE si.org_id = $1 AND si.name = $2 AND si.status = 'active' \
                AND EXISTS ( \
@@ -324,7 +333,7 @@ pub async fn resolve_by_name_any_status(
         return sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2",
             org_id,
@@ -338,7 +347,7 @@ pub async fn resolve_by_name_any_status(
         let caller_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3",
             org_id,
@@ -358,7 +367,7 @@ pub async fn resolve_by_name_any_status(
         let user_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+             template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3",
             org_id,
@@ -375,7 +384,7 @@ pub async fn resolve_by_name_any_status(
     let org_instance = sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2",
         org_id,
@@ -393,7 +402,8 @@ pub async fn resolve_by_name_any_status(
             ServiceInstanceRow,
             "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, \
              si.template_id, si.connection_id, si.secret_name, si.credentials as \"credentials: Json<CredentialsMap>\", si.url, si.use_default_connection, \
-             si.status, si.is_system, si.created_at, si.updated_at \
+             si.status, si.is_system, si.created_at, si.updated_at, \
+             si.discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", si.discovered_at \
              FROM service_instances si \
              WHERE si.org_id = $1 AND si.name = $2 \
                AND EXISTS ( \
@@ -425,7 +435,7 @@ pub(crate) async fn list_by_org(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NULL ORDER BY name",
         org_id,
@@ -443,7 +453,7 @@ pub(crate) async fn list_by_user(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id = $2 ORDER BY name",
         org_id,
@@ -468,7 +478,7 @@ pub(crate) async fn list_available(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
          FROM service_instances \
          WHERE org_id = $1 \
            AND (owner_identity_id IS NULL \
@@ -502,7 +512,7 @@ pub(crate) async fn list_available_with_groups(
             sqlx::query_as!(
                 ServiceInstanceRow,
                 "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-                 template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+                 template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
                  FROM service_instances \
                  WHERE org_id = $1 AND id = ANY($2) \
                  ORDER BY name",
@@ -527,7 +537,7 @@ pub(crate) async fn list_all_in_org(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at \
          FROM service_instances \
          WHERE org_id = $1 \
          ORDER BY name",
@@ -552,13 +562,40 @@ pub(crate) async fn update_status(
         "UPDATE service_instances SET status = $3, updated_at = now() \
          WHERE id = $1 AND org_id = $2 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at",
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at",
         id,
         org_id,
         status,
     )
     .fetch_optional(pool)
     .await
+}
+
+/// Overwrite the MCP discovery result for an instance, scoped to an org.
+///
+/// Narrow writer (kept separate from [`update`], which is the user-facing
+/// instance edit) used by the MCP resync route. Last write wins — every
+/// resync replaces `discovered_tools` wholesale. Double-key: a row id from
+/// another org mutates nothing and returns `false`.
+pub(crate) async fn update_discovered_tools(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+    tools: &[serde_json::Value],
+    at: OffsetDateTime,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE service_instances \
+         SET discovered_tools = $3, discovered_at = $4, updated_at = now() \
+         WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+        Json(tools) as _,
+        at,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Update mutable fields, scoped to an org.
@@ -596,7 +633,7 @@ pub(crate) async fn update(
          updated_at = now() \
          WHERE id = $1 AND org_id = $2 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at",
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at",
         id,
         org_id,
         input.name,

@@ -1,11 +1,12 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::{get, patch, put},
+    routing::{get, patch, post, put},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use overslash_db::repos::audit::AuditEntry;
 use overslash_db::scopes::OrgScope;
 
 use crate::{
@@ -30,6 +31,7 @@ pub fn router() -> Router<AppState> {
             get(get_service).delete(delete_service),
         )
         .route("/v1/services/{name}/actions", get(list_service_actions))
+        .route("/v1/services/{id}/mcp/resync", post(resync_mcp_service))
         .route("/v1/services/{id}/manage", put(update_service))
         .route("/v1/services/{id}/status", patch(update_service_status))
         .route("/v1/services/{id}/groups", get(list_service_groups))
@@ -491,7 +493,7 @@ async fn list_service_actions(
     // Resolve the same template + connection the exec path would use, then
     // annotate each scope-bearing action with its coverage so the agent sees
     // `needs_reconnect` here instead of after a 403.
-    let def = super::templates::resolve_template_definition(
+    let mut def = super::templates::resolve_template_definition(
         &state,
         &ext,
         instance.org_id,
@@ -499,6 +501,9 @@ async fn list_service_actions(
         &instance.template_key,
     )
     .await?;
+    // Overlay this instance's MCP resync result on top of the template's
+    // authored tools (authored wins; instance-only tools are added).
+    crate::routes::actions::overlay_instance_discovered_tools(Some(&instance), &mut def);
     let effective =
         platform_services::resolve_effective_scopes(state.db(&ext), &scope, &def, &instance).await;
     let knowledge = match effective.as_ref() {
@@ -511,4 +516,171 @@ async fn list_service_actions(
     Ok(Json(
         super::templates::actions_from_definition_with_coverage(&def, knowledge),
     ))
+}
+
+#[derive(Serialize)]
+struct McpResyncResponse {
+    service_id: Uuid,
+    tool_count: usize,
+    discovered_at: String,
+}
+
+/// POST /v1/services/{id}/mcp/resync — refresh `discovered_tools` on an MCP
+/// **service instance** by calling tools/list against its effective MCP server.
+///
+/// Unlike a template, an instance carries the `url`/`secret_name` (or OAuth
+/// connection) needed to actually reach the server, so this works for
+/// templates like `telegram` that defer both to their instances. The result
+/// is stored per-instance (one fast-mcp container per user must not clobber a
+/// shared row) and overlaid on the template's authored tools at read time.
+async fn resync_mcp_service(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+) -> Result<Json<McpResyncResponse>> {
+    use overslash_core::types::Runtime;
+
+    let identity_id = acl
+        .identity_id
+        .ok_or_else(|| AppError::Forbidden("identity-bound credential required".into()))?;
+    let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
+
+    let instance = scope
+        .get_service_instance(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("service '{id}' not found")))?;
+    // Resync mutates the instance and drives an outbound call using its
+    // configured URL + credential, so it needs an owner gate —
+    // `get_service_instance` is org-scoped but not owner-scoped, so without
+    // this any write-level identity in the org could resync (and reach the
+    // server behind) someone else's private instance.
+    //
+    // Gated on the *ceiling user*, not the raw caller: an agent creates
+    // services at its owner-user level (`on_behalf_of`), so the agent that set
+    // an instance up must still be able to resync it. A different user's agent
+    // resolves to a different ceiling and is refused.
+    if !crate::services::permission_chain::caller_may_manage_owned(
+        &scope,
+        instance.owner_identity_id,
+        Some(ceiling_user_id),
+        acl.access_level,
+    )
+    .await?
+    {
+        return Err(AppError::Forbidden(
+            "only the service owner or an org admin can resync this service".into(),
+        ));
+    }
+
+    // Resolve the same template the exec path would use.
+    let def = super::templates::resolve_template_definition(
+        &state,
+        &ext,
+        instance.org_id,
+        instance.owner_identity_id,
+        &instance.template_key,
+    )
+    .await?;
+    if def.runtime != Runtime::Mcp {
+        return Err(AppError::BadRequest(format!(
+            "service '{}' is not an MCP-runtime template",
+            instance.name
+        )));
+    }
+    let mcp = def
+        .mcp
+        .clone()
+        .ok_or_else(|| AppError::Internal("mcp runtime without mcp block".into()))?;
+    if !mcp.autodiscover {
+        return Err(AppError::BadRequest(
+            "autodiscover=false on this template — resync disabled".into(),
+        ));
+    }
+
+    // Effective url + auth: instance wins, template fallback. OAuth resolves a
+    // live bearer (or gates with needs_authentication); Bearer resolves the
+    // vault secret name; missing url/secret → structured 400.
+    let crate::routes::actions::ResolvedMcp {
+        url,
+        auth,
+        oauth_header,
+    } = crate::routes::actions::resolve_effective_mcp(
+        &state,
+        &ext,
+        &scope,
+        acl.identity_id,
+        ceiling_user_id,
+        &instance.template_key,
+        Some(&instance),
+        &mcp,
+        None,
+    )
+    .await?;
+
+    // Auth headers + SSRF-pinned client, shared with the tools/call path so
+    // the two can't drift on auth merging, host overrides, or the timeout.
+    let (client, headers) = crate::services::mcp_caller::build_client(
+        &state,
+        &scope,
+        &url,
+        &auth,
+        oauth_header.as_ref(),
+    )
+    .await?;
+    let tools = client
+        .tools_list(&headers)
+        .await
+        .map_err(|e| AppError::BadGateway(format!("mcp tools/list failed: {e}")))?;
+
+    let discovered_json: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            let mut m = serde_json::Map::new();
+            m.insert("name".into(), serde_json::Value::String(t.name.clone()));
+            if let Some(d) = &t.description {
+                m.insert("description".into(), serde_json::Value::String(d.clone()));
+            }
+            if let Some(s) = &t.input_schema {
+                m.insert("input_schema".into(), s.clone());
+            }
+            if let Some(s) = &t.output_schema {
+                m.insert("output_schema".into(), s.clone());
+            }
+            serde_json::Value::Object(m)
+        })
+        .collect();
+
+    let at = time::OffsetDateTime::now_utc();
+    let discovered_at = at
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    scope
+        .update_service_instance_discovered_tools(instance.id, &discovered_json, at)
+        .await?;
+
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "service.mcp_resync",
+            resource_type: Some("service_instance"),
+            resource_id: Some(instance.id),
+            detail: serde_json::json!({
+                "template_key": instance.template_key,
+                "tool_count": tools.len(),
+                "url": url,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(McpResyncResponse {
+        service_id: instance.id,
+        tool_count: tools.len(),
+        discovered_at,
+    }))
 }

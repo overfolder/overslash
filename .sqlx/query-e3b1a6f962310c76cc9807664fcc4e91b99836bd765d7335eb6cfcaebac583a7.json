@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, owner_identity_id, name, template_source, template_key, template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at FROM service_instances WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND name = $3",
+  "query": "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, si.template_id, si.connection_id, si.secret_name, si.credentials as \"credentials: Json<CredentialsMap>\", si.url, si.use_default_connection, si.status, si.is_system, si.created_at, si.updated_at, si.discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", si.discovered_at FROM service_instances si WHERE si.org_id = $1 AND si.name = $2 AND EXISTS ( SELECT 1 FROM group_grants gg JOIN identity_groups ig ON ig.group_id = gg.group_id JOIN identities i ON i.id = ig.identity_id JOIN groups g ON g.id = gg.group_id WHERE ig.identity_id = $3 AND gg.service_instance_id = si.id AND i.org_id = $1 AND g.org_id = $1 )",
   "describe": {
     "columns": [
       {
@@ -178,13 +178,35 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 16,
+        "name": "discovered_tools?: Json<Vec<serde_json::Value>>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "discovered_tools"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "discovered_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "discovered_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text"
+        "Text",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -203,8 +225,10 @@
       false,
       false,
       false,
-      false
+      false,
+      true,
+      true
     ]
   },
-  "hash": "f707a02ec19794cf784fba67ab29a9f2a3cd2904d94a4ea181e1726666baf7d3"
+  "hash": "e3b1a6f962310c76cc9807664fcc4e91b99836bd765d7335eb6cfcaebac583a7"
 }

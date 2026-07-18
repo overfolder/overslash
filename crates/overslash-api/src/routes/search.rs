@@ -171,6 +171,10 @@ struct InstanceRow {
     /// resolved the same way `list_services` derives `credentials_status`.
     /// Drives per-action `scope_coverage`. See [`InstanceScopes`].
     scopes: InstanceScopes,
+    /// This instance's MCP resync result, if any. Overlaid on the template's
+    /// authored tools so tools discovered on the instance become searchable —
+    /// visibility-scoped, since only instances the caller can see reach here.
+    discovered_tools: Option<Vec<serde_json::Value>>,
 }
 
 /// Owned mirror of [`ScopeKnowledge`] carried per instance from
@@ -479,6 +483,69 @@ async fn search(
                 }
             }
         }
+
+        // Second pass: tools discovered on an *instance* (via MCP resync) that
+        // the template doesn't declare. Only connected/visible instances reach
+        // here, so a caller without access to an instance never sees its
+        // instance-only tools. Instance-only tools have no template-scoped
+        // embedding row, so they score on the keyword/fuzzy path.
+        for inst in &connected_instances {
+            let Some(discovered) = inst.discovered_tools.as_ref() else {
+                continue;
+            };
+            let mut inst_def = t.def.clone();
+            // Calls the core overlay directly rather than the
+            // `overlay_instance_discovered_tools` row wrapper: search carries a
+            // projected `InstanceRow`, not a `ServiceInstanceRow`.
+            overslash_core::openapi::overlay_discovered_tools(&mut inst_def, discovered);
+            for (action_key, action) in inst_def.actions.iter() {
+                if t.def.actions.contains_key(action_key) {
+                    // Already scored + emitted in the template loop above.
+                    continue;
+                }
+                let cand = Candidate {
+                    service: &inst_def,
+                    action_key,
+                    action,
+                };
+                let kw = keyword_fuzzy_score(q, &cand);
+                let emb = emb_scores
+                    .get(&(t.tier.to_string(), t.def.key.clone(), action_key.clone()))
+                    .copied()
+                    .unwrap_or(0.0);
+                let raw = if emb > 0.0 {
+                    KEYWORD_WEIGHT * kw + EMBEDDING_WEIGHT * emb
+                } else {
+                    kw
+                };
+                let final_score = apply_post_bonuses(raw, connected, action.risk);
+                if final_score < MIN_SCORE {
+                    continue;
+                }
+                let (scope_coverage, missing_scopes) = if action.required_scopes.is_empty() {
+                    (None, Vec::new())
+                } else {
+                    let (c, m) = action_scope_coverage(action, inst.scopes.knowledge());
+                    (Some(c), m)
+                };
+                scored.push(SearchResult {
+                    service: Some(inst.name.clone()),
+                    template: t.def.key.clone(),
+                    service_display_name: t.def.display_name.clone(),
+                    account_email: inst.account_email.clone(),
+                    secret_name: inst.secret_name.clone(),
+                    action: Some(action_key.clone()),
+                    description: Some(action.description.clone()),
+                    risk: Some(action.risk),
+                    tier: t.tier.into(),
+                    auth: auth_status.clone(),
+                    score: Some(final_score),
+                    setup_required: None,
+                    scope_coverage,
+                    missing_scopes,
+                });
+            }
+        }
     }
 
     scored.sort_by(|a, b| {
@@ -644,6 +711,7 @@ async fn collect_visible_templates(
                 account_email,
                 secret_name: r.secret_name,
                 scopes,
+                discovered_tools: r.discovered_tools.map(|j| j.0),
             });
     }
 

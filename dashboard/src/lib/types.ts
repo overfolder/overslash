@@ -526,6 +526,8 @@ export interface ServiceInstanceDetail extends ServiceInstanceSummary {
   template_id?: string;
   created_at: string;
   updated_at: string;
+  /** When this instance's MCP tools were last resynced (RFC3339). Absent until the first resync. */
+  discovered_at?: string;
 }
 
 export interface CreateServiceRequest {

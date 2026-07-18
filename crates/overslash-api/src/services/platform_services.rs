@@ -190,6 +190,10 @@ pub struct ServiceInstanceDetail {
     pub is_system: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// When this instance's MCP tools were last resynced (RFC3339). Absent
+    /// until the first `POST /v1/services/{id}/mcp/resync`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovered_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials_status: Option<CredentialsStatus>,
     /// Present on the response to `POST /v1/services` when the kernel
@@ -1048,6 +1052,7 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
         is_system: row.is_system,
         created_at: fmt_time(row.created_at),
         updated_at: fmt_time(row.updated_at),
+        discovered_at: row.discovered_at.map(fmt_time),
         credentials_status: None,
         connect: None,
     }

@@ -4,6 +4,7 @@
 //! `self.org_id()` so a row id from another org returns `None` / `false`
 //! at the SQL boundary instead of leaking or mutating cross-tenant rows.
 
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::repos::service_instance::{
@@ -150,6 +151,18 @@ impl OrgScope {
         input: &UpdateServiceInstance<'_>,
     ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
         service_instance::update(self.db(), self.org_id(), id, input).await
+    }
+
+    /// Overwrite a service instance's MCP discovery result, scoped to this org.
+    /// Returns `false` if the id belongs to another tenant. Used by the
+    /// instance-scoped MCP resync route.
+    pub async fn update_service_instance_discovered_tools(
+        &self,
+        id: Uuid,
+        tools: &[serde_json::Value],
+        at: OffsetDateTime,
+    ) -> Result<bool, sqlx::Error> {
+        service_instance::update_discovered_tools(self.db(), self.org_id(), id, tools, at).await
     }
 
     /// Delete a service instance, scoped to this org. Returns `false` if the

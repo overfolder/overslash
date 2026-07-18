@@ -64,8 +64,9 @@ servers that don't support Dynamic Client Registration (e.g. Slack, HubSpot).
 `services/hubspot.yaml` and `services/slack.yaml` are the shipped examples.
 
 - `tools[]` is the admin-authored overlay (risk, scope_param, disabled, description/schema overrides).
-- `discovered_tools[]` is populated by `POST /v1/templates/:key/mcp/resync` from a live `tools/list` call.
-- Compile merges the two (YAML wins per-field) and emits one `ServiceAction` per merged tool. Tools present in YAML but not in `discovered_tools` emit a `mcp_tool_not_discovered` warning (admins can pre-annotate).
+- A template's `discovered_tools[]` may ship in-repo (globals) or be authored; it compiles into the template's action set.
+- Per-**instance** `discovered_tools` are populated by `POST /v1/services/:id/mcp/resync` (see Resync lifecycle) and stored on `service_instances`; they are overlaid onto the compiled template def at every read path that has an instance in scope (actions listing, the call/validate resolver, and visibility-scoped search).
+- Compile merges authored `tools[]` over template `discovered_tools[]` (authored wins per-field) and emits one `ServiceAction` per merged tool; the instance overlay then adds any instance-discovered tool the template doesn't already declare (authored/existing wins). Tools present in YAML but not in `discovered_tools` emit a `mcp_tool_not_discovered` warning (admins can pre-annotate).
 - `autodiscover: false` pins the tool set to YAML; every tool must declare `input_schema`.
 
 ## Dispatch
@@ -103,13 +104,28 @@ Tool-level errors (`isError: true`) return HTTP 200 with `is_error: true` in the
 
 ## Resync lifecycle
 
-`POST /v1/templates/:key/mcp/resync`
+`POST /v1/services/:id/mcp/resync` — resync is **instance-scoped**. A template
+like `telegram` ships no `url`/`secret_name` (one fast-mcp container per
+end-user); the instance carries the config needed to reach the server, so
+resync must run against an instance, not the template.
 
-- Write-ACL gated. User-tier rows reachable by their owner; org-tier rows require admin; globals ship their tool list in-repo and cannot be resynced.
-- Calls `tools/list` against `mcp.url` with the template's configured auth.
-- Writes the response into `x-overslash-mcp.discovered_tools` and stamps `discovered_at` (RFC 3339).
-- Audited as `template.mcp_resync`.
-- On network/auth failure returns `502` with a descriptive message; the template row is left unchanged.
+- Write-ACL gated, org-scoped by instance id.
+- Resolves the effective MCP target with `mcp_resolve::resolve_effective_mcp`
+  (shared with the exec path): URL and bearer `secret_name` are instance-wins-
+  template-fallback; OAuth mints a live bearer from the instance's connection
+  (explicit `connection_id` → `use_default_connection` → owner default), and
+  when none exists yet returns `needs_authentication` (the dashboard drives the
+  connect popup and retries).
+- Calls `tools/list` and writes the response into the **instance's**
+  `discovered_tools` + `discovered_at` (RFC 3339) — last write wins per
+  instance, so sibling instances don't clobber each other.
+- Audited as `service.mcp_resync` (`resource_type: service_instance`).
+- On network/auth failure returns `502` with a descriptive message; the
+  instance row is left unchanged.
+
+Rejected with `400` when the template is not MCP-runtime or `autodiscover:
+false`. (The template-scoped `POST /v1/templates/:key/mcp/resync` route was
+retired in favour of this one.)
 
 No discovery runs on `/v1/actions/call` — the resync is the only code path that contacts the upstream for metadata.
 
@@ -118,7 +134,7 @@ No discovery runs on `/v1/actions/call` — the resync is the only code path tha
 Service detail page, Actions tab:
 
 - When `template.runtime === 'mcp'`: show `Tool | Description | Risk | (pill)` columns; disabled tools render with a muted "hidden" pill.
-- A strip above the table shows the MCP URL, last resync timestamp, and a "Resync tools" button (hidden for `autodiscover: false` or global tier).
+- A strip above the table shows the MCP URL, the instance's last resync timestamp, and a "Resync tools" button. The button is shown whenever `autodiscover` is on and an effective URL exists (`svc.url || template.mcp.url`) — including global-template instances and OAuth servers, since resync is instance-scoped. For an OAuth instance with no connection the resync returns `needs_authentication`, and the page drives the same connect popup the reconnect button uses, then retries.
 
 No separate "Add MCP server" wizard — admins paste the YAML in the template editor.
 

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, owner_identity_id, name, template_source, template_key, template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at FROM service_instances WHERE org_id = $1 ORDER BY name",
+  "query": "SELECT id, org_id, owner_identity_id, name, template_source, template_key, template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at FROM service_instances WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND name = $3",
   "describe": {
     "columns": [
       {
@@ -178,11 +178,35 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 16,
+        "name": "discovered_tools?: Json<Vec<serde_json::Value>>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "discovered_tools"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "discovered_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "discovered_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -201,8 +225,10 @@
       false,
       false,
       false,
-      false
+      false,
+      true,
+      true
     ]
   },
-  "hash": "732a48b19940405c206d54d0dfc0f9c17b80f0b72d670797199d3557d188c8d3"
+  "hash": "ddfcadbcae598e16dd191424e90368a81b3e0d540f0ab750925051b0454481a7"
 }

@@ -20,11 +20,11 @@ x-overslash-mcp:
   #   secret_name — vault key that holds the container's bearer AUTH_TOKEN
   auth:
     kind: bearer
-  # Tools are authored inline (globals ship their tool list in-repo and are not
-  # resync-able). When an operator promotes this template to org/user tier,
-  # `autodiscover: true` lets `POST /v1/templates/telegram/mcp/resync` populate
-  # `discovered_tools` and merge on top of these entries; the authored
-  # `input_schema` still wins field-by-field, so the aliases below survive.
+  # Tools are authored inline (globals ship their tool list in-repo).
+  # `autodiscover: true` lets `POST /v1/services/{id}/mcp/resync` populate the
+  # *instance's* `discovered_tools` from a live tools/list; those are overlaid
+  # on top of these entries at read time, and the authored `input_schema` still
+  # wins field-by-field, so the aliases below survive.
   #
   # `x-overslash-aliases` on a parameter accepts a caller-facing synonym and
   # rewrites it to the canonical name before validation. Added here because

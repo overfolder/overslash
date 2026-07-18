@@ -50,6 +50,7 @@ mod approval_detail;
 mod auth;
 mod call;
 mod errors;
+mod mcp_resolve;
 mod resolve;
 mod service_resolve;
 mod validate;
@@ -60,6 +61,11 @@ use validate::validate_action_impl;
 // Used by the approval-replay path to re-mint the OAuth credential that
 // replay payloads deliberately don't persist.
 pub(crate) use auth::{resolve_mcp_oauth_bearer, resolve_replay_auth_header};
+
+// Effective-MCP resolution shared with the instance-scoped resync route.
+pub(crate) use mcp_resolve::{
+    ResolvedMcp, overlay_instance_discovered_tools, resolve_effective_mcp,
+};
 
 /// Cap on the number of instance names we surface in `ServiceResolution`
 /// error payloads. Agents only need a handful to disambiguate; the full
