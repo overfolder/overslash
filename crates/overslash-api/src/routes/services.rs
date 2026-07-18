@@ -503,9 +503,7 @@ async fn list_service_actions(
     .await?;
     // Overlay this instance's MCP resync result on top of the template's
     // authored tools (authored wins; instance-only tools are added).
-    if let Some(tools) = instance.discovered_tools.as_ref() {
-        overslash_core::openapi::overlay_discovered_tools(&mut def, &tools.0);
-    }
+    crate::routes::actions::overlay_instance_discovered_tools(Some(&instance), &mut def);
     let effective =
         platform_services::resolve_effective_scopes(state.db(&ext), &scope, &def, &instance).await;
     let knowledge = match effective.as_ref() {
@@ -539,6 +537,7 @@ async fn resync_mcp_service(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<McpResyncResponse>> {
@@ -547,13 +546,34 @@ async fn resync_mcp_service(
     let identity_id = acl
         .identity_id
         .ok_or_else(|| AppError::Forbidden("identity-bound credential required".into()))?;
-    let scope = OrgScope::new(acl.org_id, state.db_pool(&ext));
     let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
 
     let instance = scope
         .get_service_instance(id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("service '{id}' not found")))?;
+    // Resync mutates the instance and drives an outbound call using its
+    // configured URL + credential, so it needs an owner gate —
+    // `get_service_instance` is org-scoped but not owner-scoped, so without
+    // this any write-level identity in the org could resync (and reach the
+    // server behind) someone else's private instance.
+    //
+    // Gated on the *ceiling user*, not the raw caller: an agent creates
+    // services at its owner-user level (`on_behalf_of`), so the agent that set
+    // an instance up must still be able to resync it. A different user's agent
+    // resolves to a different ceiling and is refused.
+    if !crate::services::permission_chain::caller_may_manage_owned(
+        &scope,
+        instance.owner_identity_id,
+        Some(ceiling_user_id),
+        acl.access_level,
+    )
+    .await?
+    {
+        return Err(AppError::Forbidden(
+            "only the service owner or an org admin can resync this service".into(),
+        ));
+    }
 
     // Resolve the same template the exec path would use.
     let def = super::templates::resolve_template_definition(
@@ -600,32 +620,16 @@ async fn resync_mcp_service(
     )
     .await?;
 
-    // Build headers: vault bearer + merged out-of-band OAuth bearer (mirrors
-    // services::mcp_caller::invoke).
-    let mut headers = crate::services::mcp_auth::resolve_headers(&state, &scope, &auth).await?;
-    if let Some(h) = &oauth_header {
-        let name = reqwest::header::HeaderName::from_bytes(h.name.as_bytes()).map_err(|_| {
-            AppError::Internal(format!("invalid MCP auth header name `{}`", h.name))
-        })?;
-        let value = reqwest::header::HeaderValue::from_str(&h.value).map_err(|_| {
-            AppError::Internal("resolved OAuth token is not a valid HTTP header value".into())
-        })?;
-        headers.insert(name, value);
-    }
-
-    // SSRF-pinned client against the effective URL (base overrides applied so
-    // e2e can route at a local fake, matching the exec path).
-    let resolved_url = state.config.apply_base_overrides(&url);
-    let (http, base) = crate::services::ssrf_guard::build_pinned_client(
-        &resolved_url,
-        std::time::Duration::from_secs(30),
+    // Auth headers + SSRF-pinned client, shared with the tools/call path so
+    // the two can't drift on auth merging, host overrides, or the timeout.
+    let (client, headers) = crate::services::mcp_caller::build_client(
+        &state,
+        &scope,
+        &url,
+        &auth,
+        oauth_header.as_ref(),
     )
     .await?;
-    let client = crate::services::mcp_client::McpClient::with_client_and_base(
-        http,
-        base,
-        crate::services::mcp_client::DEFAULT_MAX_BODY_BYTES,
-    );
     let tools = client
         .tools_list(&headers)
         .await

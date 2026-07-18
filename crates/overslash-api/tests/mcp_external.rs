@@ -38,7 +38,6 @@ impl Stub {
         self.inner.lock().unwrap().last_auth.clone()
     }
 
-    #[allow(dead_code)]
     fn list_calls(&self) -> u32 {
         self.inner.lock().unwrap().list_calls
     }
@@ -552,9 +551,9 @@ async fn mcp_missing_secret_returns_400_before_upstream_call() {
     assert!(stub.last_auth().is_none());
 }
 
-/// The exact bug: a telegram-shaped template ships no `url`/`secret_name`;
-/// the instance supplies them. Resync must run against the instance and 200,
-/// where the old template route 400'd on the missing template URL.
+/// A telegram-shaped template ships no `url`/`secret_name` — the instance
+/// supplies both. Resync resolves them from the instance, reaches the server
+/// with the instance's bearer, and stores the tools on the instance.
 #[tokio::test]
 async fn mcp_resync_bearer_instance_populates_discovered_tools() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
@@ -606,7 +605,7 @@ async fn mcp_resync_bearer_instance_populates_discovered_tools() {
     let inst: Value = resp.json().await.unwrap();
     let instance_id = inst["id"].as_str().expect("instance id").to_string();
 
-    // Resync against the instance → 200 (the bug: this used to 400).
+    // Resync resolves url + secret_name from the instance.
     let resp = client
         .post(format!("{base}/v1/services/{instance_id}/mcp/resync"))
         .header(auth(&org_key).0, auth(&org_key).1)
@@ -651,6 +650,71 @@ async fn mcp_resync_bearer_instance_populates_discovered_tools() {
         .unwrap();
     let detail: Value = resp.json().await.unwrap();
     assert!(detail["discovered_at"].is_string());
+}
+
+/// Resync mutates an instance and drives an outbound call with its configured
+/// URL + credential, so it requires the same owner/admin gate as every other
+/// mutating instance route. A write-level identity in the same org must not be
+/// able to resync someone else's instance.
+#[tokio::test]
+async fn mcp_resync_requires_owner_or_admin() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, stub) = start_stub().await;
+    stub.set_tools(vec![json!({
+        "name": "peeked",
+        "description": "should not be reachable by a non-owner",
+        "inputSchema": { "type": "object", "properties": {} }
+    })]);
+    let stub_url = format!("http://{addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let org_key = fx.org_key.clone();
+
+    let (_user_a, _agent_a, key_a) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (_user_b, _agent_b, key_b) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"openapi": mcp_template_yaml_no_url("stub_authz", "none")}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "template: {:?}", resp.text().await);
+
+    // Agent A owns the instance.
+    let inst: Value = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&key_a).0, auth(&key_a).1)
+        .json(&json!({"name": "stub_authz_a", "template_key": "stub_authz", "url": stub_url}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let instance_id = inst["id"].as_str().expect("instance id").to_string();
+
+    // Agent B (write access, but not the owner and not an admin) is refused
+    // before any upstream call happens.
+    let resp = client
+        .post(format!("{base}/v1/services/{instance_id}/mcp/resync"))
+        .header(auth(&key_b).0, auth(&key_b).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "{:?}", resp.text().await);
+    assert_eq!(stub.list_calls(), 0, "upstream must not be contacted");
+
+    // The owner can.
+    let resp = client
+        .post(format!("{base}/v1/services/{instance_id}/mcp/resync"))
+        .header(auth(&key_a).0, auth(&key_a).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "owner resync: {:?}", resp.text().await);
 }
 
 /// A no-url MCP template can't be instantiated without a `url` — instance
@@ -889,7 +953,7 @@ async fn mcp_resync_is_per_instance() {
 
 /// Search must surface a tool discovered on an instance — but only to callers
 /// who can see that instance. A second identity without access must not find
-/// the instance-only tool. (Added requirement.)
+/// the instance-only tool.
 #[tokio::test]
 async fn mcp_instance_discovered_tool_search_visibility() {
     let (pool, fx) = common::test_pool_bootstrapped().await;

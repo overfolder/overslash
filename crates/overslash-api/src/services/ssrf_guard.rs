@@ -4,7 +4,7 @@
 //! window between validation and dial.
 //!
 //! Shared by template OpenAPI import and MCP dispatch (`/actions/call` +
-//! `/templates/:key/mcp/resync`) so every user-controllable outbound URL
+//! `/services/:id/mcp/resync`) so every user-controllable outbound URL
 //! goes through the same gate.
 
 use std::net::{IpAddr, ToSocketAddrs};

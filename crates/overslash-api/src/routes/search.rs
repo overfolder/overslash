@@ -494,6 +494,9 @@ async fn search(
                 continue;
             };
             let mut inst_def = t.def.clone();
+            // Calls the core overlay directly rather than the
+            // `overlay_instance_discovered_tools` row wrapper: search carries a
+            // projected `InstanceRow`, not a `ServiceInstanceRow`.
             overslash_core::openapi::overlay_discovered_tools(&mut inst_def, discovered);
             for (action_key, action) in inst_def.actions.iter() {
                 if t.def.actions.contains_key(action_key) {
