@@ -171,6 +171,11 @@ struct TemplateDetail {
     /// into the template. The dashboard reveals a URL field on the
     /// instance-create/edit form when this is set. See [`configurable_url`].
     configurable_url: bool,
+    /// Params an org may pin per service instance (`x-overslash-instance-config`),
+    /// deduped across actions. The dashboard renders one field per entry on the
+    /// instance-create/edit form and submits them as `config`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    instance_config_params: Vec<InstanceConfigParam>,
     /// Base template key this layer derives from (a **derived** layer). `None`
     /// for a standalone layer or a global template.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -502,12 +507,54 @@ async fn db_row_to_detail(
         mcp,
         hidden: def.hidden,
         configurable_url: configurable_url(def),
+        instance_config_params: instance_config_params(def),
         extends: t.extends,
         delta: t.delta,
         resolution_report: ResolutionReport {
             warnings: resolved.warnings,
         },
     })
+}
+
+/// One instance-pinnable param, flattened for the dashboard form.
+#[derive(Serialize)]
+struct InstanceConfigParam {
+    name: String,
+    #[serde(rename = "type")]
+    param_type: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    description: String,
+    /// Whether every action declaring this param marks it required. A param
+    /// that is optional on any action stays optional on the form.
+    required: bool,
+}
+
+/// Params an org may pin per instance, deduped by name across actions.
+///
+/// A param can appear on several actions (`X-Mailbox-Imap` rides all three
+/// email operations); the form shows one field, so the first occurrence wins
+/// for type/description and `required` is the AND across occurrences — a pin
+/// that is optional anywhere must not be forced on the form.
+fn instance_config_params(def: &ServiceDefinition) -> Vec<InstanceConfigParam> {
+    use std::collections::BTreeMap;
+
+    let mut acc: BTreeMap<&str, InstanceConfigParam> = BTreeMap::new();
+    for action in def.actions.values() {
+        for (name, p) in &action.params {
+            if !p.instance_config {
+                continue;
+            }
+            acc.entry(name.as_str())
+                .and_modify(|existing| existing.required &= p.required)
+                .or_insert_with(|| InstanceConfigParam {
+                    name: name.clone(),
+                    param_type: p.param_type.clone(),
+                    description: p.description.clone(),
+                    required: p.required,
+                });
+        }
+    }
+    acc.into_values().collect()
 }
 
 /// True when a service's endpoint URL is set per instance rather than baked
@@ -849,6 +896,7 @@ async fn get_template(
         mcp,
         hidden: svc.hidden,
         configurable_url: configurable_url(svc),
+        instance_config_params: instance_config_params(svc),
         extends: None,
         delta: None,
         resolution_report: ResolutionReport::default(),

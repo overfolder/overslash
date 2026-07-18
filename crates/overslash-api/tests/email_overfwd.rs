@@ -37,6 +37,11 @@ struct Captured {
     path: String,
     authorization: Option<String>,
     mailbox_auth: Option<String>,
+    /// The mailbox endpoint headers. Absent unless the instance pinned them
+    /// via `config` (or the caller passed them) — overfwd otherwise falls back
+    /// to autoconfig.
+    imap: Option<String>,
+    smtp: Option<String>,
     body: Value,
 }
 
@@ -65,6 +70,8 @@ async fn start_mock_overfwd() -> (String, Sink) {
             path: uri.path().to_string(),
             authorization: header("authorization"),
             mailbox_auth: header("x-mailbox-auth"),
+            imap: header("x-mailbox-imap"),
+            smtp: header("x-mailbox-smtp"),
             body: serde_json::from_slice(&body).unwrap_or(Value::Null),
         });
         Json(json!({ "messages": [], "sent": true }))
@@ -657,4 +664,295 @@ async fn email_template_serializes_scheme_keys_and_sources() {
     assert_eq!(auth[1]["scheme"], json!("mailbox"));
     // `instance` is the default source; it serializes explicitly.
     assert_eq!(auth[1]["secret_source"], json!("instance"));
+}
+
+/// The mailbox endpoint pinned on the instance must reach the gateway as
+/// headers, without the caller passing anything.
+///
+/// This is what makes a self-hosted mailbox reachable at all: overfwd falls
+/// back to autoconfig (a live ISPDB/DNS lookup) when the headers are absent,
+/// and autoconfig can't resolve a private host — or a login that isn't an
+/// email address.
+#[tokio::test]
+async fn email_instance_config_pins_mailbox_endpoint_headers() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, agent_key, _admin_key, _instance) = setup_email_instance_custom(
+        pool,
+        &[("mailbox_credential", MAILBOX_CRED)],
+        json!({
+            "template_key": "email",
+            "url": gateway_url,
+            "credentials": { "mailbox": "mailbox_credential" },
+            "config": {
+                "X-Mailbox-Imap": "imap.corp.internal:993",
+                "X-Mailbox-Smtp": "smtp.corp.internal:465",
+            },
+            "status": "active",
+        }),
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({ "service": "email", "action": "search", "params": {} }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let captured = sink.lock().unwrap();
+    let req = captured.first().expect("gateway saw no request");
+    assert_eq!(req.imap.as_deref(), Some("imap.corp.internal:993"));
+    assert_eq!(req.smtp.as_deref(), Some("smtp.corp.internal:465"));
+}
+
+/// An explicit caller argument beats the instance pin.
+///
+/// The pin is a per-deployment default, not a lock — precedence is
+/// `caller arg > instance config > template default`.
+#[tokio::test]
+async fn email_caller_arg_overrides_pinned_mailbox_endpoint() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, agent_key, _admin_key, _instance) = setup_email_instance_custom(
+        pool,
+        &[("mailbox_credential", MAILBOX_CRED)],
+        json!({
+            "template_key": "email",
+            "url": gateway_url,
+            "credentials": { "mailbox": "mailbox_credential" },
+            "config": { "X-Mailbox-Imap": "imap.corp.internal:993" },
+            "status": "active",
+        }),
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "email",
+            "action": "search",
+            "params": { "X-Mailbox-Imap": "imap.other.test:143" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let captured = sink.lock().unwrap();
+    let req = captured.first().expect("gateway saw no request");
+    assert_eq!(req.imap.as_deref(), Some("imap.other.test:143"));
+}
+
+/// Only params the template marks `x-overslash-instance-config` are storable.
+/// Anything else is a 400 naming what the template does declare — the same
+/// shape `credentials` uses for an unknown scheme.
+#[tokio::test]
+async fn email_create_rejects_unknown_instance_config_key() {
+    let pool = common::test_pool().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, _ident_id, _agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "email",
+            "config": { "query": "ALL" },
+            "status": "active",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Value = resp.json().await.unwrap();
+    let msg = body["error"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("unknown instance config 'query'") && msg.contains("X-Mailbox-Imap"),
+        "expected a 400 naming the declared params, got: {msg}"
+    );
+}
+
+/// `search` with no arguments is the obvious "list my mail" call. It must send
+/// a JSON body — a body-less POST carries no `Content-Type`, which overfwd
+/// rejects — so the template's documented `INBOX`/`ALL` defaults have to be
+/// real declared defaults, not just prose.
+#[tokio::test]
+async fn email_search_with_no_args_sends_defaulted_body() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, agent_key, _admin_key, _instance) = setup_email_instance_custom(
+        pool,
+        &[("mailbox_credential", MAILBOX_CRED)],
+        json!({
+            "template_key": "email",
+            "url": gateway_url,
+            "credentials": { "mailbox": "mailbox_credential" },
+            "status": "active",
+        }),
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({ "service": "email", "action": "search", "params": {} }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let captured = sink.lock().unwrap();
+    let req = captured.first().expect("gateway saw no request");
+    assert_eq!(req.body["folder"], json!("INBOX"));
+    assert_eq!(req.body["query"], json!("ALL"));
+}
+
+/// A blank value is rejected rather than stored, so "not pinned" has exactly
+/// one representation (key absent) instead of two.
+#[tokio::test]
+async fn email_create_rejects_blank_instance_config_value() {
+    let pool = common::test_pool().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, _ident_id, _agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "email",
+            "config": { "X-Mailbox-Imap": "   " },
+            "status": "active",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("must have a value"),
+        "unexpected error: {body:?}"
+    );
+}
+
+/// `config` on update is a whole-map replace: `{}` clears every pin, and an
+/// absent field leaves the stored map alone.
+#[tokio::test]
+async fn email_update_config_replaces_and_clears() {
+    let pool = common::test_pool().await;
+    let (base, _agent_key, admin_key, instance) = setup_email_instance_custom(
+        pool,
+        &[("mailbox_credential", MAILBOX_CRED)],
+        json!({
+            "template_key": "email",
+            "url": "http://127.0.0.1:1",
+            "credentials": { "mailbox": "mailbox_credential" },
+            "config": { "X-Mailbox-Imap": "imap.one.test:993" },
+            "status": "active",
+        }),
+    )
+    .await;
+    let svc_id = instance["id"].as_str().unwrap();
+    let client = reqwest::Client::new();
+
+    // A rename touches neither credentials nor config.
+    let renamed: Value = client
+        .put(format!("{base}/v1/services/{svc_id}/manage"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "name": "email-renamed" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        renamed["config"]["X-Mailbox-Imap"],
+        json!("imap.one.test:993")
+    );
+
+    // An explicit map replaces wholesale.
+    let replaced: Value = client
+        .put(format!("{base}/v1/services/{svc_id}/manage"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "config": { "X-Mailbox-Smtp": "smtp.two.test:465" } }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        replaced["config"]["X-Mailbox-Smtp"],
+        json!("smtp.two.test:465")
+    );
+    assert!(
+        replaced["config"].get("X-Mailbox-Imap").is_none(),
+        "replace must drop keys absent from the new map: {:?}",
+        replaced["config"]
+    );
+
+    // `{}` clears. The field is skipped when empty, so it disappears entirely.
+    let cleared: Value = client
+        .put(format!("{base}/v1/services/{svc_id}/manage"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "config": {} }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        cleared.get("config").is_none() || cleared["config"] == json!({}),
+        "empty map should clear every pin: {:?}",
+        cleared.get("config")
+    );
+}
+
+/// The templates API advertises which params the dashboard should render as
+/// instance-config fields, deduped across the actions that declare them.
+#[tokio::test]
+async fn email_template_advertises_instance_config_params() {
+    let pool = common::test_pool().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, _ident_id, _agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+
+    let tpl: Value = client
+        .get(format!("{base}/v1/templates/email"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let params = tpl["instance_config_params"]
+        .as_array()
+        .expect("instance_config_params present");
+    let names: Vec<&str> = params.iter().filter_map(|p| p["name"].as_str()).collect();
+    // Each rides all three operations but must appear once on the form.
+    assert_eq!(
+        names,
+        vec!["X-Mailbox-Imap", "X-Mailbox-Smtp"],
+        "{params:?}"
+    );
+    for p in params {
+        assert_eq!(p["required"], json!(false), "{p:?}");
+        assert!(
+            p["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("host:port"),
+            "description should reach the form: {p:?}"
+        );
+    }
+    assert_eq!(tpl["configurable_url"], json!(true));
 }

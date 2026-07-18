@@ -33,6 +33,8 @@
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
 	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
+	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
+	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	type ApiKeyScheme = Extract<ServiceAuth, { type: 'api_key' }>;
@@ -58,6 +60,7 @@
 	// ("gateway", "mailbox"). Seeded from svc.credentials with the legacy
 	// scalar secret_name mapped into its instance-source slot for display.
 	let editCredentials = $state<Record<string, string>>({});
+	let editConfig = $state<Record<string, string>>({});
 	let editUrl = $state('');
 	let editUseDefaultConnection = $state(true);
 	let availableSecrets = $state<SecretSummary[]>([]);
@@ -158,6 +161,11 @@
 	// legacy single scalar field in that case.
 	const schemeKeyed = $derived(usesApiKey && apiKeySchemes.every((s) => !!s.scheme));
 	const isSystem = $derived(!!svc?.is_system);
+	// Non-secret per-instance values the template lets an org pin (e.g. the
+	// mailbox gateway's IMAP/SMTP endpoint). System services are not editable.
+	const hasInstanceConfig = $derived(
+		!isSystem && (template?.instance_config_params ?? []).length > 0
+	);
 	const ownerDisplay = $derived.by(() => {
 		const s = svc;
 		if (!s) return '';
@@ -278,15 +286,19 @@
 		return map;
 	}
 
-	// Whole-map replace payload: trimmed, blank entries dropped (blank =
-	// unbind / fall back to the scheme's default resolution).
-	function cleanedCredentials(): Record<string, string> {
-		return Object.fromEntries(
-			Object.entries(editCredentials)
-				.map(([k, v]) => [k, (v ?? '').trim()])
-				.filter(([, v]) => v)
-		);
+	// Seed one entry per instance-pinnable param with the instance's stored
+	// value, so the form shows what is actually pinned rather than a blank.
+	function seedConfig(
+		tpl: TemplateDetail | null,
+		s: ServiceInstanceDetail
+	): Record<string, string> {
+		const map: Record<string, string> = {};
+		for (const p of tpl?.instance_config_params ?? []) {
+			map[p.name] = s.config?.[p.name] ?? '';
+		}
+		return map;
 	}
+
 
 	async function load() {
 		// Cancel any in-flight load from a previous service navigation so
@@ -334,6 +346,7 @@
 			if (ctrl.signal.aborted) return;
 			template = tpl;
 			editCredentials = seedCredentials(tpl, fresh);
+			editConfig = seedConfig(tpl, fresh);
 			actions = acts;
 			connections = conns;
 			identities = ids;
@@ -371,7 +384,8 @@
 					editConnection !== (svc.connection_id ?? '')
 						? editConnection || null
 						: undefined,
-				credentials: sendCredentials ? cleanedCredentials() : undefined,
+				credentials: sendCredentials ? cleanServiceMap(editCredentials) : undefined,
+				config: hasInstanceConfig ? cleanServiceMap(editConfig) : undefined,
 				secret_name:
 					!sendCredentials && editSecret !== (svc.secret_name ?? '')
 						? editSecret || null
@@ -385,6 +399,7 @@
 			});
 			svc = updated;
 			editCredentials = seedCredentials(template, updated);
+			editConfig = seedConfig(template, updated);
 		} catch (e) {
 			error = e instanceof ApiError ? `Save failed (${e.status})` : 'Save failed';
 		} finally {
@@ -767,6 +782,13 @@
 						/>
 						<small>Point this instance at your own deployment. Leave blank to use the default.</small>
 					</label>
+				{/if}
+				{#if hasInstanceConfig}
+					<ServiceInstanceConfig
+						params={template?.instance_config_params ?? []}
+						bind:config={editConfig}
+						idPrefix="edit-service-config"
+					/>
 				{/if}
 				{#if usesApiKey && !usesOAuth && !isSystem && schemeKeyed}
 					<ServiceCredentials

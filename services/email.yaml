@@ -59,6 +59,37 @@ components:
       default_secret_name: mailbox_credential
 paths:
   /email/search:
+    # overfwd derives the IMAP/SMTP endpoint from the mailbox domain via
+    # autoconfig (Mozilla ISPDB + RFC 6186 SRV), which covers the public
+    # providers this template targets. It cannot cover a self-hosted or
+    # corporate mailbox whose domain publishes no autoconfig — and it cannot
+    # cover a login that isn't an email address at all, since there is then no
+    # domain to look up. For those, the org pins the endpoint on the service
+    # instance and overfwd skips autoconfig entirely.
+    #
+    # Transport is inferred from the port: overfwd treats 993/3993 (IMAP) and
+    # 465/3465 (SMTP) as implicit TLS and everything else as plaintext. There
+    # is no STARTTLS path, so a plaintext port is a deliberate choice, not a
+    # fallback.
+    parameters: &mailbox_endpoint
+      - name: X-Mailbox-Imap
+        in: header
+        required: false
+        description: >-
+          IMAP endpoint as host:port (e.g. imap.migadu.com:993). Leave unset to
+          let the gateway autoconfigure from the mailbox domain.
+        x-overslash-instance-config: true
+        schema:
+          type: string
+      - name: X-Mailbox-Smtp
+        in: header
+        required: false
+        description: >-
+          SMTP submission endpoint as host:port (e.g. smtp.migadu.com:465).
+          Leave unset to let the gateway autoconfigure from the mailbox domain.
+        x-overslash-instance-config: true
+        schema:
+          type: string
     post:
       operationId: search
       summary: "Search mailbox folder '{folder}' for {query}"
@@ -69,11 +100,19 @@ paths:
             schema:
               type: object
               properties:
+                # Declared as real defaults, not just documented ones. A
+                # `search` with no arguments — the obvious "list my mail" call —
+                # otherwise sends no body at all, and a body-less POST carries
+                # no `Content-Type: application/json`, which the gateway
+                # rejects outright. Declaring the defaults the description
+                # already promised makes the empty call the working call.
                 folder:
                   type: string
+                  default: INBOX
                   description: Mailbox folder to search. Defaults to INBOX.
                 query:
                   type: string
+                  default: ALL
                   description: >-
                     Raw IMAP SEARCH key (e.g. ALL, UNSEEN, SUBJECT "hi",
                     FROM "a@b.com"). Defaults to ALL.
@@ -81,6 +120,7 @@ paths:
                   type: integer
                   description: Cap on summaries returned (newest first).
   /email/get:
+    parameters: *mailbox_endpoint
     post:
       operationId: get
       summary: "Fetch message {uid} from folder '{folder}'"
@@ -95,11 +135,13 @@ paths:
               properties:
                 folder:
                   type: string
+                  default: INBOX
                   description: Mailbox folder holding the message. Defaults to INBOX.
                 uid:
                   type: integer
                   description: Mailbox-unique id of the message (from a prior search).
   /email/send:
+    parameters: *mailbox_endpoint
     post:
       operationId: send
       summary: "Send email '{subject}' to {to}"

@@ -422,6 +422,52 @@ paths:
     }
 
     #[test]
+    fn shipped_email_declares_instance_pinnable_mailbox_endpoint() {
+        // The email template reaches overfwd, which resolves the IMAP/SMTP
+        // endpoint by autoconfig unless the request carries `X-Mailbox-Imap` /
+        // `X-Mailbox-Smtp`. Autoconfig cannot resolve a self-hosted mailbox, so
+        // without these params the template can only ever reach public
+        // providers. They must stay header-located (a body param would be sent
+        // as JSON and silently ignored by the gateway) and instance-pinnable
+        // (an agent has no way to know its org's mail host).
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let email = reg.get("email").expect("email template registered");
+
+        // All three operations carry them — a pin that only reached `search`
+        // would leave `send` silently autoconfiguring against a host the org
+        // never chose.
+        for action_key in ["search", "get", "send"] {
+            let action = &email.actions[action_key];
+            for param_name in ["X-Mailbox-Imap", "X-Mailbox-Smtp"] {
+                let p = action
+                    .params
+                    .get(param_name)
+                    .unwrap_or_else(|| panic!("email.{action_key} must declare {param_name}"));
+                assert_eq!(
+                    p.location,
+                    crate::types::ParamLocation::Header,
+                    "email.{action_key}.{param_name} must be header-located"
+                );
+                assert!(
+                    p.instance_config,
+                    "email.{action_key}.{param_name} must be instance-pinnable"
+                );
+                assert!(
+                    !p.required,
+                    "email.{action_key}.{param_name} must stay optional — \
+                     autoconfig is the default path for public providers"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn shipped_telegram_send_message_declares_param_aliases() {
         // Pin the ergonomics fix from the burned-approval traces: the Telegram
         // `send_message` tool must accept `text`/`body` as aliases for its

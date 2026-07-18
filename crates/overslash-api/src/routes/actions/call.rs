@@ -107,6 +107,18 @@ pub(super) async fn call_action_impl(
         &pre_meta.validation_params,
         &mut req.params,
     );
+    // Apply the instance's pinned config (e.g. `X-Mailbox-Imap` on a
+    // self-hosted mailbox gateway) *after* aliases so it lands on canonical
+    // keys, and *before* defaults so a pinned value beats the template default
+    // while an explicit caller arg still beats the pin. Precedence, high to
+    // low: caller arg > instance config > template default.
+    apply_instance_config(
+        &pre_meta.validation_params,
+        pre_resolved_mode_c
+            .as_ref()
+            .and_then(|r| r.instance.as_ref()),
+        &mut req.params,
+    );
     // Fill in template-declared defaults (e.g. `calendarId: primary`) before
     // validation so a `required` param with a default isn't rejected as
     // missing, and before resolution so the default flows into the outgoing

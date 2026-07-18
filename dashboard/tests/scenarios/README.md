@@ -47,7 +47,10 @@ The same helpers work inside `tests/e2e/flows/*.spec.ts`. Import from `../scenar
 
 | Helper | What it does |
 |---|---|
-| `login(profile)` | POST `/auth/dev/token?profile=admin\|member\|readonly`, returns a `Session` with cookie + identity ids |
+| `login(profile, { org })` | GET `/auth/dev/token?profile=admin\|member\|readonly`, returns a `Session` with cookie + identity ids. Pass `org` for a run-private org (see "Isolation") |
+| `freshOrgSlug(prefix?)` | A collision-proof slug for a run-private org |
+| `deleteOrg(slug)` | DELETE `/auth/dev/orgs/{slug}` — drops the org and everything in it. Idempotent |
+| `seedMailbox(messages)` / `purgeMail()` / `listMailboxMessages()` | Drive the e2e mail stack (GreenMail behind overfwd). See "Mail stack" |
 | `attachToContext(ctx, session)` | Mirrors the session cookie onto a Playwright BrowserContext (both API and dashboard hosts) |
 | `seedAgent(s, input)` / `seedAgents(s, inputs[])` | POST `/v1/identities` |
 | `listIdentities(s)` | GET `/v1/identities` |
@@ -64,9 +67,33 @@ The same helpers work inside `tests/e2e/flows/*.spec.ts`. Import from `../scenar
 | `makeSnapper(session, outDir?)` | Returns `{ navigateAndSnap, page, snap, close }` for screenshot capture |
 | `api(s, path, opts)` | Low-level typed `fetch` for routes the lib doesn't wrap yet |
 
+## Isolation
+
+By default `login()` signs into the shared `dev-org`, which every screenshot script uses and which accumulates state across runs.
+
+For a spec that asserts on *its own* data — "my services", "my secrets", an empty state — take a private org instead. The server creates it on demand with org-scoped profile emails, so nothing another spec did is visible:
+
+```js
+const orgSlug = freshOrgSlug('e2e-email');
+const session = await login('admin', { org: orgSlug });
+try {
+  // ... everything here is alone in its own tenant
+} finally {
+  await deleteOrg(orgSlug);   // cascade delete; idempotent
+}
+```
+
+Both endpoints are gated behind `DEV_AUTH=1`, same as `/auth/dev/token` itself. `dev-org` cannot be passed as a slug or deleted. See D34.
+
+## Mail stack
+
+`make e2e-up` also starts GreenMail (a real IMAP/SMTP server) behind a real overfwd gateway, which is what `services/email.yaml` targets. `seedMailbox()` delivers over SMTP rather than inserting through GreenMail's admin API — a message that arrived the way real mail arrives is the only one that proves the read path — and `listMailboxMessages()` reads the mail store directly, out of band, so a spec can prove the gateway returned real mail rather than an echo of its own request.
+
+`purgeMail()` empties every mailbox but keeps the declared users; prefer it to GreenMail's `/api/service/reset`, which restarts the server. Note that mail is **not** org-scoped the way the Overslash side is — purge before seeding rather than assuming a clean box.
+
 ## Conventions
 
-- Helpers are **idempotent where the API allows it**. Service creation degrades to find-and-return on 409 so re-runs against a long-lived stack don't fail. Group creation does not (group names are unique per org); use `${name}-${Date.now()}` if you need multiple runs.
+- Helpers are **idempotent where the API allows it**. Service creation degrades to find-and-return on 409 so re-runs against a long-lived stack don't fail. Group creation does not (group names are unique per org); use `${name}-${Date.now()}` if you need multiple runs — or take a private org (above) and stop worrying about names.
 - Helpers return the **canonical API response shape**, not a hand-rolled subset. Chain freely.
 - For approvals, never insert directly via psql or hand-roll `permission_keys` / `suggested_tiers`. `seedApproval` walks the real action gateway so all derived fields are populated.
 

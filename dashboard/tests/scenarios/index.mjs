@@ -16,7 +16,8 @@
 // stack.
 
 export { resolveEnv } from './env.mjs';
-export { login, attachToContext } from './auth.mjs';
+export { login, attachToContext, freshOrgSlug, deleteOrg } from './auth.mjs';
+export { purgeMail, seedMailbox, listMailboxMessages } from './mail.mjs';
 export { api } from './api.mjs';
 export {
 	seedAgent,

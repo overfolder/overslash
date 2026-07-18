@@ -51,6 +51,7 @@ import { api } from './api.mjs';
  *   status?: 'draft' | 'active' | 'archived',
  *   secretName?: string,
  *   credentials?: Record<string, string>,
+ *   config?: Record<string, string>,
  *   url?: string,
  * }} SeedServiceInput
  *
@@ -181,6 +182,7 @@ export async function seedService(session, input) {
 	if (input.name) body.name = input.name;
 	if (input.secretName) body.secret_name = input.secretName;
 	if (input.credentials) body.credentials = input.credentials;
+	if (input.config) body.config = input.config;
 	if (input.url) body.url = input.url;
 
 	try {
