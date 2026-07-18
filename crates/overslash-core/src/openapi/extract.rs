@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 use crate::template_validation::ValidationIssue;
 use crate::types::{
     ActionParam, DisclosureField, McpAuth, McpSpec, ParamLocation, ParamResolver, Risk,
-    ServiceAction, ServiceAuth, TokenInjection,
+    ServiceAction, ServiceAuth, ServiceDefinition, TokenInjection,
 };
 
 // ── servers → hosts ──────────────────────────────────────────────────
@@ -877,89 +877,136 @@ pub(super) fn extract_mcp_actions(
 
     // Lower merged entries to ServiceAction.
     for (name, obj) in merged {
-        let base = format!("x-overslash-mcp.tools[{name}]");
-
-        let risk = match obj.get("x-overslash-risk").and_then(Value::as_str) {
-            Some("read") | None => Risk::Read,
-            Some("write") => Risk::Write,
-            Some("delete") => Risk::Delete,
-            Some(other) => {
-                errors.push(ValidationIssue::new(
-                    "invalid_risk",
-                    format!("x-overslash-risk must be one of read/write/delete (got {other:?})"),
-                    format!("{base}.x-overslash-risk"),
-                ));
-                continue;
-            }
-        };
-
-        let description = obj
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let scope_param = obj
-            .get("x-overslash-scope_param")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let disabled = obj
-            .get("disabled")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let output_schema = obj.get("output_schema").cloned();
-
-        // input_schema required when autodiscover=false; otherwise optional.
-        let input_schema = obj.get("input_schema");
-        if !autodiscover && input_schema.is_none() {
-            errors.push(ValidationIssue::new(
-                "mcp_invalid",
-                format!("tool `{name}` missing `input_schema` (required when autodiscover=false)"),
-                format!("{base}.input_schema"),
-            ));
-            continue;
+        if let Some(action) = lower_mcp_tool(&name, &obj, autodiscover, &mut errors) {
+            sink.insert(name, action);
         }
-        let params = input_schema.map(lower_input_schema).unwrap_or_default();
-
-        let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, &mut errors);
-        let redact = parse_redact(obj.get("x-overslash-redact"), &base, &mut errors);
-
-        // The upstream MCP tool name defaults to the action key, but may be
-        // overridden with `mcp_tool` when the server's tool name isn't a valid
-        // Overslash action key — e.g. a server naming its tools with dashes
-        // (`some-list-tool`), which the action-key grammar `^[a-z][a-z0-9_]*$`
-        // rejects: the key becomes `some_list_tool` and
-        // `mcp_tool: some-list-tool` carries the real name upstream.
-        let mcp_tool = obj
-            .get("mcp_tool")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| name.clone());
-
-        sink.insert(
-            name.clone(),
-            ServiceAction {
-                method: String::new(),
-                path: String::new(),
-                description,
-                risk,
-                response_type: None,
-                params,
-                scope_param,
-                required_scopes: Vec::new(),
-                permission: None,
-                disclose,
-                redact,
-                mcp_tool: Some(mcp_tool),
-                output_schema,
-                disabled,
-            },
-        );
     }
 
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors)
+    }
+}
+
+/// Lower a single merged MCP tool object into a [`ServiceAction`]. Returns
+/// `None` (pushing to `errors`) when the object is malformed — an invalid
+/// risk, or a missing `input_schema` while `autodiscover=false`. Shared by the
+/// compile-time [`extract_mcp_actions`] and the per-instance
+/// [`overlay_discovered_tools`].
+fn lower_mcp_tool(
+    name: &str,
+    obj: &Map<String, Value>,
+    autodiscover: bool,
+    errors: &mut Vec<ValidationIssue>,
+) -> Option<ServiceAction> {
+    let base = format!("x-overslash-mcp.tools[{name}]");
+
+    let risk = match obj.get("x-overslash-risk").and_then(Value::as_str) {
+        Some("read") | None => Risk::Read,
+        Some("write") => Risk::Write,
+        Some("delete") => Risk::Delete,
+        Some(other) => {
+            errors.push(ValidationIssue::new(
+                "invalid_risk",
+                format!("x-overslash-risk must be one of read/write/delete (got {other:?})"),
+                format!("{base}.x-overslash-risk"),
+            ));
+            return None;
+        }
+    };
+
+    let description = obj
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let scope_param = obj
+        .get("x-overslash-scope_param")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let disabled = obj
+        .get("disabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let output_schema = obj.get("output_schema").cloned();
+
+    // input_schema required when autodiscover=false; otherwise optional.
+    let input_schema = obj.get("input_schema");
+    if !autodiscover && input_schema.is_none() {
+        errors.push(ValidationIssue::new(
+            "mcp_invalid",
+            format!("tool `{name}` missing `input_schema` (required when autodiscover=false)"),
+            format!("{base}.input_schema"),
+        ));
+        return None;
+    }
+    let params = input_schema.map(lower_input_schema).unwrap_or_default();
+
+    let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, errors);
+    let redact = parse_redact(obj.get("x-overslash-redact"), &base, errors);
+
+    // The upstream MCP tool name defaults to the action key, but may be
+    // overridden with `mcp_tool` when the server's tool name isn't a valid
+    // Overslash action key — e.g. a server naming its tools with dashes
+    // (`some-list-tool`), which the action-key grammar `^[a-z][a-z0-9_]*$`
+    // rejects: the key becomes `some_list_tool` and
+    // `mcp_tool: some-list-tool` carries the real name upstream.
+    let mcp_tool = obj
+        .get("mcp_tool")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| name.to_string());
+
+    Some(ServiceAction {
+        method: String::new(),
+        path: String::new(),
+        description,
+        risk,
+        response_type: None,
+        params,
+        scope_param,
+        required_scopes: Vec::new(),
+        permission: None,
+        disclose,
+        redact,
+        mcp_tool: Some(mcp_tool),
+        output_schema,
+        disabled,
+    })
+}
+
+/// Overlay a service instance's `discovered_tools` onto an already-compiled
+/// [`ServiceDefinition`], in place.
+///
+/// Applied only where an instance is in scope (actions listing, the call/
+/// validate resolver, and visibility-scoped search), so `ServiceDefinition`
+/// stays a pure function of the template key everywhere else.
+///
+/// Precedence: **existing actions win** — a tool the template already declares
+/// (authored `tools:` or template-level `discovered_tools`) is left untouched,
+/// so authored `input_schema`/aliases/disclose remain authoritative. Instance-
+/// discovered tools that the template does not declare are added. Malformed
+/// discovered entries are skipped silently (they came from a live server, not
+/// authored config, so there is no author to warn).
+pub fn overlay_discovered_tools(def: &mut ServiceDefinition, discovered: &[Value]) {
+    for entry in discovered {
+        let Some(obj) = entry.as_object() else {
+            continue;
+        };
+        let Some(name) = obj.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if def.actions.contains_key(name) {
+            // Authored / existing tool wins — don't overwrite.
+            continue;
+        }
+        // Discovered tools come from a live tools/list, so autodiscover=true
+        // semantics apply (input_schema optional). Errors are non-fatal here.
+        let mut errors = Vec::new();
+        if let Some(action) = lower_mcp_tool(name, obj, true, &mut errors) {
+            def.actions.insert(name.to_string(), action);
+        }
     }
 }
 

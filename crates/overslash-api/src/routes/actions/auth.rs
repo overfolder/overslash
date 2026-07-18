@@ -552,25 +552,29 @@ pub(crate) async fn resolve_mcp_oauth_bearer(
     // Owner identity (D22): connections resolve at the owner, shared by every
     // child agent, so one reauth heals all.
     owner_identity_id: Uuid,
+    // Instance whose OAuth actions we're minting for. Drives connection
+    // precedence (explicit binding → default → opt-out); `None` (e.g. the
+    // replay path) always uses the owner's default connection.
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
     provider: &str,
     return_url_hint: Option<&str>,
 ) -> Result<Option<AuthHeader>, AppError> {
     let org_id = scope.org_id();
-    let user_scope =
-        overslash_db::scopes::UserScope::new(org_id, owner_identity_id, scope.db().clone());
     let enc_key = state
         .config
         .keyring()
         .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
 
-    let conn = match user_scope.find_my_connection_by_provider(provider).await {
-        Ok(Some(conn)) => conn,
-        Ok(None) => return Ok(None),
-        Err(e) => {
-            return Err(AppError::Internal(format!(
-                "connection lookup for provider '{provider}' failed: {e}"
-            )));
-        }
+    let conn = match super::mcp_resolve::resolve_instance_connection(
+        scope,
+        owner_identity_id,
+        instance,
+        provider,
+    )
+    .await?
+    {
+        Some(conn) => conn,
+        None => return Ok(None),
     };
 
     // Client credentials for refresh — resolves the connection's pinned BYOC,
@@ -662,25 +666,18 @@ pub(super) async fn check_required_scopes(
     };
 
     let org_id = scope.org_id();
-    let user_scope =
-        overslash_db::scopes::UserScope::new(org_id, owner_identity_id, scope.db().clone());
 
     // Resolve the connection the exec path would actually use — instance's
-    // explicit binding takes precedence, else `find_my_connection_by_provider`.
-    let connection = if let Some(inst) = instance {
-        if let Some(conn_id) = inst.connection_id {
-            scope.get_connection(conn_id).await?
-        } else if inst.use_default_connection {
-            user_scope.find_my_connection_by_provider(&provider).await?
-        } else {
-            // Opted out of the default-connection fallback: the exec path
-            // resolves no connection (yields `needs_authentication`), so there
-            // is nothing to gate here. Mirror `resolve_instance_auth`.
-            None
-        }
-    } else {
-        user_scope.find_my_connection_by_provider(&provider).await?
-    };
+    // explicit binding takes precedence, else the owner's default connection.
+    // Shared with the exec/resync OAuth-bearer path so the gate and the token
+    // are always read from the same connection.
+    let connection = super::mcp_resolve::resolve_instance_connection(
+        scope,
+        owner_identity_id,
+        instance,
+        &provider,
+    )
+    .await?;
 
     let Some(connection) = connection else {
         // Fall through — auth resolution will report the missing connection

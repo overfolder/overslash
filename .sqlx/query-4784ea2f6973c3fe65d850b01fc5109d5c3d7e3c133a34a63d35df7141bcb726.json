@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE service_instances SET discovered_tools = $3, discovered_at = $4, updated_at = now() WHERE id = $1 AND org_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Jsonb",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4784ea2f6973c3fe65d850b01fc5109d5c3d7e3c133a34a63d35df7141bcb726"
+}

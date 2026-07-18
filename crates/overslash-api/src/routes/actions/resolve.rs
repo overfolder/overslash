@@ -7,9 +7,7 @@ use uuid::Uuid;
 use overslash_db::scopes::OrgScope;
 
 use crate::{AppState, error::AppError, extractors::AuthContext, services::platform_connections};
-use overslash_core::types::{
-    ActionRequest, McpAuth, ParamLocation, ResolvedActionRequest, Runtime,
-};
+use overslash_core::types::{ActionRequest, ParamLocation, ResolvedActionRequest, Runtime};
 
 use super::*;
 use super::{auth::*, errors::*, service_resolve::*};
@@ -102,7 +100,7 @@ pub(super) async fn resolve_action_metadata(
         )
         .await?;
 
-        let svc = if let Some(ref inst) = instance {
+        let mut svc = if let Some(ref inst) = instance {
             crate::routes::templates::resolve_template_definition(
                 state,
                 ext,
@@ -134,6 +132,7 @@ pub(super) async fn resolve_action_metadata(
                 }
             }
         };
+        overlay_instance_discovered_tools(instance.as_ref(), &mut svc);
 
         let action = svc.actions.get(action_key).ok_or_else(|| {
             AppError::NotFound(format!(
@@ -345,7 +344,7 @@ pub(super) async fn resolve_request(
         // Reuse the template/instance lookup performed by
         // `resolve_action_metadata` if the caller threaded it through.
         // Otherwise fall back to the same DB walk it would have run.
-        let (instance, svc) = if let Some(pre) = pre_resolved_mode_c {
+        let (instance, mut svc) = if let Some(pre) = pre_resolved_mode_c {
             (pre.instance, pre.svc)
         } else {
             let instance = resolve_instance_for_call(
@@ -397,6 +396,7 @@ pub(super) async fn resolve_request(
             };
             (instance, svc)
         };
+        overlay_instance_discovered_tools(instance.as_ref(), &mut svc);
 
         let action = svc.actions.get(action_key).ok_or_else(|| {
             AppError::NotFound(format!(
@@ -427,103 +427,24 @@ pub(super) async fn resolve_request(
                 ))
             })?;
 
-            // Resolve URL: instance wins, template is fallback.
-            let resolved_url = match instance
-                .as_ref()
-                .and_then(|i| i.url.as_deref().map(str::to_string))
-                .or(mcp_spec.url.clone())
-            {
-                Some(u) => u,
-                None => {
-                    return Err(mcp_missing_config_error(
-                        scope,
-                        auth.identity_id,
-                        Some(ceiling_user_id),
-                        service_key,
-                        instance.as_ref(),
-                        "url",
-                    )
-                    .await);
-                }
-            };
-
-            // Resolve auth. For Bearer: pick secret_name (instance wins,
-            // template fallback). For OAuth: resolve a live bearer from the
-            // caller's connection now (out-of-band), gating to a fresh auth
-            // URL when no connection exists yet.
-            let mut mcp_oauth_header: Option<overslash_core::types::AuthHeader> = None;
-            let resolved_auth = match &mcp_spec.auth {
-                McpAuth::None => McpAuth::None,
-                McpAuth::Bearer {
-                    secret_name: tpl_sn,
-                } => {
-                    let sn = match instance
-                        .as_ref()
-                        .and_then(|i| i.secret_name.as_deref())
-                        .or(tpl_sn.as_deref())
-                    {
-                        Some(s) => s.to_string(),
-                        None => {
-                            return Err(mcp_missing_config_error(
-                                scope,
-                                auth.identity_id,
-                                Some(ceiling_user_id),
-                                service_key,
-                                instance.as_ref(),
-                                "secret_name",
-                            )
-                            .await);
-                        }
-                    };
-                    McpAuth::Bearer {
-                        secret_name: Some(sn),
-                    }
-                }
-                McpAuth::OAuth { provider, scopes } => {
-                    match resolve_mcp_oauth_bearer(
-                        state,
-                        ext,
-                        scope,
-                        ceiling_user_id,
-                        provider,
-                        return_url_hint,
-                    )
-                    .await?
-                    {
-                        Some(header) => mcp_oauth_header = Some(header),
-                        None => {
-                            // No connection yet — mint a gated auth URL and
-                            // hand the agent a `needs_authentication` envelope,
-                            // mirroring the HTTP OAuth path.
-                            let urls = platform_connections::mint_initial_auth_url(
-                                state,
-                                scope.org_id(),
-                                ceiling_user_id,
-                                provider,
-                                scopes,
-                                None,
-                                return_url_hint,
-                            )
-                            .await?;
-                            return Err(AppError::NeedsAuthentication {
-                                service: Some(service_key.clone()),
-                                service_instance_id: instance.as_ref().map(|i| i.id),
-                                connection_id: None,
-                                auth_url: Some(urls.auth_url),
-                                short: urls.short,
-                                provider: Some(provider.clone()),
-                                required_scopes: scopes.clone(),
-                                account_email: None,
-                                headless: false,
-                            });
-                        }
-                    }
-                    McpAuth::OAuth {
-                        provider: provider.clone(),
-                        scopes: scopes.clone(),
-                    }
-                }
-            };
+            // Effective URL + auth: instance wins, template is fallback.
+            // Shared with the instance-scoped resync route (mcp_resolve).
+            let ResolvedMcp {
+                url: resolved_url,
+                auth: resolved_auth,
+                oauth_header: mcp_oauth_header,
+            } = resolve_effective_mcp(
+                state,
+                ext,
+                scope,
+                auth.identity_id,
+                ceiling_user_id,
+                service_key,
+                instance.as_ref(),
+                &mcp_spec,
+                return_url_hint,
+            )
+            .await?;
 
             let tool = action
                 .mcp_tool

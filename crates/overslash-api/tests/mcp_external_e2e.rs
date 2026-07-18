@@ -85,10 +85,34 @@ async fn deepwiki_live_resync_and_call() {
         resp.text().await
     );
 
-    // Resync — real tools/list call against DeepWiki.
-    let resp = client
-        .post(format!("{base}/v1/templates/deepwiki_live/mcp/resync"))
+    // Permission grant + instance (resync is instance-scoped, so the instance
+    // must exist first; its url falls back to the template's).
+    client
+        .post(format!("{base}/v1/permissions"))
         .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({
+            "identity_id": agent_ident,
+            "action_pattern": "deepwiki_live:*:*",
+        }))
+        .send()
+        .await
+        .unwrap();
+    let inst: Value = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({"name": "deepwiki_live", "template_key": "deepwiki_live"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let instance_id = inst["id"].as_str().expect("instance id").to_string();
+
+    // Resync — real tools/list call against DeepWiki, via the instance.
+    let resp = client
+        .post(format!("{base}/v1/services/{instance_id}/mcp/resync"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
         .send()
         .await
         .unwrap();
@@ -103,25 +127,6 @@ async fn deepwiki_live_resync_and_call() {
         tool_count >= 1,
         "expected at least one discovered tool, got {body}"
     );
-
-    // Permission grant + instance.
-    client
-        .post(format!("{base}/v1/permissions"))
-        .header(auth(&org_key).0, auth(&org_key).1)
-        .json(&json!({
-            "identity_id": agent_ident,
-            "action_pattern": "deepwiki_live:*:*",
-        }))
-        .send()
-        .await
-        .unwrap();
-    client
-        .post(format!("{base}/v1/services"))
-        .header(auth(&agent_key).0, auth(&agent_key).1)
-        .json(&json!({"name": "deepwiki_live", "template_key": "deepwiki_live"}))
-        .send()
-        .await
-        .unwrap();
 
     // Execute ask_question against a small, well-indexed repo.
     let resp = client

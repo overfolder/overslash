@@ -36,6 +36,7 @@ use alias::{
     HTTP_METHODS, INFO_ALIASES, MCP_TOOL_ALIASES, OAUTH2_SEC_ALIASES, OPERATION_ALIASES,
     ROOT_ALIASES, normalize_parameters_in, rewrite_aliases,
 };
+pub use extract::overlay_discovered_tools;
 use extract::{
     extract_auth, extract_hosts, extract_http_action, extract_mcp_actions, extract_mcp_spec,
     extract_platform_action,
