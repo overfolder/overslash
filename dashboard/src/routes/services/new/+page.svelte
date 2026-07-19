@@ -27,6 +27,8 @@
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
 	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
+	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
+	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	type ApiKeyScheme = Extract<ServiceAuth, { type: 'api_key' }>;
@@ -57,6 +59,7 @@
 	let secretName = $state('');
 	// Per-scheme secret bindings, keyed by the template's securityScheme keys.
 	let credentialsInput = $state<Record<string, string>>({});
+	let configInput = $state<Record<string, string>>({});
 	let urlInput = $state('');
 	let userLevel = $state(true);
 	let useDefaultConnection = $state(true);
@@ -80,6 +83,11 @@
 	// HTTP gateways (e.g. the `email` Mailbox Gateway) set their endpoint per
 	// instance too — reveal the same URL field the MCP path uses.
 	const httpNeedsUrl = $derived(!isMcp && selectedDetail?.configurable_url === true);
+
+	// Non-secret values the org pins per instance (e.g. the mailbox gateway's
+	// IMAP/SMTP endpoint). Declared by the template via
+	// `x-overslash-instance-config`; empty for templates that declare none.
+	const instanceConfigParams = $derived(selectedDetail?.instance_config_params ?? []);
 
 	const searchKeys = $derived<SearchKey[]>([
 		{
@@ -306,6 +314,13 @@
 				if (a.type === 'api_key' && a.scheme) seeded[a.scheme] = '';
 			}
 			credentialsInput = seeded;
+			// Same for instance-pinned config: a stale value from a previously
+			// selected template must not carry into this one's form.
+			const seededConfig: Record<string, string> = {};
+			for (const p of selectedDetail?.instance_config_params ?? []) {
+				seededConfig[p.name] = '';
+			}
+			configInput = seededConfig;
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to load template (${e.status})` : 'Failed to load template';
 		} finally {
@@ -434,19 +449,18 @@
 			// Per-scheme bindings ride the `credentials` map (the server mirrors
 			// the legacy scalar); the scalar `secret_name` is only sent for the
 			// paths still editing it directly (MCP bearer, pre-scheme APIs).
-			const cleanedCredentials = Object.fromEntries(
-				Object.entries(credentialsInput)
-					.map(([k, v]) => [k, (v ?? '').trim()])
-					.filter(([, v]) => v)
-			);
+			const cleanedCredentials = cleanServiceMap(credentialsInput);
 			const sendCredentials =
 				schemeKeyed && !usesOAuth && Object.keys(cleanedCredentials).length > 0;
+			const cleanedConfig = cleanServiceMap(configInput);
+			const sendConfig = Object.keys(cleanedConfig).length > 0;
 			const created = await createService({
 				template_key: selectedDetail.key,
 				name: nameInput.trim() || undefined,
 				connection_id: connectionId || undefined,
 				credentials: sendCredentials ? cleanedCredentials : undefined,
 				secret_name: !sendCredentials ? secretName.trim() || undefined : undefined,
+				config: sendConfig ? cleanedConfig : undefined,
 				url: urlInput.trim() || undefined,
 				status: 'active',
 				user_level: userLevel,
@@ -718,6 +732,14 @@
 					/>
 					<small>Point this instance at your own deployment. Leave blank to use the default.</small>
 				</label>
+			{/if}
+
+			{#if instanceConfigParams.length > 0}
+				<ServiceInstanceConfig
+					params={instanceConfigParams}
+					bind:config={configInput}
+					idPrefix="new-service-config"
+				/>
 			{/if}
 
 			{#if usesApiKey && !usesOAuth && schemeKeyed}

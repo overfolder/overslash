@@ -325,12 +325,24 @@ export interface TemplateDetail {
    * gateways like the `email` Mailbox Gateway). The instance form reveals a
    * URL field when this is set. */
   configurable_url?: boolean;
+  /** Params an org may pin per instance (`x-overslash-instance-config`), deduped
+   * across actions. The instance form renders one field each and submits them
+   * as `config`. */
+  instance_config_params?: InstanceConfigParam[];
   /** Base template key when this is a derived layer; absent for standalone/global. */
   extends?: string;
   /** The stored delta for a derived layer; absent for standalone/global. */
   delta?: Delta;
   /** Fold-time resolution warnings (drift, shadowed extensions, dead entries). */
   resolution_report?: ResolutionReport;
+}
+
+/** A template param an org can pin on a service instance. */
+export interface InstanceConfigParam {
+  name: string;
+  type: string;
+  description?: string;
+  required?: boolean;
 }
 
 export interface CreateTemplateRequest {
@@ -513,6 +525,9 @@ export interface ServiceInstanceSummary {
   secret_name?: string;
   /** Per-scheme secret bindings: securityScheme key → secret NAME in the org vault. */
   credentials?: Record<string, string>;
+  /** Per-instance non-secret param values (plain values, not vault references).
+   * Keys are template params marked `x-overslash-instance-config`. */
+  config?: Record<string, string>;
   /** Per-instance MCP server URL override. Present only for MCP runtime services. */
   url?: string;
   /** When `false`, an unbound instance won't fall back to the identity's default connection for the provider. Defaults to `true`. */
@@ -537,6 +552,9 @@ export interface CreateServiceRequest {
   secret_name?: string;
   /** Per-scheme secret bindings: securityScheme key → secret NAME in the org vault. */
   credentials?: Record<string, string>;
+  /** Per-instance non-secret param values. Keys must be template params marked
+   * `x-overslash-instance-config`. */
+  config?: Record<string, string>;
   url?: string;
   status?: ServiceStatus;
   user_level?: boolean;
@@ -550,6 +568,9 @@ export interface UpdateServiceRequest {
   secret_name?: string | null;
   /** Per-scheme secret bindings: whole-map replace ({} clears every binding); omit to leave unchanged. */
   credentials?: Record<string, string>;
+  /** Per-instance non-secret param values: whole-map replace ({} clears every
+   * value); omit to leave unchanged. */
+  config?: Record<string, string>;
   url?: string | null;
   use_default_connection?: boolean;
 }

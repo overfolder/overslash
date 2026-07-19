@@ -1654,6 +1654,68 @@ struct DevTokenQuery {
     /// dev identity inside Dev Org so e2e fixtures can sign in as different
     /// roles. Unknown values fall back to `admin` for forward compatibility.
     profile: Option<String>,
+    /// Optional org slug. Absent → the shared `dev-org` (unchanged legacy
+    /// behaviour, which every existing screenshot script and spec relies on).
+    /// Present → sign into *that* org, creating it on demand, so an e2e spec
+    /// can run against a private org nobody else is mutating.
+    ///
+    /// Identity resolution is by email and `find_user_identity_by_email` is a
+    /// global lookup (`idx_identities_email` is not unique), so a per-org org
+    /// needs per-org profile emails — otherwise the second org's login would
+    /// resolve the first org's identity and silently cross the tenant
+    /// boundary. `DevProfile::email_for` derives them from the slug.
+    org: Option<String>,
+}
+
+/// Where a dev login lands. `Shared` is the legacy `dev-org`; `Scoped` is a
+/// per-run org requested via `?org=`.
+enum DevOrg {
+    Shared,
+    Scoped(String),
+}
+
+impl DevOrg {
+    fn parse(slug: Option<&str>) -> Result<Self, AppError> {
+        let Some(slug) = slug else {
+            return Ok(Self::Shared);
+        };
+        let slug = slug.trim();
+        // Mirrors the public slug rules in `routes/orgs.rs` so a slug accepted
+        // here can't produce an org the real API would have rejected.
+        let valid = (2..=63).contains(&slug.len())
+            && slug
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            && !slug.starts_with('-')
+            && !slug.ends_with('-');
+        if !valid {
+            return Err(AppError::BadRequest(format!(
+                "invalid dev org slug {slug:?}: 2-63 chars of [a-z0-9-], no leading/trailing hyphen"
+            )));
+        }
+        if slug == "dev-org" {
+            // Would collide with the shared org while using scoped emails,
+            // leaving two identity sets fighting over one org.
+            return Err(AppError::BadRequest(
+                "dev org slug 'dev-org' is reserved — omit ?org= to use the shared org".into(),
+            ));
+        }
+        Ok(Self::Scoped(slug.to_string()))
+    }
+
+    fn slug(&self) -> &str {
+        match self {
+            Self::Shared => "dev-org",
+            Self::Scoped(s) => s,
+        }
+    }
+
+    fn display_name(&self) -> String {
+        match self {
+            Self::Shared => "Dev Org".to_string(),
+            Self::Scoped(s) => format!("Dev Org ({s})"),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1676,6 +1738,24 @@ impl DevProfile {
             Self::Admin => "dev@overslash.local",
             Self::Member => "member@overslash.local",
             Self::Readonly => "readonly@overslash.local",
+        }
+    }
+
+    /// The profile's email *within a given dev org*. The shared org keeps the
+    /// historical addresses verbatim — existing fixtures assert on them — while
+    /// a scoped org gets a slug-tagged local part so the global email lookup
+    /// can never resolve across orgs.
+    fn email_for(self, org: &DevOrg) -> String {
+        match org {
+            DevOrg::Shared => self.email().to_string(),
+            DevOrg::Scoped(slug) => {
+                let local = match self {
+                    Self::Admin => "dev",
+                    Self::Member => "member",
+                    Self::Readonly => "readonly",
+                };
+                format!("{local}+{slug}@overslash.local")
+            }
         }
     }
     fn display_name(self) -> &'static str {
@@ -1704,24 +1784,35 @@ async fn dev_token(
     }
 
     let profile = DevProfile::parse(query.profile.as_deref());
-    let admin_email = DevProfile::Admin.email();
+    let dev_org = DevOrg::parse(query.org.as_deref())?;
+    let admin_email = DevProfile::Admin.email_for(&dev_org);
+    let org_slug = dev_org.slug();
     let system = SystemScope::new_internal(state.db_pool(&ext));
 
-    // Step 1: ensure Dev Org exists. Look up the admin identity to find the
+    // Step 1: ensure the dev org exists. Look up the admin identity to find the
     // org or create one. We always run org_bootstrap (idempotent) so
     // Everyone/Admins groups + the overslash service instance exist.
-    let admin_org_id = match system.find_user_identity_by_email(admin_email).await? {
+    let admin_org_id = match system.find_user_identity_by_email(&admin_email).await? {
         Some(existing) => existing.org_id,
-        None => match org::create(state.db(&ext), "Dev Org", "dev-org", "standard").await {
-            Ok(new_org) => new_org.id,
-            Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
-                org::get_by_slug(state.db(&ext), "dev-org")
-                    .await?
-                    .ok_or_else(|| AppError::Internal("dev race: dev-org missing".into()))?
-                    .id
+        None => {
+            match org::create(
+                state.db(&ext),
+                &dev_org.display_name(),
+                org_slug,
+                "standard",
+            )
+            .await
+            {
+                Ok(new_org) => new_org.id,
+                Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
+                    org::get_by_slug(state.db(&ext), org_slug)
+                        .await?
+                        .ok_or_else(|| AppError::Internal(format!("dev race: {org_slug} missing")))?
+                        .id
+                }
+                Err(e) => return Err(e.into()),
             }
-            Err(e) => return Err(e.into()),
-        },
+        }
     };
     overslash_db::repos::org_bootstrap::bootstrap_org(state.db(&ext), admin_org_id, None).await?;
     // Match the public `POST /v1/orgs` corp-org default — dev orgs ship
@@ -1740,7 +1831,8 @@ async fn dev_token(
     // identity, Everyone + Myself groups, membership row — so `/account`,
     // the org switcher, group ceilings, and is_admin all behave. Admin
     // additionally joins the Admins group via `bootstrap_org(.., Some(id))`.
-    let profile_email = profile.email();
+    let profile_email = profile.email_for(&dev_org);
+    let profile_email = profile_email.as_str();
     let identity_id =
         if let Some(existing) = system.find_user_identity_by_email(profile_email).await? {
             // Re-assert admin group membership on every admin login. Without

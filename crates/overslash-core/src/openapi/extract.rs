@@ -543,6 +543,7 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                 .unwrap_or("")
                 .to_string();
             let aliases = parse_aliases(Some(obj), name);
+            let instance_config = parse_instance_config(Some(obj));
             Some((
                 name.clone(),
                 ActionParam {
@@ -554,6 +555,7 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     resolve: None,
                     aliases,
                     location: ParamLocation::Body,
+                    instance_config,
                 },
             ))
         })
@@ -1049,6 +1051,7 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
         });
         let default = po.get("default").cloned();
         let aliases = parse_aliases(Some(po), name);
+        let instance_config = parse_instance_config(Some(po));
         out.insert(
             name.clone(),
             ActionParam {
@@ -1060,6 +1063,7 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
                 resolve: None,
                 aliases,
                 location: ParamLocation::Body,
+                instance_config,
             },
         );
     }
@@ -1130,6 +1134,8 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
             _ => ParamLocation::Body,
         };
 
+        let instance_config = parse_instance_config(Some(obj));
+
         out.insert(
             name.to_string(),
             ActionParam {
@@ -1141,6 +1147,7 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
                 resolve,
                 aliases,
                 location,
+                instance_config,
             },
         );
     }
@@ -1188,6 +1195,7 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
             .and_then(|o| o.get("x-overslash-resolve"))
             .and_then(parse_resolver);
         let aliases = parse_aliases(pobj, name);
+        let instance_config = parse_instance_config(pobj);
 
         out.insert(
             name.clone(),
@@ -1200,6 +1208,7 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
                 resolve,
                 aliases,
                 location: ParamLocation::Body,
+                instance_config,
             },
         );
     }
@@ -1241,6 +1250,16 @@ fn parse_resolver(v: &Value) -> Option<ParamResolver> {
 /// an alias equal to the canonical `name` is skipped (it would be a no-op
 /// rewrite). Returns an empty `Vec` when the extension is absent or malformed —
 /// aliases are a convenience, never a load-time error.
+/// `x-overslash-instance-config` — whether an org may pin this param per
+/// service instance. Read from the same four param shapes `parse_aliases`
+/// covers (operation params, body properties, platform params, lowered input
+/// schemas), so the vocabulary means the same thing wherever it is authored.
+fn parse_instance_config(obj: Option<&Map<String, Value>>) -> bool {
+    obj.and_then(|o| o.get("x-overslash-instance-config"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn parse_aliases(obj: Option<&Map<String, Value>>, name: &str) -> Vec<String> {
     obj.and_then(|o| o.get("x-overslash-aliases"))
         .and_then(Value::as_array)

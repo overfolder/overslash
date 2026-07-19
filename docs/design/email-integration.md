@@ -32,11 +32,38 @@ Built as designed — overfwd is consumed as an ordinary HTTP service via the sh
    (verbatim base, scheme + port preserved) over the template host, mirroring the MCP fork.
    This is how an org points its catalog entry at its own overfwd deployment. A derived
    `configurable_url` flag on the templates API drives the dashboard to reveal a "Gateway URL"
-   field. The generic per-instance `config jsonb` (for host/port param overrides) remains
-   deferred; autoconfig covers the common providers.
+   field.
+
+### Update (2026-07-18): Core-change #3 landed — see D33
+
+The rest of Core-change #3 (the generic per-instance `config jsonb`) is **built**. The
+original plan held that host/port needed no per-instance surface because gateway-side
+autoconfig covered the common providers; that understated the gap.
+
+overfwd resolves the mailbox endpoint from `X-Mailbox-Imap` / `X-Mailbox-Smtp` headers, and
+falls back to autoconfig (Mozilla ISPDB + RFC 6186 DNS SRV) only when they are absent. The
+shipped template sent neither, so **any mailbox whose domain publishes no autoconfig record was
+unreachable** — every self-hosted and corporate Dovecot/Cyrus deployment, i.e. a large part of
+the "standard-IMAP long tail" this integration exists to serve. A login that is not an email
+address has no domain to look up at all. The interim answer (fork the template per deployment)
+meant issuing a capability grant to change a hostname.
+
+`services/email.yaml` now declares both endpoints as optional header params marked
+`x-overslash-instance-config: true`, so an org pins them on the instance next to the Gateway
+URL, and overfwd's autoconfig remains the default path for public providers. Storage is
+`service_instances.config` — a column that holds literals only, deliberately distinct from
+`credentials`, which holds vault references only (D32/D33).
+
+Note for anyone pinning these by hand: overfwd wants **both** headers or neither — a request
+with only `X-Mailbox-Imap` is rejected — and it infers transport from the port number
+(993/3993 and 465/3465 are implicit TLS, everything else is plaintext; there is no STARTTLS
+path).
 
 Coverage: `search`/`get` (`read`, auto-approvable) + `send` (`write`, gated, discloses
-To/From/Subject). End-to-end test: `crates/overslash-api/tests/email_overfwd.rs`.
+To/From/Subject). End-to-end test: `crates/overslash-api/tests/email_overfwd.rs` (API contract,
+in-process mock gateway) and `dashboard/tests/e2e/flows/email-configure-and-try-it.spec.ts`
+(full user story through the dashboard, against a real overfwd talking real IMAP to a GreenMail
+container — see `make mail-up`).
 
 ---
 
@@ -234,8 +261,9 @@ persisted — so "zero-persistence" stays honest.
 
 - **Microsoft Graph** (`msgraph.yaml`) — separate REST track for Outlook/M365.
 - **Own-inbox** and **real-time inbound** (needs an inbound-event ingestion subsystem).
-- **Generic `config jsonb` per-instance param overrides** (would supersede the one-off
-  `url` field) — interim is prefilled forked templates.
+- ~~**Generic `config jsonb` per-instance param overrides**~~ — **built** 2026-07-18 (D33).
+  Scoped to template-declared params rather than superseding the one-off `url` field, which
+  stays a typed column.
 - **Generic managed-backing-container** hosting pattern (WhatsApp/npx-MCP).
 - **`x-overslash-fixed-params`** extension (for third-party overgeneric APIs).
 - **overfwd Portfolio/Session modes** — standalone-product surfaces, disabled in Overslash

@@ -736,6 +736,7 @@ mod tests {
             resolve: None,
             aliases: Vec::new(),
             location: crate::types::ParamLocation::Body,
+            instance_config: false,
         }
     }
 
@@ -1103,6 +1104,7 @@ mod tests {
                             resolve: None,
                             aliases: Vec::new(),
                             location: crate::types::ParamLocation::Body,
+                            instance_config: false,
                         },
                     );
                     p

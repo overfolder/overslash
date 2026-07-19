@@ -38,7 +38,16 @@ for (const k of [
 	'OPENAPI_URL',
 	'MCP_URL',
 	'AUTH0_TENANT_URL',
-	'OKTA_TENANT_URL'
+	'OKTA_TENANT_URL',
+	// Mail stack: the overfwd gateway, GreenMail's REST admin API, and the
+	// mailbox coordinates the email story pins onto its service instance.
+	'OVERFWD_URL',
+	'GREENMAIL_API_URL',
+	'GREENMAIL_SMTP_PORT',
+	'MAILBOX_IMAP',
+	'MAILBOX_SMTP',
+	'MAILBOX_LOGIN',
+	'MAILBOX_PASSWORD'
 ]) {
 	if (!process.env[k] && envFromFile[k]) process.env[k] = envFromFile[k];
 }

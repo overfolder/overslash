@@ -19,7 +19,7 @@ use overslash_core::types::{
 use overslash_db::repos::group::ServiceGroupRow;
 use overslash_db::repos::org as org_repo;
 use overslash_db::repos::service_instance::{
-    CreateServiceInstance, CredentialsMap, ServiceInstanceRow, UpdateServiceInstance,
+    ConfigMap, CreateServiceInstance, CredentialsMap, ServiceInstanceRow, UpdateServiceInstance,
 };
 use overslash_db::repos::service_template;
 use overslash_db::scopes::{OrgScope, UserScope};
@@ -44,6 +44,10 @@ pub struct CreateServiceInput {
     /// org vault. Keys must match the template's apiKey scheme keys.
     #[serde(default)]
     pub credentials: Option<CredentialsMap>,
+    /// Per-instance non-secret param values: param name → value. Keys must
+    /// name a template param marked `x-overslash-instance-config`.
+    #[serde(default)]
+    pub config: Option<ConfigMap>,
     pub url: Option<String>,
     #[serde(default = "default_status")]
     pub status: String,
@@ -93,6 +97,11 @@ pub struct UpdateServiceInput {
     /// apiKey scheme keys.
     #[serde(default)]
     pub credentials: Option<CredentialsMap>,
+    /// Per-instance non-secret param values. `Some` = whole-map replace (an
+    /// empty map clears every value); absent = leave unchanged. Keys must name
+    /// a template param marked `x-overslash-instance-config`.
+    #[serde(default)]
+    pub config: Option<ConfigMap>,
     pub url: Option<Option<String>>,
     /// `Some` = update the flag; `None` = leave unchanged.
     pub use_default_connection: Option<bool>,
@@ -125,6 +134,10 @@ pub struct ServiceInstanceSummary {
     /// org vault. Names only — secret values never leave the vault.
     #[serde(skip_serializing_if = "CredentialsMap::is_empty")]
     pub credentials: CredentialsMap,
+    /// Per-instance non-secret param values. Plain values, not vault
+    /// references — see `service_instances.config`.
+    #[serde(skip_serializing_if = "ConfigMap::is_empty")]
+    pub config: ConfigMap,
     /// Per-instance MCP server URL override. Overrides the template's `mcp.url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -181,6 +194,10 @@ pub struct ServiceInstanceDetail {
     /// org vault. Names only — secret values never leave the vault.
     #[serde(skip_serializing_if = "CredentialsMap::is_empty")]
     pub credentials: CredentialsMap,
+    /// Per-instance non-secret param values. Plain values, not vault
+    /// references — see `service_instances.config`.
+    #[serde(skip_serializing_if = "ConfigMap::is_empty")]
+    pub config: ConfigMap,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// When `false`, an unbound instance won't fall back to the default
@@ -611,6 +628,8 @@ pub async fn kernel_create_service(
         input.secret_name.as_deref(),
     )?;
 
+    let config = validate_instance_config(&template_def, input.config.as_ref())?;
+
     if is_mcp && !mcp_has_default_url {
         let provided = input.url.as_deref().is_some_and(|u| !u.is_empty());
         if !provided {
@@ -649,6 +668,7 @@ pub async fn kernel_create_service(
         connection_id: input.connection_id,
         secret_name: stored_secret_name.as_deref(),
         credentials: &credentials,
+        config: &config,
         url: input.url.as_deref(),
         use_default_connection: input.use_default_connection.unwrap_or(true),
         status: &input.status,
@@ -813,16 +833,28 @@ pub async fn kernel_update_service(
     // both — merged and validated by `reconcile_credentials`, then stored as
     // one consistent (map, mirrored scalar) pair.
     let touches_credentials = input.credentials.is_some() || input.secret_name.is_some();
-    let (new_credentials, new_secret_name) = if touches_credentials {
+    // `config` is validated against the same template definition, so resolve
+    // it once here rather than twice inside each branch.
+    let template_def = if touches_credentials || input.config.is_some() {
         let template_lookup_identity = existing.owner_identity_id.or(Some(auth_identity));
-        let template_def = resolve_template_definition(
-            &ctx.db,
-            &ctx.registry,
-            ctx.org_id,
-            template_lookup_identity,
-            &existing.template_key,
+        Some(
+            resolve_template_definition(
+                &ctx.db,
+                &ctx.registry,
+                ctx.org_id,
+                template_lookup_identity,
+                &existing.template_key,
+            )
+            .await?,
         )
-        .await?;
+    } else {
+        None
+    };
+
+    let (new_credentials, new_secret_name) = if touches_credentials {
+        let template_def = template_def
+            .as_ref()
+            .expect("resolved above whenever touches_credentials");
 
         if input
             .secret_name
@@ -859,7 +891,7 @@ pub async fn kernel_update_service(
         // the slot is always populated). `secret_name: null` clears the slot.
         // When both fields ride one request, the slot stays so a disagreement
         // between them still 400s.
-        let instance_slots = instance_scheme_keys(&template_def);
+        let instance_slots = instance_scheme_keys(template_def);
         let mut base = match input.credentials.as_ref() {
             Some(explicit) => explicit.clone(),
             None => existing.credentials.0.clone(),
@@ -870,7 +902,7 @@ pub async fn kernel_update_service(
             }
         }
         let legacy = input.secret_name.as_ref().and_then(|o| o.as_deref());
-        let (map, mut scalar) = reconcile_credentials(&template_def, Some(&base), legacy)?;
+        let (map, mut scalar) = reconcile_credentials(template_def, Some(&base), legacy)?;
         // A credentials-only request on a template with no instance-source
         // scheme (MCP bearer) mustn't clobber the scalar the map doesn't cover.
         if instance_slots.is_empty() && input.secret_name.is_none() {
@@ -889,11 +921,24 @@ pub async fn kernel_update_service(
         }
     }
 
+    // An explicit `config` is a whole-map replace (an empty map clears every
+    // pinned value); absent leaves the stored map untouched.
+    let new_config = match input.config.as_ref() {
+        Some(explicit) => {
+            let template_def = template_def
+                .as_ref()
+                .expect("resolved above whenever config is present");
+            Some(validate_instance_config(template_def, Some(explicit))?)
+        }
+        None => None,
+    };
+
     let update = UpdateServiceInstance {
         name: input.name.as_deref(),
         connection_id: input.connection_id,
         secret_name: new_secret_name.as_ref().map(|o| o.as_deref()),
         credentials: new_credentials.as_ref(),
+        config: new_config.as_ref(),
         url: input.url.as_ref().map(|o| o.as_deref()),
         use_default_connection: input.use_default_connection,
     };
@@ -923,6 +968,59 @@ fn instance_scheme_keys(template: &ServiceDefinition) -> Vec<&str> {
             _ => None,
         })
         .collect()
+}
+
+/// Validate a per-instance `config` map against the template.
+///
+/// Only params the template marks `x-overslash-instance-config` may be pinned.
+/// The alternative — accepting any key — would let a caller pin an arbitrary
+/// request parameter on every call the instance ever makes, which is a
+/// permissions surface, not a convenience: `risk`/`disclose` are authored per
+/// action against the params a *caller* supplies.
+///
+/// Blank values are rejected rather than stored, so "unset" has one
+/// representation (key absent) instead of two.
+fn validate_instance_config(
+    template: &ServiceDefinition,
+    explicit: Option<&ConfigMap>,
+) -> Result<ConfigMap, AppError> {
+    let mut configurable: Vec<&str> = template
+        .actions
+        .values()
+        .flat_map(|a| a.params.iter())
+        .filter(|(_, p)| p.instance_config)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    configurable.sort_unstable();
+    configurable.dedup();
+
+    let mut map = ConfigMap::new();
+    let Some(explicit) = explicit else {
+        return Ok(map);
+    };
+
+    for (key, value) in explicit {
+        if !configurable.contains(&key.as_str()) {
+            return Err(AppError::BadRequest(format!(
+                "unknown instance config '{key}'; template '{}' declares: {}",
+                template.key,
+                if configurable.is_empty() {
+                    "none".to_string()
+                } else {
+                    configurable.join(", ")
+                }
+            )));
+        }
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::BadRequest(format!(
+                "instance config '{key}' must have a value; omit the key to unset it"
+            )));
+        }
+        map.insert(key.clone(), trimmed.to_string());
+    }
+
+    Ok(map)
 }
 
 /// Reconcile explicit per-scheme `credentials` with the legacy scalar
@@ -1027,6 +1125,7 @@ pub fn row_to_summary(
         connection_id: row.connection_id,
         secret_name: row.secret_name,
         credentials: row.credentials.0,
+        config: row.config.0,
         url: row.url,
         use_default_connection: row.use_default_connection,
         groups,
@@ -1046,6 +1145,7 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
         connection_id: row.connection_id,
         secret_name: row.secret_name,
         credentials: row.credentials.0,
+        config: row.config.0,
         url: row.url,
         use_default_connection: row.use_default_connection,
         status: row.status,

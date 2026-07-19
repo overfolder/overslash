@@ -18,6 +18,13 @@ import { resolve } from 'node:path';
  *   stripeUrl?: string,
  *   mcpUrl?: string,
  *   mcpPuppetUrl?: string,
+ *   overfwdUrl?: string,
+ *   greenmailApiUrl?: string,
+ *   greenmailSmtpPort?: string,
+ *   mailboxImap?: string,
+ *   mailboxSmtp?: string,
+ *   mailboxLogin?: string,
+ *   mailboxPassword?: string,
  * }} ResolvedEnv
  */
 
@@ -62,7 +69,17 @@ export function resolveEnv() {
 		openapiUrl: pick('OPENAPI_URL'),
 		stripeUrl: pick('STRIPE_URL'),
 		mcpUrl: pick('MCP_URL'),
-		mcpPuppetUrl: pick('MCP_PUPPET_URL')
+		mcpPuppetUrl: pick('MCP_PUPPET_URL'),
+		// Mail stack. `mailboxImap`/`mailboxSmtp` are container-network
+		// addresses — they are dialled by overfwd, not by the test process,
+		// so they are deliberately not host-reachable URLs.
+		overfwdUrl: pick('OVERFWD_URL'),
+		greenmailApiUrl: pick('GREENMAIL_API_URL'),
+		greenmailSmtpPort: pick('GREENMAIL_SMTP_PORT'),
+		mailboxImap: pick('MAILBOX_IMAP'),
+		mailboxSmtp: pick('MAILBOX_SMTP'),
+		mailboxLogin: pick('MAILBOX_LOGIN'),
+		mailboxPassword: pick('MAILBOX_PASSWORD')
 	};
 
 	process.env.DASHBOARD_URL = cached.dashboardUrl;

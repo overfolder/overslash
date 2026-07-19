@@ -80,6 +80,13 @@ pub(super) async fn validate_action_impl(
         &meta.validation_params,
         &mut req.params,
     );
+    // Overlay the instance's pinned config in lockstep with `/call`, so a
+    // param satisfied by a pin doesn't validate here as missing.
+    super::apply_instance_config(
+        &meta.validation_params,
+        resolved_mode_c.as_ref().and_then(|m| m.instance.as_ref()),
+        &mut req.params,
+    );
     // Fill template-declared defaults before validating — mirrors `/call`
     // so a defaulted-required param (e.g. `calendarId: primary`) omitted by
     // the caller validates here exactly as it would execute there.

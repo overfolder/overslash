@@ -607,6 +607,33 @@ struct ResolvedModeC {
     instance: Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
 }
 
+/// Overlay the instance's pinned `config` onto a call's args.
+///
+/// Only params the template marks `x-overslash-instance-config` are eligible —
+/// the API refuses to store anything else, and re-checking here means a
+/// template that *stops* declaring a param can't have a stale pinned value
+/// keep flowing into requests.
+///
+/// A key the caller already supplied is left alone: the pin is a default for
+/// the deployment, not an override of an explicit argument. Values are stored
+/// as strings; `coerce_args` (which runs just after this) casts them to the
+/// param's declared type, so a pinned `"993"` on an integer param behaves
+/// exactly like a caller-supplied `"993"`.
+fn apply_instance_config(
+    params: &std::collections::HashMap<String, overslash_core::types::ActionParam>,
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+    args: &mut std::collections::HashMap<String, serde_json::Value>,
+) {
+    let Some(instance) = instance else { return };
+    for (key, value) in instance.config.0.iter() {
+        if !params.get(key).is_some_and(|p| p.instance_config) {
+            continue;
+        }
+        args.entry(key.clone())
+            .or_insert_with(|| serde_json::Value::String(value.clone()));
+    }
+}
+
 /// Classify an OAuth resolver error so the action handler can respond
 /// with the right HTTP status. The split mirrors RFC 7231 semantics:
 ///   * `Reauth(reason)` → 401, the user can fix it by clicking a link.

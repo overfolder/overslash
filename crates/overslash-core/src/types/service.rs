@@ -402,6 +402,21 @@ pub struct ActionParam {
     /// Where this parameter is sent (body/query/path). Omitted when `body` (the default).
     #[serde(default, skip_serializing_if = "ParamLocation::is_default")]
     pub location: ParamLocation,
+    /// Whether an org can pin this parameter per service instance.
+    ///
+    /// Some parameters are properties of a *deployment*, not of a call: which
+    /// IMAP host a mailbox gateway should dial, which region an API lives in.
+    /// The caller has no business supplying them on every request and an agent
+    /// has no way to know them. Marking the param `x-overslash-instance-config`
+    /// (or unprefixed `instance-config`) lets the dashboard render a field on
+    /// the service-instance form and store the value in
+    /// `service_instances.config`, which is then merged *under* the caller's
+    /// args at execution time — an explicit arg still wins.
+    ///
+    /// Only non-secret values belong here; it is stored as plain jsonb. A
+    /// secret goes in the vault and is bound via `credentials`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub instance_config: bool,
 }
 
 #[cfg(test)]
@@ -520,9 +535,14 @@ mod tests {
             resolve: None,
             aliases: Vec::new(),
             location: ParamLocation::Body,
+            instance_config: false,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("location").is_none());
+        // Same omit-when-default contract as `location`: a param nobody pinned
+        // must not grow an `instance_config: false` key in every serialized
+        // template.
+        assert!(json.get("instance_config").is_none());
 
         let q = ActionParam {
             location: ParamLocation::Query,
