@@ -2,24 +2,24 @@
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
 	import type { SecretSummary, ServiceAuth } from '$lib/types';
 
-	type ApiKeyScheme = Extract<ServiceAuth, { type: 'api_key' }>;
+	type SecretScheme = Extract<ServiceAuth, { type: 'secret' }>;
 
 	let {
 		schemes,
 		credentials = $bindable<Record<string, string>>({}),
 		available,
 		loading = false,
-		singleLabel = 'API key secret name',
 		idPrefix = 'svc-cred'
 	}: {
-		schemes: ApiKeyScheme[];
+		schemes: SecretScheme[];
 		credentials: Record<string, string>;
 		available: SecretSummary[];
 		loading?: boolean;
-		/** Label used when the template declares exactly one credential slot. */
-		singleLabel?: string;
 		idPrefix?: string;
 	} = $props();
+
+	/** Label when the template declares exactly one credential slot. */
+	const SINGLE_LABEL = 'Secret name';
 
 	// One slot is unambiguous — keep the familiar generic label. Several slots
 	// must be told apart by their securityScheme key ("gateway", "mailbox").
@@ -29,11 +29,11 @@
 	// Human-readable row naming, taken from the template YAML: the scheme's
 	// `x-overslash-label` ("Overfwd API Token") names the row; the standard
 	// OpenAPI `description` renders as help text under the picker. No label
-	// falls back to the scheme key ("gateway secret name") / `singleLabel`.
-	function rowLabel(s: ApiKeyScheme): string {
+	// falls back to the scheme key ("gateway secret name") / `SINGLE_LABEL`.
+	function rowLabel(s: SecretScheme): string {
 		const l = (s.label ?? '').trim();
 		if (l) return l;
-		return showSchemeLabels ? `${s.scheme} secret name` : singleLabel;
+		return showSchemeLabels ? `${s.scheme} secret name` : SINGLE_LABEL;
 	}
 
 	// Every scheme key must hold a string BEFORE the pickers render — binding
@@ -67,7 +67,7 @@
 			bind:value={credentials[key]}
 			{available}
 			{loading}
-			placeholder={isOrg && s.default_secret_name ? s.default_secret_name : 'my-api-key'}
+			placeholder={isOrg && s.default_secret_name ? s.default_secret_name : 'my-secret'}
 		/>
 		{#if s.description}
 			<small>{s.description}</small>

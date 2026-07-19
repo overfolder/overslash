@@ -96,7 +96,7 @@ same user pick it up immediately. The response carries
 
 | Value | Meaning | Next step |
 |---|---|---|
-| `needs_authentication` | OAuth template with no connection bound, **or** an API-key / MCP-bearer template with no secret set | OAuth → step 3; API key → [Providing an API key](#providing-an-api-key-non-oauth-services) |
+| `needs_authentication` | OAuth template with no connection bound, **or** a secret-based / MCP-bearer template with no secret set | OAuth → step 3; secret-based → [Providing a secret](#providing-a-secret-non-oauth-services) |
 | `ok` | secret/connection inferred from existing user state | skip to step 5 |
 | `partially_degraded` | a connection is bound but does not cover every action's scopes — uncovered actions return `403 missing_scopes` | click the upgrade `auth_url` returned in that 403 |
 | `needs_reconnect` | a connection is bound but covers none of the scope-bearing actions | re-run consent (step 3) |
@@ -159,7 +159,7 @@ servers:
   - url: https://api.acme.com    # calls are bounded to this host
 components:
   securitySchemes:
-    # API-key style — Overslash injects a vault secret:
+    # Secret-based — Overslash injects a vault secret:
     token:
       type: apiKey
       in: header
@@ -249,9 +249,10 @@ user and point them at the setup guide:
 A related `400 "pinned BYOC credential '<id>' not found"` means the connection's
 BYOC client was deleted — tell the user to create a new connection.
 
-### Providing an API key (non-OAuth services)
+### Providing a secret (non-OAuth services)
 
-For API-key (or HMAC / inline-secret) services there is **no `auth_url`**. When
+For secret-based services — an API key, a bearer token, an HMAC secret, or a
+`user:password` pair — there is **no `auth_url`**. When
 the required secret is absent, calling the action returns a `400`:
 
 ```json

@@ -241,7 +241,7 @@ fn extract_api_key(
         }
     };
 
-    Ok(ServiceAuth::ApiKey {
+    Ok(ServiceAuth::Secret {
         scheme: scheme_key.to_string(),
         label,
         description: scheme_description(obj),
@@ -272,7 +272,7 @@ fn extract_http_auth(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    Ok(ServiceAuth::ApiKey {
+    Ok(ServiceAuth::Secret {
         scheme: scheme_key.to_string(),
         label: obj
             .get("x-overslash-label")
@@ -1415,7 +1415,7 @@ mod tests {
     fn auth_carries_scheme_keys_and_descriptions_in_sorted_order() {
         // Two apiKey schemes à la services/email.yaml: the securitySchemes map
         // KEY (`gateway`/`mailbox`) — not the header `name` — must ride into
-        // `ServiceAuth::ApiKey.scheme`, in the deterministic sorted order the
+        // `ServiceAuth::Secret.scheme`, in the deterministic sorted order the
         // dashboard's per-scheme credential rows key off.
         let doc = json!({
             "info": {"title": "T", "x-overslash-key": "t"},
@@ -1440,7 +1440,7 @@ mod tests {
         let (svc, _) = compile_service(&doc).unwrap();
         assert_eq!(svc.auth.len(), 2);
         match &svc.auth[0] {
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 scheme,
                 label,
                 description,
@@ -1454,10 +1454,10 @@ mod tests {
                 assert_eq!(*secret_source, crate::types::SecretSource::Org);
                 assert!(optional);
             }
-            other => panic!("expected ApiKey, got {other:?}"),
+            other => panic!("expected Secret, got {other:?}"),
         }
         match &svc.auth[1] {
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 scheme,
                 label,
                 description,
@@ -1473,7 +1473,7 @@ mod tests {
                 // key wasn't confused with the scheme object's `name` field.
                 assert_eq!(injection.header_name.as_deref(), Some("X-Mailbox-Auth"));
             }
-            other => panic!("expected ApiKey, got {other:?}"),
+            other => panic!("expected Secret, got {other:?}"),
         }
     }
 
@@ -1492,7 +1492,7 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         assert_eq!(svc.auth.len(), 1);
-        assert!(matches!(svc.auth[0], ServiceAuth::ApiKey { .. }));
+        assert!(matches!(svc.auth[0], ServiceAuth::Secret { .. }));
     }
 
     #[test]
@@ -1510,7 +1510,7 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         match svc.auth.into_iter().next().unwrap() {
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 default_secret_name,
                 injection,
                 ..
@@ -1521,7 +1521,7 @@ mod tests {
                 assert!(injection.header_name.is_none());
                 assert!(injection.prefix.is_none());
             }
-            _ => panic!("expected ApiKey"),
+            _ => panic!("expected Secret"),
         }
     }
 
@@ -1560,11 +1560,11 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         match &svc.auth[0] {
-            ServiceAuth::ApiKey { injection, .. } => {
+            ServiceAuth::Secret { injection, .. } => {
                 assert_eq!(injection.inject_as, "header");
                 assert_eq!(injection.header_name.as_deref(), Some("Authorization"));
             }
-            _ => panic!("expected ApiKey"),
+            _ => panic!("expected Secret"),
         }
     }
 
@@ -1584,7 +1584,7 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         match &svc.auth[0] {
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 default_secret_name,
                 injection,
                 ..
@@ -1595,7 +1595,7 @@ mod tests {
                 assert_eq!(injection.prefix.as_deref(), Some("Bearer "));
                 assert!(injection.query_param.is_none());
             }
-            _ => panic!("expected ApiKey for http/bearer"),
+            _ => panic!("expected Secret for http/bearer"),
         }
     }
 
@@ -1609,11 +1609,11 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         match &svc.auth[0] {
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 default_secret_name,
                 ..
             } => assert!(default_secret_name.is_empty()),
-            _ => panic!("expected ApiKey for http/bearer"),
+            _ => panic!("expected Secret for http/bearer"),
         }
     }
 

@@ -6,7 +6,7 @@
 		available,
 		loading = false,
 		allowCreate = true,
-		placeholder = 'my-api-key',
+		placeholder = 'my-secret',
 		id,
 		disabled = false
 	}: {

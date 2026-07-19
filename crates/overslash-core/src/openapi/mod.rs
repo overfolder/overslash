@@ -431,7 +431,7 @@ mod tests {
                     assert_eq!(provider, "slack");
                     assert!(scopes.contains(&"chat:write".to_string()));
                 }
-                ServiceAuth::ApiKey {
+                ServiceAuth::Secret {
                     default_secret_name,
                     ..
                 } => {

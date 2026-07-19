@@ -603,18 +603,18 @@ pub async fn kernel_create_service(
         // instance-source apiKey scheme to bind (or an MCP bearer secret) —
         // org-source schemes resolve their fixed default name and are bound
         // per scheme via `credentials`.
-        let has_instance_api_key = template_def.auth.iter().any(|a| {
+        let has_instance_secret = template_def.auth.iter().any(|a| {
             matches!(
                 a,
-                ServiceAuth::ApiKey {
+                ServiceAuth::Secret {
                     secret_source: SecretSource::Instance,
                     ..
                 }
             )
         });
-        if !has_instance_api_key && !is_mcp_bearer {
+        if !has_instance_secret && !is_mcp_bearer {
             return Err(AppError::BadRequest(format!(
-                "template '{}' does not use api key or MCP bearer auth",
+                "template '{}' does not use secret or MCP bearer auth",
                 input.template_key
             )));
         }
@@ -861,10 +861,10 @@ pub async fn kernel_update_service(
             .as_ref()
             .is_some_and(|o| o.as_deref().is_some_and(|s| !s.is_empty()))
         {
-            let has_instance_api_key = template_def.auth.iter().any(|a| {
+            let has_instance_secret = template_def.auth.iter().any(|a| {
                 matches!(
                     a,
-                    ServiceAuth::ApiKey {
+                    ServiceAuth::Secret {
                         secret_source: SecretSource::Instance,
                         ..
                     }
@@ -874,9 +874,9 @@ pub async fn kernel_update_service(
                 template_def.mcp.as_ref().map(|m| &m.auth),
                 Some(McpAuth::Bearer { .. })
             );
-            if !has_instance_api_key && !is_mcp_bearer {
+            if !has_instance_secret && !is_mcp_bearer {
                 return Err(AppError::BadRequest(format!(
-                    "template '{}' does not use api key or MCP bearer auth",
+                    "template '{}' does not use secret or MCP bearer auth",
                     existing.template_key
                 )));
             }
@@ -960,7 +960,7 @@ fn instance_scheme_keys(template: &ServiceDefinition) -> Vec<&str> {
         .auth
         .iter()
         .filter_map(|a| match a {
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 scheme,
                 secret_source: SecretSource::Instance,
                 ..
@@ -1046,7 +1046,7 @@ fn reconcile_credentials(
         .auth
         .iter()
         .filter_map(|a| match a {
-            ServiceAuth::ApiKey { scheme, .. } if !scheme.is_empty() => Some(scheme.as_str()),
+            ServiceAuth::Secret { scheme, .. } if !scheme.is_empty() => Some(scheme.as_str()),
             _ => None,
         })
         .collect();
@@ -1159,7 +1159,7 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
 }
 
 /// Pull the OAuth provider declared on a template's auth schemes, if any.
-/// Returns `None` for templates that don't declare an OAuth auth (api-key
+/// Returns `None` for templates that don't declare an OAuth auth (secret-based
 /// only, MCP bearer only, no auth, etc.) — in which case the auto-connect
 /// orchestration in `kernel_create_service` is a no-op.
 pub(crate) fn template_oauth_provider(def: &ServiceDefinition) -> Option<&str> {
@@ -1404,10 +1404,10 @@ pub fn derive_credentials_status(
             .auth
             .iter()
             .any(|a| matches!(a, ServiceAuth::OAuth { .. }));
-    let has_api_key = template
+    let has_secret = template
         .auth
         .iter()
-        .any(|a| matches!(a, ServiceAuth::ApiKey { .. }));
+        .any(|a| matches!(a, ServiceAuth::Secret { .. }));
     // A required apiKey scheme is unbound when the execution-time resolution
     // chain (`credentials[scheme]` → legacy `secret_name` for instance-source
     // → fixed `default_secret_name` for org-source) yields no name. Mirrors
@@ -1416,8 +1416,8 @@ pub fn derive_credentials_status(
     // particular a template whose apiKey schemes are all org-source needs no
     // instance binding at all — it must NOT report NeedsAuthentication just
     // because the instance's scalar `secret_name` is empty.
-    let api_key_unbound = template.auth.iter().any(|a| match a {
-        ServiceAuth::ApiKey {
+    let secret_unbound = template.auth.iter().any(|a| match a {
+        ServiceAuth::Secret {
             scheme,
             default_secret_name,
             secret_source,
@@ -1447,9 +1447,9 @@ pub fn derive_credentials_status(
             if has_oauth {
                 return Some(CredentialsStatus::NeedsAuthentication);
             }
-            if has_api_key || mcp_bearer {
+            if has_secret || mcp_bearer {
                 let missing =
-                    (has_api_key && api_key_unbound) || (!has_api_key && mcp_bearer && no_secret);
+                    (has_secret && secret_unbound) || (!has_secret && mcp_bearer && no_secret);
                 return Some(if missing {
                     CredentialsStatus::NeedsAuthentication
                 } else {
@@ -1621,7 +1621,7 @@ mod tests {
         );
     }
 
-    fn api_key_template() -> ServiceDefinition {
+    fn secret_template() -> ServiceDefinition {
         ServiceDefinition {
             key: "t".into(),
             display_name: "T".into(),
@@ -1629,7 +1629,7 @@ mod tests {
             hosts: vec![],
             category: None,
             hidden: false,
-            auth: vec![ServiceAuth::ApiKey {
+            auth: vec![ServiceAuth::Secret {
                 scheme: String::new(),
                 label: String::new(),
                 description: String::new(),
@@ -1850,8 +1850,8 @@ mod tests {
     }
 
     #[test]
-    fn ok_when_api_key_template_has_secret_and_no_connection() {
-        let tpl = api_key_template();
+    fn ok_when_secret_template_has_secret_and_no_connection() {
+        let tpl = secret_template();
         assert_eq!(
             derive_credentials_status(
                 &tpl,
@@ -1866,7 +1866,7 @@ mod tests {
     /// email.yaml-shaped auth: an optional org-source `gateway` slot plus a
     /// required instance-source `mailbox` slot.
     fn dual_scheme_template() -> ServiceDefinition {
-        let mut tpl = api_key_template();
+        let mut tpl = secret_template();
         let injection = TokenInjection {
             inject_as: "header".into(),
             header_name: Some("Authorization".into()),
@@ -1875,7 +1875,7 @@ mod tests {
             encode: None,
         };
         tpl.auth = vec![
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 scheme: "gateway".into(),
                 label: String::new(),
                 description: String::new(),
@@ -1884,7 +1884,7 @@ mod tests {
                 secret_source: overslash_core::types::SecretSource::Org,
                 optional: true,
             },
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 scheme: "mailbox".into(),
                 label: String::new(),
                 description: String::new(),
@@ -1901,9 +1901,9 @@ mod tests {
     /// no instance binding — the old `.any(ApiKey)` predicate misreported it
     /// as NeedsAuthentication forever.
     #[test]
-    fn ok_when_all_api_key_schemes_are_org_source_and_nothing_bound() {
-        let mut tpl = api_key_template();
-        if let ServiceAuth::ApiKey { secret_source, .. } = &mut tpl.auth[0] {
+    fn ok_when_all_secret_schemes_are_org_source_and_nothing_bound() {
+        let mut tpl = secret_template();
+        if let ServiceAuth::Secret { secret_source, .. } = &mut tpl.auth[0] {
             *secret_source = overslash_core::types::SecretSource::Org;
         }
         assert_eq!(
@@ -1960,7 +1960,7 @@ mod tests {
     #[test]
     fn reconcile_rejects_scalar_alias_when_several_instance_slots_exist() {
         let mut tpl = dual_scheme_template();
-        if let ServiceAuth::ApiKey {
+        if let ServiceAuth::Secret {
             secret_source,
             optional,
             ..

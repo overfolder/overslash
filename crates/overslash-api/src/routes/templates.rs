@@ -568,7 +568,7 @@ fn configurable_url(def: &ServiceDefinition) -> bool {
         || def.auth.iter().any(|a| {
             matches!(
                 a,
-                ServiceAuth::ApiKey {
+                ServiceAuth::Secret {
                     secret_source: SecretSource::Org,
                     ..
                 }

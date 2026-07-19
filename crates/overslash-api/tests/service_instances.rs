@@ -459,7 +459,7 @@ async fn test_secret_name_rejected_on_oauth_template() {
     let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
-    // Two org-level templates: one OAuth-only, one api-key-only. The gate
+    // Two org-level templates: one OAuth-only, one secret-only. The gate
     // should reject `secret_name` for the OAuth one and accept it for the
     // other.
     client
@@ -509,8 +509,8 @@ async fn test_secret_name_rejected_on_oauth_template() {
         body["error"]
             .as_str()
             .unwrap_or_default()
-            .contains("does not use api key or MCP bearer auth"),
-        "expected api-key-auth error, got: {body}"
+            .contains("does not use secret or MCP bearer auth"),
+        "expected secret-auth error, got: {body}"
     );
 
     // Update path: clean OAuth instance, then try to set `secret_name` via PUT.
@@ -549,7 +549,7 @@ async fn test_secret_name_rejected_on_oauth_template() {
         .unwrap();
     assert_eq!(clear.status(), 200);
 
-    // Regression guard: the gate must NOT over-reject — api-key templates
+    // Regression guard: the gate must NOT over-reject — secret-based templates
     // continue to accept `secret_name`.
     let ok = client
         .post(format!("{base}/v1/services"))
