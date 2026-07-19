@@ -264,7 +264,7 @@
 	let upgrading = $state(false);
 	let upgradeAbort: AbortController | null = null;
 
-	// Build the editable per-scheme map: one entry per apiKey scheme, seeded
+	// Build the editable per-scheme map: one entry per secret scheme, seeded
 	// from svc.credentials. A legacy row (empty map, scalar secret_name set)
 	// shows its scalar in the sole instance-source slot so nothing looks
 	// unbound that isn't.
@@ -374,7 +374,7 @@
 		try {
 			// Per-scheme bindings ride the `credentials` map (the server mirrors
 			// the legacy scalar). The scalar `secret_name` is only sent on the
-			// paths that still edit it directly — MCP bearer, or an apiKey
+			// paths that still edit it directly — MCP bearer, or a secret
 			// template from an API without scheme keys — never alongside the
 			// map, so the two can't conflict.
 			const sendCredentials = schemeKeyed && !usesOAuth && !isSystem;

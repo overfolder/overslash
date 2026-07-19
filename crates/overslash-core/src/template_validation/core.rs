@@ -991,7 +991,7 @@ mod tests {
     #[test]
     fn several_instance_source_schemes_are_valid() {
         // Instances bind secrets per scheme key (`credentials[scheme]`), so a
-        // template may declare any number of instance-source apiKey schemes —
+        // template may declare any number of instance-source secret schemes —
         // the old `multiple_instance_secrets` scalar-storage rule is gone.
         let mut d = minimal_valid();
         d.auth = vec![

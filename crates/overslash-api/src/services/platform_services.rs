@@ -36,12 +36,12 @@ pub struct CreateServiceInput {
     pub template_key: String,
     pub name: Option<String>,
     pub connection_id: Option<Uuid>,
-    /// Legacy scalar alias for the template's sole instance-source apiKey
+    /// Legacy scalar alias for the template's sole instance-source secret
     /// scheme (or the MCP bearer secret). Rejected when the template declares
     /// several instance-source schemes — bind those via `credentials`.
     pub secret_name: Option<String>,
     /// Per-scheme secret bindings: securityScheme key → secret NAME in the
-    /// org vault. Keys must match the template's apiKey scheme keys.
+    /// org vault. Keys must match the template's secret scheme keys.
     #[serde(default)]
     pub credentials: Option<CredentialsMap>,
     /// Per-instance non-secret param values: param name → value. Keys must
@@ -87,14 +87,14 @@ fn default_status() -> String {
 pub struct UpdateServiceInput {
     pub name: Option<String>,
     pub connection_id: Option<Option<Uuid>>,
-    /// Legacy scalar alias for the template's sole instance-source apiKey
+    /// Legacy scalar alias for the template's sole instance-source secret
     /// scheme (or the MCP bearer secret). Rejected when the template declares
     /// several instance-source schemes — bind those via `credentials`.
     pub secret_name: Option<Option<String>>,
     /// Per-scheme secret bindings: securityScheme key → secret NAME in the
     /// org vault. `Some` = whole-map replace (an empty map clears every
     /// binding); absent = leave unchanged. Keys must match the template's
-    /// apiKey scheme keys.
+    /// secret scheme keys.
     #[serde(default)]
     pub credentials: Option<CredentialsMap>,
     /// Per-instance non-secret param values. `Some` = whole-map replace (an
@@ -600,7 +600,7 @@ pub async fn kernel_create_service(
 
     if input.secret_name.as_deref().is_some_and(|s| !s.is_empty()) {
         // The scalar alias only makes sense for a template with an
-        // instance-source apiKey scheme to bind (or an MCP bearer secret) —
+        // instance-source secret scheme to bind (or an MCP bearer secret) —
         // org-source schemes resolve their fixed default name and are bound
         // per scheme via `credentials`.
         let has_instance_secret = template_def.auth.iter().any(|a| {
@@ -952,7 +952,7 @@ pub async fn kernel_update_service(
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-/// The template's apiKey scheme keys whose fallback is the instance's legacy
+/// The template's secret scheme keys whose fallback is the instance's legacy
 /// scalar `secret_name` (i.e. `secret_source: instance`). Empty scheme keys
 /// (programmatically-built templates) are skipped — they can't key a binding.
 fn instance_scheme_keys(template: &ServiceDefinition) -> Vec<&str> {
@@ -1027,7 +1027,7 @@ fn validate_instance_config(
 /// `secret_name` alias into the map to store, validating both against the
 /// template.
 ///
-/// - Every explicit key must name one of the template's apiKey schemes, and
+/// - Every explicit key must name one of the template's secret schemes, and
 ///   every value must be non-empty (whole-map replace: omit a key to unbind).
 /// - A non-empty `secret_name` folds into the sole instance-source scheme's
 ///   slot. With several instance-source schemes the alias is ambiguous → 400.
@@ -1408,12 +1408,12 @@ pub fn derive_credentials_status(
         .auth
         .iter()
         .any(|a| matches!(a, ServiceAuth::Secret { .. }));
-    // A required apiKey scheme is unbound when the execution-time resolution
+    // A required secret scheme is unbound when the execution-time resolution
     // chain (`credentials[scheme]` → legacy `secret_name` for instance-source
     // → fixed `default_secret_name` for org-source) yields no name. Mirrors
     // `resolve_instance_auth`; whether the named secret actually exists in
     // the vault is a send-time concern a pure classifier can't check. In
-    // particular a template whose apiKey schemes are all org-source needs no
+    // particular a template whose secret schemes are all org-source needs no
     // instance binding at all — it must NOT report NeedsAuthentication just
     // because the instance's scalar `secret_name` is empty.
     let secret_unbound = template.auth.iter().any(|a| match a {
@@ -1897,8 +1897,8 @@ mod tests {
         tpl
     }
 
-    /// A template whose only apiKey scheme resolves an org-vault default needs
-    /// no instance binding — the old `.any(ApiKey)` predicate misreported it
+    /// A template whose only secret scheme resolves an org-vault default needs
+    /// no instance binding — the old `.any(ApiKey)` predicate (pre-rename) misreported it
     /// as NeedsAuthentication forever.
     #[test]
     fn ok_when_all_secret_schemes_are_org_source_and_nothing_bound() {

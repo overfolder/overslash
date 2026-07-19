@@ -307,7 +307,7 @@
 		try {
 			selectedDetail = await getTemplate(t.key);
 			nameInput = t.key;
-			// Seed one entry per apiKey scheme so the per-scheme pickers bind
+			// Seed one entry per secret scheme so the per-scheme pickers bind
 			// to defined slots on the configure step's first render.
 			const seeded: Record<string, string> = {};
 			for (const a of selectedDetail?.auth ?? []) {

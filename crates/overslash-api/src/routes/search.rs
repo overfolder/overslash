@@ -146,6 +146,13 @@ struct SearchResult {
 struct AuthStatus {
     /// `"oauth"` or `"secret"`. Mirrors `ServiceAuth` so agents don't have
     /// to crack open the template themselves.
+    ///
+    /// This string is hand-built, not derived from `ServiceAuth`'s serde
+    /// tag, so `ServiceAuth::Secret`'s `alias = "api_key"` does NOT apply:
+    /// it only rescues *inbound* parsing. Outbound, this field emits
+    /// `"secret"` where it used to emit `"api_key"` — a deliberate break for
+    /// any client branching on the old discriminant. Agents read the current
+    /// vocabulary from SKILL.md, and the dashboard ships with the API.
     #[serde(rename = "type")]
     kind: String,
     /// OAuth provider key when `kind == "oauth"`. Absent for secret-based auth.
