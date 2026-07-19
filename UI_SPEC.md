@@ -1022,7 +1022,7 @@ If the caller has any open drafts, a **Drafts** card renders above this table; s
 3. **Connect credentials** — depends on the template's auth config:
    - *OAuth*: shows requested scopes and a `[Connect]` button that starts the OAuth redirect. Below the connect button, a collapsible **"Use your own OAuth app"** section (collapsed by default). When expanded, shows two text inputs: **Client ID** and **Client Secret** (password-masked with show/hide toggle). If the user fills these in and clicks `[Connect]`, Overslash creates two secrets in the user's vault — `OAUTH_{PROVIDER}_CLIENT_ID` and `OAUTH_{PROVIDER}_CLIENT_SECRET` — and uses them for the OAuth redirect instead of org/system credentials. A help link explains why a user might want this (e.g., "Use credentials from your own GCP project"). If org-level or system credentials are not configured for this provider, the collapsible section starts **expanded** and the fields are required — there's nothing to fall back to.
    - *Org service with per-user OAuth*: OAuth redirect using the org's app credentials (resolved from org-level secrets). No BYOC option — the org controls the app.
-   - *API key*: form to paste the key → stored as a versioned secret → done
+   - *Secret*: form to paste the value → stored as a versioned secret → done
    - *Both available*: user picks which auth method
    - *Org service with shared credential*: one-click, no auth needed
 4. **Status**: starts as Active (or Draft if the user wants to test first)
@@ -1032,7 +1032,7 @@ If the caller has any open drafts, a **Drafts** card renders above this table; s
 `[Manage]` on a service instance shows:
 
 - **Connection status** — connected, expired (needs re-auth), error
-- **Credential type** — OAuth (which account), API key, shared
+- **Credential type** — OAuth (which account), secret, shared
 - **Template** — link to view the template definition
 - **Usage** — which agents used this service, last execution, execution count
 - **Actions**: `[Reconnect]` `[Revoke]` `[Archive]`
@@ -1043,7 +1043,7 @@ If the caller has any open drafts, a **Drafts** card renders above this table; s
 
 **Manual creation:**
 1. **Template identity**: key, display name, base URL, description
-2. **Auth config**: None / API Key (injection config) / OAuth (provider, scopes, token injection) / Both
+2. **Auth config**: None / Secret (injection config) / OAuth (provider, scopes, token injection) / Both
 3. **Actions**: optional — add defined actions now or later (see Template Editor)
 4. Save as Draft or Active
 
@@ -1169,7 +1169,7 @@ Org-admins see additional capabilities:
 **Org services:**
 - Create org-level service instances from any template, assign to groups
 - For OAuth templates: the org's OAuth app credentials are resolved from org-level secrets (`OAUTH_{PROVIDER}_CLIENT_ID` / `SECRET`, configured in Org Settings → OAuth App Credentials). If no org credentials exist for the template's provider, the create flow prompts the admin to configure them first (link to Org Settings). Users in assigned groups complete their own OAuth flow using the org's app.
-- For API key templates: optionally provide a shared credential, or let each user provide their own.
+- For secret-based templates: optionally provide a shared credential, or let each user provide their own.
 
 **Org templates:**
 - Create/edit org-level templates (same Template Editor)

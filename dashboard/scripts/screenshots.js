@@ -26,7 +26,7 @@ const MOCK_GITHUB_DETAIL = {
   hosts: ['api.github.com'],
   auth: [
     { type: 'oauth', provider: 'github', token_injection: { as: 'header', header_name: 'Authorization', prefix: 'Bearer ' } },
-    { type: 'api_key', default_secret_name: 'github_token', injection: { as: 'header', header_name: 'Authorization', prefix: 'Bearer ' } }
+    { type: 'secret', default_secret_name: 'github_token', injection: { as: 'header', header_name: 'Authorization', prefix: 'Bearer ' } }
   ],
   actions: {
     list_repos: {

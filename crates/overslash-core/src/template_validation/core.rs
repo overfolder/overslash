@@ -130,7 +130,7 @@ fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
                     issues,
                 );
             }
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 scheme,
                 default_secret_name,
                 injection,
@@ -139,12 +139,12 @@ fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
                 if default_secret_name.trim().is_empty() {
                     issues.err(
                         "missing_field",
-                        "api_key default_secret_name is required",
+                        "secret default_secret_name is required",
                         format!("auth[{i}].default_secret_name"),
                     );
                 }
                 // Instances bind secrets per scheme key (`credentials[scheme]`),
-                // so any number of apiKey schemes is fine — but the keys must be
+                // so any number of secret schemes is fine — but the keys must be
                 // unambiguous. Unique by construction when compiled from a
                 // securitySchemes map; guard the programmatic construction paths.
                 if !scheme.is_empty() {
@@ -683,7 +683,7 @@ mod tests {
             hosts: vec!["api.example.com".into()],
             category: None,
             hidden: false,
-            auth: vec![ServiceAuth::ApiKey {
+            auth: vec![ServiceAuth::Secret {
                 scheme: String::new(),
                 label: String::new(),
                 description: String::new(),
@@ -921,7 +921,7 @@ mod tests {
     #[test]
     fn incomplete_token_injection_header() {
         let mut d = minimal_valid();
-        d.auth = vec![ServiceAuth::ApiKey {
+        d.auth = vec![ServiceAuth::Secret {
             scheme: String::new(),
             label: String::new(),
             description: String::new(),
@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn incomplete_token_injection_query() {
         let mut d = minimal_valid();
-        d.auth = vec![ServiceAuth::ApiKey {
+        d.auth = vec![ServiceAuth::Secret {
             scheme: String::new(),
             label: String::new(),
             description: String::new(),
@@ -970,8 +970,8 @@ mod tests {
         );
     }
 
-    fn api_key(scheme: &str, source: SecretSource) -> ServiceAuth {
-        ServiceAuth::ApiKey {
+    fn secret(scheme: &str, source: SecretSource) -> ServiceAuth {
+        ServiceAuth::Secret {
             scheme: scheme.into(),
             label: String::new(),
             description: String::new(),
@@ -991,12 +991,12 @@ mod tests {
     #[test]
     fn several_instance_source_schemes_are_valid() {
         // Instances bind secrets per scheme key (`credentials[scheme]`), so a
-        // template may declare any number of instance-source apiKey schemes —
+        // template may declare any number of instance-source secret schemes —
         // the old `multiple_instance_secrets` scalar-storage rule is gone.
         let mut d = minimal_valid();
         d.auth = vec![
-            api_key("first", SecretSource::Instance),
-            api_key("second", SecretSource::Instance),
+            secret("first", SecretSource::Instance),
+            secret("second", SecretSource::Instance),
         ];
         let r = run(&d);
         assert!(r.valid, "errors: {:?}", r.errors);
@@ -1006,8 +1006,8 @@ mod tests {
     fn duplicate_scheme_keys_are_rejected() {
         let mut d = minimal_valid();
         d.auth = vec![
-            api_key("token", SecretSource::Instance),
-            api_key("token", SecretSource::Org),
+            secret("token", SecretSource::Instance),
+            secret("token", SecretSource::Org),
         ];
         let r = run(&d);
         assert!(
@@ -1213,7 +1213,7 @@ mod tests {
     #[test]
     fn mcp_rejects_http_auth() {
         let mut d = minimal_mcp(McpAuth::None);
-        d.auth = vec![ServiceAuth::ApiKey {
+        d.auth = vec![ServiceAuth::Secret {
             scheme: String::new(),
             label: String::new(),
             description: String::new(),

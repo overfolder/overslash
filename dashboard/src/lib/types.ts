@@ -670,7 +670,7 @@ export interface ServiceDetail {
 export type ServiceAuth =
   | { type: 'oauth'; provider: string; scopes?: string[]; token_injection: TokenInjection }
   | {
-      type: 'api_key';
+      type: 'secret';
       /** The securitySchemes key this credential slot was compiled from (e.g. `gateway`, `mailbox`). */
       scheme?: string;
       /** Short display name from `x-overslash-label` (e.g. "Overfwd API Token") — the row's label. */

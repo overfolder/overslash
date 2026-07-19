@@ -101,11 +101,11 @@ struct SearchResult {
     service_display_name: String,
     /// OAuth account identifier sourced from `connections.account_email`
     /// (e.g. `alice@gmail.com`). Hoisted to the top level since each row is
-    /// already a single instance. Absent for api-key rows and for OAuth
+    /// already a single instance. Absent for secret-based rows and for OAuth
     /// connections whose userinfo lookup didn't return an email.
     #[serde(skip_serializing_if = "Option::is_none")]
     account_email: Option<String>,
-    /// Variable name of the secret backing an api-key instance — the label
+    /// Variable name of the secret backing a secret-based instance — the label
     /// only, never the value. Hoisted to the top level since each row is a
     /// single instance. Absent for OAuth rows.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,11 +144,18 @@ struct SearchResult {
 
 #[derive(Serialize, Clone)]
 struct AuthStatus {
-    /// `"oauth"` or `"api_key"`. Mirrors `ServiceAuth` so agents don't have
+    /// `"oauth"` or `"secret"`. Mirrors `ServiceAuth` so agents don't have
     /// to crack open the template themselves.
+    ///
+    /// This string is hand-built, not derived from `ServiceAuth`'s serde
+    /// tag, so `ServiceAuth::Secret`'s `alias = "api_key"` does NOT apply:
+    /// it only rescues *inbound* parsing. Outbound, this field emits
+    /// `"secret"` where it used to emit `"api_key"` — a deliberate break for
+    /// any client branching on the old discriminant. Agents read the current
+    /// vocabulary from SKILL.md, and the dashboard ships with the API.
     #[serde(rename = "type")]
     kind: String,
-    /// OAuth provider key when `kind == "oauth"`. Absent for api-key auth.
+    /// OAuth provider key when `kind == "oauth"`. Absent for secret-based auth.
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
     /// `true` when this row represents a configured instance the caller can
@@ -164,7 +171,7 @@ struct InstanceRow {
     name: String,
     /// OAuth account identifier (when applicable).
     account_email: Option<String>,
-    /// Secret-name label for api-key instances (when applicable).
+    /// Secret-name label for secret-based instances (when applicable).
     secret_name: Option<String>,
     /// Granted-scope knowledge of the connection the exec path would use for
     /// this instance (explicit binding, else owner-provider auto-resolve),
@@ -456,7 +463,7 @@ async fn search(
                 // tie-break sort below stabilises by service name.
                 for inst in &connected_instances {
                     // Per-action coverage, but only for actions that actually
-                    // declare scopes (OAuth-secured). Unscoped/api-key actions
+                    // declare scopes (OAuth-secured). Unscoped/secret-based actions
                     // leave the fields absent.
                     let (scope_coverage, missing_scopes) = if action.required_scopes.is_empty() {
                         (None, Vec::new())
@@ -729,7 +736,7 @@ fn build_auth_status(def: &ServiceDefinition, connected: bool) -> AuthStatus {
     // the preferred one first — exactly how the dashboard displays them.
     let (kind, provider) = match def.auth.first() {
         Some(ServiceAuth::OAuth { provider, .. }) => ("oauth".into(), Some(provider.clone())),
-        Some(ServiceAuth::ApiKey { .. }) => ("api_key".into(), None),
+        Some(ServiceAuth::Secret { .. }) => ("secret".into(), None),
         None => ("none".into(), None),
     };
     AuthStatus {

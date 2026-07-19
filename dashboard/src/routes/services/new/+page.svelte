@@ -31,7 +31,7 @@
 	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
-	type ApiKeyScheme = Extract<ServiceAuth, { type: 'api_key' }>;
+	type SecretScheme = Extract<ServiceAuth, { type: 'secret' }>;
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean } } = $props();
 
@@ -139,19 +139,19 @@
 		})
 	);
 
-	// Auth modes available on the selected template (oauth | api_key)
+	// Auth modes available on the selected template (oauth or secret)
 	const authModes = $derived(
 		(selectedDetail?.auth ?? []).map((a: any) => a?.type as string).filter(Boolean)
 	);
-	const usesApiKey = $derived(authModes.includes('api_key'));
-	// Every apiKey credential slot the template declares — one picker each,
+	const usesSecret = $derived(authModes.includes('secret'));
+	// Every secret credential slot the template declares — one picker each,
 	// bound via `credentials[scheme]` (e.g. email's `gateway` + `mailbox`).
-	const apiKeySchemes = $derived(
-		(selectedDetail?.auth ?? []).filter((a: any) => a?.type === 'api_key') as ApiKeyScheme[]
+	const secretSchemes = $derived(
+		(selectedDetail?.auth ?? []).filter((a: any) => a?.type === 'secret') as SecretScheme[]
 	);
 	// An API from before per-scheme bindings omits `scheme` — fall back to the
 	// legacy single scalar field in that case.
-	const schemeKeyed = $derived(usesApiKey && apiKeySchemes.every((s) => !!s.scheme));
+	const schemeKeyed = $derived(usesSecret && secretSchemes.every((s) => !!s.scheme));
 	// An HTTP `oauth` scheme, or an MCP-runtime `auth.kind: oauth` provider
 	// (D24) normalized to the same {provider, scopes} shape so the connect
 	// surface below is shared. MCP OAuth declares no template-level scopes.
@@ -219,7 +219,7 @@
 	$effect(() => {
 		if (step !== 'configure') return;
 		if (secretsLoaded) return;
-		if (!((usesApiKey && !usesOAuth) || mcpNeedsSecret)) return;
+		if (!((usesSecret && !usesOAuth) || mcpNeedsSecret)) return;
 		secretsLoaded = true;
 		secretsLoading = true;
 		listSecrets()
@@ -307,11 +307,11 @@
 		try {
 			selectedDetail = await getTemplate(t.key);
 			nameInput = t.key;
-			// Seed one entry per apiKey scheme so the per-scheme pickers bind
+			// Seed one entry per secret scheme so the per-scheme pickers bind
 			// to defined slots on the configure step's first render.
 			const seeded: Record<string, string> = {};
 			for (const a of selectedDetail?.auth ?? []) {
-				if (a.type === 'api_key' && a.scheme) seeded[a.scheme] = '';
+				if (a.type === 'secret' && a.scheme) seeded[a.scheme] = '';
 			}
 			credentialsInput = seeded;
 			// Same for instance-pinned config: a stale value from a previously
@@ -742,19 +742,18 @@
 				/>
 			{/if}
 
-			{#if usesApiKey && !usesOAuth && schemeKeyed}
+			{#if usesSecret && !usesOAuth && schemeKeyed}
 				<ServiceCredentials
-					schemes={apiKeySchemes}
+					schemes={secretSchemes}
 					bind:credentials={credentialsInput}
 					available={availableSecrets}
 					loading={secretsLoading}
-					singleLabel={httpNeedsUrl ? 'Credential secret name' : 'API key secret name'}
 					idPrefix="new-service-cred"
 				/>
-			{:else if (usesApiKey && !usesOAuth) || mcpNeedsSecret}
+			{:else if (usesSecret && !usesOAuth) || mcpNeedsSecret}
 				<div class="field">
 					<label class="label" for="new-service-secret">
-						{#if mcpNeedsSecret}Bearer token secret name{:else if httpNeedsUrl}Credential secret name{:else}API key secret name{/if}
+						{#if mcpNeedsSecret}Bearer token secret name{:else}Secret name{/if}
 					</label>
 					<SecretNamePicker
 						id="new-service-secret"

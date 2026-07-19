@@ -1080,7 +1080,7 @@ pub(crate) async fn resolve_instance_auth(
     let mut secret_refs: Vec<SecretRef> = Vec::new();
     let mut instance_secret_missing = false;
     for service_auth in &svc.auth {
-        if let overslash_core::types::ServiceAuth::ApiKey {
+        if let overslash_core::types::ServiceAuth::Secret {
             scheme,
             default_secret_name,
             injection,

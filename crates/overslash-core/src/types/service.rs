@@ -184,12 +184,19 @@ pub enum ServiceAuth {
         scopes: Vec<String>,
         token_injection: TokenInjection,
     },
-    #[serde(rename = "api_key")]
-    ApiKey {
+    /// A static, vault-stored credential injected into the outbound request.
+    /// Not necessarily an API key: `services/email.yaml`'s `mailbox` scheme
+    /// carries an IMAP `user:password` pair. Compiled from an OpenAPI `apiKey`
+    /// or `http`-bearer security scheme.
+    ///
+    /// Serializes as `"secret"`; still accepts the legacy `"api_key"`
+    /// discriminant on the wire.
+    #[serde(rename = "secret", alias = "api_key")]
+    Secret {
         /// The securitySchemes key this was compiled from (`gateway`,
         /// `mailbox`, …). Identifies the credential slot: it keys the
         /// instance's per-scheme `credentials` bindings and labels the
-        /// credential in the dashboard, so a template with several apiKey
+        /// credential in the dashboard, so a template with several secret
         /// schemes doesn't present them as one anonymous field.
         #[serde(default)]
         scheme: String,
@@ -225,9 +232,9 @@ pub enum ServiceAuth {
     },
 }
 
-/// Which secret a compiled apiKey injection falls back to at execution time
-/// when the instance has no explicit `credentials[scheme]` binding.
-/// See [`ServiceAuth::ApiKey::secret_source`].
+/// Which secret a compiled credential injection falls back to at execution
+/// time when the instance has no explicit `credentials[scheme]` binding.
+/// See [`ServiceAuth::Secret`]'s `secret_source`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SecretSource {
@@ -422,6 +429,42 @@ pub struct ActionParam {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `Secret` variant used to be `ApiKey`, serialized as `"api_key"`.
+    /// The `serde(alias)` keeps templates and clients written against the old
+    /// discriminant parsing; nothing else pins it, so removing the alias must
+    /// break this test rather than silently break those callers.
+    #[test]
+    fn secret_auth_accepts_legacy_api_key_discriminant() {
+        let legacy = serde_json::json!({
+            "type": "api_key",
+            "scheme": "mailbox",
+            "default_secret_name": "mailbox_credential",
+            "injection": { "as": "header", "header_name": "X-Mailbox-Auth" },
+        });
+
+        let parsed: ServiceAuth = serde_json::from_value(legacy).unwrap();
+        let ServiceAuth::Secret {
+            scheme,
+            default_secret_name,
+            ..
+        } = &parsed
+        else {
+            panic!("legacy api_key must deserialize into ServiceAuth::Secret");
+        };
+        assert_eq!(scheme, "mailbox");
+        assert_eq!(default_secret_name, "mailbox_credential");
+
+        // Round-trips out under the new name, never the legacy one.
+        let out = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(out["type"], "secret");
+
+        // And the new discriminant parses too.
+        assert!(matches!(
+            serde_json::from_value::<ServiceAuth>(out).unwrap(),
+            ServiceAuth::Secret { .. }
+        ));
+    }
 
     #[test]
     fn risk_serde_roundtrip() {

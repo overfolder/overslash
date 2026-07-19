@@ -812,7 +812,7 @@ paths:
 - **`x-overslash-resolve` / `resolve:`** — on a parameter, fetch a human-readable name for an opaque ID. Runs a follow-up GET against the service and extracts a field. Used in agent-facing descriptions.
 - **`x-overslash-aliases` / `aliases:`** — on a parameter, a list of alternate caller-facing names (e.g. `[to, dest]` on a `recipient` param). A call that supplies an alias key instead of the canonical name has it rewritten to the canonical name before validation, so a well-known synonym is accepted rather than rejected as an unknown argument. A declared field always wins over an alias that collides with it, and an alias claimed by two params is ambiguous and ignored (the caller gets the normal unknown-argument error, with a Levenshtein "did you mean" suggestion). The unprefixed `aliases:` form is normalized on `parameters[]` entries; body-schema properties use the canonical `x-overslash-aliases` key (same as `resolve`).
 - **`x-overslash-provider` / `provider:`** — on an `oauth2` security scheme, the symbolic OAuth provider name (`google`, `slack`, `github`, ...). Decoupled from OAuth URLs so the gateway can resolve credentials independently.
-- **`x-overslash-default_secret_name` / `default_secret_name:`** — on an `apiKey` or `http` security scheme, the canonical secret name for auto-wiring. Templates are expected to declare **either** an OAuth scheme **or** an apiKey/http scheme with this field — OAuth templates don't fall back to an API key secret.
+- **`x-overslash-default_secret_name` / `default_secret_name:`** — on an `apiKey` or `http` security scheme, the canonical secret name for auto-wiring. Templates are expected to declare **either** an OAuth scheme **or** an apiKey/http scheme with this field — OAuth templates don't fall back to a secret.
 - **Platform-namespace actions** — `x-overslash-platform_actions` (alias `platform_actions:`) at the top level declares permission anchors with no HTTP binding (e.g. the `overslash` meta service's admin actions).
 
 ### OAuth Scopes
@@ -844,14 +844,14 @@ At connect time, the caller picks which scopes to request from the service's sup
 
 ### Secret-Token Templates
 
-Templates whose `auth.type` is `api_key` (or any other secret-token variant) declare two extra fields to make the secret-provide flow usable:
+Templates whose `auth.type` is `secret` declare two extra fields to make the secret-provide flow usable:
 
 ```yaml
 key: linear
 display_name: Linear
 hosts: [api.linear.app]
 auth:
-  - type: api_key
+  - type: secret
     instructions: "Paste your Linear personal API key. Find it at https://linear.app/settings/api"
     injection: { as: header, header_name: Authorization, prefix: "Bearer " }
     verify:
@@ -947,7 +947,7 @@ There is intentionally **no `Draft` state**. A service is either configured-and-
 1. Pick a template (from global/org/user templates)
 2. Name the service instance — defaults to the template key (e.g., `google-calendar`). Rename to create additional instances (e.g., `personal-calendar`).
 3. OAuth client override (optional) — for templates that use OAuth, the user can optionally provide their own OAuth app credentials (client ID + client secret). If provided, these are stored as secrets `OAUTH_{PROVIDER}_CLIENT_ID` / `OAUTH_{PROVIDER}_CLIENT_SECRET` in the user's vault and used instead of org or system credentials for this user's connections to this provider. If omitted, the cascade (§7) resolves credentials normally.
-4. Connect credentials — OAuth flow, API key input, or shared credential (for org services)
+4. Connect credentials — OAuth flow, secret input, or shared credential (for org services)
 5. Optionally assign to groups (org-admin only)
 
 For org services with OAuth (per-user tokens): the org-admin configures the org's OAuth app credentials as org-level secrets (`OAUTH_{PROVIDER}_CLIENT_ID` / `SECRET`, configured in Org Settings → OAuth App Credentials). Users in the assigned groups see the service and complete their individual OAuth flow using the org's app credentials. The service is shared, but each user has their own token.
@@ -1066,7 +1066,7 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 | `invalid_key` | service `key` does not match `^[a-z][a-z0-9_-]*$` |
 | `invalid_action_key` | action key does not match `^[a-z][a-z0-9_]*$` |
 | `invalid_host` | host is empty, contains scheme, path, or whitespace |
-| `unknown_auth_type` | `auth[i].type` is not `oauth` or `api_key` (also surfaces as a `schema_error` on JSON input) |
+| `unknown_auth_type` | `auth[i].type` is not `oauth` or `secret` (also surfaces as a `schema_error` on JSON input) |
 | `incomplete_token_injection` | `token_injection.as="header"` without `header_name`, or `"query"` without `query_param` |
 | `invalid_token_injection` | `token_injection.as` is not `"header"` or `"query"` |
 | `invalid_http_method` | action `method` is not one of GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS |
@@ -1160,7 +1160,7 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
       "description": "Send email '{subject}' to {to}",
       "risk": "write",
       "tier": "global",
-      "auth": { "type": "api_key", "connected": true },
+      "auth": { "type": "secret", "connected": true },
       "score": 0.74
     }
   ]
@@ -1177,8 +1177,8 @@ Each callable row carries everything an agent needs to pick the right instance:
 
 - **`service`** — the instance's runtime name (e.g. `gmail_work`). Unique per `(org, owner, name)`. Pass it verbatim as `overslash_call.service`.
 - **`template`** — the underlying template key (e.g. `gmail`). Lets the agent recognise that `gmail_work` and `gmail_personal` are siblings.
-- **`account_email`** — for OAuth-backed instances, the email returned by the upstream userinfo endpoint at OAuth time. Sourced from `connections.account_email`. Absent for api-key services.
-- **`secret_name`** — for api-key-backed instances, the variable name of the secret that backs the instance. The value, version, and encryption envelope are **never** exposed via this or any other API.
+- **`account_email`** — for OAuth-backed instances, the email returned by the upstream userinfo endpoint at OAuth time. Sourced from `connections.account_email`. Absent for secret-based services.
+- **`secret_name`** — for secret-based instances, the variable name of the secret that backs the instance. The value, version, and encryption envelope are **never** exposed via this or any other API.
 
 When two instances share the same `account_email` (two services pinned to one OAuth connection) or the same `secret_name`, the `service` (instance name) is the disambiguator — it always uniquely identifies the row.
 
@@ -1261,7 +1261,7 @@ Overslash provides built-in standalone pages for common user interactions. These
 Platforms can always build fully white-label equivalents using the same REST API these pages consume. The API exposes all the data needed: approval details with suggested tiers, secret request metadata, OAuth consent payloads. The built-in pages are a convenience, not a requirement.
 
 - **Approval resolution** (`/approvals/apr_...`) — requires login. Shows approval details and specificity picker. See §5 Trust Model.
-- **Secret request** (`/secrets/provide/req_...?token=jwt`) — no login required *by default* for the user landing on the page (signed URL). Secure input field for secret provisioning. Safe because providing a secret doesn't grant the agent authority. **One page, two contexts:** this URL is used both for (a) mid-execution secret requests when an agent calls `overslash_auth.request_secret` and (b) initial bootstrap of a secret-based service when an agent calls `create_service_from_template` against an API-key template (§9 *Programmatic Service Creation*). Both contexts share the same security properties — the signed token scopes the page to a single secret slot on a single identity.
+- **Secret request** (`/secrets/provide/req_...?token=jwt`) — no login required *by default* for the user landing on the page (signed URL). Secure input field for secret provisioning. Safe because providing a secret doesn't grant the agent authority. **One page, two contexts:** this URL is used both for (a) mid-execution secret requests when an agent calls `overslash_auth.request_secret` and (b) initial bootstrap of a secret-based service when an agent calls `create_service_from_template` against a secret-based template (§9 *Programmatic Service Creation*). Both contexts share the same security properties — the signed token scopes the page to a single secret slot on a single identity.
 
   **The API calls that generate these URLs always require an authenticated identity** — typically an enrolled agent acting `on_behalf_of` its owner-user, or a user acting through the dashboard. There is no path for an unenrolled or anonymous caller to issue a secret-provide URL. The "no login" property describes only the user-facing redemption step, not the issuance step.
 

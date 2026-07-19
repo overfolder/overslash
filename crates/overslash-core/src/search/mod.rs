@@ -174,7 +174,7 @@ mod tests {
             hosts: vec![],
             category: None,
             hidden: false,
-            auth: vec![ServiceAuth::ApiKey {
+            auth: vec![ServiceAuth::Secret {
                 scheme: String::new(),
                 label: String::new(),
                 description: String::new(),

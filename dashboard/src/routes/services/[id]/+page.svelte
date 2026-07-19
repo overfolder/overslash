@@ -37,7 +37,7 @@
 	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
-	type ApiKeyScheme = Extract<ServiceAuth, { type: 'api_key' }>;
+	type SecretScheme = Extract<ServiceAuth, { type: 'secret' }>;
 
 	const id = $derived($page.params.id ?? '');
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
@@ -150,16 +150,16 @@
 	// request nothing and mint a token missing every permission.
 	const oauthScopes = $derived<string[]>(oauthAuth?.scopes ?? template?.mcp?.scopes ?? []);
 	const usesOAuth = $derived(!!oauthProvider);
-	// Every apiKey credential slot the template declares — a template may have
+	// Every secret credential slot the template declares — a template may have
 	// several (e.g. email's org-wide `gateway` key + per-instance `mailbox`
 	// login), each bound independently via `credentials[scheme]`.
-	const apiKeySchemes = $derived(
-		(template?.auth ?? []).filter((a: any) => a?.type === 'api_key') as ApiKeyScheme[]
+	const secretSchemes = $derived(
+		(template?.auth ?? []).filter((a: any) => a?.type === 'secret') as SecretScheme[]
 	);
-	const usesApiKey = $derived(apiKeySchemes.length > 0);
+	const usesSecret = $derived(secretSchemes.length > 0);
 	// An API from before per-scheme bindings omits `scheme` — fall back to the
 	// legacy single scalar field in that case.
-	const schemeKeyed = $derived(usesApiKey && apiKeySchemes.every((s) => !!s.scheme));
+	const schemeKeyed = $derived(usesSecret && secretSchemes.every((s) => !!s.scheme));
 	const isSystem = $derived(!!svc?.is_system);
 	// Non-secret per-instance values the template lets an org pin (e.g. the
 	// mailbox gateway's IMAP/SMTP endpoint). System services are not editable.
@@ -264,7 +264,7 @@
 	let upgrading = $state(false);
 	let upgradeAbort: AbortController | null = null;
 
-	// Build the editable per-scheme map: one entry per apiKey scheme, seeded
+	// Build the editable per-scheme map: one entry per secret scheme, seeded
 	// from svc.credentials. A legacy row (empty map, scalar secret_name set)
 	// shows its scalar in the sole instance-source slot so nothing looks
 	// unbound that isn't.
@@ -273,8 +273,8 @@
 		s: ServiceInstanceDetail
 	): Record<string, string> {
 		const schemes = ((tpl?.auth ?? []).filter(
-			(a: any) => a?.type === 'api_key'
-		) as ApiKeyScheme[]).filter((sch) => !!sch.scheme);
+			(a: any) => a?.type === 'secret'
+		) as SecretScheme[]).filter((sch) => !!sch.scheme);
 		const map: Record<string, string> = {};
 		for (const sch of schemes) map[sch.scheme!] = s.credentials?.[sch.scheme!] ?? '';
 		const instanceSlots = schemes.filter(
@@ -374,7 +374,7 @@
 		try {
 			// Per-scheme bindings ride the `credentials` map (the server mirrors
 			// the legacy scalar). The scalar `secret_name` is only sent on the
-			// paths that still edit it directly — MCP bearer, or an apiKey
+			// paths that still edit it directly — MCP bearer, or a secret
 			// template from an API without scheme keys — never alongside the
 			// map, so the two can't conflict.
 			const sendCredentials = schemeKeyed && !usesOAuth && !isSystem;
@@ -649,7 +649,7 @@
 	$effect(() => {
 		if (secretsLoaded || !svc || isSystem) return;
 		const fieldVisible =
-			(usesApiKey && !usesOAuth) ||
+			(usesSecret && !usesOAuth) ||
 			(isMcp && template?.mcp?.auth_kind === 'bearer');
 		if (!fieldVisible) return;
 		secretsLoaded = true;
@@ -790,20 +790,17 @@
 						idPrefix="edit-service-config"
 					/>
 				{/if}
-				{#if usesApiKey && !usesOAuth && !isSystem && schemeKeyed}
+				{#if usesSecret && !usesOAuth && !isSystem && schemeKeyed}
 					<ServiceCredentials
-						schemes={apiKeySchemes}
+						schemes={secretSchemes}
 						bind:credentials={editCredentials}
 						available={availableSecrets}
 						loading={secretsLoading}
-						singleLabel={template?.configurable_url
-							? 'Credential secret name'
-							: 'API key secret name'}
 						idPrefix="edit-service-cred"
 					/>
-				{:else if (usesApiKey && !usesOAuth && !isSystem) || (isMcp && template?.mcp?.auth_kind === 'bearer' && !isSystem)}
+				{:else if (usesSecret && !usesOAuth && !isSystem) || (isMcp && template?.mcp?.auth_kind === 'bearer' && !isSystem)}
 					<div class="field">
-						<label class="label" for="edit-service-secret">{#if isMcp}Bearer token secret name{:else if template?.configurable_url}Credential secret name{:else}API key secret name{/if}</label>
+						<label class="label" for="edit-service-secret">{#if isMcp}Bearer token secret name{:else}Secret name{/if}</label>
 						<SecretNamePicker
 							id="edit-service-secret"
 							bind:value={editSecret}
@@ -1048,15 +1045,12 @@
 							{saving ? 'Saving…' : 'Save'}
 						</button>
 					</div>
-				{:else if usesApiKey && schemeKeyed}
+				{:else if usesSecret && schemeKeyed}
 					<ServiceCredentials
-						schemes={apiKeySchemes}
+						schemes={secretSchemes}
 						bind:credentials={editCredentials}
 						available={availableSecrets}
 						loading={secretsLoading}
-						singleLabel={template?.configurable_url
-							? 'Credential secret name'
-							: 'API key secret name'}
 						idPrefix="cred-tab"
 					/>
 					<div class="actions">
@@ -1064,9 +1058,9 @@
 							{saving ? 'Saving…' : 'Save'}
 						</button>
 					</div>
-				{:else if usesApiKey || (isMcp && template?.mcp?.auth_kind === 'bearer')}
+				{:else if usesSecret || (isMcp && template?.mcp?.auth_kind === 'bearer')}
 					<div class="field">
-						<label class="label" for="edit-service-secret">{#if isMcp}Bearer token secret name{:else if template?.configurable_url}Credential secret name{:else}API key secret name{/if}</label>
+						<label class="label" for="edit-service-secret">{#if isMcp}Bearer token secret name{:else}Secret name{/if}</label>
 						<SecretNamePicker
 							id="edit-service-secret"
 							bind:value={editSecret}
