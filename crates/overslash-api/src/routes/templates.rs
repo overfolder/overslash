@@ -530,7 +530,10 @@ async fn db_row_to_detail(
     })
 }
 
-/// One instance-pinnable param, flattened for the dashboard form.
+/// One instance-settable value, flattened for the dashboard form. Covers both
+/// sources — an `x-overslash-instance-config` param and a credential template's
+/// `x-overslash-config` var — because they share the instance's one `config`
+/// map and render as one list of fields.
 #[derive(Serialize)]
 struct InstanceConfigParam {
     name: String,
@@ -541,14 +544,21 @@ struct InstanceConfigParam {
     /// Whether every action declaring this param marks it required. A param
     /// that is optional on any action stays optional on the form.
     required: bool,
+    /// Display name, when the declaration gives one. Config vars carry a
+    /// human label ("Mailbox username") because their key is not a header name
+    /// an operator would recognise; params have none and fall back to `name`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    label: String,
 }
 
-/// Params an org may pin per instance, deduped by name across actions.
+/// Values an org may set per instance, deduped by name.
 ///
 /// A param can appear on several actions (`X-Mailbox-Imap` rides all three
 /// email operations); the form shows one field, so the first occurrence wins
 /// for type/description and `required` is the AND across occurrences — a pin
-/// that is optional anywhere must not be forced on the form.
+/// that is optional anywhere must not be forced on the form. Credential config
+/// vars join the same list; a name collision between the two is a template
+/// error, so neither can shadow the other here.
 fn instance_config_params(def: &ServiceDefinition) -> Vec<InstanceConfigParam> {
     use std::collections::BTreeMap;
 
@@ -565,8 +575,19 @@ fn instance_config_params(def: &ServiceDefinition) -> Vec<InstanceConfigParam> {
                     param_type: p.param_type.clone(),
                     description: p.description.clone(),
                     required: p.required,
+                    label: String::new(),
                 });
         }
+    }
+    for var in &def.config {
+        acc.entry(var.key.as_str())
+            .or_insert_with(|| InstanceConfigParam {
+                name: var.key.clone(),
+                param_type: "string".to_string(),
+                description: var.description.clone(),
+                required: var.required,
+                label: var.label.clone(),
+            });
     }
     acc.into_values().collect()
 }

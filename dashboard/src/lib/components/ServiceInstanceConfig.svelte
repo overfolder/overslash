@@ -32,8 +32,8 @@
 
 {#each params as p (p.name)}
 	<div class="field">
-		<label class="label" for="{idPrefix}-{p.name}">
-			{p.name}
+		<label class="label" class:named={p.label} for="{idPrefix}-{p.name}">
+			{p.label ?? p.name}
 			{#if inherited?.[p.name]}<span class="cfg-badge">inherited</span>
 		{:else if !p.required}<span class="cfg-badge">optional</span>{/if}
 		</label>
@@ -66,7 +66,12 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 6px;
+		/* Param names are literal header/query keys — mono reads as "type this
+		   exactly". A declared label is prose and takes the sans face. */
 		font-family: var(--font-mono);
+	}
+	.label.named {
+		font-family: var(--font-sans);
 	}
 	.cfg-badge {
 		font-size: 9px;

@@ -78,6 +78,11 @@ pub fn parse_template_parts(
         // still resolves — `ServiceDefinition::slots_for` treats it as the
         // scheme's implicit self-named slot.
         secrets: Vec::new(),
+        // Nor a `config` input, for the same reason — and unlike a slot there
+        // is no implicit-declaration fallback, so a parts-built definition
+        // whose template reads config resolves nothing until the stored
+        // OpenAPI doc is recompiled.
+        config: Vec::new(),
         actions,
         runtime: Runtime::Http,
         mcp: None,

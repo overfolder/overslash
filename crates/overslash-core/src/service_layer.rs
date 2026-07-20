@@ -359,6 +359,10 @@ pub fn apply_delta(
         // Credential slots ride with `auth`: a mask may add actions and hosts,
         // never rebind credentials.
         secrets: base.secrets.clone(),
+        // Same reasoning for the non-secret inputs those credentials read: a
+        // layer presets their *values* through `instance_defaults.config`, it
+        // never redeclares them.
+        config: base.config.clone(),
         actions,
         runtime: base.runtime,
         mcp: base.mcp.clone(),
@@ -646,6 +650,7 @@ mod tests {
         }
         ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: "github".into(),
             display_name: "GitHub".into(),
             description: Some("d".into()),
@@ -952,6 +957,38 @@ mod tests {
             },
         );
         base
+    }
+
+    /// A credential template's non-secret input is defaultable by a layer for
+    /// free, because it is a key of the same `config` map — an org sets its
+    /// shared mailbox login once instead of every user retyping it. This is why
+    /// `Delta` needs no second config field.
+    #[test]
+    fn instance_defaults_may_target_a_credential_config_var() {
+        let mut base = base_with(&[("a", Risk::Read)]);
+        base.config = vec![crate::types::ConfigVar {
+            key: "mailbox_user".into(),
+            label: "Mailbox username".into(),
+            description: String::new(),
+            required: true,
+        }];
+        let delta = Delta {
+            instance_defaults: Some(defaults(None, &[("mailbox_user", "ops@acme.com")])),
+            ..Default::default()
+        };
+        let report = validate_delta(&delta, &base, false);
+        assert!(report.valid, "got errors: {:?}", report.errors);
+
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(
+            def.instance_defaults.unwrap().config.get("mailbox_user"),
+            Some(&"ops@acme.com".to_string())
+        );
+        // The declaration itself is the base's, untouched: a layer supplies a
+        // value, never a relabel — and never a credential.
+        assert_eq!(def.config[0].label, "Mailbox username");
+        assert!(def.config[0].required);
+        assert_eq!(def.secrets.len(), base.secrets.len());
     }
 
     #[test]

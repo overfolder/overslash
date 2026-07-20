@@ -39,6 +39,18 @@ pub struct SecretRef {
     /// so the send path decrypts nothing it does not need.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bindings: BTreeMap<String, String>,
+    /// Non-secret config key → resolved value, for the config vars the template
+    /// reads. Resolved from the service instance when the ref is built.
+    ///
+    /// Unlike `bindings`, which names secrets and resolves them at send time,
+    /// this holds the values themselves — so they are **persisted verbatim into
+    /// approval payloads**. That is sound only because a config var is
+    /// non-secret by declaration (`components.x-overslash-config`); never put a
+    /// vaulted value here. It also means a long-pending approval replays with
+    /// the value captured when the call was issued, exactly like an
+    /// instance-config param pin already baked into the stored args.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, String>,
 
     /// Accepted and ignored. Predecessor of `template` on template-compiled
     /// refs; kept only so `ActionRequest`s persisted on approvals from before

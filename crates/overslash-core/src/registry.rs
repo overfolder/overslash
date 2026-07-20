@@ -29,6 +29,7 @@ fn http_pseudo_service() -> ServiceDefinition {
         hidden: false,
         auth: Vec::new(),
         secrets: Vec::new(),
+        config: Vec::new(),
         actions: HashMap::new(),
         runtime: Runtime::Http,
         mcp: None,

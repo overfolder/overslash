@@ -1,10 +1,18 @@
-//! Static analysis of credential templates: which secret slots does this
-//! expression read?
+//! Static analysis of credential templates: which inputs does this expression
+//! read?
 //!
 //! Answered once, at template-compile time, so the request path never parses
 //! jq to decide what to decrypt. The result is stored on the compiled
 //! `ServiceAuth::Secret` and narrowed into each `SecretRef`'s bindings, so a
 //! template declaring five slots whose header names two decrypts two.
+//!
+//! An expression reads two kinds of input, and the *only* thing that tells
+//! them apart is the declarations: a key listed under
+//! `components.x-overslash-config` is a plain per-instance value, anything else
+//! is a vault secret slot. [`referenced_inputs`] finds the reads;
+//! [`partition_reads`] splits them. The walk is identical either way — a
+//! non-secret input does not relax a single one of the refusals below, because
+//! an expression that can reach *any* unnamed key can reach a secret.
 //!
 //! Evaluation lives in `overslash-api` (it needs `jaq-std`/`jaq-json`); this
 //! module only lexes, parses and walks.
@@ -35,8 +43,35 @@ pub enum TemplateError {
     DynamicAccess(String),
 }
 
-/// Secret slot keys the expression reads, in source order, deduped.
-pub fn referenced_slots(template: &CredentialTemplate) -> Result<Vec<String>, TemplateError> {
+/// The reads an expression's inputs must satisfy, split by kind.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct TemplateReads {
+    /// Vault secret slots — every read not declared as config.
+    pub slots: Vec<String>,
+    /// Non-secret per-instance values, in declaration-agnostic source order.
+    pub config: Vec<String>,
+}
+
+/// Split an expression's reads against the template's declared config keys.
+///
+/// Anything not declared as config is a secret slot: the default is the safe
+/// one, so a config declaration that is later removed turns its reads back into
+/// slots (which then fail extraction as undeclared) rather than silently
+/// leaving a credential half-built from a value nobody supplies.
+pub fn partition_reads(
+    template: &CredentialTemplate,
+    declared_config: &[String],
+) -> Result<TemplateReads, TemplateError> {
+    let (config, slots): (Vec<String>, Vec<String>) = referenced_inputs(template)?
+        .into_iter()
+        .partition(|key| declared_config.iter().any(|d| d == key));
+    Ok(TemplateReads { slots, config })
+}
+
+/// Every input key the expression reads, in source order, deduped — secrets and
+/// config alike. Callers that need the split use [`partition_reads`]; callers
+/// that only need "is every input present?" (send-time rendering) use this.
+pub fn referenced_inputs(template: &CredentialTemplate) -> Result<Vec<String>, TemplateError> {
     let CredentialTemplate::Jq { expr } = template;
 
     let tokens = Lexer::new(expr.as_str())
@@ -192,13 +227,68 @@ mod tests {
     use super::*;
 
     fn slots(expr: &str) -> Result<Vec<String>, TemplateError> {
-        referenced_slots(&CredentialTemplate::Jq {
+        referenced_inputs(&CredentialTemplate::Jq {
             expr: expr.to_string(),
         })
     }
 
     fn ok(expr: &str) -> Vec<String> {
         slots(expr).expect("expression should analyse")
+    }
+
+    fn split(expr: &str, declared_config: &[&str]) -> TemplateReads {
+        partition_reads(
+            &CredentialTemplate::Jq {
+                expr: expr.to_string(),
+            },
+            &declared_config
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+        )
+        .expect("expression should analyse")
+    }
+
+    #[test]
+    fn partitions_the_email_template() {
+        // The shape `services/email.yaml` ships: a declared-config username
+        // joined with a vaulted password.
+        let reads = split(
+            r#""Basic " + (.mailbox_user + ":" + .mailbox_pass | @base64)"#,
+            &["mailbox_user"],
+        );
+        assert_eq!(reads.slots, ["mailbox_pass"]);
+        assert_eq!(reads.config, ["mailbox_user"]);
+    }
+
+    #[test]
+    fn undeclared_reads_default_to_secret_slots() {
+        // Nothing declared → every read is a slot, which is exactly the
+        // pre-config behaviour and the safe default.
+        let reads = split(".mailbox_user + .mailbox_pass", &[]);
+        assert_eq!(reads.slots, ["mailbox_user", "mailbox_pass"]);
+        assert!(reads.config.is_empty());
+    }
+
+    #[test]
+    fn declared_config_the_expression_never_reads_is_not_reported() {
+        let reads = split(".token", &["region", "tenant"]);
+        assert_eq!(reads.slots, ["token"]);
+        assert!(reads.config.is_empty());
+    }
+
+    /// A config declaration must not buy an expression any freedom: `.[$k]`
+    /// can reach a secret whatever else the template declares.
+    #[test]
+    fn partition_still_refuses_dynamic_access() {
+        let err = partition_reads(
+            &CredentialTemplate::Jq {
+                expr: ".[$k]".to_string(),
+            },
+            &["k".to_string()],
+        )
+        .unwrap_err();
+        assert!(matches!(err, TemplateError::DynamicAccess(_)));
     }
 
     #[test]

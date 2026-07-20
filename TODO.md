@@ -84,6 +84,7 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 - [ ] Ship 11 more service templates to hit top 20 (priority order: Notion, Linear, Jira, Asana, HubSpot, Salesforce, Airtable, Discord, PagerDuty, Zendesk, Intercom).
 - [ ] Complete the OpenAPI **bulk import** UX at `/services/templates/import` — currently scaffolded; needs overlay-default suggestions and a diff preview before save.
 - [ ] **User-to-org template sharing** — propose / approve / deny flow (review card `7e5ee`).
+- [ ] **Hard pins on `instance_defaults`** — a layer default is a *preset* an instance may override (D36, D38). Add an opt-in "not instance-changeable" flag so an org layer can mandate a value: the instance form renders it read-only and `instance_config::validate_config` rejects a key the layer has hard-pinned. Deferred deliberately — the preset is the useful case for per-instance values like a mailbox username, and a ceiling only matters once a layer wants to mandate an org-wide constant.
 
 ### 2.3 API surface gaps
 

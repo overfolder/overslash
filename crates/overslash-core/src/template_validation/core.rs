@@ -687,6 +687,7 @@ mod tests {
     fn minimal_valid() -> ServiceDefinition {
         ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: "svc".into(),
             display_name: "Service".into(),
             description: None,
@@ -696,6 +697,7 @@ mod tests {
             auth: vec![ServiceAuth::Secret {
                 template: None,
                 slots: Vec::new(),
+                config_keys: Vec::new(),
                 scheme: String::new(),
                 label: String::new(),
                 description: String::new(),
@@ -937,6 +939,7 @@ mod tests {
         d.auth = vec![ServiceAuth::Secret {
             template: None,
             slots: Vec::new(),
+            config_keys: Vec::new(),
             scheme: String::new(),
             label: String::new(),
             description: String::new(),
@@ -964,6 +967,7 @@ mod tests {
         d.auth = vec![ServiceAuth::Secret {
             template: None,
             slots: Vec::new(),
+            config_keys: Vec::new(),
             scheme: String::new(),
             label: String::new(),
             description: String::new(),
@@ -989,6 +993,7 @@ mod tests {
         ServiceAuth::Secret {
             template: None,
             slots: Vec::new(),
+            config_keys: Vec::new(),
             scheme: scheme.into(),
             label: String::new(),
             description: String::new(),
@@ -1061,6 +1066,7 @@ mod tests {
         // clean as long as description is present.
         let mut d = ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: "overslash".into(),
             display_name: "Overslash".into(),
             description: None,
@@ -1141,6 +1147,7 @@ mod tests {
         );
         ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: "linear_mcp".into(),
             display_name: "Linear".into(),
             description: None,
@@ -1238,6 +1245,7 @@ mod tests {
         d.auth = vec![ServiceAuth::Secret {
             template: None,
             slots: Vec::new(),
+            config_keys: Vec::new(),
             scheme: String::new(),
             label: String::new(),
             description: String::new(),

@@ -1097,6 +1097,7 @@ pub(crate) async fn resolve_instance_auth(
         let slots = svc.slots_for(service_auth);
         let single_slot = slots.len() == 1;
         let mut bindings = std::collections::BTreeMap::new();
+        let mut config = std::collections::BTreeMap::new();
         // A scheme is emitted only when every slot it reads resolved; a
         // half-composed header would authenticate as nobody.
         let mut scheme_unresolved = false;
@@ -1164,6 +1165,42 @@ pub(crate) async fn resolve_instance_auth(
             bindings.insert(slot.key.clone(), name);
         }
 
+        // The non-secret half of the same credential. Same two sources, same
+        // precedence, as any other key of the instance's `config` map: the
+        // instance's own value, else the org layer's `instance_defaults.config`
+        // (see `apply_instance_config`). Unlike a slot there is no vault
+        // fallback — a config var is never in the vault.
+        for var in svc.config_for(service_auth) {
+            let value = instance
+                .config
+                .0
+                .get(&var.key)
+                .or_else(|| {
+                    svc.instance_defaults
+                        .as_ref()
+                        .and_then(|d| d.config.get(&var.key))
+                })
+                .cloned();
+            match value {
+                Some(v) => {
+                    config.insert(var.key.clone(), v);
+                }
+                // Required and unset is the same failure as an unbound slot,
+                // and must be treated the same: emitting the scheme anyway
+                // would render a truncated credential (`Basic base64(":pass")`)
+                // that reads downstream as a wrong password rather than as
+                // missing configuration.
+                None if var.required => {
+                    instance_secret_missing = true;
+                    scheme_unresolved = true;
+                    break;
+                }
+                // Optional and unset: the expression must tolerate it (jq's
+                // `// ""`), so leave the key out and let the template decide.
+                None => {}
+            }
+        }
+
         if scheme_unresolved || bindings.is_empty() {
             continue;
         }
@@ -1179,6 +1216,7 @@ pub(crate) async fn resolve_instance_auth(
             query_param: injection.query_param.clone(),
             template: template.clone(),
             bindings,
+            config,
             ..Default::default()
         });
     }

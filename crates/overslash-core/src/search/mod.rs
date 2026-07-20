@@ -169,6 +169,7 @@ mod tests {
     fn mk_service(key: &str, display: &str, desc: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: key.into(),
             display_name: display.into(),
             description: desc.map(String::from),
@@ -178,6 +179,7 @@ mod tests {
             auth: vec![ServiceAuth::Secret {
                 template: None,
                 slots: Vec::new(),
+                config_keys: Vec::new(),
                 scheme: String::new(),
                 label: String::new(),
                 description: String::new(),
