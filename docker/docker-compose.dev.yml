@@ -141,7 +141,10 @@ services:
     # Pinned, not `:latest`. e2e-up.sh hard-fails the whole bring-up when the
     # mail stack doesn't start, so an upstream push to a mutable tag would
     # break every e2e run, not just the email story.
-    image: angelmanuel/overfwd:0.2.0
+    # 0.4.0 is the first release where an unparseable IMAP SEARCH key fails
+    # loudly instead of coming back as `200 []`. The e2e mail story asserts
+    # that behaviour, so the pin is a floor, not just a stability choice.
+    image: angelmanuel/overfwd:0.4.0
     environment:
       OVERFWD_BIND: 0.0.0.0:8000
       # Keyless: exercises the template's `optional` gateway scheme, where the

@@ -687,13 +687,33 @@ async fn collect_visible_templates(
         }
     }
 
+    // Templates that name an identity-bearing config var (`identity: true`),
+    // so a secret-based instance can report which account it speaks for.
+    let identity_key_by_template: HashMap<&str, &str> = templates
+        .iter()
+        .filter_map(|t| t.def.identity_config_key().map(|k| (t.def.key.as_str(), k)))
+        .collect();
+
     let mut instances_by_template: HashMap<String, Vec<InstanceRow>> = HashMap::new();
     for r in instances {
         if r.status != "active" {
             continue;
         }
         let bound_conn = r.connection_id.and_then(|id| connections_by_id.get(&id));
-        let account_email = bound_conn.and_then(|c| c.account_email.clone());
+        // A bound OAuth connection is authoritative — it is the account the
+        // call actually authenticates as. The config value is the fallback for
+        // secret-based instances, which have no connection to ask.
+        let account_email = bound_conn
+            .and_then(|c| c.account_email.clone())
+            .or_else(|| {
+                let key = identity_key_by_template.get(r.template_key.as_str())?;
+                r.config
+                    .0
+                    .get(*key)
+                    .map(String::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string)
+            });
         let scopes = if let Some(cid) = r.connection_id {
             match connections_by_id.get(&cid) {
                 Some(c) => InstanceScopes::from_recorded(c.scopes.as_deref()),

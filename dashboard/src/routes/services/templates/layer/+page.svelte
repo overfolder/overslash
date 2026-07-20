@@ -337,7 +337,10 @@
 								label={`Include ${a.key}`}
 							/>
 							<span class="action-key">{a.key}</span>
-							<span class="action-desc">{a.description}</span>
+							<!-- Short label in the row; the long agent-facing text on hover. -->
+							<span class="action-desc" title={a.summary ? a.description : undefined}
+								>{a.summary ?? a.description}</span
+							>
 						</div>
 						<div class="action-risk">
 							<span class="base-risk risk-{a.risk}">{a.risk}</span>

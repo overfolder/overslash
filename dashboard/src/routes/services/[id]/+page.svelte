@@ -1144,7 +1144,11 @@
 							{#each actions as a}
 								<tr class:disabled={a.disabled}>
 									<td><span class="mono">{a.mcp_tool ?? a.key}</span></td>
-									<td>{a.description}</td>
+									<!-- The one-line label; the full agent-facing description can run to
+									     a paragraph, so it rides as the hover title instead of the cell. -->
+									<td title={a.summary ? a.description : undefined}
+										>{a.summary ?? a.description}</td
+									>
 									<td><span class="mono">{a.risk}</span></td>
 									<td>
 										{#if a.disabled}<span class="pill pill-muted">hidden</span>{/if}
@@ -1168,7 +1172,9 @@
 								<tr>
 									<td><span class="method">{a.method}</span></td>
 									<td><span class="mono">{a.path}</span></td>
-									<td>{a.description}</td>
+									<td title={a.summary ? a.description : undefined}
+										>{a.summary ?? a.description}</td
+									>
 									<td><span class="mono">{a.risk}</span></td>
 								</tr>
 							{/each}

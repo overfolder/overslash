@@ -2067,6 +2067,7 @@ mod risk_tests {
                 method: "GET".into(),
                 path: "/".into(),
                 description: String::new(),
+                summary: None,
                 risk,
                 response_type: None,
                 params: HashMap::new(),

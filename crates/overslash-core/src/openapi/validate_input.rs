@@ -333,6 +333,29 @@ fn coerce_scalar(param_type: &str, v: &Value) -> Option<Value> {
             Some("false") => Some(Value::Bool(false)),
             _ => None,
         },
+        // A single value where a list is declared. An agent reaching for
+        // `to: "a@b.com"` means a one-element list, and `to: "a@b.com, c@d.com"`
+        // means two — the comma form is what a human types into a mail client,
+        // and the mailbox gateway splits it the same way, so both sides must
+        // agree or the derived permission keys name recipients that differ from
+        // the ones actually mailed.
+        //
+        // A string with no comma is simply wrapped. Empty segments are dropped,
+        // so `"a@b.com,"` is one recipient, not one-and-a-blank. A string that
+        // is entirely separators yields `[]` — `validate_args` only checks
+        // presence, so that survives to the gateway, which is the layer that
+        // knows an empty recipient list is unsendable.
+        "array" => match v {
+            Value::Array(_) => None,
+            Value::String(s) => Some(Value::Array(
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(|part| Value::String(part.to_string()))
+                    .collect(),
+            )),
+            other => Some(Value::Array(vec![other.clone()])),
+        },
         _ => None,
     }
 }
@@ -705,6 +728,39 @@ mod tests {
         let mut a = args(&[("enabled", json!("false"))]);
         coerce_args(&s, &mut a);
         assert_eq!(a.get("enabled"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn coerce_lone_string_to_single_element_array() {
+        // `to: "a@b.com"` is what an agent reaches for when it has one
+        // recipient; the declared list shape is restored before the permission
+        // key is derived.
+        let s = schema(&[("to", p("array", true))]);
+        let mut a = args(&[("to", json!("a@b.com"))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("to"), Some(&json!(["a@b.com"])));
+        assert!(validate_args(&s, &a).is_ok());
+    }
+
+    #[test]
+    fn coerce_comma_string_splits_and_trims_for_array_param() {
+        // The mailbox gateway splits a recipient string on commas, so this
+        // side must too — otherwise the derived permission keys name a
+        // recipient that differs from the ones actually mailed.
+        let s = schema(&[("cc", p("array", false))]);
+        let mut a = args(&[("cc", json!("a@b.com, c@d.com ,,"))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("cc"), Some(&json!(["a@b.com", "c@d.com"])));
+    }
+
+    #[test]
+    fn coerce_leaves_existing_array_untouched() {
+        let s = schema(&[("to", p("array", false))]);
+        // A legitimate element containing a comma must survive: only the
+        // *string* form is split, never an already-shaped list.
+        let mut a = args(&[("to", json!(["Doe, Jane <j@d.com>"]))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("to"), Some(&json!(["Doe, Jane <j@d.com>"])));
     }
 
     #[test]

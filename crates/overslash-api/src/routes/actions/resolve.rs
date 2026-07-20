@@ -461,7 +461,7 @@ pub(super) async fn resolve_request(
             // {team}". Resolvers don't apply (MCP has no HTTP parameter
             // schema), so we pass an empty resolved map.
             let interpolated = overslash_core::description::interpolate_description_with_resolved(
-                &action.description,
+                action.label_template(),
                 &req.params,
                 &std::collections::HashMap::new(),
             );
@@ -763,8 +763,12 @@ pub(super) async fn resolve_request(
         )
         .await;
 
+        // The approval title and audit row use the short `summary` (falling
+        // back to `description` when an action authors only the long form) —
+        // the agent-facing `description` is free to run to a paragraph, which
+        // no approval prompt should render.
         let interpolated = overslash_core::description::interpolate_description_with_resolved(
-            &action.description,
+            action.label_template(),
             &req.params,
             &resolved,
         );

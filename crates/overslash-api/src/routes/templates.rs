@@ -279,7 +279,15 @@ pub(crate) struct ActionSummary {
     key: String,
     method: String,
     path: String,
+    /// Agent-facing text — the full contract, examples included. Can run to a
+    /// paragraph, so a table cell should prefer `summary` and keep this for a
+    /// tooltip or an expanded row.
     description: String,
+    /// The short one-line label (`summary`), when the action authors one
+    /// distinctly from its `description`. Absent when the two are the same
+    /// string, which is the common case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
     risk: Risk,
     /// MCP tool name when the owning service has `runtime: mcp`; None for HTTP.
     /// The dashboard switches its column layout on this field's presence.
@@ -312,6 +320,11 @@ struct ActionDetail {
     method: String,
     path: String,
     description: String,
+    /// The short interpolatable label (`summary`) when the action authors one
+    /// distinctly from its agent-facing `description`. Absent when the two are
+    /// the same string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
     risk: Risk,
     params: std::collections::HashMap<String, ActionParam>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -458,6 +471,7 @@ fn actions_from_definition_inner(
                 method: a.method.clone(),
                 path: a.path.clone(),
                 description: a.description.clone(),
+                summary: a.summary.clone(),
                 risk: a.risk,
                 mcp_tool: a.mcp_tool.clone(),
                 output_schema: a.output_schema.clone(),
@@ -1031,6 +1045,7 @@ async fn get_template_action(
         method: action.method.clone(),
         path: action.path.clone(),
         description: action.description.clone(),
+        summary: action.summary.clone(),
         risk: action.risk,
         params: action.params.clone(),
         scope_param: action.scope_param.clone(),

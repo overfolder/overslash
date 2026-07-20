@@ -150,6 +150,7 @@ mod tests {
             method: "GET".into(),
             path: "/x".into(),
             description: "x".into(),
+            summary: None,
             risk: Risk::Read,
             response_type: None,
             params: HashMap::new(),

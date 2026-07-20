@@ -480,7 +480,12 @@ export interface ActionSummary {
   key: string;
   method: string;
   path: string;
+  /** Agent-facing text: the full contract, examples included. May be a
+   *  paragraph — prefer `summary` for a table cell. */
   description: string;
+  /** Short one-line label. Absent when the action authors a single string for
+   *  both jobs, in which case `description` is already short. */
+  summary?: string;
   risk: string;
   /** MCP tool name when the owning service has `runtime: mcp`. Absent for HTTP. */
   mcp_tool?: string;
@@ -515,7 +520,11 @@ export interface ActionDetail {
   key: string;
   method: string;
   path: string;
+  /** Agent-facing text: what the model reads when choosing this action. */
   description: string;
+  /** Short interpolatable label used for the approval title. Absent when the
+   *  action authors only one string for both jobs. */
+  summary?: string;
   risk: string;
   params: Record<string, ActionParam>;
   scope_param?: string;

@@ -303,8 +303,16 @@ async fn email_search_dual_injects_auth_and_routes_to_instance_url() {
         Some(MAILBOX_BASIC),
         "mailbox (secret_source: instance) must inject as Basic base64(user:pass)"
     );
-    // The search key made it into the JSON body.
-    assert_eq!(req.body["query"], json!("UNSEEN"));
+    // The search key made it into the JSON body — under the canonical name.
+    // The caller above sent the legacy `query`; `apply_aliases` rewrites it to
+    // `criteria` before the body is assembled, which is what keeps the rename
+    // from breaking existing callers.
+    assert_eq!(req.body["criteria"], json!("UNSEEN"));
+    assert!(
+        req.body.get("query").is_none(),
+        "the alias must be rewritten, not sent alongside the canonical name: {:?}",
+        req.body
+    );
 }
 
 /// Regression: `search` declares a `requestBody` whose every field is optional,
@@ -352,14 +360,14 @@ async fn email_search_without_params_still_sends_json_body_and_content_type() {
          omitting it is what overfwd's Json extractor rejects"
     );
     // A JSON object, not an absent/empty body. The template's `default`s fill
-    // folder/query, so an argument-free call still expresses the intent.
+    // folder/criteria, so an argument-free call still expresses the intent.
     assert!(
         req.body.is_object(),
         "body must be a JSON object, got {:?}",
         req.body
     );
     assert_eq!(req.body["folder"], json!("INBOX"));
-    assert_eq!(req.body["query"], json!("ALL"));
+    assert_eq!(req.body["criteria"], json!("ALL"));
 }
 
 /// The same guarantee, isolated from `email.yaml`'s `default`s.
@@ -1224,7 +1232,7 @@ async fn email_search_with_no_args_sends_defaulted_body() {
     let captured = sink.lock().unwrap();
     let req = captured.first().expect("gateway saw no request");
     assert_eq!(req.body["folder"], json!("INBOX"));
-    assert_eq!(req.body["query"], json!("ALL"));
+    assert_eq!(req.body["criteria"], json!("ALL"));
 }
 
 /// A blank value is rejected rather than stored, so "not pinned" has exactly
@@ -1689,4 +1697,315 @@ async fn email_platform_gateway_key_never_leaves_the_platform_host() {
         "the platform key must never be sent to a tenant-chosen host"
     );
     assert_eq!(req.mailbox_auth.as_deref(), Some(MAILBOX_BASIC));
+}
+
+// ── Recipient-scoped send permissions ────────────────────────────────────
+
+/// `send` derives one permission key per recipient, so a domain-scoped grant
+/// covers a send to that domain outright — no approval, and the message
+/// actually goes out.
+#[tokio::test]
+async fn email_send_to_a_granted_domain_needs_no_approval() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    seed_email_instance(&base, &client, &admin_key, &gateway_url).await;
+
+    // Scoped to one domain — NOT `email:send:*`.
+    grant(
+        &base,
+        &client,
+        &admin_key,
+        ident_id,
+        "email:send:*@example.com",
+    )
+    .await;
+
+    let exec: Value = call_send(&base, &agent_key, json!(["a@example.com", "b@example.com"])).await;
+
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("called"),
+        "every recipient is inside the grant, so no approval should be raised: {exec:?}"
+    );
+    assert_eq!(
+        sink.lock().unwrap().len(),
+        1,
+        "the message should have reached the gateway"
+    );
+}
+
+/// The same grant, one recipient outside it. The covered address must not
+/// launder the uncovered one: the call is gated, and nothing is sent.
+#[tokio::test]
+async fn email_send_to_a_mixed_recipient_list_is_gated_on_the_uncovered_one() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    seed_email_instance(&base, &client, &admin_key, &gateway_url).await;
+
+    grant(
+        &base,
+        &client,
+        &admin_key,
+        ident_id,
+        "email:send:*@example.com",
+    )
+    .await;
+
+    let exec: Value = call_send(
+        &base,
+        &agent_key,
+        json!(["a@example.com", "stranger@example.org"]),
+    )
+    .await;
+
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("pending_approval"),
+        "a recipient outside the grant must gate the whole send: {exec:?}"
+    );
+    assert_eq!(sink.lock().unwrap().len(), 0, "gated before any HTTP call");
+}
+
+/// A single recipient sent as a bare string, and several as one comma-joined
+/// string, must derive the same keys as the list form — the mailbox gateway
+/// splits recipients on commas, so this side has to agree or the permission
+/// check would be about a recipient nobody is mailing.
+#[tokio::test]
+async fn email_send_accepts_a_comma_separated_recipient_string() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    seed_email_instance(&base, &client, &admin_key, &gateway_url).await;
+
+    grant(
+        &base,
+        &client,
+        &admin_key,
+        ident_id,
+        "email:send:*@example.com",
+    )
+    .await;
+
+    // Covered domain only → goes through, and the gateway receives a real list.
+    let exec: Value = call_send(&base, &agent_key, json!("a@example.com, b@example.com")).await;
+    assert_eq!(exec["status"].as_str(), Some("called"), "{exec:?}");
+    {
+        let captured = sink.lock().unwrap();
+        let req = captured.first().expect("gateway saw no request");
+        assert_eq!(
+            req.body["to"],
+            json!(["a@example.com", "b@example.com"]),
+            "a comma-joined string must reach the gateway as a list"
+        );
+    }
+
+    // The same string with one address outside the grant is still gated —
+    // proof the split happened before the permission check, not after.
+    let exec: Value = call_send(
+        &base,
+        &agent_key,
+        json!("a@example.com,stranger@example.org"),
+    )
+    .await;
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("pending_approval"),
+        "{exec:?}"
+    );
+}
+
+/// Discovery tells two mailboxes on one template apart. Both rows carry the
+/// same `service_display_name` (it belongs to the template), so the mailbox
+/// address has to come through as `account_email` or an agent has to call both
+/// to find out which is which.
+#[tokio::test]
+async fn email_search_rows_name_their_mailbox() {
+    let pool = common::test_pool().await;
+    let (gateway_url, _sink) = start_mock_overfwd().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, _ident_id, _agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+
+    seed_email_instance_named(
+        &base,
+        &client,
+        &admin_key,
+        &gateway_url,
+        "email_ops",
+        "ops@example.com",
+    )
+    .await;
+    seed_email_instance_named(
+        &base,
+        &client,
+        &admin_key,
+        &gateway_url,
+        "email_billing",
+        "billing@example.com",
+    )
+    .await;
+
+    let found: Value = client
+        .get(format!("{base}/v1/search?q=email+search+mailbox"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let rows: Vec<&Value> = found["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .filter(|r| r["template"] == json!("email"))
+        .collect();
+    assert!(!rows.is_empty(), "no email rows in {found:?}");
+
+    let addr_for = |svc: &str| -> Option<String> {
+        rows.iter()
+            .find(|r| r["service"] == json!(svc))
+            .and_then(|r| r["account_email"].as_str())
+            .map(str::to_string)
+    };
+    assert_eq!(addr_for("email_ops").as_deref(), Some("ops@example.com"));
+    assert_eq!(
+        addr_for("email_billing").as_deref(),
+        Some("billing@example.com")
+    );
+}
+
+// ── helpers for the tests above ──────────────────────────────────────────
+
+async fn grant(
+    base: &str,
+    client: &reqwest::Client,
+    admin_key: &str,
+    ident_id: uuid::Uuid,
+    action_pattern: &str,
+) {
+    let resp = client
+        .post(format!("{base}/v1/permissions"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "identity_id": ident_id, "action_pattern": action_pattern }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "grant {action_pattern} failed: {}",
+        resp.status()
+    );
+}
+
+async fn call_send(base: &str, agent_key: &str, to: Value) -> Value {
+    reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "email",
+            "action": "send",
+            "params": {
+                "from": MAILBOX_USER,
+                "to": to,
+                "subject": "Status",
+                "text": "Body."
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+async fn seed_email_instance(
+    base: &str,
+    client: &reqwest::Client,
+    admin_key: &str,
+    gateway_url: &str,
+) {
+    seed_email_instance_named(base, client, admin_key, gateway_url, "email", MAILBOX_USER).await;
+}
+
+async fn seed_email_instance_named(
+    base: &str,
+    client: &reqwest::Client,
+    admin_key: &str,
+    gateway_url: &str,
+    name: &str,
+    mailbox_user: &str,
+) {
+    let secret = format!("{name}_pass");
+    let resp = client
+        .put(format!("{base}/v1/secrets/{secret}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "value": MAILBOX_PASS }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "secret create: {}",
+        resp.status()
+    );
+
+    let instance: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "name": name,
+            "template_key": "email",
+            "url": gateway_url,
+            "credentials": { "mailbox_pass": secret },
+            "config": { "mailbox_user": mailbox_user },
+            "status": "active",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let svc_id = instance["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("instance {name} create failed: {instance:?}"));
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .and_then(|g| g["id"].as_str())
+        .expect("Everyone group not found");
+
+    let grant = client
+        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id,
+            "access_level": "admin",
+            "auto_approve_reads": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        grant.status() == 200 || grant.status() == 409,
+        "grant failed: {}",
+        grant.status()
+    );
 }

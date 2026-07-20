@@ -1660,6 +1660,7 @@ mod tests {
                     method: "GET".into(),
                     path: "/".into(),
                     description: String::new(),
+                    summary: None,
                     risk: Risk::Read,
                     response_type: None,
                     params: HashMap::new(),

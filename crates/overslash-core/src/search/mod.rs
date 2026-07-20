@@ -205,6 +205,7 @@ mod tests {
             method: "POST".into(),
             path: "/x".into(),
             description: desc.into(),
+            summary: None,
             risk,
             response_type: None,
             params: HashMap::new(),
