@@ -17,11 +17,14 @@ info:
   #                shared across the org, resolved from the org vault
   #                (source: org). Injected only if the org stored
   #                `overfwd_gateway_key`; a keyless self-host omits it.
-  #   • mailbox  — the per-user IMAP/SMTP login, stored as TWO secrets
-  #                (`mailbox_user`, `mailbox_pass`) so the password rotates on
-  #                its own and neither half is a usable credential alone. The
+  #   • mailbox  — the per-user IMAP/SMTP login, split into its two halves:
+  #                the username is a plain per-instance value
+  #                (`x-overslash-config`, usually the public email address) and
+  #                only the password is vaulted (`x-overslash-secrets`). The
   #                `mailbox` scheme joins them into
-  #                `X-Mailbox-Auth: Basic base64(user:pass)` at send time.
+  #                `X-Mailbox-Auth: Basic base64(user:pass)` at send time, so
+  #                the password rotates on its own and neither half is a usable
+  #                credential alone.
   #
   # The overfwd deployment URL is set per instance (`service_instances.url`),
   # so each org points its catalog entry at its own gateway; `servers` below is
@@ -38,15 +41,23 @@ security:
   - gateway: []
     mailbox: []
 components:
-  # The secrets an operator binds for this service. Declared once here and
-  # referenced by name from the securitySchemes' templates below, so one
-  # secret can feed several headers and one header can join several secrets.
-  x-overslash-secrets:
+  # Non-secret values an operator sets per instance, which the securitySchemes'
+  # templates below may read alongside their secrets. Stored in the instance's
+  # `config` map — the same place the X-Mailbox-Imap/Smtp pins live — so the
+  # username shows as an ordinary text field rather than a write-only secret.
+  x-overslash-config:
     mailbox_user:
       label: Mailbox username
       description: >-
         The IMAP/SMTP login, usually the full email address.
-      source: instance
+      # Without it `X-Mailbox-Auth` would render as base64(":password") — a
+      # credential that reads downstream as a wrong password rather than as
+      # missing configuration.
+      required: true
+  # The secrets an operator binds for this service. Declared once here and
+  # referenced by name from the securitySchemes' templates below, so one
+  # secret can feed several headers and one header can join several secrets.
+  x-overslash-secrets:
     mailbox_pass:
       label: Mailbox password
       description: >-
@@ -80,8 +91,8 @@ components:
       name: X-Mailbox-Auth
       x-overslash-label: Mailbox login
       description: >-
-        The mailbox's IMAP/SMTP login, joined from the username and password
-        secrets and sent base64-encoded.
+        The mailbox's IMAP/SMTP login, joined from the username config value
+        and the password secret and sent base64-encoded.
       x-overslash-template:
         lang: jq
         expr: '"Basic " + (.mailbox_user + ":" + .mailbox_pass | @base64)'

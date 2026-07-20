@@ -257,7 +257,13 @@ pub async fn resolve_credential_values(
 
         let value = match &secret_ref.template {
             Some(template) => {
-                credential_template::render(template, &secret_ref.name, &slot_values).await?
+                credential_template::render(
+                    template,
+                    &secret_ref.name,
+                    &slot_values,
+                    &secret_ref.config,
+                )
+                .await?
             }
             // No template: one slot, injected verbatim.
             None => slot_values.into_values().next().ok_or_else(|| {

@@ -74,9 +74,17 @@ impl ConfigError {
     }
 }
 
-/// Every param name across `def`'s actions declared `x-overslash-instance-config`,
-/// sorted and deduped. A param may appear on several actions (the `email`
-/// mailbox-endpoint headers are a shared YAML anchor); one entry is emitted.
+/// Every key a writer may set, sorted and deduped. Two declarations feed it:
+///
+/// - params marked `x-overslash-instance-config` — a param may appear on
+///   several actions (the `email` mailbox-endpoint headers are a shared YAML
+///   anchor); one entry is emitted;
+/// - `components.x-overslash-config` vars — the non-secret inputs a credential
+///   template reads (`email`'s mailbox username).
+///
+/// The two share this namespace because they share the map: one key is one
+/// field on the instance form, whoever consumes it. A collision between them
+/// is refused at template-compile time, so neither can shadow the other here.
 pub fn configurable_keys(def: &ServiceDefinition) -> Vec<String> {
     let mut keys: Vec<String> = def
         .actions
@@ -84,6 +92,7 @@ pub fn configurable_keys(def: &ServiceDefinition) -> Vec<String> {
         .flat_map(|a| a.params.iter())
         .filter(|(_, p)| p.instance_config)
         .map(|(name, _)| name.clone())
+        .chain(def.config.iter().map(|c| c.key.clone()))
         .collect();
     keys.sort_unstable();
     keys.dedup();
@@ -160,6 +169,7 @@ mod tests {
                 .insert((*name).to_string(), param(*instance_config));
         }
         ServiceDefinition {
+            config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,

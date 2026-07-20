@@ -103,6 +103,12 @@ pub struct ServiceDefinition {
     /// feed several injections.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretSlot>,
+    /// Non-secret per-instance inputs a credential template may read alongside
+    /// its secrets (`components.x-overslash-config`). Declared here, stored in
+    /// the instance's `config` jsonb next to the instance-config *param* pins,
+    /// and never vaulted — see [`ConfigVar`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config: Vec<ConfigVar>,
     #[serde(default)]
     pub actions: HashMap<String, ServiceAction>,
     /// Execution runtime. Defaults to `Http` for backwards compat with every
@@ -225,6 +231,25 @@ impl ServiceDefinition {
             .collect()
     }
 
+    /// The non-secret config vars one auth entry's template reads, paired with
+    /// their declarations.
+    ///
+    /// Unlike [`Self::slots_for`] there is no implicit-var rule: a config key
+    /// only exists because `components.x-overslash-config` declares it, which
+    /// is what extraction checks. A key with no declaration here can only come
+    /// from stored data that has drifted from its template, and is dropped
+    /// rather than invented — resolution then treats the scheme as unresolved
+    /// instead of rendering a credential from a value nobody declared.
+    pub fn config_for(&self, auth: &ServiceAuth) -> Vec<ConfigVar> {
+        let ServiceAuth::Secret { config_keys, .. } = auth else {
+            return Vec::new();
+        };
+        config_keys
+            .iter()
+            .filter_map(|key| self.config.iter().find(|c| &c.key == key).cloned())
+            .collect()
+    }
+
     /// Every credential slot the template needs, deduped, in `auth` order.
     /// The set the dashboard renders and an instance binds.
     pub fn all_slots(&self) -> Vec<SecretSlot> {
@@ -303,6 +328,14 @@ pub enum ServiceAuth {
         /// (the implicit slot named after `scheme`) when there is no template.
         #[serde(default)]
         slots: Vec<String>,
+        /// Non-secret config keys the template reads, split out from `slots` at
+        /// extraction by the same static analysis and against the same
+        /// `components.x-overslash-config` declarations. Empty for every
+        /// template that composes secrets alone. Kept separate from `slots`
+        /// because the two resolve from different stores — a slot names a vault
+        /// secret, a config key names a plain value on the instance.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        config_keys: Vec<String>,
         /// Fallback policy when the instance has no explicit per-slot
         /// binding in `credentials[slot]`. `Instance` (default): fall back
         /// to the instance's legacy scalar `secret_name`; unbound means the
@@ -363,6 +396,38 @@ pub struct SecretSlot {
     /// request.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
+}
+
+/// A non-secret template input: one plain value the operator sets per service
+/// instance, which a [`CredentialTemplate`] may read alongside its secrets.
+///
+/// The reason this is not a [`SecretSlot`] with a flag: a slot's value is
+/// encrypted, versioned, write-only in the dashboard and costs a vault entry.
+/// A mailbox *username* is none of those things — it is the public half of a
+/// login, and `services/email.yaml` only stored it in the vault because a
+/// credential template had no other input. A config var is stored in the
+/// instance's `config` jsonb, the same place an `x-overslash-instance-config`
+/// param pin lives, and shares its namespace: one key means one field on the
+/// instance form, whether a param or a credential reads it. That sharing is
+/// what gives config vars an org-layer default for free — a layer's
+/// `instance_defaults.config` presets them exactly as it presets a param pin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigVar {
+    /// Key the credential template references (`.mailbox_user`) and the
+    /// instance sets in its `config` map.
+    pub key: String,
+    /// Short display name for the instance form ("Mailbox username").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// Help text under the field.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// When true, a scheme reading this var does not resolve until the value is
+    /// set — the same treatment an unbound secret slot gets, because a jq
+    /// template silently absorbs a missing value (`"user" + null` is `"user"`)
+    /// and would otherwise send a truncated credential.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
 }
 
 /// Where a credential's value goes in the HTTP request.
@@ -889,6 +954,7 @@ mod tests {
         // Existing Http templates must serialize without runtime/mcp keys.
         let svc = ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: "slack".into(),
             display_name: "Slack".into(),
             description: None,
@@ -934,6 +1000,7 @@ mod tests {
         );
         let svc = ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: "linear_mcp".into(),
             display_name: "Linear".into(),
             description: None,

@@ -364,12 +364,19 @@ export interface TemplateDetail {
   resolution_report?: ResolutionReport;
 }
 
-/** A template param an org can pin on a service instance. */
+/** A value an org can set on a service instance — either a pinnable action
+ * param (`x-overslash-instance-config`) or a credential template's non-secret
+ * input (`components.x-overslash-config`). Both live in the instance's one
+ * `config` map, so the form renders them as one list. */
 export interface InstanceConfigParam {
   name: string;
   type: string;
   description?: string;
   required?: boolean;
+  /** Human label, when the declaration gives one. Config vars carry one
+   * ("Mailbox username") because their key is not a header name an operator
+   * would recognise; params have none and fall back to `name`. */
+  label?: string;
 }
 
 export interface CreateTemplateRequest {

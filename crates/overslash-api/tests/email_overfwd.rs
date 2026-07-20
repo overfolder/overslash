@@ -3,9 +3,9 @@
 //!
 //! Proves the three overfwd-enabling changes together, against an in-process
 //! mock that impersonates an overfwd deployment:
-//!   • Core A — credential composition: the mailbox username and password are
-//!     two separate vault secrets, joined by the scheme's jq template into
-//!     `X-Mailbox-Auth: Basic base64(user:pass)`.
+//!   • Core A — credential composition: the mailbox username is a non-secret
+//!     instance `config` value and the password a vault secret, joined by the
+//!     scheme's jq template into `X-Mailbox-Auth: Basic base64(user:pass)`.
 //!   • Core B — multi-injection auth: the gateway key (`source: org`) and the
 //!     mailbox credential (`source: instance`) ride the SAME request as
 //!     `Authorization: Bearer …` + `X-Mailbox-Auth: Basic …`.
@@ -28,9 +28,10 @@ use tokio::net::TcpListener;
 
 use crate::common::{bootstrap_org_identity, start_api_with_registry};
 
-// The mailbox login, stored as two independently-rotatable secrets. The
-// expected header is unchanged from when this was ONE `user:pass` secret —
-// that identity is the point: only where the colon comes from changed.
+// The mailbox login: a public username (instance `config`) and an
+// independently-rotatable password (vault secret). The expected header is
+// unchanged from when this was ONE `user:pass` secret, and from when it was
+// two — that identity is the point: only where each half comes from changed.
 const MAILBOX_USER: &str = "user@example.com";
 const MAILBOX_PASS: &str = "app-password";
 // base64("user@example.com:app-password"), STANDARD alphabet.
@@ -97,8 +98,8 @@ async fn start_mock_overfwd() -> (String, Sink) {
 }
 
 /// Boot the API with the shipped registry (so `services/email.yaml` loads),
-/// seed the gateway key (and the mailbox login iff `bind_mailbox`), create an
-/// `email` instance pointed at `gateway_url` binding both mailbox slots, and
+/// seed the gateway key (and the mailbox password iff `bind_mailbox`), create
+/// an `email` instance pointed at `gateway_url` with the mailbox login set, and
 /// grant it to Everyone (admin + auto-approve reads).
 /// Returns `(base, agent_key)`.
 async fn setup_email_instance(
@@ -109,14 +110,14 @@ async fn setup_email_instance(
 ) -> (String, String) {
     // The gateway key is an org-vault secret referenced by the template's fixed
     // `default_secret_name` (source: org, optional). A keyless overfwd
-    // deployment omits it. The mailbox login is two per-instance bound secrets
-    // (source: instance) — seeded only when the instance binds them.
+    // deployment omits it. The mailbox login is split: the username is a plain
+    // instance `config` value and only the password is a bound secret
+    // (source: instance) — both set only when the instance binds the mailbox.
     let mut secrets = Vec::new();
     if seed_gateway_key {
         secrets.push(("overfwd_gateway_key", GATEWAY_KEY));
     }
     if bind_mailbox {
-        secrets.push(("mailbox_user", MAILBOX_USER));
         secrets.push(("mailbox_pass", MAILBOX_PASS));
     }
     let mut body = json!({
@@ -127,10 +128,8 @@ async fn setup_email_instance(
         "status": "active",
     });
     if bind_mailbox {
-        body["credentials"] = json!({
-            "mailbox_user": "mailbox_user",
-            "mailbox_pass": "mailbox_pass",
-        });
+        body["credentials"] = json!({ "mailbox_pass": "mailbox_pass" });
+        body["config"] = json!({ "mailbox_user": MAILBOX_USER });
     }
     let (base, agent_key, _admin_key, _instance) =
         setup_email_instance_custom(pool, &secrets, body).await;
@@ -570,6 +569,66 @@ async fn email_unbound_mailbox_never_injects_gateway_key_alone() {
     }
 }
 
+/// The config half of the same contract: the password is bound but the
+/// username is unset. `mailbox_user` is `required`, so the scheme must not
+/// resolve — rendering it anyway would send `Basic base64(":app-password")`,
+/// which the gateway reports as a bad password rather than as missing config.
+#[tokio::test]
+async fn email_missing_required_config_never_sends_a_truncated_credential() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, agent_key, _admin_key, _instance) = setup_email_instance_custom(
+        pool,
+        &[("mailbox_pass", MAILBOX_PASS)],
+        json!({
+            "template_key": "email",
+            "name": "email",
+            "url": gateway_url,
+            "status": "active",
+            "credentials": { "mailbox_pass": "mailbox_pass" },
+            // No `config`: the username is missing.
+        }),
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "email",
+            "action": "search",
+            "params": { "query": "UNSEEN" }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // The scheme never becomes a `SecretRef`, so it never reaches `render` —
+    // the caller cannot get the generic "failed to build a value", and no
+    // half-built header exists to send.
+    let body = resp.text().await.unwrap();
+    assert!(
+        !body.contains("failed to build a value"),
+        "a scheme with a missing config value must never reach render: {body}"
+    );
+
+    for req in sink.lock().unwrap().iter() {
+        assert!(
+            req.mailbox_auth.is_none(),
+            "truncated credential reached the gateway: {:?}",
+            req.mailbox_auth
+        );
+        // Nor does the org gateway key ride alone, for the same reason it does
+        // not when a *slot* is unbound: an unresolved scheme takes the whole
+        // credential set down with it.
+        assert!(
+            req.authorization.is_none(),
+            "partial auth with a missing config value: {:?}",
+            req.authorization
+        );
+    }
+}
+
 #[tokio::test]
 async fn email_blank_stored_binding_is_missing_not_partial() {
     // The API rejects blank bindings, so a blank map value can only be
@@ -582,11 +641,11 @@ async fn email_blank_stored_binding_is_missing_not_partial() {
     let (base, agent_key) = setup_email_instance(pool, &gateway_url, true, true).await;
 
     // Corrupt the stored map behind the API's back: required password → "".
-    // The username stays bound, so this also covers "half a composed
+    // The username stays set in `config`, so this also covers "half a composed
     // credential" — the case that would otherwise send `Basic base64("user:")`.
     sqlx::query(
         r#"UPDATE service_instances
-           SET credentials = '{"mailbox_user": "mailbox_user", "mailbox_pass": ""}'::jsonb,
+           SET credentials = '{"mailbox_pass": ""}'::jsonb,
                secret_name = NULL
            WHERE name = 'email'"#,
     )
@@ -668,8 +727,9 @@ async fn email_keyless_gateway_omits_authorization_but_still_sends_mailbox_auth(
 
 /// Every slot bound explicitly through the `credentials` map — including a
 /// per-instance gateway key under a NON-default name, which the org-fixed
-/// `overfwd_gateway_key` fallback could never express, and a mailbox login
-/// split across two secrets under names of the operator's choosing.
+/// `overfwd_gateway_key` fallback could never express, and a mailbox password
+/// under a name of the operator's choosing, joined with the plain-config
+/// username.
 #[tokio::test]
 async fn email_credentials_map_binds_every_slot_with_custom_names() {
     let pool = common::test_pool().await;
@@ -679,7 +739,6 @@ async fn email_credentials_map_binds_every_slot_with_custom_names() {
         pool,
         &[
             ("my_own_gateway_token", "instance-gw-key"),
-            ("angel_login", MAILBOX_USER),
             ("angel_app_password", MAILBOX_PASS),
         ],
         json!({
@@ -690,25 +749,26 @@ async fn email_credentials_map_binds_every_slot_with_custom_names() {
             "status": "active",
             "credentials": {
                 "gateway": "my_own_gateway_token",
-                "mailbox_user": "angel_login",
                 "mailbox_pass": "angel_app_password",
             },
+            "config": { "mailbox_user": MAILBOX_USER },
         }),
     )
     .await;
 
-    // The create response exposes the bindings (names only). With two
-    // instance-source slots the legacy scalar has nothing unambiguous to
-    // mirror, so it stays null.
+    // The create response exposes the bindings (names only). `mailbox_pass` is
+    // the sole instance-source slot, so the legacy scalar mirrors it; the
+    // gateway (org-source) never mirrors.
     assert_eq!(
         instance["credentials"],
         json!({
             "gateway": "my_own_gateway_token",
-            "mailbox_user": "angel_login",
             "mailbox_pass": "angel_app_password",
         })
     );
-    assert_eq!(instance["secret_name"], json!(null));
+    assert_eq!(instance["secret_name"], json!("angel_app_password"));
+    // The username rides in `config`, in the clear — it is not a secret.
+    assert_eq!(instance["config"]["mailbox_user"], json!(MAILBOX_USER));
 
     let resp = reqwest::Client::new()
         .post(format!("{base}/v1/actions/call"))
@@ -737,8 +797,9 @@ async fn email_credentials_map_binds_every_slot_with_custom_names() {
         Some("Bearer instance-gw-key"),
         "credentials[gateway] must override the overfwd_gateway_key fallback"
     );
-    // Two secrets, one header: the joined value is byte-identical to what a
-    // single `user:pass` secret produced before the split.
+    // A config value and a secret, one header: the joined value is
+    // byte-identical to what a single `user:pass` secret produced before the
+    // split, and to what two secrets produced after it.
     assert_eq!(req.mailbox_auth.as_deref(), Some(MAILBOX_BASIC));
 
     // The gateway binding never mirrors into the scalar `secret_name`, so the
@@ -789,12 +850,16 @@ async fn email_create_rejects_unknown_credential_slot() {
     );
 }
 
-/// The scalar `secret_name` alias cannot express a composed credential, so a
-/// template with several instance-source slots must reject it rather than
-/// guess which half it meant. (The alias still works for a single-slot
-/// template — see `service_instances::test_secret_name_rejected_on_oauth_template`.)
+/// Once the username stopped being a secret, `email` has exactly ONE
+/// instance-source slot again — so the legacy scalar `secret_name` is
+/// unambiguous and folds into it. This is the shape a pre-`credentials` caller
+/// still sends, and it must keep working.
+///
+/// (The ambiguous case — several instance-source slots — is still refused;
+/// `platform_services::reconcile_rejects_scalar_alias_when_several_instance_slots_exist`
+/// covers it without needing a shipped template that has two.)
 #[tokio::test]
-async fn email_rejects_scalar_secret_name_for_composed_mailbox() {
+async fn email_scalar_secret_name_folds_into_the_sole_mailbox_slot() {
     let pool = common::test_pool().await;
     let (base, client) = start_api_with_registry(pool, None).await;
     let (_org_id, _ident_id, _agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
@@ -811,27 +876,59 @@ async fn email_rejects_scalar_secret_name_for_composed_mailbox() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400, "ambiguous scalar alias must 400");
+    assert!(
+        resp.status().is_success(),
+        "scalar alias should bind the sole instance slot: {}",
+        resp.text().await.unwrap()
+    );
+    let instance: Value = resp.json().await.unwrap();
+    assert_eq!(
+        instance["credentials"]["mailbox_pass"],
+        json!("mailbox_credential")
+    );
+}
+
+/// Hard cutover: `mailbox_user` used to be a credential slot and is now a
+/// config value. An instance still binding it as a credential must fail with a
+/// message that says where the value went — this error is the only notice an
+/// operator gets.
+#[tokio::test]
+async fn email_rejects_binding_the_username_as_a_credential() {
+    let pool = common::test_pool().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, _ident_id, _agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "email",
+            "name": "email",
+            "user_level": false,
+            "credentials": { "mailbox_user": "mailbox_user", "mailbox_pass": "mailbox_pass" },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
     let body = resp.text().await.unwrap();
     assert!(
-        body.contains("mailbox_user") && body.contains("mailbox_pass"),
-        "error should name the slots to bind instead: {body}"
+        body.contains("no longer a credential") && body.contains("config"),
+        "error must point the operator at `config`: {body}"
     );
 }
 
 /// `credentials` on update is a whole-map replace, and an empty map unbinds
-/// everything — the same contract as before the mailbox split, now over two
-/// slots instead of one.
+/// everything. Exercised over the gateway + mailbox pair, which is what the
+/// `email` template's two secret schemes reduce to now that the username is
+/// plain config.
 #[tokio::test]
 async fn email_update_credentials_replaces_and_clears() {
     let pool = common::test_pool().await;
     let (gateway_url, _sink) = start_mock_overfwd().await;
     let (base, _agent_key, admin_key, instance) = setup_email_instance_custom(
         pool,
-        &[
-            ("mailbox_user", MAILBOX_USER),
-            ("mailbox_pass", MAILBOX_PASS),
-        ],
+        &[("gw_key", GATEWAY_KEY), ("mailbox_pass", MAILBOX_PASS)],
         json!({
             "template_key": "email",
             "name": "email",
@@ -839,21 +936,22 @@ async fn email_update_credentials_replaces_and_clears() {
             "user_level": false,
             "status": "active",
             "credentials": {
-                "mailbox_user": "mailbox_user",
+                "gateway": "gw_key",
                 "mailbox_pass": "mailbox_pass",
             },
+            "config": { "mailbox_user": MAILBOX_USER },
         }),
     )
     .await;
     let svc_id = instance["id"].as_str().unwrap();
     let client = reqwest::Client::new();
 
-    // Whole-map replace: rebind both halves at once.
+    // Whole-map replace: rebind both slots at once.
     let updated: Value = client
         .put(format!("{base}/v1/services/{svc_id}/manage"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "credentials": { "mailbox_user": "other_login", "mailbox_pass": "other_password" }
+            "credentials": { "gateway": "other_gw", "mailbox_pass": "other_password" }
         }))
         .send()
         .await
@@ -863,16 +961,16 @@ async fn email_update_credentials_replaces_and_clears() {
         .unwrap();
     assert_eq!(
         updated["credentials"],
-        json!({ "mailbox_user": "other_login", "mailbox_pass": "other_password" })
+        json!({ "gateway": "other_gw", "mailbox_pass": "other_password" })
     );
 
-    // Rotating just the password leaves the username bound — the whole point
-    // of splitting the credential in two.
+    // Rotating just the mailbox password leaves the gateway key bound — the
+    // whole point of binding per slot rather than one scalar.
     let rotated: Value = client
         .put(format!("{base}/v1/services/{svc_id}/manage"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "credentials": { "mailbox_user": "other_login", "mailbox_pass": "rotated_password" }
+            "credentials": { "gateway": "other_gw", "mailbox_pass": "rotated_password" }
         }))
         .send()
         .await
@@ -880,7 +978,7 @@ async fn email_update_credentials_replaces_and_clears() {
         .json()
         .await
         .unwrap();
-    assert_eq!(rotated["credentials"]["mailbox_user"], json!("other_login"));
+    assert_eq!(rotated["credentials"]["gateway"], json!("other_gw"));
     assert_eq!(
         rotated["credentials"]["mailbox_pass"],
         json!("rotated_password")
@@ -927,15 +1025,15 @@ async fn email_template_serializes_slots_and_sources() {
     assert_eq!(auth[1]["scheme"], json!("mailbox"));
     // `instance` is the default source; it serializes explicitly.
     assert_eq!(auth[1]["secret_source"], json!("instance"));
-    // The mailbox header is joined from two secrets, so it reads two slots
-    // while the gateway reads only its own implicit one.
+    // The mailbox header joins a config value with a secret, so it reads one
+    // slot and one config key; the gateway reads only its own implicit slot.
     assert_eq!(auth[0]["slots"], json!(["gateway"]));
-    assert_eq!(auth[1]["slots"], json!(["mailbox_user", "mailbox_pass"]));
+    assert_eq!(auth[1]["slots"], json!(["mailbox_pass"]));
+    assert_eq!(auth[1]["config_keys"], json!(["mailbox_user"]));
 
-    // The slot list the credentials form renders: three pickers, each with
-    // the label and source the dashboard shows. Ordered by the auth entry
-    // that reads them, then by the expression — so the form asks for the
-    // username before the password, the order the header joins them in.
+    // The slot list the credentials form renders: two pickers, each with the
+    // label and source the dashboard shows. The username is NOT here — it is a
+    // config field, not a secret picker.
     let secrets = tpl["secrets"].as_array().expect("secrets array");
     let rows: Vec<(&str, &str, &str)> = secrets
         .iter()
@@ -951,7 +1049,6 @@ async fn email_template_serializes_slots_and_sources() {
         rows,
         vec![
             ("gateway", "Overfwd API Token", "org"),
-            ("mailbox_user", "Mailbox username", "instance"),
             ("mailbox_pass", "Mailbox password", "instance"),
         ],
         "slots drive the dashboard credential rows"
@@ -976,15 +1073,13 @@ async fn email_instance_config_pins_mailbox_endpoint_headers() {
     let (gateway_url, sink) = start_mock_overfwd().await;
     let (base, agent_key, _admin_key, _instance) = setup_email_instance_custom(
         pool,
-        &[
-            ("mailbox_user", MAILBOX_USER),
-            ("mailbox_pass", MAILBOX_PASS),
-        ],
+        &[("mailbox_pass", MAILBOX_PASS)],
         json!({
             "template_key": "email",
             "url": gateway_url,
-            "credentials": { "mailbox_user": "mailbox_user", "mailbox_pass": "mailbox_pass" },
+            "credentials": { "mailbox_pass": "mailbox_pass" },
             "config": {
+                "mailbox_user": MAILBOX_USER,
                 "X-Mailbox-Imap": "imap.corp.internal:993",
                 "X-Mailbox-Smtp": "smtp.corp.internal:465",
             },
@@ -1018,15 +1113,15 @@ async fn email_caller_arg_overrides_pinned_mailbox_endpoint() {
     let (gateway_url, sink) = start_mock_overfwd().await;
     let (base, agent_key, _admin_key, _instance) = setup_email_instance_custom(
         pool,
-        &[
-            ("mailbox_user", MAILBOX_USER),
-            ("mailbox_pass", MAILBOX_PASS),
-        ],
+        &[("mailbox_pass", MAILBOX_PASS)],
         json!({
             "template_key": "email",
             "url": gateway_url,
-            "credentials": { "mailbox_user": "mailbox_user", "mailbox_pass": "mailbox_pass" },
-            "config": { "X-Mailbox-Imap": "imap.corp.internal:993" },
+            "credentials": { "mailbox_pass": "mailbox_pass" },
+            "config": {
+                "mailbox_user": MAILBOX_USER,
+                "X-Mailbox-Imap": "imap.corp.internal:993",
+            },
             "status": "active",
         }),
     )
@@ -1089,14 +1184,12 @@ async fn email_search_with_no_args_sends_defaulted_body() {
     let (gateway_url, sink) = start_mock_overfwd().await;
     let (base, agent_key, _admin_key, _instance) = setup_email_instance_custom(
         pool,
-        &[
-            ("mailbox_user", MAILBOX_USER),
-            ("mailbox_pass", MAILBOX_PASS),
-        ],
+        &[("mailbox_pass", MAILBOX_PASS)],
         json!({
             "template_key": "email",
             "url": gateway_url,
-            "credentials": { "mailbox_user": "mailbox_user", "mailbox_pass": "mailbox_pass" },
+            "credentials": { "mailbox_pass": "mailbox_pass" },
+            "config": { "mailbox_user": MAILBOX_USER },
             "status": "active",
         }),
     )
@@ -1154,15 +1247,15 @@ async fn email_update_config_replaces_and_clears() {
     let pool = common::test_pool().await;
     let (base, _agent_key, admin_key, instance) = setup_email_instance_custom(
         pool,
-        &[
-            ("mailbox_user", MAILBOX_USER),
-            ("mailbox_pass", MAILBOX_PASS),
-        ],
+        &[("mailbox_pass", MAILBOX_PASS)],
         json!({
             "template_key": "email",
             "url": "http://127.0.0.1:1",
-            "credentials": { "mailbox_user": "mailbox_user", "mailbox_pass": "mailbox_pass" },
-            "config": { "X-Mailbox-Imap": "imap.one.test:993" },
+            "credentials": { "mailbox_pass": "mailbox_pass" },
+            "config": {
+                "mailbox_user": MAILBOX_USER,
+                "X-Mailbox-Imap": "imap.one.test:993",
+            },
             "status": "active",
         }),
     )
@@ -1247,13 +1340,15 @@ async fn email_template_advertises_instance_config_params() {
         .as_array()
         .expect("instance_config_params present");
     let names: Vec<&str> = params.iter().filter_map(|p| p["name"].as_str()).collect();
-    // Each rides all three operations but must appear once on the form.
+    // The endpoint params ride all three operations but must appear once on
+    // the form — and the credential template's `mailbox_user` joins them,
+    // because both kinds of value live in the instance's one `config` map.
     assert_eq!(
         names,
-        vec!["X-Mailbox-Imap", "X-Mailbox-Smtp"],
+        vec!["X-Mailbox-Imap", "X-Mailbox-Smtp", "mailbox_user"],
         "{params:?}"
     );
-    for p in params {
+    for p in params.iter().take(2) {
         assert_eq!(p["required"], json!(false), "{p:?}");
         assert!(
             p["description"]
@@ -1263,6 +1358,12 @@ async fn email_template_advertises_instance_config_params() {
             "description should reach the form: {p:?}"
         );
     }
+    // The config var arrives with the label the raw key can't carry, and
+    // `required` — an unset username would render a truncated credential.
+    let user = &params[2];
+    assert_eq!(user["label"], json!("Mailbox username"));
+    assert_eq!(user["required"], json!(true));
+    assert_eq!(user["type"], json!("string"));
     assert_eq!(tpl["configurable_url"], json!(true));
 }
 
@@ -1282,23 +1383,25 @@ async fn email_org_layer_defaults_route_to_org_gateway() {
     let (gateway_url, sink) = start_mock_overfwd().await;
     let (base, agent_key, _admin_key, _instance) = setup_email_instance_layered(
         pool,
-        &[
-            ("mailbox_user", MAILBOX_USER),
-            ("mailbox_pass", MAILBOX_PASS),
-        ],
+        &[("mailbox_pass", MAILBOX_PASS)],
         Some(json!({
             "instance_defaults": {
                 "url": gateway_url,
                 "config": {
                     "X-Mailbox-Imap": "imap.corp.internal:993",
                     "X-Mailbox-Smtp": "smtp.corp.internal:465",
+                    // A credential template's non-secret input is defaultable
+                    // like any other config key — here the org's shared mailbox
+                    // login, so a user's instance carries only its password.
+                    "mailbox_user": MAILBOX_USER,
                 }
             }
         })),
         json!({
             "template_key": "email_org",
-            // No `url`, no `config` — everything comes from the org layer.
-            "credentials": { "mailbox_user": "mailbox_user", "mailbox_pass": "mailbox_pass" },
+            // No `url`, no `config` — everything but the password comes from
+            // the org layer.
+            "credentials": { "mailbox_pass": "mailbox_pass" },
             "status": "active",
         }),
     )
@@ -1324,6 +1427,9 @@ async fn email_org_layer_defaults_route_to_org_gateway() {
     let req = captured.first().expect("org gateway saw no request");
     assert_eq!(req.imap.as_deref(), Some("imap.corp.internal:993"));
     assert_eq!(req.smtp.as_deref(), Some("smtp.corp.internal:465"));
+    // And the layer's username joined the instance's password into the one
+    // credential header — the same bytes as when both halves were local.
+    assert_eq!(req.mailbox_auth.as_deref(), Some(MAILBOX_BASIC));
 }
 
 /// Precedence, top to bottom: an instance overrides its org layer, and a caller
@@ -1335,10 +1441,7 @@ async fn email_instance_and_caller_override_org_layer_defaults() {
     let (gateway_url, sink) = start_mock_overfwd().await;
     let (base, agent_key, _admin_key, _instance) = setup_email_instance_layered(
         pool,
-        &[
-            ("mailbox_user", MAILBOX_USER),
-            ("mailbox_pass", MAILBOX_PASS),
-        ],
+        &[("mailbox_pass", MAILBOX_PASS)],
         Some(json!({
             "instance_defaults": {
                 // A URL the mock gateway is NOT listening on: if the instance's
@@ -1347,15 +1450,20 @@ async fn email_instance_and_caller_override_org_layer_defaults() {
                 "config": {
                     "X-Mailbox-Imap": "imap.layer.internal:993",
                     "X-Mailbox-Smtp": "smtp.layer.internal:465",
+                    // A shared login the instance's own mailbox overrides.
+                    "mailbox_user": "shared-ops@acme.com",
                 }
             }
         })),
         json!({
             "template_key": "email_org",
             "url": gateway_url,
-            "credentials": { "mailbox_user": "mailbox_user", "mailbox_pass": "mailbox_pass" },
-            // Instance pins IMAP; SMTP is left to the layer.
-            "config": { "X-Mailbox-Imap": "imap.instance.internal:993" },
+            "credentials": { "mailbox_pass": "mailbox_pass" },
+            // Instance pins IMAP and its own mailbox; SMTP is left to the layer.
+            "config": {
+                "X-Mailbox-Imap": "imap.instance.internal:993",
+                "mailbox_user": MAILBOX_USER,
+            },
             "status": "active",
         }),
     )
@@ -1390,5 +1498,12 @@ async fn email_instance_and_caller_override_org_layer_defaults() {
         req.smtp.as_deref(),
         Some("smtp.caller.internal:465"),
         "a caller arg must beat both"
+    );
+    // Same precedence inside a credential: the instance's own username built
+    // the header, not the layer's shared one.
+    assert_eq!(
+        req.mailbox_auth.as_deref(),
+        Some(MAILBOX_BASIC),
+        "instance config must beat the layer default inside the credential too"
     );
 }

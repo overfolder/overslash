@@ -1027,6 +1027,17 @@ fn reconcile_credentials(
     if let Some(explicit) = explicit {
         for (key, value) in explicit {
             if !slot_keys.contains(key) {
+                // A key that is now a config var is the shape of a template
+                // that stopped vaulting a value (the `email` mailbox username).
+                // Saying only "unknown credential" would leave the operator
+                // hunting; this is the one message they get.
+                if template.config.iter().any(|c| &c.key == key) {
+                    return Err(AppError::BadRequest(format!(
+                        "'{key}' is no longer a credential on template '{}'; it is a \
+                         plain config value — move it from `credentials` to `config`",
+                        template.key
+                    )));
+                }
                 return Err(AppError::BadRequest(format!(
                     "unknown credential '{key}'; template '{}' declares: {}",
                     template.key,
@@ -1502,6 +1513,7 @@ mod tests {
     fn mcp_bearer_template(default_secret: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1525,6 +1537,7 @@ mod tests {
     fn mcp_oauth_template(provider: &str, scopes: &[&str]) -> ServiceDefinition {
         ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1607,6 +1620,7 @@ mod tests {
     fn secret_template() -> ServiceDefinition {
         ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1616,6 +1630,7 @@ mod tests {
             auth: vec![ServiceAuth::Secret {
                 template: None,
                 slots: Vec::new(),
+                config_keys: Vec::new(),
                 scheme: String::new(),
                 label: String::new(),
                 description: String::new(),
@@ -1662,6 +1677,7 @@ mod tests {
         }
         ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1707,6 +1723,7 @@ mod tests {
     fn none_when_template_has_no_auth_and_no_connection() {
         let tpl = ServiceDefinition {
             secrets: Vec::new(),
+            config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1867,6 +1884,7 @@ mod tests {
             ServiceAuth::Secret {
                 template: None,
                 slots: Vec::new(),
+                config_keys: Vec::new(),
                 scheme: "gateway".into(),
                 label: String::new(),
                 description: String::new(),
@@ -1878,6 +1896,7 @@ mod tests {
             ServiceAuth::Secret {
                 template: None,
                 slots: Vec::new(),
+                config_keys: Vec::new(),
                 scheme: "mailbox".into(),
                 label: String::new(),
                 description: String::new(),

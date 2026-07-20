@@ -237,13 +237,22 @@ pub fn compile_service(
 
     let hosts = extract_hosts(root.get("servers"));
 
-    let (auth, secrets) = match extract_auth(root.get("components")) {
-        Ok(a) => a,
+    let creds = match extract_auth(root.get("components")) {
+        Ok(c) => c,
         Err(mut es) => {
             errors.append(&mut es);
-            (Vec::new(), Vec::new())
+            extract::CompiledCredentials {
+                auth: Vec::new(),
+                secrets: Vec::new(),
+                config: Vec::new(),
+            }
         }
     };
+    let extract::CompiledCredentials {
+        auth,
+        secrets,
+        config,
+    } = creds;
 
     // Document root-level `security`, applied as the default required-scopes
     // for every operation that doesn't declare its own (OpenAPI 3.1 semantics).
@@ -331,6 +340,30 @@ pub fn compile_service(
         None
     };
 
+    // Credential config vars and `x-overslash-instance-config` params share one
+    // namespace: both are keys of the instance's single `config` map, and both
+    // render as one field on the instance form. A collision would make one
+    // field feed two unrelated consumers, so it is a template error rather than
+    // a precedence rule nobody could guess.
+    for var in &config {
+        if let Some(action_key) = actions
+            .iter()
+            .find(|(_, a)| a.params.get(&var.key).is_some_and(|p| p.instance_config))
+            .map(|(k, _)| k)
+        {
+            errors.push(ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!(
+                    "config `{}` collides with the instance-config param of the \
+                     same name on action `{action_key}`; instance config is one \
+                     namespace",
+                    var.key
+                ),
+                format!("components.x-overslash-config.{}", var.key),
+            ));
+        }
+    }
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -345,6 +378,7 @@ pub fn compile_service(
             hidden,
             auth,
             secrets,
+            config,
             actions,
             runtime,
             mcp,
