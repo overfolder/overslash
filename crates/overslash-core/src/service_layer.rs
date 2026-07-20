@@ -101,7 +101,12 @@ pub struct ActionPatch {
     /// Additional disclose specs appended to the action's existing ones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disclose: Vec<DisclosureField>,
-    /// Relabel the action's description.
+    /// Relabel the action's agent-facing description.
+    ///
+    /// Deliberately does not touch `ServiceAction::summary`: an org rewording
+    /// what the agent reads should not silently rewrite the approval title a
+    /// human has learned to recognise. A layer that wants both re-authors the
+    /// action through `Extensions.actions` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -628,6 +633,7 @@ mod tests {
             method: "GET".into(),
             path: "/x".into(),
             description: "x".into(),
+            summary: None,
             risk,
             response_type: None,
             params: HashMap::new(),
@@ -971,6 +977,7 @@ mod tests {
             label: "Mailbox username".into(),
             description: String::new(),
             required: true,
+            identity: false,
         }];
         let delta = Delta {
             instance_defaults: Some(defaults(None, &[("mailbox_user", "ops@acme.com")])),

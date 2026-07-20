@@ -182,6 +182,21 @@ pub enum McpAuth {
 }
 
 impl ServiceDefinition {
+    /// The config key whose per-instance value names the account this instance
+    /// speaks for, if the template declares one (`identity: true` on a
+    /// `components.x-overslash-config` entry).
+    ///
+    /// Discovery reads the instance's `config` at this key and surfaces it as
+    /// `account_email`, which is what lets several secret-based instances of
+    /// one template be told apart. Deterministic when a template mistakenly
+    /// marks more than one: keys are sorted at parse time, so the first wins.
+    pub fn identity_config_key(&self) -> Option<&str> {
+        self.config
+            .iter()
+            .find(|c| c.identity)
+            .map(|c| c.key.as_str())
+    }
+
     /// The credential slots one secret-backed auth entry reads, paired with
     /// their declarations — the single place the implicit-slot rule lives.
     ///
@@ -428,6 +443,21 @@ pub struct ConfigVar {
     /// and would otherwise send a truncated credential.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
+    /// When true, this var's value names *which account* the instance speaks
+    /// for, and discovery surfaces it as the row's `account_email`.
+    ///
+    /// OAuth instances get that identity for free from
+    /// `connections.account_email`. Secret-based ones have nowhere to put it:
+    /// the display name belongs to the template, so three mailboxes on the
+    /// same template render three identical rows and an agent has no way to
+    /// tell which is which except by calling all of them. Marking the config
+    /// var that already holds the address closes that gap without a new
+    /// column.
+    ///
+    /// At most one var per template should set this; the first by key order
+    /// wins if several do.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub identity: bool,
 }
 
 /// Where a credential's value goes in the HTTP request.
@@ -453,7 +483,27 @@ pub struct ServiceAction {
     pub method: String,
     #[serde(default)]
     pub path: String,
+    /// What the *agent* reads when choosing this action, and the text the
+    /// keyword/embedding index scores against. For an HTTP operation this is
+    /// the OpenAPI `description`, falling back to `summary` when only the
+    /// short form is authored.
+    ///
+    /// This is the only string about an action that ever reaches the model —
+    /// parameter descriptions, defaults, and response schemas do not — so it
+    /// carries the whole contract, examples included, and is free to be long.
     pub description: String,
+    /// The short, interpolatable human label: the OpenAPI `summary`, e.g.
+    /// `"Search folder '{folder}' for {criteria}"`. `{param}` placeholders are
+    /// substituted with the caller's actual arguments to title the approval
+    /// screen and the audit row.
+    ///
+    /// Separate from [`description`](Self::description) because the two jobs
+    /// pull in opposite directions: the agent needs the long form, while an
+    /// approval prompt a human must read in one glance needs a single line.
+    /// `None` falls back to `description`, which is how every action that
+    /// authors only one of the two behaves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     #[serde(default)]
     pub risk: Risk,
     /// Response type hint: "json" (default) or "binary" (for file downloads).
@@ -516,6 +566,16 @@ pub struct ServiceAction {
     /// before it ever looks at the body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_body: Option<RequestBodySpec>,
+}
+
+impl ServiceAction {
+    /// The template to interpolate for human-facing surfaces (approval title,
+    /// audit description). Prefers the short [`summary`](Self::summary) and
+    /// falls back to [`description`](Self::description) when the action
+    /// authors only the long form.
+    pub fn label_template(&self) -> &str {
+        self.summary.as_deref().unwrap_or(&self.description)
+    }
 }
 
 /// An operation's declared `requestBody`, reduced to what routing needs: which
@@ -984,6 +1044,7 @@ mod tests {
                 method: "".into(),
                 path: "".into(),
                 description: "Search issues".into(),
+                summary: None,
                 risk: Risk::Read,
                 response_type: None,
                 params: HashMap::new(),
@@ -1045,6 +1106,7 @@ mod tests {
             method: "GET".into(),
             path: "/foo".into(),
             description: "x".into(),
+            summary: None,
             risk: Risk::Read,
             response_type: None,
             params: HashMap::new(),

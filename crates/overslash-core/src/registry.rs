@@ -472,6 +472,106 @@ paths:
         }
     }
 
+    /// The search parameter is named for what it is. `query` implied a
+    /// free-text box, so an agent searched for a sender by name, got `200 []`,
+    /// and concluded the mailbox was empty. The old name stays accepted so no
+    /// caller breaks, and the explanation lives on `description` because that
+    /// is the only string about an action the model ever sees.
+    #[test]
+    fn shipped_email_search_names_its_imap_criteria_and_keeps_query_accepted() {
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let search = &reg.get("email").expect("email template").actions["search"];
+
+        let criteria = search
+            .params
+            .get("criteria")
+            .expect("email.search must declare `criteria`");
+        assert!(
+            !search.params.contains_key("query"),
+            "`query` must be an alias, not a second declared param"
+        );
+        assert!(
+            criteria.aliases.contains(&"query".to_string()),
+            "the old name must stay accepted, got {:?}",
+            criteria.aliases
+        );
+        assert_eq!(criteria.default, Some(serde_json::json!("ALL")));
+
+        // The agent-facing text must say the thing that would have prevented
+        // the burned calls, and must not be the terse label.
+        assert!(
+            search.description.contains("IMAP SEARCH"),
+            "description must name the syntax: {:?}",
+            search.description
+        );
+        assert_ne!(
+            Some(search.description.as_str()),
+            search.summary.as_deref(),
+            "the approval label must stay short and separate from the explainer"
+        );
+    }
+
+    /// Every instance of this template renders the same display name, because
+    /// the name belongs to the template. Marking the mailbox address as the
+    /// identity config var is what lets discovery tell three mailboxes apart.
+    #[test]
+    fn shipped_email_marks_the_mailbox_address_as_its_account_identity() {
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let email = reg.get("email").expect("email template");
+        assert_eq!(email.identity_config_key(), Some("mailbox_user"));
+    }
+
+    /// Permission keys for a send are derived per recipient, so a grant can be
+    /// scoped to one correspondent or one domain.
+    #[test]
+    fn shipped_email_send_scopes_permissions_by_recipient() {
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let send = &reg.get("email").expect("email template").actions["send"];
+
+        assert_eq!(send.scope_param.as_deref(), Some("to"));
+        assert_eq!(
+            send.params["to"].param_type, "array",
+            "the recipient fan-out relies on `to` lowering as an array"
+        );
+
+        let mut params = std::collections::HashMap::new();
+        params.insert(
+            "to".to_string(),
+            serde_json::json!(["a@example.com", "b@example.org"]),
+        );
+        let keys =
+            crate::permissions::PermissionKey::from_service_action("email", "send", None, &params);
+        assert_eq!(keys.len(), 1, "no scope_param passed → single wildcard key");
+        let keys = crate::permissions::PermissionKey::from_service_action(
+            "email",
+            "send",
+            send.scope_param.as_deref(),
+            &params,
+        );
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec!["email:send:a@example.com", "email:send:b@example.org"]
+        );
+    }
+
     #[test]
     fn shipped_telegram_send_message_declares_param_aliases() {
         // Pin the ergonomics fix from the burned-approval traces: the Telegram

@@ -32,7 +32,7 @@
 			</option>
 			{#each sorted as a (a.key)}
 				<option value={a.key}>
-					{a.key} — {a.description || a.path} [{a.risk}]
+					{a.key} — {a.summary || a.description || a.path} [{a.risk}]
 				</option>
 			{/each}
 		</select>

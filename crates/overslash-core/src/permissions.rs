@@ -47,20 +47,51 @@ impl PermissionKey {
 
     /// Derive permission keys from a service action request.
     /// Format: `{service}:{action}:{arg}` where arg comes from `scope_param` or defaults to `*`.
+    ///
+    /// An **array-valued** `scope_param` fans out into one key per element
+    /// rather than stringifying the whole array. A `send` to two recipients
+    /// therefore derives two keys, so a grant like `email:send:*@example.com`
+    /// covers the internal recipient while the external one bubbles as an
+    /// approval naming only itself. Without the fan-out the arg would be the
+    /// JSON literal `["a@b.com","c@d.com"]`, which no rule can match and no
+    /// human can read.
+    ///
+    /// Elements are deduped (order-preserving) so a repeated recipient does
+    /// not raise the same approval twice. An empty array carries no scope at
+    /// all, so it falls back to `*` exactly like a missing param.
     pub fn from_service_action(
         service_key: &str,
         action_key: &str,
         scope_param: Option<&str>,
         params: &HashMap<String, serde_json::Value>,
     ) -> Vec<Self> {
-        let arg = scope_param
-            .and_then(|sp| params.get(sp))
-            .map(|v| match v.as_str() {
-                Some(s) => s.to_string(),
-                None => v.to_string(),
-            })
-            .unwrap_or_else(|| "*".to_string());
-        vec![Self(format!("{service_key}:{action_key}:{arg}"))]
+        let args: Vec<String> = match scope_param.and_then(|sp| params.get(sp)) {
+            Some(serde_json::Value::Array(items)) => {
+                let mut seen = std::collections::HashSet::new();
+                items
+                    .iter()
+                    .map(Self::scope_arg)
+                    .filter(|s| seen.insert(s.clone()))
+                    .collect()
+            }
+            Some(v) => vec![Self::scope_arg(v)],
+            None => Vec::new(),
+        };
+        if args.is_empty() {
+            return vec![Self(format!("{service_key}:{action_key}:*"))];
+        }
+        args.into_iter()
+            .map(|arg| Self(format!("{service_key}:{action_key}:{arg}")))
+            .collect()
+    }
+
+    /// Render one `scope_param` value as the `{arg}` segment. Strings pass
+    /// through unquoted; anything else falls back to its JSON form.
+    fn scope_arg(v: &serde_json::Value) -> String {
+        match v.as_str() {
+            Some(s) => s.to_string(),
+            None => v.to_string(),
+        }
     }
 }
 
@@ -536,6 +567,62 @@ mod tests {
             &params,
         );
         assert_eq!(keys[0].0, "github:create_pull_request:overfolder/backend");
+    }
+
+    #[test]
+    fn service_action_array_scope_param_fans_out_per_element() {
+        let mut params = HashMap::new();
+        params.insert(
+            "to".to_string(),
+            serde_json::json!(["a@example.com", "b@example.org"]),
+        );
+        let keys = PermissionKey::from_service_action("email", "send", Some("to"), &params);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec!["email:send:a@example.com", "email:send:b@example.org"]
+        );
+    }
+
+    /// A grant scoped to one domain covers only the recipients in it; the rest
+    /// stay uncovered and bubble as an approval naming just them.
+    #[test]
+    fn domain_scoped_rule_covers_only_matching_recipients() {
+        let mut params = HashMap::new();
+        params.insert(
+            "to".to_string(),
+            serde_json::json!(["a@example.com", "b@example.org"]),
+        );
+        let keys = PermissionKey::from_service_action("email", "send", Some("to"), &params);
+        let covered: Vec<&str> = keys
+            .iter()
+            .filter(|k| glob_match::glob_match("email:send:*@example.com", &k.0))
+            .map(|k| k.0.as_str())
+            .collect();
+        assert_eq!(covered, vec!["email:send:a@example.com"]);
+    }
+
+    #[test]
+    fn service_action_array_scope_param_dedups_repeated_elements() {
+        let mut params = HashMap::new();
+        params.insert("to".to_string(), serde_json::json!(["a@b.com", "a@b.com"]));
+        let keys = PermissionKey::from_service_action("email", "send", Some("to"), &params);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].0, "email:send:a@b.com");
+    }
+
+    #[test]
+    fn service_action_empty_array_scope_param_falls_back_to_wildcard() {
+        // No recipient carries no scope, so the key is as broad as a missing
+        // param — and a domain-scoped rule therefore does not cover it.
+        let mut params = HashMap::new();
+        params.insert("to".to_string(), serde_json::json!([]));
+        let keys = PermissionKey::from_service_action("email", "send", Some("to"), &params);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].0, "email:send:*");
+        assert!(!glob_match::glob_match(
+            "email:send:*@example.com",
+            &keys[0].0
+        ));
     }
 
     #[test]

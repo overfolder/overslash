@@ -296,9 +296,15 @@ variable "enable_overfwd" {
 variable "overfwd_image" {
   description = "overfwd image path *relative to the Docker Hub mirror*, digest-pinned (e.g. `angelmanuel/overfwd@sha256:…`). A moving tag would be an unreviewed third-party code change reaching production on the next revision roll, so a digest is required."
   type        = string
-  # v0.3.0 — first release with OVERFWD_BLOCK_PRIVATE_ENDPOINTS, which the
-  # module turns on. Do not downgrade below it without also revisiting that.
-  default = "angelmanuel/overfwd@sha256:cd403be0c5c789ae16fcfc7e6971377712700a7b2b9d45f721449074f94b16fd"
+  # v0.4.0 — the release where an unparseable IMAP SEARCH key returns a 400
+  # naming the fix instead of `200 []`, an empty key means ALL, and /email/search
+  # answers `{results, total, truncated}` rather than a bare array. The `search`
+  # action's description in `services/email.yaml` documents that contract, so a
+  # downgrade would make the shipped template lie to agents.
+  #
+  # Still ≥ v0.3.0, which introduced OVERFWD_BLOCK_PRIVATE_ENDPOINTS — the
+  # module turns that on and would fail closed against an older image.
+  default = "angelmanuel/overfwd@sha256:adaf72343c74699ebdbb517d2e9e299f0631729379b527ef96c9a20f87d0989a"
 
   validation {
     condition     = can(regex("@sha256:[0-9a-f]{64}$", var.overfwd_image))

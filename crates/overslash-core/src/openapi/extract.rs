@@ -286,11 +286,24 @@ fn extract_config_vars(components: Option<&Value>) -> Result<Vec<ConfigVar>, Vec
                 continue;
             }
         };
+        let identity = match obj.get("identity") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(other) => {
+                errors.push(ValidationIssue::new(
+                    "openapi_unsupported_construct",
+                    format!("config `identity` must be a boolean (got {other})"),
+                    format!("{base}.identity"),
+                ));
+                continue;
+            }
+        };
         out.push(ConfigVar {
             key: key.clone(),
             label: str_field(obj, "label"),
             description: str_field(obj, "description"),
             required,
+            identity,
         });
     }
 
@@ -782,12 +795,21 @@ pub(super) fn extract_http_action(
         })?
         .to_string();
 
-    let description = op
+    // `description` is what the agent reads and what search scores against;
+    // `summary` is the one-line label a human sees on an approval, with its
+    // `{param}` placeholders interpolated. An operation authoring only one of
+    // the two gets it used for both, which is how every template behaved
+    // before the split. Matches `extract_platform_action` below.
+    let summary = op
         .get("summary")
         .and_then(Value::as_str)
-        .or_else(|| op.get("description").and_then(Value::as_str))
-        .unwrap_or("")
-        .to_string();
+        .map(str::to_string);
+    let description = op
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| summary.clone())
+        .unwrap_or_default();
 
     let risk = match op.get("x-overslash-risk").and_then(Value::as_str) {
         Some("read") => Risk::Read,
@@ -845,6 +867,7 @@ pub(super) fn extract_http_action(
             method: method.to_uppercase(),
             path: path_key.to_string(),
             description,
+            summary,
             risk,
             response_type,
             params,
@@ -904,6 +927,7 @@ pub(super) fn extract_platform_action(
         method: String::new(),
         path: String::new(),
         description,
+        summary: None,
         risk,
         response_type: None,
         params,
@@ -1369,6 +1393,7 @@ fn lower_mcp_tool(
         method: String::new(),
         path: String::new(),
         description,
+        summary: None,
         risk,
         response_type: None,
         params,
@@ -2648,6 +2673,72 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         assert_eq!(svc.actions["act"].description, "Summary fallback");
+    }
+
+    /// The agent reads `description`; the approval screen reads `summary`. An
+    /// operation authoring both must keep them separate — cramming the long
+    /// form into `summary` used to be the only way to reach the model, and it
+    /// made the approval title a paragraph.
+    #[test]
+    fn http_action_description_wins_and_summary_is_kept_for_the_label() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://x.test"}],
+            "paths": {"/search": {"post": {
+                "operationId": "search",
+                "summary": "Search folder '{folder}' for {criteria}",
+                "description": "Raw IMAP SEARCH criteria — not free text.",
+                "x-overslash-risk": "read"
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let a = &svc.actions["search"];
+        assert_eq!(a.description, "Raw IMAP SEARCH criteria — not free text.");
+        assert_eq!(
+            a.summary.as_deref(),
+            Some("Search folder '{folder}' for {criteria}")
+        );
+        assert_eq!(
+            a.label_template(),
+            "Search folder '{folder}' for {criteria}"
+        );
+    }
+
+    /// The overwhelmingly common shape: `summary` only. It must still be both
+    /// the agent text and the label, exactly as before the split.
+    #[test]
+    fn http_action_summary_only_serves_as_both_description_and_label() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://x.test"}],
+            "paths": {"/send": {"post": {
+                "operationId": "send",
+                "summary": "Send email '{subject}' to {to}",
+                "x-overslash-risk": "write"
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let a = &svc.actions["send"];
+        assert_eq!(a.description, "Send email '{subject}' to {to}");
+        assert_eq!(a.label_template(), "Send email '{subject}' to {to}");
+    }
+
+    /// `description` only: no summary to fall back on, so the label reuses it.
+    #[test]
+    fn http_action_description_only_labels_with_the_description() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://x.test"}],
+            "paths": {"/list": {"get": {
+                "operationId": "list",
+                "description": "List everything."
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let a = &svc.actions["list"];
+        assert_eq!(a.description, "List everything.");
+        assert_eq!(a.summary, None);
+        assert_eq!(a.label_template(), "List everything.");
     }
 
     #[test]

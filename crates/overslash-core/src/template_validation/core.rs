@@ -376,6 +376,7 @@ fn check_action(key: &str, action: &ServiceAction, issues: &mut Issues) {
     let is_mcp_action = action.mcp_tool.is_some();
     check_description(
         &action.description,
+        action.summary.as_deref(),
         &action.params,
         &action_path,
         is_mcp_action,
@@ -542,46 +543,81 @@ fn check_action_path(
     }
 }
 
+/// Check the action's agent-facing `description` for presence, then check the
+/// **label template** — `summary` when authored, else `description` — for
+/// placeholder and bracket grammar.
+///
+/// The two are separated because only the label is ever interpolated
+/// ([`ServiceAction::label_template`]). A `description` is prose the model
+/// reads, and prose legitimately contains braces: LinkedIn's `create_post`
+/// explains that an author URN looks like `urn:li:person:{sub}`, which is
+/// documentation, not a placeholder referencing a param. Validating it as one
+/// would force authors to mangle their own examples.
+///
+/// When an action authors only `description`, the label *is* that description
+/// and the grammar checks apply to it exactly as before — which is the case
+/// for nearly every shipped template.
+///
+/// Takes `summary` rather than a pre-resolved label so the reported field is a
+/// structural fact, not an inference: comparing the two strings would call an
+/// action that authors the same text in both fields a `description` error and
+/// send the author editing the wrong line.
 fn check_description(
     desc: &str,
+    summary: Option<&str>,
     params: &std::collections::HashMap<String, ActionParam>,
     action_path: &str,
     optional: bool,
     issues: &mut Issues,
 ) {
-    if desc.trim().is_empty() {
-        if !optional {
-            issues.err(
-                "missing_field",
-                "description is required",
-                format!("{action_path}.description"),
-            );
-        }
-        return;
+    if desc.trim().is_empty() && !optional {
+        issues.err(
+            "missing_field",
+            "description is required",
+            format!("{action_path}.description"),
+        );
     }
 
-    if let Err(off) = validate_flat_brackets(desc) {
+    // Mirrors `ServiceAction::label_template`, and names the field the author
+    // actually wrote the offending text in.
+    let (label, field) = match summary {
+        Some(s) => (s, "summary"),
+        None => (desc, "description"),
+    };
+
+    // Grammar is checked even when `description` is absent. Presence and
+    // syntax are independent questions, and only the *label* is interpolated —
+    // an action that omits its description but carries a malformed `summary`
+    // must still be caught. Today that combination cannot be built (only the
+    // HTTP path sets `summary`, and it is never `optional`), so this is
+    // structural rather than a live fix — but the invariant lives in another
+    // module, and returning early here would silently drop the check the day
+    // an MCP tool gains a relabelled summary. An empty label makes every check
+    // below a no-op, so the ordinary "no description, no summary" case is
+    // unaffected.
+
+    if let Err(off) = validate_flat_brackets(label) {
         issues.err(
             "unbalanced_brackets",
-            format!("description has an unbalanced or nested '[' at byte offset {off}"),
-            format!("{action_path}.description"),
+            format!("{field} has an unbalanced or nested '[' at byte offset {off}"),
+            format!("{action_path}.{field}"),
         );
     }
 
-    if has_unclosed_brace(desc) {
+    if has_unclosed_brace(label) {
         issues.err(
             "invalid_description_syntax",
-            "description has an unclosed '{' placeholder",
-            format!("{action_path}.description"),
+            format!("{field} has an unclosed '{{' placeholder"),
+            format!("{action_path}.{field}"),
         );
     }
 
-    for (_, ident) in iter_placeholders(desc) {
+    for (_, ident) in iter_placeholders(label) {
         if !params.contains_key(ident) {
             issues.err(
                 "unknown_description_param",
-                format!("description placeholder {{{ident}}} does not reference a defined param"),
-                format!("{action_path}.description"),
+                format!("{field} placeholder {{{ident}}} does not reference a defined param"),
+                format!("{action_path}.{field}"),
             );
         }
     }
@@ -719,6 +755,7 @@ mod tests {
                         method: "GET".into(),
                         path: "/items".into(),
                         description: "List items".into(),
+                        summary: None,
                         risk: Risk::Read,
                         response_type: None,
                         params: HashMap::new(),
@@ -889,6 +926,107 @@ mod tests {
         a.description = "List[ filtered by {filter}]".into();
         a.params.insert("filter".into(), param("string", false));
         assert!(run(&d).valid);
+    }
+
+    /// Prose the agent reads is not a label template. LinkedIn's `create_post`
+    /// documents that an author URN looks like `urn:li:person:{sub}` — real
+    /// documentation, not a placeholder. Only the `summary` is interpolated,
+    /// so only the `summary` is grammar-checked.
+    #[test]
+    fn braces_in_description_are_prose_when_a_summary_exists() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.description = "The author URN is urn:li:person:{sub}.".into();
+        a.summary = Some("List items".into());
+        assert!(run(&d).valid);
+    }
+
+    /// ...but a bad placeholder in the `summary` still fails, and the issue
+    /// points at `summary` rather than at `description`.
+    #[test]
+    fn summary_unknown_param_is_reported_against_summary() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.description = "List items".into();
+        a.summary = Some("List {ghost}".into());
+        let r = run(&d);
+        let issue = r
+            .errors
+            .iter()
+            .find(|e| e.code == "unknown_description_param")
+            .expect("summary placeholder must still be validated");
+        assert!(
+            issue.path.ends_with(".summary"),
+            "issue should name the summary field, got {:?}",
+            issue.path
+        );
+    }
+
+    /// An action may author the same text in both fields. The reported field
+    /// has to come from which field exists, not from comparing their contents
+    /// — otherwise this case blames `description` and sends the author editing
+    /// a line that is not the one being validated.
+    #[test]
+    fn identical_summary_and_description_still_blames_summary() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.description = "List {ghost}".into();
+        a.summary = Some("List {ghost}".into());
+        let r = run(&d);
+        let issue = r
+            .errors
+            .iter()
+            .find(|e| e.code == "unknown_description_param")
+            .expect("the placeholder must still be caught");
+        assert!(
+            issue.path.ends_with(".summary"),
+            "identical text must still be attributed to the field that is \
+             interpolated, got {:?}",
+            issue.path
+        );
+    }
+
+    /// Presence and syntax are independent: a missing `description` must not
+    /// buy a malformed `summary` a free pass. Both issues are reported, each
+    /// against its own field.
+    #[test]
+    fn absent_description_does_not_suppress_summary_grammar_checks() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.description = String::new();
+        a.summary = Some("List {ghost}".into());
+        let r = run(&d);
+
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.code == "missing_field" && e.path.ends_with(".description")),
+            "the absent description must still be reported: {:?}",
+            r.errors
+        );
+        let placeholder = r
+            .errors
+            .iter()
+            .find(|e| e.code == "unknown_description_param")
+            .expect("an empty description must not skip the summary's grammar");
+        assert!(placeholder.path.ends_with(".summary"), "{placeholder:?}");
+    }
+
+    /// The ordinary shape of an MCP tool that declares neither — the MCP spec
+    /// makes a tool description optional and `tools/list` often omits it. An
+    /// empty label has no grammar to be wrong about, so dropping the early
+    /// return must not start reporting anything here.
+    #[test]
+    fn absent_description_and_summary_report_nothing_extra() {
+        let mut d = minimal_mcp(McpAuth::Bearer {
+            secret_name: Some("tok".into()),
+        });
+        for a in d.actions.values_mut() {
+            a.description = String::new();
+            a.summary = None;
+        }
+        let r = run(&d);
+        assert!(r.valid, "expected a clean report, got {:?}", r.errors);
     }
 
     #[test]
@@ -1085,6 +1223,7 @@ mod tests {
                 method: String::new(),
                 path: String::new(),
                 description: "Manage secrets".into(),
+                summary: None,
                 risk: Risk::Write,
                 response_type: None,
                 params: HashMap::new(),
@@ -1114,6 +1253,7 @@ mod tests {
                 method: String::new(),
                 path: String::new(),
                 description: "Search {team}".into(),
+                summary: None,
                 risk: Risk::Read,
                 response_type: None,
                 params: {

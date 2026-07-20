@@ -3,6 +3,16 @@ info:
   title: Email (Mailbox Gateway)
   key: email
   category: Communication
+  # Folded into the text every action is scored against
+  # (`{display_name} — {action}: {description} ({svc_desc})`), so the wording
+  # is a retrieval decision, not just prose. Deliberately phrased around
+  # IMAP/SMTP rather than the bare verbs "send an email": a generic mailbox
+  # gateway should surface for "IMAP", "mailbox", "Fastmail", not outrank
+  # gmail/resend on the plain "send an email" query that has a better answer.
+  description: >-
+    Direct IMAP/SMTP mailbox access for providers with no REST API (Migadu,
+    Fastmail, iCloud, Zoho, Yahoo, self-hosted Dovecot). Folder search uses
+    raw IMAP SEARCH criteria (RFC 3501), not free-text queries.
   # Generic, provider-agnostic mailbox access over any standard IMAP/SMTP
   # provider (Migadu, Fastmail, iCloud, Zoho, Yahoo, corporate Dovecot/Cyrus, …).
   # Yahoo belongs here rather than in a native template of its own: it ships no
@@ -54,6 +64,13 @@ components:
       # credential that reads downstream as a wrong password rather than as
       # missing configuration.
       required: true
+      # This value is also *which mailbox* the instance speaks for, so
+      # discovery surfaces it as the row's `account_email`. Without it every
+      # instance of this template renders the same "Email (Mailbox Gateway)"
+      # display name — the name belongs to the template, not the instance —
+      # and an agent holding three mailboxes has to call all three to find out
+      # which is which.
+      identity: true
   # The secrets an operator binds for this service. Declared once here and
   # referenced by name from the securitySchemes' templates below, so one
   # secret can feed several headers and one header can join several secrets.
@@ -132,7 +149,25 @@ paths:
           type: string
     post:
       operationId: search
-      summary: "Search mailbox folder '{folder}' for {query}"
+      # `summary` is the one-line approval/audit label, interpolated with the
+      # caller's actual arguments. `description` is what the agent reads and
+      # what search scores against — the only string about this action that
+      # ever reaches the model, since parameter descriptions and defaults do
+      # not. Hence the examples live here rather than on `criteria` below.
+      summary: "Search mailbox folder '{folder}' for {criteria}"
+      description: >-
+        Search folder {folder} using raw IMAP SEARCH criteria (RFC 3501).
+        This is NOT free-text search: a bare `Jane Doe` is not valid criteria
+        and comes back as an empty list rather than an error, which reads
+        exactly like "no results". Search for a person or a phrase with an
+        explicit key.
+        Examples: `ALL` (everything), `UNSEEN`, `FROM "jane"`,
+        `SUBJECT "invoice"`, `TEXT "deck"`, `SINCE 1-Jul-2026`, and
+        combinations like `FROM "example.com" SINCE 1-Jul-2026`.
+        Defaults to ALL. Returns `{results, total, truncated}` — `total` is the
+        true match count, so `total: 0` means "no such mail", not "the response
+        was cut". Results are newest-first by IMAP UID (arrival order, not the
+        Date header). Use `limit` to bound large folders.
       risk: read
       requestBody:
         # Every field is optional — a bare "search my inbox" is a legitimate
@@ -155,20 +190,38 @@ paths:
                   type: string
                   default: INBOX
                   description: Mailbox folder to search. Defaults to INBOX.
-                query:
+                # Named `criteria`, not `query`: `query` reads as a free-text
+                # search box, which is what sent an agent hunting for a sender
+                # by name and concluding the mailbox was empty. The gateway
+                # accepts both (`#[serde(alias = "criteria")]` on its side), so
+                # the rename costs nothing on the wire.
+                #
+                # The old name stays accepted here too. Note the canonical
+                # `x-overslash-*` spelling is required: the unprefixed
+                # `aliases:` shorthand is only normalized on `parameters[]`
+                # entries, not on requestBody schema properties.
+                criteria:
                   type: string
                   default: ALL
+                  x-overslash-aliases: [query, imap_search]
                   description: >-
-                    Raw IMAP SEARCH key (e.g. ALL, UNSEEN, SUBJECT "hi",
-                    FROM "a@b.com"). Defaults to ALL.
+                    Raw IMAP SEARCH criteria (RFC 3501) — see the action
+                    description for the syntax and examples. Defaults to ALL.
                 limit:
                   type: integer
-                  description: Cap on summaries returned (newest first).
+                  description: >-
+                    Cap on summaries returned, newest-first by UID. Omitting it
+                    fetches every match in the folder; the response's `total`
+                    and `truncated` report what was actually found either way.
   /email/get:
     parameters: *mailbox_endpoint
     post:
       operationId: get
       summary: "Fetch message {uid} from folder '{folder}'"
+      description: >-
+        Fetch one message in full (headers plus body) by its IMAP UID. UIDs
+        come from a prior `search` in the same folder and are unique only
+        within that folder — a UID from INBOX will not resolve in Archive.
       risk: read
       requestBody:
         required: true
@@ -190,7 +243,24 @@ paths:
     post:
       operationId: send
       summary: "Send email '{subject}' to {to}"
+      description: >-
+        Send an email from this mailbox over SMTP. `to`, `cc`, and `bcc` each
+        accept either a list of addresses or a single comma-separated string.
+        At least one of `text` or `html` is required.
       risk: write
+      # Permission keys are derived per *recipient*: an array `scope_param`
+      # fans out into one `email:send:<address>` key per element, so a grant
+      # can be scoped to one correspondent (`email:send:jane@example.com`) or a
+      # whole domain (`email:send:*@example.com`), and a send that mixes covered
+      # and uncovered addresses raises an approval naming only the uncovered
+      # ones.
+      #
+      # Known gap: `scope_param` names a single param, so cc/bcc recipients
+      # currently consume no permission key of their own. A grant for
+      # `email:send:*@example.com` therefore does not stop a bcc elsewhere. Closing
+      # it needs `scope_param` to accept a list, which touches template
+      # validation, the template API, and the dashboard — tracked separately.
+      scope_param: to
       # The mailbox credential rides as an injected SecretRef resolved only at
       # send time, so it never lands in the persisted approval/audit payload —
       # no `redact` needed for it. These fields disclose the human-meaningful
