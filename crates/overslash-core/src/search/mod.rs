@@ -194,6 +194,7 @@ mod tests {
             actions: HashMap::new(),
             runtime: crate::types::Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         }
     }
 

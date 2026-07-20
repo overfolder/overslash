@@ -277,6 +277,21 @@ export interface Extensions {
 }
 
 /**
+ * Defaults an org layer supplies for the surface a service instance would
+ * otherwise fill in by hand. Non-secret only — credentials and connections are
+ * never expressible in a delta. Org-tier layers only; the API rejects these on
+ * a user layer.
+ *
+ * Precedence at execution is `instance > layer > template`.
+ */
+export interface InstanceDefaults {
+  /** Endpoint every instance dials unless it sets its own `url`. */
+  url?: string;
+  /** Defaults for params declared `x-overslash-instance-config`, by param name. */
+  config?: Record<string, string>;
+}
+
+/**
  * A derived layer's stored content — a mask half (restrictive) and an extension
  * half (expansive). Resolved by the fold as `apply(delta, resolve(extends))`.
  */
@@ -294,6 +309,8 @@ export interface Delta {
   action_patch?: Record<string, ActionPatch>;
   /** New actions + hosts. */
   extensions?: Extensions;
+  /** Defaults every instance of this layer inherits. Org-tier layers only. */
+  instance_defaults?: InstanceDefaults;
 }
 
 /** Non-blocking resolution warnings computed during the fold. */
@@ -335,6 +352,10 @@ export interface TemplateDetail {
    * across actions. The instance form renders one field each and submits them
    * as `config`. */
   instance_config_params?: InstanceConfigParam[];
+  /** Effective defaults an org layer in this chain supplies for the per-instance
+   * surface. The instance form renders these as placeholders — leaving a field
+   * blank inherits the layer's value. */
+  instance_defaults?: InstanceDefaults;
   /** Base template key when this is a derived layer; absent for standalone/global. */
   extends?: string;
   /** The stored delta for a derived layer; absent for standalone/global. */

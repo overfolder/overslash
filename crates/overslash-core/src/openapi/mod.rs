@@ -37,6 +37,7 @@ use alias::{
     ROOT_ALIASES, normalize_parameters_in, rewrite_aliases,
 };
 pub use extract::overlay_discovered_tools;
+pub use extract::url_to_host;
 use extract::{
     extract_auth, extract_hosts, extract_http_action, extract_mcp_actions, extract_mcp_spec,
     extract_platform_action,
@@ -347,6 +348,9 @@ pub fn compile_service(
             actions,
             runtime,
             mcp,
+            // Only the fold sets these; a shipped template expresses its
+            // defaults through `servers:` and param `default:`.
+            instance_defaults: None,
         },
         warnings,
     ))

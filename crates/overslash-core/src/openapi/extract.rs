@@ -37,7 +37,7 @@ pub(super) fn extract_hosts(servers: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn url_to_host(url: &str) -> Option<String> {
+pub fn url_to_host(url: &str) -> Option<String> {
     let s = url.trim();
     let s = s
         .strip_prefix("https://")

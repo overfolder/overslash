@@ -4,10 +4,14 @@
 	let {
 		params,
 		config = $bindable<Record<string, string>>({}),
+		inherited,
 		idPrefix = 'svc-config'
 	}: {
 		params: InstanceConfigParam[];
 		config: Record<string, string>;
+		/** Defaults an org layer supplies. Rendered as placeholders — leaving a
+		 * field blank inherits the layer's value at execution time. */
+		inherited?: Record<string, string>;
 		idPrefix?: string;
 	} = $props();
 
@@ -30,16 +34,20 @@
 	<div class="field">
 		<label class="label" for="{idPrefix}-{p.name}">
 			{p.name}
-			{#if !p.required}<span class="cfg-badge">optional</span>{/if}
+			{#if inherited?.[p.name]}<span class="cfg-badge">inherited</span>
+		{:else if !p.required}<span class="cfg-badge">optional</span>{/if}
 		</label>
 		<input
 			id="{idPrefix}-{p.name}"
 			type="text"
 			bind:value={config[p.name]}
+			placeholder={inherited?.[p.name] ?? ''}
 			autocomplete="off"
 			spellcheck="false"
 		/>
-		{#if p.description}
+		{#if inherited?.[p.name]}
+			<small>Leave blank to inherit your org's default ({inherited[p.name]}).</small>
+		{:else if p.description}
 			<small>{p.description}</small>
 		{/if}
 	</div>

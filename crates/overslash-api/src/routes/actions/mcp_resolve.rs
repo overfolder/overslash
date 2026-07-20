@@ -81,7 +81,10 @@ pub(crate) async fn resolve_instance_connection(
 
 /// Resolve the effective URL + auth for an MCP call against `instance`.
 ///
-/// - **URL:** `instance.url ?? mcp.url` → else a structured missing-config 400.
+/// - **URL:** `instance.url ?? layer_url ?? mcp.url` → else a structured
+///   missing-config 400. `layer_url` is the org layer's
+///   `instance_defaults.url`, so an org running its own deployment of an MCP
+///   server sets it once instead of on every instance.
 /// - **Bearer:** `instance.secret_name ?? template secret_name` → else 400.
 /// - **OAuth:** mint a live bearer from the instance's connection (see
 ///   [`resolve_instance_connection`]); when none exists yet, gate to a fresh
@@ -97,11 +100,13 @@ pub(crate) async fn resolve_effective_mcp(
     service_key: &str,
     instance: Option<&ServiceInstanceRow>,
     mcp: &McpSpec,
+    layer_url: Option<&str>,
     return_url_hint: Option<&str>,
 ) -> Result<ResolvedMcp, AppError> {
-    // URL: instance wins, template is fallback.
+    // URL: instance wins, then the org layer's default, then the template.
     let url = match instance
         .and_then(|i| i.url.as_deref().map(str::to_string))
+        .or_else(|| layer_url.map(str::to_string))
         .or_else(|| mcp.url.clone())
     {
         Some(u) => u,

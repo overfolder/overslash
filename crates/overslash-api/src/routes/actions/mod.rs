@@ -607,12 +607,21 @@ struct ResolvedModeC {
     instance: Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
 }
 
-/// Overlay the instance's pinned `config` onto a call's args.
+/// Overlay the pinned `config` onto a call's args — the instance's own pins
+/// first, then any an org layer supplies as defaults.
+///
+/// Precedence falls out of `entry().or_insert_with()` and the pass ordering:
+///
+/// ```text
+/// caller arg  >  instance.config  >  layer instance_defaults.config  >  template default
+/// ```
+///
+/// (`apply_defaults` runs after this, so template defaults stay last.)
 ///
 /// Only params the template marks `x-overslash-instance-config` are eligible —
 /// the API refuses to store anything else, and re-checking here means a
 /// template that *stops* declaring a param can't have a stale pinned value
-/// keep flowing into requests.
+/// keep flowing into requests, from either source.
 ///
 /// A key the caller already supplied is left alone: the pin is a default for
 /// the deployment, not an override of an explicit argument. Values are stored
@@ -621,16 +630,26 @@ struct ResolvedModeC {
 /// exactly like a caller-supplied `"993"`.
 fn apply_instance_config(
     params: &std::collections::HashMap<String, overslash_core::types::ActionParam>,
-    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+    resolved: Option<&ResolvedModeC>,
     args: &mut std::collections::HashMap<String, serde_json::Value>,
 ) {
-    let Some(instance) = instance else { return };
-    for (key, value) in instance.config.0.iter() {
-        if !params.get(key).is_some_and(|p| p.instance_config) {
-            continue;
+    let Some(resolved) = resolved else { return };
+    let instance_config = resolved.instance.as_ref().map(|i| &i.config.0);
+    let layer_config = resolved
+        .svc
+        .instance_defaults
+        .as_ref()
+        .map(|d| &d.config)
+        .filter(|c| !c.is_empty());
+
+    for source in [instance_config, layer_config].into_iter().flatten() {
+        for (key, value) in source.iter() {
+            if !params.get(key).is_some_and(|p| p.instance_config) {
+                continue;
+            }
+            args.entry(key.clone())
+                .or_insert_with(|| serde_json::Value::String(value.clone()));
         }
-        args.entry(key.clone())
-            .or_insert_with(|| serde_json::Value::String(value.clone()));
     }
 }
 

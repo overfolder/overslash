@@ -734,6 +734,7 @@ mod tests {
             },
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         }
     }
 
@@ -1069,6 +1070,7 @@ mod tests {
             actions: HashMap::new(),
             runtime: Runtime::Platform,
             mcp: None,
+            instance_defaults: None,
         };
         d.actions.insert(
             "manage_secrets".into(),
@@ -1150,6 +1152,7 @@ mod tests {
                 auth,
                 autodiscover: true,
             }),
+            instance_defaults: None,
         }
     }
 

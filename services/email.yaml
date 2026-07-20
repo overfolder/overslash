@@ -23,6 +23,12 @@ info:
   # The overfwd deployment URL is set per instance (`service_instances.url`),
   # so each org points its catalog entry at its own gateway; `servers` below is
   # only the fallback default (the shared Overslash Cloud gateway).
+  #
+  # Because the mailbox credential is per-instance, every user creates their own
+  # instance — so an org with a dedicated gateway sets it ONCE on an org layer
+  # (`delta.instance_defaults.url`, plus the mailbox-endpoint headers below)
+  # rather than on each instance. An instance that sets its own value still
+  # wins. See DECISIONS.md D35.
 servers:
   - url: https://mailbox.overslash.com
 security:
