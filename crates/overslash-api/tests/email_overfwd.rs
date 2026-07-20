@@ -591,7 +591,7 @@ async fn email_missing_required_config_never_sends_a_truncated_credential() {
     )
     .await;
 
-    let _ = reqwest::Client::new()
+    let resp = reqwest::Client::new()
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
@@ -603,11 +603,28 @@ async fn email_missing_required_config_never_sends_a_truncated_credential() {
         .await
         .unwrap();
 
+    // The scheme never becomes a `SecretRef`, so it never reaches `render` —
+    // the caller cannot get the generic "failed to build a value", and no
+    // half-built header exists to send.
+    let body = resp.text().await.unwrap();
+    assert!(
+        !body.contains("failed to build a value"),
+        "a scheme with a missing config value must never reach render: {body}"
+    );
+
     for req in sink.lock().unwrap().iter() {
         assert!(
             req.mailbox_auth.is_none(),
             "truncated credential reached the gateway: {:?}",
             req.mailbox_auth
+        );
+        // Nor does the org gateway key ride alone, for the same reason it does
+        // not when a *slot* is unbound: an unresolved scheme takes the whole
+        // credential set down with it.
+        assert!(
+            req.authorization.is_none(),
+            "partial auth with a missing config value: {:?}",
+            req.authorization
         );
     }
 }

@@ -65,13 +65,13 @@ test('user configures the email template against their own gateway and lists mai
 		await purgeMail();
 		const seeded = await seedMailbox(MESSAGES);
 
-		// The mailbox login is TWO per-instance secrets, joined by the
-		// template's jq expression into `X-Mailbox-Auth: Basic base64(user:pass)`
-		// at send time — so the password rotates on its own and neither half is
-		// a usable credential alone. The gateway key is the org-wide one; this
-		// overfwd runs keyless, so storing it proves the org-vault path resolves
-		// without making the call depend on it.
-		await seedSecret(session, { name: 'mailbox_user', value: env.mailboxLogin! });
+		// The mailbox login has two halves, joined by the template's jq
+		// expression into `X-Mailbox-Auth: Basic base64(user:pass)` at send
+		// time. Only the password is a secret: the username is a plain
+		// per-instance config value typed straight into the form below. The
+		// gateway key is the org-wide one; this overfwd runs keyless, so storing
+		// it proves the org-vault path resolves without making the call depend
+		// on it.
 		await seedSecret(session, { name: 'mailbox_pass', value: env.mailboxPassword! });
 		await seedSecret(session, { name: 'overfwd_gateway_key', value: 'e2e-gateway-key' });
 
@@ -92,9 +92,10 @@ test('user configures the email template against their own gateway and lists mai
 		await page.getByLabel('X-Mailbox-Imap').fill(env.mailboxImap!);
 		await page.getByLabel('X-Mailbox-Smtp').fill(env.mailboxSmtp!);
 
-		// One picker per credential slot — the username and the password are
-		// bound independently.
-		await page.getByLabel(/Mailbox username/i).fill('mailbox_user');
+		// The username is an ordinary config field, so it takes the login
+		// itself; the password is a secret picker, so it takes the NAME of the
+		// vault secret seeded above. Both feed the one `X-Mailbox-Auth` header.
+		await page.getByLabel(/Mailbox username/i).fill(env.mailboxLogin!);
 		await page.getByLabel(/Mailbox password/i).fill('mailbox_pass');
 
 		await page.screenshot({ path: 'screenshots/email-story-1-configure.png' });
@@ -161,13 +162,15 @@ test('the same template without a pinned mailbox endpoint cannot reach a self-ho
 
 	try {
 		await attachToContext(page.context(), session);
-		await seedSecret(session, { name: 'mailbox_user', value: env.mailboxLogin! });
 		await seedSecret(session, { name: 'mailbox_pass', value: env.mailboxPassword! });
 
 		const svc = await createEmailServiceViaApi(session, {
 			name: 'email-unpinned',
-			url: env.overfwdUrl!
-			// deliberately no `config`
+			url: env.overfwdUrl!,
+			mailboxLogin: env.mailboxLogin!
+			// deliberately no endpoint pins — the helper still supplies the
+			// mailbox username, since without it the credential would not
+			// resolve and the call would fail for the wrong reason.
 		});
 
 		await page.goto('/services?tab=api-explorer');
@@ -212,7 +215,7 @@ async function teardownOrg(slug: string) {
  */
 async function createEmailServiceViaApi(
 	session: Awaited<ReturnType<typeof login>>,
-	opts: { name: string; url: string; config?: Record<string, string> }
+	opts: { name: string; url: string; mailboxLogin: string; config?: Record<string, string> }
 ): Promise<{ id: string }> {
 	const res = await fetch(`${session.apiUrl}/v1/services`, {
 		method: 'POST',
@@ -221,8 +224,9 @@ async function createEmailServiceViaApi(
 			template_key: 'email',
 			name: opts.name,
 			url: opts.url,
-			credentials: { mailbox_user: 'mailbox_user', mailbox_pass: 'mailbox_pass' },
-			config: opts.config,
+			credentials: { mailbox_pass: 'mailbox_pass' },
+			// The username rides `config` alongside any endpoint pins.
+			config: { mailbox_user: opts.mailboxLogin, ...(opts.config ?? {}) },
 			status: 'active'
 		})
 	});
