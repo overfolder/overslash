@@ -616,6 +616,9 @@ async fn resync_mcp_service(
         &instance.template_key,
         Some(&instance),
         &mcp,
+        def.instance_defaults
+            .as_ref()
+            .and_then(|d| d.url.as_deref()),
         None,
     )
     .await?;

@@ -2,7 +2,13 @@
 	import { goto } from '$app/navigation';
 	import { ApiError } from '$lib/session';
 	import { createTemplate, updateTemplate, deleteTemplate, validateDelta } from '$lib/api/services';
-	import type { Delta, ValidationResult, ActionSummary } from '$lib/types';
+	import type {
+		Delta,
+		InstanceDefaults,
+		ValidationResult,
+		ActionSummary,
+		InstanceConfigParam
+	} from '$lib/types';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
@@ -33,8 +39,11 @@
 	let keyEditing = $state(false);
 	// svelte-ignore state_referenced_locally
 	let displayName = $state(data.layer?.display_name ?? base?.display_name ?? '');
+	// Seeded from the layer's own tier when editing, so live validation folds
+	// over the same base the save will — and so an existing user layer isn't
+	// offered org-only controls.
 	// svelte-ignore state_referenced_locally
-	let scope = $state<'org' | 'user'>('org');
+	let scope = $state<'org' | 'user'>(data.layer?.tier === 'user' ? 'user' : 'org');
 
 	// Catalog visibility (`delta.hidden`) is now managed from the catalog admin
 	// view, not this editor. Carry any existing value forward so saving the
@@ -62,6 +71,21 @@
 	}
 	// svelte-ignore state_referenced_locally
 	let riskOverride = $state<Record<string, string>>(seedRisk());
+
+	// ── Instance defaults (org layers only) ─────────────────────────────────
+	// Params the base declares `x-overslash-instance-config` — one row each, so
+	// an admin can pre-fill what would otherwise be per-user typing.
+	const pinnableParams: InstanceConfigParam[] = base?.instance_config_params ?? [];
+	// svelte-ignore state_referenced_locally
+	let defaultUrl = $state(existingDelta.instance_defaults?.url ?? '');
+	// svelte-ignore state_referenced_locally
+	let defaultConfig = $state<Record<string, string>>({
+		...(existingDelta.instance_defaults?.config ?? {})
+	});
+	// The endpoint field only makes sense where the endpoint is a per-deployment
+	// concern in the first place — the same signal the instance form uses.
+	const showDefaultUrl = base?.configurable_url === true;
+	const canSetDefaults = $derived(scope === 'org' && (showDefaultUrl || pinnableParams.length > 0));
 
 	// Advanced escape hatch: raw extensions JSON (actions + hosts).
 	// svelte-ignore state_referenced_locally
@@ -115,6 +139,23 @@
 		if (extensionsText.trim()) {
 			delta.extensions = JSON.parse(extensionsText);
 		}
+		// A PUT replaces the whole delta, so anything this form does not render
+		// must be carried forward explicitly or it is destroyed on save. When the
+		// section is hidden (user scope, or a base with nothing to default) that
+		// means passing any existing value through untouched.
+		if (canSetDefaults) {
+			const defaults: InstanceDefaults = {};
+			if (defaultUrl.trim()) defaults.url = defaultUrl.trim();
+			const config: Record<string, string> = {};
+			for (const p of pinnableParams) {
+				const v = defaultConfig[p.name]?.trim();
+				if (v) config[p.name] = v;
+			}
+			if (Object.keys(config).length) defaults.config = config;
+			if (defaults.url || defaults.config) delta.instance_defaults = defaults;
+		} else if (existingDelta.instance_defaults) {
+			delta.instance_defaults = existingDelta.instance_defaults;
+		}
 		return delta;
 	}
 
@@ -127,6 +168,8 @@
 		void displayName;
 		void extensionsText;
 		void scope;
+		void defaultUrl;
+		void defaultConfig;
 		clearTimeout(validateTimer);
 		validateTimer = setTimeout(async () => {
 			try {
@@ -319,6 +362,45 @@
 			</ul>
 		</section>
 
+		{#if canSetDefaults}
+			<section class="card">
+				<div class="card-head"><h2>Instance defaults</h2></div>
+				<p class="card-desc">
+					Pre-fill what every service created from this layer would otherwise be
+					asked for. A service that sets its own value still wins, so one person
+					can point at a different deployment without affecting anyone else.
+				</p>
+				{#if showDefaultUrl}
+					<label class="field">
+						<span class="lbl">Endpoint URL</span>
+						<input
+							type="url"
+							bind:value={defaultUrl}
+							placeholder={base?.hosts?.[0] ? `https://${base.hosts[0]}` : 'https://gateway.example.com'}
+						/>
+						<span class="hint">
+							Your org's own deployment. Leave blank to use the template's default.
+						</span>
+					</label>
+				{/if}
+				{#each pinnableParams as p (p.name)}
+					<label class="field">
+						<span class="lbl">{p.name}</span>
+						<input
+							type="text"
+							value={defaultConfig[p.name] ?? ''}
+							oninput={(e) =>
+								(defaultConfig = {
+									...defaultConfig,
+									[p.name]: (e.currentTarget as HTMLInputElement).value
+								})}
+						/>
+						{#if p.description}<span class="hint">{p.description}</span>{/if}
+					</label>
+				{/each}
+			</section>
+		{/if}
+
 		<section class="card">
 			<button type="button" class="advanced-toggle" onclick={() => (showAdvanced = !showAdvanced)}>
 				{showAdvanced ? '▾' : '▸'} Advanced — extensions (add actions / hosts)
@@ -483,6 +565,13 @@
 	.field.narrow {
 		flex: 0 0 160px;
 		min-width: 160px;
+	}
+	.field + .field {
+		margin-top: 0.75rem;
+	}
+	.hint {
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
 	}
 	.lbl {
 		font-size: 0.8rem;

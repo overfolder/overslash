@@ -877,3 +877,196 @@ async fn extension_adds_action() {
         "extension colliding with a base key must be rejected"
     );
 }
+
+// ── Instance defaults: org-tier authority + surfacing ──────────────────────
+
+/// A base whose `list_a` declares an instance-pinnable header, so a layer has
+/// something legal to default.
+fn base_openapi_with_pinnable(key: &str) -> String {
+    format!(
+        r#"openapi: 3.1.0
+info:
+  title: {key} base
+  key: {key}
+servers:
+  - url: https://{key}.example.com
+paths:
+  /a:
+    get:
+      operationId: list_a
+      summary: List A
+      risk: read
+      parameters:
+        - name: X-Region
+          in: header
+          schema:
+            type: string
+          x-overslash-instance-config: true
+"#
+    )
+}
+
+#[tokio::test]
+async fn org_layer_instance_defaults_are_stored_and_surfaced() {
+    let (base, client, _org, admin_key, _write) = bootstrap().await;
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "openapi": base_openapi_with_pinnable("pinbase") }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "extends": "pinbase",
+            "key": "pinbase_org",
+            "delta": {
+                "instance_defaults": {
+                    "url": "https://gw.acme.internal:8443/",
+                    "config": { "X-Region": "  eu-west-1  " }
+                }
+            },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+
+    let detail = get_template(&base, &client, "pinbase_org", &admin_key).await;
+    // The effective (folded) defaults are what the instance form reads, so they
+    // must be normalized here, not just at execution.
+    assert_eq!(
+        detail["instance_defaults"]["url"], "https://gw.acme.internal:8443",
+        "trailing slash must be trimmed: {detail:?}"
+    );
+    assert_eq!(
+        detail["instance_defaults"]["config"]["X-Region"], "eu-west-1",
+        "value must be trimmed, symmetric with the instance write path"
+    );
+    // The endpoint is unioned into hosts as an origin, so the verb shape's
+    // host-and-port matcher accepts the gateway.
+    let hosts: Vec<String> = detail["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        hosts.contains(&"https://gw.acme.internal:8443".to_string()),
+        "expected the origin in hosts, got {hosts:?}"
+    );
+}
+
+#[tokio::test]
+async fn user_layer_may_not_set_instance_defaults() {
+    let (base, client, org_id, admin_key, write_key) = bootstrap().await;
+    enable_full_user_policy(&base, &client, org_id, &admin_key).await;
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "openapi": base_openapi_with_pinnable("pinbase") }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body = json!({
+        "extends": "pinbase",
+        "key": "pinbase_mine",
+        "delta": { "instance_defaults": { "url": "https://evil.example.com" } },
+        "user_level": true,
+    });
+
+    // Write path rejects it...
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        400,
+        "a user layer must not be able to redirect egress"
+    );
+
+    // ...and the lint preview agrees, so the editor can't offer a save that 400s.
+    let report: Value = client
+        .post(format!("{base}/v1/templates/validate-delta"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .json(&json!({
+            "extends": "pinbase",
+            "delta": { "instance_defaults": { "url": "https://evil.example.com" } },
+            "user_level": true,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(report["valid"], false);
+    assert!(
+        report["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["code"] == "instance_defaults_user_tier"),
+        "{report:?}"
+    );
+
+    // The same delta on an ORG layer is accepted — proving the gate keys off
+    // tier, not on the field being unsupported.
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "extends": "pinbase",
+            "key": "pinbase_org",
+            "delta": { "instance_defaults": { "url": "https://gw.acme.internal" } },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+}
+
+#[tokio::test]
+async fn instance_defaults_config_key_must_be_declared() {
+    let (base, client, _org, admin_key, _write) = bootstrap().await;
+    // `zbase` declares no instance-config params at all.
+    create_base(&base, &client, &admin_key, "zbase").await;
+
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "extends": "zbase",
+            "key": "zbase_bad_default",
+            "delta": { "instance_defaults": { "config": { "X-Nope": "v" } } },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // A misspelled *field* fails just as loudly, rather than silently
+    // deserializing to an empty struct and leaving traffic on the default.
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "extends": "zbase",
+            "key": "zbase_typo",
+            "delta": { "instance_defaults": { "URL": "https://gw.acme.internal" } },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "{:?}", resp.text().await);
+}

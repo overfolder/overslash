@@ -32,6 +32,7 @@ fn http_pseudo_service() -> ServiceDefinition {
         actions: HashMap::new(),
         runtime: Runtime::Http,
         mcp: None,
+        instance_defaults: None,
     }
 }
 

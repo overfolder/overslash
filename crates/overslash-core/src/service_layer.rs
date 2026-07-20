@@ -28,6 +28,16 @@
 //!   **never** auth (no field exists) and **never** rebind an existing base
 //!   action (a colliding key is rejected at write time; at runtime the base
 //!   wins and the extension is shadowed).
+//! - **Instance defaults are presets, not rebinding.** [`InstanceDefaults`] is
+//!   the one half of a delta that is neither restrictive nor capability-adding:
+//!   it *replaces* a fallback rather than intersecting or appending. It does not
+//!   rebind actions — method, path and auth are untouched — it only presets what
+//!   a service instance would otherwise have to fill in by hand (its endpoint
+//!   URL and its `x-overslash-instance-config` pins), and an instance that sets
+//!   the field still wins. Because it can redirect where an org's traffic lands,
+//!   it is **org-tier only** (`validate_delta`'s `user_tier` flag rejects it on a
+//!   user layer), and it can never carry a credential — those live in the vault
+//!   and bind through `credentials`.
 //!
 //! See `docs/design/layered-service-templates.md`.
 
@@ -36,6 +46,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::instance_config::{self, ConfigMap};
 use crate::template_validation::{Issues, ValidationIssue, ValidationReport};
 use crate::types::{DisclosureField, Risk, Runtime, ServiceAction, ServiceDefinition};
 
@@ -72,6 +83,12 @@ pub struct Delta {
     // ---- extensions (expansive; capability-adding) ----
     #[serde(default, skip_serializing_if = "Extensions::is_empty")]
     pub extensions: Extensions,
+
+    // ---- instance defaults (presets; org-tier only) ----
+    /// Defaults every instance of this layer inherits unless it sets the field
+    /// itself. `None` → inherit the base's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_defaults: Option<InstanceDefaults>,
 }
 
 /// A restrictive metadata mask over one base action.
@@ -106,6 +123,72 @@ pub struct Extensions {
 impl Extensions {
     pub fn is_empty(&self) -> bool {
         self.actions.is_empty() && self.hosts.is_empty()
+    }
+}
+
+/// Defaults a layer supplies for the surface a service instance would otherwise
+/// fill in by hand. Exactly the **non-secret** half of that surface:
+///
+/// | `service_instances` column | here | why |
+/// |---|---|---|
+/// | `url` | ✅ | the endpoint — an org's own deployment |
+/// | `config` | ✅ | declared `x-overslash-instance-config` pins |
+/// | `secret_name` / `credentials` / `connection_id` | ❌ | credentials — a delta never touches auth |
+/// | `discovered_tools` | ❌ | runtime-derived, not authored |
+///
+/// Precedence at execution is `instance > layer > template`: an instance that
+/// sets `url` (or a `config` key) keeps its own value, so a developer can still
+/// point one instance at a local deployment while the rest of the org inherits
+/// the shared one.
+///
+/// `deny_unknown_fields` is deliberate: a misspelled key (`"URL"`, `"configs"`)
+/// would otherwise deserialize to an empty struct, validate clean, and silently
+/// leave the org's traffic on the shipped default. A field this
+/// consequential fails loudly instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstanceDefaults {
+    /// Endpoint every instance dials unless it sets its own `url`. Absolute,
+    /// scheme included; a path prefix is allowed (a gateway mounted under
+    /// `/api/v3`) but no query or fragment. Takes precedence over the
+    /// template's first `servers[]` entry (HTTP) and over `mcp.url` (MCP
+    /// runtime). Normalized at fold time — see [`normalize_default_url`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Default values for params the template declares
+    /// `x-overslash-instance-config`. Merged *under* an instance's own `config`
+    /// (per key), which is itself merged under the caller's args.
+    #[serde(default, skip_serializing_if = "ConfigMap::is_empty")]
+    pub config: ConfigMap,
+}
+
+impl InstanceDefaults {
+    pub fn is_empty(&self) -> bool {
+        self.url.is_none() && self.config.is_empty()
+    }
+
+    /// Overlay `self` (the deriving layer) onto `base`'s defaults. A set `url`
+    /// replaces; `config` merges per key.
+    ///
+    /// Both halves are normalized here rather than at write time, so a row
+    /// stored before the normalization existed still folds correctly, and a
+    /// value written through the layer path is injected byte-identically to the
+    /// same value pinned on an instance (which `instance_config::validate_config`
+    /// trims on write).
+    ///
+    /// Only org layers may *set* defaults, but every tier **inherits** them: a
+    /// user layer over an org layer carries the org's gateway forward untouched.
+    /// Chained org layers (org layer over org layer) are the case where the
+    /// override arm matters.
+    fn merge_over(&self, base: Option<&InstanceDefaults>) -> InstanceDefaults {
+        let mut out = base.cloned().unwrap_or_default();
+        if let Some(url) = &self.url {
+            out.url = Some(normalize_default_url(url));
+        }
+        for (k, v) in &self.config {
+            out.config.insert(k.clone(), v.trim().to_string());
+        }
+        out
     }
 }
 
@@ -203,6 +286,31 @@ pub fn apply_delta(
             hosts.push(h.clone());
         }
     }
+
+    // ── instance defaults: merge over the base's ──────────────────────────
+    let instance_defaults = match &delta.instance_defaults {
+        Some(d) => Some(d.merge_over(base.instance_defaults.as_ref())),
+        None => base.instance_defaults.clone(),
+    };
+    // A default URL is also an egress target: the service+HTTP-verb shape
+    // validates a caller-supplied `url:` against `hosts`, so without this union
+    // an org could route its actions through its own gateway yet be unable to
+    // name that gateway in a raw verb call. Appended (not prepended) — `hosts`
+    // ordering still belongs to the template; the endpoint is read from
+    // `instance_defaults.url` directly, not from `hosts.first()`.
+    //
+    // The **origin** (`scheme://host[:port]`) is unioned, not the bare hostname
+    // `url_to_host` would give: the verb shape matches host AND port, so a bare
+    // entry would both reject the admin's own `:8443` gateway and quietly
+    // allow-list `:443` on that host, which they never named.
+    if let Some(origin) = instance_defaults
+        .as_ref()
+        .and_then(|d| d.url.as_deref())
+        .and_then(url_to_origin)
+        && !hosts.contains(&origin)
+    {
+        hosts.push(origin);
+    }
     if !delta.extensions.actions.is_empty() {
         match compile_extension_actions(base, &delta.extensions) {
             Ok(compiled) => {
@@ -254,6 +362,7 @@ pub fn apply_delta(
         actions,
         runtime: base.runtime,
         mcp: base.mcp.clone(),
+        instance_defaults,
     };
 
     let report = issues.finish();
@@ -321,7 +430,16 @@ fn compile_extension_actions(
 
 /// Write-time **blocking** validation of a delta against its resolved base.
 /// Returns a [`ValidationReport`] in the same shape as template validation.
-pub fn validate_delta(delta: &Delta, base: &ServiceDefinition) -> ValidationReport {
+///
+/// `user_tier` is `true` when the layer being written is owned by an individual
+/// (`service_templates.owner_identity_id IS NOT NULL`). It gates
+/// [`InstanceDefaults`], which can redirect where an org's traffic lands and so
+/// stays with org admins.
+pub fn validate_delta(
+    delta: &Delta,
+    base: &ServiceDefinition,
+    user_tier: bool,
+) -> ValidationReport {
     let mut issues = Issues::default();
 
     // The base's FULL keyset (there is no hidden-vs-visible split once compiled;
@@ -403,7 +521,96 @@ pub fn validate_delta(delta: &Delta, base: &ServiceDefinition) -> ValidationRepo
         }
     }
 
+    // instance_defaults: org-tier only; a valid absolute endpoint; config keys
+    // the template actually declares.
+    //
+    // The tier gate keys off *presence*, not content: accepting a
+    // `"instance_defaults": {}` from a user layer would persist a field the
+    // error text says is rejected outright.
+    if let Some(defaults) = &delta.instance_defaults {
+        if user_tier {
+            issues.err(
+                "instance_defaults_user_tier",
+                "a user layer may not set `instance_defaults` — an endpoint or config default \
+                 that every instance inherits is an org-admin decision"
+                    .to_string(),
+                "instance_defaults",
+            );
+        }
+        if let Some(url) = &defaults.url
+            && let Err(reason) = check_default_url(url)
+        {
+            issues.err(
+                "instance_defaults_invalid_url",
+                format!("`instance_defaults.url` {reason}"),
+                "instance_defaults.url",
+            );
+        }
+        // Validate config keys against the *folded* surface, not the base's:
+        // this delta's own extension actions may declare instance-config params,
+        // and defaulting one of those is legitimate.
+        if !defaults.config.is_empty() {
+            let (folded, _) = apply_delta(delta, base);
+            if let Err(e) = instance_config::validate_config(&folded, &defaults.config) {
+                issues.err(
+                    e.code(),
+                    e.message(&folded.key),
+                    format!("instance_defaults.config.{}", e.key()),
+                );
+            }
+        }
+    }
+
     issues.finish()
+}
+
+/// The `scheme://host[:port]` prefix of a default endpoint, dropping any path.
+/// Used to union the endpoint into `hosts` in a form the verb shape's
+/// host-and-port matcher reads exactly — `url_to_host` would drop the port.
+/// Returns `None` for anything `check_default_url` would reject.
+fn url_to_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url
+        .strip_prefix("https://")
+        .map(|r| ("https", r))
+        .or_else(|| url.strip_prefix("http://").map(|r| ("http", r)))?;
+    let authority = rest.split('/').next()?.trim();
+    if authority.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{authority}"))
+}
+
+/// Shape check for a layer's default endpoint. Deliberately string-level (core
+/// carries no URL parser): an absolute `http`/`https` URL with a host and no
+/// query or fragment. A path prefix is allowed — a gateway mounted under
+/// `/api/v3` is a legitimate base — but a request is not.
+fn check_default_url(url: &str) -> Result<(), &'static str> {
+    let trimmed = url.trim();
+    if trimmed != url {
+        return Err("must not have leading or trailing whitespace");
+    }
+    let Some(rest) = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+    else {
+        return Err("must be an absolute URL starting with http:// or https://");
+    };
+    if rest.split('/').next().unwrap_or("").is_empty() {
+        return Err("has no host");
+    }
+    if trimmed.contains('?') || trimmed.contains('#') {
+        return Err("must not carry a query string or fragment");
+    }
+    Ok(())
+}
+
+/// Normalize a layer's default endpoint at fold time: trailing `/` trimmed, so
+/// the executor's `format!("{base}{path}")` never produces a double slash.
+/// Mirrors the per-instance `url` handling in the action resolver. Applied on
+/// read rather than on write, so a row stored before this existed still folds
+/// correctly.
+fn normalize_default_url(url: &str) -> String {
+    url.trim_end_matches('/').to_string()
 }
 
 #[cfg(test)]
@@ -448,6 +655,7 @@ mod tests {
             actions,
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         }
     }
 
@@ -594,7 +802,7 @@ mod tests {
             )]),
             ..Default::default()
         };
-        let report = validate_delta(&down, &base);
+        let report = validate_delta(&down, &base, false);
         assert!(!report.valid);
         assert!(report.errors.iter().any(|e| e.code == "risk_clamp_down"));
     }
@@ -619,7 +827,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let report = validate_delta(&delta, &base);
+        let report = validate_delta(&delta, &base, false);
         assert!(!report.valid);
         assert!(
             report
@@ -646,7 +854,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let report = validate_delta(&delta, &base);
+        let report = validate_delta(&delta, &base, false);
         assert!(
             report.valid,
             "extension should validate: {:?}",
@@ -710,5 +918,314 @@ mod tests {
         };
         let (_, warnings) = apply_delta(&delta, &base);
         assert!(warnings.iter().any(|w| w.code == "dead_allowlist_entry"));
+    }
+
+    // ── instance_defaults ────────────────────────────────────────────────
+
+    fn defaults(url: Option<&str>, config: &[(&str, &str)]) -> InstanceDefaults {
+        InstanceDefaults {
+            url: url.map(str::to_string),
+            config: config
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        }
+    }
+
+    /// A base declaring one `x-overslash-instance-config` param, mirroring
+    /// `email`'s mailbox-endpoint headers.
+    fn base_with_pinnable_param(name: &str) -> ServiceDefinition {
+        let mut base = base_with(&[("a", Risk::Read)]);
+        base.actions.get_mut("a").unwrap().params.insert(
+            name.to_string(),
+            crate::types::ActionParam {
+                param_type: "string".into(),
+                required: false,
+                description: String::new(),
+                enum_values: None,
+                default: None,
+                resolve: None,
+                aliases: vec![],
+                location: crate::types::ParamLocation::Header,
+                instance_config: true,
+            },
+        );
+        base
+    }
+
+    #[test]
+    fn instance_defaults_url_sets_effective_endpoint() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            instance_defaults: Some(defaults(Some("https://ghe.acme.internal"), &[])),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(
+            def.instance_defaults.unwrap().url.unwrap(),
+            "https://ghe.acme.internal"
+        );
+        assert_eq!(
+            def.hosts[0], "api.github.com",
+            "the template still owns `hosts` ordering; the endpoint is read from instance_defaults"
+        );
+    }
+
+    #[test]
+    fn defaults_url_trailing_slash_is_normalized() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            instance_defaults: Some(defaults(Some("https://ghe.acme.internal/"), &[])),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(
+            def.instance_defaults.unwrap().url.unwrap(),
+            "https://ghe.acme.internal",
+            "otherwise `format!(\"{{base}}{{path}}\")` yields a double slash"
+        );
+    }
+
+    #[test]
+    fn defaults_origin_unioned_into_hosts_with_port() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            instance_defaults: Some(defaults(Some("https://ghe.acme.internal:8443/api"), &[])),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert!(
+            def.hosts
+                .contains(&"https://ghe.acme.internal:8443".to_string()),
+            "the default endpoint must be a legal egress target for the service \
+             + HTTP-verb shape, which matches host AND port — a bare hostname \
+             would reject :8443 and silently allow :443. got {:?}",
+            def.hosts
+        );
+        assert!(
+            !def.hosts.contains(&"ghe.acme.internal".to_string()),
+            "the bare-hostname form must not leak in: it implies :443"
+        );
+    }
+
+    #[test]
+    fn defaults_override_through_an_org_layer_chain() {
+        // Only org layers may *set* defaults, so the override case is an org
+        // layer over an org layer: gateway + pin, then a re-point of the pin.
+        let base = base_with_pinnable_param("X-Imap");
+        let outer = Delta {
+            instance_defaults: Some(defaults(
+                Some("https://mail.overfolder-dev.com"),
+                &[("X-Imap", "imap.acme.com")],
+            )),
+            ..Default::default()
+        };
+        let (outer_def, _) = apply_delta(&outer, &base);
+
+        let inner = Delta {
+            instance_defaults: Some(defaults(None, &[("X-Imap", "imap.eu.acme.com")])),
+            ..Default::default()
+        };
+        let (inner_def, _) = apply_delta(&inner, &outer_def);
+
+        let d = inner_def.instance_defaults.unwrap();
+        assert_eq!(
+            d.url.unwrap(),
+            "https://mail.overfolder-dev.com",
+            "a layer that does not re-point inherits the gateway"
+        );
+        assert_eq!(d.config["X-Imap"], "imap.eu.acme.com");
+    }
+
+    #[test]
+    fn user_layer_inherits_org_defaults_untouched() {
+        // A user layer may not *set* defaults, but it must still *inherit* them
+        // — otherwise a user's own curation of an org template would silently
+        // drop the org's gateway.
+        let base = base_with_pinnable_param("X-Imap");
+        let org = Delta {
+            instance_defaults: Some(defaults(
+                Some("https://mail.overfolder-dev.com"),
+                &[("X-Imap", "imap.acme.com")],
+            )),
+            ..Default::default()
+        };
+        let (org_def, _) = apply_delta(&org, &base);
+
+        let user = Delta {
+            denylist: vec!["a".into()],
+            ..Default::default()
+        };
+        assert!(
+            validate_delta(&user, &org_def, true).valid,
+            "a user layer with no instance_defaults of its own is legal"
+        );
+        let (user_def, _) = apply_delta(&user, &org_def);
+        assert_eq!(
+            user_def.instance_defaults.unwrap(),
+            org_def.instance_defaults.unwrap()
+        );
+    }
+
+    #[test]
+    fn empty_defaults_still_rejected_on_a_user_layer() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            instance_defaults: Some(InstanceDefaults::default()),
+            ..Default::default()
+        };
+        assert!(
+            !validate_delta(&delta, &base, true).valid,
+            "presence, not content, gates the tier — otherwise the API persists \
+             a field it claims to reject"
+        );
+    }
+
+    #[test]
+    fn misspelled_defaults_key_is_a_hard_error() {
+        // Without `deny_unknown_fields` this deserializes to an empty struct and
+        // the org's traffic silently stays on the shipped default.
+        let err = serde_json::from_value::<Delta>(serde_json::json!({
+            "instance_defaults": { "URL": "https://gw.acme.com" }
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("URL"), "got: {err}");
+    }
+
+    #[test]
+    fn config_defaults_are_trimmed_at_fold_time() {
+        // Symmetric with the instance write path, which trims on write — the
+        // same value must inject byte-identically from either source.
+        let base = base_with_pinnable_param("X-Imap");
+        let delta = Delta {
+            instance_defaults: Some(defaults(None, &[("X-Imap", "  imap.acme.com  ")])),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(
+            def.instance_defaults.unwrap().config["X-Imap"],
+            "imap.acme.com"
+        );
+    }
+
+    #[test]
+    fn defaults_inherit_when_child_delta_has_none() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let org = Delta {
+            instance_defaults: Some(defaults(Some("https://gw.acme.com"), &[])),
+            ..Default::default()
+        };
+        let (org_def, _) = apply_delta(&org, &base);
+        let (child_def, _) = apply_delta(&Delta::default(), &org_def);
+        assert_eq!(
+            child_def.instance_defaults.unwrap().url.unwrap(),
+            "https://gw.acme.com"
+        );
+    }
+
+    #[test]
+    fn defaults_rejected_for_user_tier() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            instance_defaults: Some(defaults(Some("https://evil.example.com"), &[])),
+            ..Default::default()
+        };
+        let report = validate_delta(&delta, &base, true);
+        assert!(!report.valid);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.code == "instance_defaults_user_tier")
+        );
+        assert!(
+            validate_delta(&delta, &base, false).valid,
+            "the same delta is legal on an org layer"
+        );
+    }
+
+    #[test]
+    fn defaults_url_must_be_an_absolute_origin() {
+        let base = base_with(&[("a", Risk::Read)]);
+        for bad in [
+            "ghe.acme.internal",
+            "ftp://ghe.acme.internal",
+            "https://",
+            "https://gw.acme.com/x?a=1",
+            "https://gw.acme.com#f",
+        ] {
+            let delta = Delta {
+                instance_defaults: Some(defaults(Some(bad), &[])),
+                ..Default::default()
+            };
+            let report = validate_delta(&delta, &base, false);
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|e| e.code == "instance_defaults_invalid_url"),
+                "'{bad}' should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn undeclared_config_default_is_rejected() {
+        let base = base_with_pinnable_param("X-Imap");
+        let delta = Delta {
+            instance_defaults: Some(defaults(None, &[("X-Nope", "v")])),
+            ..Default::default()
+        };
+        let report = validate_delta(&delta, &base, false);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.code == "unknown_instance_config")
+        );
+
+        let ok = Delta {
+            instance_defaults: Some(defaults(None, &[("X-Imap", "imap.acme.com")])),
+            ..Default::default()
+        };
+        assert!(validate_delta(&ok, &base, false).valid);
+    }
+
+    #[test]
+    fn config_default_may_target_this_deltas_own_extension_action() {
+        // Regression guard on fold order: config keys validate against the
+        // *folded* surface, so a param declared by an action this same delta
+        // adds is defaultable. Validating against the bare base would 400.
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            extensions: Extensions {
+                actions: HashMap::from([(
+                    "regional".to_string(),
+                    ExtensionAction {
+                        method: "GET".into(),
+                        path: "/regional".into(),
+                        operation: serde_json::json!({
+                            "description": "Regional lookup",
+                            "x-overslash-risk": "read",
+                            "parameters": [{
+                                "name": "X-Region",
+                                "in": "header",
+                                "schema": { "type": "string" },
+                                "x-overslash-instance-config": true
+                            }]
+                        }),
+                    },
+                )]),
+                hosts: vec![],
+            },
+            instance_defaults: Some(defaults(None, &[("X-Region", "eu-west-1")])),
+            ..Default::default()
+        };
+        let report = validate_delta(&delta, &base, false);
+        assert!(
+            report.valid,
+            "expected valid, got errors: {:?}",
+            report.errors
+        );
     }
 }

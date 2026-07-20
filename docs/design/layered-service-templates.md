@@ -178,10 +178,22 @@ delta = {
 
 - May **add new action keys** and **additional hosts** (union).
 - **No auth extensions.** A derived layer inherits the base's auth mechanism and cannot add or override auth schemes — this keeps derived layers entirely out of credential resolution (the egress boundary). "Different auth" ⇒ a standalone layer.
-- **No rebinding.** An extension cannot change an existing base action's method/path/host. A mask changes an action's *metadata* (risk/disclose/labels/visibility); nothing in a delta changes where an authed call lands. "Different binding" ⇒ a standalone layer.
+- **No rebinding.** An extension cannot change an existing base action's method/path. A mask changes an action's *metadata* (risk/disclose/labels/visibility); nothing in a delta changes **which operation** an action names. "Different binding" ⇒ a standalone layer. (Where that operation is *dialled* is a separate, deliberate exception — see Instance defaults below.)
 - **Collision:**
   - *write-time:* reject an extension key that collides with **any** base action key — **visible or hidden** (checking hidden keys closes the hide-then-re-add hijack: `denylist: [delete_repo]` then `extensions.actions.delete_repo` → rejected).
   - *runtime (future upstream collision):* the **base action wins** (a well-known key can never be hijacked by a layer), the extension is **shadowed but not deleted**, and the layer raises a `shadowed_extension` warning (§6) so the admin can rename.
+
+### Instance defaults — presets, org-tier only
+
+`delta.instance_defaults` is the one half of a delta that is neither restrictive nor expansive: it *replaces* a fallback rather than intersecting or appending. It exists because some deployments are an **org** fact, not a per-service one, and the alternative is every user retyping the same value.
+
+The motivating case is `email` (the overfwd Mailbox Gateway): its mailbox credential is `secret_source: instance`, so every user creates their own service instance — and without a layer default, each of them has to paste the same org gateway URL and IMAP/SMTP host by hand. The same shape recurs for every MCP-runtime template, which resolves `instance.url ?? mcp.url`.
+
+- **Exactly the non-secret half of the per-instance surface**: `url` (the endpoint) and `config` (values for params the template declares `x-overslash-instance-config`). Credentials, connections and discovered tools are **not** expressible — the "a delta never touches auth" invariant is untouched.
+- **Presets, not pins.** Precedence is `caller arg > instance.config > layer default > template default` for params, and `instance.url > layer default > template servers[0] / mcp.url` for the endpoint. A developer can still point one instance at a local deployment.
+- **Org-tier only.** A user layer that sets `instance_defaults` is a write-time error (`instance_defaults_user_tier`) — redirecting where an org's traffic lands is an org-admin decision. Every tier still *inherits* defaults set upstream.
+- **Not a rebinding.** Method, path and auth are untouched; only the origin the same operation is dialled on changes, and only to a value an org admin named. The endpoint's origin is unioned into `hosts` so the service+HTTP-verb shape can name it too.
+- **Normalized at fold time**, not write time (trailing `/` on the URL, whitespace on config values), so rows stored before the normalization existed still fold correctly and a layer default injects byte-identically to the same value pinned on an instance.
 
 ---
 

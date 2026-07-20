@@ -80,11 +80,12 @@ pub(super) async fn validate_action_impl(
         &meta.validation_params,
         &mut req.params,
     );
-    // Overlay the instance's pinned config in lockstep with `/call`, so a
-    // param satisfied by a pin doesn't validate here as missing.
+    // Overlay the pinned config (instance's own, then the org layer's defaults)
+    // in lockstep with `/call`, so a param satisfied by a pin doesn't validate
+    // here as missing.
     super::apply_instance_config(
         &meta.validation_params,
-        resolved_mode_c.as_ref().and_then(|m| m.instance.as_ref()),
+        resolved_mode_c.as_ref(),
         &mut req.params,
     );
     // Fill template-declared defaults before validating — mirrors `/call`

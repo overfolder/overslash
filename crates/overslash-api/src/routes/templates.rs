@@ -182,6 +182,12 @@ struct TemplateDetail {
     /// instance-create/edit form and submits them as `config`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     instance_config_params: Vec<InstanceConfigParam>,
+    /// Effective defaults an org layer supplies for the per-instance surface
+    /// (endpoint `url` + `config` pins), folded through the whole chain. The
+    /// instance form renders these as placeholders — leaving a field blank
+    /// inherits the layer's value. `None` when no layer in the chain sets any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance_defaults: Option<overslash_core::service_layer::InstanceDefaults>,
     /// Base template key this layer derives from (a **derived** layer). `None`
     /// for a standalone layer or a global template.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -515,6 +521,7 @@ async fn db_row_to_detail(
         hidden: def.hidden,
         configurable_url: configurable_url(def),
         instance_config_params: instance_config_params(def),
+        instance_defaults: def.instance_defaults.clone(),
         extends: t.extends,
         delta: t.delta,
         resolution_report: ResolutionReport {
@@ -905,6 +912,8 @@ async fn get_template(
         hidden: svc.hidden,
         configurable_url: configurable_url(svc),
         instance_config_params: instance_config_params(svc),
+        // A global template is never a layer, so it never carries defaults.
+        instance_defaults: None,
         extends: None,
         delta: None,
         resolution_report: ResolutionReport::default(),
@@ -1097,7 +1106,7 @@ async fn validate_delta_route(
     .await
     .map_err(|_| AppError::BadRequest(format!("base template '{}' not found", req.extends)))?;
 
-    let mut report = service_layer::validate_delta(&delta, &base.definition);
+    let mut report = service_layer::validate_delta(&delta, &base.definition, req.user_level);
     // Fold this delta over the base and surface the resolution warnings too, so
     // the editor previews shadowed extensions / dead entries live.
     let (_def, resolution_warnings) = service_layer::apply_delta(&delta, &base.definition);
@@ -1264,8 +1273,10 @@ async fn create_derived_layer(
         other => other,
     })?;
 
-    // Write-time delta validation against the resolved base.
-    let report = service_layer::validate_delta(&delta, &base.definition);
+    // Write-time delta validation against the resolved base. `owner_identity_id`
+    // set ⇒ a user-tier layer, which may not carry `instance_defaults`.
+    let report =
+        service_layer::validate_delta(&delta, &base.definition, owner_identity_id.is_some());
     if !report.valid {
         return Err(AppError::TemplateValidationFailed { report });
     }
@@ -1536,7 +1547,11 @@ async fn update_derived_layer(
         extends,
     )
     .await?;
-    let report = service_layer::validate_delta(&delta, &base.definition);
+    let report = service_layer::validate_delta(
+        &delta,
+        &base.definition,
+        existing.owner_identity_id.is_some(),
+    );
     if !report.valid {
         return Err(AppError::TemplateValidationFailed { report });
     }

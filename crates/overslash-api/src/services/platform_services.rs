@@ -592,11 +592,19 @@ pub async fn kernel_create_service(
             secret_name: Some(_)
         })
     );
+    // An org layer's `instance_defaults.url` counts as a default here, exactly
+    // as it does at execution (`resolve_effective_mcp`'s `layer_url`) — that is
+    // the whole point for an MCP template that ships without a URL: the org
+    // names its own deployment once on the layer, and instances need no `url`.
     let mcp_has_default_url = template_def
         .mcp
         .as_ref()
         .and_then(|m| m.url.as_ref())
-        .is_some();
+        .is_some()
+        || template_def
+            .instance_defaults
+            .as_ref()
+            .is_some_and(|d| d.url.is_some());
 
     if input.secret_name.as_deref().is_some_and(|s| !s.is_empty()) {
         // The scalar alias only makes sense for a template with an
@@ -978,55 +986,19 @@ fn all_slot_keys(template: &ServiceDefinition) -> Vec<String> {
 
 /// Validate a per-instance `config` map against the template.
 ///
-/// Only params the template marks `x-overslash-instance-config` may be pinned.
-/// The alternative — accepting any key — would let a caller pin an arbitrary
-/// request parameter on every call the instance ever makes, which is a
-/// permissions surface, not a convenience: `risk`/`disclose` are authored per
-/// action against the params a *caller* supplies.
-///
-/// Blank values are rejected rather than stored, so "unset" has one
-/// representation (key absent) instead of two.
+/// The rules themselves live in `overslash_core::instance_config`, shared with
+/// the layer write path — an org layer supplying `instance_defaults.config`
+/// must accept exactly the same keys an instance may pin. This wrapper only
+/// renders the outcome as an `AppError`.
 fn validate_instance_config(
     template: &ServiceDefinition,
     explicit: Option<&ConfigMap>,
 ) -> Result<ConfigMap, AppError> {
-    let mut configurable: Vec<&str> = template
-        .actions
-        .values()
-        .flat_map(|a| a.params.iter())
-        .filter(|(_, p)| p.instance_config)
-        .map(|(name, _)| name.as_str())
-        .collect();
-    configurable.sort_unstable();
-    configurable.dedup();
-
-    let mut map = ConfigMap::new();
     let Some(explicit) = explicit else {
-        return Ok(map);
+        return Ok(ConfigMap::new());
     };
-
-    for (key, value) in explicit {
-        if !configurable.contains(&key.as_str()) {
-            return Err(AppError::BadRequest(format!(
-                "unknown instance config '{key}'; template '{}' declares: {}",
-                template.key,
-                if configurable.is_empty() {
-                    "none".to_string()
-                } else {
-                    configurable.join(", ")
-                }
-            )));
-        }
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Err(AppError::BadRequest(format!(
-                "instance config '{key}' must have a value; omit the key to unset it"
-            )));
-        }
-        map.insert(key.clone(), trimmed.to_string());
-    }
-
-    Ok(map)
+    overslash_core::instance_config::validate_config(template, explicit)
+        .map_err(|e| AppError::BadRequest(e.message(&template.key)))
 }
 
 /// Reconcile explicit per-slot `credentials` with the legacy scalar
@@ -1546,6 +1518,7 @@ mod tests {
                 },
                 autodiscover: false,
             }),
+            instance_defaults: None,
         }
     }
 
@@ -1571,6 +1544,7 @@ mod tests {
                 },
                 autodiscover: false,
             }),
+            instance_defaults: None,
         }
     }
 
@@ -1658,6 +1632,7 @@ mod tests {
             actions: HashMap::new(),
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         }
     }
 
@@ -1705,6 +1680,7 @@ mod tests {
             actions: map,
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         }
     }
 
@@ -1740,6 +1716,7 @@ mod tests {
             actions: HashMap::new(),
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         };
         assert!(
             derive_credentials_status(

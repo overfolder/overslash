@@ -167,6 +167,10 @@
 	const hasInstanceConfig = $derived(
 		!isSystem && (template?.instance_config_params ?? []).length > 0
 	);
+	// An org layer's default endpoint, shown as the placeholder so leaving the
+	// field blank visibly means "inherit the org's deployment".
+	const inheritedUrl = $derived(template?.instance_defaults?.url
+	);
 	const ownerDisplay = $derived.by(() => {
 		const s = svc;
 		if (!s) return '';
@@ -763,8 +767,14 @@
 				{#if isMcp && !isSystem}
 					<label class="field">
 						<span class="label">MCP server URL</span>
-						<input type="text" bind:value={editUrl} placeholder={template?.mcp?.url ?? 'http://host:8081/mcp'} />
-						{#if template?.mcp?.url}
+						<input
+							type="text"
+							bind:value={editUrl}
+							placeholder={inheritedUrl ?? template?.mcp?.url ?? 'http://host:8081/mcp'}
+						/>
+						{#if inheritedUrl}
+							<small>Leave blank to use your org's deployment ({inheritedUrl}).</small>
+						{:else if template?.mcp?.url}
 							<small>Leave blank to use the template's default.</small>
 						{:else}
 							<small>The URL of the MCP server endpoint.</small>
@@ -776,15 +786,23 @@
 						<input
 							type="text"
 							bind:value={editUrl}
-							placeholder={template?.hosts?.[0] ? `https://${template.hosts[0]}` : 'https://mailbox.your-org.com'}
+							placeholder={inheritedUrl ??
+								(template?.hosts?.[0]
+									? `https://${template.hosts[0]}`
+									: 'https://mailbox.your-org.com')}
 						/>
-						<small>Point this instance at your own deployment. Leave blank to use the default.</small>
+						{#if inheritedUrl}
+							<small>Leave blank to use your org's gateway ({inheritedUrl}).</small>
+						{:else}
+							<small>Point this instance at your own deployment. Leave blank to use the default.</small>
+						{/if}
 					</label>
 				{/if}
 				{#if hasInstanceConfig}
 					<ServiceInstanceConfig
 						params={template?.instance_config_params ?? []}
 						bind:config={editConfig}
+						inherited={template?.instance_defaults?.config}
 						idPrefix="edit-service-config"
 					/>
 				{/if}

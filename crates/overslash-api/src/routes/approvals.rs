@@ -2093,6 +2093,7 @@ mod risk_tests {
             actions,
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         });
         registry
     }

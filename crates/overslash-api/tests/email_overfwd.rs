@@ -143,8 +143,36 @@ async fn setup_email_instance_custom(
     secrets: &[(&str, &str)],
     body: Value,
 ) -> (String, String, String, Value) {
+    setup_email_instance_layered(pool, secrets, None, body).await
+}
+
+/// As [`setup_email_instance_custom`], but first creates an **org layer** over
+/// `email` carrying `layer` as its delta (under the key `email_org`). The
+/// caller-supplied instance body then names whichever template key it wants.
+async fn setup_email_instance_layered(
+    pool: sqlx::PgPool,
+    secrets: &[(&str, &str)],
+    layer: Option<Value>,
+    body: Value,
+) -> (String, String, String, Value) {
     let (base, client) = start_api_with_registry(pool, None).await;
     let (_org_id, _ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+
+    if let Some(delta) = layer {
+        let resp = client
+            .post(format!("{base}/v1/templates"))
+            .header("Authorization", format!("Bearer {admin_key}"))
+            .json(&json!({ "extends": "email", "key": "email_org", "delta": delta }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            200,
+            "org layer create failed: {:?}",
+            resp.text().await
+        );
+    }
 
     for (name, value) in secrets {
         let resp = client
@@ -1049,4 +1077,131 @@ async fn email_template_advertises_instance_config_params() {
         );
     }
     assert_eq!(tpl["configurable_url"], json!(true));
+}
+
+// ── Org-layer instance defaults ────────────────────────────────────────────
+
+/// The org gateway story end-to-end: an admin creates one layer over `email`
+/// naming the org's own overfwd deployment and its mailbox endpoint, and every
+/// user's instance then carries **nothing but its own mailbox credential**.
+///
+/// This is the papercut the feature exists to remove — `email`'s mailbox
+/// credential is `secret_source: instance`, so every user creates their own
+/// instance, and without a layer default each of them has to paste the same
+/// gateway URL and IMAP/SMTP host by hand.
+#[tokio::test]
+async fn email_org_layer_defaults_route_to_org_gateway() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, agent_key, _admin_key, _instance) = setup_email_instance_layered(
+        pool,
+        &[
+            ("mailbox_user", MAILBOX_USER),
+            ("mailbox_pass", MAILBOX_PASS),
+        ],
+        Some(json!({
+            "instance_defaults": {
+                "url": gateway_url,
+                "config": {
+                    "X-Mailbox-Imap": "imap.corp.internal:993",
+                    "X-Mailbox-Smtp": "smtp.corp.internal:465",
+                }
+            }
+        })),
+        json!({
+            "template_key": "email_org",
+            // No `url`, no `config` — everything comes from the org layer.
+            "credentials": { "mailbox_user": "mailbox_user", "mailbox_pass": "mailbox_pass" },
+            "status": "active",
+        }),
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({ "service": "email_org", "action": "search", "params": {} }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::OK,
+        "{:?}",
+        resp.text().await
+    );
+
+    // Reaching the mock gateway at all proves the layer's `url` beat the
+    // template's `servers[0]` (mailbox.overslash.com).
+    let captured = sink.lock().unwrap();
+    let req = captured.first().expect("org gateway saw no request");
+    assert_eq!(req.imap.as_deref(), Some("imap.corp.internal:993"));
+    assert_eq!(req.smtp.as_deref(), Some("smtp.corp.internal:465"));
+}
+
+/// Precedence, top to bottom: an instance overrides its org layer, and a caller
+/// arg overrides both. A developer pointing one instance at a local overfwd
+/// must not be blocked by the org default.
+#[tokio::test]
+async fn email_instance_and_caller_override_org_layer_defaults() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, agent_key, _admin_key, _instance) = setup_email_instance_layered(
+        pool,
+        &[
+            ("mailbox_user", MAILBOX_USER),
+            ("mailbox_pass", MAILBOX_PASS),
+        ],
+        Some(json!({
+            "instance_defaults": {
+                // A URL the mock gateway is NOT listening on: if the instance's
+                // own `url` did not win, the call could not succeed.
+                "url": "https://never.used.invalid",
+                "config": {
+                    "X-Mailbox-Imap": "imap.layer.internal:993",
+                    "X-Mailbox-Smtp": "smtp.layer.internal:465",
+                }
+            }
+        })),
+        json!({
+            "template_key": "email_org",
+            "url": gateway_url,
+            "credentials": { "mailbox_user": "mailbox_user", "mailbox_pass": "mailbox_pass" },
+            // Instance pins IMAP; SMTP is left to the layer.
+            "config": { "X-Mailbox-Imap": "imap.instance.internal:993" },
+            "status": "active",
+        }),
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "email_org",
+            "action": "search",
+            "params": { "X-Mailbox-Smtp": "smtp.caller.internal:465" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::OK,
+        "{:?}",
+        resp.text().await
+    );
+
+    let captured = sink.lock().unwrap();
+    let req = captured.first().expect("gateway saw no request");
+    assert_eq!(
+        req.imap.as_deref(),
+        Some("imap.instance.internal:993"),
+        "instance config must beat the layer default"
+    );
+    assert_eq!(
+        req.smtp.as_deref(),
+        Some("smtp.caller.internal:465"),
+        "a caller arg must beat both"
+    );
 }

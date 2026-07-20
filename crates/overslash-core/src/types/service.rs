@@ -112,6 +112,15 @@ pub struct ServiceDefinition {
     /// MCP-specific config. Present iff `runtime == Mcp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpSpec>,
+    /// Defaults an org layer supplies for the per-instance override surface
+    /// (endpoint URL + `instance_config` pins). Only ever set by the fold —
+    /// a shipped template expresses its defaults through `servers:` and param
+    /// `default:` instead, so the compile path always leaves this `None`.
+    ///
+    /// An instance that sets the corresponding field still wins; see
+    /// [`crate::service_layer::InstanceDefaults`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_defaults: Option<crate::service_layer::InstanceDefaults>,
 }
 
 /// MCP external-server configuration. Lives inside a `ServiceDefinition` when
@@ -843,6 +852,7 @@ mod tests {
             actions: HashMap::new(),
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         };
         let j = serde_json::to_value(&svc).unwrap();
         assert!(
@@ -892,6 +902,7 @@ mod tests {
                 },
                 autodiscover: true,
             }),
+            instance_defaults: None,
         };
         let j = serde_json::to_value(&svc).unwrap();
         assert_eq!(j["runtime"], "mcp");

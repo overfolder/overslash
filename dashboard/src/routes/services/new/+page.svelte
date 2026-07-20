@@ -73,7 +73,11 @@
 
 	// MCP-derived helpers
 	const isMcp = $derived(selectedDetail?.runtime === 'mcp');
-	const mcpNeedsUrl = $derived(isMcp && !selectedDetail?.mcp?.url);
+	// An org layer's default endpoint counts as a default, same as at execution:
+	// leaving the field blank inherits it, so the URL is not "required".
+	const layerDefaults = $derived(selectedDetail?.instance_defaults);
+	const inheritedUrl = $derived(layerDefaults?.url);
+	const mcpNeedsUrl = $derived(isMcp && !selectedDetail?.mcp?.url && !inheritedUrl);
 	const mcpNeedsSecret = $derived(
 		isMcp &&
 		selectedDetail?.mcp?.auth_kind === 'bearer' &&
@@ -711,10 +715,12 @@
 					<input
 						type="text"
 						bind:value={urlInput}
-						placeholder={selectedDetail?.mcp?.url ?? 'http://host:8081/mcp'}
+						placeholder={inheritedUrl ?? selectedDetail?.mcp?.url ?? 'http://host:8081/mcp'}
 					/>
 					{#if mcpNeedsUrl}
 						<small>Required — this template has no default URL.</small>
+					{:else if inheritedUrl}
+						<small>Leave blank to use your org's deployment ({inheritedUrl}).</small>
 					{:else}
 						<small>Leave blank to use the template's default.</small>
 					{/if}
@@ -725,11 +731,16 @@
 					<input
 						type="text"
 						bind:value={urlInput}
-						placeholder={selectedDetail?.hosts?.[0]
-							? `https://${selectedDetail.hosts[0]}`
-							: 'https://mailbox.your-org.com'}
+						placeholder={inheritedUrl ??
+							(selectedDetail?.hosts?.[0]
+								? `https://${selectedDetail.hosts[0]}`
+								: 'https://mailbox.your-org.com')}
 					/>
-					<small>Point this instance at your own deployment. Leave blank to use the default.</small>
+					{#if inheritedUrl}
+						<small>Leave blank to use your org's gateway ({inheritedUrl}).</small>
+					{:else}
+						<small>Point this instance at your own deployment. Leave blank to use the default.</small>
+					{/if}
 				</label>
 			{/if}
 
@@ -737,6 +748,7 @@
 				<ServiceInstanceConfig
 					params={instanceConfigParams}
 					bind:config={configInput}
+					inherited={layerDefaults?.config}
 					idPrefix="new-service-config"
 				/>
 			{/if}

@@ -81,6 +81,7 @@ pub fn parse_template_parts(
         actions,
         runtime: Runtime::Http,
         mcp: None,
+        instance_defaults: None,
     };
 
     // JSON inputs have already deduped at the serde_json::Map level, so
