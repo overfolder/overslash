@@ -3194,6 +3194,7 @@ dependencies = [
  "base64 0.22.1",
  "fastembed",
  "glob-match",
+ "jaq-core",
  "rand 0.10.2",
  "serde",
  "serde_json",

@@ -164,7 +164,12 @@ components:
       type: apiKey
       in: header
       name: Authorization
-      x-overslash-prefix: "Bearer "
+      # How to build the header value from the secrets below. Absent means
+      # "inject the one secret verbatim". Slots are named literally so the
+      # gateway knows which secrets to decrypt.
+      x-overslash-template:
+        lang: jq
+        expr: '"Bearer " + .token'
       default_secret_name: acme_key
     # …or OAuth style instead:
     # oauth:

@@ -236,11 +236,11 @@ pub fn compile_service(
 
     let hosts = extract_hosts(root.get("servers"));
 
-    let auth = match extract_auth(root.get("components")) {
+    let (auth, secrets) = match extract_auth(root.get("components")) {
         Ok(a) => a,
         Err(mut es) => {
             errors.append(&mut es);
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
     };
 
@@ -343,6 +343,7 @@ pub fn compile_service(
             category,
             hidden,
             auth,
+            secrets,
             actions,
             runtime,
             mcp,
@@ -387,7 +388,7 @@ mod tests {
                 },
                 "token": {
                     "type": "apiKey", "in": "header", "name": "Authorization",
-                    "x-overslash-prefix": "Bearer ",
+                    "x-overslash-template": {"lang": "jq", "expr": "\"Bearer \" + .token"},
                     "x-overslash-default_secret_name": "slack_token"
                 }
             }},

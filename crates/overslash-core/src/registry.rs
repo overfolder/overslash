@@ -28,6 +28,7 @@ fn http_pseudo_service() -> ServiceDefinition {
         category: Some("Platform".to_string()),
         hidden: false,
         auth: Vec::new(),
+        secrets: Vec::new(),
         actions: HashMap::new(),
         runtime: Runtime::Http,
         mcp: None,
@@ -225,7 +226,9 @@ components:
       type: apiKey
       in: header
       name: Authorization
-      x-overslash-prefix: "Bearer "
+      x-overslash-template:
+        lang: jq
+        expr: '"Bearer " + .token'
       default_secret_name: github_token
 paths:
   /user/repos:

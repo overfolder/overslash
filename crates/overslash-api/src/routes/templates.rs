@@ -143,6 +143,12 @@ struct TemplateDetail {
     hosts: Vec<String>,
     /// Compiled auth view for the dashboard's connect flows.
     auth: Vec<serde_json::Value>,
+    /// The credential slots an instance binds — one vault secret each, with
+    /// the label and help text the dashboard's credentials form renders. A
+    /// slot may feed several injections and an injection may join several
+    /// slots, so this is NOT derivable from `auth` on the client.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    secrets: Vec<overslash_core::types::SecretSlot>,
     /// Canonical OpenAPI 3.1 YAML source — the editable document. For DB
     /// templates this is the stored, alias-normalized text. For global
     /// templates it's the shipped YAML verbatim.
@@ -498,6 +504,7 @@ async fn db_row_to_detail(
         category: def.category.clone().filter(|s| !s.is_empty()),
         hosts: def.hosts.clone(),
         auth,
+        secrets: def.all_slots(),
         openapi: openapi_yaml,
         actions: actions_from_definition(def),
         scopes: template_required_scopes(def),
@@ -887,6 +894,7 @@ async fn get_template(
         category: svc.category.clone(),
         hosts: svc.hosts.clone(),
         auth,
+        secrets: svc.all_slots(),
         openapi: openapi_yaml,
         actions: actions_from_definition(svc),
         scopes: template_required_scopes(svc),

@@ -891,20 +891,20 @@ pub async fn kernel_update_service(
         // the slot is always populated). `secret_name: null` clears the slot.
         // When both fields ride one request, the slot stays so a disagreement
         // between them still 400s.
-        let instance_slots = instance_scheme_keys(template_def);
+        let instance_slots = instance_slot_keys(template_def);
         let mut base = match input.credentials.as_ref() {
             Some(explicit) => explicit.clone(),
             None => existing.credentials.0.clone(),
         };
         if input.credentials.is_none() && input.secret_name.is_some() {
             if let [sole] = instance_slots.as_slice() {
-                base.remove(*sole);
+                base.remove(sole);
             }
         }
         let legacy = input.secret_name.as_ref().and_then(|o| o.as_deref());
         let (map, mut scalar) = reconcile_credentials(template_def, Some(&base), legacy)?;
         // A credentials-only request on a template with no instance-source
-        // scheme (MCP bearer) mustn't clobber the scalar the map doesn't cover.
+        // slot (MCP bearer) mustn't clobber the scalar the map doesn't cover.
         if instance_slots.is_empty() && input.secret_name.is_none() {
             scalar = existing.secret_name.clone();
         }
@@ -952,21 +952,27 @@ pub async fn kernel_update_service(
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-/// The template's secret scheme keys whose fallback is the instance's legacy
-/// scalar `secret_name` (i.e. `secret_source: instance`). Empty scheme keys
+/// The template's credential slot keys whose fallback is the instance's legacy
+/// scalar `secret_name` (i.e. `source: instance`). Empty keys
 /// (programmatically-built templates) are skipped — they can't key a binding.
-fn instance_scheme_keys(template: &ServiceDefinition) -> Vec<&str> {
+fn instance_slot_keys(template: &ServiceDefinition) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for slot in template.all_slots() {
+        if slot.source == SecretSource::Instance && !slot.key.is_empty() && !out.contains(&slot.key)
+        {
+            out.push(slot.key);
+        }
+    }
+    out
+}
+
+/// Every credential slot key the template declares, in `auth` order.
+fn all_slot_keys(template: &ServiceDefinition) -> Vec<String> {
     template
-        .auth
-        .iter()
-        .filter_map(|a| match a {
-            ServiceAuth::Secret {
-                scheme,
-                secret_source: SecretSource::Instance,
-                ..
-            } if !scheme.is_empty() => Some(scheme.as_str()),
-            _ => None,
-        })
+        .all_slots()
+        .into_iter()
+        .map(|s| s.key)
+        .filter(|k| !k.is_empty())
         .collect()
 }
 
@@ -1023,15 +1029,15 @@ fn validate_instance_config(
     Ok(map)
 }
 
-/// Reconcile explicit per-scheme `credentials` with the legacy scalar
+/// Reconcile explicit per-slot `credentials` with the legacy scalar
 /// `secret_name` alias into the map to store, validating both against the
 /// template.
 ///
-/// - Every explicit key must name one of the template's secret schemes, and
+/// - Every explicit key must name one of the template's credential slots, and
 ///   every value must be non-empty (whole-map replace: omit a key to unbind).
-/// - A non-empty `secret_name` folds into the sole instance-source scheme's
-///   slot. With several instance-source schemes the alias is ambiguous → 400.
-///   With none (MCP bearer) it stays scalar-only and the map is untouched.
+/// - A non-empty `secret_name` folds into the sole instance-source slot.
+///   With several instance-source slots the alias is ambiguous → 400. With
+///   none (MCP bearer) it stays scalar-only and the map is untouched.
 /// - Both provided with different values for the same slot → 400.
 ///
 /// Returns `(credentials_to_store, secret_name_to_store)`. The scalar is kept
@@ -1042,27 +1048,20 @@ fn reconcile_credentials(
     explicit: Option<&CredentialsMap>,
     legacy_secret_name: Option<&str>,
 ) -> Result<(CredentialsMap, Option<String>), AppError> {
-    let scheme_keys: Vec<&str> = template
-        .auth
-        .iter()
-        .filter_map(|a| match a {
-            ServiceAuth::Secret { scheme, .. } if !scheme.is_empty() => Some(scheme.as_str()),
-            _ => None,
-        })
-        .collect();
-    let instance_schemes = instance_scheme_keys(template);
+    let slot_keys = all_slot_keys(template);
+    let instance_slots = instance_slot_keys(template);
 
     let mut map = CredentialsMap::new();
     if let Some(explicit) = explicit {
         for (key, value) in explicit {
-            if !scheme_keys.contains(&key.as_str()) {
+            if !slot_keys.contains(key) {
                 return Err(AppError::BadRequest(format!(
-                    "unknown credential scheme '{key}'; template '{}' declares: {}",
+                    "unknown credential '{key}'; template '{}' declares: {}",
                     template.key,
-                    if scheme_keys.is_empty() {
+                    if slot_keys.is_empty() {
                         "none".to_string()
                     } else {
-                        scheme_keys.join(", ")
+                        slot_keys.join(", ")
                     }
                 )));
             }
@@ -1077,9 +1076,9 @@ fn reconcile_credentials(
 
     let legacy = legacy_secret_name.filter(|s| !s.is_empty());
     if let Some(legacy) = legacy {
-        match instance_schemes.as_slice() {
+        match instance_slots.as_slice() {
             [] => {} // MCP bearer / legacy scalar-only template: stays scalar.
-            [sole] => match map.get(*sole) {
+            [sole] => match map.get(sole) {
                 Some(bound) if bound != legacy => {
                     return Err(AppError::BadRequest(format!(
                         "secret_name '{legacy}' conflicts with credentials['{sole}'] = '{bound}'; \
@@ -1087,7 +1086,7 @@ fn reconcile_credentials(
                     )));
                 }
                 _ => {
-                    map.insert((*sole).to_string(), legacy.to_string());
+                    map.insert(sole.clone(), legacy.to_string());
                 }
             },
             _ => {
@@ -1095,16 +1094,16 @@ fn reconcile_credentials(
                     "template '{}' declares several instance credentials ({}); \
                      bind them via `credentials` instead of `secret_name`",
                     template.key,
-                    instance_schemes.join(", ")
+                    instance_slots.join(", ")
                 )));
             }
         }
     }
 
-    // Dual-write the scalar: mirror the sole instance-source scheme's binding
+    // Dual-write the scalar: mirror the sole instance-source slot's binding
     // (whatever provided it), else preserve a scalar-only legacy value.
-    let secret_name = match instance_schemes.as_slice() {
-        [sole] => map.get(*sole).cloned(),
+    let secret_name = match instance_slots.as_slice() {
+        [sole] => map.get(sole).cloned(),
         _ => legacy.map(str::to_string),
     };
     Ok((map, secret_name))
@@ -1408,30 +1407,38 @@ pub fn derive_credentials_status(
         .auth
         .iter()
         .any(|a| matches!(a, ServiceAuth::Secret { .. }));
-    // A required secret scheme is unbound when the execution-time resolution
-    // chain (`credentials[scheme]` → legacy `secret_name` for instance-source
+    // A required credential slot is unbound when the execution-time resolution
+    // chain (`credentials[slot]` → legacy `secret_name` for instance-source
     // → fixed `default_secret_name` for org-source) yields no name. Mirrors
     // `resolve_instance_auth`; whether the named secret actually exists in
     // the vault is a send-time concern a pure classifier can't check. In
-    // particular a template whose secret schemes are all org-source needs no
-    // instance binding at all — it must NOT report NeedsAuthentication just
-    // because the instance's scalar `secret_name` is empty.
-    let secret_unbound = template.auth.iter().any(|a| match a {
-        ServiceAuth::Secret {
-            scheme,
-            default_secret_name,
-            secret_source,
-            optional,
-            ..
-        } => {
-            !*optional
-                && credentials.get(scheme).is_none_or(|n| n.is_empty())
-                && match secret_source {
-                    SecretSource::Instance => secret_name.is_none() || secret_name == Some(""),
-                    SecretSource::Org => default_secret_name.is_empty(),
+    // particular a template whose slots are all org-source needs no instance
+    // binding at all — it must NOT report NeedsAuthentication just because the
+    // instance's scalar `secret_name` is empty.
+    //
+    // Per *slot*, not per scheme: a header joined from a username and a
+    // password is only bound once both halves are.
+    // Counted over ALL instance-source slots, including the unkeyed one a
+    // programmatically-built template carries — the scalar alias stood for
+    // that credential too, so excluding it would report every such instance
+    // unbound.
+    let single_instance_slot = template
+        .all_slots()
+        .iter()
+        .filter(|s| s.source == SecretSource::Instance)
+        .count()
+        <= 1;
+    let secret_unbound = template.all_slots().into_iter().any(|slot| {
+        !slot.optional
+            && credentials.get(&slot.key).is_none_or(|n| n.is_empty())
+            && match slot.source {
+                // The scalar alias only ever stood for a single credential, so
+                // it cannot vouch for one half of a composed one.
+                SecretSource::Instance => {
+                    !single_instance_slot || secret_name.is_none() || secret_name == Some("")
                 }
-        }
-        _ => false,
+                SecretSource::Org => slot.default_secret_name.is_empty(),
+            }
     });
     let mcp_bearer = matches!(
         template.mcp.as_ref().map(|m| &m.auth),
@@ -1522,6 +1529,7 @@ mod tests {
 
     fn mcp_bearer_template(default_secret: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            secrets: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1543,6 +1551,7 @@ mod tests {
 
     fn mcp_oauth_template(provider: &str, scopes: &[&str]) -> ServiceDefinition {
         ServiceDefinition {
+            secrets: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1623,6 +1632,7 @@ mod tests {
 
     fn secret_template() -> ServiceDefinition {
         ServiceDefinition {
+            secrets: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1630,6 +1640,8 @@ mod tests {
             category: None,
             hidden: false,
             auth: vec![ServiceAuth::Secret {
+                template: None,
+                slots: Vec::new(),
                 scheme: String::new(),
                 label: String::new(),
                 description: String::new(),
@@ -1639,7 +1651,6 @@ mod tests {
                     header_name: Some("Authorization".into()),
                     query_param: None,
                     prefix: Some("Bearer ".into()),
-                    encode: None,
                 },
                 secret_source: overslash_core::types::SecretSource::Instance,
                 optional: false,
@@ -1674,6 +1685,7 @@ mod tests {
             );
         }
         ServiceDefinition {
+            secrets: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1688,7 +1700,6 @@ mod tests {
                     header_name: Some("Authorization".into()),
                     query_param: None,
                     prefix: Some("Bearer ".into()),
-                    encode: None,
                 },
             }],
             actions: map,
@@ -1718,6 +1729,7 @@ mod tests {
     #[test]
     fn none_when_template_has_no_auth_and_no_connection() {
         let tpl = ServiceDefinition {
+            secrets: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1872,10 +1884,11 @@ mod tests {
             header_name: Some("Authorization".into()),
             query_param: None,
             prefix: Some("Bearer ".into()),
-            encode: None,
         };
         tpl.auth = vec![
             ServiceAuth::Secret {
+                template: None,
+                slots: Vec::new(),
                 scheme: "gateway".into(),
                 label: String::new(),
                 description: String::new(),
@@ -1885,6 +1898,8 @@ mod tests {
                 optional: true,
             },
             ServiceAuth::Secret {
+                template: None,
+                slots: Vec::new(),
                 scheme: "mailbox".into(),
                 label: String::new(),
                 description: String::new(),

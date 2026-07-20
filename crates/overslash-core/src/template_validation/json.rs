@@ -73,6 +73,11 @@ pub fn parse_template_parts(
         // stored OpenAPI doc and is honored wherever that doc is compiled.
         hidden: false,
         auth,
+        // Likewise no `secrets` input: credential slots live in the stored
+        // OpenAPI doc. An auth entry whose template names an undeclared slot
+        // still resolves — `ServiceDefinition::slots_for` treats it as the
+        // scheme's implicit self-named slot.
+        secrets: Vec::new(),
         actions,
         runtime: Runtime::Http,
         mcp: None,

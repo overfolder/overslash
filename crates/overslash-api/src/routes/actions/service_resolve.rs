@@ -281,6 +281,7 @@ mod verb_host_path_tests {
 
     fn svc_with_hosts(hosts: Vec<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            secrets: Vec::new(),
             key: "github".into(),
             display_name: "GitHub".into(),
             description: None,

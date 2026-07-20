@@ -116,8 +116,8 @@ pub(super) const APIKEY_HTTP_SEC_ALIASES: &[Alias] = &[
         canonical: "x-overslash-default_secret_name",
     },
     Alias {
-        alias: "encode",
-        canonical: "x-overslash-encode",
+        alias: "template",
+        canonical: "x-overslash-template",
     },
     Alias {
         alias: "secret_source",

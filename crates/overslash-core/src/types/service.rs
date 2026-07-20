@@ -3,6 +3,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use super::CredentialTemplate;
+
 /// Risk level of a service action: read, write, or delete.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -95,6 +97,12 @@ pub struct ServiceDefinition {
     pub hidden: bool,
     #[serde(default)]
     pub auth: Vec<ServiceAuth>,
+    /// Credential slots this template needs, declared once
+    /// (`components.x-overslash-secrets`) and referenced by the auth entries'
+    /// templates. One slot is one vault secret the operator binds; a slot may
+    /// feed several injections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<SecretSlot>,
     #[serde(default)]
     pub actions: HashMap<String, ServiceAction>,
     /// Execution runtime. Defaults to `Http` for backwards compat with every
@@ -158,6 +166,71 @@ pub enum McpAuth {
     },
 }
 
+impl ServiceDefinition {
+    /// The credential slots one secret-backed auth entry reads, paired with
+    /// their declarations — the single place the implicit-slot rule lives.
+    ///
+    /// A slot declared under `components.x-overslash-secrets` uses that
+    /// declaration. A slot with no declaration is the scheme's implicit
+    /// self-named slot and inherits the scheme's own label, description,
+    /// default secret name, source and optionality. That is how a
+    /// single-secret template declares no secrets block at all — and why a
+    /// definition rebuilt without one (parts-based CRUD) still resolves.
+    ///
+    /// Returns empty for OAuth entries, which carry no vault secret.
+    pub fn slots_for(&self, auth: &ServiceAuth) -> Vec<SecretSlot> {
+        let ServiceAuth::Secret {
+            scheme,
+            label,
+            description,
+            default_secret_name,
+            slots,
+            secret_source,
+            optional,
+            ..
+        } = auth
+        else {
+            return Vec::new();
+        };
+
+        // A definition from before credential slots existed carries no
+        // `slots`; its one secret is the scheme's own.
+        let keys: Vec<&String> = if slots.is_empty() {
+            vec![scheme]
+        } else {
+            slots.iter().collect()
+        };
+
+        keys.into_iter()
+            .map(|key| match self.secrets.iter().find(|s| &s.key == key) {
+                Some(declared) => declared.clone(),
+                None => SecretSlot {
+                    key: key.clone(),
+                    label: label.clone(),
+                    description: description.clone(),
+                    default_secret_name: default_secret_name.clone(),
+                    source: *secret_source,
+                    optional: *optional,
+                },
+            })
+            .collect()
+    }
+
+    /// Every credential slot the template needs, deduped, in `auth` order.
+    /// The set the dashboard renders and an instance binds.
+    pub fn all_slots(&self) -> Vec<SecretSlot> {
+        let mut out: Vec<SecretSlot> = Vec::new();
+        for auth in &self.auth {
+            for slot in self.slots_for(auth) {
+                if !out.iter().any(|s| s.key == slot.key) {
+                    out.push(slot);
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Alias: a service template is the same as a service definition.
 pub type ServiceTemplate = ServiceDefinition;
 
@@ -186,18 +259,17 @@ pub enum ServiceAuth {
     },
     /// A static, vault-stored credential injected into the outbound request.
     /// Not necessarily an API key: `services/email.yaml`'s `mailbox` scheme
-    /// carries an IMAP `user:password` pair. Compiled from an OpenAPI `apiKey`
-    /// or `http`-bearer security scheme.
+    /// composes an IMAP username and password. Compiled from an OpenAPI
+    /// `apiKey` or `http`-bearer security scheme.
     ///
     /// Serializes as `"secret"`; still accepts the legacy `"api_key"`
     /// discriminant on the wire.
     #[serde(rename = "secret", alias = "api_key")]
     Secret {
         /// The securitySchemes key this was compiled from (`gateway`,
-        /// `mailbox`, …). Identifies the credential slot: it keys the
-        /// instance's per-scheme `credentials` bindings and labels the
-        /// credential in the dashboard, so a template with several secret
-        /// schemes doesn't present them as one anonymous field.
+        /// `mailbox`, …). Names the injection — the header or query parameter
+        /// this entry fills — and keys nothing in the vault by itself; the
+        /// secrets come from `slots`.
         #[serde(default)]
         scheme: String,
         /// Short human-readable display name for the credential slot, from
@@ -212,8 +284,18 @@ pub enum ServiceAuth {
         description: String,
         default_secret_name: String,
         injection: TokenInjection,
-        /// Fallback policy when the instance has no explicit per-scheme
-        /// binding in `credentials[scheme]`. `Instance` (default): fall back
+        /// How to build the value from `slots`. `None` injects the single
+        /// slot's secret verbatim — the common case.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        template: Option<CredentialTemplate>,
+        /// Slot keys the template reads, computed once at extraction by
+        /// [`crate::credential_template::referenced_slots`] so nothing on the
+        /// request path parses jq to decide what to decrypt. Exactly one entry
+        /// (the implicit slot named after `scheme`) when there is no template.
+        #[serde(default)]
+        slots: Vec<String>,
+        /// Fallback policy when the instance has no explicit per-slot
+        /// binding in `credentials[slot]`. `Instance` (default): fall back
         /// to the instance's legacy scalar `secret_name`; unbound means the
         /// credential is missing. `Org`: fall back to the fixed
         /// `default_secret_name` in the org vault — a sensible org-wide
@@ -246,7 +328,35 @@ pub enum SecretSource {
     Org,
 }
 
-/// How to inject a token/key into the HTTP request.
+/// A credential slot: one vault secret the operator binds per instance.
+///
+/// Declared once under `components.x-overslash-secrets` and referenced by
+/// name from a [`CredentialTemplate`], so several injections can read the same
+/// secret and one injection can compose several.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretSlot {
+    /// Key the template references (`mailbox_user`) and the instance binds in
+    /// its `credentials` map.
+    pub key: String,
+    /// Short display name for the dashboard row ("Mailbox username").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// Help text under the row.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Org-vault secret name used when `source: org` and the instance binds
+    /// nothing.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default_secret_name: String,
+    #[serde(default)]
+    pub source: SecretSource,
+    /// When true a missing secret skips the injection instead of failing the
+    /// request.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
+}
+
+/// Where a credential's value goes in the HTTP request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenInjection {
     #[serde(rename = "as")]
@@ -255,13 +365,11 @@ pub struct TokenInjection {
     pub header_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query_param: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prefix: Option<String>,
-    /// Transform applied to the secret value before the `prefix` (mirrors
-    /// [`crate::types::SecretRef::encode`]). Carried from the security
-    /// scheme's `x-overslash-encode` into the runtime `SecretRef`.
+    /// OAuth only: the literal that precedes the live token ("Bearer ").
+    /// Secret-backed credentials express any prefix in their
+    /// [`CredentialTemplate`] instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encode: Option<crate::types::SecretEncoding>,
+    pub prefix: Option<String>,
 }
 
 /// An action within a service (maps to an HTTP request template).
@@ -724,6 +832,7 @@ mod tests {
     fn service_definition_http_defaults_keep_mcp_absent() {
         // Existing Http templates must serialize without runtime/mcp keys.
         let svc = ServiceDefinition {
+            secrets: Vec::new(),
             key: "slack".into(),
             display_name: "Slack".into(),
             description: None,
@@ -766,6 +875,7 @@ mod tests {
             },
         );
         let svc = ServiceDefinition {
+            secrets: Vec::new(),
             key: "linear_mcp".into(),
             display_name: "Linear".into(),
             description: None,

@@ -1066,96 +1066,121 @@ pub(crate) async fn resolve_instance_auth(
         }
     }
 
-    // Build a SecretRef per apiKey scheme the template declares. Each scheme
-    // resolves its secret name independently:
-    //   1. the instance's explicit per-scheme binding (`credentials[scheme]`),
-    //   2. else the legacy scalar `secret_name` (instance-source schemes only),
-    //   3. else the scheme's fixed `default_secret_name` from the org vault
-    //      (org-source schemes only — a shared org-wide default).
+    // Build a SecretRef per secret-backed scheme the template declares. Each
+    // scheme reads one or more credential *slots*, and each slot resolves its
+    // vault secret name independently:
+    //   1. the instance's explicit per-slot binding (`credentials[slot]`),
+    //   2. else the legacy scalar `secret_name` (instance-source, and only for
+    //      a scheme that reads a single slot — with several the alias would be
+    //      ambiguous, which is what `reconcile_credentials` refuses to store),
+    //   3. else the slot's fixed `default_secret_name` from the org vault
+    //      (org-source slots only — a shared org-wide default).
     // That is what lets one overfwd instance carry both the per-mailbox
-    // `X-Mailbox-Auth: Basic …` and its own gateway `Authorization: Bearer …`
-    // on the same request. OAuth-only templates declare no apiKey scheme and
-    // fall through; existing instances (empty `credentials`) keep the
-    // historical behaviour exactly (steps 2 and 3).
+    // `X-Mailbox-Auth: Basic base64(user:pass)` — itself joined from two
+    // separate secrets — and its own gateway `Authorization: Bearer …` on the
+    // same request. OAuth-only templates declare no secret scheme and fall
+    // through; instances with empty `credentials` keep the historical
+    // behaviour exactly (steps 2 and 3).
     let mut secret_refs: Vec<SecretRef> = Vec::new();
     let mut instance_secret_missing = false;
     for service_auth in &svc.auth {
-        if let overslash_core::types::ServiceAuth::Secret {
+        let overslash_core::types::ServiceAuth::Secret {
             scheme,
-            default_secret_name,
             injection,
-            secret_source,
-            optional,
+            template,
             ..
         } = service_auth
-        {
-            let name = if let Some(bound) = instance.credentials.get(scheme) {
+        else {
+            continue;
+        };
+
+        let slots = svc.slots_for(service_auth);
+        let single_slot = slots.len() == 1;
+        let mut bindings = std::collections::BTreeMap::new();
+        // A scheme is emitted only when every slot it reads resolved; a
+        // half-composed header would authenticate as nobody.
+        let mut scheme_unresolved = false;
+
+        for slot in &slots {
+            let name = if let Some(bound) = instance.credentials.get(&slot.key) {
                 // Explicitly bound per instance. An explicit binding on an
-                // `optional` scheme makes it required: the user asked for this
+                // `optional` slot makes it required: the user asked for this
                 // credential, so a missing secret surfaces as a send-time
                 // error instead of being silently skipped.
                 bound.clone()
             } else {
-                match secret_source {
+                match slot.source {
                     overslash_core::types::SecretSource::Org => {
                         // An optional org credential (e.g. an overfwd gateway key
                         // when the gateway runs with OVERFWD_REQUIRE_API_KEY=false)
                         // is injected only if the org has configured it — a keyless
                         // deployment simply omits it rather than failing on a
-                        // missing secret. Required org schemes fall through to the
+                        // missing secret. Required org slots fall through to the
                         // send-time `secret not found` error as before.
-                        if *optional
+                        if slot.optional
                             && scope
-                                .get_current_secret_value(default_secret_name)
+                                .get_current_secret_value(&slot.default_secret_name)
                                 .await?
                                 .is_none()
                         {
-                            continue;
+                            scheme_unresolved = true;
+                            break;
                         }
-                        default_secret_name.clone()
+                        slot.default_secret_name.clone()
                     }
-                    overslash_core::types::SecretSource::Instance => match &instance.secret_name {
-                        Some(n) => n.clone(),
-                        // The template requires a per-instance credential but the
-                        // instance has none bound. Record it so we DON'T return the
-                        // org-source keys alone — a partial injection would send an
-                        // incomplete request (e.g. gateway Bearer without the
-                        // mailbox `X-Mailbox-Auth`) that fails downstream instead of
-                        // cleanly prompting the caller to bind the credential.
-                        None => {
-                            if *optional {
-                                continue;
+                    overslash_core::types::SecretSource::Instance => {
+                        match instance.secret_name.as_ref().filter(|_| single_slot) {
+                            Some(n) => n.clone(),
+                            // The template requires a per-instance credential but
+                            // the instance has none bound. Record it so we DON'T
+                            // return the org-source keys alone — a partial
+                            // injection would send an incomplete request (e.g.
+                            // gateway Bearer without the mailbox `X-Mailbox-Auth`)
+                            // that fails downstream instead of cleanly prompting
+                            // the caller to bind the credential.
+                            None => {
+                                if !slot.optional {
+                                    instance_secret_missing = true;
+                                }
+                                scheme_unresolved = true;
+                                break;
                             }
-                            instance_secret_missing = true;
-                            continue;
                         }
-                    },
+                    }
                 }
             };
             // A blank resolved name can only come from corrupted stored data
             // (API validation rejects blank bindings and blank org defaults).
-            // For a required scheme treat it like an unbound credential —
+            // For a required slot treat it like an unbound credential —
             // silently skipping would inject the OTHER schemes and send a
             // partially-authenticated request downstream.
             if name.is_empty() {
-                if !*optional {
+                if !slot.optional {
                     instance_secret_missing = true;
                 }
-                continue;
+                scheme_unresolved = true;
+                break;
             }
-            secret_refs.push(SecretRef {
-                name,
-                inject_as: if injection.inject_as == "query" {
-                    InjectAs::Query
-                } else {
-                    InjectAs::Header
-                },
-                header_name: injection.header_name.clone(),
-                query_param: injection.query_param.clone(),
-                prefix: injection.prefix.clone(),
-                encode: injection.encode,
-            });
+            bindings.insert(slot.key.clone(), name);
         }
+
+        if scheme_unresolved || bindings.is_empty() {
+            continue;
+        }
+
+        secret_refs.push(SecretRef {
+            name: scheme.clone(),
+            inject_as: if injection.inject_as == "query" {
+                InjectAs::Query
+            } else {
+                InjectAs::Header
+            },
+            header_name: injection.header_name.clone(),
+            query_param: injection.query_param.clone(),
+            template: template.clone(),
+            bindings,
+            ..Default::default()
+        });
     }
     // Only return credentials when the full set the template requires is
     // available. A missing instance-source secret falls through to the

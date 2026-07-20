@@ -248,6 +248,9 @@ pub fn apply_delta(
         category: base.category.clone(),
         hidden: delta.hidden.unwrap_or(base.hidden),
         auth: base.auth.clone(),
+        // Credential slots ride with `auth`: a mask may add actions and hosts,
+        // never rebind credentials.
+        secrets: base.secrets.clone(),
         actions,
         runtime: base.runtime,
         mcp: base.mcp.clone(),
@@ -434,6 +437,7 @@ mod tests {
             actions.insert((*k).to_string(), action(*r));
         }
         ServiceDefinition {
+            secrets: Vec::new(),
             key: "github".into(),
             display_name: "GitHub".into(),
             description: Some("d".into()),

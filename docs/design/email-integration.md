@@ -9,10 +9,13 @@ Built as designed — overfwd is consumed as an ordinary HTTP service via the sh
 `services/email.yaml` template. The three core changes the design anticipated landed as:
 
 1. **`x-overslash-encode: base64` on an apiKey security scheme** (Core-change #1). The
-   decrypted secret is base64'd *before* the `x-overslash-prefix` is prepended, so a
-   `user:pass` secret with `prefix: "Basic "` emits `X-Mailbox-Auth: Basic base64(user:pass)`.
-   The prefix stays generic — `base64` never includes `"Basic "`. (`SecretRef::encode`,
-   `secret_injection::inject_secrets`.)
+   decrypted secret was base64'd *before* the `x-overslash-prefix` was prepended, so a
+   `user:pass` secret with `prefix: "Basic "` emitted `X-Mailbox-Auth: Basic base64(user:pass)`.
+   *(Superseded 2026-07-20 by D35: both extensions are removed. The mailbox login is now
+   two separate secrets — `mailbox_user` and `mailbox_pass` — joined by the scheme's jq
+   template `'"Basic " + (.mailbox_user + ":" + .mailbox_pass | @base64)'`, so the password
+   rotates on its own and neither half is a usable credential alone. Same header on the
+   wire. See [credential-templates.md](credential-templates.md).)*
 2. **Multi-injection via `x-overslash-secret_source: instance | org`** (Core-change #2).
    `ServiceDefinition.auth` was already a `Vec`; `resolve_instance_auth` now emits a
    `SecretRef` per apiKey scheme. `instance` (default, backward-compatible) resolves the

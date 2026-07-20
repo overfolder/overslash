@@ -1,7 +1,5 @@
 //! `POST /v1/actions/call` execution handler.
 
-use std::collections::HashMap;
-
 use axum::{
     Json,
     extract::State,
@@ -26,7 +24,6 @@ use crate::{
     },
 };
 use overslash_core::{
-    crypto,
     permissions::{GroupCeilingResult, PermissionKey, suggest_tiers},
     secret_injection::inject_secrets,
     types::{ResolvedActionRequest, service::Risk},
@@ -734,25 +731,13 @@ pub(super) async fn call_action_impl(
     }
 
     // Resolve secrets and inject
-    let enc_key = state.config.keyring()?;
-    let mut secret_values = HashMap::new();
-    for secret_ref in &action_req.secrets {
-        let version = scope
-            .get_current_secret_value(&secret_ref.name)
-            .await?
-            .ok_or_else(|| AppError::CredentialMissing {
-                service: req.service.clone(),
-                secret_name: secret_ref.name.clone(),
-                hint_url: Some(state.config.dashboard_url_for(&format!(
-                    "/secrets?name={}",
-                    urlencoding::encode(&secret_ref.name)
-                ))),
-            })?;
-        let decrypted = crypto::decrypt(&enc_key, &version.encrypted_value)?;
-        let value = String::from_utf8(decrypted)
-            .map_err(|_| AppError::Internal("secret is not valid utf-8".into()))?;
-        secret_values.insert(secret_ref.name.clone(), value);
-    }
+    let secret_values = crate::services::action_caller::resolve_credential_values(
+        &state,
+        &scope,
+        req.service.as_deref(),
+        &action_req,
+    )
+    .await?;
 
     let (resolved_url, mut resolved_headers) = inject_secrets(&action_req, &secret_values)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;

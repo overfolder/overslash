@@ -12,11 +12,13 @@ info:
   # Credentials on each request:
   #   • gateway  — an OPTIONAL per-deployment key (Authorization: Bearer),
   #                shared across the org, resolved from the org vault
-  #                (secret_source: org). Injected only if the org stored
+  #                (source: org). Injected only if the org stored
   #                `overfwd_gateway_key`; a keyless self-host omits it.
-  #   • mailbox  — the per-user IMAP/SMTP login `user:pass`, presented as
-  #                `X-Mailbox-Auth: Basic base64(user:pass)`, bound per instance
-  #                (secret_source: instance, encode: base64).
+  #   • mailbox  — the per-user IMAP/SMTP login, stored as TWO secrets
+  #                (`mailbox_user`, `mailbox_pass`) so the password rotates on
+  #                its own and neither half is a usable credential alone. The
+  #                `mailbox` scheme joins them into
+  #                `X-Mailbox-Auth: Basic base64(user:pass)` at send time.
   #
   # The overfwd deployment URL is set per instance (`service_instances.url`),
   # so each org points its catalog entry at its own gateway; `servers` below is
@@ -27,18 +29,36 @@ security:
   - gateway: []
     mailbox: []
 components:
+  # The secrets an operator binds for this service. Declared once here and
+  # referenced by name from the securitySchemes' templates below, so one
+  # secret can feed several headers and one header can join several secrets.
+  x-overslash-secrets:
+    mailbox_user:
+      label: Mailbox username
+      description: >-
+        The IMAP/SMTP login, usually the full email address.
+      source: instance
+    mailbox_pass:
+      label: Mailbox password
+      description: >-
+        The mailbox password, or an app-specific password where the provider
+        issues them.
+      source: instance
   securitySchemes:
     gateway:
       type: apiKey
       in: header
       name: Authorization
       # Short display label for the dashboard row; `description` renders as
-      # help text under the picker.
+      # help text under the picker. No x-overslash-secrets entry: a scheme
+      # implicitly declares the slot named after itself.
       x-overslash-label: Overfwd API Token
       description: >-
         Bearer token for the overfwd deployment itself — leave blank when
         the gateway runs without require_api_key.
-      x-overslash-prefix: "Bearer "
+      x-overslash-template:
+        lang: jq
+        expr: '"Bearer " + .gateway'
       x-overslash-secret_source: org
       # Optional: injected only if the org has stored `overfwd_gateway_key`.
       # A self-hosted overfwd with OVERFWD_REQUIRE_API_KEY=false needs no
@@ -49,14 +69,14 @@ components:
       type: apiKey
       in: header
       name: X-Mailbox-Auth
-      x-overslash-label: Mailbox Auth user:pass
+      x-overslash-label: Mailbox login
       description: >-
-        The mailbox's IMAP/SMTP user:password, stored as one secret value
-        and sent base64-encoded.
-      x-overslash-prefix: "Basic "
-      x-overslash-encode: base64
+        The mailbox's IMAP/SMTP login, joined from the username and password
+        secrets and sent base64-encoded.
+      x-overslash-template:
+        lang: jq
+        expr: '"Basic " + (.mailbox_user + ":" + .mailbox_pass | @base64)'
       x-overslash-secret_source: instance
-      default_secret_name: mailbox_credential
 paths:
   /email/search:
     # overfwd derives the IMAP/SMTP endpoint from the mailbox domain via

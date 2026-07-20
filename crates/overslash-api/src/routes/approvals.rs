@@ -2082,6 +2082,7 @@ mod risk_tests {
         );
         let mut registry = ServiceRegistry::default();
         registry.insert(ServiceDefinition {
+            secrets: Vec::new(),
             key: key.into(),
             display_name: key.into(),
             description: None,
