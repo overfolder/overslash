@@ -246,6 +246,44 @@ resource "google_secret_manager_secret_version" "shortener_api_key" {
   }
 }
 
+# --- overfwd gateway key. The shared Mailbox Gateway checks it as
+#     `Authorization: Bearer`; the API injects it for every org through the
+#     platform-credential rung, so no org has to store it. Both services read
+#     this one secret, so rotating it is a single `versions add` followed by a
+#     revision roll of each.
+#
+#     Generated here rather than left as REPLACE_ME: nothing outside this
+#     deployment needs to know the value, so there is no reason for a human to
+#     ever see it. `random_password` keeps it in state (like db_password), which
+#     is already the case for every other generated credential here.
+
+resource "google_secret_manager_secret" "overfwd_gateway_key" {
+  secret_id = "${var.base_prefix}-overfwd-gateway-key"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "random_password" "overfwd_gateway_key" {
+  length = 48
+  # Alphanumeric only: the value travels as an HTTP bearer token and lands in
+  # env vars on two services — punctuation buys no entropy worth the quoting
+  # hazards.
+  special = false
+}
+
+resource "google_secret_manager_secret_version" "overfwd_gateway_key" {
+  secret      = google_secret_manager_secret.overfwd_gateway_key.id
+  secret_data = random_password.overfwd_gateway_key.result
+
+  # A rotation is `gcloud secrets versions add` out-of-band; terraform must not
+  # drag the secret back to its generated value on the next apply.
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
 # --- Stripe billing secrets (only populated when cloud_billing=true).
 #     Values populated manually via `gcloud secrets versions add` after apply.
 
@@ -340,6 +378,10 @@ output "db_password_secret_id" {
 
 output "shortener_api_key_secret_id" {
   value = google_secret_manager_secret.shortener_api_key.secret_id
+}
+
+output "overfwd_gateway_key_secret_id" {
+  value = google_secret_manager_secret.overfwd_gateway_key.secret_id
 }
 
 output "db_password_value" {

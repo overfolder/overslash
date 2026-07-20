@@ -33,6 +33,11 @@ output "cloud_build_service_account" {
   value       = module.iam.cloud_build_sa_email
 }
 
+output "overfwd_url" {
+  description = "Cloud Run URL of the shared Mailbox Gateway (if enabled). Useful for smoke-testing /openapi.json before the custom domain resolves."
+  value       = var.enable_overfwd ? module.cloud_run_overfwd[0].service_url : ""
+}
+
 output "valkey_host" {
   description = "Valkey host (if enabled)"
   value       = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""

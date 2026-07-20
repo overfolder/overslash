@@ -1194,6 +1194,7 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        platform_credential: None,
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
         email_provider: None,

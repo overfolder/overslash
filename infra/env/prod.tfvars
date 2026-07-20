@@ -55,6 +55,12 @@ enable_valkey    = true
 enable_dns       = false
 enable_shortener = true
 
+# Shared overfwd Mailbox Gateway. This hostname is what `services/email.yaml`
+# ships as `servers[0]`, so every `email` instance that pins no `url` lands
+# here. Needs a manual `mailbox CNAME ghs.googlehosted.com` at the registrar.
+enable_overfwd = true
+overfwd_domain = "mailbox.overslash.com"
+
 # oversla.sh shortener config
 shortener_base_url          = "https://oversla.sh"
 shortener_domain            = "oversla.sh"

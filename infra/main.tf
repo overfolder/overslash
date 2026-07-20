@@ -53,6 +53,10 @@ module "artifact_registry" {
   region      = var.region
   base_prefix = local.base_prefix
 
+  # overfwd is the one image we deploy but do not build; the mirror keeps its
+  # pull off Docker Hub's availability and rate limits.
+  enable_docker_hub_remote = var.enable_overfwd
+
   depends_on = [google_project_service.apis]
 }
 
@@ -174,6 +178,14 @@ module "cloud_run" {
   enable_shortener_client     = var.enable_shortener_client
   oversla_sh_base_url         = var.oversla_sh_base_url
   shortener_api_key_secret_id = module.secret_manager.shortener_api_key_secret_id
+
+  # Shared Mailbox Gateway: fill the `email` template's org-source gateway slot
+  # from platform config so no org has to hold the key (D39). Host-gated to the
+  # deployment below, so an org pointing its instances at its own overfwd never
+  # receives it.
+  platform_gateway_secret_name   = var.enable_overfwd ? "overfwd_gateway_key" : ""
+  platform_gateway_host          = var.enable_overfwd ? var.overfwd_domain : ""
+  platform_gateway_key_secret_id = var.enable_overfwd ? module.secret_manager.overfwd_gateway_key_secret_id : ""
 
   depends_on = [
     module.cloud_sql,
@@ -390,6 +402,41 @@ module "cloud_run_shortener" {
 
   depends_on = [
     module.memorystore,
+    module.secret_manager,
+    module.artifact_registry,
+  ]
+}
+
+# --- overfwd Mailbox Gateway Cloud Run service (optional) ---
+#
+# The shared gateway behind `services/email.yaml`'s
+# `servers: https://mailbox.overslash.com`. Deliberately NOT attached to the
+# VPC — see the module for why. No Cloud Build trigger: this is a third-party
+# image (overspiral/overfwd) pulled through the Docker Hub mirror at a pinned
+# digest, not something this repo builds.
+module "cloud_run_overfwd" {
+  count = var.enable_overfwd ? 1 : 0
+
+  source      = "./modules/cloud-run-overfwd"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  service_account_email = module.iam.cloud_run_sa_email
+
+  image = "${module.artifact_registry.docker_hub_repository_url}/${var.overfwd_image}"
+
+  cpu           = var.overfwd_cpu
+  memory        = var.overfwd_memory
+  min_instances = var.overfwd_min_instances
+  max_instances = var.overfwd_max_instances
+  concurrency   = var.overfwd_concurrency
+
+  api_key_secret_id = module.secret_manager.overfwd_gateway_key_secret_id
+
+  domain = var.overfwd_domain
+
+  depends_on = [
     module.secret_manager,
     module.artifact_registry,
   ]

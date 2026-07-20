@@ -285,6 +285,63 @@ variable "shortener_root_redirect_url" {
   default     = ""
 }
 
+# --- overfwd (shared Mailbox Gateway) ---
+
+variable "enable_overfwd" {
+  description = "Deploy the shared overfwd Mailbox Gateway that backs `services/email.yaml`. Also provisions the Docker Hub pull-through mirror and wires the API's platform-credential rung so no org has to store the gateway key."
+  type        = bool
+  default     = false
+}
+
+variable "overfwd_image" {
+  description = "overfwd image path *relative to the Docker Hub mirror*, digest-pinned (e.g. `angelmanuel/overfwd@sha256:…`). A moving tag would be an unreviewed third-party code change reaching production on the next revision roll, so a digest is required."
+  type        = string
+  # v0.3.0 — first release with OVERFWD_BLOCK_PRIVATE_ENDPOINTS, which the
+  # module turns on. Do not downgrade below it without also revisiting that.
+  default = "angelmanuel/overfwd@sha256:cd403be0c5c789ae16fcfc7e6971377712700a7b2b9d45f721449074f94b16fd"
+
+  validation {
+    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.overfwd_image))
+    error_message = "overfwd_image must be digest-pinned (…@sha256:<64 hex chars>)."
+  }
+}
+
+variable "overfwd_domain" {
+  description = "Hostname the gateway serves (e.g. mailbox.overslash.com). Must match `servers[0]` in services/email.yaml for the platform key to be injected on default instances. Empty = no domain mapping and no platform rung."
+  type        = string
+  default     = ""
+}
+
+variable "overfwd_cpu" {
+  description = "Cloud Run CPU for overfwd. Keep at 1: below one vCPU Cloud Run pins concurrency to 1."
+  type        = string
+  default     = "1"
+}
+
+variable "overfwd_memory" {
+  description = "Cloud Run memory for overfwd. ~17MiB at rest; legal below 512Mi only because the module throttles CPU when idle. Raise in lockstep with overfwd_concurrency."
+  type        = string
+  default     = "256Mi"
+}
+
+variable "overfwd_min_instances" {
+  description = "Min Cloud Run instances for overfwd. 0 scales to zero; a mailbox call then pays a cold start."
+  type        = number
+  default     = 0
+}
+
+variable "overfwd_max_instances" {
+  description = "Max Cloud Run instances for overfwd"
+  type        = number
+  default     = 3
+}
+
+variable "overfwd_concurrency" {
+  description = "Requests in flight per overfwd instance. Far below Cloud Run's default 80 because each in-flight `get` can hold a whole message in memory and the limit is 256Mi."
+  type        = number
+  default     = 8
+}
+
 # --- Billing ---
 
 variable "cloud_billing" {

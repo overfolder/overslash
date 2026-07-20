@@ -156,7 +156,24 @@ async fn setup_email_instance_layered(
     layer: Option<Value>,
     body: Value,
 ) -> (String, String, String, Value) {
-    let (base, client) = start_api_with_registry(pool, None).await;
+    setup_email_instance_configured(pool, secrets, layer, body, |_| {}).await
+}
+
+/// As [`setup_email_instance_layered`], but applies `customize` to the API's
+/// `Config` before boot — how the platform-credential tests below install a
+/// platform gateway key (and route the template's real `mailbox.overslash.com`
+/// host at the in-process mock) without touching process-global env.
+async fn setup_email_instance_configured<F>(
+    pool: sqlx::PgPool,
+    secrets: &[(&str, &str)],
+    layer: Option<Value>,
+    body: Value,
+    customize: F,
+) -> (String, String, String, Value)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
+    let (base, client) = common::start_api_with_registry_customized(pool, None, customize).await;
     let (_org_id, _ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     if let Some(delta) = layer {
@@ -1506,4 +1523,170 @@ async fn email_instance_and_caller_override_org_layer_defaults() {
         Some(MAILBOX_BASIC),
         "instance config must beat the layer default inside the credential too"
     );
+}
+
+// ── Platform-hosted gateway: the credential rung below the org vault (D39) ──
+
+/// The host `services/email.yaml` ships as `servers[0]` — the shared Overslash
+/// Cloud deployment. The tests below leave the instance's `url` unset so the
+/// request resolves to exactly this host, then rewrite it at send time onto the
+/// in-process mock via `service_base_overrides` (per-boot config, not env).
+const PLATFORM_HOST: &str = "mailbox.overslash.com";
+const PLATFORM_KEY: &str = "platform-gw-key";
+
+/// Install the platform credential for `overfwd_gateway_key` on `PLATFORM_HOST`
+/// and route that host at `mock_url`.
+fn with_platform_gateway(mock_url: &str) -> impl FnOnce(&mut overslash_api::config::Config) {
+    let mock_url = mock_url.to_string();
+    move |cfg: &mut overslash_api::config::Config| {
+        cfg.platform_credential = Some(overslash_api::config::PlatformCredential {
+            secret_name: "overfwd_gateway_key".into(),
+            host: PLATFORM_HOST.into(),
+            value: PLATFORM_KEY.into(),
+        });
+        cfg.service_base_overrides
+            .insert(PLATFORM_HOST.into(), mock_url);
+    }
+}
+
+/// An instance body with no `url`: the request lands on the template's own
+/// `servers[0]`, i.e. the shared gateway.
+fn default_instance_body() -> Value {
+    json!({
+        "template_key": "email",
+        "name": "email",
+        "user_level": false,
+        "status": "active",
+        // The username is a plain config value since D38; only the password
+        // is vaulted.
+        "config": { "mailbox_user": MAILBOX_USER },
+        "credentials": { "mailbox_pass": "mailbox_pass" },
+    })
+}
+
+const MAILBOX_SECRETS: [(&str, &str); 1] = [("mailbox_pass", MAILBOX_PASS)];
+
+async fn call_search(base: &str, agent_key: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "email",
+            "action": "search",
+            "params": { "query": "ALL" }
+        }))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// The whole point of a platform-hosted gateway: an org that has stored NOTHING
+/// still authenticates against it. Without this rung the `gateway` scheme is
+/// optional-and-absent, the `Authorization` header is dropped, and the shared
+/// deployment (which runs with OVERFWD_REQUIRE_API_KEY=true) answers 401.
+#[tokio::test]
+async fn email_platform_gateway_key_injected_when_org_stored_none() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, agent_key, _admin, _inst) = setup_email_instance_configured(
+        pool,
+        &MAILBOX_SECRETS,
+        None,
+        default_instance_body(),
+        with_platform_gateway(&gateway_url),
+    )
+    .await;
+
+    let resp = call_search(&base, &agent_key).await;
+    assert_eq!(
+        resp.status(),
+        200,
+        "read should auto-execute: {}",
+        resp.text().await.unwrap()
+    );
+
+    let captured = sink.lock().unwrap().clone();
+    let req = captured.first().expect("gateway saw no request");
+    assert_eq!(
+        req.authorization.as_deref(),
+        Some(&format!("Bearer {PLATFORM_KEY}")[..]),
+        "org stored no gateway key; the platform rung must supply it"
+    );
+    // The per-mailbox credential is still the org's own.
+    assert_eq!(req.mailbox_auth.as_deref(), Some(MAILBOX_BASIC));
+}
+
+/// An org that stores its own `overfwd_gateway_key` wins. The rung is a
+/// fallback, not an override — otherwise an org could never rotate away from
+/// the platform key on its own deployment.
+#[tokio::test]
+async fn email_org_gateway_key_beats_the_platform_one() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let secrets = [
+        ("overfwd_gateway_key", GATEWAY_KEY),
+        ("mailbox_pass", MAILBOX_PASS),
+    ];
+    let (base, agent_key, _admin, _inst) = setup_email_instance_configured(
+        pool,
+        &secrets,
+        None,
+        default_instance_body(),
+        with_platform_gateway(&gateway_url),
+    )
+    .await;
+
+    let resp = call_search(&base, &agent_key).await;
+    assert_eq!(resp.status(), 200, "{}", resp.text().await.unwrap());
+
+    let captured = sink.lock().unwrap().clone();
+    let req = captured.first().expect("gateway saw no request");
+    assert_eq!(
+        req.authorization.as_deref(),
+        Some(&format!("Bearer {GATEWAY_KEY}")[..]),
+        "the org's own key must win over the platform fallback"
+    );
+}
+
+/// The containment property. An org pointing its instance at its OWN overfwd
+/// must not receive the platform's key — a shared credential leaking to an
+/// arbitrary tenant-chosen host is the failure mode this rung has to avoid, and
+/// `instance.url` is tenant-controlled. It gets the keyless behaviour instead:
+/// no `Authorization` at all.
+#[tokio::test]
+async fn email_platform_gateway_key_never_leaves_the_platform_host() {
+    let pool = common::test_pool().await;
+    // Two mocks: the platform gateway the credential is pinned to, and the
+    // org's own deployment, which is where this instance actually points.
+    let (platform_url, platform_sink) = start_mock_overfwd().await;
+    let (self_hosted_url, self_hosted_sink) = start_mock_overfwd().await;
+
+    let mut body = default_instance_body();
+    body["url"] = json!(self_hosted_url);
+
+    let (base, agent_key, _admin, _inst) = setup_email_instance_configured(
+        pool,
+        &MAILBOX_SECRETS,
+        None,
+        body,
+        with_platform_gateway(&platform_url),
+    )
+    .await;
+
+    let resp = call_search(&base, &agent_key).await;
+    assert_eq!(resp.status(), 200, "{}", resp.text().await.unwrap());
+
+    assert!(
+        platform_sink.lock().unwrap().is_empty(),
+        "request must go to the org's own gateway, not the platform one"
+    );
+    let captured = self_hosted_sink.lock().unwrap().clone();
+    let req = captured
+        .first()
+        .expect("self-hosted gateway saw no request");
+    assert_eq!(
+        req.authorization, None,
+        "the platform key must never be sent to a tenant-chosen host"
+    );
+    assert_eq!(req.mailbox_auth.as_deref(), Some(MAILBOX_BASIC));
 }

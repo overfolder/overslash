@@ -267,6 +267,7 @@
 - **CI**: GitHub Actions with coverage reporting, real OAuth provider tests
 - **PR flow**: feature branches → `dev` → `master`
 - **IaC**: OpenTofu under `/infra` — deploys to GCP Cloud Run with Cloud SQL, Artifact Registry, Secret Manager, Cloud Build, and optional Memorystore/DNS
+- **Mailbox Gateway**: shared [overfwd](https://github.com/overspiral/overfwd) deployment on Cloud Run (`infra/modules/cloud-run-overfwd/`, `enable_overfwd`) serving `mailbox.overslash.com` / `mailbox.dev.overslash.com` — the `servers[0]` of `services/email.yaml`. Digest-pinned third-party image via the Artifact Registry Docker Hub mirror; requires a bearer key that the API supplies for every org through the platform-credential rung, so no org stores it (D39). Runbook: [docs/runbooks/mailbox-gateway.md](docs/runbooks/mailbox-gateway.md)
 - **Docker**: Multi-stage Dockerfile (Rust build → Debian slim runtime), `docker-compose.prod.yml` for local prod-like testing
 - **Environments**: `dev` (overslash-dev) and `prod` (overslash) via `infra/env/*.tfvars`
 - **Deployment**: `make tofu-plan ENV=dev && make tofu-apply ENV=dev`

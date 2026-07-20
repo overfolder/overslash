@@ -1083,6 +1083,11 @@ pub(crate) async fn resolve_instance_auth(
     // behaviour exactly (steps 2 and 3).
     let mut secret_refs: Vec<SecretRef> = Vec::new();
     let mut instance_secret_missing = false;
+    // Where this instance's traffic lands — the same derivation the executor
+    // uses, so the platform-credential host check below can't disagree with the
+    // URL actually dialled. Only consulted for the platform rung.
+    let platform_base =
+        crate::routes::actions::service_resolve::effective_base(Some(instance), svc);
     for service_auth in &svc.auth {
         let overslash_core::types::ServiceAuth::Secret {
             scheme,
@@ -1118,10 +1123,28 @@ pub(crate) async fn resolve_instance_auth(
                         // deployment simply omits it rather than failing on a
                         // missing secret. Required org slots fall through to the
                         // send-time `secret not found` error as before.
+                        //
+                        // …unless the platform itself holds a credential for
+                        // this slot on the host this request is bound for
+                        // (D39): the shared Mailbox Gateway requires a key, and
+                        // asking every org to store the same platform key would
+                        // be absurd. The org vault still wins — this only
+                        // decides whether an *absent* org secret means "skip
+                        // the header" or "the platform will supply it at send
+                        // time"; the value itself is resolved (and host-checked
+                        // again) in `resolve_credential_values`.
                         if slot.optional
                             && scope
                                 .get_current_secret_value(&slot.default_secret_name)
                                 .await?
+                                .is_none()
+                            && platform_base
+                                .as_deref()
+                                .and_then(|base| {
+                                    state
+                                        .config
+                                        .platform_credential_for(&slot.default_secret_name, base)
+                                })
                                 .is_none()
                         {
                             scheme_unresolved = true;

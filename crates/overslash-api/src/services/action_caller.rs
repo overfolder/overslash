@@ -238,17 +238,30 @@ pub async fn resolve_credential_values(
         };
 
         for (slot, secret_name) in bindings {
-            let version = scope
-                .get_current_secret_value(secret_name)
-                .await?
-                .ok_or_else(|| AppError::CredentialMissing {
+            let Some(version) = scope.get_current_secret_value(secret_name).await? else {
+                // Nothing in the org vault. One rung below it sits the platform
+                // itself, for the services the platform hosts (D39) — the
+                // shared Mailbox Gateway's key, which no org should have to
+                // store. Bound to both the secret name and the host: the URL
+                // is re-checked here, not just at resolve time, so an approval
+                // created against the platform gateway and replayed after the
+                // instance was repointed elsewhere cannot carry the key out.
+                if let Some(platform) = state
+                    .config
+                    .platform_credential_for(secret_name, &action_req.url)
+                {
+                    slot_values.insert(slot.to_string(), platform.to_string());
+                    continue;
+                }
+                return Err(AppError::CredentialMissing {
                     service: service_key.map(str::to_string),
                     secret_name: secret_name.to_string(),
                     hint_url: Some(state.config.dashboard_url_for(&format!(
                         "/secrets?name={}",
                         urlencoding::encode(secret_name)
                     ))),
-                })?;
+                });
+            };
             let decrypted = crypto::decrypt(&enc_key, &version.encrypted_value)?;
             let value = String::from_utf8(decrypted)
                 .map_err(|_| AppError::Internal("secret is not valid utf-8".into()))?;
