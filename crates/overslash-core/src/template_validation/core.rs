@@ -728,6 +728,7 @@ mod tests {
                         mcp_tool: None,
                         output_schema: None,
                         disabled: false,
+                        request_body: None,
                     },
                 );
                 m
@@ -1089,6 +1090,7 @@ mod tests {
                 mcp_tool: None,
                 output_schema: None,
                 disabled: false,
+                request_body: None,
             },
         );
         let r = run(&d);
@@ -1134,6 +1136,7 @@ mod tests {
                 mcp_tool: Some("search".into()),
                 output_schema: None,
                 disabled: false,
+                request_body: None,
             },
         );
         ServiceDefinition {

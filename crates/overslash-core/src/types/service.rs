@@ -439,6 +439,53 @@ pub struct ServiceAction {
     /// surfaces it in the MCP discovery-override flow.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+    /// The operation's declared `requestBody`, parsed at template-load time.
+    /// `None` means the operation takes no body at all (e.g. a POST whose only
+    /// inputs are path params) — routing then sends neither a body nor a
+    /// `Content-Type`.
+    ///
+    /// Presence here is a static fact about the contract, *not* a function of
+    /// which arguments a caller happened to supply: an operation whose body
+    /// fields are all optional (`POST /email/search`) must still send `{}` with
+    /// the declared media type, or a strict upstream extractor rejects the call
+    /// before it ever looks at the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_body: Option<RequestBodySpec>,
+}
+
+/// An operation's declared `requestBody`, reduced to what routing needs: which
+/// media type to send it as, and whether the upstream demands it.
+///
+/// `Content-Type` is deliberately modelled here rather than as a header param:
+/// it is derived from the payload, not chosen by the caller. Caller/template
+/// -chosen headers keep their own channel (`ParamLocation::Header` and
+/// `securitySchemes` injection), so the two mechanisms never contend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestBodySpec {
+    /// The media type key declared under `requestBody.content`, sent verbatim
+    /// as the `Content-Type` header (e.g. `application/json`).
+    pub content_type: String,
+    /// The `requestBody.required` flag. Informational for routing — a body is
+    /// sent whenever one is declared — but retained so validation can tell an
+    /// omitted-but-required body from an omitted-and-optional one.
+    #[serde(default)]
+    pub required: bool,
+}
+
+impl RequestBodySpec {
+    /// Whether this body is carried as JSON — `application/json` or a
+    /// structured suffix like `application/vnd.api+json`. Parameters are only
+    /// extracted (and bodies only serialised) for JSON media types today.
+    pub fn is_json(&self) -> bool {
+        let base = self
+            .content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        base == "application/json" || (base.starts_with("application/") && base.ends_with("+json"))
+    }
 }
 
 /// One entry in `ServiceAction::disclose`. The `filter` is a jq expression
@@ -882,6 +929,7 @@ mod tests {
                 mcp_tool: Some("search_issues".into()),
                 output_schema: Some(serde_json::json!({ "type": "object" })),
                 disabled: false,
+                request_body: None,
             },
         );
         let svc = ServiceDefinition {
@@ -941,6 +989,7 @@ mod tests {
             mcp_tool: None,
             output_schema: None,
             disabled: false,
+            request_body: None,
         };
         let j = serde_json::to_value(&a).unwrap();
         assert!(j.get("disabled").is_none());
