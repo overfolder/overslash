@@ -145,6 +145,51 @@ pub(super) async fn resolve_service_for_verb_shape(
     Ok((instance, svc))
 }
 
+/// The origin an instance's traffic lands on, most specific first (parity with
+/// the MCP fork in `resolve_effective_mcp`):
+///
+///   1. the instance's own `url` — one instance pointed somewhere else, e.g. a
+///      developer testing against a local overfwd;
+///   2. the org layer's `instance_defaults.url` (D36) — every instance in the
+///      org lands on the org's dedicated deployment with nothing to configure
+///      per user;
+///   3. the template's first host.
+///
+/// (1) and (2) are used verbatim, scheme and port preserved, unlike `hosts`,
+/// which `url_to_host` reduces to a bare hostname — so (3) forces https unless
+/// the stored host already carries a scheme (a test affordance, e.g.
+/// "http://localhost:1234"). Trailing `/` is trimmed so callers can append a
+/// path directly.
+///
+/// `None` only when the template declares no hosts at all (the `http`
+/// pseudo-service, which never reaches the action shape).
+///
+/// Shared with `resolve_instance_auth`, which must know where a request will
+/// land *before* deciding whether the platform gateway credential (D39) may be
+/// injected — the two derivations drifting apart would mean injecting a
+/// credential meant for one host onto a request bound for another.
+pub(super) fn effective_base(
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+    svc: &overslash_core::types::ServiceDefinition,
+) -> Option<String> {
+    let explicit = instance.and_then(|i| i.url.as_deref()).or_else(|| {
+        svc.instance_defaults
+            .as_ref()
+            .and_then(|d| d.url.as_deref())
+    });
+    match explicit {
+        Some(u) => Some(u.trim_end_matches('/').to_string()),
+        None => {
+            let host = svc.hosts.first()?;
+            Some(if host.contains("://") {
+                host.clone()
+            } else {
+                format!("https://{host}")
+            })
+        }
+    }
+}
+
 /// Resolve the path + outgoing URL for a Service + HTTP verb call.
 ///
 /// Two input shapes:

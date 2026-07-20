@@ -68,6 +68,26 @@ in-process mock gateway) and `dashboard/tests/e2e/flows/email-configure-and-try-
 (full user story through the dashboard, against a real overfwd talking real IMAP to a GreenMail
 container — see `make mail-up`).
 
+### Update (2026-07-20): the gateway is deployed — see D39
+
+Decision 12 below ("Cloud hosting = Cloud Run, one shared stateless service") is
+**built**: `infra/modules/cloud-run-overfwd/` serves `mailbox.overslash.com`, the
+hostname `services/email.yaml` has shipped as `servers[0]` since day one and
+which until now did not resolve. Overfolder had built a per-org deployment
+(overfolder#528) and backed it out (#530) on exactly decision 7's reasoning: the
+gateway is a deployment topology, and a stateless one protects nothing extra
+when copied per tenant.
+
+The one thing a *shared* deployment forced that a per-org one did not: the
+gateway runs with `OVERFWD_REQUIRE_API_KEY=true`, and decision 9's "single static
+Overslash-identity bearer" has nowhere to live. The `gateway` scheme is
+`secret_source: org`, so the key would have to sit in every org's vault — the
+same platform key, N times, unrotatable in practice. The credential cascade
+therefore gains one rung **below** the org vault, host-pinned to the platform
+deployment, so an org that stores its own key or points its instances at its own
+overfwd is completely unaffected. Details and the SSRF posture: D39, plus
+[docs/runbooks/mailbox-gateway.md](../runbooks/mailbox-gateway.md).
+
 ---
 
 **Original design** (settled grilling session 2026-07-08/09):

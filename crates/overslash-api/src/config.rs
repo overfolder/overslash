@@ -149,6 +149,12 @@ pub struct Config {
     /// `OVERSLASH_SSRF_ALLOW_PRIVATE=1` is set, so prod deploys can leave the
     /// var defined harmlessly.
     pub service_base_overrides: HashMap<String, String>,
+    /// Credential this deployment supplies on an org's behalf, for a service
+    /// it hosts itself. `None` on a deployment that hosts no such service —
+    /// every self-host, and any env where the three vars aren't all set.
+    ///
+    /// See [`PlatformCredential`] for why it is one entry and not a map.
+    pub platform_credential: Option<PlatformCredential>,
     /// Base URL for the `oversla.sh` short-link service, e.g.
     /// `https://oversla.sh`. When set together with `oversla_sh_api_key`,
     /// the nested-OAuth `initiate` handler creates a short URL alongside
@@ -232,6 +238,52 @@ fn parse_connection_return_url_allowed_hosts(raw: Option<&str>) -> Vec<String> {
         .map(|h| h.trim().to_ascii_lowercase())
         .filter(|h| !h.is_empty())
         .collect()
+}
+
+/// A credential the *platform* holds on every org's behalf, for a service the
+/// platform itself hosts — today only the shared overfwd Mailbox Gateway
+/// (`services/email.yaml`, D39).
+///
+/// It sits one rung below the org vault in the credential cascade: an org that
+/// stores the named secret, or binds it per instance, still wins. And it is
+/// pinned to a single `host`, because the whole point of the shared gateway is
+/// that a *different* org can point its instances at its own deployment — that
+/// deployment must never receive our key.
+///
+/// Deliberately one entry rather than a map keyed by secret name: there is
+/// exactly one platform-hosted upstream, and a map would invite filling
+/// third-party credentials from platform env, which is what
+/// `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS` (OAuth clients, tier 4)
+/// already exists to gate loudly. Generalise when a second one appears.
+#[derive(Debug, Clone)]
+pub struct PlatformCredential {
+    /// Vault secret name this fills — `overfwd_gateway_key`. Matched against a
+    /// credential slot's `default_secret_name`.
+    pub secret_name: String,
+    /// The only host the value may be sent to, lowercased.
+    pub host: String,
+    /// The credential itself. Cloud Run surfaces the Secret Manager value as
+    /// an env var, same as `stripe_secret_key` and friends.
+    pub value: String,
+}
+
+/// Build the platform credential from its three env vars. All three must be
+/// present and non-empty — a partial config (a host with no key, a key with no
+/// host) is a misconfiguration that must not silently degrade into "inject
+/// nowhere" or, worse, "inject everywhere".
+fn parse_platform_credential(
+    secret_name: Option<&str>,
+    host: Option<&str>,
+    value: Option<&str>,
+) -> Option<PlatformCredential> {
+    let secret_name = secret_name.map(str::trim).filter(|s| !s.is_empty())?;
+    let host = host.map(str::trim).filter(|s| !s.is_empty())?;
+    let value = value.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(PlatformCredential {
+        secret_name: secret_name.to_string(),
+        host: host.to_ascii_lowercase(),
+        value: value.to_string(),
+    })
 }
 
 fn parse_service_base_overrides(raw: Option<&str>) -> HashMap<String, String> {
@@ -493,6 +545,13 @@ impl Config {
             service_base_overrides: parse_service_base_overrides(
                 env::var("OVERSLASH_SERVICE_BASE_OVERRIDES").ok().as_deref(),
             ),
+            platform_credential: parse_platform_credential(
+                env::var("OVERSLASH_PLATFORM_GATEWAY_SECRET_NAME")
+                    .ok()
+                    .as_deref(),
+                env::var("OVERSLASH_PLATFORM_GATEWAY_HOST").ok().as_deref(),
+                env::var("OVERSLASH_PLATFORM_GATEWAY_KEY").ok().as_deref(),
+            ),
             oversla_sh_base_url: env::var("OVERSLA_SH_BASE_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -581,6 +640,26 @@ impl Config {
     /// The override is silently skipped if the override target is not loopback
     /// and `OVERSLASH_SSRF_ALLOW_PRIVATE` isn't set — the SSRF guard is
     /// honored regardless. Errors in URL parsing fall through unchanged.
+    /// The platform-held value for vault secret `secret_name`, if this
+    /// deployment has one *and* `url` lands on the host it is pinned to.
+    ///
+    /// Both conditions matter. The name check keeps the value bound to the one
+    /// credential slot it belongs to; the host check keeps it off any other
+    /// upstream, so an org that points its `email` instances at a self-hosted
+    /// overfwd — or at an attacker's — receives nothing.
+    ///
+    /// `url` is the full outgoing request URL. Anything that doesn't parse, or
+    /// carries no host, resolves to `None`: a URL we can't reason about is not
+    /// one we hand a credential to.
+    pub fn platform_credential_for(&self, secret_name: &str, url: &str) -> Option<&str> {
+        let cred = self.platform_credential.as_ref()?;
+        if cred.secret_name != secret_name {
+            return None;
+        }
+        let host = url::Url::parse(url).ok()?.host_str()?.to_ascii_lowercase();
+        (host == cred.host).then_some(cred.value.as_str())
+    }
+
     pub fn apply_base_overrides(&self, url_str: &str) -> String {
         if self.service_base_overrides.is_empty() {
             return url_str.to_string();
@@ -827,6 +906,82 @@ mod tests {
                 .as_deref(),
         );
         assert!(hosts.is_empty());
+    }
+
+    fn platform_config() -> Config {
+        let mut cfg = empty_test_config();
+        cfg.platform_credential = Some(PlatformCredential {
+            secret_name: "overfwd_gateway_key".into(),
+            host: "mailbox.overslash.com".into(),
+            value: "platform-key".into(),
+        });
+        cfg
+    }
+
+    #[test]
+    fn platform_credential_matches_on_name_and_host() {
+        let cfg = platform_config();
+        assert_eq!(
+            cfg.platform_credential_for(
+                "overfwd_gateway_key",
+                "https://mailbox.overslash.com/email/search"
+            ),
+            Some("platform-key")
+        );
+        // Case and port are not part of the identity of a host.
+        assert_eq!(
+            cfg.platform_credential_for(
+                "overfwd_gateway_key",
+                "https://MAILBOX.Overslash.com:443/email/search"
+            ),
+            Some("platform-key")
+        );
+    }
+
+    #[test]
+    fn platform_credential_withheld_from_any_other_host_or_slot() {
+        let cfg = platform_config();
+        // A self-hosted gateway — the containment property. `instance.url` is
+        // tenant-controlled, so this is the case that must never leak.
+        assert_eq!(
+            cfg.platform_credential_for(
+                "overfwd_gateway_key",
+                "https://overfwd.some-tenant.example/email/search"
+            ),
+            None
+        );
+        // A lookalike host must not match on suffix.
+        assert_eq!(
+            cfg.platform_credential_for(
+                "overfwd_gateway_key",
+                "https://evil-mailbox.overslash.com.attacker.test/email/search"
+            ),
+            None
+        );
+        // Right host, different credential slot.
+        assert_eq!(
+            cfg.platform_credential_for("stripe_key", "https://mailbox.overslash.com/x"),
+            None
+        );
+        // A URL we cannot parse is not one we hand a credential to.
+        assert_eq!(
+            cfg.platform_credential_for("overfwd_gateway_key", "not a url"),
+            None
+        );
+    }
+
+    #[test]
+    fn platform_credential_absent_without_all_three_vars() {
+        assert!(
+            empty_test_config()
+                .platform_credential_for("overfwd_gateway_key", "https://mailbox.overslash.com/x")
+                .is_none()
+        );
+        // A partial config must not half-activate the rung.
+        assert!(parse_platform_credential(Some("overfwd_gateway_key"), Some("h"), None).is_none());
+        assert!(parse_platform_credential(Some("overfwd_gateway_key"), None, Some("k")).is_none());
+        assert!(parse_platform_credential(None, Some("h"), Some("k")).is_none());
+        assert!(parse_platform_credential(Some("n"), Some("  "), Some("k")).is_none());
     }
 
     #[test]
@@ -1227,6 +1382,7 @@ mod tests {
             api_host_suffix: None,
             session_cookie_domain: None,
             service_base_overrides: HashMap::new(),
+            platform_credential: None,
             oversla_sh_base_url: None,
             oversla_sh_api_key: None,
             email_provider: None,

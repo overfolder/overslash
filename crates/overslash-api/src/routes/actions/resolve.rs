@@ -564,41 +564,8 @@ pub(super) async fn resolve_request(
             }
         }
 
-        // Base URL resolution, most specific first (parity with the MCP fork
-        // above):
-        //
-        //   1. the instance's own `url` — one instance pointed somewhere else,
-        //      e.g. a developer testing against a local overfwd;
-        //   2. the org layer's `instance_defaults.url` — every instance in the
-        //      org lands on the org's dedicated deployment with nothing to
-        //      configure per user;
-        //   3. the template's first host.
-        //
-        // (1) and (2) are used verbatim, scheme and port preserved, unlike
-        // `hosts`, which `url_to_host` reduces to a bare hostname — so (3)
-        // forces https unless the stored host already carries a scheme (a test
-        // affordance, e.g. "http://localhost:1234").
-        let explicit_base = instance
-            .as_ref()
-            .and_then(|i| i.url.as_deref())
-            .or_else(|| {
-                svc.instance_defaults
-                    .as_ref()
-                    .and_then(|d| d.url.as_deref())
-            });
-        let base = match explicit_base {
-            Some(u) => u.trim_end_matches('/').to_string(),
-            None => {
-                let host = svc.hosts.first().ok_or_else(|| {
-                    AppError::Internal(format!("service '{service_key}' has no hosts"))
-                })?;
-                if host.contains("://") {
-                    host.clone()
-                } else {
-                    format!("https://{host}")
-                }
-            }
-        };
+        let base = effective_base(instance.as_ref(), &svc)
+            .ok_or_else(|| AppError::Internal(format!("service '{service_key}' has no hosts")))?;
         let base_url = format!("{base}{path}");
 
         // Header-located params (e.g. a template-pinned `Notion-Version`) are

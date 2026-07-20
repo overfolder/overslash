@@ -76,6 +76,14 @@ infra_scheduler_start_cron = "0 7 * * *"
 enable_valkey = false
 enable_dns    = false
 
+# Shared overfwd Mailbox Gateway behind `services/email.yaml`. The dev
+# deployment is the one an `email` instance reaches when it pins no `url` and
+# the dev API's platform rung fills `overfwd_gateway_key` for it. Needs a
+# manual `mailbox.dev CNAME ghs.googlehosted.com` at the registrar (enable_dns
+# is off — overslash.com's zone is not in GCP).
+enable_overfwd = true
+overfwd_domain = "mailbox.dev.overslash.com"
+
 # Use the prod oversla.sh shortener instead of spinning up a local one.
 # The API key is copied from prod:
 #   gcloud secrets versions access latest --secret=overslash-prod-shortener-api-key --project=overslash | \

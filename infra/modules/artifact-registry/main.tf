@@ -27,6 +27,16 @@ variable "cleanup_dry_run" {
   default = false
 }
 
+# Provision a pull-through cache of Docker Hub. Needed for third-party images
+# we deploy but do not build (overfwd), so Cloud Run pulls from Artifact
+# Registry rather than depending on Docker Hub's availability and rate limits
+# at revision-deploy time. Digest pins stay valid: a remote repository serves
+# the upstream manifest unchanged.
+variable "enable_docker_hub_remote" {
+  type    = bool
+  default = false
+}
+
 resource "google_artifact_registry_repository" "repo" {
   location      = var.region
   repository_id = "${var.base_prefix}-registry"
@@ -66,6 +76,27 @@ resource "google_artifact_registry_repository" "repo" {
   }
 }
 
+# Pull-through cache of Docker Hub. Carries no cleanup policies: its contents
+# are cached upstream layers, not artifacts we own, and Artifact Registry
+# manages their lifetime itself.
+resource "google_artifact_registry_repository" "docker_hub" {
+  count = var.enable_docker_hub_remote ? 1 : 0
+
+  location      = var.region
+  repository_id = "${var.base_prefix}-dockerhub"
+  description   = "Remote (pull-through) mirror of Docker Hub"
+  format        = "DOCKER"
+  mode          = "REMOTE_REPOSITORY"
+  project       = var.project_id
+
+  remote_repository_config {
+    description = "Docker Hub"
+    docker_repository {
+      public_repository = "DOCKER_HUB"
+    }
+  }
+}
+
 output "repository_id" {
   value = google_artifact_registry_repository.repo.id
 }
@@ -76,4 +107,10 @@ output "repository_name" {
 
 output "repository_url" {
   value = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.repo.repository_id}"
+}
+
+# Base for Docker Hub images pulled through the mirror: append the upstream
+# path, e.g. `<url>/angelmanuel/overfwd@sha256:…`. Empty when the mirror is off.
+output "docker_hub_repository_url" {
+  value = var.enable_docker_hub_remote ? "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.docker_hub[0].repository_id}" : ""
 }
