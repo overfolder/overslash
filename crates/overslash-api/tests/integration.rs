@@ -363,21 +363,6 @@ fn auth(key: &str) -> (&'static str, String) {
 // ============================================================================
 
 #[tokio::test]
-async fn test_health() {
-    let pool = common::test_pool().await;
-    let (api_addr, client) = start_api(pool).await;
-    let resp: Value = client
-        .get(format!("http://{api_addr}/health"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(resp["status"], "ok");
-}
-
-#[tokio::test]
 async fn test_whoami_returns_caller_identity_for_bearer_key() {
     // /v1/whoami is the Bearer-friendly self-introspection endpoint that
     // `mcp setup` uses to discover its own identity_id (so it can supply

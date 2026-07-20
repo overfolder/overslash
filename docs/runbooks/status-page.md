@@ -8,7 +8,13 @@ Public URL: <https://status.overslash.com>
 - **Components**: `api.overslash.com` and `app.overslash.com`, each backed by
   an HTTPS check on 180s cadence across the `eu`/`us`/`as`/`au` regions.
 - **Monitors** (managed in the Better Stack console, not IaC):
-  - `api.overslash.com/health` — plain `status` (HTTP up) check.
+  - `api.overslash.com/health` — plain `status` (HTTP up) check. The body also
+    carries `"db": "up" | "down"` (plus `db_latency_ms` or `db_error`), but
+    `/health` returns **200 even when `db` is `down`** — by design. It backs the
+    Cloud Run startup *and* liveness probes, so failing it on a Cloud SQL blip
+    would recycle every container mid-outage and block redeploys until the
+    database recovered. Use `/ready` for a check that 503s on an unreachable
+    database; no probe or monitor points at it yet.
   - `app.overslash.com` — `keyword` check for `_app/immutable`. The dashboard is
     a SvelteKit SPA shell with no SSR text, so this marker confirms the real app
     shell is served rather than a Fastly/router error page (e.g.
@@ -67,8 +73,14 @@ link the rotation schedule from this page.
 
 To sanity-check the monitor without faking an outage:
 
-- Hit `https://api.overslash.com/health` from a browser — expect `{"status":"ok"}`.
+- Hit `https://api.overslash.com/health` from a browser — expect `{"status":"ok"}`
+  with `"db":"up"`.
 - The Better Stack monitor page shows the last probe time and HTTP response.
+
+During an incident, `/health` distinguishes "the process is wedged" (no
+response, or a slow one) from "the process is fine but can't reach Postgres"
+(`"db":"down"` with `db_error`) without shelling into the container. The probe
+is bounded at 2s, so a hung database still answers promptly.
 
 To exercise the public flip without affecting production, change a monitor's
 URL to a 404 path on the dev environment, wait two probe cycles, confirm the
