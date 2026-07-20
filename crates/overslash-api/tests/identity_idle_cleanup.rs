@@ -9,7 +9,7 @@
 // Test setup needs dynamic SQL for forcing org config + last_active_at backdating.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use uuid::Uuid;

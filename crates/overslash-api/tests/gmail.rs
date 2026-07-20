@@ -21,7 +21,7 @@
 //! Optional env vars:
 //!   GMAIL_TEST_SEND_TO  — Recipient email for the send_message + send_draft tests. If unset, send tests are skipped.
 
-mod common;
+use crate::common;
 
 use base64::Engine;
 use serde_json::{Value, json};

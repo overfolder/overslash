@@ -2,7 +2,7 @@
 //! Verifies that the system groups, overslash service, and ACL extractors
 //! correctly enforce access control on admin endpoints.
 
-mod common;
+use crate::common;
 
 use reqwest::Client;
 use serde_json::{Value, json};

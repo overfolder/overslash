@@ -1,6 +1,6 @@
 //! Integration tests for the template/service instance split.
 
-mod common;
+use crate::common;
 
 use reqwest::Client;
 use serde_json::{Value, json};

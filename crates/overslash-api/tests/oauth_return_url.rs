@@ -7,7 +7,7 @@
 //! row.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use overslash_db::repos::oauth_connection_flow::{self, CreateOauthConnectionFlow};
 use serde_json::Value;

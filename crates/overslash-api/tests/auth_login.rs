@@ -1,6 +1,6 @@
 //! Integration tests for user authentication (dev token, /auth/me, Google login).
 
-mod common;
+use crate::common;
 
 use serde_json::Value;
 

@@ -18,7 +18,7 @@
 
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use std::sync::{Arc, Mutex};
 
@@ -26,7 +26,7 @@ use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
-use common::{bootstrap_org_identity, start_api_with_registry};
+use crate::common::{bootstrap_org_identity, start_api_with_registry};
 
 // The mailbox login, stored as two independently-rotatable secrets. The
 // expected header is unchanged from when this was ONE `user:pass` secret —

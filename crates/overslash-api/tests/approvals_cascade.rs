@@ -7,7 +7,7 @@
 //! a descendant, and auto-resolves those whose chain now passes — saving the
 //! reviewer from re-approving structurally identical follow-ups.
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use uuid::Uuid;

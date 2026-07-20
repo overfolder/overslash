@@ -17,7 +17,7 @@
 // Test setup requires dynamic SQL for DB seeding.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};

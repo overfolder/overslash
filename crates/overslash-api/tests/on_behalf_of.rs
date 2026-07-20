@@ -4,7 +4,7 @@
 //! `services::group_ceiling::validate_on_behalf_of`, so the goal here is to
 //! exercise it through each public endpoint.
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use uuid::Uuid;

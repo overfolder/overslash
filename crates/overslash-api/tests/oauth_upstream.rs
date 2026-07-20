@@ -19,7 +19,7 @@
 //! `OVERSLASH_SSRF_ALLOW_PRIVATE=1` opens loopback for the SSRF guard so
 //! the mock at 127.0.0.1 can be reached.
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 

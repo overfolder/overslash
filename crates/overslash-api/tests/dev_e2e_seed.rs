@@ -4,7 +4,7 @@
 //!
 //! Mirrors the gating + idempotency tests already in place for `dev_token`.
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 

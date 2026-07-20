@@ -1,6 +1,6 @@
 //! Tests for identity hierarchy: parent/child relationships, depth tracking, ancestor chains.
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 

@@ -21,9 +21,9 @@
 
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
-use common::{auth, bootstrap_org_identity, start_api};
+use crate::common::{auth, bootstrap_org_identity, start_api};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 use sqlx::PgPool;

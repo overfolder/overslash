@@ -27,7 +27,7 @@
 
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use overslash_api::services::jwt;
 use overslash_db::repos as db;

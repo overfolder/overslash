@@ -12,7 +12,7 @@
 // Seeds the identity tree via the HTTP API; asserts on helper return values.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use serde_json::Value;
 use uuid::Uuid;

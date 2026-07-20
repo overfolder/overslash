@@ -13,7 +13,7 @@
 // those shapes — match the pattern in `tests/common/mod.rs`.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use overslash_db::repos::{membership, user};
 use uuid::Uuid;

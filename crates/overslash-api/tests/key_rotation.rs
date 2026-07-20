@@ -12,7 +12,7 @@
 
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use overslash_api::services::key_rotation::{self, NoopReporter};
 use overslash_core::crypto::{self, Keyring};

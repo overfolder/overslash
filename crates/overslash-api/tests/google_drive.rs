@@ -23,7 +23,7 @@
 //!   GOOGLE_DRIVE_TEST_PARENT_ID  — (optional) Parent folder id for the test folder;
 //!                                  defaults to the user's My Drive root.
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use uuid::Uuid;

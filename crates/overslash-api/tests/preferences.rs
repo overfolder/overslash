@@ -1,7 +1,7 @@
 //! Integration tests for `/auth/me/preferences` and the underlying
 //! `UserScope::update_self_preferences` / `get_self_identity` scope methods.
 
-mod common;
+use crate::common;
 
 use overslash_db::UserScope;
 use serde_json::{Value, json};

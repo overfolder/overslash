@@ -7,7 +7,7 @@
 //! actually accept a well-formed session cookie and return data, and they
 //! reject garbage cookies with 401.
 
-mod common;
+use crate::common;
 
 use overslash_api::services::jwt;
 use serde_json::{Value, json};

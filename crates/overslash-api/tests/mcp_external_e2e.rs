@@ -6,9 +6,9 @@
 //! `cargo test --test mcp_external_e2e -- --ignored`. Respects
 //! `OVERSLASH_E2E_DEEPWIKI_URL` for pointing at a mirror.
 
-mod common;
+use crate::common;
 
-use common::auth;
+use crate::common::auth;
 use serde_json::{Value, json};
 
 const DEFAULT_URL: &str = "https://mcp.deepwiki.com/mcp";

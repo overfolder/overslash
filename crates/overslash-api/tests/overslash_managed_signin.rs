@@ -19,7 +19,7 @@
 //! `email=testuser@example.com` so the invite fixture below matches that
 //! value verbatim.
 
-mod common;
+use crate::common;
 
 use overslash_api::services::jwt;
 use serde_json::{Value, json};

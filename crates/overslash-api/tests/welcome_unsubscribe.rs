@@ -14,7 +14,7 @@
 //!   call site naturally idempotent for re-entered provisioning paths
 //!   (corp-org returning members, second-IdP adds).
 
-mod common;
+use crate::common;
 
 use overslash_db::repos::{email_unsubscribe_token, user as user_repo};
 use serde_json::Value;

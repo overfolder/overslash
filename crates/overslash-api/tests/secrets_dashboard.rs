@@ -5,7 +5,7 @@
 //! enforce SPEC §6 visibility: non-admin users only see secrets in their
 //! own subtree, admins see everything in the org.
 
-mod common;
+use crate::common;
 
 use overslash_api::services::jwt;
 use serde_json::{Value, json};

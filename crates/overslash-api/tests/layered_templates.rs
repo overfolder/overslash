@@ -2,7 +2,7 @@
 //! masks, extensions, live-pointer inheritance, authority, and the delete guard.
 //! See docs/design/layered-service-templates.md.
 
-mod common;
+use crate::common;
 
 use reqwest::Client;
 use serde_json::{Value, json};

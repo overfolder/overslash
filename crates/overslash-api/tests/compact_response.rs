@@ -1,7 +1,7 @@
 //! End-to-end coverage for the `verbose` toggle on `POST /v1/actions/call`.
 //! Pairs with the unit tests at `services::compact_response::tests`.
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 

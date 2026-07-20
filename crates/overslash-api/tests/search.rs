@@ -7,7 +7,7 @@
 //! so the pgvector path is exercised end-to-end without dragging the model
 //! weights into CI.
 
-mod common;
+use crate::common;
 
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};

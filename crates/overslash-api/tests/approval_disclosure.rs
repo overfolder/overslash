@@ -15,9 +15,9 @@
 //! The mock target's echo endpoint matches the template's host, so the
 //! request never leaves the test process.
 
-mod common;
+use crate::common;
 
-use common::{
+use crate::common::{
     bootstrap_org_identity, start_api_with_registry, start_api_with_registry_customized, start_mock,
 };
 use serde_json::{Value, json};

@@ -20,9 +20,9 @@
 // Test setup requires dynamic SQL for DB seeding/inspection.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
-use common::{auth, bootstrap_org_identity, start_api_with_registry, start_mock};
+use crate::common::{auth, bootstrap_org_identity, start_api_with_registry, start_mock};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
