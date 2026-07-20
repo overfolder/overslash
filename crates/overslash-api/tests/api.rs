@@ -48,6 +48,7 @@ mod google_keep;
 mod google_tasks;
 mod groups;
 mod headless_oauth;
+mod health;
 mod hubspot;
 mod identity_archive;
 mod identity_hierarchy;

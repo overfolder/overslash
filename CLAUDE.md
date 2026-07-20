@@ -62,7 +62,14 @@ When running in a Kanban worktree (`.cline/worktrees/<id>/`), `make local` autom
 2. **Parse, don't validate.** Config and API inputs are parsed into typed structs at the boundary.
 3. **Secrets never leave the vault.** Encrypted at rest, injected at execution time, never returned via API.
 4. **No platform-specific logic.** Overslash is a generic gateway. Telegram buttons, Slack bots, etc. are caller-side concerns.
-5. **Vertical integration.** Every task that introduces new functionality must also implement the corresponding dashboard UI if it makes sense to expose it. Backend-only tasks are acceptable only when there is no user-facing surface (e.g., internal refactors, infra, CI). Do not split "build the API" and "build the dashboard page" into separate tasks — deliver them together.
+5. **Never slice a string by a raw byte index.** `&s[..n]` panics when `n`
+   lands mid-codepoint — and the strings we truncate (upstream error text,
+   user-supplied names, log lines) are exactly the ones that carry non-ASCII.
+   Snap down to a valid boundary with `while !s.is_char_boundary(n) { n -= 1 }`,
+   or iterate with `chars()`/`char_indices()`. Same for `split_at`/`get`.
+   (`str::floor_char_boundary` does this in one call but is stable only since
+   1.91 — above our 1.85 MSRV, and `clippy::incompatible_msrv` will reject it.)
+6. **Vertical integration.** Every task that introduces new functionality must also implement the corresponding dashboard UI if it makes sense to expose it. Backend-only tasks are acceptable only when there is no user-facing surface (e.g., internal refactors, infra, CI). Do not split "build the API" and "build the dashboard page" into separate tasks — deliver them together.
 
 ## Agent skills
 

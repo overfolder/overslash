@@ -1408,6 +1408,7 @@ Configured by org admins via `PUT /GET /DELETE /v1/rate-limits`.
 - **Storage**: Redis/Valkey if available (distributed, accurate across instances); in-memory `DashMap` fallback (single-instance, no external dependency).
 - **Fail-open**: If Redis becomes unavailable at runtime, requests are allowed through (logged as warning).
 - **Health endpoint** (`/health`) is exempt from rate limiting.
+- **Health vs. readiness**: `/health` is liveness — it reports database reachability in the body (`db`, `db_latency_ms` / `db_error`) but always returns 200, because it backs the Cloud Run startup and liveness probes and a 503 there would restart containers during a database outage. `/ready` runs the same bounded `SELECT 1` and returns **503** when Postgres is unreachable; it is the endpoint to point a load balancer or alerting monitor at.
 
 ---
 
