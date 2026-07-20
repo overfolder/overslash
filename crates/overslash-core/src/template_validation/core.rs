@@ -376,7 +376,7 @@ fn check_action(key: &str, action: &ServiceAction, issues: &mut Issues) {
     let is_mcp_action = action.mcp_tool.is_some();
     check_description(
         &action.description,
-        action.label_template(),
+        action.summary.as_deref(),
         &action.params,
         &action_path,
         is_mcp_action,
@@ -554,12 +554,17 @@ fn check_action_path(
 /// documentation, not a placeholder referencing a param. Validating it as one
 /// would force authors to mangle their own examples.
 ///
-/// When an action authors only `description`, `label` *is* that description
+/// When an action authors only `description`, the label *is* that description
 /// and the grammar checks apply to it exactly as before — which is the case
 /// for nearly every shipped template.
+///
+/// Takes `summary` rather than a pre-resolved label so the reported field is a
+/// structural fact, not an inference: comparing the two strings would call an
+/// action that authors the same text in both fields a `description` error and
+/// send the author editing the wrong line.
 fn check_description(
     desc: &str,
-    label: &str,
+    summary: Option<&str>,
     params: &std::collections::HashMap<String, ActionParam>,
     action_path: &str,
     optional: bool,
@@ -576,11 +581,11 @@ fn check_description(
         return;
     }
 
-    // Name the field the author actually wrote the offending text in.
-    let field = if label == desc {
-        "description"
-    } else {
-        "summary"
+    // Mirrors `ServiceAction::label_template`, and names the field the author
+    // actually wrote the offending text in.
+    let (label, field) = match summary {
+        Some(s) => (s, "summary"),
+        None => (desc, "description"),
     };
 
     if let Err(off) = validate_flat_brackets(label) {
@@ -945,6 +950,30 @@ mod tests {
         assert!(
             issue.path.ends_with(".summary"),
             "issue should name the summary field, got {:?}",
+            issue.path
+        );
+    }
+
+    /// An action may author the same text in both fields. The reported field
+    /// has to come from which field exists, not from comparing their contents
+    /// — otherwise this case blames `description` and sends the author editing
+    /// a line that is not the one being validated.
+    #[test]
+    fn identical_summary_and_description_still_blames_summary() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.description = "List {ghost}".into();
+        a.summary = Some("List {ghost}".into());
+        let r = run(&d);
+        let issue = r
+            .errors
+            .iter()
+            .find(|e| e.code == "unknown_description_param")
+            .expect("the placeholder must still be caught");
+        assert!(
+            issue.path.ends_with(".summary"),
+            "identical text must still be attributed to the field that is \
+             interpolated, got {:?}",
             issue.path
         );
     }
