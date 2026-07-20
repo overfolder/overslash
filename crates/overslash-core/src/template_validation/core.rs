@@ -570,15 +570,12 @@ fn check_description(
     optional: bool,
     issues: &mut Issues,
 ) {
-    if desc.trim().is_empty() {
-        if !optional {
-            issues.err(
-                "missing_field",
-                "description is required",
-                format!("{action_path}.description"),
-            );
-        }
-        return;
+    if desc.trim().is_empty() && !optional {
+        issues.err(
+            "missing_field",
+            "description is required",
+            format!("{action_path}.description"),
+        );
     }
 
     // Mirrors `ServiceAction::label_template`, and names the field the author
@@ -587,6 +584,17 @@ fn check_description(
         Some(s) => (s, "summary"),
         None => (desc, "description"),
     };
+
+    // Grammar is checked even when `description` is absent. Presence and
+    // syntax are independent questions, and only the *label* is interpolated —
+    // an action that omits its description but carries a malformed `summary`
+    // must still be caught. Today that combination cannot be built (only the
+    // HTTP path sets `summary`, and it is never `optional`), so this is
+    // structural rather than a live fix — but the invariant lives in another
+    // module, and returning early here would silently drop the check the day
+    // an MCP tool gains a relabelled summary. An empty label makes every check
+    // below a no-op, so the ordinary "no description, no summary" case is
+    // unaffected.
 
     if let Err(off) = validate_flat_brackets(label) {
         issues.err(
@@ -976,6 +984,49 @@ mod tests {
              interpolated, got {:?}",
             issue.path
         );
+    }
+
+    /// Presence and syntax are independent: a missing `description` must not
+    /// buy a malformed `summary` a free pass. Both issues are reported, each
+    /// against its own field.
+    #[test]
+    fn absent_description_does_not_suppress_summary_grammar_checks() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.description = String::new();
+        a.summary = Some("List {ghost}".into());
+        let r = run(&d);
+
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.code == "missing_field" && e.path.ends_with(".description")),
+            "the absent description must still be reported: {:?}",
+            r.errors
+        );
+        let placeholder = r
+            .errors
+            .iter()
+            .find(|e| e.code == "unknown_description_param")
+            .expect("an empty description must not skip the summary's grammar");
+        assert!(placeholder.path.ends_with(".summary"), "{placeholder:?}");
+    }
+
+    /// The ordinary shape of an MCP tool that declares neither — the MCP spec
+    /// makes a tool description optional and `tools/list` often omits it. An
+    /// empty label has no grammar to be wrong about, so dropping the early
+    /// return must not start reporting anything here.
+    #[test]
+    fn absent_description_and_summary_report_nothing_extra() {
+        let mut d = minimal_mcp(McpAuth::Bearer {
+            secret_name: Some("tok".into()),
+        });
+        for a in d.actions.values_mut() {
+            a.description = String::new();
+            a.summary = None;
+        }
+        let r = run(&d);
+        assert!(r.valid, "expected a clean report, got {:?}", r.errors);
     }
 
     #[test]
