@@ -55,9 +55,9 @@ jobs:
               - '.github/workflows/ci.yml'
 
   # Lint and the sqlx offline-cache check share one job: both are short
-  # (~1.5 min each), neither is on the critical path (coverage shards are),
-  # and one fewer job per run means one fewer runner slot competing with the
-  # coverage shards when the org hits its concurrency limit.
+  # (~1.5 min each), neither is on the critical path (coverage is), and one
+  # fewer job per run means one fewer runner slot competing with coverage
+  # when the org hits its concurrency limit.
   lint:
     name: Lint + SQLx Verify
     needs: changes
@@ -136,15 +136,19 @@ jobs:
       - name: Verify sqlx offline cache
         run: cargo sqlx prepare --workspace --check -- --tests
 
+  # Single job, not a shard matrix. Sharding only pays when test execution
+  # dominates; here it never did — every shard paid the full ~3m36s compile
+  # to run 25-53s of tests (run 29754452256). Five shards therefore bought
+  # ~3 min of wall clock for 5x the runner time, and those five slots were
+  # the main thing queueing behind the org concurrency limit. Consolidating
+  # the api integration tests into one binary (crates/overslash-api/tests/
+  # api.rs) cut the compile enough that one job runs the whole suite in
+  # about what a single shard used to take.
   coverage:
-    name: Test + Coverage (${{ matrix.partition }}/5)
+    name: Test + Coverage
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        partition: [1, 2, 3, 4, 5]
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -239,12 +243,11 @@ jobs:
           tool: cargo-llvm-cov,cargo-nextest
 
       # --profile ci selects the nextest profile in .config/nextest.toml
-      # (test-threads = 10 — the suite is IO-bound, see the profile comments).
-      - name: Tests with coverage (shard ${{ matrix.partition }}/5)
+      # (test-threads = 8 — the suite is IO-bound, see the profile comments).
+      - name: Tests with coverage
         run: >-
           cargo llvm-cov nextest --workspace
           --profile ci
-          --partition count:${{ matrix.partition }}/5
           --lcov --output-path lcov.info
         env:
           RUST_LOG: warn
@@ -253,7 +256,6 @@ jobs:
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: lcov.info
-          flags: shard-${{ matrix.partition }}
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: overfolder/overslash
           # Coverage reporting is non-critical — don't block CI on Codecov-side

@@ -6,7 +6,7 @@
 //! admins can create such keys. Audit rows record both the effective identity
 //! and the impersonating service account.
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use sqlx::PgPool;

@@ -8,7 +8,7 @@
 //!
 //! A mock IdP server provides token and userinfo endpoints.
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 

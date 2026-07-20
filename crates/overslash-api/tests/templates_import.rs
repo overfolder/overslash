@@ -1,7 +1,7 @@
 //! Integration tests for `POST /v1/templates/import` and the
 //! `/v1/templates/drafts*` endpoints.
 
-mod common;
+use crate::common;
 
 use reqwest::Client;
 use serde_json::{Value, json};

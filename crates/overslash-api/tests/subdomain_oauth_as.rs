@@ -8,7 +8,7 @@
 
 #![allow(clippy::disallowed_methods)] // seeding needs raw SQL
 
-mod common;
+use crate::common;
 
 use reqwest::StatusCode;
 use serde_json::Value;

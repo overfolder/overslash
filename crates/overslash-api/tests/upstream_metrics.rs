@@ -6,7 +6,7 @@
 //! errors. The MCP-runtime equivalents live in `mcp_external.rs` /
 //! `mcp_replay.rs`.
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 

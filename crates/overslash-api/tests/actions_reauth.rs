@@ -23,7 +23,7 @@
 // disallowed-methods lint.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use axum::http::StatusCode;
 use overslash_core::crypto;

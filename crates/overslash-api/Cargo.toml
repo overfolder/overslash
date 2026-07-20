@@ -4,6 +4,14 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# The 100+ files in tests/ are modules of one binary (tests/api.rs), not test
+# targets of their own — see the module docs there. Auto-discovery would go
+# back to one target per file, so it stays off.
+autotests = false
+
+[[test]]
+name = "api"
+path = "tests/api.rs"
 
 [features]
 default = ["embeddings"]

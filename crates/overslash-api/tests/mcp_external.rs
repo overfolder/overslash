@@ -4,7 +4,7 @@
 //! MCP (JSON-RPC 2.0 over POST). Nothing here reaches the public network —
 //! the stub URL is baked into each template at save time.
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};

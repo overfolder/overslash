@@ -1,7 +1,7 @@
 // Test setup uses dynamic SQL (sqlx::query) for seeding rate-limit rows.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

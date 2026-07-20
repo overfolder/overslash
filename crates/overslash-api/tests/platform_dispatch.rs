@@ -3,7 +3,7 @@
 /// `start_api_with_registry` loads the real `services/` directory so
 /// `overslash.yaml` (with `x-overslash-runtime: platform`) is present and the
 /// platform actions are live.
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 

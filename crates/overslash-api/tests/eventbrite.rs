@@ -6,7 +6,7 @@
 //!   OAUTH_EVENTBRITE_CLIENT_SECRET   — Client Secret
 //!   OAUTH_EVENTBRITE_PRIVATE_TOKEN   — Private Token (used as bearer for E2E)
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use uuid::Uuid;

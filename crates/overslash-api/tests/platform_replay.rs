@@ -9,9 +9,9 @@
 
 #![allow(clippy::disallowed_methods)] // tests need raw SQL for fixture poking
 
-mod common;
+use crate::common;
 
-use common::auth;
+use crate::common::auth;
 use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;

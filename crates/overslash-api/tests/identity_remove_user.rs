@@ -9,7 +9,7 @@
 
 #![allow(clippy::disallowed_methods)] // direct SQL seeding
 
-mod common;
+use crate::common;
 
 use overslash_api::services::jwt;
 use overslash_db::repos::{identity, membership, org_bootstrap, user as user_repo};

@@ -4,7 +4,7 @@
 //! detection, revoke, `/mcp` acceptance of `aud=mcp` JWTs and agent keys,
 //! and the 401 + WWW-Authenticate challenge shape.
 
-mod common;
+use crate::common;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;

@@ -5,7 +5,7 @@
 //! admin-share path that exposes a previously-personal service to other groups.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use sqlx::Row;

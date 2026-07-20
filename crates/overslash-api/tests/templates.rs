@@ -1,7 +1,7 @@
 //! Integration tests for the three-tier template registry:
 //! global (shipped OpenAPI YAML) + org (DB, admin CRUD) + user (DB, CRUD gated by org setting).
 
-mod common;
+use crate::common;
 
 use reqwest::Client;
 use serde_json::{Value, json};

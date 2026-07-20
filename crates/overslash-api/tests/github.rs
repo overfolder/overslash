@@ -9,7 +9,7 @@
 //!   GITHUB_TEST_REPO  — `owner/repo` string pointing at a repo the PAT can read
 //!                       (e.g. your own "hello-world" fork).
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 

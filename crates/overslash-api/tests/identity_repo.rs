@@ -5,7 +5,7 @@
 //! boundary, depth-delta math on deeper trees, the leaf-delete TOCTOU
 //! resolver).
 
-mod common;
+use crate::common;
 
 use overslash_db::OrgScope;
 use overslash_db::repos::identity::{

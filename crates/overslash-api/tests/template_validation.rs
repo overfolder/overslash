@@ -4,7 +4,7 @@
 //! All requests use OpenAPI 3.1 YAML payloads with `x-overslash-*` vendor
 //! extensions (plus aliases — see `overslash_core::openapi`).
 
-mod common;
+use crate::common;
 
 use reqwest::Client;
 use serde_json::{Value, json};

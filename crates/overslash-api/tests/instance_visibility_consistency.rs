@@ -28,7 +28,7 @@
 
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use overslash_db::OrgScope;
 use overslash_db::repos::identity::IdentityRow;

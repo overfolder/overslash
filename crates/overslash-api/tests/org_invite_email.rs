@@ -10,7 +10,7 @@
 //! like `email_smoke.rs`) — that gives the test direct access to the typed
 //! message instead of a serialized JSON body.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

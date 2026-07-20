@@ -12,7 +12,7 @@
 // Seeds service instances + asserts via direct SQL.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use serde_json::Value;
 use sqlx::PgPool;

@@ -16,7 +16,7 @@
 // Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use overslash_core::registry::ServiceRegistry;
 use serde_json::{Value, json};

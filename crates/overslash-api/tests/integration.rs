@@ -2,7 +2,7 @@
 // Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 
@@ -2448,7 +2448,7 @@ async fn test_update_tokens_preserves_refresh_token_when_none() {
 // BYOC Credential Tests
 // ============================================================================
 
-use common::bootstrap_org_identity;
+use crate::common::bootstrap_org_identity;
 
 // --- Test 1: BYOC CRUD API ---
 

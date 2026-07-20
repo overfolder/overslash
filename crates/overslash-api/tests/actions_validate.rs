@@ -19,7 +19,7 @@
 //!      `deny_unknown_fields`), so callers that haven't migrated to
 //!      Service + HTTP verb get a clear error instead of silent acceptance.
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 

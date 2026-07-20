@@ -17,7 +17,7 @@
 // Seeds rows via direct SQL.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use overslash_core::crypto;
 use sqlx::PgPool;

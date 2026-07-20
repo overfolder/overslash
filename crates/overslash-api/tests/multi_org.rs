@@ -16,7 +16,7 @@
 
 #![allow(clippy::disallowed_methods)] // seeding needs raw SQL
 
-mod common;
+use crate::common;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
