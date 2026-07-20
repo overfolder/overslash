@@ -1,3 +1,4 @@
+pub mod credential_template;
 pub mod crypto;
 pub mod description;
 pub(crate) mod description_grammar;

@@ -65,14 +65,14 @@ test('user configures the email template against their own gateway and lists mai
 		await purgeMail();
 		const seeded = await seedMailbox(MESSAGES);
 
-		// The mailbox credential is the per-instance secret the template binds
-		// as `X-Mailbox-Auth: Basic base64(user:pass)`. The gateway key is the
-		// org-wide one; this overfwd runs keyless, so storing it proves the
-		// org-vault path resolves without making the call depend on it.
-		await seedSecret(session, {
-			name: 'mailbox_credential',
-			value: `${env.mailboxLogin}:${env.mailboxPassword}`
-		});
+		// The mailbox login is TWO per-instance secrets, joined by the
+		// template's jq expression into `X-Mailbox-Auth: Basic base64(user:pass)`
+		// at send time — so the password rotates on its own and neither half is
+		// a usable credential alone. The gateway key is the org-wide one; this
+		// overfwd runs keyless, so storing it proves the org-vault path resolves
+		// without making the call depend on it.
+		await seedSecret(session, { name: 'mailbox_user', value: env.mailboxLogin! });
+		await seedSecret(session, { name: 'mailbox_pass', value: env.mailboxPassword! });
 		await seedSecret(session, { name: 'overfwd_gateway_key', value: 'e2e-gateway-key' });
 
 		// ── Configure the service through the wizard ────────────────────
@@ -92,7 +92,10 @@ test('user configures the email template against their own gateway and lists mai
 		await page.getByLabel('X-Mailbox-Imap').fill(env.mailboxImap!);
 		await page.getByLabel('X-Mailbox-Smtp').fill(env.mailboxSmtp!);
 
-		await page.getByLabel(/Mailbox Auth user:pass/i).fill('mailbox_credential');
+		// One picker per credential slot — the username and the password are
+		// bound independently.
+		await page.getByLabel(/Mailbox username/i).fill('mailbox_user');
+		await page.getByLabel(/Mailbox password/i).fill('mailbox_pass');
 
 		await page.screenshot({ path: 'screenshots/email-story-1-configure.png' });
 
@@ -158,10 +161,8 @@ test('the same template without a pinned mailbox endpoint cannot reach a self-ho
 
 	try {
 		await attachToContext(page.context(), session);
-		await seedSecret(session, {
-			name: 'mailbox_credential',
-			value: `${env.mailboxLogin}:${env.mailboxPassword}`
-		});
+		await seedSecret(session, { name: 'mailbox_user', value: env.mailboxLogin! });
+		await seedSecret(session, { name: 'mailbox_pass', value: env.mailboxPassword! });
 
 		const svc = await createEmailServiceViaApi(session, {
 			name: 'email-unpinned',
@@ -220,7 +221,7 @@ async function createEmailServiceViaApi(
 			template_key: 'email',
 			name: opts.name,
 			url: opts.url,
-			credentials: { mailbox: 'mailbox_credential' },
+			credentials: { mailbox_user: 'mailbox_user', mailbox_pass: 'mailbox_pass' },
 			config: opts.config,
 			status: 'active'
 		})

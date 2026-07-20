@@ -1,17 +1,20 @@
 <script lang="ts">
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
-	import type { SecretSummary, ServiceAuth } from '$lib/types';
-
-	type SecretScheme = Extract<ServiceAuth, { type: 'secret' }>;
+	import type { SecretSlot, SecretSummary } from '$lib/types';
 
 	let {
-		schemes,
+		slots,
 		credentials = $bindable<Record<string, string>>({}),
 		available,
 		loading = false,
 		idPrefix = 'svc-cred'
 	}: {
-		schemes: SecretScheme[];
+		/**
+		 * The credential slots the template declares — one picker each. A
+		 * template needing one secret declares one slot; `services/email.yaml`
+		 * declares a username and a password that its header joins.
+		 */
+		slots: SecretSlot[];
 		credentials: Record<string, string>;
 		available: SecretSummary[];
 		loading?: boolean;
@@ -21,41 +24,39 @@
 	/** Label when the template declares exactly one credential slot. */
 	const SINGLE_LABEL = 'Secret name';
 
-	// One slot is unambiguous — keep the familiar generic label. Several slots
-	// must be told apart by their securityScheme key ("gateway", "mailbox").
-	const showSchemeLabels = $derived(schemes.length > 1);
+	// One slot is unambiguous — keep the familiar generic label. Several must
+	// be told apart by their slot key ("mailbox_user", "mailbox_pass").
+	const showSlotLabels = $derived(slots.length > 1);
 	const vaultNames = $derived(new Set(available.map((s) => s.name)));
 
-	// Human-readable row naming, taken from the template YAML: the scheme's
-	// `x-overslash-label` ("Overfwd API Token") names the row; the standard
-	// OpenAPI `description` renders as help text under the picker. No label
-	// falls back to the scheme key ("gateway secret name") / `SINGLE_LABEL`.
-	function rowLabel(s: SecretScheme): string {
+	// Human-readable row naming, taken from the template YAML: the slot's
+	// `label` ("Mailbox username") names the row; its `description` renders as
+	// help text under the picker. No label falls back to the slot key
+	// ("mailbox_user secret name") / `SINGLE_LABEL`.
+	function rowLabel(s: SecretSlot): string {
 		const l = (s.label ?? '').trim();
 		if (l) return l;
-		return showSchemeLabels ? `${s.scheme} secret name` : SINGLE_LABEL;
+		return showSlotLabels ? `${s.key} secret name` : SINGLE_LABEL;
 	}
 
-	// Every scheme key must hold a string BEFORE the pickers render — binding
+	// Every slot key must hold a string BEFORE the pickers render — binding
 	// an undefined map slot into SecretNamePicker's fallback-valued `value`
 	// prop is a Svelte error (props_invalid_value). Init-time loop covers the
-	// first render; the effect covers `schemes` changing under a live map.
+	// first render; the effect covers `slots` changing under a live map.
 	// svelte-ignore state_referenced_locally
-	for (const s of schemes) {
-		const k = s.scheme ?? '';
-		if (k && credentials[k] === undefined) credentials[k] = '';
+	for (const s of slots) {
+		if (s.key && credentials[s.key] === undefined) credentials[s.key] = '';
 	}
 	$effect(() => {
-		for (const s of schemes) {
-			const k = s.scheme ?? '';
-			if (k && credentials[k] === undefined) credentials[k] = '';
+		for (const s of slots) {
+			if (s.key && credentials[s.key] === undefined) credentials[s.key] = '';
 		}
 	});
 </script>
 
-{#each schemes as s (s.scheme ?? s.default_secret_name)}
-	{@const key = s.scheme ?? ''}
-	{@const isOrg = s.secret_source === 'org'}
+{#each slots as s (s.key)}
+	{@const key = s.key}
+	{@const isOrg = s.source === 'org'}
 	{@const bound = (credentials[key] ?? '').trim().length > 0}
 	<div class="field">
 		<label class="label" for="{idPrefix}-{key}">

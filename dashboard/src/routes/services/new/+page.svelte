@@ -15,6 +15,7 @@
 		ConnectionSummary,
 		OAuthProviderInfo,
 		SecretSummary,
+		SecretSlot,
 		ServiceAuth,
 		TemplateDetail,
 		TemplateSummary
@@ -31,7 +32,6 @@
 	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
-	type SecretScheme = Extract<ServiceAuth, { type: 'secret' }>;
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean } } = $props();
 
@@ -144,14 +144,13 @@
 		(selectedDetail?.auth ?? []).map((a: any) => a?.type as string).filter(Boolean)
 	);
 	const usesSecret = $derived(authModes.includes('secret'));
-	// Every secret credential slot the template declares — one picker each,
-	// bound via `credentials[scheme]` (e.g. email's `gateway` + `mailbox`).
-	const secretSchemes = $derived(
-		(selectedDetail?.auth ?? []).filter((a: any) => a?.type === 'secret') as SecretScheme[]
-	);
-	// An API from before per-scheme bindings omits `scheme` — fall back to the
+	// Every credential slot the template declares — one picker each, bound via
+	// `credentials[slot]` (e.g. email's `gateway` plus its mailbox username
+	// and password).
+	const secretSlots = $derived((selectedDetail?.secrets ?? []) as SecretSlot[]);
+	// An API from before credential slots sends no `secrets` — fall back to the
 	// legacy single scalar field in that case.
-	const schemeKeyed = $derived(usesSecret && secretSchemes.every((s) => !!s.scheme));
+	const schemeKeyed = $derived(usesSecret && secretSlots.length > 0);
 	// An HTTP `oauth` scheme, or an MCP-runtime `auth.kind: oauth` provider
 	// (D24) normalized to the same {provider, scopes} shape so the connect
 	// surface below is shared. MCP OAuth declares no template-level scopes.
@@ -744,7 +743,7 @@
 
 			{#if usesSecret && !usesOAuth && schemeKeyed}
 				<ServiceCredentials
-					schemes={secretSchemes}
+					slots={secretSlots}
 					bind:credentials={credentialsInput}
 					available={availableSecrets}
 					loading={secretsLoading}

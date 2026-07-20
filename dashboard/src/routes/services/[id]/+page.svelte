@@ -22,6 +22,7 @@
 		ConnectionSummary,
 		Identity,
 		SecretSummary,
+		SecretSlot,
 		ServiceAuth,
 		ServiceGroupRef,
 		ServiceInstanceDetail,
@@ -37,7 +38,6 @@
 	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
-	type SecretScheme = Extract<ServiceAuth, { type: 'secret' }>;
 
 	const id = $derived($page.params.id ?? '');
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
@@ -150,16 +150,17 @@
 	// request nothing and mint a token missing every permission.
 	const oauthScopes = $derived<string[]>(oauthAuth?.scopes ?? template?.mcp?.scopes ?? []);
 	const usesOAuth = $derived(!!oauthProvider);
-	// Every secret credential slot the template declares — a template may have
-	// several (e.g. email's org-wide `gateway` key + per-instance `mailbox`
-	// login), each bound independently via `credentials[scheme]`.
-	const secretSchemes = $derived(
-		(template?.auth ?? []).filter((a: any) => a?.type === 'secret') as SecretScheme[]
+	// Every credential slot the template declares — one picker each, bound
+	// independently via `credentials[slot]`. A template may declare several
+	// (email's org-wide `gateway` key plus the per-instance mailbox username
+	// and password its header joins).
+	const secretSlots = $derived((template?.secrets ?? []) as SecretSlot[]);
+	const usesSecret = $derived(
+		secretSlots.length > 0 || (template?.auth ?? []).some((a: any) => a?.type === 'secret')
 	);
-	const usesSecret = $derived(secretSchemes.length > 0);
-	// An API from before per-scheme bindings omits `scheme` — fall back to the
+	// An API from before credential slots sends no `secrets` — fall back to the
 	// legacy single scalar field in that case.
-	const schemeKeyed = $derived(usesSecret && secretSchemes.every((s) => !!s.scheme));
+	const schemeKeyed = $derived(usesSecret && secretSlots.length > 0);
 	const isSystem = $derived(!!svc?.is_system);
 	// Non-secret per-instance values the template lets an org pin (e.g. the
 	// mailbox gateway's IMAP/SMTP endpoint). System services are not editable.
@@ -264,24 +265,21 @@
 	let upgrading = $state(false);
 	let upgradeAbort: AbortController | null = null;
 
-	// Build the editable per-scheme map: one entry per secret scheme, seeded
+	// Build the editable per-slot map: one entry per credential slot, seeded
 	// from svc.credentials. A legacy row (empty map, scalar secret_name set)
 	// shows its scalar in the sole instance-source slot so nothing looks
-	// unbound that isn't.
+	// unbound that isn't — and only when there IS a sole slot, since the
+	// scalar never stood for one half of a composed credential.
 	function seedCredentials(
 		tpl: TemplateDetail | null,
 		s: ServiceInstanceDetail
 	): Record<string, string> {
-		const schemes = ((tpl?.auth ?? []).filter(
-			(a: any) => a?.type === 'secret'
-		) as SecretScheme[]).filter((sch) => !!sch.scheme);
+		const slots = ((tpl?.secrets ?? []) as SecretSlot[]).filter((sl) => !!sl.key);
 		const map: Record<string, string> = {};
-		for (const sch of schemes) map[sch.scheme!] = s.credentials?.[sch.scheme!] ?? '';
-		const instanceSlots = schemes.filter(
-			(sch) => (sch.secret_source ?? 'instance') === 'instance'
-		);
-		if (instanceSlots.length === 1 && !map[instanceSlots[0].scheme!] && s.secret_name) {
-			map[instanceSlots[0].scheme!] = s.secret_name;
+		for (const sl of slots) map[sl.key] = s.credentials?.[sl.key] ?? '';
+		const instanceSlots = slots.filter((sl) => (sl.source ?? 'instance') === 'instance');
+		if (instanceSlots.length === 1 && !map[instanceSlots[0].key] && s.secret_name) {
+			map[instanceSlots[0].key] = s.secret_name;
 		}
 		return map;
 	}
@@ -792,7 +790,7 @@
 				{/if}
 				{#if usesSecret && !usesOAuth && !isSystem && schemeKeyed}
 					<ServiceCredentials
-						schemes={secretSchemes}
+						slots={secretSlots}
 						bind:credentials={editCredentials}
 						available={availableSecrets}
 						loading={secretsLoading}
@@ -1047,7 +1045,7 @@
 					</div>
 				{:else if usesSecret && schemeKeyed}
 					<ServiceCredentials
-						schemes={secretSchemes}
+						slots={secretSlots}
 						bind:credentials={editCredentials}
 						available={availableSecrets}
 						loading={secretsLoading}

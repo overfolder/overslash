@@ -27,7 +27,7 @@ pub fn validate_service_definition(
 
     check_service_shape(def, &mut issues);
     if def.runtime != Runtime::Platform {
-        check_auth(&def.auth, &mut issues);
+        check_auth(def, &mut issues);
     }
     check_mcp(def, &mut issues);
     check_duplicate_action_keys(raw_action_keys, &mut issues);
@@ -108,9 +108,9 @@ fn is_valid_hostname(s: &str) -> bool {
 
 // --- auth ------------------------------------------------------------------
 
-fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
+fn check_auth(def: &ServiceDefinition, issues: &mut Issues) {
     let mut seen_schemes: Vec<&str> = Vec::new();
-    for (i, entry) in auth.iter().enumerate() {
+    for (i, entry) in def.auth.iter().enumerate() {
         match entry {
             ServiceAuth::OAuth {
                 provider,
@@ -131,17 +131,26 @@ fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
                 );
             }
             ServiceAuth::Secret {
-                scheme,
-                default_secret_name,
-                injection,
-                ..
+                scheme, injection, ..
             } => {
-                if default_secret_name.trim().is_empty() {
-                    issues.err(
-                        "missing_field",
-                        "secret default_secret_name is required",
-                        format!("auth[{i}].default_secret_name"),
-                    );
+                // An org-source slot resolves ONLY through its default secret
+                // name — with none, the credential can never be found. An
+                // instance-source slot resolves from the instance's binding,
+                // so it needs no default.
+                for slot in def.slots_for(entry) {
+                    if slot.source == crate::types::SecretSource::Org
+                        && slot.default_secret_name.trim().is_empty()
+                    {
+                        issues.err(
+                            "missing_field",
+                            format!(
+                                "secret `{}` is org-sourced and needs a default_secret_name \
+                                 to resolve against the org vault",
+                                slot.key
+                            ),
+                            format!("auth[{i}].default_secret_name"),
+                        );
+                    }
                 }
                 // Instances bind secrets per scheme key (`credentials[scheme]`),
                 // so any number of secret schemes is fine — but the keys must be
@@ -677,6 +686,7 @@ mod tests {
 
     fn minimal_valid() -> ServiceDefinition {
         ServiceDefinition {
+            secrets: Vec::new(),
             key: "svc".into(),
             display_name: "Service".into(),
             description: None,
@@ -684,6 +694,8 @@ mod tests {
             category: None,
             hidden: false,
             auth: vec![ServiceAuth::Secret {
+                template: None,
+                slots: Vec::new(),
                 scheme: String::new(),
                 label: String::new(),
                 description: String::new(),
@@ -693,7 +705,6 @@ mod tests {
                     header_name: Some("Authorization".into()),
                     query_param: None,
                     prefix: Some("Bearer ".into()),
-                    encode: None,
                 },
                 secret_source: SecretSource::Instance,
                 optional: false,
@@ -922,6 +933,8 @@ mod tests {
     fn incomplete_token_injection_header() {
         let mut d = minimal_valid();
         d.auth = vec![ServiceAuth::Secret {
+            template: None,
+            slots: Vec::new(),
             scheme: String::new(),
             label: String::new(),
             description: String::new(),
@@ -931,7 +944,6 @@ mod tests {
                 header_name: None,
                 query_param: None,
                 prefix: None,
-                encode: None,
             },
             secret_source: SecretSource::Instance,
             optional: false,
@@ -948,6 +960,8 @@ mod tests {
     fn incomplete_token_injection_query() {
         let mut d = minimal_valid();
         d.auth = vec![ServiceAuth::Secret {
+            template: None,
+            slots: Vec::new(),
             scheme: String::new(),
             label: String::new(),
             description: String::new(),
@@ -957,7 +971,6 @@ mod tests {
                 header_name: None,
                 query_param: None,
                 prefix: None,
-                encode: None,
             },
             secret_source: SecretSource::Instance,
             optional: false,
@@ -972,6 +985,8 @@ mod tests {
 
     fn secret(scheme: &str, source: SecretSource) -> ServiceAuth {
         ServiceAuth::Secret {
+            template: None,
+            slots: Vec::new(),
             scheme: scheme.into(),
             label: String::new(),
             description: String::new(),
@@ -981,7 +996,6 @@ mod tests {
                 header_name: Some("Authorization".into()),
                 query_param: None,
                 prefix: None,
-                encode: None,
             },
             secret_source: source,
             optional: false,
@@ -1044,6 +1058,7 @@ mod tests {
         // An action with empty method/path (like overslash.yaml) must validate
         // clean as long as description is present.
         let mut d = ServiceDefinition {
+            secrets: Vec::new(),
             key: "overslash".into(),
             display_name: "Overslash".into(),
             description: None,
@@ -1120,6 +1135,7 @@ mod tests {
             },
         );
         ServiceDefinition {
+            secrets: Vec::new(),
             key: "linear_mcp".into(),
             display_name: "Linear".into(),
             description: None,
@@ -1214,6 +1230,8 @@ mod tests {
     fn mcp_rejects_http_auth() {
         let mut d = minimal_mcp(McpAuth::None);
         d.auth = vec![ServiceAuth::Secret {
+            template: None,
+            slots: Vec::new(),
             scheme: String::new(),
             label: String::new(),
             description: String::new(),
@@ -1223,7 +1241,6 @@ mod tests {
                 header_name: Some("Authorization".into()),
                 query_param: None,
                 prefix: None,
-                encode: None,
             },
             secret_source: SecretSource::Instance,
             optional: false,

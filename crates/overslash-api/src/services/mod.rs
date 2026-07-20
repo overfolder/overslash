@@ -4,6 +4,7 @@ pub mod billing_email;
 pub mod billing_tier;
 pub mod client_credentials;
 pub mod compact_response;
+pub mod credential_template;
 pub mod disclosure;
 pub mod email;
 pub mod embedding_backfill;

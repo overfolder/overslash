@@ -309,6 +309,12 @@ export interface TemplateDetail {
   hosts: string[];
   /** Compiled auth view for rendering the detail/connect UIs without re-parsing. */
   auth: ServiceAuth[];
+  /**
+   * Credential slots an instance binds — one vault secret each. A slot may
+   * feed several injections and an injection may join several slots, so this
+   * is not derivable from `auth`; it is what the credentials form renders.
+   */
+  secrets?: SecretSlot[];
   /** Raw OpenAPI 3.1 YAML source. This is the editable document. */
   openapi: string;
   /** Compiled actions view for rendering the detail page without re-parsing. */
@@ -664,23 +670,53 @@ export interface ServiceDetail {
   display_name: string;
   hosts: string[];
   auth: ServiceAuth[];
+  /**
+   * Credential slots the operator binds — one vault secret each. Declared once
+   * per template and referenced by the auth entries' templates, so one secret
+   * can feed several headers and one header can join several secrets. This is
+   * the list the credentials form renders.
+   */
+  secrets?: SecretSlot[];
   actions: Record<string, ServiceAction>;
+}
+
+/** One vault secret an instance binds, keyed by `key` in its `credentials` map. */
+export interface SecretSlot {
+  key: string;
+  /** Display name for the row (e.g. "Mailbox username"). */
+  label?: string;
+  /** Help text under the picker. */
+  description?: string;
+  /** Org-vault secret used when `source: 'org'` and nothing is bound. */
+  default_secret_name?: string;
+  source?: 'instance' | 'org';
+  /** When true, an unbound credential is skipped instead of failing the request. */
+  optional?: boolean;
 }
 
 export type ServiceAuth =
   | { type: 'oauth'; provider: string; scopes?: string[]; token_injection: TokenInjection }
   | {
       type: 'secret';
-      /** The securitySchemes key this credential slot was compiled from (e.g. `gateway`, `mailbox`). */
+      /** The securitySchemes key this injection was compiled from (e.g. `gateway`, `mailbox`). */
       scheme?: string;
-      /** Short display name from `x-overslash-label` (e.g. "Overfwd API Token") — the row's label. */
+      /** Short display name from `x-overslash-label` (e.g. "Overfwd API Token"). */
       label?: string;
-      /** The OpenAPI securityScheme `description` — help text for the credential's row. */
+      /** The OpenAPI securityScheme `description`. */
       description?: string;
       default_secret_name: string;
       injection: TokenInjection;
       /**
-       * Fallback when the instance has no explicit `credentials[scheme]` binding:
+       * How the value is built from `slots` — e.g.
+       * `'"Basic " + (.mailbox_user + ":" + .mailbox_pass | @base64)'`.
+       * Absent means the single slot's secret is injected verbatim. Never
+       * rendered to end users.
+       */
+      template?: CredentialTemplate;
+      /** Slot keys this injection reads. */
+      slots?: string[];
+      /**
+       * Fallback when the instance has no explicit `credentials[slot]` binding:
        * `instance` (default) → the legacy scalar `secret_name`; `org` → the fixed
        * `default_secret_name` from the org vault.
        */
@@ -689,12 +725,16 @@ export type ServiceAuth =
       optional?: boolean;
     };
 
+export interface CredentialTemplate {
+  lang: 'jq';
+  expr: string;
+}
+
 export interface TokenInjection {
   as: string;
   header_name?: string;
   query_param?: string;
   prefix?: string;
-  encode?: string;
 }
 
 export interface ServiceAction {

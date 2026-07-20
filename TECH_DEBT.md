@@ -115,3 +115,22 @@ D31 pins every third-party action in `.github/workflows/*.yml` to a commit SHA s
 - `rui314/setup-mold@9c9c13b` — the repo publishes no semver releases at all, only a mutable `v1` tag that moves.
 
 Both still behave correctly at runtime — rustup resolves `stable` and installs the current stable toolchain; mold installs normally. Only the *action code* is frozen, so upstream fixes won't be picked up automatically and the pins can drift stale silently with no PR. Low risk (both actions are small and stable), but they're untracked pins. Ideal fix: re-pin each to its current tip by hand periodically (e.g. quarterly), or switch to a version-tagged equivalent with the same ergonomics if one appears, so Dependabot can manage it.
+
+---
+
+## `SecretRef::encode` is deserialized and ignored for one release
+
+D35 replaced `x-overslash-encode` with a jq credential template, but
+`ActionRequest`s persisted on approvals created *before* that deploy still
+carry `encode` on their `secrets[]`. `SecretRef` keeps the field as
+`#[serde(default, skip_serializing)]` — accepted on read, never written, never
+applied — purely so such an approval still *deserialises* rather than failing
+to parse.
+
+It is not replayable, though, and deliberately so: applying the surviving
+prefix without the dropped base64 would send `Basic user:pass` upstream, which
+reads as a wrong password rather than as our bug. `resolve_credential_values`
+therefore rejects any `SecretRef` still carrying `encode` with "re-issue the
+call". In practice this is the one `email`/`mailbox` shape, whose instances
+must be rebound to two slots anyway (see D35 rollout). Drop the field once no
+pending approval predates the deploy.

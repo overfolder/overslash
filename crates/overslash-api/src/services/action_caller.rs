@@ -11,7 +11,7 @@
 //! `prefer_stream: false` (replay always buffers — there's no original caller
 //! connection to stream to).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ use crate::{
     error::AppError,
     services::{
         audit_capture::{self, AuditResponseBodyMode},
-        http_caller,
+        credential_template, http_caller,
         response_filter::{self, ResponseFilter},
     },
 };
@@ -190,6 +190,89 @@ pub enum CallOutcome {
     Streamed(Response),
 }
 
+/// Decrypt the vault secrets an `ActionRequest` references and build each
+/// credential's finished value, keyed by [`SecretRef::name`] for
+/// `inject_secrets`.
+///
+/// Decrypts exactly what the request names — a `SecretRef`'s bindings hold
+/// only the slots its template reads, never a template's full slot set — and
+/// composes multi-secret credentials here, the one place plaintext exists.
+/// The composed value is deliberately confined to this function's return: it
+/// must not reach `ActionRequest`, which is persisted for approval replay.
+pub async fn resolve_credential_values(
+    state: &AppState,
+    scope: &OrgScope,
+    service_key: Option<&str>,
+    action_req: &ActionRequest,
+) -> Result<HashMap<String, String>, AppError> {
+    let enc_key = state.config.keyring()?;
+    let mut out = HashMap::new();
+
+    for secret_ref in &action_req.secrets {
+        // An approval created before credential templates shipped carries the
+        // old `encode` field, and nothing applies it any more. Replaying it
+        // would send the credential *unencoded* under its original prefix —
+        // `Basic user:pass` instead of `Basic base64(user:pass)` — which
+        // upstream rejects as a bad password rather than as our bug. Fail
+        // loudly and let the caller re-issue the request instead.
+        if secret_ref.encode.is_some() {
+            return Err(AppError::BadRequest(format!(
+                "credential '{}' on this request predates credential templates \
+                 and can no longer be built; re-issue the call",
+                secret_ref.name
+            )));
+        }
+
+        // Slot key → plaintext. With no bindings there is one unnamed slot
+        // whose vault secret is `name` itself — the raw-HTTP (Mode A) shape,
+        // where the caller names a secret inline and no template composes it.
+        let mut slot_values: BTreeMap<String, String> = BTreeMap::new();
+        let bindings: Vec<(&str, &str)> = if secret_ref.bindings.is_empty() {
+            vec![(secret_ref.name.as_str(), secret_ref.name.as_str())]
+        } else {
+            secret_ref
+                .bindings
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect()
+        };
+
+        for (slot, secret_name) in bindings {
+            let version = scope
+                .get_current_secret_value(secret_name)
+                .await?
+                .ok_or_else(|| AppError::CredentialMissing {
+                    service: service_key.map(str::to_string),
+                    secret_name: secret_name.to_string(),
+                    hint_url: Some(state.config.dashboard_url_for(&format!(
+                        "/secrets?name={}",
+                        urlencoding::encode(secret_name)
+                    ))),
+                })?;
+            let decrypted = crypto::decrypt(&enc_key, &version.encrypted_value)?;
+            let value = String::from_utf8(decrypted)
+                .map_err(|_| AppError::Internal("secret is not valid utf-8".into()))?;
+            slot_values.insert(slot.to_string(), value);
+        }
+
+        let value = match &secret_ref.template {
+            Some(template) => {
+                credential_template::render(template, &secret_ref.name, &slot_values).await?
+            }
+            // No template: one slot, injected verbatim.
+            None => slot_values.into_values().next().ok_or_else(|| {
+                AppError::Internal(format!(
+                    "credential '{}' names no secret to inject",
+                    secret_ref.name
+                ))
+            })?,
+        };
+        out.insert(secret_ref.name.clone(), value);
+    }
+
+    Ok(out)
+}
+
 /// Execute a resolved, credential-free `ActionRequest`. The live OAuth
 /// credential (when the service resolved one) is passed separately as
 /// `auth_header` and merged into the outgoing header map at send time —
@@ -201,26 +284,8 @@ pub async fn call_action_request(
     auth_header: Option<&AuthHeader>,
 ) -> Result<CallOutcome, AppError> {
     // ── Resolve secrets ──────────────────────────────────────────────
-    let enc_key = ctx.state.config.keyring()?;
-    let mut secret_values = HashMap::new();
-    for secret_ref in &action_req.secrets {
-        let version = ctx
-            .scope
-            .get_current_secret_value(&secret_ref.name)
-            .await?
-            .ok_or_else(|| AppError::CredentialMissing {
-                service: ctx.service_key.map(str::to_string),
-                secret_name: secret_ref.name.clone(),
-                hint_url: Some(ctx.state.config.dashboard_url_for(&format!(
-                    "/secrets?name={}",
-                    urlencoding::encode(&secret_ref.name)
-                ))),
-            })?;
-        let decrypted = crypto::decrypt(&enc_key, &version.encrypted_value)?;
-        let value = String::from_utf8(decrypted)
-            .map_err(|_| AppError::Internal("secret is not valid utf-8".into()))?;
-        secret_values.insert(secret_ref.name.clone(), value);
-    }
+    let secret_values =
+        resolve_credential_values(ctx.state, ctx.scope, ctx.service_key, action_req).await?;
 
     let (resolved_url, mut resolved_headers) = inject_secrets(action_req, &secret_values)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
