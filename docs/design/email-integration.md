@@ -101,7 +101,8 @@ Unipile. Overslash is just one consumer.
 - **(a) Send** from a user's mailbox.
 - **(b) On-demand read / search** of a mailbox (request/response).
 - Coverage: the **standard-IMAP long tail** — providers reachable with a presented
-  credential (Migadu, Fastmail, iCloud, Zoho, Proton Bridge, corporate Dovecot/Cyrus, …).
+  credential (Migadu, Fastmail, iCloud, Zoho, Yahoo, Proton Bridge, corporate
+  Dovecot/Cyrus, …).
 
 **Explicitly deferred (deliberate no, not omission):**
 - **(c) Agent's own inbox** — programmatic inbox creation.
@@ -113,6 +114,12 @@ Unipile. Overslash is just one consumer.
   **explicitly does not cover Gmail/Outlook**: Google/Microsoft now require OAuth XOAUTH2
   for IMAP, so routing them through the gateway buys nothing over their REST APIs and
   loses fidelity (labels, threads, search operators).
+  This carve-out is about *those two*, not about consumer scale — **Yahoo is in scope for
+  the gateway**, not a later native track. It is the mirror image of the big two: it
+  publishes no HTTP Mail API at all (the old `mail.yahooapis.com` JSON-RPC is retired,
+  and `mail-r`/`mail-w` OAuth is gated behind a Commercial Access Agreement), and it
+  still accepts an app password over standard IMAP/SMTP — so there is no REST fidelity
+  to lose and the credential the gateway needs is obtainable. See D37.
 
 ---
 

@@ -4,7 +4,10 @@ info:
   key: email
   category: Communication
   # Generic, provider-agnostic mailbox access over any standard IMAP/SMTP
-  # provider (Migadu, Fastmail, iCloud, Zoho, corporate Dovecot/Cyrus, …).
+  # provider (Migadu, Fastmail, iCloud, Zoho, Yahoo, corporate Dovecot/Cyrus, …).
+  # Yahoo belongs here rather than in a native template of its own: it ships no
+  # HTTP Mail API, and its IMAP/SMTP wants an *app password* (generated in Yahoo
+  # account security) — not the account password. See D37.
   # Backed by overfwd (https://github.com/overspiral/overfwd), a stateless REST
   # Mailbox Gateway that holds no credentials or mail at rest. Not for
   # Gmail/Outlook — those ship as native REST services (gmail.yaml / outlook).
