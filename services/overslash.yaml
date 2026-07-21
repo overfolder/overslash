@@ -68,10 +68,31 @@ platform_actions:
     risk: delete
   list_pending:
     description: >
-      List approved actions with a pending execution, ready to dispatch or
-      cancel. Scoped to the caller's own requests. Returns an array of approval
-      objects; each includes a nested execution with status, expires_at, and
-      result.
+      List the caller's approved actions that still need attention: those with
+      a pending execution (ready to dispatch or cancel) plus those that already
+      ran automatically and whose output the caller has never fetched. Returns
+      an array of approval objects; each includes a nested execution with
+      status, expires_at, output_read, and result. Prefer get_events, which
+      also surfaces approvals waiting on the caller to resolve.
+    risk: read
+  get_result:
+    description: >
+      Fetch the outcome of a previously-approved action. Requires
+      params.approval_id (string). Returns the execution's status
+      (pending | executing | executed | failed | cancelled | expired), the
+      result body, error, and http_status_code. Resuming with approval_id
+      cannot fetch this — that returns 409 once the action has run. Reading
+      here is also what marks the output as read, so it stops appearing in
+      get_events.
+    risk: read
+  get_events:
+    description: >
+      Poll for anything needing the caller's attention. Returns an array of
+      events, each with a type: approval_needed (someone in your subtree is
+      blocked and you can resolve it), ready_to_call (your approved action is
+      waiting to be dispatched), or result_unread (your action already ran and
+      you have not read its output — fetch it with get_result). Result bodies
+      are omitted here; use get_result for the payload.
     risk: read
   call_pending:
     description: >

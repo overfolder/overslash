@@ -55,7 +55,7 @@ use crate::{
     extractors::{AuthContext, ReqExt},
     middleware::subdomain::RequestOrgContext,
     routes::oauth_as as oauth_as_routes,
-    services::{jwt, mcp_session, oauth_as, session},
+    services::{inbox, jwt, mcp_session, oauth_as, session},
 };
 
 pub fn router() -> Router<AppState> {
@@ -1039,20 +1039,23 @@ async fn dispatch_read(
     // read sub-actions through the appropriate path and reject the write
     // ones explicitly so the user gets a clear error rather than a 404 from
     // the actions handler:
-    //   - `list_pending` is GET /v1/approvals?... and predates the bridged
-    //     platform-action set, so it goes through the platform dispatcher
-    //     directly.
+    //   - `list_pending` / `get_result` / `get_events` are thin wrappers over
+    //     GET /v1/approvals... and have no kernel behind them, so they go
+    //     through the platform dispatcher directly.
     //   - `list_templates` / `get_template` are bridged read-class platform
     //     actions; fall through to the regular `/v1/actions/call` forwarding
     //     so `require_risk=read` is enforced at the action gateway.
     if service == "overslash" {
         return match action {
-            // Pass `require_risk: "read"` so the actions handler enforces the
-            // risk gate even though the caller is the read tool. Defense in
-            // depth — if a write-class action ever sneaks into this arm by
-            // mistake, the server-side check refuses it.
-            "list_pending" | "list_services" | "get_service" | "list_templates"
-            | "get_template" => {
+            // `require_risk: "read"` is forwarded so the actions handler
+            // enforces the risk gate for the *bridged* actions in this list —
+            // defense in depth if a write-class action ever sneaks in by
+            // mistake. It is inert for `list_pending` / `get_result` /
+            // `get_events`, which forward straight to `/v1/approvals...` and
+            // never reach the gate; those three are read-only by construction
+            // (GET, no kernel).
+            "list_pending" | "get_result" | "get_events" | "list_services" | "get_service"
+            | "list_templates" | "get_template" => {
                 dispatch_overslash_platform(state, bearer, action, args, Some("read")).await
             }
             other => Err(format!(
@@ -1171,21 +1174,32 @@ async fn dispatch_overslash_platform(
             )
             .await?;
             // An approval's status stays 'allowed' even after its execution
-            // has been dispatched, failed, or expired. Only return entries
-            // where the execution is still dispatchable. `map_ok` skips this
-            // filter for typed-error envelopes (which aren't arrays).
+            // has been dispatched, failed, or expired, so the raw listing is
+            // too broad. Keep two classes:
+            //   * `pending` — still dispatchable via call_pending.
+            //   * terminal but unread — the execution already ran (the
+            //     `auto_call_on_approve` default) and the agent has never
+            //     fetched the output. Dropping these was the bug: an
+            //     auto-called action vanished from every MCP surface the
+            //     moment it succeeded. See `dispatch_get_events`.
+            // `map_ok` skips this filter for typed-error envelopes (which
+            // aren't arrays).
             Ok(outcome.map_ok(|mut value| {
                 if let Some(arr) = value.as_array_mut() {
-                    arr.retain(|item| {
-                        item.get("execution")
-                            .and_then(|e| e.get("status"))
-                            .and_then(Value::as_str)
-                            == Some("pending")
-                    });
+                    arr.retain(inbox::needs_attention);
                 }
                 value
             }))
         }
+        "get_result" => {
+            let id = params
+                .and_then(|p| p.get("approval_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| "get_result requires params.approval_id".to_string())?;
+            let path = format!("/v1/approvals/{}/execution", urlencoding::encode(id));
+            forward(state, bearer, Method::GET, &path, None).await
+        }
+        "get_events" => dispatch_get_events(state, bearer).await,
         "call_pending" => {
             let id = params
                 .and_then(|p| p.get("approval_id"))
@@ -1221,6 +1235,44 @@ async fn dispatch_overslash_platform(
             "overslash platform action '{other}' is not callable via MCP"
         )),
     }
+}
+
+/// MCP wrapper over the agent inbox. Fetches the two listings that
+/// [`inbox::build_events`] classifies — see that module for what the event
+/// types mean and why `result_unread` is the reason any of this exists.
+async fn dispatch_get_events(state: &AppState, bearer: &str) -> Result<ForwardOutcome, String> {
+    // Two listings, merged. A typed error from either short-circuits — a
+    // partial inbox would read as "nothing else needs you", which is exactly
+    // the wrong thing to tell an agent that is about to stop polling.
+    let actionable = match forward(
+        state,
+        bearer,
+        Method::GET,
+        "/v1/approvals?scope=actionable",
+        None,
+    )
+    .await?
+    {
+        ForwardOutcome::Ok(v) => v,
+        typed @ ForwardOutcome::TypedError(_) => return Ok(typed),
+    };
+    let mine = match forward(
+        state,
+        bearer,
+        Method::GET,
+        "/v1/approvals?scope=mine&status=allowed",
+        None,
+    )
+    .await?
+    {
+        ForwardOutcome::Ok(v) => v,
+        typed @ ForwardOutcome::TypedError(_) => return Ok(typed),
+    };
+
+    Ok(ForwardOutcome::Ok(Value::Array(inbox::build_events(
+        &actionable,
+        &mine,
+    ))))
 }
 
 /// Forward an `overslash`-platform action through `/v1/actions/call` so the

@@ -1,10 +1,9 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use serde::Deserialize;
 
-use overslash_mcp::config::McpConfig;
+use crate::common;
 
 pub struct CallArgs {
     pub service: Option<String>,
@@ -18,13 +17,8 @@ pub struct CallArgs {
 }
 
 pub async fn list(config_path: PathBuf) -> anyhow::Result<()> {
-    let config = McpConfig::load(&config_path).with_context(|| {
-        format!(
-            "failed to load MCP config from {} — run `overslash mcp login` first",
-            config_path.display()
-        )
-    })?;
-    let client = build_client()?;
+    let config = common::load_mcp_config(&config_path)?;
+    let client = common::api_client()?;
     match list_inner(&client, &config.server_url, &config.token).await {
         Ok(body) => {
             println!("{body}");
@@ -38,13 +32,8 @@ pub async fn list(config_path: PathBuf) -> anyhow::Result<()> {
 }
 
 pub async fn call(config_path: PathBuf, args: CallArgs) -> anyhow::Result<()> {
-    let config = McpConfig::load(&config_path).with_context(|| {
-        format!(
-            "failed to load MCP config from {} — run `overslash mcp login` first",
-            config_path.display()
-        )
-    })?;
-    let client = build_client()?;
+    let config = common::load_mcp_config(&config_path)?;
+    let client = common::api_client()?;
     let req_body = build_request_body(&args);
     match call_inner(&client, &config.server_url, &config.token, &req_body).await {
         Ok(CallOutcome::Called(body)) => {
@@ -99,9 +88,7 @@ async fn list_inner(
 
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err(anyhow!(
-            "token expired or invalid — run `overslash mcp login`"
-        ));
+        return Err(common::unauthorized_error());
     }
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
@@ -142,9 +129,7 @@ async fn call_inner(
 
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err(anyhow!(
-            "token expired or invalid — run `overslash mcp login`"
-        ));
+        return Err(common::unauthorized_error());
     }
     // 403 FORBIDDEN carries a {"status":"denied",...} body — fall through to
     // the status-dispatch below rather than treating it as a generic error.
@@ -244,13 +229,6 @@ struct CallStatusPoll {
     status: String,
     approval_id: Option<String>,
     approval_url: Option<String>,
-}
-
-fn build_client() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()?)
 }
 
 #[cfg(test)]
@@ -370,8 +348,8 @@ mod tests {
 
     fn test_client() -> reqwest::Client {
         reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(5))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(5))
             .build()
             .unwrap()
     }

@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, anyhow};
 use serde::Deserialize;
 
-use overslash_mcp::config::McpConfig;
+use crate::common;
+use crate::common::is_stderr_tty;
 
 pub async fn run(
     config_path: PathBuf,
@@ -12,25 +13,14 @@ pub async fn run(
     timeout_str: String,
     poll_str: String,
 ) -> anyhow::Result<()> {
-    let config = McpConfig::load(&config_path).with_context(|| {
-        format!(
-            "failed to load MCP config from {} — run `overslash mcp login` first",
-            config_path.display()
-        )
-    })?;
+    let config = common::load_mcp_config(&config_path)?;
 
     let timeout = parse_duration(&timeout_str)
         .with_context(|| format!("invalid --timeout value: {timeout_str:?}"))?;
     let poll_interval =
         parse_duration(&poll_str).with_context(|| format!("invalid --poll value: {poll_str:?}"))?;
 
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        // Per-request timeout guards against a server that accepts the
-        // connection but then hangs sending the response body, which would
-        // otherwise bypass the user-facing --timeout flag entirely.
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let client = common::api_client()?;
 
     let url = format!(
         "{}/v1/approvals/{}",
@@ -120,9 +110,7 @@ async fn watch_inner(
 
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(anyhow!(
-                "token expired or invalid — run `overslash mcp login`"
-            ));
+            return Err(common::unauthorized_error());
         }
         if status == reqwest::StatusCode::NOT_FOUND {
             return Err(anyhow!("approval {approval_id} not found"));
@@ -180,11 +168,6 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
 
 fn eprint_progress(msg: String) {
     eprintln!("{msg}");
-}
-
-fn is_stderr_tty() -> bool {
-    use std::io::IsTerminal;
-    std::io::stderr().is_terminal()
 }
 
 #[cfg(test)]

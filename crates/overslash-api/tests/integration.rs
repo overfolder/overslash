@@ -3568,35 +3568,43 @@ async fn test_mcp_overslash_list_pending() {
     assert_eq!(items[0]["status"], "allowed");
     assert_eq!(items[0]["execution"]["status"], "pending");
 
-    // After the execution is dispatched it should be filtered out of list_pending.
+    // Dispatching it by hand returns the body in-band and stamps it read, so
+    // it drops straight out. What must NOT happen is the pre-fix behaviour on
+    // the *auto*-executed path, where a terminal execution vanished from every
+    // MCP surface with its output never delivered — covered in mcp_inbox.rs.
     client
         .post(format!("{base}/v1/approvals/{approval_id}/call"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
         .unwrap();
-    let frame2: Value = client
-        .post(format!("{base}/mcp"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
-            "params": {
-                "name": "overslash_call",
-                "arguments": {"service": "overslash", "action": "list_pending"}
-            }
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(frame2["error"].is_null(), "MCP error after call: {frame2}");
-    let text2 = frame2["result"]["content"][0]["text"].as_str().unwrap();
-    let items2: Vec<Value> = serde_json::from_str(text2).unwrap();
+    let list_pending = || async {
+        let frame: Value = client
+            .post(format!("{base}/mcp"))
+            .header(auth(&key).0, auth(&key).1)
+            .json(&json!({
+                "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                "params": {
+                    "name": "overslash_call",
+                    "arguments": {"service": "overslash", "action": "list_pending"}
+                }
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(frame["error"].is_null(), "MCP error after call: {frame}");
+        let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+        serde_json::from_str::<Vec<Value>>(text).unwrap()
+    };
+
+    let items2 = list_pending().await;
     assert!(
         items2.is_empty(),
-        "list_pending should exclude non-pending executions; got {items2:?}"
+        "a self-dispatched execution is delivered in-band and marked read, so \
+         it must not linger as unread work; got {items2:?}"
     );
 }
 
