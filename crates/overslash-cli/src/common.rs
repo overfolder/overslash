@@ -146,8 +146,11 @@ fn redact_password(url: &str) -> String {
 /// Version reported by the binary: the release tag baked in at build time
 /// (`OVERSLASH_VERSION`, set by the release workflow, no `v` prefix) or the
 /// crate version for local builds.
+///
+/// Delegates to [`overslash_core::build_info`] so `--version`, the startup
+/// banner, `/health` and `GET /v1/version` cannot drift apart.
 pub fn version() -> &'static str {
-    option_env!("OVERSLASH_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+    overslash_core::build_info::build_info().version
 }
 
 /// Print an executor-style startup banner with clickable URLs (OSC 8

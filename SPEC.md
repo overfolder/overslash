@@ -1407,8 +1407,9 @@ Configured by org admins via `PUT /GET /DELETE /v1/rate-limits`.
 - **429 Too Many Requests** with `Retry-After` header and JSON body when exceeded.
 - **Storage**: Redis/Valkey if available (distributed, accurate across instances); in-memory `DashMap` fallback (single-instance, no external dependency).
 - **Fail-open**: If Redis becomes unavailable at runtime, requests are allowed through (logged as warning).
-- **Health endpoint** (`/health`) is exempt from rate limiting.
+- **Health endpoint** (`/health`) and **build stamp** (`GET /v1/version`) are exempt from rate limiting.
 - **Health vs. readiness**: `/health` is liveness — it reports database reachability in the body (`db`, `db_latency_ms` / `db_error`) but always returns 200, because it backs the Cloud Run startup and liveness probes and a 503 there would restart containers during a database outage. `/ready` runs the same bounded `SELECT 1` and returns **503** when Postgres is unreachable; it is the endpoint to point a load balancer or alerting monitor at.
+- **Build stamp**: both `/health` and `/ready` also report `version` (release, or the crate version for unreleased builds) and `commit` (full git SHA, or `unknown`). `GET /v1/version` returns the same two values plus `commit_short`, without the database probe — it is unauthenticated for the same reason `/health` is, and is what the dashboard renders in its sidebar footer. The SHA is baked in at compile time (`OVERSLASH_GIT_SHA`, supplied by Cloud Build as `$COMMIT_SHA` or discovered via `git` for local builds).
 
 ---
 

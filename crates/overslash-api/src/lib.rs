@@ -573,6 +573,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     let global_routes = Router::new()
         .merge(routes::health::router())
+        .merge(routes::version::router())
         .merge(routes::skill_md::router())
         .merge(routes::oauth_upstream::router())
         .merge(routes::oauth::consent_router())

@@ -318,12 +318,14 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - "ADMIN" section label (11px semi-bold, neutral-400, letter-spaced) separates admin-only items.
 - **Org switcher** (sidebar footer, above the Settings link): shows the current org's name. When the user belongs to more than one org, clicking it opens a dropdown grouped by **Personal** / **Orgs** with the current entry highlighted. Selecting an entry posts to `/auth/switch-org { org_id }` and the browser hard-reloads onto the returned URL (root apex for personal orgs, `<slug>.app.overslash.com` for corp orgs). The current org's role (admin / member) is implicit — no per-row badges; every row is just an org name.
 - Collapse button (chevron «) at the bottom or top-right of the sidebar.
+- **Build stamp** (last line of the sidebar footer): `v<version> · <short sha>` in muted 11px text, read from `GET /v1/version`. Hovering shows the full SHA; clicking copies it and the line reads "Copied" for ~1.5s. Absent until the request resolves, and if it fails.
 
 **Collapsed** (64px): same background and border. Contains:
 - Logo collapses to "/" (the slash character, bold 18px) — the iconic part of "Overs/ash".
 - Nav items show icons only (18px, centered), no labels. Active item still has primary-50 rounded background. Tooltip on hover shows the label.
 - "ADMIN" label hidden. Admin nav items still show as icon-only.
 - Org switcher collapses to the first letter of the current org's slug in a single cell; clicking still opens the dropdown (which anchors to the right of the sidebar so it's readable).
+- Build stamp drops the version and shows the short SHA alone.
 - Expand button (chevron ») to restore.
 
 **Top bar**: 56px tall, white background, neutral-200 bottom border. Page title on left (semi-bold 16px). On the right, in order: notification bell + badge, theme toggle, **user badge** — the user's avatar (32px circle) + name, with the `⚡ Instance` chip appended when the viewer is an instance admin. Clicking the user badge opens the User Profile view.

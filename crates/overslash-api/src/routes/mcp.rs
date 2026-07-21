@@ -44,6 +44,7 @@ use axum::{
     routing::post,
 };
 use futures_util::stream::{self, Stream, StreamExt};
+use overslash_core::build_info::build_info;
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -355,7 +356,7 @@ async fn initialize_response(
             "capabilities": { "tools": {} },
             "serverInfo": {
                 "name": "overslash",
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": build_info().version,
             },
             "instructions": "Overslash MCP server. Use overslash_search to discover \
         services, overslash_read to invoke read-class actions (the server \

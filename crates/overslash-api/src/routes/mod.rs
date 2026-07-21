@@ -34,4 +34,5 @@ pub mod skill_md;
 pub mod templates;
 pub mod unsubscribe;
 pub mod util;
+pub mod version;
 pub mod webhooks;

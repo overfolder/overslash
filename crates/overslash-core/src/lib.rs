@@ -1,3 +1,4 @@
+pub mod build_info;
 pub mod credential_template;
 pub mod crypto;
 pub mod description;
