@@ -11,6 +11,7 @@ pub mod embedding_backfill;
 pub mod group_ceiling;
 pub mod http_caller;
 pub mod identity_path;
+pub mod inbox;
 pub mod invite_email;
 pub mod jwt;
 pub mod key_rotation;

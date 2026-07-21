@@ -305,50 +305,79 @@ When `overslash_call` hits a permission gap it does not execute — it returns:
 
 **Step 1 — show the user `approval_url`** so they can allow or deny in the dashboard.
 
-**Step 2 — wait for resolution.**
-
-If the `overslash` CLI is available (see [Installing the CLI](#installing-the-cli) above), use it — works in any harness:
-
-```bash
-overslash watch abc-123          # --timeout 15m --poll 3s by default
-```
-
-Exit codes: **0** allowed · **1** denied / expired / timed out · **2** error.
-On exit 0, stdout is the resolved JSON; `execution.result` will be present if
-the action was auto-executed on approval.
-
-If the CLI is not installed, poll with a bare shell loop:
-
-```bash
-TOKEN="$(jq -r .token ~/.config/overslash/mcp.json)"
-until [ "$(curl -sf -H "Authorization: Bearer $TOKEN" \
-  https://app.overslash.com/v1/approvals/abc-123 \
-  | jq -r '.status')" != "pending" ]; do sleep 3; done
-curl -sf -H "Authorization: Bearer $TOKEN" \
-  https://app.overslash.com/v1/approvals/abc-123
-```
-
-**Step 3 — execute.** If `execution.result` is not in the resolved JSON, call:
+**Step 2 — poll your inbox** until the approval turns into something you can act on:
 
 ```
-overslash_call { "approval_id": "abc-123" }
+overslash_call { "service": "overslash", "action": "get_events" }
 ```
+
+It returns an array of events. The two that concern you here:
+
+| `type` | What it means | What to do |
+|---|---|---|
+| `ready_to_call` | Approved, waiting for you to dispatch it (15-minute TTL) | `overslash_call { "approval_id": "abc-123" }` |
+| `result_unread` | Already ran on your behalf — the output is waiting | `get_result` (Step 3) |
+
+Which one you get depends on your identity's `auto_call_on_approve` setting. It
+is **on by default**, meaning the gateway runs the action for you the moment it
+is approved and you collect the output afterwards.
+
+An empty array means nothing has changed yet — sleep briefly and poll again.
+The approval itself expires, so this is not an infinite wait.
+
+**Step 3 — collect the result.**
+
+```
+overslash_call { "service": "overslash", "action": "get_result",
+                 "params": { "approval_id": "abc-123" } }
+```
+
+This returns the execution's `status`, `result`, `error`, and
+`http_status_code`. Reaching for `overslash_call { "approval_id": … }` instead
+will not work — that answers 409 once the action has already run.
+
+Use `get_result` even if you already glimpsed the body elsewhere (`list_pending`
+nests it too): it is the only call that marks the output as read, and an unread
+result keeps reappearing in `get_events`.
 
 **Never re-submit the original parameters once an approval exists** — that
 creates a second approval instead of resuming the first.
 
-## Pending executions
+Shell-capable harnesses can use the CLI instead of polling in-protocol (see
+[Installing the CLI](#installing-the-cli) above):
 
-An approved action sits as a pending execution (15-minute TTL) until the agent
-triggers it. Use the built-in `overslash` platform service — handy at session
-start to catch work that survived an interrupted session:
+```bash
+overslash inbox                  # same event array, as JSON on stdout
+overslash get-result abc-123     # exit 0 = executed, 1 = failed/pending, 2 = error
+overslash watch abc-123          # block until resolved; --timeout 15m --poll 3s
+```
+
+## Your inbox
+
+`get_events` is the one call that answers "is anything waiting on me?" — worth
+running at session start to pick up work that survived an interrupted session.
+A third event type appears when you have descendants:
+
+| `type` | Meaning |
+|---|---|
+| `approval_needed` | A sub-agent below you is blocked and **you** can unblock it — resolve with `overslash_approve`. These are always someone else's request (`relationship: "downstream"`); your own parked requests never appear here |
+| `ready_to_call` | Your approved action is waiting to be dispatched |
+| `result_unread` | Your action already ran and you have not read the output |
+
+Events carry `approval_id`, `action_summary`, `risk`, `relationship`, and the
+execution's lifecycle — but never the result body. Use `get_result` for that.
+
+The rest of the pending-execution surface, on the built-in `overslash` platform
+service:
 
 | Action | Effect |
 |---|---|
-| `list_pending` | Lists your approved-but-unexecuted actions |
-| `call_pending` | Executes one — `params: { "approval_id": "…" }` |
+| `get_events` | Everything waiting on you (above) |
+| `get_result` | Fetch one execution's outcome — `params: { "approval_id": "…" }` |
+| `list_pending` | Your approved actions still needing attention (dispatch or unread output) |
+| `call_pending` | Dispatches one — `params: { "approval_id": "…" }` |
 | `cancel_pending` | Discards one — `params: { "approval_id": "…" }` |
 
 ```
-overslash_call { "service": "overslash", "action": "list_pending" }
+overslash_call { "service": "overslash", "action": "get_events" }
 ```

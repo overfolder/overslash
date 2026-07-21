@@ -1093,6 +1093,24 @@ async fn call_approval(
     )
     .await?;
 
+    // A manual dispatch hands the result straight back in this response, so
+    // the requester has already seen it — stamp it read. Without this the
+    // execution would sit in the agent's inbox as a permanently unread
+    // `result_unread` event (see `services::inbox`), clearable only by
+    // re-fetching a body the caller already holds. Resolver-triggered calls
+    // deliberately don't stamp: the requesting agent still hasn't seen it.
+    let finalised = if auth.identity_id == Some(approval.identity_id) {
+        match scope.mark_execution_viewed(finalised.id).await {
+            Ok(true) => scope
+                .get_execution_by_approval(id)
+                .await?
+                .unwrap_or(finalised),
+            _ => finalised,
+        }
+    } else {
+        finalised
+    };
+
     let (identity_path, identity_path_ids) =
         crate::services::identity_path::build_for_identity(&scope, approval.identity_id)
             .await
@@ -2043,8 +2061,22 @@ fn execution_conflict_error(current: Option<ExecutionRow>) -> AppError {
                 }
             }
             "executing" => AppError::Conflict("execution is already in progress".into()),
-            "executed" => AppError::Conflict("execution has already completed".into()),
-            "failed" => AppError::Conflict("execution already attempted and failed".into()),
+            // Terminal-with-output states name the recovery path. Under the
+            // `auto_call_on_approve` default the agent's own /call loses this
+            // race routinely, and the output it wanted is already sitting in
+            // GET /v1/approvals/{id}/execution.
+            "executed" => AppError::Conflict(
+                "execution has already completed — fetch the output from \
+                 GET /v1/approvals/{id}/execution (MCP: the overslash `get_result` \
+                 action; CLI: `overslash get-result <approval_id>`)"
+                    .into(),
+            ),
+            "failed" => AppError::Conflict(
+                "execution already attempted and failed — fetch the error from \
+                 GET /v1/approvals/{id}/execution (MCP: the overslash `get_result` \
+                 action; CLI: `overslash get-result <approval_id>`)"
+                    .into(),
+            ),
             "cancelled" => AppError::Conflict("execution was cancelled".into()),
             "expired" => AppError::Gone("pending execution has expired".into()),
             other => AppError::Conflict(format!("execution in unexpected state: {other}")),

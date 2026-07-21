@@ -70,7 +70,7 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 ### 2.1 Dashboard residuals
 
 - [ ] **IdP config edit UI** on `/org` — backend `PUT /v1/org-idp-configs/{id}` already supports it (TECH_DEBT.md §3).
-- [ ] **Notification bell** dropdown in the top bar (review card `504a7`).
+- [ ] **Notification bell** dropdown in the top bar (review card `504a7`). Dashboard-side sibling of the agent inbox — the same "what's waiting on me?" question the `overslash` `get_events` action answers; reuse `services::inbox` classification rather than inventing a second one.
 - [ ] **Archived sub-agents** — list + restore button on `/agents`, plus per-org cleanup config form (`subagent_idle_timeout_secs`, `subagent_archive_retention_days`).
 - [ ] **Per-agent permission management** — rules, scopes, "Allow & Remember" review/edit on the agent detail page.
 - [ ] **`/account` profile editing** — name + avatar editable.

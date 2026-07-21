@@ -1,7 +1,9 @@
 use std::time::Duration;
 
+use anyhow::Context;
 use axum::Router;
 use overslash_api::config::{Config, default_public_url};
+use overslash_mcp::config::McpConfig;
 use tracing_subscriber::EnvFilter;
 
 fn init_tracing(to_stderr: bool) {
@@ -141,6 +143,45 @@ fn redact_password(url: &str) -> String {
         }
         Err(_) => url.to_string(),
     }
+}
+
+// ── API client helpers ──────────────────────────────────────────────────
+// Shared by every subcommand that talks to a running Overslash API
+// (`watch`, `services`, `call`, `inbox`, `get-result`).
+
+/// HTTP client for CLI→API calls.
+///
+/// The per-request timeout is the important one: it guards against a server
+/// that accepts the connection and then hangs sending the response body,
+/// which would otherwise slip past a user-facing `--timeout` flag entirely.
+pub fn api_client() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()?)
+}
+
+/// Load the stored MCP config, naming the fix when it isn't there.
+pub fn load_mcp_config(config_path: &std::path::Path) -> anyhow::Result<McpConfig> {
+    McpConfig::load(config_path).with_context(|| {
+        format!(
+            "failed to load MCP config from {} — run `overslash mcp login` first",
+            config_path.display()
+        )
+    })
+}
+
+/// The 401 every API-calling subcommand can hit. One string so the remedy
+/// stays identical no matter which command surfaced it.
+pub fn unauthorized_error() -> anyhow::Error {
+    anyhow::anyhow!("token expired or invalid — run `overslash mcp login`")
+}
+
+/// Whether stderr is a terminal. Progress and summary lines are suppressed
+/// when it isn't, so piping a command's stdout stays clean.
+pub fn is_stderr_tty() -> bool {
+    use std::io::IsTerminal;
+    std::io::stderr().is_terminal()
 }
 
 /// Version reported by the binary: the release tag baked in at build time

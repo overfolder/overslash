@@ -1,6 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 
 mod common;
+mod inbox;
 mod mcp;
 mod mcp_login;
 mod reencrypt;
@@ -54,6 +55,46 @@ enum Command {
         /// Poll interval, e.g. "3s", "10s". Default: 3s.
         #[arg(long, default_value = "3s")]
         poll: String,
+        /// Profile name (reads `~/.config/overslash/mcp.<profile>.json`).
+        #[arg(long)]
+        profile: Option<String>,
+        /// Override the config path entirely.
+        #[arg(long, env = "OVERSLASH_MCP_CONFIG")]
+        config: Option<std::path::PathBuf>,
+    },
+    /// Show everything waiting on this identity, as a JSON event array.
+    ///
+    /// Three event types: `approval_needed` (someone in your subtree is
+    /// blocked and you can resolve it), `ready_to_call` (your approved action
+    /// is waiting to be dispatched), and `result_unread` (your action already
+    /// ran — fetch the output with `overslash get-result`).
+    ///
+    /// Exit code: 0 = ok (an empty inbox is still success), 2 = error.
+    Inbox {
+        /// Suppress the human-readable summary on stderr (stdout is always
+        /// pure JSON regardless).
+        #[arg(long)]
+        quiet: bool,
+        /// Profile name (reads `~/.config/overslash/mcp.<profile>.json`).
+        #[arg(long)]
+        profile: Option<String>,
+        /// Override the config path entirely.
+        #[arg(long, env = "OVERSLASH_MCP_CONFIG")]
+        config: Option<std::path::PathBuf>,
+    },
+    /// Fetch the outcome of a previously-approved action.
+    ///
+    /// Dispatching it again won't work — `POST /v1/approvals/{id}/call`
+    /// answers 409 once the execution is terminal. This is also the only call
+    /// that marks the output as read, so it stops showing up in
+    /// `overslash inbox`.
+    ///
+    /// Exit code: 0 = executed, 1 = failed/cancelled/expired or still in
+    /// flight, 2 = error.
+    #[command(name = "get-result")]
+    GetResult {
+        /// Approval UUID whose execution result to fetch.
+        approval_id: String,
         /// Profile name (reads `~/.config/overslash/mcp.<profile>.json`).
         #[arg(long)]
         profile: Option<String>,
@@ -226,6 +267,24 @@ async fn main() -> anyhow::Result<()> {
             common::bootstrap_cli();
             let path = mcp::resolve_config_path(profile, config)?;
             watch::run(path, approval_id, timeout, poll).await
+        }
+        Command::Inbox {
+            quiet,
+            profile,
+            config,
+        } => {
+            common::bootstrap_cli();
+            let path = mcp::resolve_config_path(profile, config)?;
+            inbox::events(path, quiet).await
+        }
+        Command::GetResult {
+            approval_id,
+            profile,
+            config,
+        } => {
+            common::bootstrap_cli();
+            let path = mcp::resolve_config_path(profile, config)?;
+            inbox::get_result(path, approval_id).await
         }
         Command::Mcp {
             command,
@@ -451,6 +510,45 @@ mod cli_tests {
         } else {
             panic!("expected Login re-auth");
         }
+    }
+
+    #[test]
+    fn inbox_parses_with_defaults() {
+        let cli = parse(&["overslash", "inbox"]);
+        if let Command::Inbox { quiet, profile, .. } = cli.command {
+            assert!(!quiet);
+            assert!(profile.is_none());
+        } else {
+            panic!("expected Inbox");
+        }
+    }
+
+    #[test]
+    fn inbox_quiet_and_profile() {
+        let cli = parse(&["overslash", "inbox", "--quiet", "--profile", "work"]);
+        if let Command::Inbox { quiet, profile, .. } = cli.command {
+            assert!(quiet);
+            assert_eq!(profile.as_deref(), Some("work"));
+        } else {
+            panic!("expected Inbox");
+        }
+    }
+
+    #[test]
+    fn get_result_takes_positional_approval_id() {
+        // Kebab-case on the wire, GetResult in the enum — assert the rename
+        // so a future `#[command(name = …)]` drop is caught here.
+        let cli = parse(&["overslash", "get-result", "abc-123"]);
+        if let Command::GetResult { approval_id, .. } = cli.command {
+            assert_eq!(approval_id, "abc-123");
+        } else {
+            panic!("expected GetResult");
+        }
+    }
+
+    #[test]
+    fn get_result_requires_an_approval_id() {
+        assert!(Cli::try_parse_from(["overslash", "get-result"]).is_err());
     }
 
     #[test]
