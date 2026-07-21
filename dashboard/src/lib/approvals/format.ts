@@ -58,10 +58,40 @@ export function scopeArgDisplay(key: DerivedKey | null): string {
 	return key.label ? `${key.label}: ${key.value}` : key.arg;
 }
 
-/** Compact display for a tier's permission keys: "svc:act:arg +2". */
-export function tierKeyDisplay(keys: string[]): string {
-	if (!keys.length) return '';
-	return keys.length > 1 ? `${keys[0]} +${keys.length - 1}` : keys[0];
+/**
+ * One-line scope summary across *every* derived key, for the compact contexts
+ * (queue row, detail header). A send to two recipients reads
+ * "recipient: ada@x.com, bob@y.com" rather than naming only the first — the
+ * omitted one is usually the reason the approval exists. Past `max` values it
+ * collapses to "recipient: ada@x.com +2 more"; the full list lives in the
+ * detail panel.
+ */
+export function scopeArgSummary(keys: DerivedKey[], max = 2): string {
+	if (!keys.length) return '*';
+	const label = keys[0].label;
+	// Mixed labels can't share one prefix — fall back to whole-key displays.
+	const uniform = label && keys.every((k) => k.label === label);
+	const parts = [...new Set(keys.map((k) => (uniform ? k.value : scopeArgDisplay(k))))];
+	const shown = parts.slice(0, max).join(', ');
+	const hidden = parts.length - Math.min(parts.length, max);
+	const tail = hidden > 0 ? `${shown} +${hidden} more` : shown;
+	return uniform ? `${label}: ${tail}` : tail;
+}
+
+/**
+ * How many permission keys a surface renders before offering a "show more"
+ * toggle. Generous on purpose: the keys are short, few (one per recipient),
+ * and are exactly what the approver is being asked to grant — a bare "+1"
+ * hides the decision.
+ */
+export const KEY_DISPLAY_CAP = 6;
+
+/** Split a key list into the ones to render and the count held back. */
+export function splitKeys(
+	keys: string[],
+	cap = KEY_DISPLAY_CAP
+): { shown: string[]; hidden: number } {
+	return { shown: keys.slice(0, cap), hidden: Math.max(0, keys.length - cap) };
 }
 
 /** Last unit segment of a SPIFFE-ish identity path, or a short id fallback. */

@@ -12,8 +12,8 @@
 	import {
 		TTL_OPTIONS,
 		humanize,
-		tierKeyDisplay,
-		scopeArgDisplay,
+		splitKeys,
+		scopeArgSummary,
 		renderPayload,
 		formatBytes,
 		utf8ByteLength,
@@ -92,7 +92,7 @@
 
 	const primaryKey = $derived(current.derived_keys[0] ?? null);
 	const serviceLabel = $derived(primaryKey ? humanize(primaryKey.service) : '—');
-	const targetArg = $derived(scopeArgDisplay(primaryKey));
+	const targetArg = $derived(scopeArgSummary(current.derived_keys));
 
 	const disclosedSplit = $derived(splitDisclosed(current.disclosed_fields));
 	const primaryDisclosed = $derived(disclosedSplit.primaries);
@@ -121,13 +121,14 @@
 		idUnits.length ? idUnits[idUnits.length - 1].name : current.requesting_identity_id.slice(0, 8)
 	);
 
-	const selectedKeyDisplay = $derived(
+	// Every key the chosen tier would grant — the sticky bar shows the whole
+	// set, not a "+N" that hides the recipient the approval is really about.
+	const selectedKeys = $derived(
 		useCustomKey
-			? customKey || 'service:action:arg'
-			: current.suggested_tiers[selectedTier]
-				? tierKeyDisplay(current.suggested_tiers[selectedTier].keys)
-				: '—'
+			? [customKey || 'service:action:arg']
+			: (current.suggested_tiers[selectedTier]?.keys ?? [])
 	);
+	const selectedKeysShown = $derived(splitKeys(selectedKeys));
 	const expiryLabel = $derived(TTL_OPTIONS.find((o) => o.value === ttl)?.label ?? '');
 	const canRemember = $derived(useCustomKey ? !!customKey.trim() : current.suggested_tiers.length > 0);
 
@@ -192,7 +193,16 @@
 			<div class="aq-actionbar">
 				<div class="aq-ab-ctx">
 					<span class="lead">Remember as</span>
-					<span><code>{selectedKeyDisplay}</code> · {expiryLabel}</span>
+					<span class="aq-ab-keys">
+						{#each selectedKeysShown.shown as key}
+							<code>{key}</code>
+						{/each}
+						{#if selectedKeysShown.hidden > 0}
+							<span class="more">and {selectedKeysShown.hidden} more</span>
+						{/if}
+						{#if !selectedKeys.length}<code>—</code>{/if}
+						<span class="ttl">· {expiryLabel}</span>
+					</span>
 				</div>
 				<div class="aq-ab-btns">
 					<button class="ovs-btn ovs-btn-danger" disabled={submitting} onclick={() => resolve('deny')}
@@ -365,8 +375,15 @@
 							<dd><code class="mono">{primaryKey.action}</code></dd>
 						{/if}
 						{#if current.permission_keys.length > 0}
-							<dt>Permission</dt>
-							<dd><code class="mono">{current.permission_keys[0]}</code></dd>
+							<!-- Every uncovered key, one per line: these are exactly what
+							     still needs granting, and an action can derive several
+							     (one per recipient on a send). -->
+							<dt>{current.permission_keys.length > 1 ? 'Permissions' : 'Permission'}</dt>
+							<dd class="aq-keylist">
+								{#each current.permission_keys as key}
+									<code class="mono">{key}</code>
+								{/each}
+							</dd>
 						{/if}
 						<dt>Requested</dt>
 						<dd>{rel(current.created_at)}</dd>
@@ -382,6 +399,7 @@
 						<h3>Remember as a permission rule</h3>
 						<div class="aq-scope">
 							{#each current.suggested_tiers as tier, i}
+								{@const split = splitKeys(tier.keys)}
 								<button
 									type="button"
 									class="aq-scope-opt"
@@ -397,7 +415,14 @@
 											<span class="txt">{tier.description}</span>
 											<RiskBadge risk={current.risk} />
 										</div>
-										<div class="aq-scope-key">{tierKeyDisplay(tier.keys)}</div>
+										<div class="aq-scope-key">
+											{#each split.shown as key}
+												<code>{key}</code>
+											{/each}
+											{#if split.hidden > 0}
+												<span class="more">and {split.hidden} more</span>
+											{/if}
+										</div>
 									</div>
 								</button>
 							{/each}
@@ -601,6 +626,20 @@
 		font-family: var(--font-mono);
 		font-size: 12px;
 		color: var(--color-text);
+	}
+	/* Wrap the full key set rather than truncating it — what is being granted
+	   is the decision the approver is making. */
+	.aq-ab-keys {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 4px 10px;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.aq-ab-keys .more,
+	.aq-ab-keys .ttl {
+		color: var(--color-text-muted);
 	}
 	.aq-ab-btns {
 		display: flex;
@@ -1104,13 +1143,22 @@
 		color: var(--color-primary);
 	}
 	.aq-scope-key {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
 		font-family: var(--font-mono);
 		font-size: 11px;
 		color: var(--color-text-muted);
 		margin-top: 3px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.aq-keylist {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 4px;
+		overflow-wrap: anywhere;
 	}
 	.aq-custom-key {
 		margin-top: 10px;

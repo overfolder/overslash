@@ -20,6 +20,7 @@ mod admin_cross_user_call;
 mod approval_disclosure;
 mod approval_token_leak;
 mod approvals_cascade;
+mod approvals_remember_keys;
 mod audit;
 mod auth_login;
 mod auth_magic_link;
