@@ -209,7 +209,7 @@ mod tests {
             risk,
             response_type: None,
             params: HashMap::new(),
-            scope_param: None,
+            scope_param: Default::default(),
             required_scopes: vec![],
             permission: None,
             disclose: vec![],

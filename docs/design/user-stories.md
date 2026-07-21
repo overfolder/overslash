@@ -129,10 +129,10 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
 4. **Platform-mediated UX.** Overfolder receives the OAuth URL through its event channel (webhook from Overslash). Overfolder's Telegram integration formats a Telegram message: *"Your assistant wants to connect to Google Calendar. [Connect Google Calendar]"* with the URL behind the button. Carol taps it.
 5. **Google OAuth.** Carol completes Google's consent screen in her browser. Google redirects to Overslash's callback. Overslash creates the `google-calendar` service instance owned by `carol`, stores the encrypted token (§6, §7), and fires a webhook back to Overfolder: *"service instance ready"*.
 6. **Continuation.** Overfolder sends Carol a Telegram message: *"Connected. What would you like me to do?"* Carol replies: *"add lunch with Dave tomorrow at 1pm"*.
-7. **Action attempt.** The assistant calls `overslash_call` with `service=google-calendar`, `action=create_event`, `summary="Lunch with Dave"`, `start=...`, `end=...`. Overslash derives keys: `google-calendar:create_event:primary` (`risk: write`). No matching permission key for `carols-assistant` → Overslash returns `{ status: "pending_approval", approval_id, suggested_tiers, description }`.
+7. **Action attempt.** The assistant calls `overslash_call` with `service=google-calendar`, `action=create_event`, `summary="Lunch with Dave"`, `start=...`, `end=...`. Overslash derives keys: `google-calendar:create_event:calendarId=primary` (`risk: write`). No matching permission key for `carols-assistant` → Overslash returns `{ status: "pending_approval", approval_id, suggested_tiers, description }`.
 8. **Approval surfacing.** Overfolder receives the approval event via webhook. Its Telegram integration renders inline buttons:
    - **Allow once** — `resolution: allow`
-   - **Allow this calendar** — `remember_keys: ["google-calendar:create_event:primary"]`, TTL `7d`
+   - **Allow this calendar** — `remember_keys: ["google-calendar:create_event:calendarId=primary"]`, TTL `7d`
    - **Allow any calendar** — `remember_keys: ["google-calendar:create_event:*"]`, TTL `30d`
    - **Deny**
 
@@ -242,7 +242,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
 6. **OpenAPI import for `inventory-api`.** ACME's internal `inventory-api` runs at `inventory.acme.internal` and is documented with a 12-endpoint OpenAPI 3.x spec. Erin opens **Templates → Import OpenAPI**, uploads the spec file. Overslash's `overslash-core` parser walks the spec and shows the discovered endpoints with checkboxes. Erin:
    - Selects 8 of the 12 endpoints (skips the deprecated and admin-only ones)
    - Reviews each: marks GETs as `risk: read`, POSTs as `risk: write`, DELETEs as `risk: delete`
-   - Sets `scope_param: warehouse_id` on the warehouse-scoped actions so permission keys end up like `acme-inventory:list_items:warehouse-NYC` instead of `:*`
+   - Sets `scope_param: warehouse_id` on the warehouse-scoped actions so permission keys end up like `acme-inventory:list_items:warehouse_id=warehouse-NYC` instead of `:*` (a value-only grant, `acme-inventory:list_items:warehouse-NYC`, matches it too)
    - Names the resulting template `acme-inventory`, saves at the **org tier** (visible to all ACME users, mutable by org-admins)
    - Creates a service instance from it, configures the bearer token via `/secrets/provide`, assigns to Engineering. The verify probe (`GET /healthz`) succeeds, service flips to `active`.
 7. **Hide unused globals.** Erin opens **Templates → Global** and hides Eventbrite, Stripe, Resend, and Linear from her org. They no longer appear in user dashboards, the API Explorer, or `overslash_search` results for any ACME identity. (Templates are still in the underlying registry; she can re-enable them later.)

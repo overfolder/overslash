@@ -522,6 +522,12 @@ export interface McpDetail {
   discovered_at?: string;
 }
 
+/** Mirrors overslash_core::types::ScopeParamRef */
+export interface ScopeParamRef {
+  param: string;
+  label: string;
+}
+
 /** Full action details including the parameter schema — returned by
  *  `GET /v1/templates/{key}/actions/{action_key}`. Used by the API Explorer
  *  to auto-generate a parameter form. */
@@ -536,7 +542,12 @@ export interface ActionDetail {
   summary?: string;
   risk: string;
   params: Record<string, ActionParam>;
-  scope_param?: string;
+  /** Which params supply the `{arg}` segment of the action's permission keys,
+   *  each resolved to the label its values are filed under (`to` → `recipient`).
+   *  Params sharing a label share one key namespace. Absent when the action is
+   *  unscoped. The template document's compact `param:label` shorthand is
+   *  parsed server-side — never here. */
+  scope_param?: ScopeParamRef[];
 }
 
 // -- Service instances --

@@ -388,12 +388,17 @@ fn check_action(key: &str, action: &ServiceAction, issues: &mut Issues) {
         check_param(name, param, &action.params, &action_path, issues);
     }
 
-    // scope_param must reference an existing param.
-    if let Some(ref scope) = action.scope_param {
-        if !action.params.contains_key(scope) {
+    // Every scope_param entry must reference an existing param. The *label*
+    // half needs no check — it names a permission namespace the author invents
+    // (`to:recipient`), not something the schema declares.
+    for scope in action.scope_param.refs() {
+        if !action.params.contains_key(&scope.param) {
             issues.err(
                 "unknown_scope_param",
-                format!("scope_param {scope:?} does not reference a defined param"),
+                format!(
+                    "scope_param {:?} does not reference a defined param",
+                    scope.param
+                ),
                 format!("{action_path}.scope_param"),
             );
         }
@@ -759,7 +764,7 @@ mod tests {
                         risk: Risk::Read,
                         response_type: None,
                         params: HashMap::new(),
-                        scope_param: None,
+                        scope_param: Default::default(),
                         required_scopes: Vec::new(),
                         permission: None,
                         disclose: Vec::new(),
@@ -1044,9 +1049,44 @@ mod tests {
     #[test]
     fn unknown_scope_param() {
         let mut d = minimal_valid();
-        d.actions.get_mut("list").unwrap().scope_param = Some("ghost".into());
+        d.actions.get_mut("list").unwrap().scope_param = "ghost".into();
         let r = run(&d);
         assert!(r.errors.iter().any(|e| e.code == "unknown_scope_param"));
+    }
+
+    /// Each entry in a list is checked on its own, and the message names the
+    /// offending param rather than the whole list.
+    #[test]
+    fn unknown_scope_param_inside_a_list() {
+        let mut d = minimal_valid();
+        let action = d.actions.get_mut("list").unwrap();
+        action
+            .params
+            .insert("folder".into(), param("string", false));
+        action.scope_param = crate::types::ScopeParams::parse_list(["folder", "ghost"]).unwrap();
+        let r = run(&d);
+        let issues: Vec<_> = r
+            .errors
+            .iter()
+            .filter(|e| e.code == "unknown_scope_param")
+            .collect();
+        assert_eq!(issues.len(), 1, "only the unknown entry should report");
+        assert!(issues[0].message.contains("ghost"), "{:?}", issues[0]);
+    }
+
+    /// The label half names a permission namespace the author invents, not a
+    /// param — validating it against the schema would reject the shipped
+    /// `to:recipient` form.
+    #[test]
+    fn scope_param_label_need_not_name_a_param() {
+        let mut d = minimal_valid();
+        let action = d.actions.get_mut("list").unwrap();
+        action
+            .params
+            .insert("folder".into(), param("string", false));
+        action.scope_param = crate::types::ScopeParams::parse_list(["folder:recipient"]).unwrap();
+        let r = run(&d);
+        assert!(!r.errors.iter().any(|e| e.code == "unknown_scope_param"));
     }
 
     #[test]
@@ -1227,7 +1267,7 @@ mod tests {
                 risk: Risk::Write,
                 response_type: None,
                 params: HashMap::new(),
-                scope_param: None,
+                scope_param: Default::default(),
                 required_scopes: Vec::new(),
                 permission: None,
                 disclose: Vec::new(),
@@ -1274,7 +1314,7 @@ mod tests {
                     );
                     p
                 },
-                scope_param: Some("team".into()),
+                scope_param: "team".into(),
                 required_scopes: vec![],
                 permission: None,
                 disclose: vec![],

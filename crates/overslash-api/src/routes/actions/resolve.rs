@@ -74,7 +74,7 @@ pub(super) async fn resolve_action_metadata(
             service_scope: Some(ServiceScope {
                 service_key: service_key.clone(),
                 action_key: String::new(),
-                scope_param: None,
+                scope_param: Default::default(),
                 http_verb: Some(HttpVerb {
                     method: raw_method.clone(),
                     path,
@@ -321,7 +321,7 @@ pub(super) async fn resolve_request(
                 service_scope: Some(ServiceScope {
                     service_key: service_key.clone(),
                     action_key: String::new(),
-                    scope_param: None,
+                    scope_param: Default::default(),
                     http_verb: Some(HttpVerb {
                         method: raw_method,
                         path,

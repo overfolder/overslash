@@ -13,6 +13,7 @@
 		TTL_OPTIONS,
 		humanize,
 		tierKeyDisplay,
+		scopeArgDisplay,
 		renderPayload,
 		formatBytes,
 		utf8ByteLength,
@@ -91,7 +92,7 @@
 
 	const primaryKey = $derived(current.derived_keys[0] ?? null);
 	const serviceLabel = $derived(primaryKey ? humanize(primaryKey.service) : '—');
-	const targetArg = $derived(primaryKey?.arg ?? '*');
+	const targetArg = $derived(scopeArgDisplay(primaryKey));
 
 	const disclosedSplit = $derived(splitDisclosed(current.disclosed_fields));
 	const primaryDisclosed = $derived(disclosedSplit.primaries);

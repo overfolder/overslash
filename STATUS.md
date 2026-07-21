@@ -52,7 +52,7 @@
 - Service+action execution (registry-resolved, auth auto-resolved)
 - Service + HTTP verb execution (SPEC §8) — instance + caller-supplied `method` + (`path`|`url`); auth from instance binding, host bounded by `svc.hosts`. Permission keys derive as `{service}:{METHOD}:{path}`.
 - `connection: <uuid>` action calls removed (DECISIONS D14) — closes the host-binding gap; free-form authed calls go through Service + HTTP verb.
-- `scope_param` on service actions — permission keys use specific args from action params
+- `scope_param` on service actions — permission keys use specific args from action params. Accepts a list with per-entry scope labels (`[to:recipient, cc:recipient, bcc:recipient]`), deriving `{service}:{action}:{label}={value}` keys; value-only rules still match any label (DECISIONS D40).
 - `on_behalf_of` for agent-initiated operations (PR #90) — agents create secrets and connections at the owner-user level so sibling agents share them
 - Description interpolation — `{param}` substitution and `[optional segments]` in action descriptions
 - Human-readable audit descriptions — interpolated descriptions for the action shape, `METHOD host/path` for the `http` pseudo-service, `identity_name` resolved in audit responses

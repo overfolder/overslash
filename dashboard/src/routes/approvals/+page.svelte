@@ -4,7 +4,7 @@
 	import ServiceTile from '$lib/components/approval/ServiceTile.svelte';
 	import { session, type ApprovalResponse } from '$lib/session';
 	import { relativeTime as relativeTimeUtil } from '$lib/utils/time';
-	import { humanize, extractAgentName, pickApiError } from '$lib/approvals/format';
+	import { humanize, extractAgentName, pickApiError, scopeArgDisplay } from '$lib/approvals/format';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 
@@ -63,7 +63,7 @@
 		return a.derived_keys[0]?.service ?? 'unknown';
 	}
 	function primaryArg(a: ApprovalResponse): string {
-		return a.derived_keys[0]?.arg ?? '*';
+		return scopeArgDisplay(a.derived_keys[0] ?? null);
 	}
 	function agentName(a: ApprovalResponse): string {
 		return extractAgentName(a.identity_path, a.requesting_identity_id);

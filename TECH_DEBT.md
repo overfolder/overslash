@@ -179,3 +179,32 @@ not. Fixing it means short-circuiting to `needs_authentication` when the templat
 declares no OAuth and no env fallback, which changes behaviour for every
 secret-backed template — deliberately out of scope for D38, which only had to
 match the existing unbound-slot contract.
+
+---
+
+## Object-array recipients can't be scoped — `scope_param` names params, not values inside them
+
+`scope_param` now accepts a list with per-entry labels
+(`[to:recipient, cc:recipient, bcc:recipient]` on `services/email.yaml`), which
+gates a send on every address regardless of header. That works because
+`email`'s recipient params are arrays of plain strings.
+
+The other mail/calendar templates cannot use it:
+
+- `outlook.yaml` — `toRecipients`/`ccRecipients`/`bccRecipients` are arrays of
+  `{emailAddress: {address, name}}` objects.
+- `google_calendar.yaml` — `create_event.attendees` is an array of `{email}`.
+- `gmail.yaml` — `send_message` takes one base64url RFC 2822 `raw` blob; there
+  is no recipient param at all (it scopes on `userId`).
+
+Pointing `scope_param` at an object array would derive keys whose value is the
+JSON literal of the object — nothing a rule can match and nothing a human can
+read — so those templates keep their existing service/mailbox-level scoping
+(`outlook` has no `scope_param` on `send_mail`; the others scope on the
+mailbox/calendar id).
+
+Closing it needs a value *extractor* on a scope entry (a jq filter, in the
+shape `disclose` already uses) so a template can say "the scope values are
+`.toRecipients[].emailAddress.address`". That is a bigger change than the
+label syntax: it puts a filter on the permission-derivation path, which today
+is pure string handling and runs before any approval exists.

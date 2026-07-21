@@ -333,9 +333,9 @@ paths:
         let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
         let gh = reg.get("github").unwrap();
         let create_pr = gh.actions.get("create_pull_request").unwrap();
-        assert_eq!(create_pr.scope_param.as_deref(), Some("repo"));
+        assert_eq!(create_pr.scope_param, "repo".into());
         let list_repos = gh.actions.get("list_repos").unwrap();
-        assert_eq!(list_repos.scope_param, None);
+        assert!(list_repos.scope_param.is_empty());
     }
 
     #[test]
@@ -546,29 +546,54 @@ paths:
         let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
         let send = &reg.get("email").expect("email template").actions["send"];
 
-        assert_eq!(send.scope_param.as_deref(), Some("to"));
         assert_eq!(
-            send.params["to"].param_type, "array",
-            "the recipient fan-out relies on `to` lowering as an array"
+            send.scope_param
+                .refs()
+                .iter()
+                .map(|r| (r.param.as_str(), r.label.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("to", "recipient"),
+                ("cc", "recipient"),
+                ("bcc", "recipient")
+            ],
+            "every header is scoped, and all three share one namespace"
         );
+        for header in ["to", "cc", "bcc"] {
+            assert_eq!(
+                send.params[header].param_type, "array",
+                "the recipient fan-out relies on `{header}` lowering as an array"
+            );
+        }
 
         let mut params = std::collections::HashMap::new();
         params.insert(
             "to".to_string(),
             serde_json::json!(["a@example.com", "b@example.org"]),
         );
-        let keys =
-            crate::permissions::PermissionKey::from_service_action("email", "send", None, &params);
+        params.insert("cc".to_string(), serde_json::json!(["a@example.com"]));
+        params.insert("bcc".to_string(), serde_json::json!(["c@example.net"]));
+        let keys = crate::permissions::PermissionKey::from_service_action(
+            "email",
+            "send",
+            &crate::types::ScopeParams::default(),
+            &params,
+        );
         assert_eq!(keys.len(), 1, "no scope_param passed → single wildcard key");
         let keys = crate::permissions::PermissionKey::from_service_action(
             "email",
             "send",
-            send.scope_param.as_deref(),
+            &send.scope_param,
             &params,
         );
         assert_eq!(
             keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
-            vec!["email:send:a@example.com", "email:send:b@example.org"]
+            vec![
+                "email:send:recipient=a@example.com",
+                "email:send:recipient=b@example.org",
+                "email:send:recipient=c@example.net"
+            ],
+            "cc/bcc mint keys too, and the address on both `to` and `cc` collapses to one"
         );
     }
 
