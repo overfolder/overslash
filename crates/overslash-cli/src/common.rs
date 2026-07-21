@@ -185,8 +185,8 @@ pub fn is_stderr_tty() -> bool {
 }
 
 /// Version reported by the binary: the release tag baked in at build time
-/// (`OVERSLASH_VERSION`, set by the release workflow, no `v` prefix) or the
-/// crate version for local builds.
+/// (`OVERSLASH_VERSION`, set by the release workflow, no `v` prefix), or the
+/// current release-manifest version with a `-dev` suffix for every other build.
 ///
 /// Delegates to [`overslash_core::build_info`] so `--version`, the startup
 /// banner, `/health` and `GET /v1/version` cannot drift apart.

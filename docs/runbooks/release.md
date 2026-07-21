@@ -31,14 +31,24 @@ How a release goes from `dev` to binaries on a GitHub release. See
    the archives + `SHA256SUMS.txt` to the release. The binaries report the
    tag version (injected via `OVERSLASH_VERSION` at build time).
 
-5. **Sync back.** Merge `master` into `dev` so the changelog/version commit
-   doesn't drift:
+5. **Sync back — automatic.** The same tag push triggers `sync-dev.yml`, which
+   merges `master` into `dev` so the changelog/version commit doesn't drift.
+   It exits early when `dev` already contains `master`, so re-running it is
+   always safe (`gh workflow run sync-dev.yml`).
+
+   It fails loudly on a merge conflict or a rejected push. Then do it by hand
+   (needs admin, see Requirements):
 
    ```sh
    git checkout dev && git pull
-   git merge origin/master -m "Merge master into dev (post-release vX.Y.Z)"
+   git merge --no-ff origin/master -m "chore: sync master into dev (post-release vX.Y.Z)"
    git push origin dev
    ```
+
+   Never rebase `dev` onto `master`: `dev` is the default branch and its ruleset
+   forbids non-fast-forward pushes. The merge is also what keeps
+   `.release-please-manifest.json` current on `dev`, which is where every
+   non-release build reads its `X.Y.Z-dev` version from.
 
 ## Requirements
 
@@ -48,6 +58,11 @@ How a release goes from `dev` to binaries on a GitHub release. See
   `GITHUB_TOKEN`, whose PRs never trigger CI (the master ruleset's required
   checks block the release PR) and whose tags never trigger `release.yml`.
   Rotate before expiry; the workflow fails loudly with 403s when it lapses.
+- **The PAT's owner must be a repository admin.** `sync-dev.yml` pushes the
+  merge commit straight to `dev`, whose ruleset requires a pull request and
+  allows squash merges only; the repository-admin role is the ruleset's bypass
+  actor. A sync PR is not an equivalent: a squash merge never makes the release
+  commit an ancestor of `dev`, so the drift would return every release.
 
 ## Emergency / manual path
 
