@@ -844,9 +844,10 @@ mod tests {
 
     // ── Value-only rules stay label-agnostic ─────────────────────────────
 
-    /// Every grant written before labels existed keeps working: the rule names
-    /// a value, the key now names `label=value`, and the value-only match form
-    /// bridges them.
+    /// The compat direction that matters, and the only one that can be
+    /// inferred: rules are long-lived, keys are re-derived on every call, so a
+    /// grant written before labels existed must keep covering the labelled key
+    /// the same call derives today. The value-only match form bridges them.
     #[test]
     fn value_only_rule_covers_a_labelled_key() {
         let rules = vec![rule("email:send:*@example.com", PermissionEffect::Allow)];
@@ -865,6 +866,48 @@ mod tests {
             check_permissions(&rules, &to),
             PermissionResult::NeedsApproval(to.clone()),
             "a cc-scoped grant must not launder the same address on `to`"
+        );
+    }
+
+    /// The reverse direction does **not** hold, deliberately: a `label=`-
+    /// qualified rule does not cover a *label-less* key.
+    ///
+    /// This is reachable, because approvals persist their derived keys and
+    /// `cascade_resolve` re-matches those stored strings against rules written
+    /// later. An approval filed before labels shipped holds
+    /// `email:send:a@example.com`; a rule remembered afterwards may well be
+    /// `email:send:recipient=a@example.com`, and the two do not match.
+    ///
+    /// Matching them would mean guessing: the stored key records no label, so
+    /// nothing says whether that address was a `to`, a `cc`, or a `bcc`, and
+    /// honouring a `cc=`-scoped grant over it would grant strictly more than
+    /// the operator wrote. Failing closed costs one human click on approvals
+    /// filed in the window before the upgrade (they expire in
+    /// `APPROVAL_EXPIRY_SECS`, 30 min by default); failing open would silently
+    /// widen a narrow grant. Operators who want the old keys covered write the
+    /// value-only form, which is the tier the ladder offers directly beneath
+    /// the labelled one.
+    #[test]
+    fn a_labelled_rule_does_not_cover_a_label_less_key() {
+        let legacy = vec![PermissionKey("email:send:a@example.com".into())];
+
+        for pattern in [
+            "email:send:recipient=a@example.com",
+            "email:send:recipient=*@example.com",
+        ] {
+            let rules = vec![rule(pattern, PermissionEffect::Allow)];
+            assert_eq!(
+                check_permissions(&rules, &legacy),
+                PermissionResult::NeedsApproval(legacy.clone()),
+                "{pattern} must not cover a key that records no label"
+            );
+        }
+
+        // The value-only form is the one that does cover it.
+        let rules = vec![rule("email:send:*@example.com", PermissionEffect::Allow)];
+        assert_eq!(
+            check_permissions(&rules, &legacy),
+            PermissionResult::Allowed
         );
     }
 

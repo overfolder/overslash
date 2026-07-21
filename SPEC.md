@@ -280,6 +280,13 @@ the header actually matters:
 | `email:send:cc=*@example.com` | ❌ | ✅ |
 | `email:send:*` | ✅ | ✅ |
 
+The equivalence is one-way. A `label=`-qualified pattern does **not** cover a
+label-less key: nothing in `email:send:a@example.com` says which header carried
+that address, so a `cc=`-scoped grant cannot be honoured over it without
+granting more than the rule states. This is only observable for permission keys
+persisted on an approval before the action gained a label — live calls always
+derive the current shape.
+
 A prefix counts as a label only when everything before the **first** `=` is a
 bare identifier (`[A-Za-z_][A-Za-z0-9_]*`); otherwise the whole arg is the
 value, so `http:GET:api.example.com/x?a=1` is never sliced. The parse is purely
