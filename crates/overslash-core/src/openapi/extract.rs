@@ -22,9 +22,47 @@ use crate::credential_template::TemplateReads;
 use crate::template_validation::ValidationIssue;
 use crate::types::{
     ActionParam, ConfigVar, CredentialTemplate, DisclosureField, McpAuth, McpSpec, ParamLocation,
-    ParamResolver, RequestBodySpec, Risk, SecretSlot, ServiceAction, ServiceAuth,
+    ParamResolver, RequestBodySpec, Risk, ScopeParams, SecretSlot, ServiceAction, ServiceAuth,
     ServiceDefinition, TokenInjection,
 };
+
+/// Lower `x-overslash-scope_param` — a param name, a `param:label` pair, or a
+/// list of either — into [`ScopeParams`].
+///
+/// Absent is the common case and means "unscoped" (`{service}:{action}:*`).
+/// A shape that is neither a string nor a list of strings is an **error**
+/// rather than a silent drop: dropping it would quietly widen the action's
+/// permission key to the wildcard, which is the opposite of what the author
+/// asked for.
+fn parse_scope_params(raw: Option<&Value>, base: &str) -> Result<ScopeParams, ValidationIssue> {
+    let invalid = |msg: String| {
+        ValidationIssue::new(
+            "invalid_scope_param",
+            msg,
+            format!("{base}.x-overslash-scope_param"),
+        )
+    };
+    let entries: Vec<&str> = match raw {
+        None | Some(Value::Null) => return Ok(ScopeParams::default()),
+        Some(Value::String(s)) => vec![s.as_str()],
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| {
+                v.as_str().ok_or_else(|| {
+                    invalid(format!(
+                        "x-overslash-scope_param list entries must be strings (got {v})"
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?,
+        Some(other) => {
+            return Err(invalid(format!(
+                "x-overslash-scope_param must be a param name or a list of them (got {other})"
+            )));
+        }
+    };
+    ScopeParams::parse_list(entries).map_err(invalid)
+}
 
 // ── servers → hosts ──────────────────────────────────────────────────
 
@@ -825,10 +863,8 @@ pub(super) fn extract_http_action(
         None => Risk::from_http_method(method),
     };
 
-    let scope_param = op
-        .get("x-overslash-scope_param")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let scope_param =
+        parse_scope_params(op.get("x-overslash-scope_param"), &base).map_err(|e| vec![e])?;
 
     let response_type = detect_response_type(op);
 
@@ -923,6 +959,9 @@ pub(super) fn extract_platform_action(
         .and_then(Value::as_str)
         .map(str::to_string);
 
+    let scope_param =
+        parse_scope_params(op.get("x-overslash-scope_param"), &base).map_err(|e| vec![e])?;
+
     Ok(ServiceAction {
         method: String::new(),
         path: String::new(),
@@ -931,10 +970,7 @@ pub(super) fn extract_platform_action(
         risk,
         response_type: None,
         params,
-        scope_param: op
-            .get("x-overslash-scope_param")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        scope_param,
         required_scopes: Vec::new(),
         permission,
         // Platform actions don't have outbound HTTP payloads — disclosure
@@ -1352,10 +1388,13 @@ fn lower_mcp_tool(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let scope_param = obj
-        .get("x-overslash-scope_param")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let scope_param = match parse_scope_params(obj.get("x-overslash-scope_param"), &base) {
+        Ok(sp) => sp,
+        Err(issue) => {
+            errors.push(issue);
+            return None;
+        }
+    };
     let disabled = obj
         .get("disabled")
         .and_then(Value::as_bool)

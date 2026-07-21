@@ -1819,6 +1819,152 @@ async fn email_send_accepts_a_comma_separated_recipient_string() {
     );
 }
 
+/// The gap that motivated list-valued `scope_param`: a bcc used to consume no
+/// permission key, so a domain-scoped grant let a message reach anyone as long
+/// as `to` looked clean. Every header is scoped now.
+#[tokio::test]
+async fn email_send_is_gated_on_an_uncovered_bcc() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    seed_email_instance(&base, &client, &admin_key, &gateway_url).await;
+
+    grant(
+        &base,
+        &client,
+        &admin_key,
+        ident_id,
+        "email:send:*@example.com",
+    )
+    .await;
+
+    let exec: Value = call_send_full(
+        &base,
+        &agent_key,
+        json!(["a@example.com"]),
+        None,
+        Some(json!(["stranger@example.org"])),
+    )
+    .await;
+
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("pending_approval"),
+        "a bcc outside the grant must gate the send: {exec:?}"
+    );
+    assert_eq!(sink.lock().unwrap().len(), 0, "gated before any HTTP call");
+}
+
+/// The legacy value-only grant keeps working against the new labelled keys:
+/// covered cc and bcc recipients go through with no approval.
+#[tokio::test]
+async fn email_send_with_covered_cc_and_bcc_needs_no_approval() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    seed_email_instance(&base, &client, &admin_key, &gateway_url).await;
+
+    grant(
+        &base,
+        &client,
+        &admin_key,
+        ident_id,
+        "email:send:*@example.com",
+    )
+    .await;
+
+    let exec: Value = call_send_full(
+        &base,
+        &agent_key,
+        json!(["a@example.com"]),
+        Some(json!(["b@example.com"])),
+        Some(json!(["c@example.com"])),
+    )
+    .await;
+
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("called"),
+        "a grant written before scope labels existed must still cover the new keys: {exec:?}"
+    );
+    assert_eq!(sink.lock().unwrap().len(), 1);
+}
+
+/// A label-qualified grant is the narrow form: `recipient=` covers every
+/// header, and one address on both `to` and `cc` is a single decision.
+#[tokio::test]
+async fn email_send_accepts_a_recipient_labelled_grant() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    seed_email_instance(&base, &client, &admin_key, &gateway_url).await;
+
+    grant(
+        &base,
+        &client,
+        &admin_key,
+        ident_id,
+        "email:send:recipient=*@example.com",
+    )
+    .await;
+
+    let exec: Value = call_send_full(
+        &base,
+        &agent_key,
+        json!(["a@example.com"]),
+        Some(json!(["a@example.com", "b@example.com"])),
+        None,
+    )
+    .await;
+
+    assert_eq!(exec["status"].as_str(), Some("called"), "{exec:?}");
+    assert_eq!(sink.lock().unwrap().len(), 1);
+}
+
+/// The same call without the grant: the approval names the recipients once
+/// each, under the shared `recipient` label — an address on two headers is one
+/// key, not two.
+#[tokio::test]
+async fn email_send_approval_names_each_recipient_once() {
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, _ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    seed_email_instance(&base, &client, &admin_key, &gateway_url).await;
+
+    let exec: Value = call_send_full(
+        &base,
+        &agent_key,
+        json!(["a@example.com"]),
+        Some(json!(["a@example.com", "b@example.com"])),
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("pending_approval"),
+        "{exec:?}"
+    );
+    let keys: Vec<&str> = exec["permission_keys"]
+        .as_array()
+        .expect("permission_keys")
+        .iter()
+        .map(|k| k.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            "email:send:recipient=a@example.com",
+            "email:send:recipient=b@example.com"
+        ]
+    );
+    assert_eq!(sink.lock().unwrap().len(), 0);
+}
+
 /// Discovery tells two mailboxes on one template apart. Both rows carry the
 /// same `service_display_name` (it belongs to the template), so the mailbox
 /// address has to come through as `account_email` or an agent has to call both
@@ -1904,18 +2050,38 @@ async fn grant(
 }
 
 async fn call_send(base: &str, agent_key: &str, to: Value) -> Value {
+    call_send_full(base, agent_key, to, None, None).await
+}
+
+/// `send` with the carbon-copy headers filled in. `cc`/`bcc` are omitted from
+/// the request entirely when `None` — an absent param and an empty list are
+/// different inputs to the permission derivation, and both need covering.
+async fn call_send_full(
+    base: &str,
+    agent_key: &str,
+    to: Value,
+    cc: Option<Value>,
+    bcc: Option<Value>,
+) -> Value {
+    let mut params = json!({
+        "from": MAILBOX_USER,
+        "to": to,
+        "subject": "Status",
+        "text": "Body."
+    });
+    if let Some(cc) = cc {
+        params["cc"] = cc;
+    }
+    if let Some(bcc) = bcc {
+        params["bcc"] = bcc;
+    }
     reqwest::Client::new()
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
             "service": "email",
             "action": "send",
-            "params": {
-                "from": MAILBOX_USER,
-                "to": to,
-                "subject": "Status",
-                "text": "Body."
-            }
+            "params": params
         }))
         .send()
         .await

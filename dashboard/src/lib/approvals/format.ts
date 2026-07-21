@@ -4,7 +4,7 @@
 // resolution.svelte.ts for the async/lifecycle half of the split.
 
 import { highlightJson } from '$lib/api';
-import { ApiError, type DisclosedField } from '$lib/session';
+import { ApiError, type DerivedKey, type DisclosedField } from '$lib/session';
 
 /**
  * Extract a human-readable message from a failed request. Prefers the gateway's
@@ -45,6 +45,17 @@ export function humanize(slug: string): string {
 		.split(/[_-]/)
 		.map((s) => s.charAt(0).toUpperCase() + s.slice(1))
 		.join(' ');
+}
+
+/**
+ * What the approval is *about*, from the first derived key: the scoped value,
+ * prefixed with its label when the key carries one. `email:send:recipient=jane@x.com`
+ * reads as "recipient: jane@x.com" rather than leaking the raw `=` syntax, and
+ * an unlabelled key (or none at all) falls back to the arg verbatim.
+ */
+export function scopeArgDisplay(key: DerivedKey | null): string {
+	if (!key) return '*';
+	return key.label ? `${key.label}: ${key.value}` : key.arg;
 }
 
 /** Compact display for a tier's permission keys: "svc:act:arg +2". */

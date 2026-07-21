@@ -142,7 +142,7 @@ pub(super) async fn validate_action_impl(
         PermissionKey::from_service_action(
             &svc.service_key,
             &svc.action_key,
-            svc.scope_param.as_deref(),
+            &svc.scope_param,
             &req.params,
         )
     };

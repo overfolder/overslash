@@ -20,6 +20,15 @@
 
 	const entries = $derived(sortEntries(detail.params));
 
+	/** param name → scope label, straight from the API. A param in here
+	 *  contributes its value to the action's permission key, so the form says
+	 *  so: it is the difference between a grant that covers this call and one
+	 *  that does not. Params sharing a label (email's to/cc/bcc → `recipient`)
+	 *  share a namespace. */
+	const scopeLabels = $derived(
+		new Map((detail.scope_param ?? []).map((s) => [s.param, s.label]))
+	);
+
 	function inputTypeOf(p: ActionParam): 'text' | 'number' | 'textarea' | 'select' {
 		if (p.enum && p.enum.length > 0) return 'select';
 		if (p.type === 'integer' || p.type === 'number') return 'number';
@@ -37,6 +46,11 @@
 			<div class="row">
 				<label class="label" for={`param-${name}`}>
 					<span class="name">{name}{p.required ? ' *' : ''}</span>
+					{#if scopeLabels.has(name)}
+						<span class="scope" title="This value becomes part of the permission key checked for this call">
+							scopes permission: {scopeLabels.get(name)}
+						</span>
+					{/if}
 					{#if p.description}
 						<span class="desc">{p.description}</span>
 					{/if}
@@ -102,6 +116,17 @@
 	.desc {
 		font-size: 0.75rem;
 		color: var(--color-text-muted);
+	}
+	.scope {
+		align-self: flex-start;
+		margin: 0.15rem 0;
+		padding: 0.1rem 0.4rem;
+		font-size: 0.68rem;
+		letter-spacing: 0.02em;
+		color: var(--color-text);
+		background: var(--color-surface-alt, var(--color-surface));
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm, 4px);
 	}
 	.control {
 		width: 100%;

@@ -223,7 +223,15 @@ export interface UserPreferences {
 export interface DerivedKey {
 	service: string;
 	action: string;
+	/** Third key segment verbatim, `label=value` included when the action's
+	 *  scope carries a label (`recipient=jane@example.com`). */
 	arg: string;
+	/** The scope label, when `arg` carries one. Absent for a bare arg — keys
+	 *  from unlabelled scopes and rules typed by hand. Not a param name: an
+	 *  email send files `to`/`cc`/`bcc` alike under `recipient`. */
+	label?: string;
+	/** `arg` with any `label=` prefix stripped. */
+	value: string;
 }
 
 /** Mirrors overslash_core::permissions::SuggestedTier */

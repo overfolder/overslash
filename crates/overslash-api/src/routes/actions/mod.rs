@@ -43,7 +43,7 @@ use crate::{
 };
 use overslash_core::{
     permissions::SuggestedTier,
-    types::{ActionResult, DisclosureField, McpAuth, SecretRef, service::Risk},
+    types::{ActionResult, DisclosureField, McpAuth, ScopeParams, SecretRef, service::Risk},
 };
 
 mod approval_detail;
@@ -549,7 +549,7 @@ struct ServiceScope {
     service_key: String,
     /// Empty string for the Service + HTTP verb shape (then `http_verb` is `Some`).
     action_key: String,
-    scope_param: Option<String>,
+    scope_param: ScopeParams,
     /// Service + HTTP verb (SPEC §8) — when `Some`, permission keys derive as
     /// `{service_key}:{METHOD}:{path}` instead of `{service_key}:{action_key}:{arg}`.
     http_verb: Option<HttpVerb>,

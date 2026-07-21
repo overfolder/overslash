@@ -2071,7 +2071,7 @@ mod risk_tests {
                 risk,
                 response_type: None,
                 params: HashMap::new(),
-                scope_param: None,
+                scope_param: Default::default(),
                 required_scopes: vec![],
                 permission: None,
                 disclose: vec![],
@@ -2102,12 +2102,7 @@ mod risk_tests {
     }
 
     fn dk(service: &str, action: &str) -> DerivedKey {
-        DerivedKey {
-            key: format!("{service}:{action}:*"),
-            service: service.into(),
-            action: action.into(),
-            arg: "*".into(),
-        }
+        overslash_core::permissions::parse_derived_key(&format!("{service}:{action}:*"))
     }
 
     #[test]

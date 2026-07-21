@@ -28,7 +28,8 @@ brings the implementation into line with the spec.
 > what they choose:
 >
 > - **Service + defined action** — names a service instance and a
->   template-defined action. Derives key `github:create_pull_request:{resource}`.
+>   template-defined action. Derives key `github:create_pull_request:repo={resource}`
+>   (labelled arg, D40).
 > - **Service + HTTP verb** — names a service instance and an HTTP method +
 >   path. Derives key `github:POST:/repos/X/pulls`.
 > - **`http` pseudo-service** — full URL + method + headers + secret

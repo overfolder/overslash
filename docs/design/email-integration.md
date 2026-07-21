@@ -196,6 +196,11 @@ Unipile. Overslash is just one consumer.
     org admin if wanted.
 11. **v1 facade + risk.** Actions: `search` (`read`), `get` (`read`), `send` (`write`,
     gated — approval discloses To/From/Subject + clamped Body; `Basic` header redacted).
+    `send` scopes **every recipient header** under one label
+    (`scope_param: [to:recipient, cc:recipient, bcc:recipient]`, DECISIONS D40), so each
+    address mints an `email:send:recipient=<addr>` key: a domain-scoped grant covers a
+    correspondent wherever they appear, a bcc to an outsider gates the send like a to,
+    and an address on two headers is one approval, not two.
     **Reads are ordinary `read`** (auto-approvable); consent boundary is *whether the owner
     grants read permission*, not per-fetch approval. Attachments (`get_attachment`, binary +
     `prefer_stream`) and `list_folders` are later additions.

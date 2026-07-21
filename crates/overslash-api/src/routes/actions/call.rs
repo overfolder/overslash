@@ -213,7 +213,7 @@ pub(super) async fn call_action_impl(
         PermissionKey::from_service_action(
             &scope_meta.service_key,
             &scope_meta.action_key,
-            scope_meta.scope_param.as_deref(),
+            &scope_meta.scope_param,
             &req.params,
         )
     };

@@ -91,7 +91,7 @@ Surprisingly well in the abstract pieces, weakly in the wiring at the tail.
 
 | Concept | Why it works for external execution unchanged |
 |---|---|
-| **Permission key format `{service}:{action}:{arg}`** | Already protocol-agnostic. Nothing about it presumes HTTP. `computer-acme:click:button[name=Send]` is a perfectly valid key today. |
+| **Permission key format `{service}:{action}:{arg}`** | Already protocol-agnostic. Nothing about it presumes HTTP. `computer-acme:click:button[name=Send]` is a perfectly valid key today. Since D40 the arg may also be labelled (`{label}={value}`), which an external executor gets for free — the label comes from the template's `scope_param`, not from the transport. |
 | **Two-layer model (group ceiling + permission keys)** | Both layers operate on keys, not on HTTP shape. |
 | **Approval lifecycle** | Create → bubble → resolve → store rule on `Allow & Remember`. None of these steps look at the HTTP request. |
 | **Suggested tiers + `derived_keys`** | Already structured strings; the dashboard / platform renders them without seeing the upstream call. |

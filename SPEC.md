@@ -258,6 +258,42 @@ This format covers every level of abstraction — from registry-defined actions 
 | `http:POST:api.example.com` | Raw HTTP to a specific host |
 | `http:ANY:*` | Unrestricted HTTP proxy |
 | `secret:gh_token:api.github.com` | Inject a specific secret toward a specific host |
+| `email:send:recipient=jane@example.com` | Registry action, scoped to one labelled value |
+| `email:send:recipient=*@example.com` | …the same label, any address in a domain |
+
+**Labelled args.** `{arg}` is either a bare value or `{label}={value}`. The
+label comes from the action's `scope_param` (see §9) and names *what kind of
+thing* the value is, which is what lets several params share one grant: `email`
+scopes `to`, `cc`, and `bcc` all under `recipient`, so one key covers an address
+wherever it appears — and a bcc to an outsider is gated exactly like a to. An
+action scoping a single param labels it with the param name
+(`github:get_repo:repo=acme/api`).
+
+A **value-only** pattern matches a labelled key **on any label**; a
+`label=`-qualified pattern matches only that label. Every rule written before
+labels existed therefore keeps working, and a narrower rule is available when
+the header actually matters:
+
+| Rule | `to=a@example.com` | `cc=a@example.com` |
+|---|---|---|
+| `email:send:*@example.com` (value-only) | ✅ | ✅ |
+| `email:send:cc=*@example.com` | ❌ | ✅ |
+| `email:send:*` | ✅ | ✅ |
+
+The equivalence is one-way. A `label=`-qualified pattern does **not** cover a
+label-less key: nothing in `email:send:a@example.com` says which header carried
+that address, so a `cc=`-scoped grant cannot be honoured over it without
+granting more than the rule states. This is only observable for permission keys
+persisted on an approval before the action gained a label — live calls always
+derive the current shape.
+
+A prefix counts as a label only when everything before the **first** `=` is a
+bare identifier (`[A-Za-z_][A-Za-z0-9_]*`); otherwise the whole arg is the
+value, so `http:GET:api.example.com/x?a=1` is never sliced. The parse is purely
+lexical — an *unlabelled* arg that happens to read `word=rest` is therefore
+treated as labelled, and gains the value-only match form `…:rest`. Derived args
+are `*`, a URL/host, or a `label=`-prefixed scope value, none of which hit that
+case; it is a consideration only for hand-written rules.
 
 **Special action values:**
 - **HTTP verbs** (`GET`, `POST`, `PUT`, `DELETE`, etc.) — allow specific HTTP methods against the service
@@ -547,10 +583,13 @@ When an approval is created, Overslash derives the most specific permission keys
   "status": "pending",
   "identity": "spiffe://acme/user/alice/agent/henry",
   "derived_keys": [
-    { "key": "github:create_pull_request:overfolder/backend",
-      "service": "github", "action": "create_pull_request", "arg": "overfolder/backend" }
+    { "key": "github:create_pull_request:repo=overfolder/backend",
+      "service": "github", "action": "create_pull_request",
+      "arg": "repo=overfolder/backend", "param": "repo", "value": "overfolder/backend" }
   ],
   "suggested_tiers": [
+    { "keys": ["github:create_pull_request:repo=overfolder/backend"],
+      "description": "Create pull request on repo overfolder/backend" },
     { "keys": ["github:create_pull_request:overfolder/backend"],
       "description": "Create pull request on overfolder/backend" },
     { "keys": ["github:create_pull_request:*"],
@@ -568,8 +607,10 @@ For multi-key requests (e.g., `http` service with secret injection), keys within
 ```json
 {
   "derived_keys": [
-    { "key": "http:POST:api.example.com", "service": "http", "action": "POST", "arg": "api.example.com" },
-    { "key": "secret:api_key:api.example.com", "service": "secret", "action": "api_key", "arg": "api.example.com" }
+    { "key": "http:POST:api.example.com", "service": "http", "action": "POST",
+      "arg": "api.example.com", "value": "api.example.com" },
+    { "key": "secret:api_key:api.example.com", "service": "secret", "action": "api_key",
+      "arg": "api.example.com", "value": "api.example.com" }
   ],
   "suggested_tiers": [
     { "keys": ["http:POST:api.example.com", "secret:api_key:api.example.com"],
@@ -676,7 +717,7 @@ Auth-recovery for white-label end users is governed by a per-org **`headless`** 
 
 All action execution goes through a single endpoint. The caller specifies a service instance and action — the level of abstraction is determined by what they choose:
 
-**Service + defined action** — the caller names a service instance and a template-defined action (e.g., `github` + `create_pull_request`). Overslash builds the HTTP request from the template definition. Auth auto-resolved from the service's credentials. Derives key: `github:create_pull_request:{resource}`.
+**Service + defined action** — the caller names a service instance and a template-defined action (e.g., `github` + `create_pull_request`). Overslash builds the HTTP request from the template definition. Auth auto-resolved from the service's credentials. Derives key: `github:create_pull_request:repo={resource}` (the label comes from the action's `scope_param`; see §5).
 
 **Service + HTTP verb** — the caller names a service instance and an HTTP method + path (e.g., `github` + `POST /repos/X/pulls`). Auth is auto-injected from the service's credentials. For agents that know the API but want Overslash to handle auth. Derives key: `github:POST:/repos/X/pulls`.
 
@@ -808,7 +849,7 @@ paths:
 
 **Key gateway-specific fields:**
 - **`x-overslash-risk` / `risk:`** — enum: `read`, `write`, `delete`. Defaults to a value inferred from the HTTP method (GET/HEAD/OPTIONS → read, DELETE → delete, else write). Influences auto-approve-reads behavior.
-- **`x-overslash-scope_param` / `scope_param:`** — which parameter provides the `{arg}` segment in permission keys. Without it, the arg is `*`.
+- **`x-overslash-scope_param` / `scope_param:`** — which parameter(s) provide the `{arg}` segment in permission keys. Without it, the arg is `*`. Accepts a param name (`scope_param: repo`), a `param:label` pair, or a list of either (`scope_param: [to:recipient, cc:recipient, bcc:recipient]`). Each value mints one `{service}:{action}:{label}={value}` key — an array-valued param fans out per element — and the label defaults to the param name. Keys are deduped, so params sharing a label collapse a value that appears in more than one of them into a single key (and a single approval). See §5 for how rules match labelled keys.
 - **`x-overslash-resolve` / `resolve:`** — on a parameter, fetch a human-readable name for an opaque ID. Runs a follow-up GET against the service and extracts a field. Used in agent-facing descriptions.
 - **`x-overslash-aliases` / `aliases:`** — on a parameter, a list of alternate caller-facing names (e.g. `[to, dest]` on a `recipient` param). A call that supplies an alias key instead of the canonical name has it rewritten to the canonical name before validation, so a well-known synonym is accepted rather than rejected as an unknown argument. A declared field always wins over an alias that collides with it, and an alias claimed by two params is ambiguous and ignored (the caller gets the normal unknown-argument error, with a Levenshtein "did you mean" suggestion). The unprefixed `aliases:` form is normalized on `parameters[]` entries; body-schema properties use the canonical `x-overslash-aliases` key (same as `resolve`).
 - **`x-overslash-provider` / `provider:`** — on an `oauth2` security scheme, the symbolic OAuth provider name (`google`, `slack`, `github`, ...). Decoupled from OAuth URLs so the gateway can resolve credentials independently.
@@ -1079,7 +1120,8 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 | `invalid_description_syntax` | description has an unclosed `{` placeholder |
 | `unknown_description_param` | `{param}` in description does not reference a defined param |
 | `unknown_resolver_param` | `{param}` in `resolve.get` does not reference a defined param on the same action |
-| `unknown_scope_param` | `scope_param` does not reference a defined param |
+| `unknown_scope_param` | a `scope_param` entry does not reference a defined param |
+| `invalid_scope_param` | `scope_param` is not a param name / `param:label` pair / list of them |
 | `invalid_response_type` | `response_type` is set to something other than `"json"` or `"binary"` |
 | `duplicate_action_key` | the `actions:` mapping in YAML defines the same key twice |
 | `yaml_parse` | YAML source could not be parsed (wrapped serde_yaml error) |

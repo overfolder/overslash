@@ -18,7 +18,7 @@ use overslash_core::template_validation::{
     ValidationIssue, ValidationReport, parse_normalize_compile_yaml, prepare_draft_from_value,
     validate_template_yaml,
 };
-use overslash_core::types::{ActionParam, Risk, ServiceDefinition};
+use overslash_core::types::{ActionParam, Risk, ScopeParamRef, ServiceDefinition};
 
 use crate::services::platform_services::{ScopeCoverage, ScopeKnowledge, action_scope_coverage};
 use crate::services::platform_templates::{
@@ -327,8 +327,13 @@ struct ActionDetail {
     summary: Option<String>,
     risk: Risk,
     params: std::collections::HashMap<String, ActionParam>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    scope_param: Option<String>,
+    /// The action's scoped params, resolved to `{param, label}` pairs. The
+    /// authored `param:label` shorthand is a template-document detail; clients
+    /// (the API Explorer marks scoped inputs with their label) get the pair so
+    /// none of them re-implements the grammar. Absent when the action is
+    /// unscoped.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    scope_param: Vec<ScopeParamRef>,
 }
 
 // -- Request types --
@@ -1048,7 +1053,7 @@ async fn get_template_action(
         summary: action.summary.clone(),
         risk: action.risk,
         params: action.params.clone(),
-        scope_param: action.scope_param.clone(),
+        scope_param: action.scope_param.refs().to_vec(),
     }))
 }
 

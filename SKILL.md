@@ -183,6 +183,11 @@ paths:
       summary: "Send a message to {channel}"   # templated into approval prompts
       risk: write                               # read | write | delete — gates approval/auto-approve
       scope_param: channel                      # binds the permission/approval scope
+      # A list scopes several params at once, and `param:label` files them
+      # under one namespace — services/email.yaml scopes every recipient with
+      #   scope_param: [to:recipient, cc:recipient, bcc:recipient]
+      # so each address mints `email:send:recipient=<addr>` and a bcc is gated
+      # like a to. Keys dedupe, so an address on two headers is one approval.
       requestBody:
         required: true
         content:
@@ -223,8 +228,8 @@ overslash_call {
 Editing and **promoting** a draft to active is REST-only today (no MCP action):
 `PUT /v1/templates/drafts/{id}` then `POST /v1/templates/drafts/{id}/promote`
 (both `Authorization: Bearer …`). See `SPEC.md` for the full `x-overslash-*`
-extension table (`risk`, `scope_param`, `resolve`, `provider`,
-`default_secret_name`).
+extension table (`risk`, `scope_param` — including its list and `param:label`
+forms, `resolve`, `provider`, `default_secret_name`).
 
 ## When credentials are missing
 

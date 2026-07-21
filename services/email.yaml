@@ -248,19 +248,20 @@ paths:
         accept either a list of addresses or a single comma-separated string.
         At least one of `text` or `html` is required.
       risk: write
-      # Permission keys are derived per *recipient*: an array `scope_param`
-      # fans out into one `email:send:<address>` key per element, so a grant
-      # can be scoped to one correspondent (`email:send:jane@example.com`) or a
-      # whole domain (`email:send:*@example.com`), and a send that mixes covered
-      # and uncovered addresses raises an approval naming only the uncovered
-      # ones.
+      # Permission keys are derived per *recipient*, across all three headers:
+      # each address in `to`/`cc`/`bcc` mints one
+      # `email:send:recipient=<address>` key. A grant can therefore be scoped
+      # to one correspondent (`email:send:recipient=jane@example.com`) or a
+      # whole domain (`email:send:recipient=*@example.com`), and a send that
+      # mixes covered and uncovered addresses raises an approval naming only
+      # the uncovered ones — a bcc to an outsider is gated exactly like a to.
       #
-      # Known gap: `scope_param` names a single param, so cc/bcc recipients
-      # currently consume no permission key of their own. A grant for
-      # `email:send:*@example.com` therefore does not stop a bcc elsewhere. Closing
-      # it needs `scope_param` to accept a list, which touches template
-      # validation, the template API, and the dashboard — tracked separately.
-      scope_param: to
+      # All three share the `recipient` label deliberately: who a message
+      # reaches is what an approver is deciding about, not which header
+      # carries them, so an address on both `to` and `cc` collapses to one key
+      # and one approval. Value-only grants written before labels existed
+      # (`email:send:*@example.com`) still match.
+      scope_param: [to:recipient, cc:recipient, bcc:recipient]
       # The mailbox credential rides as an injected SecretRef resolved only at
       # send time, so it never lands in the persisted approval/audit payload —
       # no `redact` needed for it. These fields disclose the human-meaningful
