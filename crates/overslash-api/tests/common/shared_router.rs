@@ -194,6 +194,7 @@ fn build_shared_router(state: AppState) -> axum::Router {
     use overslash_api::routes;
     axum::Router::new()
         .merge(routes::health::router())
+        .merge(routes::version::router())
         .merge(routes::orgs::router())
         .merge(routes::identities::router())
         .merge(routes::api_keys::router())

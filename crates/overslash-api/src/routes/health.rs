@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use overslash_core::build_info::build_info;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
@@ -16,6 +17,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Cap on the error text echoed into an unauthenticated response body, so a
 /// sqlx error can't spill a full connection string to the public internet.
+///
+/// Note this cap is about *accidental* disclosure. The `version` / `commit`
+/// fields below are deliberate: they identify the build to uptime monitors and
+/// to anyone diagnosing a deploy, and they reveal nothing an attacker couldn't
+/// infer from behaviour. `GET /v1/version` reports the same two values (also
+/// unauthenticated, for the same reason) without the database probe.
 const MAX_ERROR_LEN: usize = 200;
 
 pub fn router() -> Router<AppState> {
@@ -102,7 +109,12 @@ fn truncate(s: &str) -> String {
 /// down, use [`ready`].
 async fn health(State(state): State<AppState>) -> Json<Value> {
     let probe = probe_db(&state.db).await;
-    let mut body = json!({ "status": "ok" });
+    let info = build_info();
+    let mut body = json!({
+        "status": "ok",
+        "version": info.version,
+        "commit": info.commit,
+    });
     probe.extend(&mut body);
     Json(body)
 }
@@ -119,7 +131,12 @@ async fn ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "degraded")
     };
-    let mut body = json!({ "status": status });
+    let info = build_info();
+    let mut body = json!({
+        "status": status,
+        "version": info.version,
+        "commit": info.commit,
+    });
     probe.extend(&mut body);
     (code, Json(body))
 }

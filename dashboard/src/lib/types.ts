@@ -2,6 +2,15 @@
 
 import type { DisclosedField, SuggestedTier } from './session';
 
+/** GET /v1/version — build identity of the API this dashboard is talking to.
+ *  `commit` is a full 40-char SHA, or the literal `"unknown"` when the build
+ *  had neither a git checkout nor an injected SHA. */
+export interface BuildInfo {
+  version: string;
+  commit: string;
+  commit_short: string;
+}
+
 export interface OrgInfo {
   id: string;
   name: string;

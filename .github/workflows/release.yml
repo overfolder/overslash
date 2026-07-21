@@ -85,7 +85,11 @@ jobs:
         shell: bash
         # OVERSLASH_VERSION (tag without the `v` prefix) overrides the crate
         # version reported by `--version`, the startup banner, and DCR.
-        run: OVERSLASH_VERSION="${VERSION#v}" cargo build --release --package overslash-cli --features embed-dashboard --locked
+        # OVERSLASH_GIT_SHA pins the commit reported by /health and
+        # GET /v1/version; actions/checkout leaves a repo behind so build.rs
+        # could find it itself, but the tag build should name the *released*
+        # commit explicitly rather than whatever HEAD happens to be.
+        run: OVERSLASH_VERSION="${VERSION#v}" OVERSLASH_GIT_SHA="$GITHUB_SHA" cargo build --release --package overslash-cli --features embed-dashboard --locked
       - name: Strip binary
         if: runner.os != 'Windows'
         run: strip target/release/overslash

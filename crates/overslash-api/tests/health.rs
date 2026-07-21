@@ -36,6 +36,11 @@ async fn health_reports_db_up() {
     assert_eq!(body["db"], "up");
     assert!(body["db_latency_ms"].is_number());
     assert!(body.get("db_error").is_none());
+
+    // Build identity, so a monitor or a deploy check can tell which build
+    // answered. `version.rs` pins that `GET /v1/version` agrees.
+    assert!(body["version"].as_str().is_some_and(|v| !v.is_empty()));
+    assert!(body["commit"].as_str().is_some_and(|c| !c.is_empty()));
 }
 
 #[tokio::test]
@@ -55,6 +60,8 @@ async fn ready_reports_db_up() {
     assert_eq!(body["status"], "ready");
     assert_eq!(body["db"], "up");
     assert!(body["db_latency_ms"].is_number());
+    assert!(body["version"].as_str().is_some_and(|v| !v.is_empty()));
+    assert!(body["commit"].as_str().is_some_and(|c| !c.is_empty()));
 }
 
 /// `/health` must stay outside the auth gate — probes carry no API key.

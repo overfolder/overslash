@@ -3,6 +3,8 @@
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/stores';
 	import { type MeIdentity } from '$lib/session';
+	import { getVersion } from '$lib/api/version';
+	import type { BuildInfo } from '$lib/types';
 	import {
 		sidebarCollapsed,
 		theme,
@@ -54,6 +56,18 @@
 		}
 	});
 
+	// Build identity of the API, shown in the sidebar footer. Fetched once per
+	// session rather than per navigation — it cannot change without a reload of
+	// the whole page anyway. A failure leaves the footer line unrendered; an
+	// unidentifiable build is not worth an error toast.
+	let buildInfo = $state<BuildInfo | null>(null);
+	$effect(() => {
+		if (!data?.user || buildInfo) return;
+		getVersion()
+			.then((info) => (buildInfo = info))
+			.catch(() => {});
+	});
+
 	$effect(() => {
 		if (standalone) {
 			stopNotificationPolling();
@@ -95,6 +109,7 @@
 			currentOrgId={data?.user?.org_id ?? ''}
 			mobileOpen={mobileDrawerOpen}
 			onCloseMobile={() => (mobileDrawerOpen = false)}
+			{buildInfo}
 		/>
 		<div class="main-col">
 			<TopBar

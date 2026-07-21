@@ -55,6 +55,16 @@ COPY SKILL.md SKILL.md
 # Touch source files to invalidate the dummy builds
 RUN find crates/ -name "*.rs" -exec touch {} +
 
+# Git commit of this build, reported by /health and GET /v1/version. The build
+# context has no .git, so overslash-core's build.rs cannot discover it — Cloud
+# Build passes its $COMMIT_SHA in (infra/modules/cloud-build/main.tf).
+#
+# Declared *here*, after the dependency-only build above: an ARG invalidates
+# every layer that follows it, and the SHA changes on every commit. Placing it
+# earlier would recompile all dependencies (~6 min) on each build.
+ARG OVERSLASH_GIT_SHA=unknown
+ENV OVERSLASH_GIT_SHA=${OVERSLASH_GIT_SHA}
+
 # sqlx offline mode: use cached query metadata from .sqlx/ instead of a live DB
 ENV SQLX_OFFLINE=true
 RUN cargo build --release --package overslash-cli

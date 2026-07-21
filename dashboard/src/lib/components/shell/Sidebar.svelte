@@ -8,6 +8,7 @@
 	import OrgSwitcher from './OrgSwitcher.svelte';
 	import CreateOrgModal from '$lib/components/CreateOrgModal.svelte';
 	import type { MembershipSummary } from '$lib/session';
+	import type { BuildInfo } from '$lib/types';
 
 	let {
 		isAdmin = false,
@@ -15,7 +16,8 @@
 		memberships = [],
 		currentOrgId = '',
 		mobileOpen = false,
-		onCloseMobile = () => {}
+		onCloseMobile = () => {},
+		buildInfo = null
 	}: {
 		isAdmin?: boolean;
 		isInstanceAdmin?: boolean;
@@ -23,6 +25,10 @@
 		currentOrgId?: string;
 		mobileOpen?: boolean;
 		onCloseMobile?: () => void;
+		/** Build identity of the API, or null until it resolves. Passed in
+		 *  rather than fetched here so this component stays inert in tests and
+		 *  screenshot scenarios. */
+		buildInfo?: BuildInfo | null;
 	} = $props();
 
 	function toggle() {
@@ -48,6 +54,47 @@
 	const activeHref = $derived(pickActiveHref($page.url.pathname, allItems));
 
 	let createOrgOpen = $state(false);
+
+	// Build stamp. A build with no discoverable commit reports `"unknown"`
+	// (see overslash-core's build.rs) — show the version alone rather than a
+	// line that reads like a real SHA.
+	const hasCommit = $derived(!!buildInfo && buildInfo.commit !== 'unknown');
+	const buildLabel = $derived(
+		!buildInfo
+			? ''
+			: collapsed
+				? hasCommit
+					? buildInfo.commit_short
+					: `v${buildInfo.version}`
+				: hasCommit
+					? `v${buildInfo.version} · ${buildInfo.commit_short}`
+					: `v${buildInfo.version}`
+	);
+	const buildTitle = $derived(
+		!buildInfo
+			? ''
+			: hasCommit
+				? `Overslash v${buildInfo.version}\ncommit ${buildInfo.commit}\n(click to copy)`
+				: `Overslash v${buildInfo.version}`
+	);
+
+	let buildCopied = $state(false);
+	let copyResetTimer: ReturnType<typeof setTimeout> | undefined;
+
+	async function copyBuild() {
+		if (!buildInfo || !navigator.clipboard) return;
+		try {
+			await navigator.clipboard.writeText(hasCommit ? buildInfo.commit : buildInfo.version);
+			buildCopied = true;
+			clearTimeout(copyResetTimer);
+			copyResetTimer = setTimeout(() => (buildCopied = false), 1500);
+		} catch {
+			// Clipboard denied (insecure origin, permission) — the full SHA is
+			// still readable in the tooltip.
+		}
+	}
+
+	$effect(() => () => clearTimeout(copyResetTimer));
 </script>
 
 {#if isMobile}
@@ -123,6 +170,11 @@
 		{#if !isMobile && $viewport !== 'tablet'}
 			<button class="collapse-btn" type="button" onclick={toggle} aria-label="Toggle sidebar">
 				{collapsed ? '»' : '«'}
+			</button>
+		{/if}
+		{#if buildInfo}
+			<button class="build" type="button" title={buildTitle} onclick={copyBuild}>
+				{buildCopied ? 'Copied' : buildLabel}
 			</button>
 		{/if}
 	</div>
@@ -233,5 +285,24 @@
 	}
 	.create-org-btn:hover {
 		background: var(--color-neutral-100, var(--color-border));
+	}
+	.build {
+		background: transparent;
+		border: none;
+		color: var(--color-text-muted);
+		cursor: pointer;
+		font-size: 0.7rem;
+		font-variant-numeric: tabular-nums;
+		letter-spacing: 0.02em;
+		padding: 0.15rem 0.25rem 0;
+		text-align: center;
+		/* The collapsed rail is 64px wide; never let a long version string
+		   push the sidebar or wrap onto a second line. */
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.build:hover {
+		color: var(--color-text);
 	}
 </style>

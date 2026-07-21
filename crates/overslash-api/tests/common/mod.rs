@@ -688,6 +688,7 @@ where
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -872,6 +873,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -1014,6 +1016,7 @@ pub async fn start_api_with_auth_providers(
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -1519,6 +1522,7 @@ where
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -1663,6 +1667,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -1778,6 +1783,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
