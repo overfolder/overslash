@@ -745,21 +745,42 @@ async fn resolve_approval(
                 ));
             }
 
+            // A remember key must be *about this request*: either it is one of
+            // the suggested tiers verbatim, or it covers at least one of the
+            // keys the approval was raised for. The second arm is what makes
+            // the dashboard's "Custom… (advanced)" field usable — a hand-typed
+            // key that genuinely relates to the request no longer 400s just
+            // for not appearing verbatim in a tier. The first arm still
+            // matters: a broadening rung like `http:ANY:{host}/**` is offered
+            // as a tier even though `ANY` is not a glob for the concrete verb,
+            // so coverage alone would reject a tier the UI put in front of the
+            // approver. Unrelated grants are still refused, and the
+            // group-ceiling check below applies either way.
             let tiers = overslash_core::permissions::suggest_tiers(&approval.permission_keys);
-            let allowed_keys: std::collections::HashSet<&str> = tiers
+            let tier_keys: std::collections::HashSet<&str> = tiers
                 .iter()
                 .flat_map(|t| t.keys.iter().map(|k| k.as_str()))
                 .collect();
 
             for key in keys {
-                if !allowed_keys.contains(key.as_str()) {
+                let relates = tier_keys.contains(key.as_str())
+                    || approval
+                        .permission_keys
+                        .iter()
+                        .any(|requested| overslash_core::permissions::key_covers(key, requested));
+                if !relates {
                     return Err(AppError::BadRequest(format!(
-                        "remember_key '{key}' is not in any suggested tier"
+                        "remember_key '{key}' does not cover any permission key this approval requested"
                     )));
                 }
             }
 
-            keys.clone()
+            // Duplicates would each write their own identical rule below.
+            let mut seen = std::collections::HashSet::new();
+            keys.iter()
+                .filter(|k| seen.insert(k.as_str()))
+                .cloned()
+                .collect()
         } else {
             approval.permission_keys.clone()
         };
@@ -1764,10 +1785,20 @@ async fn execute_claimed_approval(
         let placement_id =
             crate::services::permission_chain::rule_placement_for(scope, approval.identity_id)
                 .await?;
-        let keys_owned: Vec<String> = finalised
-            .remember_keys
-            .clone()
-            .unwrap_or_else(|| approval.permission_keys.clone());
+        // Dedupe defensively: a broad tier used to arrive with the same key
+        // once per originating permission key (an N-recipient send collapsing
+        // to one `svc:send:*`), and rows stored before that fix — or a direct
+        // API caller — can still carry repeats. One key, one rule.
+        let keys_owned: Vec<String> = {
+            let mut seen = std::collections::HashSet::new();
+            finalised
+                .remember_keys
+                .clone()
+                .unwrap_or_else(|| approval.permission_keys.clone())
+                .into_iter()
+                .filter(|k| seen.insert(k.clone()))
+                .collect()
+        };
         for key in &keys_owned {
             let _ = scope
                 .create_permission_rule(placement_id, key, "allow", finalised.remember_rule_ttl)

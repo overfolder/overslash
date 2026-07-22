@@ -183,6 +183,16 @@ fn rule_matches(pattern: &str, key: &str) -> bool {
         .any(|form| glob_match::glob_match(pattern, form))
 }
 
+/// Does the permission key `pattern` cover the concrete key `key`?
+///
+/// Same glob + [`match_forms`] semantics the rule engine uses, exposed for
+/// callers that need to validate a hand-typed key against what a request
+/// actually asked for (e.g. an approval's "Custom…" remember key) without
+/// synthesizing a `PermissionRule`.
+pub fn key_covers(pattern: &str, key: &str) -> bool {
+    rule_matches(pattern, key)
+}
+
 /// Parse all permission key strings into structured `DerivedKey`s.
 pub fn derive_keys(permission_keys: &[String]) -> Vec<DerivedKey> {
     permission_keys
@@ -297,24 +307,31 @@ fn describe_key(dk: &DerivedKey) -> String {
     }
 }
 
+/// Drop repeats while keeping first-seen order.
+fn dedup_preserving(items: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    items
+        .into_iter()
+        .filter(|s| seen.insert(s.clone()))
+        .collect()
+}
+
 /// Generate a combined description for a tier's set of derived keys.
 fn generate_tier_description(keys: &[DerivedKey]) -> String {
     // Separate primary keys (http/service-action) from auxiliary (secret)
     let primary: Vec<&DerivedKey> = keys.iter().filter(|k| k.service != "secret").collect();
     let secrets: Vec<&DerivedKey> = keys.iter().filter(|k| k.service == "secret").collect();
 
+    // At the broader rungs several keys collapse onto the same phrase — two
+    // recipients both become "Send on any resource". Say it once.
     let mut desc = if primary.is_empty() {
         keys.first().map(describe_key).unwrap_or_default()
     } else {
-        primary
-            .iter()
-            .map(|k| describe_key(k))
-            .collect::<Vec<_>>()
-            .join(", ")
+        dedup_preserving(primary.iter().map(|k| describe_key(k))).join(", ")
     };
 
     if !secrets.is_empty() {
-        let secret_names: Vec<String> = secrets.iter().map(|s| s.action.clone()).collect();
+        let secret_names = dedup_preserving(secrets.iter().map(|s| s.action.clone()));
         desc.push_str(&format!(" with {}", secret_names.join(", ")));
     }
 
@@ -338,13 +355,14 @@ pub fn suggest_tiers(permission_keys: &[String]) -> Vec<SuggestedTier> {
 
     for i in 0..max_len {
         // For each key, pick the tier at index i (or the last available)
-        let tier_keys: Vec<String> = ladders
-            .iter()
-            .map(|ladder| {
-                let idx = i.min(ladder.len() - 1);
-                ladder[idx].clone()
-            })
-            .collect();
+        // Several keys converge on the same rung as the ladders broaden — an
+        // N-recipient send collapses to one `svc:send:*`. Dedupe so the tier
+        // (and the rules "Allow & Remember" writes from it) carries each key
+        // once.
+        let tier_keys: Vec<String> = dedup_preserving(ladders.iter().map(|ladder| {
+            let idx = i.min(ladder.len() - 1);
+            ladder[idx].clone()
+        }));
 
         // Deduplicate: skip if same as previous tier
         if prev_keys.as_ref() == Some(&tier_keys) {
@@ -1155,6 +1173,49 @@ mod tests {
         assert_eq!(tiers.len(), 2);
         assert_eq!(tiers[0].keys, vec!["github:list_repos:*"]);
         assert_eq!(tiers[1].keys, vec!["github:*:*"]);
+    }
+
+    /// A multi-recipient send derives one key per recipient. The exact tier
+    /// must keep both, but every broader rung collapses them onto one key —
+    /// and must say so once, not "Send on any resource, Send on any resource".
+    #[test]
+    fn tiers_multi_recipient_dedupes_broad_rungs() {
+        let keys = vec![
+            "email:send:recipient=ada@example.com".to_string(),
+            "email:send:recipient=bob@example.com".to_string(),
+        ];
+        let tiers = suggest_tiers(&keys);
+
+        assert_eq!(tiers[0].keys, keys);
+        assert!(tiers[0].description.contains("ada@example.com"));
+        assert!(tiers[0].description.contains("bob@example.com"));
+
+        let broad = tiers
+            .iter()
+            .find(|t| t.keys == vec!["email:send:*"])
+            .expect("a `send on any resource` tier");
+        assert_eq!(broad.description, "Send on any resource");
+
+        let broadest = tiers.last().unwrap();
+        assert_eq!(broadest.keys, vec!["email:*:*"]);
+        assert_eq!(broadest.description, "Any Email action");
+    }
+
+    #[test]
+    fn key_covers_label_stripped_form() {
+        assert!(key_covers(
+            "email:send:*",
+            "email:send:recipient=ada@example.com"
+        ));
+        assert!(key_covers(
+            "email:send:recipient=ada@example.com",
+            "email:send:recipient=ada@example.com"
+        ));
+        assert!(!key_covers(
+            "email:send:recipient=bob@example.com",
+            "email:send:recipient=ada@example.com"
+        ));
+        assert!(!key_covers("github:*:*", "email:send:recipient=ada@x.com"));
     }
 
     #[test]

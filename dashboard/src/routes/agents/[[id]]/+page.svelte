@@ -747,7 +747,9 @@
 							<div class="approval-card">
 								<div class="approval-main">
 									<div class="approval-summary">{a.action_summary}</div>
-									<div class="approval-meta mono">{a.permission_keys[0] ?? ''}</div>
+									<!-- Every uncovered key: an action can derive one per
+									     recipient, and the card used to name only the first. -->
+									<div class="approval-meta mono">{a.permission_keys.join(', ')}</div>
 									<div class="approval-meta">Requested {absoluteTime(a.created_at)}</div>
 								</div>
 								<ApprovalResolver approval={a} compact onResolved={onApprovalResolved} />

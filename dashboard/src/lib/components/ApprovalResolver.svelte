@@ -13,7 +13,7 @@
 	import {
 		TTL_OPTIONS,
 		humanize,
-		tierKeyDisplay,
+		splitKeys,
 		extractAgentName,
 		renderPayload,
 		formatBytes,
@@ -195,7 +195,11 @@
 								{:else if current.suggested_tiers[selectedTier]}
 									{@const tier = current.suggested_tiers[selectedTier]}
 									<span>Remember for <strong>{tier.description.toLowerCase()}</strong></span>
-									<code class="mono small muted line-2">{tierKeyDisplay(tier.keys)}</code>
+									{@const split = splitKeys(tier.keys)}
+									<span class="keylist mono small muted">
+										{#each split.shown as key}<code>{key}</code>{/each}
+										{#if split.hidden > 0}<span>and {split.hidden} more</span>{/if}
+									</span>
 								{:else}
 									<span>Remember for this scope</span>
 								{/if}
@@ -210,6 +214,7 @@
 					{#if scopeOpen && remember}
 						<div class="scope-menu">
 							{#each current.suggested_tiers as tier, i}
+								{@const split = splitKeys(tier.keys)}
 								<button
 									type="button"
 									class="scope-option"
@@ -224,7 +229,10 @@
 										<span class="scope-option-label">{tier.description}</span>
 										<RiskBadge risk={current.risk} />
 									</div>
-									<code class="mono small muted">{tierKeyDisplay(tier.keys)}</code>
+									<span class="keylist mono small muted">
+										{#each split.shown as key}<code>{key}</code>{/each}
+										{#if split.hidden > 0}<span>and {split.hidden} more</span>{/if}
+									</span>
 								</button>
 							{/each}
 							<button
@@ -390,8 +398,15 @@
 							{/if}
 						</dd>
 						{#if current.permission_keys.length > 0}
-							<dt>Permission</dt>
-							<dd><code class="mono">{current.permission_keys[0]}</code></dd>
+							<!-- One line per uncovered key: a single action can derive
+							     several (one per recipient on a send), and each one is
+							     part of what the approver is granting. -->
+							<dt>{current.permission_keys.length > 1 ? 'Permissions' : 'Permission'}</dt>
+							<dd class="keylist">
+								{#each current.permission_keys as key}
+									<code class="mono">{key}</code>
+								{/each}
+							</dd>
 						{/if}
 						{#if hasBubbled}
 							<dt>Resolver</dt>
@@ -594,6 +609,16 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	/* Keys stack instead of truncating — the omitted ones are exactly what the
+	   approver needs to see before granting. */
+	.keylist {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 2px;
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 	.scope-text strong {
 		font-weight: 600;
