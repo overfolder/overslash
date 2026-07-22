@@ -269,11 +269,53 @@ fn humanize_action(action: &str) -> String {
     s
 }
 
+/// Name the wildcard in a scoped arg, as the noun phrase that follows "on".
+///
+/// A stored rule is a *pattern*, not a concrete key, so its arg is routinely a
+/// glob — `*` for the whole action, `*@acme.com` for a domain. Left verbatim
+/// those render as "Send on recipient *", which reads like a bug. `subject` is
+/// the label when the key carries one, so the same two shapes come out as "any
+/// recipient" and "any recipient at acme.com".
+///
+/// Returns `None` for a glob with no shape we can name (`jane@*`, `*-prod-*`);
+/// the caller then falls back to the arg verbatim rather than inventing prose.
+fn describe_arg_glob(value: &str, subject: Option<&str>) -> Option<String> {
+    let anything = match subject {
+        Some(s) => format!("any {s}"),
+        None => "anything".to_string(),
+    };
+    if value == "*" {
+        return Some(anything);
+    }
+    value
+        .strip_prefix("*@")
+        .filter(|domain| !domain.contains('*'))
+        .map(|domain| format!("{anything} at {domain}"))
+}
+
+/// Name a `/**` path glob, as the noun phrase that follows "to".
+/// `/repos/**` → "anything under /repos"; a bare `/**` → "any path".
+fn describe_path_glob(path: &str) -> Option<String> {
+    let prefix = path.strip_suffix("/**")?;
+    if prefix.is_empty() {
+        Some("any path".to_string())
+    } else {
+        Some(format!("anything under {prefix}"))
+    }
+}
+
+/// Does this segment stand for "everything"? A rule an operator typed by hand
+/// is as likely to say `github:**` as `github:*:*`, and both mean the service
+/// entire.
+fn is_catch_all(segment: &str) -> bool {
+    segment == "*" || segment == "**"
+}
+
 /// Generate a human-readable description for a single derived key at a given broadness.
 fn describe_key(dk: &DerivedKey) -> String {
     match dk.service.as_str() {
         "http" => {
-            if dk.action == "ANY" {
+            if dk.action == "ANY" || is_catch_all(&dk.action) {
                 let host = dk.arg.split('/').next().unwrap_or(&dk.arg);
                 if host == "*" {
                     "Any HTTP request".to_string()
@@ -281,7 +323,8 @@ fn describe_key(dk: &DerivedKey) -> String {
                     format!("Any request to {host}")
                 }
             } else {
-                format!("{} to {}", dk.action, dk.arg)
+                let target = describe_path_glob(&dk.arg).unwrap_or_else(|| dk.arg.clone());
+                format!("{} to {}", dk.action, target)
             }
         }
         "secret" => {
@@ -292,16 +335,25 @@ fn describe_key(dk: &DerivedKey) -> String {
             }
         }
         _ => {
-            if dk.action == "*" {
+            if is_catch_all(&dk.action) {
                 format!("Any {} action", humanize_action(&dk.service))
             } else if dk.arg == "*" {
                 format!("{} on any resource", humanize_action(&dk.action))
+            } else if dk.arg.starts_with('/') {
+                // Service-HTTP key: the arg is a path, so it reads "to", not "on".
+                match describe_path_glob(&dk.arg) {
+                    Some(target) => format!("{} to {}", humanize_action(&dk.action), target),
+                    None => format!("{} on {}", humanize_action(&dk.action), dk.arg),
+                }
             } else if let Some(ref label) = dk.label {
                 // "Send on recipient=jane@example.com" reads like a bug; the
                 // label is a noun the approver already understands.
-                format!("{} on {} {}", humanize_action(&dk.action), label, dk.value)
+                let target = describe_arg_glob(&dk.value, Some(label))
+                    .unwrap_or_else(|| format!("{label} {}", dk.value));
+                format!("{} on {}", humanize_action(&dk.action), target)
             } else {
-                format!("{} on {}", humanize_action(&dk.action), dk.arg)
+                let target = describe_arg_glob(&dk.arg, None).unwrap_or_else(|| dk.arg.clone());
+                format!("{} on {}", humanize_action(&dk.action), target)
             }
         }
     }
@@ -314,6 +366,15 @@ fn dedup_preserving(items: impl IntoIterator<Item = String>) -> Vec<String> {
         .into_iter()
         .filter(|s| seen.insert(s.clone()))
         .collect()
+}
+
+/// Describe a stored permission rule's `action_pattern` in one line.
+///
+/// The public entry point onto [`describe_key`], so a rule list and an approval's
+/// suggested tiers say the same thing about the same key rather than drifting
+/// apart in two implementations.
+pub fn describe_pattern(pattern: &str) -> String {
+    describe_key(&parse_derived_key(pattern))
 }
 
 /// Generate a combined description for a tier's set of derived keys.
@@ -1260,6 +1321,58 @@ mod tests {
     fn description_http_any() {
         let dk = parse_derived_key("http:ANY:api.stripe.com/**");
         assert_eq!(describe_key(&dk), "Any request to api.stripe.com");
+    }
+
+    /// Stored rules are patterns, not concrete keys, so every glob shape the
+    /// rule list can hold has to read as a sentence. `describe_pattern` is the
+    /// entry point the permissions API renders through.
+    #[test]
+    fn description_of_stored_rule_patterns() {
+        let cases = [
+            ("github:*:*", "Any Github action"),
+            (
+                "github:create_pull_request:*",
+                "Create pull request on any resource",
+            ),
+            ("email:send:recipient=*", "Send on any recipient"),
+            (
+                "email:send:recipient=*@acme.com",
+                "Send on any recipient at acme.com",
+            ),
+            ("email:send:*@acme.com", "Send on anything at acme.com"),
+            (
+                "email:send:recipient=jane@example.com",
+                "Send on recipient jane@example.com",
+            ),
+            (
+                "http:ANY:api.stripe.com/**",
+                "Any request to api.stripe.com",
+            ),
+            (
+                "http:POST:api.stripe.com/v1/**",
+                "POST to anything under api.stripe.com/v1",
+            ),
+            ("github:POST:/**", "POST to any path"),
+            // Two-segment patterns an operator types by hand.
+            ("github:**", "Any Github action"),
+            ("http:**", "Any HTTP request"),
+            ("github:POST:/repos/**", "POST to anything under /repos"),
+            ("github:POST:/repos/overfolder", "POST on /repos/overfolder"),
+        ];
+        for (pattern, expected) in cases {
+            assert_eq!(describe_pattern(pattern), expected, "pattern: {pattern}");
+        }
+    }
+
+    /// A glob we have no wording for stays verbatim — better a raw key than
+    /// prose that misstates what the rule covers.
+    #[test]
+    fn description_leaves_unnameable_globs_verbatim() {
+        assert_eq!(
+            describe_pattern("email:send:recipient=jane@*"),
+            "Send on recipient jane@*"
+        );
+        assert_eq!(describe_pattern("deploy:run:*-prod-*"), "Run on *-prod-*");
     }
 
     #[test]

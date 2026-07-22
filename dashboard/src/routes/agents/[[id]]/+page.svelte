@@ -759,15 +759,16 @@
 
 					<!-- Permission Rules -->
 					<h3 class="section-title">Permission Rules</h3>
-					{#if !detail || detail.rules.length === 0}
+					{#if !detail || (detail.loading && detail.rules.length === 0)}
+						<p class="muted" style="font-size:0.85rem;">Loading rules…</p>
+					{:else if detail.rules.length === 0}
 						<p class="muted" style="font-size:0.85rem;">No rules.</p>
 					{:else}
 						<table class="rules-table">
 							<thead>
 								<tr>
-									<th>Key</th>
+									<th>Rule</th>
 									<th>Source</th>
-									<th>Approved By</th>
 									<th>Expires</th>
 									<th></th>
 								</tr>
@@ -775,12 +776,20 @@
 							<tbody>
 								{#each detail.rules as r (r.id)}
 									<tr>
-										<td class="mono">{r.action_pattern}</td>
+										<td>
+											<!-- The sentence leads; the key stays visible underneath because it is
+											     what an operator copies into a rule or greps the audit log for. -->
+											{#if r.description}
+												<div class="rule-desc">{r.description}</div>
+												<div class="rule-key mono">{r.action_pattern}</div>
+											{:else}
+												<div class="rule-desc mono">{r.action_pattern}</div>
+											{/if}
+										</td>
 										<td>
 											<span class="pill pill-source">{r.effect === 'allow' ? 'Approval' : r.effect}</span>
 										</td>
-										<td>—</td>
-										<td>{ttlRemaining((r as unknown as {expires_at?: string}).expires_at)}</td>
+										<td>{ttlRemaining(r.expires_at)}</td>
 										<td>
 											<button class="revoke-link" onclick={() => handleRevokeRule(r.id)}>Revoke</button>
 										</td>
@@ -1487,6 +1496,18 @@
 		padding: 6px 0;
 		color: var(--color-text);
 		vertical-align: middle;
+	}
+	.rules-table td:first-child {
+		padding-right: 16px;
+	}
+	.rule-desc {
+		color: var(--color-text);
+	}
+	.rule-key {
+		margin-top: 2px;
+		font-size: 11px;
+		color: var(--color-text-muted);
+		word-break: break-all;
 	}
 	.revoke-link {
 		background: none;

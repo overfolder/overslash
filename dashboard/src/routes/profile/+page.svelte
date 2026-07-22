@@ -290,7 +290,12 @@
 				{#each data.permissions as rule (rule.id)}
 					<li class="row">
 						<div class="row-main">
-							<div class="row-title mono">{rule.action_pattern}</div>
+							{#if rule.description}
+								<div class="row-title">{rule.description}</div>
+								<div class="row-key mono">{rule.action_pattern}</div>
+							{:else}
+								<div class="row-title mono">{rule.action_pattern}</div>
+							{/if}
 							<div class="row-sub">
 								<span class="pill pill-{rule.effect}">{rule.effect}</span>
 								<span>TTL: {ttlRemaining(rule.expires_at)}</span>
@@ -487,6 +492,12 @@
 		color: var(--color-text);
 		overflow: hidden;
 		text-overflow: ellipsis;
+	}
+	.row-key {
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
+		word-break: break-all;
+		margin: 0.1rem 0 0.15rem;
 	}
 	.row-sub {
 		font-size: 0.8rem;

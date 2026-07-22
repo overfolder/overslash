@@ -1045,7 +1045,12 @@ export interface PermissionRule {
   id: string;
   identity_id: string;
   action_pattern: string;
+  /** `action_pattern` as a sentence, rendered server-side by the same describer
+   *  that writes an approval's suggested tiers. */
+  description: string;
   effect: string;
+  expires_at: string | null;
+  created_at: string;
 }
 
 export interface ActionResult {
