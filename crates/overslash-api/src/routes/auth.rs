@@ -2509,6 +2509,121 @@ async fn provision_org_subdomain(
         return Ok((target_org.id, existing.id, user_id, userinfo.email.clone()));
     }
 
+    // Adopt-by-email. A user identity with this email but a *different* (or
+    // no) IdP subject is the pre-created member — minted by an invite, by
+    // name-based impersonation, or by a prior sign-in through another IdP.
+    // It IS the admission decision, and adopting it (rather than forking a
+    // second identity) is what makes a pre-created member and their first
+    // real sign-in converge on one identity — with its agents, connections,
+    // and audit history. `require_invite_admission` keeps its meaning: the
+    // pre-created identity is the invite.
+    let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
+    if let Some(existing) = scope
+        .find_user_identity_by_email_in_org(&userinfo.email)
+        .await?
+    {
+        let metadata = userinfo_metadata(userinfo);
+
+        // Resolve the users row: reuse the identity's existing link (an
+        // already-signed-in member switching IdPs), else an Overslash-IdP
+        // match, else a fresh org-only user for a never-signed-in invite.
+        let user_id = match existing.user_id {
+            Some(uid) => {
+                let _ = user_repo::refresh_profile(
+                    state.db(ext),
+                    uid,
+                    Some(&userinfo.email),
+                    Some(display_name),
+                )
+                .await;
+                uid
+            }
+            None => match user_repo::find_by_overslash_idp(
+                state.db(ext),
+                &userinfo.provider_key,
+                &userinfo.external_id,
+            )
+            .await?
+            {
+                Some(u) => {
+                    let _ = user_repo::refresh_profile(
+                        state.db(ext),
+                        u.id,
+                        Some(&userinfo.email),
+                        Some(display_name),
+                    )
+                    .await;
+                    u.id
+                }
+                None => {
+                    user_repo::create_org_only(
+                        state.db(ext),
+                        Some(&userinfo.email),
+                        Some(display_name),
+                    )
+                    .await?
+                    .id
+                }
+            },
+        };
+
+        // Point the identity at this IdP subject and refresh its profile.
+        // `(org_id, external_id)` is unique, and we only reach here after the
+        // subject lookup missed, so this can't collide with another identity.
+        overslash_db::repos::identity::set_external_id(
+            state.db(ext),
+            target_org.id,
+            existing.id,
+            &userinfo.external_id,
+        )
+        .await?;
+        let _ = scope
+            .update_identity_profile(existing.id, display_name, metadata)
+            .await;
+
+        // A never-signed-in invite still needs its user link + membership +
+        // groups. An already-linked member skips all of this (idempotent
+        // anyway, but we avoid a redundant membership insert).
+        if existing.user_id.is_none() {
+            overslash_db::repos::identity::set_user_id(
+                state.db(ext),
+                target_org.id,
+                existing.id,
+                Some(user_id),
+            )
+            .await?;
+            overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
+                state.db(ext),
+                target_org.id,
+                existing.id,
+            )
+            .await?;
+            // The invite's role lives on the identity: admin invites carry
+            // `is_org_admin = true` (set at invite creation / by migration
+            // 103). Keep the membership row consistent with it.
+            let role = if existing.is_org_admin {
+                membership::ROLE_ADMIN
+            } else {
+                membership::ROLE_MEMBER
+            };
+            match membership::create(state.db(ext), user_id, target_org.id, role).await {
+                Ok(_) => {}
+                Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
+                Err(e) => return Err(e.into()),
+            }
+            let dashboard_url = build_org_redirect(state, &target_org);
+            crate::services::welcome_email::send_if_due(
+                state,
+                user_id,
+                target_org.id,
+                dashboard_url,
+            )
+            .await;
+        }
+
+        return Ok((target_org.id, existing.id, user_id, userinfo.email.clone()));
+    }
+
     // First-time sign-in for this (org, IdP-subject). Two admission paths:
     //
     // 1. Overslash-managed sign-in (migration 066): when the org has opted
@@ -2548,47 +2663,20 @@ async fn provision_org_subdomain(
         .as_deref()
         .map(|pinned| pinned == slug)
         .unwrap_or(false);
-    // Existing-member short-circuit (applies to BOTH managed sub-modes):
-    // when alice@acme.com already has a membership in this org and tries a
-    // different Overslash-managed IdP (Google→GitHub), the
-    // `(org_id, external_id)` lookup above misses (new IdP subject) and
-    // we fall through here. Her original invite is already accepted (or she
-    // was admitted by domain), so the admission gate below would lock her
-    // out. Recognise her via email-on-existing-membership and let the new
-    // identity attach to her existing user row — no fresh gate clearance
-    // required.
-    //
-    // Safe, and NOT the domain-removal bypass it might look like: the
-    // allowlist (like invites, and like the `(org, external_id)` refresh
-    // short-circuit at the top of this fn) is a point-in-time *admission*
-    // gate, not a continuous authorization check. An already-admitted
-    // member keeps signing in through her original IdP with no re-check
-    // regardless of allowlist edits, so re-gating only her *second* IdP
-    // would be incoherent (she's already in via the first) and would also
-    // route her to `create_org_only` below — forking a duplicate `users`
-    // row instead of attaching to her membership. Revoking access is done
-    // by removing the membership, not by editing the domain list.
-    let existing_member = if target_org.allow_overslash_managed_signin && !single_org_bypass {
-        user_repo::find_member_by_email_in_org(state.db(ext), target_org.id, &userinfo.email)
-            .await?
-    } else {
-        None
-    };
-    let membership_role = if single_org_bypass || existing_member.is_some() {
-        None
+    // We only reach here when NO user identity with this email exists in the
+    // org — the adopt-by-email branch above returns early for every
+    // pre-created or already-signed-in member. So the existing-member and
+    // pending-invite cases are handled there; this block is purely the
+    // *fresh admission* gate for a brand-new email.
+    if single_org_bypass {
+        // Self-hosted operator: the env-var IdP they provisioned IS the trust
+        // boundary, so admission is unconditional.
     } else if target_org.allow_overslash_managed_signin {
         if target_org.require_invite_admission {
-            let pending = overslash_db::repos::org_invite::find_pending(
-                state.db(ext),
-                target_org.id,
-                &userinfo.email,
-            )
-            .await?
-            .ok_or_else(|| AppError::Forbidden("not_invited".into()))?;
-            // Defer the `mark_accepted` write until after the membership row
-            // exists — if membership creation fails for any reason we don't
-            // want a consumed invite stranded with no member.
-            Some(pending)
+            // Invite-required: no pre-created identity for this email means
+            // no invite. (An invite is now a `kind='user'` identity with this
+            // email — see migration 103 and `routes/org_invites.rs`.)
+            return Err(AppError::Forbidden("not_invited".into()));
         } else {
             // Domain-allowlist admission. The allowlist is trusted only when
             // non-empty; an empty list with require-invite off means the
@@ -2615,7 +2703,6 @@ async fn provision_org_subdomain(
             {
                 return Err(AppError::Forbidden("domain_not_allowed".into()));
             }
-            None
         }
     } else {
         let email_domain = userinfo
@@ -2639,52 +2726,35 @@ async fn provision_org_subdomain(
         {
             return Err(AppError::Forbidden("not_permitted_by_org_idp".into()));
         }
-        None
-    };
+    }
 
-    let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
     let metadata = userinfo_metadata(userinfo);
 
-    // Decide which `users` row this new identity attaches to:
-    //   1. Existing-member short-circuit hit → attach to that user (a
-    //      second IdP for the same email in the same org).
-    //   2. The `(provider, subject)` already matches an Overslash-backed
-    //      user (SINGLE_ORG_MODE: env-var IdP is both the Overslash IdP
-    //      and the org IdP, so the same pair shows up on both paths) →
-    //      reuse that user.
-    //   3. Otherwise → first-time admission, fresh org-only user row.
-    let user_id = if let Some(ref u) = existing_member {
-        let _ = user_repo::refresh_profile(
-            state.db(ext),
-            u.id,
-            Some(&userinfo.email),
-            Some(display_name),
-        )
-        .await;
-        u.id
-    } else {
-        match user_repo::find_by_overslash_idp(
-            state.db(ext),
-            &userinfo.provider_key,
-            &userinfo.external_id,
-        )
-        .await?
-        {
-            Some(u) => {
-                let _ = user_repo::refresh_profile(
-                    state.db(ext),
-                    u.id,
-                    Some(&userinfo.email),
-                    Some(display_name),
-                )
-                .await;
-                u.id
-            }
-            None => {
-                user_repo::create_org_only(state.db(ext), Some(&userinfo.email), Some(display_name))
-                    .await?
-                    .id
-            }
+    // Fresh admission for a brand-new email. Attach to an existing
+    // Overslash-backed user when the `(provider, subject)` already matches
+    // (SINGLE_ORG_MODE: the env-var IdP is both the Overslash IdP and the org
+    // IdP), otherwise mint a fresh org-only user.
+    let user_id = match user_repo::find_by_overslash_idp(
+        state.db(ext),
+        &userinfo.provider_key,
+        &userinfo.external_id,
+    )
+    .await?
+    {
+        Some(u) => {
+            let _ = user_repo::refresh_profile(
+                state.db(ext),
+                u.id,
+                Some(&userinfo.email),
+                Some(display_name),
+            )
+            .await;
+            u.id
+        }
+        None => {
+            user_repo::create_org_only(state.db(ext), Some(&userinfo.email), Some(display_name))
+                .await?
+                .id
         }
     };
 
@@ -2711,95 +2781,31 @@ async fn provision_org_subdomain(
     )
     .await?;
 
-    // Whether this newly-provisioned identity should be a REAL org admin —
-    // `is_org_admin` flag + `Admins` group + `membership.role='admin'`, not a
-    // bare membership row that merely says 'admin' (which does NOT pass
-    // `AdminAcl`). Two independent triggers, funnelled through the same
-    // `set_is_org_admin` primitive the promote-member endpoint uses so the
-    // grant path never diverges:
-    //   1. The accepted invite explicitly grants `admin`.
-    //   2. Second-IdP login for an already-admin member. The new identity row
-    //      defaults to `is_org_admin = false` and is not in Admins, so without
-    //      this the session JWT (keyed on the new identity) would silently
-    //      downgrade an admin to a member until they re-signed-in with their
-    //      original IdP. Mirror the prior identity's admin state onto the new row.
-    let invited_as_admin = membership_role
-        .as_ref()
-        .is_some_and(|inv| inv.role == membership::ROLE_ADMIN);
-    let mut should_be_admin = invited_as_admin;
-    if let Some(ref existing) = existing_member {
-        if let Some(prior) = overslash_db::repos::identity::find_by_org_and_user(
-            state.db(ext),
-            target_org.id,
-            existing.id,
-        )
-        .await?
-        {
-            if prior.id != identity_row.id && prior.is_org_admin {
-                should_be_admin = true;
-            }
-        }
-    }
-
-    // The membership role must agree with the admin decision: an invited or
-    // mirrored admin gets `role='admin'`, everyone else `member` (legacy
-    // no-invite, non-admin path defaults to member).
-    let role = if should_be_admin {
-        membership::ROLE_ADMIN
-    } else {
-        membership::ROLE_MEMBER
+    // A freshly domain-/IdP-admitted email is always a plain member. Admins
+    // are conferred elsewhere — the org creator (`POST /v1/orgs`), an admin
+    // invite (a pre-created identity carrying `is_org_admin`, adopted by the
+    // branch above), or an explicit promote on the Members page — never by a
+    // first-time domain-allowlist sign-in.
+    //
+    // `membership::create` swallows the unique violation so a
+    // SINGLE_ORG_MODE reuse-user path (where `POST /v1/orgs` already left a
+    // `(user_id, org_id)` row) doesn't fail on repeat login.
+    match membership::create(
+        state.db(ext),
+        user_id,
+        target_org.id,
+        membership::ROLE_MEMBER,
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
+        Err(e) => return Err(e.into()),
     };
-    // `membership::create` is idempotent-friendly-enough via the PK on
-    // (user_id, org_id) — but in the SINGLE_ORG_MODE reuse-user path, an
-    // earlier sign-in could have left the same `(user_id, org_id)` row
-    // already in place (e.g., bootstrap admin from POST /v1/orgs). Swallow
-    // the unique-violation so a repeat login doesn't fail. Track whether
-    // a brand-new membership row was created so we only consume an invite
-    // when admission actually happened — a second-IdP sign-in by an
-    // already-member must not eat the pending invite (audit-trail bug).
-    let membership_created =
-        match membership::create(state.db(ext), user_id, target_org.id, role).await {
-            Ok(_) => true,
-            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => false,
-            Err(e) => return Err(e.into()),
-        };
-
-    // Confer real admin authorization when warranted. `set_is_org_admin` sets
-    // the flag AND inserts the identity into the `Admins` group. Idempotent,
-    // and applied even when the membership row already existed (second-IdP
-    // mirror) so the fresh identity carries the admin grant.
-    if should_be_admin {
-        overslash_db::repos::identity::set_is_org_admin(
-            state.db(ext),
-            target_org.id,
-            identity_row.id,
-            true,
-        )
-        .await?;
-    }
-
-    // Best-effort: consume the invite, but ONLY when this sign-in actually
-    // produced a new membership. Otherwise the invite is preserved for the
-    // genuine first-time admission. `mark_accepted` is idempotent (guards
-    // on `accepted_at IS NULL`), so a concurrent login that already marked
-    // it returns `Ok(false)` and we don't propagate that as an error.
-    if membership_created && let Some(invite) = membership_role.as_ref() {
-        if let Err(e) =
-            overslash_db::repos::org_invite::mark_accepted(state.db(ext), invite.id, user_id).await
-        {
-            tracing::warn!(
-                org_id = %target_org.id,
-                invite_id = %invite.id,
-                error = %e,
-                "failed to mark org_invite accepted after successful membership creation"
-            );
-        }
-    }
 
     // Best-effort welcome email for JIT-provisioned corp-org users. Service
-    // gates on `welcome_email_sent_at IS NULL`, so returning users (existing
-    // member adding a second IdP, SINGLE_ORG_MODE Overslash-backed reuse)
-    // are naturally no-ops without us having to thread a "was-created" bool.
+    // gates on `welcome_email_sent_at IS NULL`, so returning users
+    // (SINGLE_ORG_MODE Overslash-backed reuse) are naturally no-ops.
     let dashboard_url = build_org_redirect(state, &target_org);
     crate::services::welcome_email::send_if_due(state, user_id, target_org.id, dashboard_url).await;
 

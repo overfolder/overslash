@@ -61,6 +61,7 @@ mod inherit_permissions;
 mod instance_admin;
 mod instance_visibility_consistency;
 mod integration;
+mod invite_adoption;
 mod key_rotation;
 mod large_file;
 mod layered_templates;

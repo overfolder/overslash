@@ -191,7 +191,7 @@ Users authenticate to Overslash via external Identity Providers (IdPs). Overslas
 - *Corp org, as member* — sign in through any IdP the org has enabled on `<slug>.app.overslash.com` (per-org `org_idp_configs` row, or Overslash's shared OAuth app when the org opts in). Two admission paths, picked by the org admin:
   - **Domain-whitelist path** (default for pre-2026-05 orgs): auto-provisioning is gated by `org_idp_configs.allowed_email_domains` (empty list = trust the IdP entirely).
   - **Managed sign-in path** (`orgs.allow_overslash_managed_signin = true`, default for orgs created after migration 066): authentication via Overslash's shared OAuth apps is decoupled from membership — the IdP proves who you are, and a second gate proves you belong. Migration 092 makes that gate configurable via `orgs.require_invite_admission` (default `true`):
-    - *Invite-required* (`require_invite_admission = true`, the default): every new member must have a pending `org_invites(email, role)` row — regardless of which IdP authenticates them. Membership crossing trust domains is blocked unless the admin explicitly invites the email.
+    - *Invite-required* (`require_invite_admission = true`, the default): every new member must already exist as a pre-created user identity for that email (an invite, or an impersonation-provisioned member) — regardless of which IdP authenticates them. First sign-in adopts that identity by email. Membership crossing trust domains is blocked unless the admin explicitly invites the email.
     - *Domain-allowlist* (`require_invite_admission = false`): any verified email whose domain is on the org-wide `orgs.managed_signin_allowed_domains` list self-provisions as `member` on first login, no invite needed. An **empty** allowlist here is a misconfiguration, not "admit everyone" — sign-in is rejected. This is distinct from the per-provider `org_idp_configs.allowed_email_domains` used by the domain-whitelist path above; the managed list is org-wide because the managed path admits through multiple env-var providers sharing one trust boundary (the operator's env creds).
 
 **No cross-IdP account linking.** A human who uses Google for personal and Okta for Acme has two distinct `users` rows. This is intentional: Google and Okta are different trust domains and the system treats them as such. See [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md).
@@ -234,6 +234,32 @@ After enrollment, an identity's configuration remains mutable:
 ### `inherit_permissions`
 
 A live pointer (not a copy). When set on an identity, it dynamically has whatever permissions its parent has — current AND future. Parent gains a rule tomorrow, child gains it too.
+
+### Impersonation (`X-Overslash-As`)
+
+An API key that carries the `impersonate` scope (admin-minted only) may execute any request as another identity **in its own org**. The target is named by the `X-Overslash-As` header, which accepts three forms:
+
+| Header value | Resolves to |
+|---|---|
+| `<uuid>` | an existing identity, by id — never created |
+| `alice@acme.com` | the user with that email — **created on demand** if the org has never seen it |
+| `alice@acme.com/henry/researcher` | that user, then a slash-separated path of agent names beneath her — **each missing level created on demand** (`henry` as an `agent`, `researcher` as a `sub_agent`, …) |
+
+The value splits on `/`: the first segment is the user (a UUID or an email — neither can contain `/`), and each remaining segment is an agent name, resolved then created one level at a time. The effective identity is the last segment; all downstream permission checks, approvals, and audit run as it. A UUID first segment may also carry a path (`<uuid>/henry`) provided it names a user.
+
+Auto-created identities are unprivileged by construction: user identities are bare org members (`external_id IS NULL` — "belongs to the org, has never signed in"), and agents never inherit permissions. Every auto-creation writes an `identity.provisioned` audit row attributing it to the impersonating key. The existing ACL cap still applies to the **final** effective identity — an impersonation key can never reach an identity whose access exceeds the key's own.
+
+A path deeper than 8 agent segments, a malformed root (neither UUID nor email), or an empty segment is a `400`; an archived target is `403`; the header without the `impersonate` scope is `403`. This is the primary integration surface for white-label backends (e.g. Overfolder) that act on their users' behalf without pre-syncing Overslash UUIDs.
+
+### Members are identities; invites are pre-created members
+
+A person "belongs to an org" iff there is a `kind='user'` identity for them in that org. There is exactly one such identity per person per org, and it is created by any of three paths — an admin invite, name-based impersonation, or a first SSO sign-in — that all converge on the same row:
+
+- A **pending invite** is a user identity with `external_id IS NULL` (invited, never signed in); an **admin invite** additionally carries `is_org_admin` + Admins-group membership.
+- **First sign-in adopts by email**: the OAuth callback finds the pre-created identity by verified email and stamps the IdP subject onto it, rather than forking a second identity — so the person lands on their pre-created agents, connections, and audit history. `orgs.require_invite_admission` keeps its meaning: with it on, a verified email with no pre-created identity is rejected `not_invited`.
+- A second IdP for the same email re-points the same identity's `external_id`; one human = one identity per org.
+
+(The former `org_invites` table was folded into `identities` by migration 103; the `/v1/org-invites` API keeps its wire shape as a projection over user identities.)
 
 ---
 

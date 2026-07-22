@@ -42,8 +42,12 @@ export interface ManagedSigninSettings {
 }
 
 /**
- * One `org_invites` row. Pending invites are the membership gate for orgs
- * with `allow_overslash_managed_signin = true`.
+ * A pre-created member, projected onto the invite wire shape. Backed by a
+ * `kind='user'` identity (the `org_invites` table was dropped in migration
+ * 103): `status: 'pending'` while the person has never signed in
+ * (`external_id IS NULL`), `'accepted'` once an SSO callback adopted the
+ * identity. Pending members are the admission gate for orgs with
+ * `allow_overslash_managed_signin = true`.
  */
 export interface OrgInvite {
   id: string;
@@ -1035,6 +1039,17 @@ export interface Identity {
    * builds; treat `undefined` as `true` for display fallback.
    */
   auto_call_on_approve?: boolean;
+  /**
+   * `true` for a `user` identity that was pre-created (invited or
+   * impersonation-provisioned) but has never completed a sign-in
+   * (`external_id IS NULL`). Drives the Members-page "pending" badge.
+   */
+  pending?: boolean;
+  /**
+   * How this identity was auto-provisioned, e.g. `"impersonation"`.
+   * Absent for identities created through the normal API/UI/SSO paths.
+   */
+  provisioned_by?: string | null;
   created_at?: string;
   last_active_at?: string;
   archived_at?: string | null;

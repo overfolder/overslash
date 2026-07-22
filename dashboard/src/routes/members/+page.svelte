@@ -206,6 +206,14 @@
 										<div class="avatar avatar-fallback">{initials(u.name)}</div>
 									{/if}
 									<span class="name">{u.name}</span>
+									{#if u.pending}
+										<span
+											class="pending-badge"
+											title={u.provisioned_by === 'impersonation'
+												? 'Auto-provisioned via impersonation; has not signed in yet'
+												: 'Invited; has not signed in yet'}>pending</span
+										>
+									{/if}
 								</div>
 							</td>
 							<td class="email">{u.email ?? '—'}</td>
@@ -606,6 +614,20 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		cursor: help;
+	}
+
+	.pending-badge {
+		display: inline-block;
+		margin-left: var(--space-2);
+		padding: 1px var(--space-2);
+		border-radius: var(--radius-pill);
+		background: color-mix(in srgb, var(--color-fg-muted, #64748b) 12%, transparent);
+		color: var(--color-fg-muted, #64748b);
+		font: var(--text-label-sm);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		cursor: help;
+		vertical-align: middle;
 	}
 
 	.badge-admin {

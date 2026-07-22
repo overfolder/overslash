@@ -382,16 +382,19 @@ async fn callback_admits_invited_email_on_corp_subdomain() {
         .unwrap();
     assert_eq!(resp.status(), 303, "expected redirect on admitted login");
 
-    // Invite is marked accepted; membership exists with the invite's role.
-    let invite: (Option<time::OffsetDateTime>, String) = sqlx::query_as(
-        "SELECT accepted_at, role FROM org_invites WHERE org_id = $1 AND email = 'testuser@example.com'",
+    // The pre-created invite identity is now "accepted": adopting it at
+    // sign-in stamps `external_id` (the IdP subject) onto the same row.
+    let external_id: Option<String> = sqlx::query_scalar(
+        "SELECT external_id FROM identities WHERE org_id = $1 AND email = 'testuser@example.com' AND kind = 'user'",
     )
     .bind(org_id)
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(invite.0.is_some(), "invite should be marked accepted");
-    assert_eq!(invite.1, "admin");
+    assert!(
+        external_id.is_some(),
+        "invite identity should be adopted (external_id set) after sign-in"
+    );
 
     let membership_role: String = sqlx::query_scalar(
         "SELECT role FROM user_org_memberships m
@@ -564,10 +567,11 @@ async fn existing_member_admitted_when_new_idp_subject_misses_invite() {
         .await
         .unwrap();
 
-    // Seed an existing user + membership matching the mock's email but
-    // bound to a different external_id than the mock will return. The
-    // `(org_id, external_id)` lookup in `provision_org_subdomain` will
-    // therefore miss and we fall through to the invite gate.
+    // Seed an existing member — user + membership + identity — matching the
+    // mock's email but whose identity is bound to a *different* external_id
+    // than the mock will return. The `(org_id, external_id)` lookup in
+    // `provision_org_subdomain` therefore misses; adopt-by-email finds the
+    // identity by email and re-points it at the new subject.
     let existing_user_id: uuid::Uuid =
         sqlx::query_scalar("INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id")
             .bind("testuser@example.com")
@@ -583,8 +587,17 @@ async fn existing_member_admitted_when_new_idp_subject_misses_invite() {
     .execute(&pool)
     .await
     .unwrap();
-    // Crucially: no `org_invites` row. Without the existing-member
-    // short-circuit the callback would 403 not_invited.
+    sqlx::query(
+        "INSERT INTO identities (org_id, name, kind, external_id, email, user_id)
+         VALUES ($1, 'Original', 'user', 'original-idp-subject', 'testuser@example.com', $2)",
+    )
+    .bind(org_id)
+    .bind(existing_user_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Crucially: no invite identity beyond this already-signed-in one. Without
+    // adopt-by-email the callback would 403 not_invited.
 
     let nonce = "second-idp-1";
     let state_param = format!("login:google:{nonce}");
@@ -626,10 +639,12 @@ async fn existing_member_admitted_when_new_idp_subject_misses_invite() {
 async fn existing_admin_keeps_admin_via_second_idp() {
     // Regression test for Seer 1268697 HIGH: an existing admin signing
     // in via a second IdP must NOT be silently downgraded to a member.
-    // Pre-fix the new identity defaulted to `is_org_admin = false` and
-    // was not in Admins group; the session JWT (keyed on the new
-    // identity) lost admin powers. Fix mirrors the prior user-kind
-    // identity's admin state onto the freshly-created one.
+    //
+    // Under the identities-are-members model, a second IdP no longer forks
+    // a fresh identity: adopt-by-email finds the admin's existing identity
+    // and re-points its `external_id` at the new subject. Admin powers are
+    // preserved trivially because it is the same row — one human, one
+    // identity per org.
     let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
 
@@ -687,6 +702,18 @@ async fn existing_admin_keeps_admin_via_second_idp() {
     .fetch_one(&pool)
     .await
     .unwrap();
+    // A real admin identity is always in the Admins group (kept in lock-step
+    // with `is_org_admin` by `set_is_org_admin`). Mirror that so the seed is
+    // a consistent starting state.
+    sqlx::query(
+        "INSERT INTO identity_groups (identity_id, group_id)
+         SELECT $1, g.id FROM groups g WHERE g.org_id = $2 AND g.system_kind = 'admins'",
+    )
+    .bind(prior_identity_id)
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let nonce = "admin-second-idp-1";
     let state_param = format!("login:google:{nonce}");
@@ -703,52 +730,60 @@ async fn existing_admin_keeps_admin_via_second_idp() {
         .unwrap();
     assert_eq!(resp.status(), 303, "second IdP login must admit");
 
-    // The new identity (created for the Google callback's external_id)
-    // must inherit `is_org_admin = true`.
-    let new_identity_is_admin: bool = sqlx::query_scalar(
-        "SELECT is_org_admin FROM identities
-         WHERE org_id = $1 AND user_id = $2 AND id <> $3",
+    // Exactly one user identity for this email — the prior one was adopted,
+    // not forked.
+    let identity_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM identities
+         WHERE org_id = $1 AND kind = 'user' AND email = 'testuser@example.com'",
     )
     .bind(org_id)
-    .bind(existing_user_id)
-    .bind(prior_identity_id)
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(
-        new_identity_is_admin,
-        "second-IdP identity must inherit is_org_admin from the prior identity"
+    assert_eq!(
+        identity_count, 1,
+        "second IdP must adopt, not fork a new identity"
     );
 
-    // And must be a member of the Admins group, so ACL extractors see
-    // admin powers on the new session.
+    // The adopted identity keeps `is_org_admin = true` and had its
+    // `external_id` re-pointed away from the seeded 'prior-subject'.
+    let (is_admin, external_id): (bool, Option<String>) =
+        sqlx::query_as("SELECT is_org_admin, external_id FROM identities WHERE id = $1")
+            .bind(prior_identity_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(is_admin, "adopted identity must keep is_org_admin = true");
+    assert_ne!(
+        external_id.as_deref(),
+        Some("prior-subject"),
+        "external_id should be re-pointed to the new IdP subject"
+    );
+
+    // Still in the Admins group so ACL extractors see admin powers.
     let in_admins_group: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM identity_groups ig
          JOIN groups g ON g.id = ig.group_id
-         JOIN identities i ON i.id = ig.identity_id
-         WHERE i.org_id = $1 AND i.user_id = $2 AND i.id <> $3
-           AND g.system_kind = 'admins'",
+         WHERE ig.identity_id = $1 AND g.org_id = $2 AND g.system_kind = 'admins'",
     )
-    .bind(org_id)
-    .bind(existing_user_id)
     .bind(prior_identity_id)
+    .bind(org_id)
     .fetch_one(&pool)
     .await
     .unwrap();
     assert_eq!(
         in_admins_group, 1,
-        "second-IdP identity must be added to the Admins group"
+        "adopted admin identity must stay in the Admins group"
     );
 }
 
 #[tokio::test]
-async fn re_signin_does_not_consume_pending_invite() {
-    // A user with existing membership signs in. If we naively mark the
-    // pending invite accepted on every callback, a second IdP login by an
-    // existing member would silently consume the invite — the audit trail
-    // would claim the invite admitted someone when it didn't. Guard:
-    // `mark_accepted` only fires when membership creation produced a new
-    // row (unique-violation path is no-op for both membership AND invite).
+async fn re_invite_of_current_member_is_rejected_and_resignin_is_idempotent() {
+    // Under the identities-are-members model, inviting is creating a user
+    // identity for an email. Re-inviting an email that is already a member
+    // (or already invited) is a 409 — there is only ever one identity per
+    // email per org. And a second sign-in by that member must not fork a
+    // second identity or a duplicate membership.
     let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
 
@@ -799,10 +834,8 @@ async fn re_signin_does_not_consume_pending_invite() {
         .await
         .unwrap();
 
-    // Mint a second pending invite for the same email — this models the
-    // "admin tried to re-invite a current member" case. A second sign-in
-    // must NOT consume the new invite because the user is already a
-    // member.
+    // Re-inviting the same email now that they're a member is a 409 — the
+    // identity already exists.
     let resp = client
         .post(format!("{base}/v1/org-invites"))
         .header("authorization", format!("Bearer {org_admin_key}"))
@@ -810,8 +843,13 @@ async fn re_signin_does_not_consume_pending_invite() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.status(),
+        409,
+        "re-inviting a current member must conflict"
+    );
 
+    // A second sign-in re-points the same identity; it must not fork.
     let nonce = "consume-nonce-2";
     let state_param = format!("login:google:{nonce}");
     client
@@ -826,16 +864,30 @@ async fn re_signin_does_not_consume_pending_invite() {
         .await
         .unwrap();
 
-    let pending: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM org_invites WHERE org_id = $1 AND email = 'testuser@example.com' AND accepted_at IS NULL",
+    let identity_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM identities WHERE org_id = $1 AND kind = 'user' AND email = 'testuser@example.com'",
     )
     .bind(org_id)
     .fetch_one(&pool)
     .await
     .unwrap();
     assert_eq!(
-        pending, 1,
-        "re-sign-in by existing member must not consume the pending invite"
+        identity_count, 1,
+        "re-sign-in must not fork a second identity"
+    );
+
+    let membership_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM user_org_memberships m
+         JOIN users u ON u.id = m.user_id
+         WHERE m.org_id = $1 AND lower(u.email) = 'testuser@example.com'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        membership_count, 1,
+        "re-sign-in must not duplicate membership"
     );
 }
 
@@ -1064,8 +1116,8 @@ async fn callback_admits_by_domain_when_invite_not_required() {
         "domain-matching email should be admitted without an invite"
     );
 
-    // Membership created with the default `member` role (no invite = no
-    // role override). No invite row was created or consumed.
+    // Membership created with the default `member` role (domain admission
+    // never confers admin). The provisioned identity is a plain member.
     let membership_role: String = sqlx::query_scalar(
         "SELECT role FROM user_org_memberships m
          JOIN users u ON u.id = m.user_id
@@ -1077,13 +1129,15 @@ async fn callback_admits_by_domain_when_invite_not_required() {
     .unwrap();
     assert_eq!(membership_role, "member");
 
-    let invite_count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM org_invites WHERE org_id = $1")
-            .bind(org_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(invite_count, 0, "domain admission must not touch invites");
+    let is_admin: bool = sqlx::query_scalar(
+        "SELECT is_org_admin FROM identities
+         WHERE org_id = $1 AND kind = 'user' AND email = 'testuser@example.com'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!is_admin, "domain admission must not confer admin");
 }
 
 #[tokio::test]
