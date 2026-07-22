@@ -1198,6 +1198,76 @@ async fn test_approvals_filter_by_identity_cross_org_rejected() {
     assert_eq!(res.status(), 404);
 }
 
+/// The rule list is the agent detail panel's permission table, which leads with
+/// prose rather than the raw key. The description has to arrive with the rules —
+/// the panel refetches this list on a 10s poll, so a second describe round trip
+/// per rule would be pure overhead.
+#[tokio::test]
+async fn test_permissions_list_carries_human_readable_descriptions() {
+    let pool = common::test_pool().await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
+    let base = format!("http://{base}");
+
+    let key = bootstrap_admin(&client, &base, "perm-descriptions").await;
+    let owner = create_identity_helper(
+        &client,
+        &base,
+        &key,
+        json!({"name": "describer-owner", "kind": "user"}),
+    )
+    .await;
+    let agent = create_identity_helper(
+        &client,
+        &base,
+        &key,
+        json!({"name": "describer", "kind": "agent", "parent_id": owner["id"]}),
+    )
+    .await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let cases = [
+        ("github:*:*", "Any Github action"),
+        (
+            "email:send:recipient=*@acme.com",
+            "Send on any recipient at acme.com",
+        ),
+        (
+            "http:POST:api.stripe.com/v1/**",
+            "POST to anything under api.stripe.com/v1",
+        ),
+    ];
+
+    for (pattern, expected) in cases {
+        let res = client
+            .post(format!("{base}/v1/permissions"))
+            .header("Authorization", format!("Bearer {key}"))
+            .json(&json!({"identity_id": agent_id, "action_pattern": pattern}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "creating {pattern}");
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(body["description"], expected, "on create of {pattern}");
+    }
+
+    let res = client
+        .get(format!("{base}/v1/permissions?identity_id={agent_id}"))
+        .header("Authorization", format!("Bearer {key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let rules: Vec<serde_json::Value> = res.json().await.unwrap();
+
+    for (pattern, expected) in cases {
+        let rule = rules
+            .iter()
+            .find(|r| r["action_pattern"] == pattern)
+            .unwrap_or_else(|| panic!("rule {pattern} missing from the list"));
+        assert_eq!(rule["description"], expected, "on list of {pattern}");
+    }
+}
+
 #[tokio::test]
 async fn test_permissions_filter_by_identity_cross_org_rejected() {
     let pool = common::test_pool().await;
