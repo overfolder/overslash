@@ -717,16 +717,34 @@ async fn impersonation_rejects_too_deep_agent_path() {
     assert_eq!(resp.status().as_u16(), 400, "over-deep path must 400");
 }
 
-/// Regression: revoking a pending invite whose user had an agent chain
-/// provisioned beneath them (via name-based impersonation) must NOT
-/// cascade-delete that subtree. `identities.parent_id` is ON DELETE CASCADE,
-/// so a raw delete would silently wipe `henry`; the endpoint must 409.
+/// Regression: revoking a pending invite whose user has an agent chain
+/// beneath them must NOT cascade-delete that subtree. `identities.parent_id`
+/// is ON DELETE CASCADE, so a raw delete would silently wipe `henry`; the
+/// endpoint must 409.
+///
+/// Models the real shape: an admin invites alice, then a backend impersonates
+/// `alice@…/henry`, which *reuses* her existing invite identity and creates
+/// the agent under it. She stays a genuine invite (created via the invite
+/// endpoint), so she is still revocable — and that revoke must be refused.
 #[tokio::test]
 async fn revoking_pending_invite_with_provisioned_agents_is_refused() {
     let (base, client, pool, org_id, admin_key, sa_id, _, _) = setup().await;
     let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
 
-    // Provision alice + an agent henry beneath her.
+    // Admin invites alice — a genuine pending invite.
+    let invite: Value = client
+        .post(format!("{base}/v1/org-invites"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "email": "cascade-alice@example.com", "role": "member" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let alice_id: Uuid = invite["id"].as_str().unwrap().parse().unwrap();
+
+    // A backend then provisions an agent beneath her, reusing her identity.
     client
         .get(format!("{base}/v1/whoami"))
         .header("Authorization", format!("Bearer {imp_key}"))
@@ -734,14 +752,6 @@ async fn revoking_pending_invite_with_provisioned_agents_is_refused() {
         .send()
         .await
         .unwrap();
-
-    let alice_id: Uuid = sqlx::query_scalar(
-        "SELECT id FROM identities WHERE org_id = $1 AND kind = 'user' AND email = 'cascade-alice@example.com'",
-    )
-    .bind(org_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
 
     // Revoke via the invite endpoint — must be refused, henry must survive.
     let resp = client
@@ -808,4 +818,58 @@ async fn impersonation_provisioned_user_is_not_listed_as_an_invite() {
             .any(|i| i["email"] == "not-an-invite@example.com"),
         "impersonation-provisioned pending user must not appear as an invite: {invites:?}"
     );
+}
+
+/// All three invite endpoints agree on what an "invite" is: an
+/// impersonation-provisioned pending user is invisible to list/get and is
+/// NOT revocable through the invites surface either (it is a Members-page
+/// concern). Deleting it there is a no-op, and the identity survives.
+#[tokio::test]
+async fn impersonation_provisioned_user_is_not_revocable_as_an_invite() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+
+    client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", "solo-provisioned@example.com")
+        .send()
+        .await
+        .unwrap();
+
+    let uid: Uuid = sqlx::query_scalar(
+        "SELECT id FROM identities WHERE org_id = $1 AND kind = 'user' AND email = 'solo-provisioned@example.com'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // GET must 404 — it is not an invite.
+    let get_resp = client
+        .get(format!("{base}/v1/org-invites/{uid}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status().as_u16(), 404, "not an invite => 404");
+
+    // DELETE is a no-op and must not remove the identity.
+    let del: Value = client
+        .delete(format!("{base}/v1/org-invites/{uid}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(del["deleted"], false, "must not be revocable as an invite");
+
+    let still_there: i64 = sqlx::query_scalar("SELECT count(*) FROM identities WHERE id = $1")
+        .bind(uid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(still_there, 1, "identity must survive the no-op delete");
 }

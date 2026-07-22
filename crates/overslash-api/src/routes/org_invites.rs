@@ -280,18 +280,20 @@ async fn delete_invite(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     // Read first so the audit row carries the email/role even if another
-    // request races us. Only a *pending* identity (never signed in) is
-    // revocable here — once adopted, removing the member is a Members-page
-    // action, so an accepted identity returns `deleted: false`.
-    let existing = scope.get_identity(id).await?.filter(|r| r.kind == "user");
+    // request races us. Gated on the same `is_pending_invite` predicate as
+    // list/get, so the three endpoints agree on what an "invite" is: an
+    // accepted member (Members-page concern) and an impersonation-provisioned
+    // user (never an invitation to begin with) both return `deleted: false`
+    // rather than being revocable through this surface.
+    let existing = scope.get_identity(id).await?.filter(is_pending_invite);
 
-    // Use the leaf-safe delete, not a raw `DELETE`: a pending member who was
-    // pre-created by name-based impersonation can already own an agent
-    // subtree (`alice@acme.com/henry/...`), and `identities.parent_id` is
-    // `ON DELETE CASCADE` — a bare delete would silently wipe those agents.
-    // Refuse with 409 instead so the admin deals with the subtree first.
+    // Use the leaf-safe delete, not a raw `DELETE`: a pending member can
+    // already own an agent subtree (`alice@acme.com/henry/...`), and
+    // `identities.parent_id` is `ON DELETE CASCADE` — a bare delete would
+    // silently wipe those agents. Refuse with 409 instead so the admin deals
+    // with the subtree first.
     let deleted = match &existing {
-        Some(row) if row.external_id.is_none() => match scope.delete_identity_leaf(id).await? {
+        Some(_) => match scope.delete_identity_leaf(id).await? {
             overslash_db::repos::identity::DeleteLeafOutcome::Deleted => true,
             overslash_db::repos::identity::DeleteLeafOutcome::NotFound => false,
             overslash_db::repos::identity::DeleteLeafOutcome::HasChildren => {
@@ -300,7 +302,7 @@ async fn delete_invite(
                     ));
             }
         },
-        _ => false,
+        None => false,
     };
 
     if deleted {
