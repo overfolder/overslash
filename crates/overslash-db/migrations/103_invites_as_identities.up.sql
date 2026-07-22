@@ -79,6 +79,11 @@ ON CONFLICT DO NOTHING;
 
 -- 4. Admin invites → real org admin: Admins-group membership + the
 --    `is_org_admin` fast-path flag, matching `set_is_org_admin`.
+-- `archived_at IS NULL` matters here as much as in the INSERTs above: an
+-- archived identity sharing the invited email must NOT be silently flagged
+-- admin, or restoring it later would resurrect it with org-admin authority
+-- nobody granted. (Step 1 deliberately treats an archived row as absent and
+-- creates a fresh identity, so both can match this email.)
 UPDATE identities d
 SET is_org_admin = true
 FROM org_invites i
@@ -87,7 +92,8 @@ WHERE i.org_id = d.org_id
   AND i.accepted_at IS NULL
   AND i.role = 'admin'
   AND d.kind = 'user'
-  AND d.external_id IS NULL;
+  AND d.external_id IS NULL
+  AND d.archived_at IS NULL;
 
 INSERT INTO identity_groups (identity_id, group_id)
 SELECT d.id, g.id
