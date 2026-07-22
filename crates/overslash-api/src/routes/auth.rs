@@ -2619,6 +2619,40 @@ async fn provision_org_subdomain(
                 dashboard_url,
             )
             .await;
+
+            // Record the adoption. This is the moment a pre-created identity
+            // becomes a human-usable login, so it is the security-relevant
+            // event an admin wants to see — especially when the identity was
+            // provisioned as a side effect of name-based impersonation rather
+            // than an explicit invite. (Provisioning via an admin-minted
+            // `impersonate` key IS an admission decision, so this is not a
+            // `require_invite_admission` bypass; it is made auditable so the
+            // org can tell the two admission paths apart after the fact.)
+            let provisioned_by = existing
+                .metadata
+                .get("provisioned_by")
+                .and_then(|v| v.as_str())
+                .unwrap_or("invite");
+            let _ = scope
+                .log_audit(AuditEntry {
+                    org_id: target_org.id,
+                    identity_id: Some(existing.id),
+                    action: "identity.adopted",
+                    resource_type: Some("identity"),
+                    resource_id: Some(existing.id),
+                    detail: serde_json::json!({
+                        "email": &userinfo.email,
+                        "provider": &userinfo.provider_key,
+                        "provisioned_by": provisioned_by,
+                        "role": if existing.is_org_admin { membership::ROLE_ADMIN } else { membership::ROLE_MEMBER },
+                    }),
+                    description: Some(&format!(
+                        "{} signed in for the first time and adopted their pre-created identity ({provisioned_by})",
+                        &userinfo.email
+                    )),
+                    ip_address: None,
+                })
+                .await;
         }
 
         return Ok((target_org.id, existing.id, user_id, userinfo.email.clone()));

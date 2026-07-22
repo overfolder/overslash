@@ -18,6 +18,7 @@ const EVENT_VALUES = [
 	'connection.changed',
 	'identity.created',
 	'identity.provisioned',
+	'identity.adopted',
 	'identity.deleted',
 	'permission.changed',
 	'org.creator_admin_added',

@@ -173,6 +173,26 @@ async fn impersonation_provisioned_member_is_adopted_at_first_signin() {
         Some(pre_user_id),
         "henry still owned by the same user"
     );
+
+    // The adoption is audited, and records that this identity came from
+    // impersonation rather than an explicit invite — the admission path is
+    // legitimate (the `impersonate` scope is admin-minted) but must be
+    // distinguishable after the fact.
+    let (adopted_count, provisioned_by): (i64, Option<String>) = sqlx::query_as(
+        "SELECT count(*), max(detail->>'provisioned_by') FROM audit_log
+         WHERE org_id = $1 AND action = 'identity.adopted' AND resource_id = $2",
+    )
+    .bind(org_id)
+    .bind(pre_user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(adopted_count, 1, "first sign-in must log identity.adopted");
+    assert_eq!(
+        provisioned_by.as_deref(),
+        Some("impersonation"),
+        "audit must record the identity was impersonation-provisioned"
+    );
 }
 
 /// Invite-required admission is now "a user identity with this email exists":

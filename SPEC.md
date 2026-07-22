@@ -259,6 +259,8 @@ A person "belongs to an org" iff there is a `kind='user'` identity for them in t
 - **First sign-in adopts by email**: the OAuth callback finds the pre-created identity by verified email and stamps the IdP subject onto it, rather than forking a second identity — so the person lands on their pre-created agents, connections, and audit history. `orgs.require_invite_admission` keeps its meaning: with it on, a verified email with no pre-created identity is rejected `not_invited`.
 - A second IdP for the same email re-points the same identity's `external_id`; one human = one identity per org.
 
+**Impersonation-provisioning is an admission decision.** A pre-created identity satisfies `require_invite_admission` regardless of which admin-authorized path created it — an explicit invite or name-based impersonation. This is not a bypass: the `impersonate` scope is admin-minted, and the provisioned row is *already* a full member (Everyone + Myself groups) the moment it is created, before any login. Refusing to adopt it at sign-in would not unmake the member; it would only stop the real human from ever logging into an account that is already theirs. Because adoption is the moment a pre-created identity becomes a human-usable login, it emits an `identity.adopted` audit row carrying `provisioned_by` (`invite` vs `impersonation`), so an org can tell the two admission paths apart after the fact.
+
 (The former `org_invites` table was folded into `identities` by migration 103; the `/v1/org-invites` API keeps its wire shape as a projection over user identities.)
 
 ---
