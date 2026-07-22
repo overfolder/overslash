@@ -2567,16 +2567,25 @@ async fn provision_org_subdomain(
             },
         };
 
-        // Point the identity at this IdP subject and refresh its profile.
-        // `(org_id, external_id)` is unique, and we only reach here after the
-        // subject lookup missed, so this can't collide with another identity.
-        overslash_db::repos::identity::set_external_id(
-            state.db(ext),
-            target_org.id,
-            existing.id,
-            &userinfo.external_id,
-        )
-        .await?;
+        // Link the identity to this IdP subject — but ONLY the first time.
+        // `external_id` records the subject that originally claimed this
+        // identity; it must not flip-flop as a member alternates between
+        // IdPs. Rewriting it on every alternate-IdP login would make the
+        // `(org_id, external_id)` fast-path miss half the time and, worse,
+        // make `connect_gate`'s cross-org subject match depend on whichever
+        // IdP happened to be used last. A second IdP is still admitted — by
+        // email, right here — it just doesn't rewrite the column.
+        // `(org_id, external_id)` is unique, and we only reach this branch
+        // after the subject lookup missed, so the first write can't collide.
+        if existing.external_id.is_none() {
+            overslash_db::repos::identity::set_external_id(
+                state.db(ext),
+                target_org.id,
+                existing.id,
+                &userinfo.external_id,
+            )
+            .await?;
+        }
         let _ = scope
             .update_identity_profile(existing.id, display_name, metadata)
             .await;

@@ -745,8 +745,10 @@ async fn existing_admin_keeps_admin_via_second_idp() {
         "second IdP must adopt, not fork a new identity"
     );
 
-    // The adopted identity keeps `is_org_admin = true` and had its
-    // `external_id` re-pointed away from the seeded 'prior-subject'.
+    // The adopted identity keeps `is_org_admin = true`, and its `external_id`
+    // is NOT rewritten: the second IdP is admitted by email, but the column
+    // stays pinned to the subject that originally claimed the identity so it
+    // can't flip-flop between providers on alternating logins.
     let (is_admin, external_id): (bool, Option<String>) =
         sqlx::query_as("SELECT is_org_admin, external_id FROM identities WHERE id = $1")
             .bind(prior_identity_id)
@@ -754,10 +756,10 @@ async fn existing_admin_keeps_admin_via_second_idp() {
             .await
             .unwrap();
     assert!(is_admin, "adopted identity must keep is_org_admin = true");
-    assert_ne!(
+    assert_eq!(
         external_id.as_deref(),
         Some("prior-subject"),
-        "external_id should be re-pointed to the new IdP subject"
+        "external_id must stay pinned to the originally-linked IdP subject"
     );
 
     // Still in the Admins group so ACL extractors see admin powers.
