@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { getVersion, buildLabel, buildTitle } from '$lib/api/version';
+	import type { BuildInfo } from '$lib/types';
 
 	let { data } = $props();
 
@@ -95,6 +97,12 @@
 		return 'btn-oidc';
 	}
 
+	// Build identity of the API, stamped under the card. `/v1/version` is
+	// unauthenticated, so this works pre-sign-in — which is the point: a
+	// "sign-in is broken" report can name the build without getting in.
+	// A failure leaves the line unrendered.
+	let buildInfo = $state<BuildInfo | null>(null);
+
 	// Auto-redirect when the org has designated a single default IdP.
 	// Skip the picker entirely so MCP-driven OAuth bounces don't show an
 	// extra click. Users can always go back from the IdP to pick another.
@@ -103,6 +111,10 @@
 		// post-hydration template re-render attaches `preview_origin` to the
 		// rest of the providers' hrefs.
 		browserOrigin = window.location.origin;
+
+		getVersion()
+			.then((info) => (buildInfo = info))
+			.catch(() => {});
 
 		if (scope !== 'org') return;
 		const def = providers.find((p) => p.is_default);
@@ -241,14 +253,20 @@
 			</div>
 		{/if}
 	</div>
+
+	{#if buildInfo}
+		<p class="build" title={buildTitle(buildInfo)}>{buildLabel(buildInfo)}</p>
+	{/if}
 </div>
 
 <style>
 	.login-page {
 		min-height: 100vh;
 		display: flex;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
+		gap: 1rem;
 		background: var(--color-bg);
 		padding: 2rem;
 	}
@@ -460,5 +478,16 @@
 		font-family: var(--font-mono);
 		font-size: 0.8rem;
 		color: var(--color-primary);
+	}
+
+	/* Matches the sidebar's build stamp, minus the click-to-copy affordance —
+	   no reason to prompt for clipboard access before sign-in. */
+	.build {
+		margin: 0;
+		color: var(--color-text-muted);
+		font-size: 0.7rem;
+		font-variant-numeric: tabular-nums;
+		letter-spacing: 0.02em;
+		text-align: center;
 	}
 </style>

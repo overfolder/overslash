@@ -9,6 +9,7 @@
 	import CreateOrgModal from '$lib/components/CreateOrgModal.svelte';
 	import type { MembershipSummary } from '$lib/session';
 	import type { BuildInfo } from '$lib/types';
+	import { buildLabel, buildTitle, hasCommit } from '$lib/api/version';
 
 	let {
 		isAdmin = false,
@@ -55,28 +56,11 @@
 
 	let createOrgOpen = $state(false);
 
-	// Build stamp. A build with no discoverable commit reports `"unknown"`
-	// (see overslash-core's build.rs) — show the version alone rather than a
-	// line that reads like a real SHA.
-	const hasCommit = $derived(!!buildInfo && buildInfo.commit !== 'unknown');
-	const buildLabel = $derived(
-		!buildInfo
-			? ''
-			: collapsed
-				? hasCommit
-					? buildInfo.commit_short
-					: `v${buildInfo.version}`
-				: hasCommit
-					? `v${buildInfo.version} · ${buildInfo.commit_short}`
-					: `v${buildInfo.version}`
-	);
-	const buildTitle = $derived(
-		!buildInfo
-			? ''
-			: hasCommit
-				? `Overslash v${buildInfo.version}\ncommit ${buildInfo.commit}\n(click to copy)`
-				: `Overslash v${buildInfo.version}`
-	);
+	// Build stamp. The collapsed rail shows the version alone — the short SHA
+	// would win the 64px of space without being the thing anyone recognises —
+	// and both widths surface the full commit on hover.
+	const label = $derived(buildLabel(buildInfo, collapsed));
+	const title = $derived(buildTitle(buildInfo, true));
 
 	let buildCopied = $state(false);
 	let copyResetTimer: ReturnType<typeof setTimeout> | undefined;
@@ -84,7 +68,9 @@
 	async function copyBuild() {
 		if (!buildInfo || !navigator.clipboard) return;
 		try {
-			await navigator.clipboard.writeText(hasCommit ? buildInfo.commit : buildInfo.version);
+			await navigator.clipboard.writeText(
+				hasCommit(buildInfo) ? buildInfo.commit : buildInfo.version
+			);
 			buildCopied = true;
 			clearTimeout(copyResetTimer);
 			copyResetTimer = setTimeout(() => (buildCopied = false), 1500);
@@ -173,8 +159,8 @@
 			</button>
 		{/if}
 		{#if buildInfo}
-			<button class="build" type="button" title={buildTitle} onclick={copyBuild}>
-				{buildCopied ? 'Copied' : buildLabel}
+			<button class="build" type="button" {title} onclick={copyBuild}>
+				{buildCopied ? 'Copied' : label}
 			</button>
 		{/if}
 	</div>

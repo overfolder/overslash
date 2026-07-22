@@ -25,6 +25,7 @@ This login form has:
 + Login in with Google, Github using horizontal buttons with button and text(these buttons can be disabled or not present if the corresponding IDP is not configured)
 + Login in with ......, same, for custom corporate IDP, Okta, ...
 + On dev(and if enabled via envvar) a "Dev Login" is a different orangish color and with a developer/console icon. This is a debug login
++ A **build stamp** below the card: `v<version> · <short sha>` in muted 11px text, read from the unauthenticated `GET /v1/version`. Hovering shows the full SHA. No click-to-copy here — the pre-auth page shouldn't trigger a clipboard permission prompt. Absent until the request resolves, and if it fails.
 
 UNauth users go here, and on auth, they go back to the page they were trying to access previously, or /agents if no such page or a loop would form
 
@@ -325,7 +326,7 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - Nav items show icons only (18px, centered), no labels. Active item still has primary-50 rounded background. Tooltip on hover shows the label.
 - "ADMIN" label hidden. Admin nav items still show as icon-only.
 - Org switcher collapses to the first letter of the current org's slug in a single cell; clicking still opens the dropdown (which anchors to the right of the sidebar so it's readable).
-- Build stamp drops the version and shows the short SHA alone.
+- Build stamp drops the short SHA and shows the version alone — the SHA stays available in the hover tooltip, and clicking still copies it.
 - Expand button (chevron ») to restore.
 
 **Top bar**: 56px tall, white background, neutral-200 bottom border. Page title on left (semi-bold 16px). On the right, in order: notification bell + badge, theme toggle, **user badge** — the user's avatar (32px circle) + name, with the `⚡ Instance` chip appended when the viewer is an instance admin. Clicking the user badge opens the User Profile view.
