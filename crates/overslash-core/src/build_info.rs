@@ -4,20 +4,24 @@
 //! MCP `serverInfo`, `/health` and `GET /v1/version` can never disagree about
 //! what is running.
 //!
-//! Both values are baked at compile time:
+//! Both values are baked at compile time by this crate's `build.rs`:
 //!
-//! - **version** — `OVERSLASH_VERSION` if the release workflow set it (see
-//!   `.github/workflows/release.yml`), else this crate's `CARGO_PKG_VERSION`.
-//! - **commit** — `OVERSLASH_GIT_SHA`, normally emitted by this crate's
-//!   `build.rs`, else read straight from the environment, else [`UNKNOWN_COMMIT`].
+//! - **version** — the release tag when `.github/workflows/release.yml` set
+//!   `OVERSLASH_VERSION`, else the `.release-please-manifest.json` version with
+//!   a `-dev` suffix (`0.5.0-dev`), else this crate's `CARGO_PKG_VERSION`.
+//!   That last fallback is `0.1.0` and always will be: crate versions are
+//!   deliberately never bumped (D19), which is exactly why `build.rs` reads the
+//!   release manifest.
+//! - **commit** — `OVERSLASH_GIT_SHA`, normally emitted by `build.rs`, else
+//!   read straight from the environment, else [`UNKNOWN_COMMIT`].
 //!
-//! The commit is read with `option_env!` rather than `env!` on purpose: not
-//! every build context has the build script. `docker/docker-compose.dev.yml`
+//! Both are read with `option_env!` rather than `env!` on purpose: not every
+//! build context has the build script. `docker/docker-compose.dev.yml`
 //! bind-mounts each crate's `src/` (plus a short allow-list of compile-time
 //! assets) into the dev container, so `build.rs` — which sits at the crate
-//! root — is not there. An `env!` would turn that into a compile error, which
-//! is a wildly disproportionate outcome for a cosmetic version stamp; those
-//! builds simply report `unknown`, the same as a checkout with no git.
+//! root — is not there, and that container reports `0.1.0` / `unknown`. An
+//! `env!` would turn that into a compile error, which is a wildly
+//! disproportionate outcome for a cosmetic version stamp.
 
 /// Length of the abbreviated commit shown in UIs. Seven is git's own default
 /// for `--short` and stays unambiguous well past this repo's size.

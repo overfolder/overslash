@@ -1,7 +1,7 @@
-//! Bakes the git commit of the source tree into the binary as
-//! `OVERSLASH_GIT_SHA`, read back by `build_info::build_info()`.
+//! Bakes the identity of the build into the binary as `OVERSLASH_GIT_SHA` and
+//! `OVERSLASH_VERSION`, read back by `build_info::build_info()`.
 //!
-//! Two supply routes, in priority order:
+//! The commit has two supply routes, in priority order:
 //!
 //! 1. An `OVERSLASH_GIT_SHA` env var. This is how CI and the container build
 //!    inject it — `crates/overslash-api/Dockerfile` turns a `--build-arg` into
@@ -9,18 +9,43 @@
 //! 2. `git rev-parse HEAD`, so a plain `cargo build` on a developer machine
 //!    still reports something truthful.
 //!
-//! Falling back to `unknown` is always acceptable: an unidentifiable build is
-//! a cosmetic loss, a failed build is not.
+//! The version has two as well:
+//!
+//! 1. An `OVERSLASH_VERSION` env var — the release tag, set by
+//!    `.github/workflows/release.yml`. Re-emitted verbatim.
+//! 2. `.release-please-manifest.json` at the workspace root, suffixed `-dev`
+//!    (e.g. `0.5.0-dev`). Crate versions stay frozen at `0.1.0` on purpose
+//!    (D19: bumping them would churn `Cargo.lock` and break the `--locked`
+//!    release build), so without this every non-release build — local, dev
+//!    Cloud Run — would report `0.1.0` and say nothing about which release
+//!    line it came from.
+//!
+//! Falling back to `unknown` / `CARGO_PKG_VERSION` is always acceptable: an
+//! unidentifiable build is a cosmetic loss, a failed build is not.
 
 use std::process::Command;
 
 const UNKNOWN: &str = "unknown";
 
+/// Workspace-root manifest release-please rewrites on every release, relative
+/// to this crate.
+const RELEASE_MANIFEST: &str = "../../.release-please-manifest.json";
+
 fn main() {
     println!("cargo::rerun-if-env-changed=OVERSLASH_GIT_SHA");
+    println!("cargo::rerun-if-env-changed=OVERSLASH_VERSION");
     emit_git_rerun_paths();
+    // Not every build context ships the manifest (the dev container copies an
+    // allow-list of files), and naming a path that is not there makes cargo
+    // treat this script as permanently dirty.
+    emit_if_exists(RELEASE_MANIFEST);
 
     println!("cargo::rustc-env=OVERSLASH_GIT_SHA={}", resolve_sha());
+    // Emitting nothing leaves `option_env!("OVERSLASH_VERSION")` as `None`, so
+    // `build_info()` falls back to `CARGO_PKG_VERSION`.
+    if let Some(version) = resolve_version() {
+        println!("cargo::rustc-env=OVERSLASH_VERSION={version}");
+    }
 }
 
 /// Tell cargo which files invalidate the baked SHA.
@@ -75,6 +100,34 @@ fn resolve_sha() -> String {
     }
 
     git(&["rev-parse", "HEAD"]).unwrap_or_else(|| UNKNOWN.to_string())
+}
+
+/// Release version to bake in, or `None` to leave the crate version in place.
+fn resolve_version() -> Option<String> {
+    if let Ok(version) = std::env::var("OVERSLASH_VERSION") {
+        let version = version.trim();
+        if !version.is_empty() {
+            return Some(version.to_string());
+        }
+    }
+
+    let manifest = std::fs::read_to_string(RELEASE_MANIFEST).ok()?;
+    Some(format!("{}-dev", manifest_version(&manifest)?))
+}
+
+/// Pull the root package's version out of a release-please manifest.
+///
+/// The file is machine-written with a fixed shape — `{ ".": "0.5.0" }`, one
+/// key because `release-please-config.json` declares a single root package —
+/// so a quoted-string scan beats a `serde_json` build-dependency here. Every
+/// failure path lands on the `CARGO_PKG_VERSION` fallback, so a shape we do
+/// not recognise costs a cosmetic stamp, not a build.
+fn manifest_version(manifest: &str) -> Option<&str> {
+    let after_key = manifest.split_once("\".\"")?.1;
+    let after_colon = after_key.split_once(':')?.1;
+    let value = after_colon.split_once('"')?.1;
+    let (version, _) = value.split_once('"')?;
+    (!version.is_empty()).then_some(version)
 }
 
 /// Run a git command, returning its trimmed stdout. `None` for any failure —
