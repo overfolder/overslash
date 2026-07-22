@@ -774,3 +774,38 @@ async fn revoking_pending_invite_with_provisioned_agents_is_refused() {
     .unwrap();
     assert_eq!(henry_still_there, 1, "henry must survive a refused revoke");
 }
+
+/// An impersonation-provisioned pending user is a member managed on the
+/// Members page, NOT a deliberate invitation — it must not surface in the
+/// `/v1/org-invites` list (else a white-label backend floods it).
+#[tokio::test]
+async fn impersonation_provisioned_user_is_not_listed_as_an_invite() {
+    let (base, client, _pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+
+    // Provision a pending user via impersonation.
+    client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", "not-an-invite@example.com")
+        .send()
+        .await
+        .unwrap();
+
+    // The invites list must be empty — she was never explicitly invited.
+    let invites: Vec<Value> = client
+        .get(format!("{base}/v1/org-invites"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !invites
+            .iter()
+            .any(|i| i["email"] == "not-an-invite@example.com"),
+        "impersonation-provisioned pending user must not appear as an invite: {invites:?}"
+    );
+}

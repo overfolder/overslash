@@ -222,28 +222,36 @@ async fn resolve_inviter_display_name(
         .or_else(|| user_row.email.filter(|s| !s.trim().is_empty()))
 }
 
-/// Pending + accepted pre-created members expose PII (emails) and the org's
-/// role grants — admin-only, same as create/delete.
+/// Is this identity a genuine *invite* — a pending (`external_id IS NULL`)
+/// user with an email, that was NOT merely a side effect of name-based
+/// impersonation? An impersonation-provisioned pending user is a real member
+/// and is managed on the Members page (which badges it "pending"); it should
+/// not masquerade as an invitation an admin deliberately sent, or a
+/// heavily-impersonated org (e.g. a white-label backend) would see its
+/// invites list flooded with users it never explicitly invited.
+fn is_pending_invite(r: &IdentityRow) -> bool {
+    r.kind == "user"
+        && r.archived_at.is_none()
+        && r.email.is_some()
+        && r.external_id.is_none()
+        && r.metadata.get("provisioned_by").and_then(|v| v.as_str()) != Some("impersonation")
+}
+
+/// Pending invites expose PII (emails) and the org's role grants — admin-only,
+/// same as create/delete.
 async fn list_invites(
     AdminAcl(_acl): AdminAcl,
     scope: OrgScope,
 ) -> Result<Json<Vec<InviteResponse>>> {
-    // Pending members only — a `user` identity that carries an email but has
-    // never signed in (`external_id IS NULL`). An *accepted* invite is now
+    // Genuine pending invitations only. An *accepted* invite is now
     // indistinguishable from any other member (both have an email AND an IdP
-    // subject), so returning them here would list the entire org — including
-    // every SSO-provisioned member, which all carry an email. Accepted
-    // members belong on the Members page; this endpoint stays "who is invited
-    // but hasn't joined yet".
+    // subject), and an impersonation-provisioned pending user is a member the
+    // admin never explicitly invited — both belong on the Members page, not
+    // here. This endpoint stays "who did we invite that hasn't joined yet".
     let rows = scope.list_identities().await?;
     let out: Vec<InviteResponse> = rows
         .into_iter()
-        .filter(|r| {
-            r.kind == "user"
-                && r.archived_at.is_none()
-                && r.email.is_some()
-                && r.external_id.is_none()
-        })
+        .filter(is_pending_invite)
         .map(InviteResponse::from)
         .collect();
     Ok(Json(out))
@@ -254,10 +262,13 @@ async fn get_invite(
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<InviteResponse>> {
+    // Consistent with `list_invites`: only a genuine pending invite is an
+    // "invite" here. Accepted members and impersonation-provisioned pending
+    // users are addressable via `/v1/identities/{id}`, not this endpoint.
     let row = scope
         .get_identity(id)
         .await?
-        .filter(|r| r.kind == "user")
+        .filter(is_pending_invite)
         .ok_or_else(|| AppError::NotFound("invite not found".into()))?;
     Ok(Json(row.into()))
 }
