@@ -126,8 +126,8 @@ try {
 				viewport: { width: 1280, height: 800 },
 				waitFor: async (pg) => {
 					await pg.getByRole('button', { name: /^Deny$/ }).waitFor({ timeout: 15_000 });
-					await pg.getByRole('button', { name: /Remember as/ }).click();
-					await pg.getByRole('listbox', { name: /permission rule/i }).waitFor({ timeout: 5_000 });
+					await pg.getByRole('button', { name: /Scope to remember/ }).click();
+					await pg.getByRole('listbox', { name: /Scope to remember/i }).waitFor({ timeout: 5_000 });
 					// let the 120ms pop-in settle so the shot isn't a half-faded frame
 					await pg.waitForTimeout(300);
 				}

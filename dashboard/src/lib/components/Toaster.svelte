@@ -69,6 +69,12 @@
 	.toast.error .dot {
 		background: var(--color-danger);
 	}
+	.toast.info {
+		border-color: var(--color-primary-bg);
+	}
+	.toast.info .dot {
+		background: var(--color-primary);
+	}
 	@keyframes toastIn {
 		from {
 			opacity: 0;

@@ -13,7 +13,12 @@ export interface Toast {
 	message: string;
 }
 
-const DEFAULT_TTL_MS = 3600;
+// A resolution's toast is the *only* confirmation the operator gets — the row
+// it describes is already gone — and the messages run long ("Allowed &
+// remembered — <key> · also resolved 3 related requests"). 5s is the usual
+// accessibility floor for a message that must be read rather than glanced at;
+// clicking dismisses sooner.
+const DEFAULT_TTL_MS = 5000;
 
 let nextId = 0;
 const items = $state<Toast[]>([]);

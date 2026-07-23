@@ -1,26 +1,28 @@
 <script lang="ts">
-	// The "Remember as" control that lives *in* the action bar.
+	// The scope control that lives *in* the action bar.
 	//
 	// Picking a granularity here IS what "Allow & Remember" writes — the scope
 	// ladder and the action bar's old read-only summary are now one thing, so the
 	// operator never has to scroll to a side panel to change what gets stored.
+	//
+	// Each option is exactly what it grants: the human description, then the
+	// key(s) underneath. No radios, no repeated risk badge (every tier of one
+	// approval carries the same risk) — the selected option is marked the same
+	// way ExpiryControl marks its own.
 
 	import type { SuggestedTier } from '$lib/session';
 	import { splitKeys } from '$lib/approvals/format';
-	import RiskBadge from './RiskBadge.svelte';
 
 	let {
 		tiers,
 		selectedTier = $bindable(),
 		useCustomKey = $bindable(),
-		customKey = $bindable(),
-		risk
+		customKey = $bindable()
 	}: {
 		tiers: SuggestedTier[];
 		selectedTier: number;
 		useCustomKey: boolean;
 		customKey: string;
-		risk: 'low' | 'med' | 'high';
 	} = $props();
 
 	let open = $state(false);
@@ -60,9 +62,9 @@
 		class="aq-remember-trig"
 		class:is-open={open}
 		aria-expanded={open}
+		aria-label="Scope to remember: {currentLabel}"
 		onclick={() => (open = !open)}
 	>
-		<span class="aq-remember-lead">Remember as</span>
 		<span class="aq-remember-cur">
 			<span class="txt">{currentLabel}</span>
 			<span class="caret">▾</span>
@@ -74,73 +76,61 @@
 	</button>
 
 	{#if open}
-		<div class="aq-remember-pop" role="listbox" aria-label="Remember as a permission rule">
-			<div class="aq-remember-pop-head">Remember as a permission rule</div>
-			<div class="aq-scope">
-				{#each tiers as tier, i}
-					{@const split = splitKeys(tier.keys)}
-					<button
-						type="button"
-						role="option"
-						aria-selected={!useCustomKey && selectedTier === i}
-						class="aq-scope-opt"
-						class:is-sel={!useCustomKey && selectedTier === i}
-						onclick={() => {
-							selectedTier = i;
-							useCustomKey = false;
-							open = false;
-						}}
-					>
-						<span class="aq-scope-radio"></span>
-						<div class="aq-scope-main">
-							<div class="aq-scope-label">
-								<span class="txt">{tier.description}</span>
-								<RiskBadge {risk} />
-							</div>
-							<div class="aq-scope-keys">
-								{#each split.shown as k}<code class="aq-scope-key">{k}</code>{/each}
-								{#if split.hidden > 0}<span class="more">and {split.hidden} more</span>{/if}
-							</div>
-						</div>
-					</button>
-				{/each}
-
-				<div
-					class="aq-scope-opt"
-					class:is-sel={useCustomKey}
+		<div class="aq-remember-pop" role="listbox" aria-label="Scope to remember">
+			{#each tiers as tier, i}
+				{@const split = splitKeys(tier.keys)}
+				<button
+					type="button"
 					role="option"
-					aria-selected={useCustomKey}
-					tabindex="0"
-					onclick={() => (useCustomKey = true)}
-					onkeydown={(e) => {
-						// Only the option itself activates on Enter/Space — permission
-						// keys legitimately contain spaces (`gmail:send:subject=Hi there`),
-						// so keystrokes inside the field must reach the input untouched.
-						if (e.target !== e.currentTarget) return;
-						if (e.key === 'Enter' || e.key === ' ') {
-							e.preventDefault();
-							useCustomKey = true;
-						}
+					aria-selected={!useCustomKey && selectedTier === i}
+					class="aq-scope-opt"
+					class:is-sel={!useCustomKey && selectedTier === i}
+					onclick={() => {
+						selectedTier = i;
+						useCustomKey = false;
+						open = false;
 					}}
 				>
-					<span class="aq-scope-radio"></span>
-					<div class="aq-scope-main">
-						<div class="aq-scope-label"><span class="txt">Custom… (advanced)</span></div>
-						{#if useCustomKey}
-							<!-- svelte-ignore a11y_autofocus -->
-							<input
-								class="aq-remember-input"
-								placeholder="service:action:arg"
-								spellcheck="false"
-								autofocus
-								bind:value={customKey}
-								onclick={(e) => e.stopPropagation()}
-							/>
-						{:else}
-							<div class="aq-scope-desc">Type a permission key by hand</div>
-						{/if}
-					</div>
-				</div>
+					<span class="aq-scope-label">{tier.description}</span>
+					<span class="aq-scope-keys">
+						{#each split.shown as k}<code>{k}</code>{/each}
+						{#if split.hidden > 0}<span class="more">and {split.hidden} more</span>{/if}
+					</span>
+				</button>
+			{/each}
+
+			<div
+				class="aq-scope-opt"
+				class:is-sel={useCustomKey}
+				role="option"
+				aria-selected={useCustomKey}
+				tabindex="0"
+				onclick={() => (useCustomKey = true)}
+				onkeydown={(e) => {
+					// Only the option itself activates on Enter/Space — permission
+					// keys legitimately contain spaces (`gmail:send:subject=Hi there`),
+					// so keystrokes inside the field must reach the input untouched.
+					if (e.target !== e.currentTarget) return;
+					if (e.key === 'Enter' || e.key === ' ') {
+						e.preventDefault();
+						useCustomKey = true;
+					}
+				}}
+			>
+				<span class="aq-scope-label">Custom rule</span>
+				{#if useCustomKey}
+					<!-- svelte-ignore a11y_autofocus -->
+					<input
+						class="aq-remember-input"
+						placeholder="service:action:arg"
+						spellcheck="false"
+						autofocus
+						bind:value={customKey}
+						onclick={(e) => e.stopPropagation()}
+					/>
+				{:else}
+					<span class="aq-scope-keys"><span class="more">type a permission key by hand</span></span>
+				{/if}
 			</div>
 		</div>
 	{/if}
@@ -171,10 +161,6 @@
 	.aq-remember-trig:hover,
 	.aq-remember-trig.is-open {
 		background: var(--color-sidebar);
-	}
-	.aq-remember-lead {
-		font-size: 12px;
-		color: var(--color-text-secondary);
 	}
 	.aq-remember-cur {
 		display: flex;
@@ -224,7 +210,9 @@
 		border: 1px solid var(--color-border);
 		border-radius: 12px;
 		box-shadow: var(--shadow-lg);
-		padding: 12px;
+		padding: 5px;
+		display: flex;
+		flex-direction: column;
 		animation: aqPop 0.12s ease both;
 	}
 	@keyframes aqPop {
@@ -242,101 +230,50 @@
 			animation: none;
 		}
 	}
-	.aq-remember-pop-head {
-		font-size: 11px;
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
-		color: var(--color-text-muted);
-		margin: 2px 2px 10px;
-	}
 
-	.aq-scope {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-	}
+	/* One option = what it grants: description, then the key(s) it writes. */
 	.aq-scope-opt {
 		display: flex;
-		gap: 11px;
-		padding: 11px 12px;
-		border: 1px solid var(--color-border);
-		border-radius: 10px;
-		cursor: pointer;
-		transition:
-			border-color 0.1s,
-			background 0.1s;
-		align-items: flex-start;
+		flex-direction: column;
+		gap: 3px;
+		width: 100%;
+		padding: 9px 11px;
+		border: 0;
+		border-radius: 8px;
 		background: transparent;
 		text-align: left;
 		font: inherit;
 		color: var(--color-text);
-		width: 100%;
+		cursor: pointer;
 	}
 	.aq-scope-opt:hover {
 		background: var(--color-sidebar);
 	}
-	.aq-scope-opt.is-sel {
-		border-color: var(--color-primary);
-		background: var(--color-primary-bg);
+	.aq-scope-opt.is-sel .aq-scope-label {
+		color: var(--color-primary);
+		font-weight: 600;
 	}
-	.aq-scope-radio {
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		border: 1.5px solid var(--neutral-300);
-		flex: none;
-		margin-top: 1px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		transition: border-color 0.1s;
-	}
-	.aq-scope-opt.is-sel .aq-scope-radio {
-		border-color: var(--color-primary);
-	}
-	.aq-scope-opt.is-sel .aq-scope-radio::after {
-		content: '';
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--color-primary);
-	}
-	.aq-scope-main {
-		flex: 1;
-		min-width: 0;
+	.aq-scope-opt.is-sel .aq-scope-label::after {
+		content: '✓';
+		margin-left: 7px;
+		font-size: 12px;
 	}
 	.aq-scope-label {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 8px;
-	}
-	.aq-scope-label .txt {
 		font-size: 13px;
 		font-weight: 500;
 		color: var(--color-text);
-	}
-	.aq-scope-opt.is-sel .aq-scope-label .txt {
-		color: var(--color-primary);
 	}
 	.aq-scope-keys {
 		display: flex;
 		flex-direction: column;
 		gap: 1px;
-		margin-top: 3px;
+		min-width: 0;
 	}
-	.aq-scope-key {
+	.aq-scope-keys code {
 		font-family: var(--font-mono);
 		font-size: 11px;
 		color: var(--color-text-muted);
-		white-space: normal;
 		word-break: break-all;
-	}
-	.aq-scope-desc {
-		font-size: 12px;
-		color: var(--color-text-muted);
-		margin-top: 4px;
 	}
 	.more {
 		font-size: 11px;
@@ -344,7 +281,7 @@
 	}
 	.aq-remember-input {
 		width: 100%;
-		margin-top: 7px;
+		margin-top: 3px;
 		height: 30px;
 		border: 1px solid var(--color-border);
 		border-radius: 7px;

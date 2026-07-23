@@ -192,7 +192,6 @@
 			<div class="aq-actionbar">
 				<RememberControl
 					tiers={current.suggested_tiers}
-					risk={current.risk}
 					bind:selectedTier
 					bind:useCustomKey
 					bind:customKey
