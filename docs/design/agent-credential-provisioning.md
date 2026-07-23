@@ -169,6 +169,13 @@ Overfolder calls Overslash over REST with an org service key + `X-Overslash-As` 
 (`agent-runner/src/overslash/client.rs`), not over MCP. The **recommended** integration is the
 *delegated-backend* mode, because it keeps the credential inside the PAI's own trust boundary:
 
+> **`X-Overslash-As` is name-based** (SPEC §4). Overfolder no longer needs to pre-sync Overslash
+> UUIDs or maintain an `overslash_user_links` table to learn a target id: it names the user by
+> email (`X-Overslash-As: alice@acme.com`) and the user identity is provisioned on demand,
+> converging with the identity that user gets when they later sign in to Overslash directly. A
+> path of agent names (`alice@acme.com/henry/researcher`) provisions the agent chain the same
+> way. The `overslash_user_links` references below predate this and are the legacy shape.
+
 **Mode 1 — delegated collection (recommended).**
 
 1. agent-runner's `configure_external_service` connect receives `oauth_client_missing`

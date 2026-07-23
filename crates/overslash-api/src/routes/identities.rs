@@ -365,6 +365,15 @@ struct IdentityResponse {
     /// the resolver/agent must call `POST /v1/approvals/{id}/call`
     /// explicitly. Meaningless for `user`-kind rows.
     auto_call_on_approve: bool,
+    /// `true` for a `user` identity that was pre-created (invited or
+    /// impersonation-provisioned) but has never completed a sign-in
+    /// (`external_id IS NULL`). Drives the Members-page "pending" badge.
+    pending: bool,
+    /// How this identity came to exist, when it was auto-provisioned — e.g.
+    /// `"impersonation"`. Projected from `metadata.provisioned_by`; `None`
+    /// for identities created through the normal API/UI/SSO paths.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provisioned_by: Option<String>,
     created_at: String,
     last_active_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -385,6 +394,12 @@ impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
             .get("picture")
             .and_then(|v| v.as_str())
             .map(str::to_owned);
+        let provisioned_by = r
+            .metadata
+            .get("provisioned_by")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        let pending = r.kind == "user" && r.external_id.is_none();
         Self {
             id: r.id,
             org_id: r.org_id,
@@ -400,6 +415,8 @@ impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
             inherit_permissions: r.inherit_permissions,
             is_org_admin: r.is_org_admin,
             auto_call_on_approve: r.auto_call_on_approve,
+            pending,
+            provisioned_by,
             created_at: fmt_time(r.created_at),
             last_active_at: fmt_time(r.last_active_at),
             archived_at: r.archived_at.map(fmt_time),

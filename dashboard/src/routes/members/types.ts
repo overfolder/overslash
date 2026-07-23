@@ -13,6 +13,11 @@ export interface Identity {
 	owner_id: string | null;
 	inherit_permissions: boolean;
 	is_org_admin: boolean;
+	/** `true` for a pre-created `user` identity that has never signed in
+	 * (`external_id IS NULL`). Drives the "pending" badge. */
+	pending?: boolean;
+	/** How this identity was auto-provisioned, e.g. `"impersonation"`. */
+	provisioned_by?: string | null;
 	created_at: string;
 	last_active_at: string;
 	archived_at?: string;

@@ -493,24 +493,6 @@ CREATE TABLE public.org_idp_configs (
 
 
 --
--- Name: org_invites; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.org_invites (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    org_id uuid NOT NULL,
-    email text NOT NULL,
-    role text NOT NULL,
-    invited_by uuid,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    accepted_at timestamp with time zone,
-    accepted_by_user_id uuid,
-    CONSTRAINT org_invites_email_lower CHECK ((email = lower(email))),
-    CONSTRAINT org_invites_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'member'::text])))
-);
-
-
---
 -- Name: org_subscriptions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1094,13 +1076,6 @@ ALTER TABLE ONLY public.org_idp_configs
 ALTER TABLE ONLY public.org_idp_configs
     ADD CONSTRAINT org_idp_configs_pkey PRIMARY KEY (id);
 
-
---
--- Name: org_invites org_invites_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_invites
-    ADD CONSTRAINT org_invites_pkey PRIMARY KEY (id);
 
 
 --
@@ -1825,20 +1800,6 @@ CREATE UNIQUE INDEX org_idp_configs_one_default_per_org ON public.org_idp_config
 
 
 --
--- Name: org_invites_by_org_email; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX org_invites_by_org_email ON public.org_invites USING btree (org_id, email);
-
-
---
--- Name: org_invites_one_pending_per_email; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX org_invites_one_pending_per_email ON public.org_invites USING btree (org_id, email) WHERE (accepted_at IS NULL);
-
-
---
 -- Name: service_action_embeddings_global_unique; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2301,30 +2262,6 @@ ALTER TABLE ONLY public.org_idp_configs
 
 ALTER TABLE ONLY public.org_idp_configs
     ADD CONSTRAINT org_idp_configs_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
-
-
---
--- Name: org_invites org_invites_accepted_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_invites
-    ADD CONSTRAINT org_invites_accepted_by_user_id_fkey FOREIGN KEY (accepted_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
-
-
---
--- Name: org_invites org_invites_invited_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_invites
-    ADD CONSTRAINT org_invites_invited_by_fkey FOREIGN KEY (invited_by) REFERENCES public.identities(id) ON DELETE SET NULL;
-
-
---
--- Name: org_invites org_invites_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_invites
-    ADD CONSTRAINT org_invites_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
 
 
 --

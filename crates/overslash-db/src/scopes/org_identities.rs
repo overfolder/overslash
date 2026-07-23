@@ -84,6 +84,74 @@ impl OrgScope {
         identity::get_by_id(self.db(), self.org_id(), id).await
     }
 
+    /// Look up a live user identity by email in this org. Case-insensitive.
+    /// Backs both name-based impersonation and the adopt-by-email login
+    /// branch, which is what makes a pre-created identity and a first
+    /// sign-in converge on the same row.
+    pub async fn find_user_identity_by_email_in_org(
+        &self,
+        email: &str,
+    ) -> Result<Option<IdentityRow>, sqlx::Error> {
+        identity::find_user_by_email_in_org(self.db(), self.org_id(), email).await
+    }
+
+    /// Look up a live child identity by name under `parent_id`, bounded to
+    /// this org. Resolves to the oldest match when siblings share a name.
+    pub async fn find_identity_child_by_name(
+        &self,
+        parent_id: Uuid,
+        name: &str,
+    ) -> Result<Option<IdentityRow>, sqlx::Error> {
+        identity::find_child_by_name(self.db(), self.org_id(), parent_id, name).await
+    }
+
+    /// Resolve a user identity by email in this org, creating it when absent.
+    /// Returns `(row, created)`. The created row has `external_id = NULL` —
+    /// "belongs to the org, has never signed in".
+    pub async fn get_or_create_user_identity_by_email(
+        &self,
+        email: &str,
+        name: &str,
+        metadata: serde_json::Value,
+    ) -> Result<(IdentityRow, bool), sqlx::Error> {
+        identity::get_or_create_user_by_email(self.db(), self.org_id(), email, name, metadata).await
+    }
+
+    /// Resolve a child identity by name under `parent_id`, creating it when
+    /// absent. Returns `(row, created)`. Created rows never inherit
+    /// permissions.
+    pub async fn get_or_create_identity_child(
+        &self,
+        parent_id: Uuid,
+        name: &str,
+        kind: &str,
+        depth: i32,
+        owner_id: Uuid,
+        metadata: serde_json::Value,
+    ) -> Result<(IdentityRow, bool), sqlx::Error> {
+        identity::get_or_create_child(
+            self.db(),
+            self.org_id(),
+            parent_id,
+            name,
+            kind,
+            depth,
+            owner_id,
+            metadata,
+        )
+        .await
+    }
+
+    /// Point a user identity at the IdP subject that just authenticated as
+    /// it — the write that converts a pre-created identity into a live one.
+    pub async fn set_identity_external_id(
+        &self,
+        id: Uuid,
+        external_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        identity::set_external_id(self.db(), self.org_id(), id, external_id).await
+    }
+
     /// Total identity count for this org.
     pub async fn count_identities(&self) -> Result<i64, sqlx::Error> {
         identity::count_by_org(self.db(), self.org_id()).await

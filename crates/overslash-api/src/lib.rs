@@ -10,6 +10,7 @@
 pub mod config;
 pub mod error;
 pub mod extractors;
+pub mod impersonation;
 pub mod middleware;
 pub mod ownership;
 pub mod routes;
