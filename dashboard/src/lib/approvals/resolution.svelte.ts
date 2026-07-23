@@ -5,8 +5,8 @@ import { pickApiError } from '$lib/approvals/format';
  * Shared resolution controller for approvals.
  *
  * Owns the async + lifecycle machinery so the surfaces that resolve a single
- * approval — the full-page `ApprovalDetail` and the compact `ApprovalResolver`
- * embedded in the agents tree — run the *same* proven implementation:
+ * approval — the full-page `ApprovalDetail` and the `ApprovalRow` shared by the
+ * queue and the agents tree — run the *same* proven implementation:
  * optimistic `override`, the 30s auto-call poll
  * (a `/resolve allow` returns immediately while the auto-call runs in a spawned
  * task, so we poll `/v1/approvals/{id}` to catch the execution reaching a

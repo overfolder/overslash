@@ -448,8 +448,8 @@ enum CallResponse {
         // White-label integrations (Telegram/WhatsApp/web bots) render an
         // approval prompt straight off this envelope. The four fields below
         // mirror the matching `ApprovalResponse` fields the dashboard's
-        // `ApprovalResolver` renders from, so a caller can draw the same card
-        // without a second `GET /v1/approvals/{id}` round-trip.
+        // `ApprovalRow` / `ApprovalDetail` render from, so a caller can draw
+        // the same card without a second `GET /v1/approvals/{id}` round-trip.
         /// Labeled, human-readable slice of the resolved request extracted via
         /// the template's `x-overslash-disclose` filters. Omitted when the
         /// template declared none. Same shape as

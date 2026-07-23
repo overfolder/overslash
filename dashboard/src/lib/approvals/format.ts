@@ -1,10 +1,10 @@
 // Pure presentation helpers shared across the approval surfaces (the queue at
-// /approvals, the full-page ApprovalDetail, and the compact ApprovalResolver in
-// the agents tree). Kept framework-free so all three stay in lockstep — see
+// /approvals, the full-page ApprovalDetail, and the ApprovalRow embedded in the
+// agents tree). Kept framework-free so all three stay in lockstep — see
 // resolution.svelte.ts for the async/lifecycle half of the split.
 
 import { highlightJson } from '$lib/api';
-import { ApiError, type DerivedKey, type DisclosedField } from '$lib/session';
+import { ApiError, type ApprovalResponse, type DerivedKey, type DisclosedField } from '$lib/session';
 
 /**
  * Extract a human-readable message from a failed request. Prefers the gateway's
@@ -144,6 +144,44 @@ export function splitDisclosed(fields: DisclosedField[] | null): {
 	const primaries = all.filter((f) => f.primary && f.value !== null && !f.error);
 	const remaining = primaries.length ? all.filter((f) => !primaries.includes(f)) : all;
 	return { primaries, remaining };
+}
+
+/**
+ * One-line confirmation for a resolution that has already succeeded. The row
+ * that was resolved is gone by the time this is read, so the message has to
+ * name both what happened and which request it happened to.
+ *
+ * `updated` is the server's response — it carries the cascade list, i.e. the
+ * sibling approvals a freshly-written rule just covered.
+ */
+export function resolutionToast(
+	resolution: 'allow' | 'deny' | 'allow_remember' | 'bubble_up',
+	approval: ApprovalResponse,
+	updated?: ApprovalResponse | null,
+	rememberedKeys?: string[]
+): string {
+	const agent = extractAgentName(approval.identity_path, approval.requesting_identity_id);
+	const service = approval.derived_keys[0] ? humanize(approval.derived_keys[0].service) : 'the service';
+	const cascaded = updated?.cascaded_approval_ids?.length ?? 0;
+	const alsoResolved =
+		cascaded > 0 ? ` · also resolved ${cascaded} related ${cascaded === 1 ? 'request' : 'requests'}` : '';
+
+	switch (resolution) {
+		case 'allow':
+			return `Allowed once — ${agent} → ${service}`;
+		case 'allow_remember': {
+			// A toast is one line, so this is the one place keys *are* elided —
+			// two named, the rest counted. The written rules are on the agent's
+			// Permission Rules table in full.
+			const { shown, hidden } = splitKeys(rememberedKeys ?? approval.permission_keys, 2);
+			const keys = shown.join(', ') + (hidden > 0 ? ` and ${hidden} more` : '');
+			return `Allowed & remembered — ${keys || service}${alsoResolved}`;
+		}
+		case 'deny':
+			return `Denied — ${agent}'s ${service} action`;
+		case 'bubble_up':
+			return `Bubbled up — ${agent} → ${service} now waits on an ancestor`;
+	}
 }
 
 /**
