@@ -20,8 +20,10 @@
 	import { session, ApiError, type ApprovalResponse } from '$lib/session';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import ApprovalResolver from '$lib/components/ApprovalResolver.svelte';
-	import { absoluteTime, ttlRemaining } from '$lib/utils/time';
+	import ApprovalRow from '$lib/components/approval/ApprovalRow.svelte';
+	import { collapse, motionDuration } from '$lib/utils/motion';
+	import { flip } from 'svelte/animate';
+	import { ttlRemaining } from '$lib/utils/time';
 
 	let identities = $state<Identity[]>([]);
 	let approvals = $state<ApprovalResponse[]>([]);
@@ -743,18 +745,16 @@
 					<!-- Pending Approvals -->
 					{#if detail && detail.approvals.length > 0}
 						<h3 class="section-title">Pending Approvals</h3>
-						{#each detail.approvals as a (a.id)}
-							<div class="approval-card">
-								<div class="approval-main">
-									<div class="approval-summary">{a.action_summary}</div>
-									<!-- Every uncovered key: an action can derive one per
-									     recipient, and the card used to name only the first. -->
-									<div class="approval-meta mono">{a.permission_keys.join(', ')}</div>
-									<div class="approval-meta">Requested {absoluteTime(a.created_at)}</div>
+						<div class="approval-list">
+							{#each detail.approvals as a (a.id)}
+								<div
+									animate:flip={{ duration: motionDuration(130) }}
+									out:collapse={{ duration: 130 }}
+								>
+									<ApprovalRow approval={a} onResolved={onApprovalResolved} />
 								</div>
-								<ApprovalResolver approval={a} compact onResolved={onApprovalResolved} />
-							</div>
-						{/each}
+							{/each}
+						</div>
 					{/if}
 
 					<!-- Permission Rules -->
@@ -1452,30 +1452,11 @@
 		margin: 16px 0 8px;
 	}
 
-	/* ── Approval cards ── */
-	.approval-card {
-		border: 1px solid var(--color-border);
-		border-radius: 8px;
-		padding: 12px;
+	/* ── Approval rows (same component as the /approvals queue) ── */
+	.approval-list {
+		display: flex;
+		flex-direction: column;
 		margin-bottom: 8px;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-	}
-	.approval-main {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		min-width: 0;
-	}
-	.approval-summary {
-		font-size: 13px;
-		font-weight: 500;
-		color: var(--color-text-heading);
-	}
-	.approval-meta {
-		font-size: 11px;
-		color: var(--color-text-muted);
 	}
 
 	/* ── Permission rules table ── */

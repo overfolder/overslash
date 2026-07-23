@@ -7,18 +7,20 @@
 	import IdentityPath from './IdentityPath.svelte';
 	import RiskBadge from './approval/RiskBadge.svelte';
 	import ServiceTile from './approval/ServiceTile.svelte';
+	import RememberControl from './approval/RememberControl.svelte';
+	import ExpiryControl from './approval/ExpiryControl.svelte';
 	import { relativeTime } from '$lib/utils/time';
 	import { createResolution } from '$lib/approvals/resolution.svelte';
+	import { pushToast } from '$lib/stores/toasts.svelte';
 	import {
-		TTL_OPTIONS,
 		humanize,
-		splitKeys,
 		scopeArgSummary,
 		renderPayload,
 		formatBytes,
 		utf8ByteLength,
 		splitDisclosed,
-		rememberKeys
+		rememberKeys,
+		resolutionToast
 	} from '$lib/approvals/format';
 	import { onMount } from 'svelte';
 
@@ -121,20 +123,14 @@
 		idUnits.length ? idUnits[idUnits.length - 1].name : current.requesting_identity_id.slice(0, 8)
 	);
 
-	// Every key the chosen tier would grant — the sticky bar shows the whole
-	// set, not a "+N" that hides the recipient the approval is really about.
-	const selectedKeys = $derived(
-		useCustomKey
-			? [customKey || 'service:action:arg']
-			: (current.suggested_tiers[selectedTier]?.keys ?? [])
-	);
-	const selectedKeysShown = $derived(splitKeys(selectedKeys));
-	const expiryLabel = $derived(TTL_OPTIONS.find((o) => o.value === ttl)?.label ?? '');
+	// The key set the chosen tier would grant is rendered by RememberControl,
+	// which owns the selection now that the ladder lives in the action bar.
 	const canRemember = $derived(useCustomKey ? !!customKey.trim() : current.suggested_tiers.length > 0);
 
 	async function resolve(resolution: 'allow' | 'deny' | 'allow_remember' | 'bubble_up') {
 		formError = null;
 		ctrl.clearError();
+		const before = current;
 		const body: ResolveApprovalRequest = { resolution };
 		if (resolution === 'allow_remember') {
 			const keys = rememberKeys({
@@ -151,7 +147,9 @@
 			if (ttl !== 'forever') body.ttl = ttl;
 		}
 		const updated = await ctrl.resolve(body);
-		if (updated) onResolved?.(updated);
+		if (!updated) return;
+		pushToast('success', resolutionToast(resolution, before, updated, body.remember_keys));
+		onResolved?.(updated);
 	}
 </script>
 
@@ -189,21 +187,16 @@
 		</div>
 
 		{#if isPending}
-			<!-- prominent action bar -->
+			<!-- prominent action bar: scope + expiry + the three resolutions,
+			     merged into one control strip above the fold -->
 			<div class="aq-actionbar">
-				<div class="aq-ab-ctx">
-					<span class="lead">Remember as</span>
-					<span class="aq-ab-keys">
-						{#each selectedKeysShown.shown as key}
-							<code>{key}</code>
-						{/each}
-						{#if selectedKeysShown.hidden > 0}
-							<span class="more">and {selectedKeysShown.hidden} more</span>
-						{/if}
-						{#if !selectedKeys.length}<code>—</code>{/if}
-						<span class="ttl">· {expiryLabel}</span>
-					</span>
-				</div>
+				<RememberControl
+					tiers={current.suggested_tiers}
+					bind:selectedTier
+					bind:useCustomKey
+					bind:customKey
+				/>
+				<ExpiryControl bind:value={ttl} />
 				<div class="aq-ab-btns">
 					<button class="ovs-btn ovs-btn-danger" disabled={submitting} onclick={() => resolve('deny')}
 						>Deny</button
@@ -352,7 +345,7 @@
 				</div>
 			</div>
 
-			<!-- RIGHT: risk, details, scope -->
+			<!-- RIGHT: risk + request details (scope and expiry live in the action bar) -->
 			<div class="aq-side">
 				<div class="aq-riskbar {current.risk}">
 					<span class="glyph">{riskMeta[current.risk].glyph}</span>
@@ -394,82 +387,16 @@
 					</dl>
 				</div>
 
-				{#if isPending}
-					<div class="aq-panel">
-						<h3>Remember as a permission rule</h3>
-						<div class="aq-scope">
-							{#each current.suggested_tiers as tier, i}
-								{@const split = splitKeys(tier.keys)}
-								<button
-									type="button"
-									class="aq-scope-opt"
-									class:is-sel={!useCustomKey && selectedTier === i}
-									onclick={() => {
-										selectedTier = i;
-										useCustomKey = false;
-									}}
-								>
-									<span class="aq-scope-radio"></span>
-									<div class="aq-scope-main">
-										<div class="aq-scope-label">
-											<span class="txt">{tier.description}</span>
-											<RiskBadge risk={current.risk} />
-										</div>
-										<div class="aq-scope-key">
-											{#each split.shown as key}
-												<code>{key}</code>
-											{/each}
-											{#if split.hidden > 0}
-												<span class="more">and {split.hidden} more</span>
-											{/if}
-										</div>
-									</div>
-								</button>
-							{/each}
-							<button
-								type="button"
-								class="aq-scope-opt"
-								class:is-sel={useCustomKey}
-								onclick={() => (useCustomKey = true)}
-							>
-								<span class="aq-scope-radio"></span>
-								<div class="aq-scope-main">
-									<div class="aq-scope-label">
-										<span class="txt">Custom… (advanced)</span>
-									</div>
-									<div class="aq-scope-key">Type a permission key by hand</div>
-								</div>
-							</button>
-						</div>
-						{#if useCustomKey}
-							<input
-								class="aq-custom-key"
-								type="text"
-								placeholder="service:action:arg"
-								bind:value={customKey}
-							/>
-						{/if}
-						<div class="aq-expiry">
-							<span>Expires</span>
-							<select bind:value={ttl}>
-								{#each TTL_OPTIONS as o}
-									<option value={o.value}>{o.label}</option>
-								{/each}
-							</select>
-						</div>
-					</div>
-
-					{#if !isCurrentResolver}
-						<button
-							type="button"
-							class="aq-bubble"
-							disabled={submitting}
-							onclick={() => resolve('bubble_up')}
-							title="Hand this approval off to the next ancestor in the chain"
-						>
-							Bubble up to ancestor →
-						</button>
-					{/if}
+				{#if isPending && !isCurrentResolver}
+					<button
+						type="button"
+						class="aq-bubble"
+						disabled={submitting}
+						onclick={() => resolve('bubble_up')}
+						title="Hand this approval off to the next ancestor in the chain"
+					>
+						Bubble up to ancestor →
+					</button>
 				{/if}
 			</div>
 		</div>
@@ -610,36 +537,6 @@
 		border-radius: 12px;
 		padding: 12px 12px 12px 18px;
 		box-shadow: var(--shadow-sm);
-	}
-	.aq-ab-ctx {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		min-width: 0;
-		font-size: 12px;
-		color: var(--color-text-muted);
-	}
-	.aq-ab-ctx .lead {
-		color: var(--color-text-secondary);
-	}
-	.aq-ab-ctx code {
-		font-family: var(--font-mono);
-		font-size: 12px;
-		color: var(--color-text);
-	}
-	/* Wrap the full key set rather than truncating it — what is being granted
-	   is the decision the approver is making. */
-	.aq-ab-keys {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: baseline;
-		gap: 4px 10px;
-		min-width: 0;
-		overflow-wrap: anywhere;
-	}
-	.aq-ab-keys .more,
-	.aq-ab-keys .ttl {
-		color: var(--color-text-muted);
 	}
 	.aq-ab-btns {
 		display: flex;
@@ -1072,130 +969,14 @@
 		word-break: break-word;
 	}
 
-	/* scope ladder */
-	.aq-scope {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-	}
-	.aq-scope-opt {
-		display: flex;
-		gap: 11px;
-		padding: 11px 12px;
-		border: 1px solid var(--color-border);
-		border-radius: 10px;
-		cursor: pointer;
-		transition:
-			border-color 0.1s,
-			background 0.1s;
-		align-items: flex-start;
-		background: transparent;
-		text-align: left;
-		font: inherit;
-		color: var(--color-text);
-		width: 100%;
-	}
-	.aq-scope-opt:hover {
-		background: var(--color-sidebar);
-	}
-	.aq-scope-opt.is-sel {
-		border-color: var(--color-primary);
-		background: var(--color-primary-bg);
-	}
-	.aq-scope-radio {
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		border: 1.5px solid var(--neutral-300);
-		flex: none;
-		margin-top: 1px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		transition: border-color 0.1s;
-	}
-	.aq-scope-opt.is-sel .aq-scope-radio {
-		border-color: var(--color-primary);
-	}
-	.aq-scope-opt.is-sel .aq-scope-radio::after {
-		content: '';
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--color-primary);
-	}
-	.aq-scope-main {
-		flex: 1;
-		min-width: 0;
-	}
-	.aq-scope-label {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 8px;
-	}
-	.aq-scope-label .txt {
-		font-size: 13px;
-		font-weight: 500;
-		color: var(--color-text);
-	}
-	.aq-scope-opt.is-sel .aq-scope-label .txt {
-		color: var(--color-primary);
-	}
-	.aq-scope-key {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		font-family: var(--font-mono);
-		font-size: 11px;
-		color: var(--color-text-muted);
-		margin-top: 3px;
-		min-width: 0;
-		overflow-wrap: anywhere;
-	}
+	/* The full permission-key set stacks instead of truncating — what is being
+	   granted is the decision the approver is making. */
 	.aq-keylist {
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
 		gap: 4px;
 		overflow-wrap: anywhere;
-	}
-	.aq-custom-key {
-		margin-top: 10px;
-		width: 100%;
-		padding: 8px 10px;
-		border: 1px solid var(--color-border);
-		border-radius: 8px;
-		background: var(--color-surface);
-		color: var(--color-text);
-		font-family: var(--font-mono);
-		font-size: 12px;
-	}
-	.aq-custom-key:focus {
-		outline: 2px solid var(--color-primary);
-		outline-offset: -1px;
-		border-color: var(--color-primary);
-	}
-	.aq-expiry {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 10px;
-		margin-top: 12px;
-		padding-top: 12px;
-		border-top: 1px solid var(--color-border-subtle);
-		font-size: 13px;
-		color: var(--color-text-secondary);
-	}
-	.aq-expiry select {
-		height: 30px;
-		border: 1px solid var(--color-border);
-		border-radius: 7px;
-		background: var(--color-surface);
-		color: var(--color-text);
-		font: var(--text-label);
-		padding: 0 8px;
-		cursor: pointer;
 	}
 
 	.aq-bubble {
@@ -1239,6 +1020,16 @@
 			flex-direction: column;
 			align-items: stretch;
 			gap: 10px;
+		}
+		/* stack the merged bar: scope, then expiry, then the buttons */
+		.aq-actionbar :global(.aq-remember) {
+			order: 1;
+		}
+		.aq-actionbar :global(.aq-expctl) {
+			order: 2;
+		}
+		.aq-ab-btns {
+			order: 3;
 		}
 		.aq-ab-btns .ovs-btn {
 			flex: 1;

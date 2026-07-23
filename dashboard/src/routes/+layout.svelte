@@ -17,6 +17,7 @@
 	import TopBar from '$lib/components/shell/TopBar.svelte';
 	import MobileTabBar from '$lib/components/shell/MobileTabBar.svelte';
 	import TrialBanner from '$lib/components/shell/TrialBanner.svelte';
+	import Toaster from '$lib/components/Toaster.svelte';
 
 	let { children, data }: { children: Snippet; data: { user: MeIdentity | null } } = $props();
 
@@ -127,6 +128,8 @@
 		<MobileTabBar user={data?.user ?? null} {isAdmin} />
 	</div>
 {/if}
+
+<Toaster />
 
 <style>
 	.app {

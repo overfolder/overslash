@@ -10,7 +10,8 @@
 // relies on.
 //
 // Prereq: `make e2e-up`. Output: dashboard/screenshots/{logged-out-redirect,
-// pending,resolved,queue-light,queue-dark,card-mobile,detail-dark}.png.
+// pending,resolved,queue-light,queue-dark,card-mobile,detail-dark,
+// queue-toast,detail-remember-open,detail-expiry-open,agents-inline}.png.
 
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
@@ -113,6 +114,77 @@ try {
 			await p.getByRole('button', { name: /^Deny$/ }).waitFor({ timeout: 15_000 });
 		}
 	});
+
+	// 7. The merged action bar's two dropdowns, open. Picking a tier here is
+	//    what "Allow & Remember" writes — the scope ladder and the expiry menu
+	//    live in the bar, not in a side panel.
+	{
+		const { page: p, ctx } = await snap.navigateAndSnap(
+			'detail-remember-open',
+			`/approvals/${mobileApproval.id}`,
+			{
+				viewport: { width: 1280, height: 800 },
+				waitFor: async (pg) => {
+					await pg.getByRole('button', { name: /^Deny$/ }).waitFor({ timeout: 15_000 });
+					await pg.getByRole('button', { name: /Scope to remember/ }).click();
+					await pg.getByRole('listbox', { name: /Scope to remember/i }).waitFor({ timeout: 5_000 });
+					// let the 120ms pop-in settle so the shot isn't a half-faded frame
+					await pg.waitForTimeout(300);
+				}
+			}
+		);
+		await p.keyboard.press('Escape');
+		await p.getByRole('button', { name: /Rule expires/ }).click();
+		await p.getByRole('listbox', { name: /Rule expiry/i }).waitFor({ timeout: 5_000 });
+		await p.waitForTimeout(300);
+		await snap.snap(p, 'detail-expiry-open');
+		await ctx.close();
+	}
+
+	// 8. Inline resolve from the queue: click the green ✓ (approve once) and
+	//    catch the bottom-of-page toast while the row collapses out.
+	{
+		await seedApproval(session, {
+			method: 'POST',
+			url: 'https://api.example.com/inline-a',
+			body: '{"n":1}'
+		});
+		await seedApproval(session, {
+			method: 'POST',
+			url: 'https://api.example.com/inline-b',
+			body: '{"n":2}'
+		});
+		const { page: p, ctx } = await snap.page({ viewport: { width: 1280, height: 800 } });
+		await p.goto(`${session.dashboardUrl}/approvals`, { waitUntil: 'networkidle' });
+		await p.getByRole('button', { name: 'Approve once', exact: true }).first().waitFor({ timeout: 15_000 });
+		await p.getByRole('button', { name: 'Approve once', exact: true }).first().click();
+		await p.getByRole('status').waitFor({ timeout: 10_000 });
+		await snap.snap(p, 'queue-toast');
+		await ctx.close();
+	}
+
+	// 9. The same row component inside the agents tree — one approval surface,
+	//    two places.
+	{
+		const inline = await seedApproval(session, {
+			method: 'POST',
+			url: 'https://api.example.com/agent-inline',
+			body: '{"n":3}'
+		});
+		const { ctx } = await snap.navigateAndSnap(
+			'agents-inline',
+			`/agents/${inline.requesting_identity_id}`,
+			{
+				viewport: { width: 1280, height: 900 },
+				waitFor: async (pg) => {
+					await pg.getByRole('button', { name: 'Allow and remember', exact: true }).first().waitFor({
+						timeout: 15_000
+					});
+				}
+			}
+		);
+		await ctx.close();
+	}
 
 	console.log('[approvals] done');
 } finally {

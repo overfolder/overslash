@@ -1,12 +1,9 @@
 <script lang="ts">
-	import IdentityPath from '$lib/components/IdentityPath.svelte';
-	import RiskBadge from '$lib/components/approval/RiskBadge.svelte';
-	import ServiceTile from '$lib/components/approval/ServiceTile.svelte';
+	import ApprovalRow from '$lib/components/approval/ApprovalRow.svelte';
 	import { session, type ApprovalResponse } from '$lib/session';
-	import { relativeTime as relativeTimeUtil } from '$lib/utils/time';
-	import { humanize, extractAgentName, pickApiError, scopeArgSummary } from '$lib/approvals/format';
-	import { goto } from '$app/navigation';
-	import { onMount } from 'svelte';
+	import { humanize, extractAgentName, scopeArgSummary } from '$lib/approvals/format';
+	import { collapse, motionDuration } from '$lib/utils/motion';
+	import { flip } from 'svelte/animate';
 
 	let {
 		data
@@ -20,44 +17,35 @@
 
 	let approvals = $state<ApprovalResponse[]>([]);
 	let pendingExecutions = $state<ApprovalResponse[]>([]);
-	let rowBusy = $state<Record<string, boolean>>({});
-	// Per-row so a failure on one row's inline action can't be clobbered by
-	// another row's action starting concurrently.
-	let rowErrors = $state<Record<string, string | null>>({});
-	let execBusy = $state<Record<string, boolean>>({});
-	let execError = $state<string | null>(null);
 
 	// filters
 	let query = $state('');
 	let riskFilter = $state<'all' | 'low' | 'med' | 'high'>('all');
 	let serviceFilter = $state('all');
 
+	/**
+	 * What belongs in "Pending calls": a deferred execution waiting on a
+	 * trigger, or — "called but output unread" — one that auto-call (or any
+	 * prior /call) already ran to a terminal state while the agent has yet to
+	 * collect the result, so the operator still sees the outcome and its HTTP
+	 * code. Applied to the loaded list *and* to every in-place update, so the
+	 * section and its header count never drift apart.
+	 */
+	function isPendingCall(a: ApprovalResponse): boolean {
+		const s = a.execution?.status;
+		if (s === 'pending') return true;
+		return (s === 'executed' || s === 'failed') && a.execution?.output_read === false;
+	}
+
 	$effect(() => {
 		approvals = data.approvals;
 	});
 	$effect(() => {
-		pendingExecutions = data.pendingExecutions.filter((a) => {
-			const s = a.execution?.status;
-			if (s === 'pending') return true;
-			// "Called but output unread": auto-call (or any prior /call) ran the
-			// action to a terminal state, but the agent hasn't read the result
-			// yet. Surface so the operator sees the outcome and the HTTP code.
-			if ((s === 'executed' || s === 'failed') && a.execution?.output_read === false) {
-				return true;
-			}
-			return false;
-		});
+		pendingExecutions = data.pendingExecutions.filter(isPendingCall);
 	});
 
-	let tick = $state(0);
-	onMount(() => {
-		const id = setInterval(() => (tick += 1), 30_000);
-		return () => clearInterval(id);
-	});
-	function relativeTime(iso: string): string {
-		void tick;
-		return relativeTimeUtil(iso);
-	}
+	// Row exit: fast enough that the next card lands under a stationary cursor.
+	const exitMs = 130;
 
 	function primaryService(a: ApprovalResponse): string {
 		return a.derived_keys[0]?.service ?? 'unknown';
@@ -70,12 +58,6 @@
 	}
 	function agentName(a: ApprovalResponse): string {
 		return extractAgentName(a.identity_path, a.requesting_identity_id);
-	}
-	function hasBubbled(a: ApprovalResponse): boolean {
-		return (
-			!!a.current_resolver_identity_id &&
-			a.current_resolver_identity_id !== a.requesting_identity_id
-		);
 	}
 
 	const services = $derived([...new Set(approvals.map(primaryService))].sort());
@@ -108,70 +90,28 @@
 		approvals = approvals.filter((a) => a.id !== updated.id && !cascaded.has(a.id));
 	}
 
-	// Inline resolve from the queue. ✓ allows and remembers at the narrowest
-	// suggested tier (no expiry — matches the resolver's default); ✕ denies.
-	async function resolveRow(a: ApprovalResponse, resolution: 'allow_remember' | 'deny') {
-		rowBusy = { ...rowBusy, [a.id]: true };
-		rowErrors = { ...rowErrors, [a.id]: null };
-		try {
-			const body: { resolution: string; remember_keys?: string[] } = { resolution };
-			if (resolution === 'allow_remember') {
-				const tier = a.suggested_tiers[0];
-				if (!tier) {
-					// No tier to remember — fall back to a plain allow-once.
-					body.resolution = 'allow';
-				} else {
-					body.remember_keys = tier.keys;
-				}
+	// A row that resolves into a deferred execution moves from the queue into
+	// the "Pending calls" section without a reload.
+	async function onRowResolved(updated: ApprovalResponse) {
+		dropResolved(updated);
+		if (updated.execution?.status === 'pending') {
+			try {
+				const fresh = await session.get<ApprovalResponse[]>(
+					'/v1/approvals?scope=mine&status=allowed'
+				);
+				pendingExecutions = fresh.filter(isPendingCall);
+			} catch {
+				// Non-fatal — the section refreshes on the next navigation.
 			}
-			const updated = await session.post<ApprovalResponse>(`/v1/approvals/${a.id}/resolve`, body);
-			dropResolved(updated);
-		} catch (e) {
-			rowErrors = { ...rowErrors, [a.id]: pickApiError(e, 'Failed to resolve approval.') };
-		} finally {
-			rowBusy = { ...rowBusy, [a.id]: false };
 		}
 	}
 
-	function executionStateLabel(a: ApprovalResponse): 'pending' | 'executed' | 'failed' {
-		const s = a.execution?.status;
-		if (s === 'executed') return 'executed';
-		if (s === 'failed') return 'failed';
-		return 'pending';
-	}
-	async function callExecution(a: ApprovalResponse) {
-		execBusy = { ...execBusy, [a.id]: true };
-		execError = null;
-		try {
-			await session.post(`/v1/approvals/${a.id}/call`);
-			pendingExecutions = pendingExecutions.filter((x) => x.id !== a.id);
-		} catch (e) {
-			execError = pickApiError(e, 'Failed to dispatch execution.');
-		} finally {
-			execBusy = { ...execBusy, [a.id]: false };
-		}
-	}
-	async function cancelExecution(a: ApprovalResponse) {
-		execBusy = { ...execBusy, [a.id]: true };
-		execError = null;
-		try {
-			await session.post(`/v1/approvals/${a.id}/cancel`);
-			pendingExecutions = pendingExecutions.filter((x) => x.id !== a.id);
-		} catch (e) {
-			execError = pickApiError(e, 'Failed to cancel execution.');
-		} finally {
-			execBusy = { ...execBusy, [a.id]: false };
-		}
-	}
-
-	function openDetail(id: string) {
-		goto(`/approvals/${id}`);
-	}
-	function onRowKey(e: KeyboardEvent, id: string) {
-		if (e.key === 'Enter' || e.key === ' ') {
-			e.preventDefault();
-			openDetail(id);
-		}
+	// Call now / Cancel leave the execution in a new state: keep the row only
+	// while it still belongs in the section, so the header count stays honest.
+	function onExecutionChanged(updated: ApprovalResponse) {
+		pendingExecutions = pendingExecutions
+			.map((a) => (a.id === updated.id ? updated : a))
+			.filter(isPendingCall);
 	}
 </script>
 
@@ -238,59 +178,21 @@
 		{:else}
 			<div class="aq-list">
 				{#each visible as a (a.id)}
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
-						class="aq-row"
-						role="button"
-						tabindex="0"
-						onclick={() => openDetail(a.id)}
-						onkeydown={(e) => onRowKey(e, a.id)}
+						class="aq-slot"
+						animate:flip={{ duration: motionDuration(exitMs) }}
+						out:collapse={{ duration: exitMs }}
 					>
-						<span class="aq-rail {a.risk}"></span>
-						<ServiceTile name={primaryService(a)} size={38} />
-						<div class="aq-content">
-							<div class="aq-line1">{a.action_summary}</div>
-							<div class="aq-line2">
-								<span>{humanize(primaryService(a))}</span>
-								<span class="dot">·</span>
-								<span class="mono">{agentName(a)}</span>
-								<span class="dot">·</span>
-								<span class="mono">{primaryArg(a)}</span>
-								{#if hasBubbled(a)}<span class="dot">·</span><span class="bubbled">bubbled</span>{/if}
-							</div>
-							{#if rowErrors[a.id]}
-								<div class="aq-rowerr">{rowErrors[a.id]}</div>
-							{/if}
-						</div>
-						<div class="aq-right">
-							<div class="aq-when">
-								<span class="req">{relativeTime(a.created_at)}</span>
-							</div>
-							<RiskBadge risk={a.risk} />
-							<!-- svelte-ignore a11y_no_static_element_interactions -->
-							<div class="aq-actions" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-								<button
-									class="aq-iconbtn allow"
-									title="Allow & remember"
-									disabled={rowBusy[a.id]}
-									onclick={() => resolveRow(a, 'allow_remember')}>✓</button
-								>
-								<button
-									class="aq-iconbtn deny"
-									title="Deny"
-									disabled={rowBusy[a.id]}
-									onclick={() => resolveRow(a, 'deny')}>✕</button
-								>
-							</div>
-							<span class="aq-caret">▸</span>
-						</div>
+						<ApprovalRow approval={a} onResolved={onRowResolved} />
 					</div>
 				{/each}
 			</div>
 
 			<div class="aq-hint">
-				Inline <span style="color: var(--color-success)">✓</span> approves at the narrowest scope and
-				remembers it · open a request to widen scope or set expiry.
+				<span style="color: var(--color-success)">✓</span> approve once ·
+				<span style="color: var(--color-danger)">✕</span> deny ·
+				<span style="color: var(--color-primary)">✓✓</span> allow &amp; remember at the narrowest scope
+				· open a request to widen scope or set expiry.
 			</div>
 		{/if}
 
@@ -300,63 +202,19 @@
 					<h2>Pending calls</h2>
 					<span class="count">{pendingExecutions.length} pending</span>
 				</header>
-				{#if execError}
-					<div class="banner-error">{execError}</div>
-				{/if}
 				<div class="aq-list">
 					{#each pendingExecutions as a (a.id)}
-						{@const state = executionStateLabel(a)}
-						<div class="aq-row exec-row exec-row--{state}">
-							<span class="aq-rail {a.risk}"></span>
-							<ServiceTile name={primaryService(a)} size={38} />
-							<div class="aq-content">
-								<div class="aq-line1">{a.action_summary}</div>
-								<div class="aq-line2">
-									{#if a.identity_path}
-										<IdentityPath path={a.identity_path} pathIds={a.identity_path_ids} />
-									{:else}
-										<span class="mono">{agentName(a)}</span>
-									{/if}
-								</div>
-							</div>
-							<div class="aq-right">
-								<div class="exec-status">
-									{#if state === 'pending'}
-										<span class="exec-pill exec-pill--pending">awaiting call</span>
-									{:else if state === 'executed'}
-										<span class="exec-pill exec-pill--executed">called</span>
-										{#if a.execution?.http_status_code != null}
-											<code class="mono small muted">{a.execution.http_status_code}</code>
-										{/if}
-										{#if a.execution?.triggered_by === 'auto'}<span class="exec-trigger">auto</span
-											>{/if}
-									{:else}
-										<span class="exec-pill exec-pill--failed">failed</span>
-										{#if a.execution?.http_status_code != null}
-											<code class="mono small muted">{a.execution.http_status_code}</code>
-										{/if}
-									{/if}
-								</div>
-								{#if state === 'pending'}
-									<!-- svelte-ignore a11y_no_static_element_interactions -->
-									<div class="aq-actions" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-										<button
-											class="ovs-btn ovs-btn-primary sm"
-											disabled={execBusy[a.id]}
-											onclick={() => callExecution(a)}
-										>
-											{execBusy[a.id] ? 'Calling…' : 'Call now'}
-										</button>
-										<button
-											class="ovs-btn ovs-btn-secondary sm"
-											disabled={execBusy[a.id]}
-											onclick={() => cancelExecution(a)}
-										>
-											Cancel
-										</button>
-									</div>
-								{/if}
-							</div>
+						<div
+							class="aq-slot"
+							animate:flip={{ duration: motionDuration(exitMs) }}
+							out:collapse={{ duration: exitMs }}
+						>
+							<ApprovalRow
+								approval={a}
+								showIdentityPath
+								clickable={false}
+								{onExecutionChanged}
+							/>
 						</div>
 					{/each}
 				</div>
@@ -538,146 +396,14 @@
 		opacity: 0.8;
 	}
 
-	/* rows */
+	/* rows — the row itself carries its own bottom margin so a collapsing row
+	   takes its spacing with it (a flex `gap` cannot be animated away). */
 	.aq-list {
 		display: flex;
 		flex-direction: column;
-		gap: 7px;
 	}
-	.aq-row {
-		display: grid;
-		grid-template-columns: 4px 38px 1fr auto;
-		gap: 14px;
-		align-items: center;
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: 10px;
-		padding: 12px 14px 12px 0;
-		cursor: pointer;
-		transition:
-			border-color 0.1s,
-			box-shadow 0.1s;
-		position: relative;
-		overflow: hidden;
-		text-align: left;
-	}
-	.aq-row:hover {
-		border-color: var(--color-primary);
-		box-shadow: var(--shadow-sm);
-	}
-	.aq-rail {
-		width: 4px;
-		align-self: stretch;
-		border-radius: 4px 0 0 4px;
-	}
-	.aq-rail.low {
-		background: var(--color-success);
-	}
-	.aq-rail.med {
-		background: var(--color-warning);
-	}
-	.aq-rail.high {
-		background: var(--color-danger);
-	}
-	.aq-content {
+	.aq-slot {
 		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-	}
-	.aq-line1 {
-		font-size: 14px;
-		color: var(--color-text-heading);
-		line-height: 1.45;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		display: -webkit-box;
-		-webkit-line-clamp: 1;
-		line-clamp: 1;
-		-webkit-box-orient: vertical;
-	}
-	.aq-line2 {
-		font-size: 12px;
-		color: var(--color-text-muted);
-		display: flex;
-		align-items: center;
-		gap: 7px;
-		flex-wrap: wrap;
-	}
-	.aq-line2 .dot {
-		color: var(--color-border);
-	}
-	.aq-line2 .mono {
-		font-family: var(--font-mono);
-		color: var(--color-text-secondary);
-	}
-	.aq-line2 .bubbled {
-		color: var(--color-warning);
-	}
-	.aq-rowerr {
-		margin-top: 4px;
-		font-size: 12px;
-		color: var(--color-danger);
-	}
-
-	.aq-right {
-		display: flex;
-		align-items: center;
-		gap: 14px;
-	}
-	.aq-when {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-end;
-		gap: 3px;
-		min-width: 72px;
-	}
-	.aq-when .req {
-		font-size: 11px;
-		color: var(--color-text-muted);
-		font-family: var(--font-mono);
-	}
-	.aq-actions {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-	.aq-iconbtn {
-		width: 30px;
-		height: 30px;
-		border-radius: 8px;
-		border: 1px solid var(--color-border);
-		background: var(--color-surface);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		cursor: pointer;
-		font-size: 13px;
-		transition: all 0.1s;
-	}
-	.aq-iconbtn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.aq-iconbtn.allow {
-		color: var(--color-success);
-	}
-	.aq-iconbtn.allow:not(:disabled):hover {
-		background: var(--badge-bg-success);
-		border-color: transparent;
-	}
-	.aq-iconbtn.deny {
-		color: var(--color-danger);
-	}
-	.aq-iconbtn.deny:not(:disabled):hover {
-		background: var(--badge-bg-danger);
-		border-color: transparent;
-	}
-	.aq-caret {
-		color: var(--color-text-muted);
-		font-size: 11px;
-		width: 14px;
-		text-align: center;
 	}
 
 	.aq-empty {
@@ -717,107 +443,10 @@
 		font-size: 12px;
 		color: var(--color-text-muted);
 	}
-	.exec-row {
-		cursor: default;
-	}
-	.exec-row:hover {
-		border-color: var(--color-border);
-		box-shadow: none;
-	}
-	.exec-status {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		flex-wrap: wrap;
-	}
-	.exec-pill {
-		display: inline-flex;
-		align-items: center;
-		padding: 2px 8px;
-		border-radius: 9999px;
-		font-size: 11px;
-		font-weight: 600;
-	}
-	.exec-pill--pending {
-		background: var(--badge-bg-warning);
-		color: var(--color-warning);
-	}
-	.exec-pill--executed {
-		background: var(--badge-bg-success);
-		color: var(--color-success);
-	}
-	.exec-pill--failed {
-		background: var(--badge-bg-danger);
-		color: var(--color-danger);
-	}
-	.exec-trigger {
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--color-text-muted);
-		padding: 1px 6px;
-		border-radius: 3px;
-		background: var(--color-sidebar);
-	}
-
-	.ovs-btn {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		border-radius: 8px;
-		border: 1px solid transparent;
-		cursor: pointer;
-		font-family: inherit;
-		font-weight: 500;
-		transition: all 0.1s;
-	}
-	.ovs-btn.sm {
-		padding: 6px 12px;
-		font-size: 12px;
-	}
-	.ovs-btn:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
-	}
-	.ovs-btn-primary {
-		background: var(--color-primary);
-		color: #fff;
-		border-color: var(--color-primary);
-	}
-	.ovs-btn-primary:not(:disabled):hover {
-		background: var(--color-primary-hover);
-	}
-	.ovs-btn-secondary {
-		background: var(--color-surface);
-		color: var(--color-text-secondary);
-		border-color: var(--color-border);
-	}
-	.ovs-btn-secondary:not(:disabled):hover {
-		color: var(--color-danger);
-		border-color: var(--color-danger);
-	}
-
-	.mono {
-		font-family: var(--font-mono);
-		font-size: 12px;
-	}
-	.small {
-		font-size: 11px;
-	}
-	.muted {
-		color: var(--color-text-muted);
-	}
 
 	@media (max-width: 768px) {
 		.aq-page {
 			padding: 16px;
-		}
-		.aq-row {
-			grid-template-columns: 4px 34px 1fr;
-			padding-right: 12px;
-		}
-		.aq-right {
-			display: none;
 		}
 		.aq-head h1 {
 			font-size: 24px;

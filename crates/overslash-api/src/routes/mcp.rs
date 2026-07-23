@@ -882,7 +882,7 @@ fn elicitation_event_stream(
 }
 
 /// Build the elicitation/create params for a permission gap, mirroring the
-/// dashboard `ApprovalResolver` choices: decision (allow/allow_remember/
+/// dashboard `ApprovalDetail` choices: decision (allow/allow_remember/
 /// deny/bubble_up), optional remember_keys (custom), optional ttl. The
 /// client renders a flat form whose answers we translate in
 /// `mcp_session::complete_from_elicitation`.
