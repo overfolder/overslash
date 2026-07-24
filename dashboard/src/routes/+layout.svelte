@@ -134,45 +134,55 @@
 	});
 </script>
 
-{#if !env.isProd}
-	<DevEnvBanner name={env.name} />
-{/if}
+<!-- One declaration of --env-bar-height for the whole shell. `display: contents`
+     adds no box, but the custom property still cascades to every descendant —
+     the ribbon and the .app/.standalone offsets read the same value, so the bar
+     height and the reserved space can never drift apart. -->
+<div class="env-scope" style:--env-bar-height={envBarHeight}>
+	{#if !env.isProd}
+		<DevEnvBanner name={env.name} />
+	{/if}
 
-{#if standalone}
-	<div class="standalone" style:--env-bar-height={envBarHeight}>
-		{@render children()}
-	</div>
-{:else}
-	<div class="app" style:--sidebar-width={sidebarWidth} style:--env-bar-height={envBarHeight}>
-		<Sidebar
-			{isAdmin}
-			{isInstanceAdmin}
-			memberships={data?.user?.memberships ?? []}
-			currentOrgId={data?.user?.org_id ?? ''}
-			mobileOpen={mobileDrawerOpen}
-			onCloseMobile={() => (mobileDrawerOpen = false)}
-			{buildInfo}
-		/>
-		<div class="main-col">
-			<TopBar
-				user={data?.user ?? null}
-				{isInstanceAdmin}
-				onMenu={() => (mobileDrawerOpen = true)}
-			/>
-			{#if data?.user?.trial}
-				<TrialBanner trial={data.user.trial} {isAdmin} />
-			{/if}
-			<main class="content">
-				{@render children()}
-			</main>
+	{#if standalone}
+		<div class="standalone">
+			{@render children()}
 		</div>
-		<MobileTabBar user={data?.user ?? null} {isAdmin} />
-	</div>
-{/if}
+	{:else}
+		<div class="app" style:--sidebar-width={sidebarWidth}>
+			<Sidebar
+				{isAdmin}
+				{isInstanceAdmin}
+				memberships={data?.user?.memberships ?? []}
+				currentOrgId={data?.user?.org_id ?? ''}
+				mobileOpen={mobileDrawerOpen}
+				onCloseMobile={() => (mobileDrawerOpen = false)}
+				{buildInfo}
+			/>
+			<div class="main-col">
+				<TopBar
+					user={data?.user ?? null}
+					{isInstanceAdmin}
+					onMenu={() => (mobileDrawerOpen = true)}
+				/>
+				{#if data?.user?.trial}
+					<TrialBanner trial={data.user.trial} {isAdmin} />
+				{/if}
+				<main class="content">
+					{@render children()}
+				</main>
+			</div>
+			<MobileTabBar user={data?.user ?? null} {isAdmin} />
+		</div>
+	{/if}
+</div>
 
 <Toaster />
 
 <style>
+	.env-scope {
+		/* No box of its own — just a cascade root for --env-bar-height. */
+		display: contents;
+	}
 	.app,
 	.standalone {
 		min-height: 100vh;
