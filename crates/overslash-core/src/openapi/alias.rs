@@ -200,6 +200,101 @@ pub(super) fn normalize_parameters_in(
     }
 }
 
+/// Walk the document and rewrite every alias key under its supported context
+/// to its canonical `x-overslash-*` form. Returns issues for any ambiguous
+/// objects that carry both forms at once.
+pub fn normalize_aliases(v: &mut Value) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    let Value::Object(root) = v else {
+        return issues;
+    };
+
+    rewrite_aliases(root, ROOT_ALIASES, "", &mut issues);
+
+    if let Some(info) = root.get_mut("info").and_then(Value::as_object_mut) {
+        rewrite_aliases(info, INFO_ALIASES, "info", &mut issues);
+    }
+
+    if let Some(paths) = root.get_mut("paths").and_then(Value::as_object_mut) {
+        for (path_key, path_item) in paths.iter_mut() {
+            let Value::Object(path_obj) = path_item else {
+                continue;
+            };
+            // Path-level parameters (shared across all methods on this path)
+            // also carry parameter aliases and must be normalized.
+            let path_base = format!("paths.{path_key}");
+            normalize_parameters_in(path_obj, &path_base, &mut issues);
+            for method in HTTP_METHODS {
+                let Some(op) = path_obj.get_mut(*method).and_then(Value::as_object_mut) else {
+                    continue;
+                };
+                let op_base = format!("paths.{path_key}.{method}");
+                rewrite_aliases(op, OPERATION_ALIASES, &op_base, &mut issues);
+                normalize_parameters_in(op, &op_base, &mut issues);
+            }
+        }
+    }
+
+    if let Some(comps) = root.get_mut("components").and_then(Value::as_object_mut) {
+        if let Some(schemes) = comps
+            .get_mut("securitySchemes")
+            .and_then(Value::as_object_mut)
+        {
+            for (name, scheme) in schemes.iter_mut() {
+                let Value::Object(obj) = scheme else {
+                    continue;
+                };
+                let base = format!("components.securitySchemes.{name}");
+                let ty = obj.get("type").and_then(Value::as_str).unwrap_or("");
+                match ty {
+                    "oauth2" => rewrite_aliases(obj, OAUTH2_SEC_ALIASES, &base, &mut issues),
+                    "apiKey" | "http" => {
+                        rewrite_aliases(obj, APIKEY_HTTP_SEC_ALIASES, &base, &mut issues)
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Platform actions live under the x-overslash-platform_actions extension
+    // (or its `platform_actions` alias, already rewritten above). Each entry
+    // is an operation-shaped object, so operation-level aliases apply.
+    if let Some(platform) = root
+        .get_mut("x-overslash-platform_actions")
+        .and_then(Value::as_object_mut)
+    {
+        for (action_key, action) in platform.iter_mut() {
+            let Value::Object(obj) = action else {
+                continue;
+            };
+            let base = format!("x-overslash-platform_actions.{action_key}");
+            rewrite_aliases(obj, OPERATION_ALIASES, &base, &mut issues);
+        }
+    }
+
+    // MCP tools live under x-overslash-mcp.tools[] and x-overslash-mcp.discovered_tools[].
+    // Both are arrays of tool-shaped objects carrying `risk:` / `scope_param:` aliases.
+    if let Some(mcp) = root
+        .get_mut("x-overslash-mcp")
+        .and_then(Value::as_object_mut)
+    {
+        for field in ["tools", "discovered_tools"] {
+            if let Some(arr) = mcp.get_mut(field).and_then(Value::as_array_mut) {
+                for (i, entry) in arr.iter_mut().enumerate() {
+                    let Value::Object(obj) = entry else {
+                        continue;
+                    };
+                    let base = format!("x-overslash-mcp.{field}[{i}]");
+                    rewrite_aliases(obj, MCP_TOOL_ALIASES, &base, &mut issues);
+                }
+            }
+        }
+    }
+
+    issues
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::normalize_aliases;

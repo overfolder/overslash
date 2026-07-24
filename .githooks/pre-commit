@@ -45,6 +45,15 @@ if [ -n "$IGNORED_AUTH_HITS" ]; then
     exit 1
 fi
 
+# Keep source files navigable. Fails in milliseconds, so it runs before
+# the compile-bound checks below.
+echo "  line-count gate"
+bash "$(git rev-parse --show-toplevel)/scripts/check-line-counts.sh" || {
+    echo "Split the file along a functional seam into a directory module;" >&2
+    echo "see crates/overslash-api/src/routes/actions/ for the pattern." >&2
+    exit 1
+}
+
 echo "  cargo fmt --check"
 cargo fmt --check || {
     echo "ERROR: Code not formatted. Run 'cargo fmt' first."
