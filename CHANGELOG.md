@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.6.0](https://github.com/overfolder/overslash/compare/v0.5.0...v0.6.0) (2026-07-24)
+
+
+### Features
+
+* **actions:** accept declared parameter aliases before validation ([#460](https://github.com/overfolder/overslash/issues/460)) ([49dbd0e](https://github.com/overfolder/overslash/commit/49dbd0e10948e2390aa45eaccee3de92bd756692))
+* **actions:** validate types + enums and coerce args before approvals ([#459](https://github.com/overfolder/overslash/issues/459)) ([7b9991c](https://github.com/overfolder/overslash/commit/7b9991c9371a84797144066b98a00279f2ab704a))
+* **api:** report database connectivity from /health and /ready ([#478](https://github.com/overfolder/overslash/issues/478)) ([f186c7b](https://github.com/overfolder/overslash/commit/f186c7b1fc007b04b3f57c9a191a650194bb81fb))
+* **approvals:** explicit `primary` disclose flag for hero fields ([#449](https://github.com/overfolder/overslash/issues/449)) ([a15de51](https://github.com/overfolder/overslash/commit/a15de51338863bd2fb6369e36c090d387365ce23))
+* **approvals:** one row component, three one-click resolutions, merged action bar ([#488](https://github.com/overfolder/overslash/issues/488)) ([62e8530](https://github.com/overfolder/overslash/commit/62e85308993df9b346f71edcb6460bb8f6418559))
+* **byoc:** metadata tags + in-place replace for BYOC OAuth creds ([#455](https://github.com/overfolder/overslash/issues/455)) ([66c44b7](https://github.com/overfolder/overslash/commit/66c44b7642265c5ec89a9384511f8c3a0d7891e9))
+* **dashboard:** full-screen Approval Queue + detail page (retire modal) ([#442](https://github.com/overfolder/overslash/issues/442)) ([5329ba8](https://github.com/overfolder/overslash/commit/5329ba886cf732fe6f1974166c5ff0189b14fda9))
+* **dashboard:** show the API's release version and commit ([#480](https://github.com/overfolder/overslash/issues/480)) ([3086b4c](https://github.com/overfolder/overslash/commit/3086b4cb0000e94a95af2318a2cf249191ed4f3a))
+* **dashboard:** stamp the build on the login page, version on the rail ([#483](https://github.com/overfolder/overslash/issues/483)) ([0c8c566](https://github.com/overfolder/overslash/commit/0c8c5669de8fa3c18f0bf173ace772e8418cc389))
+* **e2e:** per-run org isolation + per-instance config, proven by a real email user story ([#467](https://github.com/overfolder/overslash/issues/467)) ([7a99073](https://github.com/overfolder/overslash/commit/7a99073c9b7e721cfea305cde137767a5b3fd3bd))
+* **email:** integrate overfwd Mailbox Gateway as an HTTP service ([#458](https://github.com/overfolder/overslash/issues/458)) ([1d7d339](https://github.com/overfolder/overslash/commit/1d7d3394aceae870b94cbadb7cdc63f2a3392ed6))
+* **email:** name the IMAP criteria, scope sends per recipient ([#479](https://github.com/overfolder/overslash/issues/479)) ([28fb032](https://github.com/overfolder/overslash/commit/28fb03209607187c76016f123d5243b5a55be795))
+* **identity:** name-based impersonation + fold invites into identities ([#487](https://github.com/overfolder/overslash/issues/487)) ([d3e0b37](https://github.com/overfolder/overslash/commit/d3e0b3720a278f08950575107653f40f046b232c))
+* **infra:** deploy overfwd as the shared Mailbox Gateway ([#477](https://github.com/overfolder/overslash/issues/477)) ([ca4071b](https://github.com/overfolder/overslash/commit/ca4071b833bf8b6c8a4450d89b7a25b658e66b83))
+* **mcp:** an agent can collect the result of an approved action ([#482](https://github.com/overfolder/overslash/issues/482)) ([d721058](https://github.com/overfolder/overslash/commit/d7210580a9294db625713de23feb2e740492f179))
+* **mcp:** instance-scoped tool resync — fix 400 on templates that defer url/secret ([#466](https://github.com/overfolder/overslash/issues/466)) ([066d881](https://github.com/overfolder/overslash/commit/066d8812cc897c9c0354e96ed2fa21e9c54238bf))
+* **mcp:** org-scope MCP enrollment to the subdomain ([#443](https://github.com/overfolder/overslash/issues/443)) ([932f64c](https://github.com/overfolder/overslash/commit/932f64c03df142ba1609308b32af4b8b82adc494))
+* **perms:** human-readable descriptions for agent permission rules ([#486](https://github.com/overfolder/overslash/issues/486)) ([c8aeb6a](https://github.com/overfolder/overslash/commit/c8aeb6a6646767c142febefcaf8508686b05d3d5))
+* **perms:** scope_param takes a list, keys carry a scope label ([#481](https://github.com/overfolder/overslash/issues/481)) ([831cd7e](https://github.com/overfolder/overslash/commit/831cd7ee63765a32b9c88f963209799250b97ebd))
+* **services:** a credential template may read declared non-secret inputs ([#476](https://github.com/overfolder/overslash/issues/476)) ([710a671](https://github.com/overfolder/overslash/commit/710a6711531c475c90a5153cdcda6af7ec0e1d91))
+* **services:** credential slots + jq composition templates ([#470](https://github.com/overfolder/overslash/issues/470)) ([3f0d04a](https://github.com/overfolder/overslash/commit/3f0d04a5c915132d5e20366aa6a4b4811e84270c))
+* **services:** delete orphaned OAuth connection on service deletion ([#447](https://github.com/overfolder/overslash/issues/447)) ([a837b91](https://github.com/overfolder/overslash/commit/a837b9164d18db74bd4d9c63eadd6a433288cb07))
+* **services:** let a user manage services/templates owned by its agents ([#454](https://github.com/overfolder/overslash/issues/454)) ([d6d068e](https://github.com/overfolder/overslash/commit/d6d068ee5bbf7df13e328a2176aad31e3bce44f1))
+* **services:** Microsoft Graph (Outlook) mail service, Gmail-equivalent ([#445](https://github.com/overfolder/overslash/issues/445)) ([a902fc3](https://github.com/overfolder/overslash/commit/a902fc3952fdd770c2ad6677ca70e39680afd79b))
+* **services:** per-scheme credential bindings — one labelled credential per securityScheme ([#464](https://github.com/overfolder/overslash/issues/464)) ([881fc3a](https://github.com/overfolder/overslash/commit/881fc3a4cacf92f89382d38fc0091b3ebe091f95))
+* **templates:** layered service templates — extends/delta layers + the fold ([#444](https://github.com/overfolder/overslash/issues/444)) ([16fcb3c](https://github.com/overfolder/overslash/commit/16fcb3c80d78128a91f173eb98f9412c4defea66))
+* **templates:** org layers can preset the per-instance surface (`delta.instance_defaults`) ([#471](https://github.com/overfolder/overslash/issues/471)) ([ba60835](https://github.com/overfolder/overslash/commit/ba6083594c21d720d26033d71342ae52bdc7365b))
+
+
+### Bug Fixes
+
+* **actions:** send a request body when the template declares one ([#465](https://github.com/overfolder/overslash/issues/465)) ([b48f94e](https://github.com/overfolder/overslash/commit/b48f94e86600710195a993311e1b8831a0ccc227))
+* **approvals:** show every derived key, dedupe collapsed tiers ([#485](https://github.com/overfolder/overslash/issues/485)) ([35f197f](https://github.com/overfolder/overslash/commit/35f197f4cfe072d262f0d58494289180b5609292))
+* **dashboard:** reflect real catalog allow-list so toggling a global off can't 404 ([#450](https://github.com/overfolder/overslash/issues/450)) ([5bebb5c](https://github.com/overfolder/overslash/commit/5bebb5cf88f9a845ab2fa40af29b7d9cbe890ebd))
+
+
+### Performance Improvements
+
+* **ci:** one api test binary, one coverage job (was 5 shards) ([#475](https://github.com/overfolder/overslash/issues/475)) ([d2d52e0](https://github.com/overfolder/overslash/commit/d2d52e00771f0a7f1eb1cf0078b2457e47695857))
+
 ## [0.5.0](https://github.com/overfolder/overslash/compare/v0.4.0...v0.5.0) (2026-07-08)
 
 
