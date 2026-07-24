@@ -260,6 +260,7 @@ module "cloud_build" {
   project_id  = var.project_id
   region      = var.region
   base_prefix = local.base_prefix
+  env         = local.env
 
   repository_name = module.artifact_registry.repository_name
 

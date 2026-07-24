@@ -9,16 +9,21 @@
 //! 2. `git rev-parse HEAD`, so a plain `cargo build` on a developer machine
 //!    still reports something truthful.
 //!
-//! The version has two as well:
+//! The version has three routes, in priority order:
 //!
 //! 1. An `OVERSLASH_VERSION` env var — the release tag, set by
 //!    `.github/workflows/release.yml`. Re-emitted verbatim.
-//! 2. `.release-please-manifest.json` at the workspace root, suffixed `-dev`
-//!    (e.g. `0.5.0-dev`). Crate versions stay frozen at `0.1.0` on purpose
-//!    (D19: bumping them would churn `Cargo.lock` and break the `--locked`
-//!    release build), so without this every non-release build — local, dev
-//!    Cloud Run — would report `0.1.0` and say nothing about which release
-//!    line it came from.
+//! 2. `.release-please-manifest.json` at the workspace root, emitted *clean*
+//!    (e.g. `0.5.0`) when `OVERSLASH_RELEASE` is set. The prod container build
+//!    passes this flag (`crates/overslash-api/Dockerfile` via a prod-only
+//!    Cloud Build `--build-arg`) because a continuous-deploy build off `master`
+//!    has no release tag to supply as `OVERSLASH_VERSION`, yet should still
+//!    claim the release line it ships.
+//! 3. The same manifest, suffixed `-dev` (e.g. `0.5.0-dev`), when the flag is
+//!    absent. Crate versions stay frozen at `0.1.0` on purpose (D19: bumping
+//!    them would churn `Cargo.lock` and break the `--locked` release build), so
+//!    without this every non-release build — local, dev Cloud Run — would
+//!    report `0.1.0` and say nothing about which release line it came from.
 //!
 //! Falling back to `unknown` / `CARGO_PKG_VERSION` is always acceptable: an
 //! unidentifiable build is a cosmetic loss, a failed build is not.
@@ -34,6 +39,7 @@ const RELEASE_MANIFEST: &str = "../../.release-please-manifest.json";
 fn main() {
     println!("cargo::rerun-if-env-changed=OVERSLASH_GIT_SHA");
     println!("cargo::rerun-if-env-changed=OVERSLASH_VERSION");
+    println!("cargo::rerun-if-env-changed=OVERSLASH_RELEASE");
     emit_git_rerun_paths();
     // Not every build context ships the manifest (the dev container copies an
     // allow-list of files), and naming a path that is not there makes cargo
@@ -112,7 +118,23 @@ fn resolve_version() -> Option<String> {
     }
 
     let manifest = std::fs::read_to_string(RELEASE_MANIFEST).ok()?;
-    Some(format!("{}-dev", manifest_version(&manifest)?))
+    let version = manifest_version(&manifest)?;
+
+    // A prod deploy sets `OVERSLASH_RELEASE` (there is no release tag to pass as
+    // `OVERSLASH_VERSION` on a continuous branch-push build), so it reports the
+    // clean manifest version. Every other manifest-sourced build gets `-dev`.
+    if is_release_build() {
+        Some(version.to_string())
+    } else {
+        Some(format!("{version}-dev"))
+    }
+}
+
+/// Whether `OVERSLASH_RELEASE` is set to a non-empty value.
+fn is_release_build() -> bool {
+    std::env::var("OVERSLASH_RELEASE")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
 }
 
 /// Pull the root package's version out of a release-please manifest.
