@@ -57,6 +57,7 @@ mod auth_scopes;
 mod call;
 mod errors;
 mod mcp_resolve;
+mod permission_gate;
 mod resolve;
 mod resolve_encode;
 mod resolve_metadata;
