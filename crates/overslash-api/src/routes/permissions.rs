@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -7,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use overslash_core::registry::ServiceRegistry;
 use overslash_db::OrgScope;
 use overslash_db::repos::audit::AuditEntry;
 
@@ -15,7 +18,31 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, ClientIp, OrgAcl, ReqExt},
+    services::principals::resolve_service_principals,
 };
+
+/// Build the service label a rule description leads with: the catalog display
+/// name, plus the principal in parens when it is unambiguous ("GitHub" →
+/// "GitHub (alice@acme.com)"). Returns `None` for a service the registry can't
+/// name (org-custom templates, the `secret` pseudo-service), so those rules
+/// fall back to the label-less sentence.
+fn service_label(
+    registry: &ServiceRegistry,
+    principals: &HashMap<String, HashSet<String>>,
+    action_pattern: &str,
+) -> Option<String> {
+    let slug = action_pattern.split(':').next().unwrap_or("");
+    let base = registry.get(slug)?.display_name.clone();
+    // Principal only when unambiguous: exactly one distinct account backs this
+    // service for the rule's owner. Zero or several → name the service alone,
+    // since a rule spans every account, not one.
+    match principals.get(slug) {
+        Some(set) if set.len() == 1 => {
+            Some(format!("{base} ({})", set.iter().next().expect("len == 1")))
+        }
+        _ => Some(base),
+    }
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -85,10 +112,25 @@ async fn create_permission(
         })
         .await;
 
+    // Resolve the principal for this rule's target identity so the returned
+    // description leads with "GitHub (alice@acme.com) · …" when unambiguous.
+    // Degrade to display-name-only on error — a label is a nicety, not a reason
+    // to fail the create.
+    let principals = resolve_service_principals(&scope, &state.registry, row.identity_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("principal resolution failed for permission create: {e}");
+            HashMap::new()
+        });
+    let label = service_label(&state.registry, &principals, &row.action_pattern);
+
     Ok(Json(PermissionResponse {
         id: row.id,
         identity_id: row.identity_id,
-        description: overslash_core::permissions::describe_pattern(&row.action_pattern),
+        description: overslash_core::permissions::describe_pattern_named(
+            &row.action_pattern,
+            label.as_deref(),
+        ),
         action_pattern: row.action_pattern,
         effect: row.effect,
         expires_at: row.expires_at.map(fmt_time),
@@ -102,6 +144,7 @@ struct ListPermissionsQuery {
 }
 
 async fn list_permissions(
+    State(state): State<AppState>,
     auth: AuthContext,
     scope: OrgScope,
     Query(q): Query<ListPermissionsQuery>,
@@ -126,16 +169,33 @@ async fn list_permissions(
     let rows = scope
         .list_permission_rules_for_identity(identity_id)
         .await?;
+
+    // One principal resolution for the whole list — the panel polls this every
+    // 10 s, so it rides the call the page already makes. Degrade to
+    // display-name-only labels if it fails; the rules still render.
+    let principals = resolve_service_principals(&scope, &state.registry, identity_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("principal resolution failed for permission list: {e}");
+            HashMap::new()
+        });
+
     Ok(Json(
         rows.into_iter()
-            .map(|r| PermissionResponse {
-                id: r.id,
-                identity_id: r.identity_id,
-                description: overslash_core::permissions::describe_pattern(&r.action_pattern),
-                action_pattern: r.action_pattern,
-                effect: r.effect,
-                expires_at: r.expires_at.map(fmt_time),
-                created_at: fmt_time(r.created_at),
+            .map(|r| {
+                let label = service_label(&state.registry, &principals, &r.action_pattern);
+                PermissionResponse {
+                    id: r.id,
+                    identity_id: r.identity_id,
+                    description: overslash_core::permissions::describe_pattern_named(
+                        &r.action_pattern,
+                        label.as_deref(),
+                    ),
+                    action_pattern: r.action_pattern,
+                    effect: r.effect,
+                    expires_at: r.expires_at.map(fmt_time),
+                    created_at: fmt_time(r.created_at),
+                }
             })
             .collect(),
     ))
@@ -217,6 +277,7 @@ fn ttl_to_expires_at(ttl: Option<&str>) -> Result<Option<OffsetDateTime>> {
 }
 
 async fn update_permission(
+    State(state): State<AppState>,
     acl: OrgAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -265,10 +326,23 @@ async fn update_permission(
         })
         .await;
 
+    // Keep the edited row's description consistent with create/list: lead with
+    // the service label (and principal when unambiguous), degrading on error.
+    let principals = resolve_service_principals(&scope, &state.registry, row.identity_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("principal resolution failed for permission update: {e}");
+            HashMap::new()
+        });
+    let label = service_label(&state.registry, &principals, &row.action_pattern);
+
     Ok(Json(PermissionResponse {
         id: row.id,
         identity_id: row.identity_id,
-        description: overslash_core::permissions::describe_pattern(&row.action_pattern),
+        description: overslash_core::permissions::describe_pattern_named(
+            &row.action_pattern,
+            label.as_deref(),
+        ),
         action_pattern: row.action_pattern,
         effect: row.effect,
         expires_at: row.expires_at.map(fmt_time),

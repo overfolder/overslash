@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Email (Mailbox Gateway)
+  title: Email
   key: email
   category: Communication
   # Folded into the text every action is scored against
@@ -66,10 +66,9 @@ components:
       required: true
       # This value is also *which mailbox* the instance speaks for, so
       # discovery surfaces it as the row's `account_email`. Without it every
-      # instance of this template renders the same "Email (Mailbox Gateway)"
-      # display name — the name belongs to the template, not the instance —
-      # and an agent holding three mailboxes has to call all three to find out
-      # which is which.
+      # instance of this template renders the same "Email" display name — the
+      # name belongs to the template, not the instance — and an agent holding
+      # three mailboxes has to call all three to find out which is which.
       identity: true
   # The secrets an operator binds for this service. Declared once here and
   # referenced by name from the securitySchemes' templates below, so one

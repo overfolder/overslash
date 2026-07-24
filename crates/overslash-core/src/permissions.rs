@@ -311,23 +311,48 @@ fn is_catch_all(segment: &str) -> bool {
     segment == "*" || segment == "**"
 }
 
-/// Generate a human-readable description for a single derived key at a given broadness.
+/// Generate a human-readable description for a single derived key at a given
+/// broadness, with no service label (the legacy self-contained wording).
 fn describe_key(dk: &DerivedKey) -> String {
+    describe_key_named(dk, None)
+}
+
+/// Like [`describe_key`], but leads with a resolved service `label` when one is
+/// supplied: "GitHub · Create pull request on any resource". The label is the
+/// catalog display name (optionally carrying a principal, "GitHub (alice@acme.com)")
+/// and is composed by the caller — this stays a pure string function.
+///
+/// With `service_label = None` the output is byte-identical to the pre-label
+/// wording, which names the service inline for the whole-service cases
+/// ("Any Github action"). That path still feeds approval tiers and any rule on
+/// a service the registry can't name.
+fn describe_key_named(dk: &DerivedKey, service_label: Option<&str>) -> String {
+    // Prefix a self-contained predicate with the label when we have one. The
+    // predicate never embeds the service itself, so "GitHub · " never doubles
+    // up on it.
+    let prefixed = |predicate: String| match service_label {
+        Some(label) => format!("{label} · {predicate}"),
+        None => predicate,
+    };
     match dk.service.as_str() {
         "http" => {
             if dk.action == "ANY" || is_catch_all(&dk.action) {
                 let host = dk.arg.split('/').next().unwrap_or(&dk.arg);
-                if host == "*" {
-                    "Any HTTP request".to_string()
-                } else {
-                    format!("Any request to {host}")
+                match (service_label, host) {
+                    // The one whole-service case that names "HTTP" inline when
+                    // unprefixed; the label ("Raw HTTP") carries it otherwise.
+                    (None, "*") => "Any HTTP request".to_string(),
+                    (Some(label), "*") => format!("{label} · Any request"),
+                    (_, host) => prefixed(format!("Any request to {host}")),
                 }
             } else {
                 let target = describe_path_glob(&dk.arg).unwrap_or_else(|| dk.arg.clone());
-                format!("{} to {}", dk.action, target)
+                prefixed(format!("{} to {}", dk.action, target))
             }
         }
         "secret" => {
+            // No registry display name resolves for `secret`; callers pass
+            // `None`. Keep the legacy wording regardless of any label.
             if dk.arg == "*" {
                 format!("{} (any target)", humanize_action(&dk.action))
             } else {
@@ -336,24 +361,29 @@ fn describe_key(dk: &DerivedKey) -> String {
         }
         _ => {
             if is_catch_all(&dk.action) {
-                format!("Any {} action", humanize_action(&dk.service))
+                match service_label {
+                    Some(label) => format!("{label} · Any action"),
+                    None => format!("Any {} action", humanize_action(&dk.service)),
+                }
             } else if dk.arg == "*" {
-                format!("{} on any resource", humanize_action(&dk.action))
+                prefixed(format!("{} on any resource", humanize_action(&dk.action)))
             } else if dk.arg.starts_with('/') {
                 // Service-HTTP key: the arg is a path, so it reads "to", not "on".
                 match describe_path_glob(&dk.arg) {
-                    Some(target) => format!("{} to {}", humanize_action(&dk.action), target),
-                    None => format!("{} on {}", humanize_action(&dk.action), dk.arg),
+                    Some(target) => {
+                        prefixed(format!("{} to {}", humanize_action(&dk.action), target))
+                    }
+                    None => prefixed(format!("{} on {}", humanize_action(&dk.action), dk.arg)),
                 }
             } else if let Some(ref label) = dk.label {
                 // "Send on recipient=jane@example.com" reads like a bug; the
                 // label is a noun the approver already understands.
                 let target = describe_arg_glob(&dk.value, Some(label))
                     .unwrap_or_else(|| format!("{label} {}", dk.value));
-                format!("{} on {}", humanize_action(&dk.action), target)
+                prefixed(format!("{} on {}", humanize_action(&dk.action), target))
             } else {
                 let target = describe_arg_glob(&dk.arg, None).unwrap_or_else(|| dk.arg.clone());
-                format!("{} on {}", humanize_action(&dk.action), target)
+                prefixed(format!("{} on {}", humanize_action(&dk.action), target))
             }
         }
     }
@@ -374,7 +404,18 @@ fn dedup_preserving(items: impl IntoIterator<Item = String>) -> Vec<String> {
 /// suggested tiers say the same thing about the same key rather than drifting
 /// apart in two implementations.
 pub fn describe_pattern(pattern: &str) -> String {
-    describe_key(&parse_derived_key(pattern))
+    describe_pattern_named(pattern, None)
+}
+
+/// Like [`describe_pattern`], but leads with a resolved service `label` when one
+/// is supplied — "GitHub · Any action", "Email (ops@acme.com) · Send on …".
+///
+/// The label is the catalog display name, optionally carrying a principal, and
+/// is composed by the caller (which owns the registry + connection lookups this
+/// pure function deliberately does not). `None` reproduces the label-less
+/// wording exactly.
+pub fn describe_pattern_named(pattern: &str, service_label: Option<&str>) -> String {
+    describe_key_named(&parse_derived_key(pattern), service_label)
 }
 
 /// Generate a combined description for a tier's set of derived keys.
@@ -1373,6 +1414,81 @@ mod tests {
             "Send on recipient jane@*"
         );
         assert_eq!(describe_pattern("deploy:run:*-prod-*"), "Run on *-prod-*");
+    }
+
+    /// With a resolved service label the sentence leads with the catalog display
+    /// name and the predicate drops the inline service word, so nothing doubles
+    /// up ("GitHub · Any action", never "GitHub · Any Github action").
+    #[test]
+    fn description_leads_with_the_service_label() {
+        let cases = [
+            ("github:*:*", "GitHub", "GitHub · Any action"),
+            (
+                "github:create_pull_request:*",
+                "GitHub",
+                "GitHub · Create pull request on any resource",
+            ),
+            (
+                "email:send:recipient=*@acme.com",
+                "Email",
+                "Email · Send on any recipient at acme.com",
+            ),
+            (
+                "http:POST:api.stripe.com/v1/**",
+                "Raw HTTP",
+                "Raw HTTP · POST to anything under api.stripe.com/v1",
+            ),
+            ("http:**", "Raw HTTP", "Raw HTTP · Any request"),
+            (
+                "http:ANY:api.stripe.com/**",
+                "Raw HTTP",
+                "Raw HTTP · Any request to api.stripe.com",
+            ),
+        ];
+        for (pattern, label, expected) in cases {
+            assert_eq!(
+                describe_pattern_named(pattern, Some(label)),
+                expected,
+                "pattern: {pattern}"
+            );
+        }
+    }
+
+    /// The label carries a principal when the caller resolved one; the describer
+    /// just prefixes whatever string it is handed.
+    #[test]
+    fn description_label_can_carry_a_principal() {
+        assert_eq!(
+            describe_pattern_named("github:*:*", Some("GitHub (alice@acme.com)")),
+            "GitHub (alice@acme.com) · Any action"
+        );
+        assert_eq!(
+            describe_pattern_named(
+                "email:send:recipient=*@acme.com",
+                Some("Email (ops@acme.com)")
+            ),
+            "Email (ops@acme.com) · Send on any recipient at acme.com"
+        );
+    }
+
+    /// `None` reproduces the label-less wording exactly — the path approval
+    /// tiers and unnameable services still ride.
+    #[test]
+    fn description_named_with_none_matches_unlabelled() {
+        for pattern in [
+            "github:*:*",
+            "github:create_pull_request:*",
+            "email:send:recipient=*@acme.com",
+            "http:POST:api.stripe.com/v1/**",
+            "http:**",
+            "secret:api_key:*",
+        ] {
+            assert_eq!(
+                describe_pattern_named(pattern, None),
+                describe_pattern(pattern),
+                "pattern: {pattern}"
+            );
+        }
     }
 
     #[test]

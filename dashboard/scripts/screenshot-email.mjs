@@ -43,9 +43,10 @@ try {
 		viewport: { width: 1200, height: 1100 },
 		fullPage: false,
 		waitFor: async (p) => {
-			// Catalog step: pick the Email (Mailbox Gateway) template card, then
-			// advance to the configure step via "Use this template".
-			await p.getByText('Email (Mailbox Gateway)', { exact: false }).first().click();
+			// Catalog step: pick the Email template card, then advance to the
+			// configure step via "Use this template". Exact match so the short
+			// "Email" title doesn't collide with substrings in other copy.
+			await p.getByText('Email', { exact: true }).first().click();
 			await p.getByRole('button', { name: 'Use this template' }).click();
 			// Configure step: every credential row must render.
 			await p.getByText('Overfwd API Token', { exact: false }).first().waitFor({ timeout: 15_000 });
