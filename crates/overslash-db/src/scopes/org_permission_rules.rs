@@ -64,4 +64,15 @@ impl OrgScope {
     ) -> Result<Option<PermissionRuleRow>, sqlx::Error> {
         permission_rule::get_by_id(self.db(), self.org_id(), id).await
     }
+
+    /// Reset a rule's expiry, scoped to this org. `expires_at = None` clears it
+    /// (the rule becomes permanent). Returns the updated row, or `None` when no
+    /// row matched (wrong id or another tenant's row).
+    pub async fn update_permission_rule_expiry(
+        &self,
+        id: Uuid,
+        expires_at: Option<OffsetDateTime>,
+    ) -> Result<Option<PermissionRuleRow>, sqlx::Error> {
+        permission_rule::update_expiry(self.db(), self.org_id(), id, expires_at).await
+    }
 }

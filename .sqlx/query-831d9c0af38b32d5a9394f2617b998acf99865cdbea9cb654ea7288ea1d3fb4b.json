@@ -1,0 +1,102 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE permission_rules SET expires_at = $1\n         WHERE id = $2 AND org_id = $3\n         RETURNING id, org_id, identity_id, action_pattern, effect, expires_at, created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "permission_rules",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "permission_rules",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "permission_rules",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "action_pattern",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "permission_rules",
+            "name": "action_pattern"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "effect",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "permission_rules",
+            "name": "effect"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "permission_rules",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "permission_rules",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "831d9c0af38b32d5a9394f2617b998acf99865cdbea9cb654ea7288ea1d3fb4b"
+}

@@ -10,6 +10,7 @@
 		updateIdentity,
 		deleteIdentity,
 		deletePermission,
+		updatePermissionExpiry,
 		type CreateIdentityRequest
 	} from '$lib/identityApi';
 	import type {
@@ -21,6 +22,7 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import ApprovalRow from '$lib/components/approval/ApprovalRow.svelte';
+	import ExpiryControl from '$lib/components/approval/ExpiryControl.svelte';
 	import { collapse, motionDuration } from '$lib/utils/motion';
 	import { flip } from 'svelte/animate';
 	import { ttlRemaining } from '$lib/utils/time';
@@ -565,6 +567,17 @@
 		}
 	}
 
+	// Reset a rule's expiry from the inline dropdown. 'forever' clears it; any
+	// other option resets expiry to now + that duration. Refresh mirrors revoke.
+	async function handleUpdateRuleExpiry(id: string, optionValue: string) {
+		try {
+			await updatePermissionExpiry(id, optionValue === 'forever' ? null : optionValue);
+			if (selected) await loadDetail(selected.id);
+		} catch (e) {
+			alert(e instanceof Error ? e.message : String(e));
+		}
+	}
+
 	function copy(text: string) {
 		void navigator.clipboard.writeText(text);
 	}
@@ -680,8 +693,61 @@
 					<div class="error-bar">{detail.error}</div>
 				{/if}
 
+				<!-- Permission Rules — shared by the agent branch and the user (Human)
+				     branch. A Human's rules are their remembered approvals, the same
+				     rows the profile page lists; `detail.rules` is populated for users
+				     too, so the only thing needed to surface them here is rendering. -->
+				{#snippet rulesSection()}
+					<h3 class="section-title">Permission Rules</h3>
+					{#if !detail || (detail.loading && detail.rules.length === 0)}
+						<p class="muted" style="font-size:0.85rem;">Loading rules…</p>
+					{:else if detail.rules.length === 0}
+						<p class="muted" style="font-size:0.85rem;">No rules.</p>
+					{:else}
+						<table class="rules-table">
+							<thead>
+								<tr>
+									<th>Rule</th>
+									<th>Source</th>
+									<th>Expires</th>
+									<th></th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each detail.rules as r (r.id)}
+									<tr>
+										<td>
+											<!-- The sentence leads; the key stays visible underneath because it is
+											     what an operator copies into a rule or greps the audit log for. -->
+											{#if r.description}
+												<div class="rule-desc">{r.description}</div>
+												<div class="rule-key mono">{r.action_pattern}</div>
+											{:else}
+												<div class="rule-desc mono">{r.action_pattern}</div>
+											{/if}
+										</td>
+										<td>
+											<span class="pill pill-source">{r.effect === 'allow' ? 'Approval' : r.effect}</span>
+										</td>
+										<td>
+											<ExpiryControl
+												displayLabel={ttlRemaining(r.expires_at)}
+												onselect={(v) => handleUpdateRuleExpiry(r.id, v)}
+											/>
+										</td>
+										<td>
+											<button class="revoke-link" onclick={() => handleRevokeRule(r.id)}>Revoke</button>
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					{/if}
+				{/snippet}
+
 				{#if selected.kind === 'user'}
-					<!-- User root: read-only -->
+					<!-- User root: read-only identity fields, but its remembered rules
+					     (permission grants) are shown and editable per backend auth. -->
 					<div class="field-row">
 						<span class="field-label">Kind</span>
 						<span class="field-value">user</span>
@@ -705,6 +771,8 @@
 							<button class="btn-danger" onclick={requestDelete}>Remove from org</button>
 						{/if}
 					</div>
+
+					{@render rulesSection()}
 				{:else}
 					<!-- Agent detail fields -->
 					<div class="field-row">
@@ -757,47 +825,7 @@
 						</div>
 					{/if}
 
-					<!-- Permission Rules -->
-					<h3 class="section-title">Permission Rules</h3>
-					{#if !detail || (detail.loading && detail.rules.length === 0)}
-						<p class="muted" style="font-size:0.85rem;">Loading rules…</p>
-					{:else if detail.rules.length === 0}
-						<p class="muted" style="font-size:0.85rem;">No rules.</p>
-					{:else}
-						<table class="rules-table">
-							<thead>
-								<tr>
-									<th>Rule</th>
-									<th>Source</th>
-									<th>Expires</th>
-									<th></th>
-								</tr>
-							</thead>
-							<tbody>
-								{#each detail.rules as r (r.id)}
-									<tr>
-										<td>
-											<!-- The sentence leads; the key stays visible underneath because it is
-											     what an operator copies into a rule or greps the audit log for. -->
-											{#if r.description}
-												<div class="rule-desc">{r.description}</div>
-												<div class="rule-key mono">{r.action_pattern}</div>
-											{:else}
-												<div class="rule-desc mono">{r.action_pattern}</div>
-											{/if}
-										</td>
-										<td>
-											<span class="pill pill-source">{r.effect === 'allow' ? 'Approval' : r.effect}</span>
-										</td>
-										<td>{ttlRemaining(r.expires_at)}</td>
-										<td>
-											<button class="revoke-link" onclick={() => handleRevokeRule(r.id)}>Revoke</button>
-										</td>
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					{/if}
+					{@render rulesSection()}
 
 					<!-- MCP Connection -->
 					<h3 class="section-title">MCP Connection</h3>

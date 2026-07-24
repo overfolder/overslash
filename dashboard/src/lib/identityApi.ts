@@ -69,6 +69,25 @@ export function deletePermission(id: string): Promise<void> {
 	return session.delete<void>(`/v1/permissions/${id}`);
 }
 
+/**
+ * Reset a rule's expiry. `ttl` is a duration string (`'1h'`/`'24h'`/`'7d'`/`'30d'`)
+ * — the new expiry is `now + ttl`. Pass `null` (or `'forever'`) to clear the
+ * expiry so the rule never expires. Same PATCH-via-fetch shape as
+ * `updateIdentity`, since the session helper has no PATCH.
+ */
+export function updatePermissionExpiry(id: string, ttl: string | null): Promise<PermissionRule> {
+	return fetch(`/v1/permissions/${id}`, {
+		method: 'PATCH',
+		credentials: 'include',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ ttl })
+	}).then(async (res) => {
+		const text = await res.text();
+		if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+		return JSON.parse(text);
+	});
+}
+
 // ─── Approvals ────────────────────────────────────────────────────────────
 
 export function listApprovals(identity_id?: string): Promise<ApprovalResponse[]> {

@@ -7,12 +7,26 @@
 
 	import { TTL_OPTIONS } from '$lib/approvals/format';
 
-	let { value = $bindable() }: { value: string } = $props();
+	// `value` (bindable) drives approval usage. Rule surfaces instead pass a
+	// `displayLabel` (the real remaining time, which won't map to a fixed
+	// option) and an `onselect` callback to PATCH + refresh — there is no
+	// persistent `value` there, only the chosen option to apply.
+	let {
+		value = $bindable(),
+		displayLabel,
+		onselect
+	}: {
+		value?: string;
+		displayLabel?: string;
+		onselect?: (value: string) => void;
+	} = $props();
 
 	let open = $state(false);
 	let root: HTMLDivElement | undefined = $state();
 
-	const label = $derived(TTL_OPTIONS.find((o) => o.value === value)?.label ?? 'Never');
+	const label = $derived(
+		displayLabel ?? TTL_OPTIONS.find((o) => o.value === value)?.label ?? 'Never'
+	);
 
 	$effect(() => {
 		if (!open) return;
@@ -69,6 +83,7 @@
 					class:is-sel={value === o.value}
 					onclick={() => {
 						value = o.value;
+						onselect?.(o.value);
 						open = false;
 					}}>{o.label}</button
 				>

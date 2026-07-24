@@ -90,6 +90,28 @@ pub(crate) async fn get_by_id(
     .await
 }
 
+/// Reset a rule's expiry, scoped to this org. `expires_at = None` writes SQL
+/// NULL (the rule becomes permanent). Returns the updated row, or `None` when
+/// no row matched (wrong id or another tenant's row).
+pub(crate) async fn update_expiry(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+    expires_at: Option<OffsetDateTime>,
+) -> Result<Option<PermissionRuleRow>, sqlx::Error> {
+    sqlx::query_as!(
+        PermissionRuleRow,
+        "UPDATE permission_rules SET expires_at = $1
+         WHERE id = $2 AND org_id = $3
+         RETURNING id, org_id, identity_id, action_pattern, effect, expires_at, created_at",
+        expires_at,
+        id,
+        org_id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 pub(crate) async fn delete(pool: &PgPool, org_id: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "DELETE FROM permission_rules WHERE id = $1 AND org_id = $2",
