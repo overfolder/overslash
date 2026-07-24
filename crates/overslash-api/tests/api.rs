@@ -99,6 +99,7 @@ mod owner_scoped_connections;
 mod partial_grant;
 mod permission_chain_helpers;
 mod permission_chain_walk;
+mod permissions_expiry;
 mod platform_dispatch;
 mod platform_replay;
 mod preferences;
