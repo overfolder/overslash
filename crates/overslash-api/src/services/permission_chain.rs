@@ -17,7 +17,7 @@
 use uuid::Uuid;
 
 use overslash_core::permissions::{
-    AccessLevel, PermissionKey, PermissionResult, check_permissions,
+    AccessLevel, PermissionKey, PermissionResult, check_permissions, check_permissions_screened,
 };
 use overslash_core::types::{PermissionEffect, PermissionRule};
 use overslash_db::repos::audit::AuditEntry;
@@ -44,12 +44,17 @@ pub enum ChainWalkResult {
 /// Walk the requester's ancestor chain and decide whether to allow, deny,
 /// or open an approval.
 ///
+/// `deny_screen_keys` (D42 column keys) can trip a deny rule at any level
+/// but never require allow coverage and never appear in an approval's
+/// uncovered set -- see `check_permissions_screened`.
+///
 /// `force_user_resolver` short-circuits the resolver search and assigns the
 /// user directly -- used when the org has set `approval_auto_bubble_secs = 0`.
 pub async fn walk(
     scope: &OrgScope,
     requester_id: Uuid,
     perm_keys: &[PermissionKey],
+    deny_screen_keys: &[PermissionKey],
     force_user_resolver: bool,
 ) -> Result<ChainWalkResult, AppError> {
     // chain is depth ASC: chain[0] is the user (root), chain.last() is requester.
@@ -85,7 +90,7 @@ pub async fn walk(
             }
         } else {
             let rules = load_rules(scope, ident.id).await?;
-            match check_permissions(&rules, perm_keys) {
+            match check_permissions_screened(&rules, perm_keys, deny_screen_keys) {
                 PermissionResult::Allowed => {}
                 PermissionResult::Denied(reason) => {
                     return Ok(ChainWalkResult::Denied(reason));
@@ -125,7 +130,9 @@ pub async fn walk(
                 continue;
             }
             let rules = load_rules(scope, ident.id).await?;
-            if let PermissionResult::Denied(reason) = check_permissions(&rules, perm_keys) {
+            if let PermissionResult::Denied(reason) =
+                check_permissions_screened(&rules, perm_keys, deny_screen_keys)
+            {
                 return Ok(ChainWalkResult::Denied(reason));
             }
         }
@@ -145,6 +152,35 @@ pub async fn walk(
         initial_resolver_id,
         rule_placement_id,
     })
+}
+
+/// Deny-only sweep of the requester's chain: does any non-inheriting level
+/// (including the user root) carry a deny rule matching one of `keys`?
+///
+/// Exists for the D42 read-bypass interaction: `auto_approve_reads` skips
+/// the full [`walk`] for read-classified calls, but a deny rule is
+/// documented as overriding every allow mechanism — including that bypass —
+/// so SQL-classified calls run this sweep even when Layer 2 is skipped.
+/// All keys passed here are deny-screen only; no allow coverage is checked.
+pub async fn denied_anywhere(
+    scope: &OrgScope,
+    requester_id: Uuid,
+    keys: &[PermissionKey],
+) -> Result<Option<String>, AppError> {
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    let chain = scope.get_identity_ancestor_chain(requester_id).await?;
+    for ident in chain.iter().rev() {
+        if ident.inherit_permissions {
+            continue;
+        }
+        let rules = load_rules(scope, ident.id).await?;
+        if let PermissionResult::Denied(reason) = check_permissions_screened(&rules, &[], keys) {
+            return Ok(Some(reason));
+        }
+    }
+    Ok(None)
 }
 
 /// Find the next eligible resolver after `current_resolver_id` for an approval
@@ -383,7 +419,9 @@ pub async fn cascade_resolve(
             .map(|k| PermissionKey(k.clone()))
             .collect();
 
-        let walk_result = match walk(scope, approval.identity_id, &perm_keys, false).await {
+        // Stored approvals carry no column screen keys -- those were
+        // evaluated (and passed) when the approval was filed.
+        let walk_result = match walk(scope, approval.identity_id, &perm_keys, &[], false).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(

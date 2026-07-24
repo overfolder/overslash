@@ -263,6 +263,57 @@ jobs:
           # CLI binary). Tests themselves still gate the merge.
           fail_ci_if_error: false
 
+  # D42/D43: the SQL-policy classifier is behind the default-off `sql_policy`
+  # feature (it builds vendored libpg_query — a C dep the default jobs must
+  # not pay for), so nothing above compiles it. This job is the feature's
+  # only CI surface: clippy + the classifier matrix + the feature-gated
+  # Metabase integration tier (mock upstream; the real-Metabase suite stays
+  # local behind `make metabase-e2e`).
+  sql-policy:
+    name: SQL Policy (feature)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: overslash
+          POSTGRES_PASSWORD: overslash
+          POSTGRES_DB: overslash
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
+      SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: sql-policy-deps
+      - uses: ./.github/actions/seed-ort-cache
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1 (mutable tag)
+      # bindgen (pg_query's build) needs libclang; make it deterministic
+      # rather than relying on the runner image's LLVM layout.
+      - name: Install libclang
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
+      - name: Clippy (feature on)
+        run: cargo clippy -p overslash-core -p overslash-api --all-targets --features sql_policy -- -D warnings
+      - name: Classifier matrix (overslash-core)
+        run: cargo test -p overslash-core --features sql_policy sql_policy
+      - name: Feature-gated integration tier (overslash-api)
+        run: cargo test -p overslash-api --features sql_policy --test api metabase
+        env:
+          RUST_LOG: warn
+
   infra:
     name: Infrastructure
     needs: changes
@@ -339,6 +390,10 @@ jobs:
     steps:
       - name: Set WORKTREE_STATE_DIR to a per-job temp dir
         run: echo "WORKTREE_STATE_DIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      # e2e-up builds the API with sql_policy (matching the release build);
+      # bindgen for the vendored libpg_query needs libclang.
+      - name: Install libclang
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
       - name: Tune Postgres for CI (durability off; data is throwaway)
         run: |
           PGPASSWORD=overslash psql -h localhost -U overslash -d overslash <<'SQL'
@@ -399,7 +454,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, coverage, infra, dashboard, e2e]
+    needs: [changes, lint, coverage, sql-policy, infra, dashboard, e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs passed or were skipped

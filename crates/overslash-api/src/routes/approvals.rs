@@ -234,7 +234,7 @@ fn derive_risk_class(registry: &ServiceRegistry, derived_keys: &[DerivedKey]) ->
     let risk = registry
         .get(&first.service)
         .and_then(|svc| svc.actions.get(&first.action))
-        .map(|action| action.risk);
+        .map(|action| action.risk.display_risk());
     risk_class(risk)
 }
 
@@ -2131,7 +2131,7 @@ mod risk_tests {
                 path: "/".into(),
                 description: String::new(),
                 summary: None,
-                risk,
+                risk: risk.into(),
                 response_type: None,
                 params: HashMap::new(),
                 scope_param: Default::default(),

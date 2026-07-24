@@ -208,3 +208,25 @@ shape `disclose` already uses) so a template can say "the scope values are
 `.toRecipients[].emailAddress.address`". That is a bigger change than the
 label syntax: it puts a filter on the permission-derivation path, which today
 is pure string handling and runs before any approval exists.
+
+## SQL policy: Windows release binary ships without the parser
+
+`sql_policy` (D42/D43) builds vendored libpg_query — a C build verified on
+the Linux/macOS release runners but not on `windows-latest` (pg_query.rs uses
+bindgen, and libpg_query only gained MSVC support recently). The release
+matrix therefore enables the feature everywhere **except**
+`x86_64-pc-windows-msvc`, where the binary fails closed: every
+`risk: dynamic` action classifies write-on-unknown-tables and routes to
+approval. Correct but read-path-less. To close: try
+`features: embed-dashboard,sql_policy` on the Windows matrix row (LLVM is
+preinstalled on the runner), and delete this entry if the build passes.
+
+Two adjacent small items:
+
+- **Metabase `{{template_vars}}` don't parse** → classify write. If agents
+  want Metabase-variable queries approval-free, add a pre-parse substitution
+  step (bind `native_parameters` values before classification).
+- **`EXPLAIN` (without `ANALYZE`) classifies write** — a deliberate
+  fail-closed simplification (`EXPLAIN ANALYZE` executes DML, so
+  whitelisting bare EXPLAIN means recursing into the option list). Relax in
+  `sql_policy.rs` if the prompt-noise ever matters.

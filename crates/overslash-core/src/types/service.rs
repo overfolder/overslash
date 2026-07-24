@@ -32,6 +32,17 @@ impl Risk {
         }
     }
 
+    /// The more severe of two risks. Used to merge a call-time floor (e.g.
+    /// the D42 SQL classifier's verdict) into a declared risk — elevation
+    /// only, never a downgrade.
+    pub fn max_severity(self, other: Risk) -> Risk {
+        if other.severity() > self.severity() {
+            other
+        } else {
+            self
+        }
+    }
+
     /// Infer risk from an HTTP method.
     pub fn from_http_method(method: &str) -> Risk {
         match method.to_uppercase().as_str() {
@@ -48,6 +59,94 @@ impl fmt::Display for Risk {
             Risk::Read => write!(f, "read"),
             Risk::Write => write!(f, "write"),
             Risk::Delete => write!(f, "delete"),
+        }
+    }
+}
+
+/// The risk a template *declares* for an action: one of the three static
+/// [`Risk`] classes, or `dynamic` — "classified per call from the SQL the
+/// caller supplies" (D42/D43).
+///
+/// `dynamic` is only accepted by template validation on an action that
+/// nominates an `x-overslash-sql` param, because without a nominated field
+/// there is nothing to classify. At call time a dynamic action starts from
+/// [`base_risk`](Self::base_risk) (`read`) and the classifier's verdict is
+/// merged in as a floor — a build without the `sql_policy` feature classifies
+/// everything as write, so the fast read path only exists where the parser
+/// does. Static/display contexts use [`display_risk`](Self::display_risk)
+/// (`write`): until a concrete query proves otherwise, a dynamic action is
+/// presented as mutating.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeclaredRisk {
+    #[default]
+    Read,
+    Write,
+    Delete,
+    Dynamic,
+}
+
+impl DeclaredRisk {
+    pub fn is_dynamic(self) -> bool {
+        matches!(self, DeclaredRisk::Dynamic)
+    }
+
+    /// The concrete risk for static contexts (listings, approval-card
+    /// severity, the mutating-actions-declare-disclose gate, layer-fold
+    /// severity comparisons): `dynamic` counts as **write** until a concrete
+    /// query proves otherwise.
+    pub fn display_risk(self) -> Risk {
+        match self {
+            DeclaredRisk::Read => Risk::Read,
+            DeclaredRisk::Write => Risk::Write,
+            DeclaredRisk::Delete => Risk::Delete,
+            DeclaredRisk::Dynamic => Risk::Write,
+        }
+    }
+
+    /// The call-time starting point *before* the SQL classifier's floor is
+    /// merged in: `dynamic` starts at **read** and only stays there when the
+    /// parse proves the statement read-only. Callers must always merge the
+    /// classifier verdict (which fails closed to write) on top — this value
+    /// alone never gates anything.
+    pub fn base_risk(self) -> Risk {
+        match self {
+            DeclaredRisk::Dynamic => Risk::Read,
+            other => other.display_risk(),
+        }
+    }
+}
+
+impl From<Risk> for DeclaredRisk {
+    fn from(r: Risk) -> Self {
+        match r {
+            Risk::Read => DeclaredRisk::Read,
+            Risk::Write => DeclaredRisk::Write,
+            Risk::Delete => DeclaredRisk::Delete,
+        }
+    }
+}
+
+/// A declared risk equals a static [`Risk`] iff it is that static class;
+/// `Dynamic` equals none of them. Lets call sites (and tests) compare
+/// `action.risk == Risk::Write` without lifting.
+impl PartialEq<Risk> for DeclaredRisk {
+    fn eq(&self, other: &Risk) -> bool {
+        *self == DeclaredRisk::from(*other)
+    }
+}
+
+impl PartialEq<DeclaredRisk> for Risk {
+    fn eq(&self, other: &DeclaredRisk) -> bool {
+        other == self
+    }
+}
+
+impl fmt::Display for DeclaredRisk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DeclaredRisk::Dynamic => write!(f, "dynamic"),
+            other => other.display_risk().fmt(f),
         }
     }
 }
@@ -651,7 +750,7 @@ pub struct ServiceAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(default)]
-    pub risk: Risk,
+    pub risk: DeclaredRisk,
     /// Response type hint: "json" (default) or "binary" (for file downloads).
     /// When "binary", callers should use `prefer_stream: true` to avoid buffering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -859,6 +958,28 @@ pub struct ActionParam {
     /// secret goes in the vault and is bound via `credentials`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub instance_config: bool,
+    /// `x-overslash-sql-field` (D42/D43): presence marks this string param
+    /// as the one carrying a raw SQL query — the call handler parses and
+    /// classifies it (read/write becomes a risk floor, referenced tables
+    /// become per-table permission keys, referenced column identifiers are
+    /// screened against deny rules). The *value* is the dotted path the
+    /// param is nested under when the outgoing JSON body is assembled:
+    /// `native.query` sends the value as `{"native": {"query": …}}`, while a
+    /// path equal to the param name means flat placement. This keeps the
+    /// caller surface flat and agent-friendly while matching an upstream
+    /// API's nested payload — and keeps the annotation on the real string
+    /// param rather than inside an opaque object. Template validation
+    /// enforces at most one per action, on a string param.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql_field: Option<String>,
+    /// `x-overslash-sql-database` (D42): a jq expression over the call
+    /// params (e.g. `.database | tostring`) whose result keys into the
+    /// instance's `sql_databases` config map to resolve the parse dialect
+    /// and the human DB label used in audit and permission keys. Only
+    /// meaningful on an action that has an
+    /// [`sql_field`](Self::sql_field) param.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql_database: Option<String>,
 }
 
 #[cfg(test)]
@@ -993,6 +1114,32 @@ mod tests {
         assert_eq!(Risk::default(), Risk::Read);
     }
 
+    /// `DeclaredRisk` deserializes byte-compatibly with the pre-D43 `Risk`
+    /// wire forms (pre-existing templates keep parsing) and adds `dynamic`.
+    #[test]
+    fn declared_risk_serde_and_semantics() {
+        for (json, want) in [
+            (r#""read""#, DeclaredRisk::Read),
+            (r#""write""#, DeclaredRisk::Write),
+            (r#""delete""#, DeclaredRisk::Delete),
+            (r#""dynamic""#, DeclaredRisk::Dynamic),
+        ] {
+            assert_eq!(serde_json::from_str::<DeclaredRisk>(json).unwrap(), want);
+            assert_eq!(serde_json::to_string(&want).unwrap(), json);
+        }
+        assert_eq!(DeclaredRisk::default(), DeclaredRisk::Read);
+
+        // Static/display contexts see dynamic as write-until-proven-read…
+        assert_eq!(DeclaredRisk::Dynamic.display_risk(), Risk::Write);
+        // …while the call-time base starts at read for the classifier merge.
+        assert_eq!(DeclaredRisk::Dynamic.base_risk(), Risk::Read);
+        assert_eq!(DeclaredRisk::Delete.base_risk(), Risk::Delete);
+
+        // Cross-type equality: a static class matches, dynamic matches none.
+        assert_eq!(DeclaredRisk::Write, Risk::Write);
+        assert_ne!(DeclaredRisk::Dynamic, Risk::Write);
+    }
+
     #[test]
     fn risk_is_mutating() {
         assert!(!Risk::Read.is_mutating());
@@ -1081,6 +1228,8 @@ mod tests {
             aliases: Vec::new(),
             location: ParamLocation::Body,
             instance_config: false,
+            sql_field: None,
+            sql_database: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("location").is_none());
@@ -1258,7 +1407,7 @@ mod tests {
                 path: "".into(),
                 description: "Search issues".into(),
                 summary: None,
-                risk: Risk::Read,
+                risk: Risk::Read.into(),
                 response_type: None,
                 params: HashMap::new(),
                 scope_param: "team".into(),
@@ -1320,7 +1469,7 @@ mod tests {
             path: "/foo".into(),
             description: "x".into(),
             summary: None,
-            risk: Risk::Read,
+            risk: Risk::Read.into(),
             response_type: None,
             params: HashMap::new(),
             scope_param: Default::default(),

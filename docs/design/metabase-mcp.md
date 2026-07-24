@@ -1,6 +1,11 @@
 # Metabase MCP — reference & service-spec notes
 
-**Status:** Draft — reference (input for a future `services/metabase.yaml`); SQL-policy direction settled in **DECISIONS.md D42**.
+**Status:** Shipped — `services/metabase.yaml` and the full SQL policy (all
+D42 tiers) landed together; the annotation surface shipped in the amended
+shape settled in **DECISIONS.md D43** (`x-overslash-sql-field` merges the
+field nomination with the body path; `risk: dynamic`; `column_star` deny
+keys). This doc remains the background reference. The gated live-stack suite
+is `make metabase-e2e` (docker/metabase + Pagila).
 
 Notes from installing and exercising the [Metabase MCP server]
 (`@jerichosequitin/metabase-mcp`) against a local Metabase, to inform an
@@ -135,12 +140,24 @@ DB's job. Keep the read-only Metabase key as the backstop regardless (belt +
 suspenders). Wiring point: `crates/overslash-api/src/routes/actions/call.rs`, where
 full `req.params` is already in memory before the ceiling/chain walk.
 
-## Next step
+## Outcome (2026-07-24)
 
-1. **Audit first** (the only near-term customer ask): draft `services/metabase.yaml`
-   — API-key auth (`x-api-key`), the read actions above as low-risk, native SQL as a
-   `write` action gated behind approval, and a `disclose` filter capturing the raw
-   `query` — using the discrete REST endpoints rather than the MCP's six meta-tools.
-   No parser yet.
-2. Then the read/write classifier (`pg_query` behind `sql_policy`), then per-table
-   permission keys, then column rules — per D42.
+Everything above shipped in one change rather than the audit-first sequence —
+see **D43** for the deltas discovered during implementation:
+
+- `services/metabase.yaml`: 5 read actions + `run_query`/`export_query` at
+  `risk: dynamic`, disclose capturing the raw SQL, `x-api-key` secret scheme,
+  `sql_databases` config var.
+- `x-overslash-sql` + body nesting merged into **`x-overslash-sql-field:
+  <dotted-path>`** (string params are placed at the path; object params are
+  descended into — Metabase's export endpoint takes the dataset query as one
+  nested object, which is what forced extraction mode).
+- Classifier in `overslash_core::sql_policy` behind the default-off
+  `sql_policy` feature (release builds enable it; Windows stays fail-closed).
+- Per-table keys split by context — reads mint `table={label}/{relation}`,
+  mutation targets mint `table_mut={label}/{relation}` (+ mutation-shaped
+  sentinel), so a remembered read grant never authorizes writes and
+  asymmetric policies are expressible; `column=`/`column_star=` deny screen,
+  ladder `**` rungs, deny-sweep under the `auto_approve_reads` bypass.
+- Verified against a live Metabase + Pagila (views, partitioned `payment`,
+  CSV export): `make metabase-up` / `make metabase-e2e`.

@@ -43,7 +43,10 @@ use crate::{
 };
 use overslash_core::{
     permissions::SuggestedTier,
-    types::{ActionResult, DisclosureField, McpAuth, ScopeParams, SecretRef, service::Risk},
+    types::{
+        ActionResult, DisclosureField, McpAuth, ScopeParams, SecretRef,
+        service::{DeclaredRisk, Risk},
+    },
 };
 
 mod approval_detail;
@@ -495,8 +498,9 @@ struct ResolvedMeta {
     /// Present for service shapes (action / verb); carries info to derive
     /// service permission keys.
     service_scope: Option<ServiceScope>,
-    /// Risk level of the action (action shape only, from the action definition).
-    risk: Option<Risk>,
+    /// Declared risk of the action (action shape only, from the action
+    /// definition). `Dynamic` resolves per call via the SQL classifier.
+    risk: Option<DeclaredRisk>,
     /// Disclosure declarations from the action template (action shape only;
     /// empty for verb / `http`). Runs at approval-create and audit-write time.
     disclose: Vec<DisclosureField>,
@@ -586,9 +590,10 @@ struct ActionMetadata {
     validation_params: HashMap<String, overslash_core::types::ActionParam>,
     /// Service info for permission-key derivation (service shapes only).
     service_scope: Option<ServiceScope>,
-    /// Risk class — action shape reads it from the template; verb /
+    /// Declared risk class — action shape reads it from the template; verb /
     /// `http` shapes leave it `None` and the caller infers from method.
-    risk: Option<Risk>,
+    /// `Dynamic` resolves per call via the SQL classifier.
+    risk: Option<DeclaredRisk>,
     /// Caller-supplied raw HTTP fields used for `http`-pseudo-service
     /// permission-key derivation. Service shapes use `service_scope`.
     raw_method: String,
@@ -651,6 +656,225 @@ fn apply_instance_config(
                 .or_insert_with(|| serde_json::Value::String(value.clone()));
         }
     }
+}
+
+/// D42 SQL policy outcome for one call. `None` (from [`evaluate_sql_policy`])
+/// when the action nominates no SQL param, the shape is not a service action,
+/// or the caller didn't supply the SQL param.
+struct SqlPolicyOutcome {
+    /// Risk floor from classification — callers merge it with
+    /// `Risk::max_severity`, never downward.
+    floor: Risk,
+    /// `table=…` keys, appended to (or replacing the `:*` fallback of) the
+    /// scope_param-derived keys. May be empty for a table-less `SELECT 1`.
+    table_keys: Vec<overslash_core::permissions::PermissionKey>,
+    /// `column=…` / `column_star=…` keys — deny-screen only.
+    column_keys: Vec<overslash_core::permissions::PermissionKey>,
+    /// Sanitized audit label ("reveni-prod", the raw db-key, or "unknown").
+    db_label: String,
+    /// Why the floor is Write, when it is. For tracing/audit.
+    write_reason: Option<overslash_core::sql_policy::WriteReason>,
+}
+
+/// Evaluate the D42 SQL content policy for one call: locate the
+/// `x-overslash-sql-field` param, resolve the target database's dialect +
+/// label (jq expression over the call params → `sql_databases` instance
+/// config), parse and classify the SQL, and derive the per-table /
+/// per-column permission keys.
+///
+/// Fail-closed at every step: an unresolvable database defaults to postgres
+/// with the raw key (or "unknown") as label; a non-postgres dialect, an
+/// unparseable statement, or a build without the `sql_policy` feature all
+/// classify Write with the all-tables sentinel key.
+async fn evaluate_sql_policy(
+    filter_timeout: std::time::Duration,
+    meta: &ActionMetadata,
+    resolved: Option<&ResolvedModeC>,
+    params: &std::collections::HashMap<String, serde_json::Value>,
+) -> Option<SqlPolicyOutcome> {
+    use overslash_core::permissions::PermissionKey;
+    use overslash_core::sql_policy::{self, SqlAnalysis, SqlClass, WriteReason};
+
+    let scope = meta.service_scope.as_ref()?;
+    let (sql_param_name, sql_param) = meta
+        .validation_params
+        .iter()
+        .find(|(_, p)| p.sql_field.is_some())?;
+    // Optional SQL param not supplied this call: nothing to classify. The
+    // caller still fails closed for `risk: dynamic` (no analysis → Write).
+    let supplied = params.contains_key(sql_param_name.as_str());
+    if !supplied {
+        return None;
+    }
+
+    // ── Resolve the database key via the template's jq expression. ──
+    let db_expr = meta
+        .validation_params
+        .values()
+        .find_map(|p| p.sql_database.clone());
+    let db_key: Option<String> = match db_expr {
+        Some(expr) => {
+            let body = serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
+            let join = tokio::task::spawn_blocking(move || {
+                crate::services::response_filter::run_jq_blocking(&expr, &body)
+            });
+            match tokio::time::timeout(filter_timeout, join).await {
+                Ok(Ok(Ok((outputs, _)))) => outputs.first().and_then(|v| match v {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                }),
+                // jq error / panic / timeout → unresolved (fail-closed
+                // default below), but the call itself proceeds.
+                _ => None,
+            }
+        }
+        None => None,
+    };
+
+    // ── Key into the instance's `sql_databases` config map. ──
+    let entry = db_key.as_deref().and_then(|key| {
+        let raw = resolved.and_then(|r| {
+            r.instance
+                .as_ref()
+                .and_then(|i| i.config.0.get(sql_policy::SQL_DATABASES_CONFIG_KEY))
+                .or_else(|| {
+                    r.svc
+                        .instance_defaults
+                        .as_ref()
+                        .and_then(|d| d.config.get(sql_policy::SQL_DATABASES_CONFIG_KEY))
+                })
+        })?;
+        match sql_policy::parse_sql_databases(raw) {
+            Ok(mut map) => map.remove(key),
+            Err(e) => {
+                tracing::warn!(
+                    service = %scope.service_key,
+                    "malformed sql_databases instance config ({e}); using defaults"
+                );
+                None
+            }
+        }
+    });
+    let dialect = entry
+        .as_ref()
+        .and_then(|e| e.dialect.clone())
+        .unwrap_or_else(|| "postgres".to_string());
+    let db_label = entry
+        .as_ref()
+        .and_then(|e| e.label.clone())
+        .or(db_key)
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // ── Locate and classify the SQL. ──
+    let sql_field = sql_param.sql_field.as_deref().unwrap_or_default();
+    let analysis = if !dialect.eq_ignore_ascii_case("postgres") {
+        // Parsing with the wrong grammar proves nothing — fail closed. A
+        // best-effort second backend (sqlparser-rs) can slot in here later.
+        SqlAnalysis {
+            class: SqlClass::Write,
+            write_reason: Some(WriteReason::UnsupportedDialect(dialect)),
+            read_tables: Vec::new(),
+            mut_tables: Vec::new(),
+            columns: Vec::new(),
+            tables_exhaustive: false,
+        }
+    } else {
+        match sql_policy::extract_sql(sql_param_name, sql_field, params) {
+            Some(sql) => sql_policy::analyze(sql),
+            // Present but not a string at the nominated path — validate_args
+            // should have rejected it; refuse to guess.
+            None => SqlAnalysis {
+                class: SqlClass::Write,
+                write_reason: Some(WriteReason::ParseError(
+                    "sql param value is not a string at the nominated path".to_string(),
+                )),
+                read_tables: Vec::new(),
+                mut_tables: Vec::new(),
+                columns: Vec::new(),
+                tables_exhaustive: false,
+            },
+        }
+    };
+
+    let table_keys = PermissionKey::from_sql_analysis(
+        &scope.service_key,
+        &scope.action_key,
+        &db_label,
+        &analysis,
+    );
+    let column_keys = PermissionKey::from_sql_columns(
+        &scope.service_key,
+        &scope.action_key,
+        &db_label,
+        &analysis,
+    );
+
+    Some(SqlPolicyOutcome {
+        floor: analysis.class.as_risk(),
+        table_keys,
+        column_keys,
+        db_label,
+        write_reason: analysis.write_reason,
+    })
+}
+
+/// Merge a call's declared risk, its SQL classification, and the HTTP-method
+/// fallback into the single effective risk both the `require_risk` gate and
+/// the group ceiling evaluate.
+///
+/// - static risk: the declared class, elevated by the SQL floor when a
+///   classified query is on board;
+/// - `dynamic`: starts at read and takes the classifier's verdict — with
+///   **no analysis** (SQL param not supplied, or any earlier bail) it is
+///   Write, because nothing proved the call read-only;
+/// - no declared risk (verb / `http` shapes): inferred from the method.
+fn effective_risk(
+    declared: Option<DeclaredRisk>,
+    sql_policy: Option<&SqlPolicyOutcome>,
+    method: &str,
+) -> Risk {
+    match declared {
+        Some(d) => {
+            let base = d.base_risk();
+            match sql_policy {
+                Some(sp) => base.max_severity(sp.floor),
+                None if d.is_dynamic() => Risk::Write,
+                None => base,
+            }
+        }
+        None => Risk::from_http_method(method),
+    }
+}
+
+/// Merge D42 table keys into the scope_param-derived key set.
+///
+/// Appended when real scoped keys exist (DB-scoping and table-scoping are
+/// separate operator decisions), but they **replace** the unscoped
+/// `{service}:{action}:*` fallback: the chain walk requires *every* key
+/// covered, and no table-shaped rule can cover `:*`, so keeping it would
+/// collapse the per-table tier into "grant the whole action".
+fn merge_sql_keys(
+    mut perm_keys: Vec<overslash_core::permissions::PermissionKey>,
+    scope: &ServiceScope,
+    sql_policy: Option<&SqlPolicyOutcome>,
+) -> Vec<overslash_core::permissions::PermissionKey> {
+    let Some(sp) = sql_policy else {
+        return perm_keys;
+    };
+    if sp.table_keys.is_empty() {
+        return perm_keys;
+    }
+    let fallback = format!("{}:{}:*", scope.service_key, scope.action_key);
+    if perm_keys.len() == 1 && perm_keys[0].0 == fallback {
+        perm_keys.clear();
+    }
+    for key in &sp.table_keys {
+        if !perm_keys.contains(key) {
+            perm_keys.push(key.clone());
+        }
+    }
+    perm_keys
 }
 
 /// Classify an OAuth resolver error so the action handler can respond

@@ -453,6 +453,8 @@ mod tests {
             aliases: Vec::new(),
             location: crate::types::ParamLocation::Body,
             instance_config: false,
+            sql_field: None,
+            sql_database: None,
         }
     }
 

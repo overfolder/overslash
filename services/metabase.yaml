@@ -1,0 +1,221 @@
+openapi: 3.1.0
+info:
+  title: Metabase
+  key: metabase
+  category: Analytics
+  description: >-
+    Metabase BI over its REST API. Discovery and saved-question actions are
+    read-class; native SQL runs through the D42 content policy — the query is
+    parsed, classified read/write, and gated per referenced table. Auth is a
+    Metabase API key (Admin → Settings → Authentication → API keys) sent as
+    x-api-key; pair it with a read-only Metabase group for
+    belt-and-suspenders.
+# Metabase is self-hosted: the shipped default matches the docker/metabase
+# dev harness, and every real deployment pins its own URL on the service
+# instance (or an org layer's instance_defaults).
+servers:
+  - url: http://localhost:3033
+components:
+  securitySchemes:
+    # The scheme name doubles as the implicit credential slot (`token`),
+    # exactly like resend.yaml; the vault entry defaults to
+    # `metabase_api_key`.
+    token:
+      type: apiKey
+      in: header
+      name: x-api-key
+      x-overslash-template:
+        lang: jq
+        expr: .token
+      default_secret_name: metabase_api_key
+  # D42: maps the database id produced by `x-overslash-sql-database` to the
+  # parse dialect + the human label used in audit rows and permission keys
+  # (`metabase:run_query:table={label}/{schema}.{table}`). Unlisted ids
+  # fail closed to postgres with the raw id as label.
+  x-overslash-config:
+    sql_databases:
+      label: SQL databases
+      description: >-
+        JSON object mapping Metabase database ids to their SQL policy entry,
+        e.g. {"5": {"dialect": "postgres", "label": "reveni-prod"}}.
+      required: false
+paths:
+  /api/database:
+    get:
+      operationId: list_databases
+      summary: List databases
+      risk: read
+      description: >-
+        List the databases this Metabase knows about. Use the returned `id`
+        as the `database` argument of run_query / export_query and
+        get_database_schema.
+  /api/database/{database_id}/metadata:
+    get:
+      operationId: get_database_schema
+      summary: "Get schema of database {database_id}"
+      risk: read
+      description: >-
+        Full metadata for one database: tables with their schemas and
+        fields. Read this before writing SQL so table names can be
+        schema-qualified.
+      parameters:
+        - name: database_id
+          in: path
+          required: true
+          description: Metabase database id (from list_databases)
+          schema:
+            type: integer
+  /api/card:
+    get:
+      operationId: list_cards
+      summary: List saved questions
+      risk: read
+      description: >-
+        List saved questions (cards). Use the returned `id` with run_card.
+      parameters:
+        - name: f
+          in: query
+          description: "Optional filter: all, mine, archived (default all)"
+          schema:
+            type: string
+  /api/card/{card_id}/query:
+    post:
+      operationId: run_card
+      summary: "Run saved question {card_id}"
+      risk: read
+      description: >-
+        Execute a saved question by id and return its rows. The query text
+        is whatever the card owner saved — running a card never takes raw
+        SQL from the caller.
+      parameters:
+        - name: card_id
+          in: path
+          required: true
+          description: Card id (from list_cards)
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                parameters:
+                  type: array
+                  description: Optional card parameter bindings
+  /api/search:
+    get:
+      operationId: search
+      summary: "Search Metabase for '{q}'"
+      risk: read
+      description: >-
+        Native Metabase search over cards, dashboards, tables, collections,
+        and databases.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Search term
+          schema:
+            type: string
+        - name: models
+          in: query
+          description: >-
+            Optional comma-separated type filter (card, dashboard, table,
+            collection, database)
+          schema:
+            type: string
+  /api/dataset:
+    post:
+      operationId: run_query
+      summary: "Run SQL on database {database}"
+      # D42: classified per call — SELECT-only queries execute as reads
+      # (gated per referenced table), anything else routes to approval.
+      risk: dynamic
+      description: >-
+        Run a native SQL query against a database and return up to ~2000
+        rows. The statement is parsed by the gateway: single read-only
+        SELECTs run as read-class, per referenced table; DML/DDL,
+        multi-statement input, or anything unparseable is write-class and
+        routes to approval. Schema-qualify table names (public.orders).
+        Metabase {{template variables}} are not supported here — inline the
+        values instead.
+      disclose:
+        - label: SQL
+          primary: true
+          filter: .params.query
+          max_chars: 2000
+        - label: Database
+          filter: .params.database | tostring
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [database, query]
+              properties:
+                database:
+                  type: integer
+                  description: Metabase database id (from list_databases)
+                  x-overslash-sql-database: .database | tostring
+                query:
+                  type: string
+                  description: The SQL statement to run
+                  x-overslash-sql-field: native.query
+                type:
+                  type: string
+                  # Pinned: exposing MBQL (`query`) here would smuggle an
+                  # unparsed query shape past the SQL policy.
+                  enum: [native]
+                  default: native
+  /api/dataset/{export_format}:
+    post:
+      operationId: export_query
+      summary: "Export SQL results as {export_format}"
+      risk: dynamic
+      description: >-
+        Run a native SQL query and return the full result set (up to ~1M
+        rows) as csv, json, or xlsx — the payload comes back in the
+        response, nothing is written to disk. Same SQL policy as run_query.
+        Unlike run_query, Metabase's export endpoint takes the dataset
+        query as one nested object: pass
+        query = {"database": <id>, "type": "native",
+        "native": {"query": "SELECT …"}}.
+      disclose:
+        - label: SQL
+          primary: true
+          filter: .params.query.native.query
+          max_chars: 2000
+        - label: Database
+          filter: .params.query.database | tostring
+        - label: Format
+          filter: .params.export_format
+      response_type: binary
+      parameters:
+        - name: export_format
+          in: path
+          required: true
+          description: "Result format: csv, json, or xlsx"
+          schema:
+            type: string
+            enum: [csv, json, xlsx]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: object
+                  description: >-
+                    The dataset query object: {"database": <id>, "type":
+                    "native", "native": {"query": "SELECT …"}}. The SQL is
+                    read (and policy-classified) at native.query; anything
+                    else — including an MBQL "type": "query" — fails closed
+                    to write-class.
+                  # Extraction mode: the path descends into this object.
+                  x-overslash-sql-field: query.native.query
+                  x-overslash-sql-database: .query.database | tostring

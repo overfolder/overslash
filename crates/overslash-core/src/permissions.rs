@@ -124,6 +124,117 @@ impl PermissionKey {
             None => v.to_string(),
         }
     }
+
+    /// D42/D43 per-table keys for one analyzed SQL statement, split by
+    /// context: `{service}:{action}:table={label}/{relation}` per relation
+    /// read (select context) and `{service}:{action}:table_mut={label}/
+    /// {relation}` per **mutation target** (DML/DDL context), plus the
+    /// **sentinel** `table_mut={label}/*` when the statement's relations
+    /// cannot be exhaustively enumerated (parse failure, `DO`/`CALL`
+    /// bodies, the parser compiled out, an unsupported dialect — all of
+    /// which also classify write, hence the mutation-shaped sentinel).
+    ///
+    /// The split is what keeps Allow & Remember honest: a rule remembered
+    /// from a read approval (`table=…`) never covers a later mutation of
+    /// the same table, and asymmetric policies ("read anything, write only
+    /// scratch") become expressible. The **value-only** compat form
+    /// (`{service}:{action}:{label-less value}`, D40) covers both labels —
+    /// "this table, read or write" — and is the ladder's middle rung.
+    ///
+    /// Relations come verbatim from the parser: schema-qualified iff the SQL
+    /// qualified them, unquoted identifiers already lowercased, quoted ones
+    /// case-preserved. No `search_path` guessing — a rule for
+    /// `…/public.orders` does not cover an unqualified `orders`; operators
+    /// grant both spellings or require agents to schema-qualify. A view is
+    /// gated as its own name.
+    ///
+    /// Glob shapes that fall out (`*` does not span `/`):
+    /// - `…:table=reveni-prod/*` — read every table in one DB;
+    /// - `…:table_mut=reveni-prod/*` — mutate anything there (covers the
+    ///   sentinel too, deliberately: whoever may mutate the whole DB may
+    ///   run statements the parser cannot enumerate);
+    /// - `…:table=reveni-prod/public.*` — one schema (`*` spans `.`);
+    /// - `…:reveni-prod/public.orders` — value-only: this table, either way;
+    /// - `{service}:{action}:*` does **not** cover table keys — action-wide
+    ///   grants over SQL actions are written `{service}:{action}:**`.
+    pub fn from_sql_analysis(
+        service_key: &str,
+        action_key: &str,
+        db_label: &str,
+        analysis: &crate::sql_policy::SqlAnalysis,
+    ) -> Vec<Self> {
+        let label = sanitize_db_label(db_label);
+        let mut keys: Vec<Self> = dedup_preserving(
+            analysis
+                .read_tables
+                .iter()
+                .map(|t| format!("{service_key}:{action_key}:table={label}/{t}"))
+                .chain(
+                    analysis
+                        .mut_tables
+                        .iter()
+                        .map(|t| format!("{service_key}:{action_key}:table_mut={label}/{t}")),
+                ),
+        )
+        .into_iter()
+        .map(Self)
+        .collect();
+        if !analysis.tables_exhaustive {
+            let sentinel = Self(format!("{service_key}:{action_key}:table_mut={label}/*"));
+            if !keys.contains(&sentinel) {
+                keys.push(sentinel);
+            }
+        }
+        keys
+    }
+
+    /// D42 column keys for one analyzed SQL statement — **deny-screen only**,
+    /// never required to be covered by an allow rule (a parser sees
+    /// *referenced identifiers*, not resolved columns, so allow semantics
+    /// would be security theater; see the sql_policy module docs).
+    ///
+    /// Named columns mint `{service}:{action}:column={label}/{identifier}`.
+    /// A star select (`*` / `t.*`) mints `{service}:{action}:column_star={label}`
+    /// as its own label instead of a `column=` key, because a glob pattern
+    /// cannot name the literal `*` without also matching everything — this
+    /// way "force explicit enumeration" is the typable deny rule
+    /// `{service}:*:column_star=*`, and per-column denies stay independent
+    /// (`{service}:*:column=*/ssn`).
+    pub fn from_sql_columns(
+        service_key: &str,
+        action_key: &str,
+        db_label: &str,
+        analysis: &crate::sql_policy::SqlAnalysis,
+    ) -> Vec<Self> {
+        let label = sanitize_db_label(db_label);
+        dedup_preserving(analysis.columns.iter().map(|c| {
+            if c == "*" {
+                format!("{service_key}:{action_key}:column_star={label}")
+            } else {
+                format!("{service_key}:{action_key}:column={label}/{c}")
+            }
+        }))
+        .into_iter()
+        .map(Self)
+        .collect()
+    }
+}
+
+/// `/` separates the DB label from the relation and `=` separates the scope
+/// label from the value, so a config-supplied label containing either would
+/// silently change the key shape; whitespace would make keys untypable.
+/// All three collapse to `-`.
+fn sanitize_db_label(label: &str) -> String {
+    label
+        .chars()
+        .map(|c| {
+            if c == '/' || c == '=' || c.is_whitespace() {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// Parse a flat permission key string into its structured components.
@@ -236,6 +347,25 @@ fn broadening_ladder(dk: &DerivedKey) -> Vec<String> {
                     ladder.push(method_wildcard);
                 }
                 ladder.push(format!("{}:*:/**", dk.service));
+            } else if dk.label.is_some() && dk.value.contains('/') {
+                // Slash-carrying labelled keys — the D42 table shape
+                // ({service}:{action}:table={db}/{relation}). `*` does not
+                // span `/`, so the classic `:*` / `:*:*` rungs would suggest
+                // rules that match nothing; the ladder widens value-only →
+                // db-wide → `**` forms instead:
+                //   table=prod/public.orders → prod/public.orders (any label)
+                //   → table=prod/* (whole DB) → {service}:{action}:**
+                //   → {service}:**
+                ladder.push(format!("{}:{}:{}", dk.service, dk.action, dk.value));
+                if let Some((db, rest)) = dk.value.split_once('/') {
+                    if rest != "*"
+                        && let Some(label) = &dk.label
+                    {
+                        ladder.push(format!("{}:{}:{label}={db}/*", dk.service, dk.action));
+                    }
+                }
+                ladder.push(format!("{}:{}:**", dk.service, dk.action));
+                ladder.push(format!("{}:**", dk.service));
             } else {
                 // Service action:
                 // {service}:{action}:{label}={value} → {service}:{action}:{value}
@@ -515,8 +645,26 @@ pub enum PermissionResult {
 /// Rules are evaluated in order: deny rules override allow rules.
 /// All keys must be covered by allow rules for the result to be `Allowed`.
 pub fn check_permissions(rules: &[PermissionRule], keys: &[PermissionKey]) -> PermissionResult {
-    // First check for explicit denies
-    for key in keys {
+    check_permissions_screened(rules, keys, &[])
+}
+
+/// [`check_permissions`] with an extra set of **deny-screen** keys: keys a
+/// deny rule can match (→ hard `Denied`) but that never need allow coverage.
+///
+/// This is the D42 column tier: a parser yields *referenced identifiers*,
+/// not resolved columns, so requiring an allow rule per column would force
+/// operators to enumerate grants for something the gateway cannot actually
+/// guarantee — but a deny rule over them is sound, because matching a
+/// referenced identifier fails closed (`SELECT *` screens as `column_star`,
+/// forcing enumeration; a named PII column screens as itself).
+pub fn check_permissions_screened(
+    rules: &[PermissionRule],
+    keys: &[PermissionKey],
+    deny_screen_keys: &[PermissionKey],
+) -> PermissionResult {
+    // First check for explicit denies — over the required keys *and* the
+    // screen-only keys.
+    for key in keys.iter().chain(deny_screen_keys) {
         for rule in rules {
             if rule.effect == PermissionEffect::Deny && rule_matches(&rule.action_pattern, &key.0) {
                 return PermissionResult::Denied(format!(
@@ -527,7 +675,7 @@ pub fn check_permissions(rules: &[PermissionRule], keys: &[PermissionKey]) -> Pe
         }
     }
 
-    // Then check for allows
+    // Then check for allows — required keys only; screen keys need none.
     let mut uncovered = Vec::new();
     for key in keys {
         let covered = rules.iter().any(|rule| {
@@ -1666,5 +1814,313 @@ mod tests {
         assert_eq!(AccessLevel::parse("write"), Some(AccessLevel::Write));
         assert_eq!(AccessLevel::parse("admin"), Some(AccessLevel::Admin));
         assert_eq!(AccessLevel::parse("invalid"), None);
+    }
+
+    // ── D42 SQL-policy keys ──────────────────────────────────────────────
+
+    fn analysis(
+        read_tables: &[&str],
+        mut_tables: &[&str],
+        columns: &[&str],
+        exhaustive: bool,
+    ) -> crate::sql_policy::SqlAnalysis {
+        crate::sql_policy::SqlAnalysis {
+            class: crate::sql_policy::SqlClass::Read,
+            write_reason: None,
+            read_tables: read_tables.iter().map(|s| s.to_string()).collect(),
+            mut_tables: mut_tables.iter().map(|s| s.to_string()).collect(),
+            columns: columns.iter().map(|s| s.to_string()).collect(),
+            tables_exhaustive: exhaustive,
+        }
+    }
+
+    #[test]
+    fn sql_table_keys_enumerate_split_and_dedup() {
+        // INSERT INTO archive SELECT … FROM public.orders JOIN users —
+        // read-context relations mint `table=`, the mutation target mints
+        // `table_mut=`, duplicates collapse.
+        let a = analysis(
+            &["public.orders", "users", "public.orders"],
+            &["archive"],
+            &[],
+            true,
+        );
+        let keys = PermissionKey::from_sql_analysis("metabase", "run_query", "reveni-prod", &a);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec![
+                "metabase:run_query:table=reveni-prod/public.orders",
+                "metabase:run_query:table=reveni-prod/users",
+                "metabase:run_query:table_mut=reveni-prod/archive",
+            ]
+        );
+        // A relation both read and mutated appears under both labels.
+        let a = analysis(&["a"], &["a"], &[], true);
+        let keys = PermissionKey::from_sql_analysis("m", "q", "db", &a);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec!["m:q:table=db/a", "m:q:table_mut=db/a"]
+        );
+    }
+
+    #[test]
+    fn sql_table_keys_emit_mut_sentinel_when_not_exhaustive() {
+        // The sentinel is mutation-shaped: every non-exhaustive case also
+        // classifies write, so only a mutate-anything (or broader) grant
+        // covers it.
+        let a = analysis(&["orders"], &[], &[], false);
+        let keys = PermissionKey::from_sql_analysis("metabase", "run_query", "prod", &a);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec![
+                "metabase:run_query:table=prod/orders",
+                "metabase:run_query:table_mut=prod/*",
+            ]
+        );
+        // No tables at all (feature off / parse error) → sentinel only.
+        let a = analysis(&[], &[], &[], false);
+        let keys = PermissionKey::from_sql_analysis("metabase", "run_query", "prod", &a);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].0, "metabase:run_query:table_mut=prod/*");
+    }
+
+    #[test]
+    fn sql_db_label_is_sanitized() {
+        let a = analysis(&["t"], &[], &[], true);
+        let keys = PermissionKey::from_sql_analysis("m", "q", "a/b=c d", &a);
+        assert_eq!(keys[0].0, "m:q:table=a-b-c-d/t");
+    }
+
+    #[test]
+    fn sql_column_keys_split_star_from_named() {
+        let a = analysis(&[], &[], &["*", "id", "ssn", "id"], true);
+        let keys = PermissionKey::from_sql_columns("metabase", "run_query", "prod", &a);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec![
+                "metabase:run_query:column_star=prod",
+                "metabase:run_query:column=prod/id",
+                "metabase:run_query:column=prod/ssn",
+            ]
+        );
+    }
+
+    /// The glob truths D42's rule surface depends on. `*` does not span `/`,
+    /// `**` does, `*` spans `.`.
+    #[test]
+    fn sql_table_key_cover_truths() {
+        let key = "metabase:run_query:table=reveni-prod/public.orders";
+        for (pattern, covers) in [
+            ("metabase:run_query:table=reveni-prod/public.orders", true),
+            ("metabase:run_query:table=reveni-prod/*", true), // whole DB
+            ("metabase:run_query:table=reveni-prod/public.*", true), // schema
+            ("metabase:run_query:table=*/public.orders", true), // any DB
+            ("metabase:run_query:reveni-prod/public.orders", true), // value-only form
+            ("metabase:run_query:*", false),                  // `*` does not span `/`
+            ("metabase:run_query:**", true),
+            ("metabase:**", true),
+            // Qualified rule does not cover an unqualified relation.
+            ("metabase:run_query:table=reveni-prod/public.orders", true),
+        ] {
+            assert_eq!(key_covers(pattern, key), covers, "{pattern} vs {key}");
+        }
+        // …and the unqualified relation is its own key.
+        assert!(!key_covers(
+            "metabase:run_query:table=reveni-prod/public.orders",
+            "metabase:run_query:table=reveni-prod/orders"
+        ));
+        // The sentinel is only covered by the db-wide-mut (or broader) grants.
+        let sentinel = "metabase:run_query:table_mut=reveni-prod/*";
+        assert!(key_covers(
+            "metabase:run_query:table_mut=reveni-prod/*",
+            sentinel
+        ));
+        assert!(!key_covers(
+            "metabase:run_query:table_mut=reveni-prod/public.orders",
+            sentinel
+        ));
+    }
+
+    /// The D43 read/mut split: a read grant never covers a mutation of the
+    /// same table (and vice versa), while the value-only form covers both —
+    /// "this table, whichever way".
+    #[test]
+    fn sql_table_read_and_mut_labels_are_disjoint() {
+        let read_key = "metabase:run_query:table=pagila/public.film";
+        let mut_key = "metabase:run_query:table_mut=pagila/public.film";
+
+        // A remembered read grant does not authorize writes…
+        assert!(!key_covers(
+            "metabase:run_query:table=pagila/public.film",
+            mut_key
+        ));
+        assert!(!key_covers("metabase:run_query:table=pagila/*", mut_key));
+        // …and a write grant does not cover reads.
+        assert!(!key_covers(
+            "metabase:run_query:table_mut=pagila/public.film",
+            read_key
+        ));
+
+        // The label-less value-only form covers both classes (D40 compat).
+        for key in [read_key, mut_key] {
+            assert!(
+                key_covers("metabase:run_query:pagila/public.film", key),
+                "{key}"
+            );
+            assert!(key_covers("metabase:run_query:pagila/*", key), "{key}");
+        }
+
+        // Asymmetric policy: read anything + write only scratch.
+        let rules = vec![
+            rule("metabase:run_query:table=pagila/*", PermissionEffect::Allow),
+            rule(
+                "metabase:run_query:table_mut=pagila/public.scratch",
+                PermissionEffect::Allow,
+            ),
+        ];
+        let allowed = vec![
+            PermissionKey("metabase:run_query:table=pagila/public.film".to_string()),
+            PermissionKey("metabase:run_query:table_mut=pagila/public.scratch".to_string()),
+        ];
+        assert_eq!(
+            check_permissions(&rules, &allowed),
+            PermissionResult::Allowed
+        );
+        let blocked = vec![PermissionKey(
+            "metabase:run_query:table_mut=pagila/public.film".to_string(),
+        )];
+        assert!(matches!(
+            check_permissions(&rules, &blocked),
+            PermissionResult::NeedsApproval(_)
+        ));
+
+        // Write-only deny: mutations blocked, reads untouched.
+        let rules = vec![
+            rule("metabase:**", PermissionEffect::Allow),
+            rule("metabase:*:table_mut=pagila/*", PermissionEffect::Deny),
+        ];
+        assert!(matches!(
+            check_permissions(&rules, &[PermissionKey(mut_key.to_string())]),
+            PermissionResult::Denied(_)
+        ));
+        assert_eq!(
+            check_permissions(&rules, &[PermissionKey(read_key.to_string())]),
+            PermissionResult::Allowed
+        );
+    }
+
+    #[test]
+    fn sql_table_key_ladder_uses_globstar_rungs() {
+        let dk = parse_derived_key("metabase:run_query:table=reveni-prod/public.orders");
+        assert_eq!(
+            broadening_ladder(&dk),
+            vec![
+                "metabase:run_query:table=reveni-prod/public.orders",
+                "metabase:run_query:reveni-prod/public.orders",
+                "metabase:run_query:table=reveni-prod/*",
+                "metabase:run_query:**",
+                "metabase:**",
+            ]
+        );
+        // A mut key ladders identically within its own label, with the
+        // value-only rung as the read-or-write middle step.
+        let dk = parse_derived_key("metabase:run_query:table_mut=reveni-prod/public.orders");
+        assert_eq!(
+            broadening_ladder(&dk),
+            vec![
+                "metabase:run_query:table_mut=reveni-prod/public.orders",
+                "metabase:run_query:reveni-prod/public.orders",
+                "metabase:run_query:table_mut=reveni-prod/*",
+                "metabase:run_query:**",
+                "metabase:**",
+            ]
+        );
+
+        // The sentinel skips the db-wide rung (it *is* the db-wide shape).
+        let dk = parse_derived_key("metabase:run_query:table_mut=reveni-prod/*");
+        assert_eq!(
+            broadening_ladder(&dk),
+            vec![
+                "metabase:run_query:table_mut=reveni-prod/*",
+                "metabase:run_query:reveni-prod/*",
+                "metabase:run_query:**",
+                "metabase:**",
+            ]
+        );
+    }
+
+    /// Regression: slash-free labelled keys (email's `recipient=`) keep the
+    /// classic ladder untouched.
+    #[test]
+    fn slash_free_ladder_unchanged() {
+        let dk = parse_derived_key("email:send:recipient=a@example.com");
+        assert_eq!(
+            broadening_ladder(&dk),
+            vec![
+                "email:send:recipient=a@example.com",
+                "email:send:a@example.com",
+                "email:send:*",
+                "email:*:*",
+            ]
+        );
+    }
+
+    #[test]
+    fn deny_screen_keys_deny_but_need_no_allow() {
+        let rules = vec![
+            rule("metabase:run_query:**", PermissionEffect::Allow),
+            rule("metabase:*:column=*/ssn", PermissionEffect::Deny),
+        ];
+        let keys = vec![PermissionKey(
+            "metabase:run_query:table=prod/users".to_string(),
+        )];
+
+        // Screen keys don't require allow coverage…
+        let screen = vec![PermissionKey(
+            "metabase:run_query:column=prod/id".to_string(),
+        )];
+        assert_eq!(
+            check_permissions_screened(&rules, &keys, &screen),
+            PermissionResult::Allowed
+        );
+
+        // …but a deny rule matching one is a hard denial.
+        let screen = vec![PermissionKey(
+            "metabase:run_query:column=prod/ssn".to_string(),
+        )];
+        assert!(matches!(
+            check_permissions_screened(&rules, &keys, &screen),
+            PermissionResult::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn column_star_deny_forces_enumeration() {
+        let rules = vec![
+            rule("metabase:**", PermissionEffect::Allow),
+            rule("metabase:*:column_star=*", PermissionEffect::Deny),
+        ];
+        let keys = vec![PermissionKey(
+            "metabase:run_query:table=prod/users".to_string(),
+        )];
+
+        // `SELECT *` screens as column_star → denied.
+        let star = vec![PermissionKey(
+            "metabase:run_query:column_star=prod".to_string(),
+        )];
+        assert!(matches!(
+            check_permissions_screened(&rules, &keys, &star),
+            PermissionResult::Denied(_)
+        ));
+
+        // Enumerated columns pass — and the deny never bleeds onto them.
+        let named = vec![
+            PermissionKey("metabase:run_query:column=prod/id".to_string()),
+            PermissionKey("metabase:run_query:column=prod/total".to_string()),
+        ];
+        assert_eq!(
+            check_permissions_screened(&rules, &keys, &named),
+            PermissionResult::Allowed
+        );
     }
 }

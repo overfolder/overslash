@@ -18,6 +18,10 @@ default = ["embeddings"]
 # Propagates to overslash-core; when off, `init_embeddings` short-circuits
 # to `DisabledEmbedder` and the search endpoint runs keyword+fuzzy only.
 embeddings = ["overslash-core/embeddings"]
+# D42 SQL content policy — propagates to overslash-core. When off,
+# `sql_policy::analyze` fails closed: every sql-annotated call classifies
+# as a write on unknown tables and routes to approval.
+sql_policy = ["overslash-core/sql_policy"]
 
 [dependencies]
 overslash-core = { path = "../overslash-core", default-features = false, features = ["yaml"] }

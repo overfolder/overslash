@@ -62,6 +62,7 @@
 - Eventbrite OAuth provider support
 - E2E tests against real providers: Eventbrite (OAuth), GitHub (PR #113), Google Calendar (PR #111), Google Drive (PR #107), Gmail (PR #115), Resend (token), X.com (OAuth+PKCE, PR #114), Outlook/Microsoft Graph (OAuth; mock e2e in CI + `#[ignore]` live test)
 - sqlx compile-time query checking enforced across all repos
+- **SQL content policy (D42/D43)** — `services/metabase.yaml` (API-key auth; `run_query`/`export_query` at `risk: dynamic`) + a Postgres-exact classifier (`pg_query`/libpg_query behind the default-off `sql_policy` feature; release builds and the e2e stack enable it, the Windows binary fails closed). `x-overslash-sql-field` nominates the SQL param and its body path (string params nest, object params are descended into); read-only SELECTs run as read-class per referenced table (`table={label}/{relation}` keys), everything else elevates to write and bubbles approval on the **mutation targets** (`table_mut={label}/{relation}` + mutation-shaped all-tables sentinel — a remembered read grant never authorizes writes, and "read anything, write only scratch" is expressible); `column=`/`column_star=` deny screening overrides even the `auto_approve_reads` bypass. Verified against a live Metabase + Pagila (`make metabase-e2e`).
 
 ### Phase 2.5 — Dashboard (in progress)
 

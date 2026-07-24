@@ -21,9 +21,9 @@ use serde_json::{Map, Value};
 use crate::credential_template::TemplateReads;
 use crate::template_validation::ValidationIssue;
 use crate::types::{
-    ActionParam, ConfigVar, CredentialTemplate, DisclosureField, McpAuth, McpSpec, ParamLocation,
-    ParamResolver, RequestBodySpec, Risk, ScopeParams, SecretSlot, ServiceAction, ServiceAuth,
-    ServiceDefinition, TokenInjection,
+    ActionParam, ConfigVar, CredentialTemplate, DeclaredRisk, DisclosureField, McpAuth, McpSpec,
+    ParamLocation, ParamResolver, RequestBodySpec, Risk, ScopeParams, SecretSlot, ServiceAction,
+    ServiceAuth, ServiceDefinition, TokenInjection,
 };
 
 /// Lower `x-overslash-scope_param` — a param name, a `param:label` pair, or a
@@ -254,6 +254,12 @@ pub(super) fn extract_auth(
         .flatten()
         .collect();
     for var in &config {
+        // `sql_databases` is consumed by the D42 SQL policy at call time
+        // (dialect + audit-label lookup), not by a credential template, so
+        // it is exempt from the scheme-reads check.
+        if var.key == crate::sql_policy::SQL_DATABASES_CONFIG_KEY {
+            continue;
+        }
         if !read_config.contains(&var.key.as_str()) {
             errors.push(ValidationIssue::new(
                 "openapi_unsupported_construct",
@@ -850,17 +856,22 @@ pub(super) fn extract_http_action(
         .unwrap_or_default();
 
     let risk = match op.get("x-overslash-risk").and_then(Value::as_str) {
-        Some("read") => Risk::Read,
-        Some("write") => Risk::Write,
-        Some("delete") => Risk::Delete,
+        Some("read") => DeclaredRisk::Read,
+        Some("write") => DeclaredRisk::Write,
+        Some("delete") => DeclaredRisk::Delete,
+        // Classified per call from the SQL the caller supplies (D42);
+        // validation rejects it on actions with no `x-overslash-sql` param.
+        Some("dynamic") => DeclaredRisk::Dynamic,
         Some(other) => {
             return Err(vec![ValidationIssue::new(
                 "invalid_risk",
-                format!("x-overslash-risk must be one of read/write/delete (got {other:?})"),
+                format!(
+                    "x-overslash-risk must be one of read/write/delete/dynamic (got {other:?})"
+                ),
                 format!("{base}.x-overslash-risk"),
             )]);
         }
-        None => Risk::from_http_method(method),
+        None => Risk::from_http_method(method).into(),
     };
 
     let scope_param =
@@ -936,9 +947,11 @@ pub(super) fn extract_platform_action(
         .to_string();
 
     let risk = match op.get("x-overslash-risk").and_then(Value::as_str) {
-        Some("read") | None => Risk::Read,
-        Some("write") => Risk::Write,
-        Some("delete") => Risk::Delete,
+        Some("read") | None => DeclaredRisk::Read,
+        Some("write") => DeclaredRisk::Write,
+        Some("delete") => DeclaredRisk::Delete,
+        // Platform actions carry no SQL param, so `dynamic` is rejected —
+        // there is nothing for a classifier to read.
         Some(other) => {
             return Err(vec![ValidationIssue::new(
                 "invalid_risk",
@@ -1009,6 +1022,7 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                 .to_string();
             let aliases = parse_aliases(Some(obj), name);
             let instance_config = parse_instance_config(Some(obj));
+            let (sql_field, sql_database) = parse_sql_policy(Some(obj));
             Some((
                 name.clone(),
                 ActionParam {
@@ -1021,6 +1035,8 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     aliases,
                     location: ParamLocation::Body,
                     instance_config,
+                    sql_field,
+                    sql_database,
                 },
             ))
         })
@@ -1370,13 +1386,18 @@ fn lower_mcp_tool(
     let base = format!("x-overslash-mcp.tools[{name}]");
 
     let risk = match obj.get("x-overslash-risk").and_then(Value::as_str) {
-        Some("read") | None => Risk::Read,
-        Some("write") => Risk::Write,
-        Some("delete") => Risk::Delete,
+        Some("read") | None => DeclaredRisk::Read,
+        Some("write") => DeclaredRisk::Write,
+        Some("delete") => DeclaredRisk::Delete,
+        // An MCP tool taking raw SQL (e.g. HubSpot `query_crm_data`) can be
+        // classified per call exactly like an HTTP action (D42).
+        Some("dynamic") => DeclaredRisk::Dynamic,
         Some(other) => {
             errors.push(ValidationIssue::new(
                 "invalid_risk",
-                format!("x-overslash-risk must be one of read/write/delete (got {other:?})"),
+                format!(
+                    "x-overslash-risk must be one of read/write/delete/dynamic (got {other:?})"
+                ),
                 format!("{base}.x-overslash-risk"),
             ));
             return None;
@@ -1524,6 +1545,7 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
         let default = po.get("default").cloned();
         let aliases = parse_aliases(Some(po), name);
         let instance_config = parse_instance_config(Some(po));
+        let (sql_field, sql_database) = parse_sql_policy(Some(po));
         out.insert(
             name.clone(),
             ActionParam {
@@ -1536,6 +1558,8 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
                 aliases,
                 location: ParamLocation::Body,
                 instance_config,
+                sql_field,
+                sql_database,
             },
         );
     }
@@ -1607,6 +1631,7 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
         };
 
         let instance_config = parse_instance_config(Some(obj));
+        let (sql_field, sql_database) = parse_sql_policy(Some(obj));
 
         out.insert(
             name.to_string(),
@@ -1620,6 +1645,8 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
                 aliases,
                 location,
                 instance_config,
+                sql_field,
+                sql_database,
             },
         );
     }
@@ -1692,6 +1719,7 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
             .and_then(parse_resolver);
         let aliases = parse_aliases(pobj, name);
         let instance_config = parse_instance_config(pobj);
+        let (sql_field, sql_database) = parse_sql_policy(pobj);
 
         out.insert(
             name.clone(),
@@ -1705,6 +1733,8 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
                 aliases,
                 location: ParamLocation::Body,
                 instance_config,
+                sql_field,
+                sql_database,
             },
         );
     }
@@ -1756,6 +1786,25 @@ fn parse_instance_config(obj: Option<&Map<String, Value>>) -> bool {
         .unwrap_or(false)
 }
 
+/// `x-overslash-sql-field` + `x-overslash-sql-database` (D42/D43): presence
+/// of `sql-field` marks this param as the raw-SQL query field, its value is
+/// the dotted body path the value nests under; `sql-database` is the jq
+/// expression that resolves which database the query targets. Read from the
+/// same four param shapes `parse_aliases` covers; cross-param rules (one sql
+/// param per action, string type, path shape, inert sql-database) are
+/// checked by template validation, not here.
+fn parse_sql_policy(obj: Option<&Map<String, Value>>) -> (Option<String>, Option<String>) {
+    let sql_field = obj
+        .and_then(|o| o.get("x-overslash-sql-field"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let sql_database = obj
+        .and_then(|o| o.get("x-overslash-sql-database"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    (sql_field, sql_database)
+}
+
 fn parse_aliases(obj: Option<&Map<String, Value>>, name: &str) -> Vec<String> {
     obj.and_then(|o| o.get("x-overslash-aliases"))
         .and_then(Value::as_array)
@@ -1798,6 +1847,51 @@ mod tests {
         aliases.sort();
         assert_eq!(aliases, vec!["dest".to_string(), "to".to_string()]);
         assert!(params["text"].aliases.is_empty());
+    }
+
+    /// The D42/D43 sql annotations parse from body properties (the Metabase
+    /// shape) and from `parameters[]` entries alike.
+    #[test]
+    fn sql_annotations_parse_from_body_and_query_params() {
+        let body = json!({
+            "required": true,
+            "content": { "application/json": { "schema": {
+                "type": "object",
+                "required": ["database", "query"],
+                "properties": {
+                    "database": {
+                        "type": "integer",
+                        "x-overslash-sql-database": ".database | tostring"
+                    },
+                    "query": {
+                        "type": "string",
+                        "x-overslash-sql-field": "native.query"
+                    },
+                    "type": { "type": "string", "default": "native" }
+                }
+            }}}
+        });
+        let mut params = HashMap::new();
+        collect_body_parameters(Some(&body), &mut params);
+        assert_eq!(params["query"].sql_field.as_deref(), Some("native.query"));
+        assert!(params["query"].sql_database.is_none());
+        assert_eq!(
+            params["database"].sql_database.as_deref(),
+            Some(".database | tostring")
+        );
+        assert!(params["database"].sql_field.is_none());
+        assert!(params["type"].sql_field.is_none());
+
+        // Query-param shape (GET-with-SQL services).
+        let arr = vec![json!({
+            "name": "q",
+            "in": "query",
+            "schema": { "type": "string" },
+            "x-overslash-sql-field": "q"
+        })];
+        let mut params = HashMap::new();
+        collect_parameters(&arr, &mut params);
+        assert_eq!(params["q"].sql_field.as_deref(), Some("q"));
     }
 
     #[test]
