@@ -1,8 +1,10 @@
 <script lang="ts">
 	import '../app.css';
 	import type { Snippet } from 'svelte';
+	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
 	import { type MeIdentity } from '$lib/session';
+	import { currentEnvironment, type AppEnv } from '$lib/env';
 	import { getVersion } from '$lib/api/version';
 	import type { BuildInfo } from '$lib/types';
 	import {
@@ -17,6 +19,7 @@
 	import TopBar from '$lib/components/shell/TopBar.svelte';
 	import MobileTabBar from '$lib/components/shell/MobileTabBar.svelte';
 	import TrialBanner from '$lib/components/shell/TrialBanner.svelte';
+	import DevEnvBanner from '$lib/components/shell/DevEnvBanner.svelte';
 	import Toaster from '$lib/components/Toaster.svelte';
 
 	let { children, data }: { children: Snippet; data: { user: MeIdentity | null } } = $props();
@@ -45,9 +48,41 @@
 
 	let mobileDrawerOpen = $state(false);
 
+	// Which environment this tab is pointed at. On the server we can't know the
+	// runtime host, so we assume prod (no ribbon, no favicon swap) until hydration.
+	const env = $derived<AppEnv>(
+		browser ? currentEnvironment() : { name: '', isProd: true }
+	);
+
 	$effect(() => {
 		if (typeof document !== 'undefined') {
 			document.documentElement.dataset.theme = $theme;
+		}
+	});
+
+	// Height reserved for the environment ribbon; 0 in prod. Applied as an inline
+	// CSS var on the shell wrappers below (not via an $effect), so the offset is
+	// present in the very first render and the sidebar/topbar don't shift down a
+	// frame after load. It cascades to Sidebar/TopBar, which read the same var.
+	const envBarHeight = $derived(env.isProd ? '0px' : '24px');
+
+	// Swap the favicon for a distinct dev-tinted variant in non-prod. Repoint the
+	// existing app.html <link> tags rather than appending new ones — multiple
+	// same-size icon links have undefined precedence.
+	$effect(() => {
+		if (!browser || env.isProd) return;
+		const map: Record<string, string> = {
+			'favicon-16.png': 'favicon-dev-16.png',
+			'favicon-32.png': 'favicon-dev-32.png',
+			'apple-touch-icon.png': 'apple-touch-icon-dev.png'
+		};
+		const links = document.querySelectorAll<HTMLLinkElement>(
+			"link[rel~='icon'], link[rel='apple-touch-icon']"
+		);
+		for (const link of links) {
+			for (const [prod, dev] of Object.entries(map)) {
+				if (link.href.includes(prod)) link.href = link.href.replace(prod, dev);
+			}
 		}
 	});
 
@@ -99,41 +134,60 @@
 	});
 </script>
 
-{#if standalone}
-	{@render children()}
-{:else}
-	<div class="app" style:--sidebar-width={sidebarWidth}>
-		<Sidebar
-			{isAdmin}
-			{isInstanceAdmin}
-			memberships={data?.user?.memberships ?? []}
-			currentOrgId={data?.user?.org_id ?? ''}
-			mobileOpen={mobileDrawerOpen}
-			onCloseMobile={() => (mobileDrawerOpen = false)}
-			{buildInfo}
-		/>
-		<div class="main-col">
-			<TopBar
-				user={data?.user ?? null}
-				{isInstanceAdmin}
-				onMenu={() => (mobileDrawerOpen = true)}
-			/>
-			{#if data?.user?.trial}
-				<TrialBanner trial={data.user.trial} {isAdmin} />
-			{/if}
-			<main class="content">
-				{@render children()}
-			</main>
+<!-- One declaration of --env-bar-height for the whole shell. `display: contents`
+     adds no box, but the custom property still cascades to every descendant —
+     the ribbon and the .app/.standalone offsets read the same value, so the bar
+     height and the reserved space can never drift apart. -->
+<div class="env-scope" style:--env-bar-height={envBarHeight}>
+	{#if !env.isProd}
+		<DevEnvBanner name={env.name} />
+	{/if}
+
+	{#if standalone}
+		<div class="standalone">
+			{@render children()}
 		</div>
-		<MobileTabBar user={data?.user ?? null} {isAdmin} />
-	</div>
-{/if}
+	{:else}
+		<div class="app" style:--sidebar-width={sidebarWidth}>
+			<Sidebar
+				{isAdmin}
+				{isInstanceAdmin}
+				memberships={data?.user?.memberships ?? []}
+				currentOrgId={data?.user?.org_id ?? ''}
+				mobileOpen={mobileDrawerOpen}
+				onCloseMobile={() => (mobileDrawerOpen = false)}
+				{buildInfo}
+			/>
+			<div class="main-col">
+				<TopBar
+					user={data?.user ?? null}
+					{isInstanceAdmin}
+					onMenu={() => (mobileDrawerOpen = true)}
+				/>
+				{#if data?.user?.trial}
+					<TrialBanner trial={data.user.trial} {isAdmin} />
+				{/if}
+				<main class="content">
+					{@render children()}
+				</main>
+			</div>
+			<MobileTabBar user={data?.user ?? null} {isAdmin} />
+		</div>
+	{/if}
+</div>
 
 <Toaster />
 
 <style>
-	.app {
+	.env-scope {
+		/* No box of its own — just a cascade root for --env-bar-height. */
+		display: contents;
+	}
+	.app,
+	.standalone {
 		min-height: 100vh;
+		/* Offset for the environment ribbon; resolves to 0 in prod. */
+		padding-top: var(--env-bar-height, 0);
 	}
 	.main-col {
 		margin-left: var(--sidebar-width);
