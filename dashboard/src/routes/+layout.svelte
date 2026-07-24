@@ -60,12 +60,11 @@
 		}
 	});
 
-	// Reserve space for the environment ribbon. The var defaults to 0 (see the
-	// `, 0` fallbacks in .app / Sidebar / TopBar), so prod is an exact no-op.
-	$effect(() => {
-		if (!browser) return;
-		document.documentElement.style.setProperty('--env-bar-height', env.isProd ? '0px' : '24px');
-	});
+	// Height reserved for the environment ribbon; 0 in prod. Applied as an inline
+	// CSS var on the shell wrappers below (not via an $effect), so the offset is
+	// present in the very first render and the sidebar/topbar don't shift down a
+	// frame after load. It cascades to Sidebar/TopBar, which read the same var.
+	const envBarHeight = $derived(env.isProd ? '0px' : '24px');
 
 	// Swap the favicon for a distinct dev-tinted variant in non-prod. Repoint the
 	// existing app.html <link> tags rather than appending new ones — multiple
@@ -140,11 +139,11 @@
 {/if}
 
 {#if standalone}
-	<div class="standalone">
+	<div class="standalone" style:--env-bar-height={envBarHeight}>
 		{@render children()}
 	</div>
 {:else}
-	<div class="app" style:--sidebar-width={sidebarWidth}>
+	<div class="app" style:--sidebar-width={sidebarWidth} style:--env-bar-height={envBarHeight}>
 		<Sidebar
 			{isAdmin}
 			{isInstanceAdmin}
