@@ -51,10 +51,15 @@ use overslash_core::{
 
 mod approval_detail;
 mod auth;
+mod auth_envelopes;
+mod auth_resolve;
+mod auth_scopes;
 mod call;
 mod errors;
 mod mcp_resolve;
 mod resolve;
+mod resolve_encode;
+mod resolve_metadata;
 mod service_resolve;
 mod validate;
 
