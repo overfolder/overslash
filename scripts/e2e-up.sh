@@ -144,9 +144,12 @@ MAILBOX_PASSWORD="e2epass"
 log "mail ready: greenmail=$GREENMAIL_API_URL overfwd=$OVERFWD_URL imap=$MAILBOX_IMAP"
 
 # 2. Build the fakes + API + puppet binaries up-front so the stack is fast
-# to boot.
+# to boot. sql_policy matches the release build (D42/D43): the e2e stack
+# classifies SQL like prod does, so Metabase dynamic-risk stories and
+# screenshots show real per-table keys rather than the fail-closed sentinel.
+# (Builds vendored libpg_query — needs a C toolchain + libclang.)
 log "building binaries"
-( cd "$REPO_ROOT" && SQLX_OFFLINE=true cargo build -p overslash-fakes -p overslash-cli -p overslash-mcp-puppet --release >/dev/null )
+( cd "$REPO_ROOT" && SQLX_OFFLINE=true cargo build -p overslash-fakes -p overslash-cli -p overslash-mcp-puppet --release -F overslash-cli/sql_policy >/dev/null )
 
 # 3. Start overslash-fakes (OS-assigned ports + state file). The Stripe fake
 #    reads STRIPE_WEBHOOK_SECRET so the HMAC over outbound webhook deliveries

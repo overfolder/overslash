@@ -390,6 +390,10 @@ jobs:
     steps:
       - name: Set WORKTREE_STATE_DIR to a per-job temp dir
         run: echo "WORKTREE_STATE_DIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      # e2e-up builds the API with sql_policy (matching the release build);
+      # bindgen for the vendored libpg_query needs libclang.
+      - name: Install libclang
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
       - name: Tune Postgres for CI (durability off; data is throwaway)
         run: |
           PGPASSWORD=overslash psql -h localhost -U overslash -d overslash <<'SQL'
