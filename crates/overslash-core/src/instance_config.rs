@@ -142,6 +142,8 @@ mod tests {
             aliases: vec![],
             location: ParamLocation::Header,
             instance_config,
+            sql_field: None,
+            sql_database: None,
         }
     }
 
@@ -151,7 +153,7 @@ mod tests {
             path: "/x".into(),
             description: "x".into(),
             summary: None,
-            risk: Risk::Read,
+            risk: Risk::Read.into(),
             response_type: None,
             params: HashMap::new(),
             scope_param: Default::default(),

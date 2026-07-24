@@ -705,7 +705,9 @@ paths:
             }
             for (key, action) in &def.actions {
                 let id = format!("{}:{}", def.key, key);
-                if action.risk.is_mutating()
+                // `dynamic` counts as mutating here: a per-call-classified
+                // action can write, so its approvals need disclose too.
+                if action.risk.display_risk().is_mutating()
                     && action.disclose.is_empty()
                     && !ALLOW_MISSING.contains(&id.as_str())
                 {

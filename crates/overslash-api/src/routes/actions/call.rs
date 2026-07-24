@@ -43,6 +43,17 @@ use super::{approval_detail::*, resolve::*, service_resolve::*, validate::*};
 #[derive(Clone, Copy)]
 pub(crate) struct UpstreamErrored;
 
+/// The `sql` audit block for one evaluated policy outcome: the DB label,
+/// the classification, and (for writes) which fail-closed rule fired. The
+/// raw query itself travels via the template's `disclose` filters.
+fn sql_audit_block(sp: &SqlPolicyOutcome) -> serde_json::Value {
+    serde_json::json!({
+        "db": sp.db_label,
+        "classified": sp.floor.to_string(),
+        "write_reason": sp.write_reason.as_ref().map(|r| r.tag()),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn call_action_impl(
     State(state): State<AppState>,
@@ -138,6 +149,31 @@ pub(super) async fn call_action_impl(
         ));
     }
 
+    // ── D42 SQL content policy ────────────────────────────────────────
+    //
+    // Params are fully canonical (aliases, pins, defaults, coercion,
+    // validation) and the resolved instance is still on hand, so this is
+    // the one point where the SQL param can be located, the target DB's
+    // dialect/label resolved, and the statement classified. The outcome
+    // feeds the `require_risk` gate, the group ceiling, and the permission
+    // keys below — all fail-closed.
+    let sql_policy = evaluate_sql_policy(
+        std::time::Duration::from_millis(state.config.filter_timeout_ms),
+        &pre_meta,
+        pre_resolved_mode_c.as_ref(),
+        &req.params,
+    )
+    .await;
+    if let Some(sp) = &sql_policy {
+        tracing::info!(
+            db_label = %sp.db_label,
+            floor = %sp.floor,
+            write_reason = sp.write_reason.as_ref().map(|r| r.tag()),
+            tables = sp.table_keys.len(),
+            "sql policy evaluated"
+        );
+    }
+
     // ── Admin-as-owner impersonation ──────────────────────────────────
     //
     // When the resolved instance is owned by a different user than the
@@ -180,14 +216,13 @@ pub(super) async fn call_action_impl(
     } = resolved;
 
     // Caller-asserted risk gate (MCP `overslash_read`): reject before any
-    // permission/approval work if the resolved action mutates. We use the
-    // template-declared `risk` for the action shape and fall back to the
-    // HTTP-method inference for verb / `http` shapes — same logic as the
-    // ceiling check below.
+    // permission/approval work if the resolved action mutates. The declared
+    // risk (falling back to HTTP-method inference for verb / `http` shapes)
+    // is merged with the SQL classification — a `dynamic` action carrying a
+    // SELECT-only query passes as read here; a write-classified (or
+    // unclassifiable) one is rejected. Same value as the ceiling check below.
+    let effective = effective_risk(meta.risk, sql_policy.as_ref(), &action_req.method);
     if let Some(required) = req.require_risk {
-        let effective = meta
-            .risk
-            .unwrap_or_else(|| Risk::from_http_method(&action_req.method));
         if required == Risk::Read && effective.is_mutating() {
             let action_label = req
                 .action
@@ -217,6 +252,13 @@ pub(super) async fn call_action_impl(
             &req.params,
         )
     };
+    // D42: per-table keys join (or, for the bare `:*` fallback, replace)
+    // the scope_param keys; column keys ride separately as deny-screen.
+    let perm_keys = merge_sql_keys(perm_keys, scope_meta, sql_policy.as_ref());
+    let deny_screen_keys: Vec<PermissionKey> = sql_policy
+        .as_ref()
+        .map(|sp| sp.column_keys.clone())
+        .unwrap_or_default();
 
     // ── Layer 1: Group ceiling check ─────────────────────────────────
     //
@@ -225,11 +267,9 @@ pub(super) async fn call_action_impl(
     // call runs through this same ceiling — including ones targeting a
     // service owned by the caller's ceiling user.
     let ceiling_service = scope_meta.service_key.clone();
-    let ceiling_risk = if let Some(risk) = meta.risk {
-        risk
-    } else {
-        Risk::from_http_method(&action_req.method)
-    };
+    // Same merged value as the `require_risk` gate: a write-classified SQL
+    // statement exceeds a read-only ceiling and forfeits `read_bypass`.
+    let ceiling_risk = effective;
 
     let ceiling = group_ceiling::load_ceiling(&scope, ceiling_user_id).await?;
 
@@ -282,6 +322,7 @@ pub(super) async fn call_action_impl(
             &scope,
             identity_id,
             &perm_keys,
+            &deny_screen_keys,
             force_user_resolver,
         )
         .await?
@@ -391,6 +432,12 @@ pub(super) async fn call_action_impl(
                     "summary": summary,
                     "current_resolver_identity_id": initial_resolver_id,
                 });
+                if let Some(sp) = &sql_policy {
+                    approval_audit_detail
+                        .as_object_mut()
+                        .expect("audit detail is a json object")
+                        .insert("sql".into(), sql_audit_block(sp));
+                }
                 if !disclosed_fields.is_empty() {
                     approval_audit_detail
                         .as_object_mut()
@@ -489,7 +536,10 @@ pub(super) async fn call_action_impl(
                         relationship: "self".into(),
                         suggested_tiers: suggest_tiers(&keys),
                         auto_call_on_approve: identity.auto_call_on_approve,
-                        risk: crate::routes::approvals::risk_class(meta.risk),
+                        // The merged (SQL-classified) risk when the shape
+                        // declares one; verb/http shapes keep the "med"
+                        // default risk_class(None) has always produced.
+                        risk: crate::routes::approvals::risk_class(meta.risk.map(|_| effective)),
                         permission_keys: keys.clone(),
                         action_detail: response_action_detail,
                         action_detail_truncated,
@@ -944,6 +994,12 @@ pub(super) async fn call_action_impl(
         "service": req.service,
         "action": req.action,
     });
+    if let Some(sp) = &sql_policy {
+        audit_detail
+            .as_object_mut()
+            .expect("audit_detail is a json object")
+            .insert("sql".into(), sql_audit_block(sp));
+    }
     // Org-gated response capture (off / errors_only / all), truncated at
     // AUDIT_RESPONSE_BODY_MAX_BYTES.
     if audit_capture::should_capture(audit_body_mode, upstream_error) {

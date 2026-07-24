@@ -630,10 +630,27 @@ pub(super) async fn resolve_request(
                 .as_ref()
                 .filter(|rb| rb.is_json())
                 .map(|_| {
-                    let map: serde_json::Map<String, serde_json::Value> = body_params
-                        .into_iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
+                    let mut map = serde_json::Map::new();
+                    for (k, v) in body_params {
+                        // A string param whose `x-overslash-sql-field` names a
+                        // path other than its own name is *moved* there
+                        // (`query` → `{"native": {"query": …}}`), keeping the
+                        // caller surface flat while matching the upstream's
+                        // nested payload (D43). Object-mode sql params (the
+                        // path points inside the caller-supplied object) place
+                        // flat like everything else.
+                        let nested_path = action.params.get(k.as_str()).and_then(|p| {
+                            p.sql_field
+                                .as_deref()
+                                .filter(|path| p.param_type != "object" && *path != k.as_str())
+                        });
+                        match nested_path {
+                            Some(path) => insert_at_body_path(&mut map, path, v.clone()),
+                            None => {
+                                map.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
                     serde_json::to_string(&map).unwrap_or_default()
                 });
             (url, body)
@@ -820,6 +837,35 @@ pub(super) async fn resolve_request(
 /// nothing. Nested arrays/objects inside an array fall through to their
 /// JSON string encoding — templates only declare arrays of scalars, so
 /// that case is a template bug, not a runtime one.
+/// Insert `value` at a dotted path in a JSON body under construction,
+/// creating intermediate objects as needed (`native.query` →
+/// `{"native": {"query": value}}`). Template validation guarantees the first
+/// segment collides with no flat body param; a non-object already present at
+/// an intermediate key (two sql-field params can't exist, so only via a
+/// caller-supplied conflicting value routed by an unrelated bug) is
+/// overwritten rather than panicked on.
+fn insert_at_body_path(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    path: &str,
+    value: serde_json::Value,
+) {
+    let mut segments = path.split('.').peekable();
+    let mut cur = map;
+    while let Some(seg) = segments.next() {
+        if segments.peek().is_none() {
+            cur.insert(seg.to_string(), value);
+            return;
+        }
+        let entry = cur
+            .entry(seg.to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !entry.is_object() {
+            *entry = serde_json::Value::Object(serde_json::Map::new());
+        }
+        cur = entry.as_object_mut().expect("just ensured object");
+    }
+}
+
 fn encode_query_param(key: &str, value: &serde_json::Value) -> Vec<String> {
     let encode = |v: &serde_json::Value| {
         let val = v.as_str().unwrap_or(&v.to_string()).to_string();
@@ -833,8 +879,33 @@ fn encode_query_param(key: &str, value: &serde_json::Value) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::encode_query_param;
+    use super::{encode_query_param, insert_at_body_path};
     use serde_json::json;
+
+    /// D43 body nesting: a sql-field path creates intermediate objects and
+    /// coexists with flat keys under the same parent.
+    #[test]
+    fn insert_at_body_path_nests_and_merges() {
+        let mut map = serde_json::Map::new();
+        map.insert("database".to_string(), json!(5));
+        insert_at_body_path(&mut map, "native.query", json!("SELECT 1"));
+        insert_at_body_path(&mut map, "native.template-tags", json!({}));
+        assert_eq!(
+            serde_json::Value::Object(map),
+            json!({
+                "database": 5,
+                "native": { "query": "SELECT 1", "template-tags": {} }
+            })
+        );
+
+        // Single-segment path behaves like a flat insert.
+        let mut map = serde_json::Map::new();
+        insert_at_body_path(&mut map, "query", json!("SELECT 1"));
+        assert_eq!(
+            serde_json::Value::Object(map),
+            json!({ "query": "SELECT 1" })
+        );
+    }
 
     #[test]
     fn array_expands_to_repeated_pairs() {

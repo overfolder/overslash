@@ -15,5 +15,6 @@ pub mod registry;
 pub mod search;
 pub mod secret_injection;
 pub mod service_layer;
+pub mod sql_policy;
 pub mod template_validation;
 pub mod types;

@@ -381,8 +381,11 @@ pub fn apply_delta(
 fn apply_action_patch(action: &mut ServiceAction, patch: &ActionPatch) {
     if let Some(risk) = patch.risk {
         // Clamp UP only: raise to `risk` if it's more severe; never lower.
-        if risk.severity() >= action.risk.severity() {
-            action.risk = risk;
+        // A `dynamic` base counts as write here ("write until proven read"),
+        // so a mask pinning `write` (or `delete`) replaces the dynamism with
+        // a static class — more approvals, never fewer.
+        if risk.severity() >= action.risk.display_risk().severity() {
+            action.risk = risk.into();
         }
     }
     if !patch.disclose.is_empty() {
@@ -489,7 +492,7 @@ pub fn validate_delta(
             ),
             Some(action) => {
                 if let Some(risk) = patch.risk
-                    && risk.severity() < action.risk.severity()
+                    && risk.severity() < action.risk.display_risk().severity()
                 {
                     issues.err(
                         "risk_clamp_down",
@@ -634,7 +637,7 @@ mod tests {
             path: "/x".into(),
             description: "x".into(),
             summary: None,
-            risk,
+            risk: risk.into(),
             response_type: None,
             params: HashMap::new(),
             scope_param: Default::default(),
@@ -960,6 +963,8 @@ mod tests {
                 aliases: vec![],
                 location: crate::types::ParamLocation::Header,
                 instance_config: true,
+                sql_field: None,
+                sql_database: None,
             },
         );
         base

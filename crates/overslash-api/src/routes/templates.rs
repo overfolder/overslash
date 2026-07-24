@@ -18,7 +18,7 @@ use overslash_core::template_validation::{
     ValidationIssue, ValidationReport, parse_normalize_compile_yaml, prepare_draft_from_value,
     validate_template_yaml,
 };
-use overslash_core::types::{ActionParam, Risk, ScopeParamRef, ServiceDefinition};
+use overslash_core::types::{ActionParam, DeclaredRisk, ScopeParamRef, ServiceDefinition};
 
 use crate::services::platform_services::{ScopeCoverage, ScopeKnowledge, action_scope_coverage};
 use crate::services::platform_templates::{
@@ -37,10 +37,11 @@ use crate::{
 };
 
 /// Run `parse_normalize_compile_yaml` and then validate that every
-/// `x-overslash-disclose` filter is a syntactically valid jq expression. jq
-/// syntax validation lives in `overslash-api` (jq isn't compiled into
-/// `overslash-core` to keep it WASM-friendly), so this is the single gate
-/// any register / update / import / promote path must go through.
+/// `x-overslash-disclose` filter and `x-overslash-sql-database` expression is
+/// a syntactically valid jq expression. jq syntax validation lives in
+/// `overslash-api` (jq isn't compiled into `overslash-core` to keep it
+/// WASM-friendly), so this is the single gate any register / update /
+/// import / promote path must go through.
 fn parse_normalize_compile_and_check_disclose(
     yaml: &str,
 ) -> std::result::Result<(serde_json::Value, ServiceDefinition), ValidationReport> {
@@ -57,6 +58,20 @@ fn parse_normalize_compile_and_check_disclose(
                     "disclose_invalid_jq",
                     format!("filter is not a valid jq expression: {msg}"),
                     format!("actions.{action_key}.disclose[{i}].filter"),
+                ));
+            }
+        }
+        for (param_name, param) in &action.params {
+            if let Some(expr) = &param.sql_database
+                && let Err(msg) =
+                    response_filter::validate_syntax(&response_filter::ResponseFilter::Jq {
+                        expr: expr.clone(),
+                    })
+            {
+                extra.push(ValidationIssue::new(
+                    "sql_database_invalid_jq",
+                    format!("x-overslash-sql-database is not a valid jq expression: {msg}"),
+                    format!("actions.{action_key}.params.{param_name}.x-overslash-sql-database"),
                 ));
             }
         }
@@ -288,7 +303,7 @@ pub(crate) struct ActionSummary {
     /// string, which is the common case.
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
-    risk: Risk,
+    risk: DeclaredRisk,
     /// MCP tool name when the owning service has `runtime: mcp`; None for HTTP.
     /// The dashboard switches its column layout on this field's presence.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -325,7 +340,7 @@ struct ActionDetail {
     /// the same string.
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
-    risk: Risk,
+    risk: DeclaredRisk,
     params: std::collections::HashMap<String, ActionParam>,
     /// The action's scoped params, resolved to `{param, label}` pairs. The
     /// authored `param:label` shorthand is a template-document detail; clients

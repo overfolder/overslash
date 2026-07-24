@@ -103,6 +103,14 @@ pub(super) const PARAMETER_ALIASES: &[Alias] = &[
         alias: "instance-config",
         canonical: "x-overslash-instance-config",
     },
+    Alias {
+        alias: "sql-field",
+        canonical: "x-overslash-sql-field",
+    },
+    Alias {
+        alias: "sql-database",
+        canonical: "x-overslash-sql-database",
+    },
 ];
 
 pub(super) const OAUTH2_SEC_ALIASES: &[Alias] = &[Alias {

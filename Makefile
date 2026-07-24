@@ -92,11 +92,11 @@ dashboard-static:
 # Build the self-hosted single-binary release with embedded dashboard and MCP.
 # Produces target/release/overslash. Run `overslash web` to start it.
 build: dashboard-static
-	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard
+	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard,sql_policy
 
 # Alias kept for backward compatibility.
 web-build: dashboard-static
-	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard
+	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard,sql_policy
 
 # Install overslash to $(PREFIX)/bin (default: ~/.local/bin).
 # Override: PREFIX=/usr/local make install

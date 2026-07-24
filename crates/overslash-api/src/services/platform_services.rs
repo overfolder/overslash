@@ -1661,7 +1661,7 @@ mod tests {
                     path: "/".into(),
                     description: String::new(),
                     summary: None,
-                    risk: Risk::Read,
+                    risk: Risk::Read.into(),
                     response_type: None,
                     params: HashMap::new(),
                     scope_param: Default::default(),

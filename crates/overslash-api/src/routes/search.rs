@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_core::search::{Candidate, MIN_SCORE, apply_post_bonuses, keyword_fuzzy_score};
-use overslash_core::types::{Risk, ServiceAuth, ServiceDefinition};
+use overslash_core::types::{DeclaredRisk, ServiceAuth, ServiceDefinition};
 use overslash_db::repos::{org as org_repo, service_action_embedding, service_template};
 use overslash_db::scopes::{OrgScope, UserScope};
 
@@ -117,7 +117,7 @@ struct SearchResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    risk: Option<Risk>,
+    risk: Option<DeclaredRisk>,
     tier: String,
     auth: AuthStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -427,7 +427,7 @@ async fn search(
             } else {
                 kw
             };
-            let final_score = apply_post_bonuses(raw, connected, action.risk);
+            let final_score = apply_post_bonuses(raw, connected, action.risk.display_risk());
             if final_score < MIN_SCORE {
                 continue;
             }
@@ -525,7 +525,7 @@ async fn search(
                 } else {
                     kw
                 };
-                let final_score = apply_post_bonuses(raw, connected, action.risk);
+                let final_score = apply_post_bonuses(raw, connected, action.risk.display_risk());
                 if final_score < MIN_SCORE {
                     continue;
                 }

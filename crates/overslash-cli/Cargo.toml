@@ -15,6 +15,9 @@ default = []
 # can serve it same-origin. Requires `dashboard/build/` to exist (run
 # `make dashboard-static` first).
 embed-dashboard = ["dep:rust-embed", "dep:mime_guess"]
+# D42 SQL content policy (pg_query parser). Off by default; the release
+# build enables it so prod classifies SQL instead of failing closed.
+sql_policy = ["overslash-api/sql_policy", "overslash-core/sql_policy"]
 
 [dependencies]
 overslash-api = { path = "../overslash-api" }
