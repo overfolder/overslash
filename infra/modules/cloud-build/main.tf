@@ -10,6 +10,11 @@ variable "base_prefix" {
   type = string
 }
 
+variable "env" {
+  description = "Environment name (dev/prod). Gates the release-version build-arg."
+  type        = string
+}
+
 variable "repository_name" {
   type = string
 }
@@ -65,7 +70,10 @@ resource "google_cloudbuild_trigger" "deploy" {
     # staleness to one week.
     step {
       name = "gcr.io/kaniko-project/executor:latest"
-      args = [
+      # Only prod claims the clean manifest version. A branch-push deploy has no
+      # release tag to inject, so OVERSLASH_RELEASE tells build.rs to drop the
+      # "-dev" suffix from the manifest version; dev omits it and stays "-dev".
+      args = concat([
         "--dockerfile=crates/overslash-api/Dockerfile",
         "--context=dir:///workspace",
         # Bake the commit into the binary so /health and GET /v1/version can
@@ -80,7 +88,9 @@ resource "google_cloudbuild_trigger" "deploy" {
         # inference fragile, so we point every build at one stable repo.
         "--cache-repo=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api/cache",
         "--cache-ttl=168h",
-      ]
+        ], var.env == "prod" ? [
+        "--build-arg=OVERSLASH_RELEASE=1",
+      ] : [])
     }
 
     step {
