@@ -54,7 +54,7 @@
 		justify-content: space-between;
 		padding: 0 1.5rem;
 		position: sticky;
-		top: 0;
+		top: var(--env-bar-height, 0);
 		z-index: 5;
 		gap: 0.5rem;
 	}

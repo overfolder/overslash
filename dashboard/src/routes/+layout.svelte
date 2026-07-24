@@ -1,8 +1,10 @@
 <script lang="ts">
 	import '../app.css';
 	import type { Snippet } from 'svelte';
+	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
 	import { type MeIdentity } from '$lib/session';
+	import { currentEnvironment, type AppEnv } from '$lib/env';
 	import { getVersion } from '$lib/api/version';
 	import type { BuildInfo } from '$lib/types';
 	import {
@@ -17,6 +19,7 @@
 	import TopBar from '$lib/components/shell/TopBar.svelte';
 	import MobileTabBar from '$lib/components/shell/MobileTabBar.svelte';
 	import TrialBanner from '$lib/components/shell/TrialBanner.svelte';
+	import DevEnvBanner from '$lib/components/shell/DevEnvBanner.svelte';
 	import Toaster from '$lib/components/Toaster.svelte';
 
 	let { children, data }: { children: Snippet; data: { user: MeIdentity | null } } = $props();
@@ -45,9 +48,42 @@
 
 	let mobileDrawerOpen = $state(false);
 
+	// Which environment this tab is pointed at. On the server we can't know the
+	// runtime host, so we assume prod (no ribbon, no favicon swap) until hydration.
+	const env = $derived<AppEnv>(
+		browser ? currentEnvironment() : { name: '', isProd: true }
+	);
+
 	$effect(() => {
 		if (typeof document !== 'undefined') {
 			document.documentElement.dataset.theme = $theme;
+		}
+	});
+
+	// Reserve space for the environment ribbon. The var defaults to 0 (see the
+	// `, 0` fallbacks in .app / Sidebar / TopBar), so prod is an exact no-op.
+	$effect(() => {
+		if (!browser) return;
+		document.documentElement.style.setProperty('--env-bar-height', env.isProd ? '0px' : '24px');
+	});
+
+	// Swap the favicon for a distinct dev-tinted variant in non-prod. Repoint the
+	// existing app.html <link> tags rather than appending new ones — multiple
+	// same-size icon links have undefined precedence.
+	$effect(() => {
+		if (!browser || env.isProd) return;
+		const map: Record<string, string> = {
+			'favicon-16.png': 'favicon-dev-16.png',
+			'favicon-32.png': 'favicon-dev-32.png',
+			'apple-touch-icon.png': 'apple-touch-icon-dev.png'
+		};
+		const links = document.querySelectorAll<HTMLLinkElement>(
+			"link[rel~='icon'], link[rel='apple-touch-icon']"
+		);
+		for (const link of links) {
+			for (const [prod, dev] of Object.entries(map)) {
+				if (link.href.includes(prod)) link.href = link.href.replace(prod, dev);
+			}
 		}
 	});
 
@@ -99,8 +135,14 @@
 	});
 </script>
 
+{#if !env.isProd}
+	<DevEnvBanner name={env.name} />
+{/if}
+
 {#if standalone}
-	{@render children()}
+	<div class="standalone">
+		{@render children()}
+	</div>
 {:else}
 	<div class="app" style:--sidebar-width={sidebarWidth}>
 		<Sidebar
@@ -132,8 +174,11 @@
 <Toaster />
 
 <style>
-	.app {
+	.app,
+	.standalone {
 		min-height: 100vh;
+		/* Offset for the environment ribbon; resolves to 0 in prod. */
+		padding-top: var(--env-bar-height, 0);
 	}
 	.main-col {
 		margin-left: var(--sidebar-width);
