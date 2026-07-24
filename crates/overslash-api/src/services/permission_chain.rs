@@ -154,6 +154,35 @@ pub async fn walk(
     })
 }
 
+/// Deny-only sweep of the requester's chain: does any non-inheriting level
+/// (including the user root) carry a deny rule matching one of `keys`?
+///
+/// Exists for the D42 read-bypass interaction: `auto_approve_reads` skips
+/// the full [`walk`] for read-classified calls, but a deny rule is
+/// documented as overriding every allow mechanism — including that bypass —
+/// so SQL-classified calls run this sweep even when Layer 2 is skipped.
+/// All keys passed here are deny-screen only; no allow coverage is checked.
+pub async fn denied_anywhere(
+    scope: &OrgScope,
+    requester_id: Uuid,
+    keys: &[PermissionKey],
+) -> Result<Option<String>, AppError> {
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    let chain = scope.get_identity_ancestor_chain(requester_id).await?;
+    for ident in chain.iter().rev() {
+        if ident.inherit_permissions {
+            continue;
+        }
+        let rules = load_rules(scope, ident.id).await?;
+        if let PermissionResult::Denied(reason) = check_permissions_screened(&rules, &[], keys) {
+            return Ok(Some(reason));
+        }
+    }
+    Ok(None)
+}
+
 /// Find the next eligible resolver after `current_resolver_id` for an approval
 /// that targets `requester_id`. Used by explicit BubbleUp and the auto-bubble
 /// background loop.

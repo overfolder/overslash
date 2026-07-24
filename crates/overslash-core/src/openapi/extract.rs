@@ -254,6 +254,12 @@ pub(super) fn extract_auth(
         .flatten()
         .collect();
     for var in &config {
+        // `sql_databases` is consumed by the D42 SQL policy at call time
+        // (dialect + audit-label lookup), not by a credential template, so
+        // it is exempt from the scheme-reads check.
+        if var.key == crate::sql_policy::SQL_DATABASES_CONFIG_KEY {
+            continue;
+        }
         if !read_config.contains(&var.key.as_str()) {
             errors.push(ValidationIssue::new(
                 "openapi_unsupported_construct",

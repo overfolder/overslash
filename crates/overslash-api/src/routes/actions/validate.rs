@@ -193,6 +193,24 @@ pub(super) async fn validate_action_impl(
         }
     }
 
+    // D42 deny-only sweep — lockstep with `/call`: a deny rule overrides
+    // the read bypass and the user fast path, so the dry-run reports the
+    // same hard denial the real call would return.
+    let walk_will_run = identity.kind != "user" && meta.needs_gate && !skip_layer2;
+    if sql_policy.is_some() && !walk_will_run {
+        let mut screen: Vec<PermissionKey> = perm_keys.clone();
+        screen.extend(deny_screen_keys.iter().cloned());
+        if let Some(reason) =
+            crate::services::permission_chain::denied_anywhere(&scope, identity_id, &screen).await?
+        {
+            let body = serde_json::json!({
+                "ok": true,
+                "permission": { "status": "denied", "reason": reason },
+            });
+            return Ok(((StatusCode::OK, Json(body)).into_response(), "denied"));
+        }
+    }
+
     // Layer 2: permission chain. Users are gated by groups only, so
     // they get an immediate `allowed`. Agents walk the chain — first
     // gap reports `would_require_approval` without writing an approval

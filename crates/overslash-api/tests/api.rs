@@ -75,6 +75,7 @@ mod mcp_oauth;
 mod mcp_replay;
 mod mcp_require_risk;
 mod mcp_typed_errors;
+mod metabase;
 mod multi_org;
 mod multi_org_backfill;
 mod myself_groups;

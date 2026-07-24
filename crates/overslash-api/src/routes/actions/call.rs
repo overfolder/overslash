@@ -295,6 +295,25 @@ pub(super) async fn call_action_impl(
     }
     // has_groups == false → NoGroups → permissive (no ceiling enforced)
 
+    // D42: a deny rule overrides every allow mechanism — including the
+    // `auto_approve_reads` read bypass and the users-are-their-own-approvers
+    // rule, both of which skip the chain walk below. A SQL-classified call
+    // therefore runs a deny-only sweep whenever the full walk won't: a
+    // `column=…/ssn` or `column_star=…` deny (or a table deny) is a hard 403
+    // no matter which fast path the call took.
+    let walk_will_run = identity.kind != "user" && pre_meta.needs_gate && !skip_layer2;
+    if sql_policy.is_some() && !walk_will_run {
+        let mut screen: Vec<PermissionKey> = perm_keys.clone();
+        screen.extend(deny_screen_keys.iter().cloned());
+        if let Some(reason) =
+            crate::services::permission_chain::denied_anywhere(&scope, identity_id, &screen).await?
+        {
+            return Ok(
+                (StatusCode::FORBIDDEN, Json(CallResponse::Denied { reason })).into_response(),
+            );
+        }
+    }
+
     // ── Layer 2: Hierarchical permission check (agents/sub-agents only) ──
     //
     // Use the conservative pre-resolution estimate (`pre_meta.needs_gate`)

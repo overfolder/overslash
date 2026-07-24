@@ -1149,7 +1149,14 @@
 									<td title={a.summary ? a.description : undefined}
 										>{a.summary ?? a.description}</td
 									>
-									<td><span class="mono">{a.risk}</span></td>
+									<td
+										><span
+											class="mono"
+											title={a.risk === 'dynamic'
+												? 'Classified per call: the SQL is parsed — read-only SELECTs run as read, anything else routes to approval'
+												: undefined}>{a.risk}</span
+										></td
+									>
 									<td>
 										{#if a.disabled}<span class="pill pill-muted">hidden</span>{/if}
 									</td>
@@ -1175,7 +1182,14 @@
 									<td title={a.summary ? a.description : undefined}
 										>{a.summary ?? a.description}</td
 									>
-									<td><span class="mono">{a.risk}</span></td>
+									<td
+										><span
+											class="mono"
+											title={a.risk === 'dynamic'
+												? 'Classified per call: the SQL is parsed — read-only SELECTs run as read, anything else routes to approval'
+												: undefined}>{a.risk}</span
+										></td
+									>
 								</tr>
 							{/each}
 						</tbody>
