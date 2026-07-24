@@ -1,4 +1,4 @@
-.PHONY: local local-db local-down dev dev-api dev-dashboard down net test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
+.PHONY: local local-db local-down dev dev-api dev-dashboard down net test check line-count fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean \
        dashboard-static web-build web build install \
@@ -245,11 +245,15 @@ worktree-clean:
 test:
 	cargo test --workspace
 
-# CI check: fmt + clippy + test
-check:
+# CI check: line counts + fmt + clippy + test
+check: line-count
 	cargo fmt --check
 	cargo clippy --workspace -- -D warnings
 	cargo test --workspace
+
+# Every .rs under crates/*/src must stay under 1000 lines (mirrors CI).
+line-count:
+	bash scripts/check-line-counts.sh
 
 # Format
 fmt:
