@@ -106,34 +106,43 @@ pub struct SqlAnalysis {
     pub class: SqlClass,
     /// `None` iff `class == Read`.
     pub write_reason: Option<WriteReason>,
-    /// Referenced relations exactly as the parser reports them:
-    /// `"public.orders"` when the SQL schema-qualified the name, `"orders"`
-    /// when it did not (unquoted identifiers arrive already lowercased by
-    /// Postgres's lexer; quoted identifiers keep their case). CTE names are
-    /// excluded. Order-preserving, deduped.
-    pub tables: Vec<String>,
+    /// Relations referenced in **read (select) context**, exactly as the
+    /// parser reports them: `"public.orders"` when the SQL schema-qualified
+    /// the name, `"orders"` when it did not (unquoted identifiers arrive
+    /// already lowercased by Postgres's lexer; quoted identifiers keep their
+    /// case). CTE names are excluded. Order-preserving, deduped.
+    pub read_tables: Vec<String>,
+    /// Relations that are **mutation targets** (DML/DDL context): the table
+    /// an INSERT/UPDATE/DELETE/MERGE lands on, a DROP/ALTER/TRUNCATE target,
+    /// a `CREATE TABLE … AS` / `SELECT INTO` destination. Same normalization
+    /// as [`read_tables`](Self::read_tables). A relation both read and
+    /// mutated in one statement appears in both lists.
+    pub mut_tables: Vec<String>,
     /// Referenced column identifiers (the last segment of each column
     /// reference). `*` and `t.*` both surface as the literal `"*"`.
     /// Order-preserving, deduped.
     pub columns: Vec<String>,
-    /// `false` when the statement may touch relations not listed in
-    /// `tables` (parse failure, `DO`/`CALL`/`EXECUTE` bodies, feature off,
+    /// `false` when the statement may touch relations not listed above
+    /// (parse failure, `DO`/`CALL`/`EXECUTE` bodies, feature off,
     /// unsupported dialect). Callers must then emit the all-tables sentinel
-    /// permission key.
+    /// permission key — mutation-shaped, because every such case also
+    /// classifies write.
     pub tables_exhaustive: bool,
 }
 
 impl SqlAnalysis {
     fn write(
         reason: WriteReason,
-        tables: Vec<String>,
+        read_tables: Vec<String>,
+        mut_tables: Vec<String>,
         columns: Vec<String>,
         exhaustive: bool,
     ) -> Self {
         SqlAnalysis {
             class: SqlClass::Write,
             write_reason: Some(reason),
-            tables,
+            read_tables,
+            mut_tables,
             columns,
             tables_exhaustive: exhaustive,
         }
@@ -203,7 +212,13 @@ pub fn extract_sql<'a>(
 /// Classify `sql`, fail-closed. See the module docs for the guarantees.
 #[cfg(not(feature = "sql_policy"))]
 pub fn analyze(_sql: &str) -> SqlAnalysis {
-    SqlAnalysis::write(WriteReason::Unavailable, Vec::new(), Vec::new(), false)
+    SqlAnalysis::write(
+        WriteReason::Unavailable,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        false,
+    )
 }
 
 /// Classify `sql`, fail-closed. See the module docs for the guarantees.
@@ -226,13 +241,25 @@ mod imp {
                     WriteReason::ParseError(e.to_string()),
                     Vec::new(),
                     Vec::new(),
+                    Vec::new(),
                     false,
                 );
             }
         };
 
-        // Everything below reads the same three collections.
-        let tables = dedup(result.tables());
+        // Everything below reads the same collections. The parser tags each
+        // referenced relation with its context; select-context relations are
+        // reads, DML/DDL-context relations are mutation targets (the D43
+        // `table=` / `table_mut=` split). A relation in both contexts
+        // (`INSERT INTO a SELECT * FROM a`) lands in both lists.
+        let read_tables = dedup(result.select_tables());
+        let mut_tables = dedup(
+            result
+                .dml_tables()
+                .into_iter()
+                .chain(result.ddl_tables())
+                .collect(),
+        );
         let walk = walk_tree(&result);
         let columns = walk.columns;
         let exhaustive = !walk.opaque;
@@ -245,12 +272,19 @@ mod imp {
             .collect();
 
         if stmts.is_empty() {
-            return SqlAnalysis::write(WriteReason::EmptyInput, tables, columns, true);
+            return SqlAnalysis::write(
+                WriteReason::EmptyInput,
+                read_tables,
+                mut_tables,
+                columns,
+                true,
+            );
         }
         if stmts.len() > 1 {
             return SqlAnalysis::write(
                 WriteReason::MultiStatement(stmts.len()),
-                tables,
+                read_tables,
+                mut_tables,
                 columns,
                 exhaustive,
             );
@@ -260,7 +294,8 @@ mod imp {
         if !matches!(top, NodeEnum::SelectStmt(_)) {
             return SqlAnalysis::write(
                 WriteReason::Statement(node_variant_name(top)),
-                tables,
+                read_tables,
+                mut_tables,
                 columns,
                 exhaustive,
             );
@@ -268,20 +303,39 @@ mod imp {
 
         // Top-level SELECT. Refuse the shapes that write through it, in
         // order of least-surprising diagnosis.
-        if walk.nested_dml || !result.dml_tables().is_empty() || !result.ddl_tables().is_empty() {
-            return SqlAnalysis::write(WriteReason::WritableCte, tables, columns, exhaustive);
+        if walk.nested_dml || !mut_tables.is_empty() {
+            return SqlAnalysis::write(
+                WriteReason::WritableCte,
+                read_tables,
+                mut_tables,
+                columns,
+                exhaustive,
+            );
         }
         if walk.select_into {
-            return SqlAnalysis::write(WriteReason::SelectInto, tables, columns, exhaustive);
+            return SqlAnalysis::write(
+                WriteReason::SelectInto,
+                read_tables,
+                mut_tables,
+                columns,
+                exhaustive,
+            );
         }
         if walk.row_locking {
-            return SqlAnalysis::write(WriteReason::RowLocking, tables, columns, exhaustive);
+            return SqlAnalysis::write(
+                WriteReason::RowLocking,
+                read_tables,
+                mut_tables,
+                columns,
+                exhaustive,
+            );
         }
 
         SqlAnalysis {
             class: SqlClass::Read,
             write_reason: None,
-            tables,
+            read_tables,
+            mut_tables,
             columns,
             tables_exhaustive: exhaustive,
         }
@@ -403,7 +457,8 @@ mod stub_tests {
         let a = analyze("SELECT 1");
         assert_eq!(a.class, SqlClass::Write);
         assert_eq!(a.write_reason, Some(WriteReason::Unavailable));
-        assert!(a.tables.is_empty());
+        assert!(a.read_tables.is_empty());
+        assert!(a.mut_tables.is_empty());
         assert!(a.columns.is_empty());
         assert!(!a.tables_exhaustive);
     }
@@ -468,57 +523,67 @@ mod tests {
 
     #[test]
     fn classification_matrix() {
-        // (case, sql, expected class, expected tables — None = don't assert)
-        let cases: &[(&str, &str, Expect, Option<&[&str]>)] = &[
-            // --- reads ---
+        // (case, sql, expected class, expected read tables, expected
+        // mutation-target tables — None = don't assert)
+        #[allow(clippy::type_complexity)]
+        let cases: &[(&str, &str, Expect, Option<&[&str]>, Option<&[&str]>)] = &[
+            // --- reads (mutation targets always empty) ---
             (
                 "plain select",
                 "SELECT id, name FROM public.orders",
                 Read,
                 Some(&["public.orders"]),
+                Some(&[]),
             ),
             (
                 "select star",
                 "SELECT * FROM orders",
                 Read,
                 Some(&["orders"]),
+                Some(&[]),
             ),
             (
                 "qualified star",
                 "SELECT t.* FROM orders t",
                 Read,
                 Some(&["orders"]),
+                Some(&[]),
             ),
             (
                 "read-only cte",
                 "WITH r AS (SELECT id FROM public.orders) SELECT * FROM r",
                 Read,
                 Some(&["public.orders"]), // CTE name excluded
+                Some(&[]),
             ),
             (
                 "join",
                 "SELECT o.id FROM orders o JOIN public.users u ON u.id = o.user_id",
                 Read,
                 Some(&["orders", "public.users"]),
+                Some(&[]),
             ),
-            ("constant select", "SELECT 1", Read, Some(&[])),
+            ("constant select", "SELECT 1", Read, Some(&[]), Some(&[])),
             (
                 "comments",
                 "/* c */ SELECT id FROM orders -- trailing",
                 Read,
                 Some(&["orders"]),
+                Some(&[]),
             ),
             (
                 "quoted mixed case",
                 "SELECT \"Id\" FROM \"Orders\"",
                 Read,
                 Some(&["Orders"]),
+                Some(&[]),
             ),
             (
                 "unquoted uppercase folds",
                 "SELECT ID FROM ORDERS",
                 Read,
                 Some(&["orders"]),
+                Some(&[]),
             ),
             // Documented limitation: volatile functions classify read.
             (
@@ -526,55 +591,77 @@ mod tests {
                 "SELECT nextval('order_seq')",
                 Read,
                 Some(&[]),
+                Some(&[]),
             ),
             (
                 "subquery",
                 "SELECT * FROM (SELECT id FROM orders) s",
                 Read,
                 Some(&["orders"]),
+                Some(&[]),
             ),
             (
                 "view reads as its own name",
                 "SELECT * FROM reporting.orders_view",
                 Read,
                 Some(&["reporting.orders_view"]),
+                Some(&[]),
             ),
             (
                 "union",
                 "SELECT id FROM a UNION SELECT id FROM b",
                 Read,
                 Some(&["a", "b"]),
+                Some(&[]),
             ),
-            ("trailing semicolon", "SELECT 1;", Read, Some(&[])),
-            // --- DML ---
+            (
+                "trailing semicolon",
+                "SELECT 1;",
+                Read,
+                Some(&[]),
+                Some(&[]),
+            ),
+            // --- DML: the target is a mutation, tables it reads stay reads ---
             (
                 "insert",
                 "INSERT INTO orders (id) VALUES (1)",
                 Write("statement"),
+                Some(&[]),
                 Some(&["orders"]),
             ),
             (
                 "update",
                 "UPDATE public.orders SET x = 1",
                 Write("statement"),
+                Some(&[]),
                 Some(&["public.orders"]),
             ),
             (
                 "delete",
                 "DELETE FROM orders",
                 Write("statement"),
+                Some(&[]),
                 Some(&["orders"]),
+            ),
+            (
+                "insert from select",
+                "INSERT INTO archive SELECT * FROM public.orders",
+                Write("statement"),
+                Some(&["public.orders"]),
+                Some(&["archive"]),
             ),
             (
                 "merge",
                 "MERGE INTO orders o USING s ON o.id = s.id WHEN MATCHED THEN DO NOTHING",
                 Write("statement"),
                 None,
+                Some(&["orders"]),
             ),
             (
                 "truncate",
                 "TRUNCATE orders",
                 Write("statement"),
+                Some(&[]),
                 Some(&["orders"]),
             ),
             // --- DDL ---
@@ -582,30 +669,35 @@ mod tests {
                 "drop table",
                 "DROP TABLE orders",
                 Write("statement"),
+                Some(&[]),
                 Some(&["orders"]),
             ),
             (
                 "create table",
                 "CREATE TABLE t (id int)",
                 Write("statement"),
-                None,
+                Some(&[]),
+                Some(&["t"]),
             ),
             (
                 "alter table",
                 "ALTER TABLE orders ADD COLUMN x int",
                 Write("statement"),
-                None,
+                Some(&[]),
+                Some(&["orders"]),
             ),
             (
                 "create table as",
                 "CREATE TABLE t AS SELECT * FROM orders",
                 Write("statement"),
-                None,
+                Some(&["orders"]),
+                Some(&["t"]),
             ),
             (
                 "grant",
                 "GRANT SELECT ON orders TO joe",
                 Write("statement"),
+                None,
                 None,
             ),
             // --- SELECT shapes that write ---
@@ -613,18 +705,21 @@ mod tests {
                 "select into",
                 "SELECT id INTO backup FROM orders",
                 Write("select_into"),
+                Some(&["orders"]),
                 None,
             ),
             (
                 "writable cte delete",
                 "WITH d AS (DELETE FROM orders RETURNING id) SELECT * FROM d",
                 Write("writable_cte"),
+                Some(&[]),
                 Some(&["orders"]),
             ),
             (
                 "writable cte insert",
                 "WITH i AS (INSERT INTO audit_log (x) VALUES (1) RETURNING id) SELECT 1",
                 Write("writable_cte"),
+                Some(&[]),
                 Some(&["audit_log"]),
             ),
             (
@@ -632,31 +727,36 @@ mod tests {
                 "SELECT * FROM orders FOR UPDATE",
                 Write("row_locking"),
                 Some(&["orders"]),
+                Some(&[]),
             ),
             (
                 "nested for update",
                 "SELECT * FROM (SELECT id FROM orders FOR UPDATE) s",
                 Write("row_locking"),
                 Some(&["orders"]),
+                Some(&[]),
             ),
             (
                 "for share",
                 "SELECT * FROM orders FOR SHARE",
                 Write("row_locking"),
                 None,
+                None,
             ),
-            // --- COPY, both directions ---
+            // --- COPY, both directions (context pinned by observation) ---
             (
                 "copy out",
                 "COPY orders TO '/tmp/x.csv'",
                 Write("statement"),
-                Some(&["orders"]),
+                None,
+                None,
             ),
             (
                 "copy in",
                 "COPY orders FROM '/tmp/x.csv'",
                 Write("statement"),
-                Some(&["orders"]),
+                None,
+                None,
             ),
             // --- opaque bodies ---
             (
@@ -664,13 +764,21 @@ mod tests {
                 "DO $$ BEGIN DELETE FROM orders; END $$",
                 Write("statement"),
                 None,
+                None,
             ),
-            ("call", "CALL do_maintenance()", Write("statement"), None),
+            (
+                "call",
+                "CALL do_maintenance()",
+                Write("statement"),
+                None,
+                None,
+            ),
             // --- utility statements: fail-closed, no whitelist ---
             (
                 "explain",
                 "EXPLAIN SELECT * FROM orders",
                 Write("statement"),
+                None,
                 None,
             ),
             (
@@ -678,16 +786,36 @@ mod tests {
                 "EXPLAIN ANALYZE DELETE FROM orders",
                 Write("statement"),
                 None,
+                None,
             ),
-            ("set", "SET search_path TO evil", Write("statement"), None),
-            ("show", "SHOW server_version", Write("statement"), None),
-            ("vacuum", "VACUUM orders", Write("statement"), None),
-            ("prepare", "PREPARE p AS SELECT 1", Write("statement"), None),
+            (
+                "set",
+                "SET search_path TO evil",
+                Write("statement"),
+                None,
+                None,
+            ),
+            (
+                "show",
+                "SHOW server_version",
+                Write("statement"),
+                None,
+                None,
+            ),
+            ("vacuum", "VACUUM orders", Write("statement"), None, None),
+            (
+                "prepare",
+                "PREPARE p AS SELECT 1",
+                Write("statement"),
+                None,
+                None,
+            ),
             // --- multi-statement ---
             (
                 "multi",
                 "SELECT 1; DROP TABLE orders",
                 Write("multi_statement"),
+                Some(&[]),
                 Some(&["orders"]),
             ),
             (
@@ -695,19 +823,22 @@ mod tests {
                 "PREPARE p AS SELECT 1; EXECUTE p",
                 Write("multi_statement"),
                 None,
+                None,
             ),
             (
                 "multi comment obfuscation",
                 "SELECT 1/*\n*/; DELETE FROM orders",
                 Write("multi_statement"),
+                Some(&[]),
                 Some(&["orders"]),
             ),
             // --- empty / broken ---
-            ("empty", "", Write("empty_input"), Some(&[])),
+            ("empty", "", Write("empty_input"), Some(&[]), Some(&[])),
             (
                 "comment only",
                 "-- only a comment",
                 Write("empty_input"),
+                Some(&[]),
                 Some(&[]),
             ),
             (
@@ -715,11 +846,13 @@ mod tests {
                 "SELEC id FROM orders",
                 Write("parse_error"),
                 Some(&[]),
+                Some(&[]),
             ),
             (
                 "mysql backticks",
                 "SELECT * FROM `orders`",
                 Write("parse_error"),
+                Some(&[]),
                 Some(&[]),
             ),
             (
@@ -727,10 +860,11 @@ mod tests {
                 "SELECT * FROM orders WHERE id = {{id}}",
                 Write("parse_error"),
                 Some(&[]),
+                Some(&[]),
             ),
         ];
 
-        for (name, sql, expect, tables) in cases {
+        for (name, sql, expect, read_tables, mut_tables) in cases {
             let a = analyze(sql);
             match expect {
                 Read => {
@@ -752,12 +886,17 @@ mod tests {
                     assert_eq!(got, Some(*tag), "{name}: wrong write reason");
                 }
             }
-            if let Some(tables) = tables {
-                let mut got = a.tables.clone();
-                got.sort();
-                let mut want: Vec<String> = tables.iter().map(|s| s.to_string()).collect();
-                want.sort();
-                assert_eq!(got, want, "{name}: table set mismatch");
+            for (kind, want, got) in [
+                ("read", read_tables, &a.read_tables),
+                ("mut", mut_tables, &a.mut_tables),
+            ] {
+                if let Some(want) = want {
+                    let mut got = got.clone();
+                    got.sort();
+                    let mut want: Vec<String> = want.iter().map(|s| s.to_string()).collect();
+                    want.sort();
+                    assert_eq!(got, want, "{name}: {kind}-table set mismatch");
+                }
             }
         }
     }

@@ -345,8 +345,9 @@ async fn dynamic_fails_closed_without_the_parser() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    // No sql_databases config → the db-key ("1") is the label.
-    assert_eq!(keys, vec!["metabase:run_query:table=1/*"]);
+    // No sql_databases config → the db-key ("1") is the label. The
+    // sentinel is mutation-shaped (nothing was proven read).
+    assert_eq!(keys, vec!["metabase:run_query:table_mut=1/*"]);
     // Classified write → "med" severity card.
     assert_eq!(resp["risk"].as_str(), Some("med"));
 }
@@ -365,7 +366,7 @@ async fn dynamic_without_parser_executes_under_sentinel_grant() {
         &client,
         &admin_key,
         &ident,
-        "metabase:run_query:table=1/*",
+        "metabase:run_query:table_mut=1/*",
         "allow",
     )
     .await;
@@ -494,12 +495,24 @@ mod classified {
         assert_eq!(resp["status"].as_str(), Some("denied"), "{resp:?}");
     }
 
+    /// The D43 fix demonstrated end-to-end: a remembered *read* grant on a
+    /// table does not authorize mutating it — the INSERT still bubbles, on
+    /// the `table_mut=` key.
     #[tokio::test]
     async fn insert_bubbles_under_write_ceiling() {
         let pool = common::test_pool().await;
         let (mock, _seen) = start_mock_metabase().await;
-        let (base, client, agent_key, _admin, _ident) =
+        let (base, client, agent_key, admin_key, ident) =
             setup(pool, mock, "write", false, Some(DBS)).await;
+        add_rule(
+            &base,
+            &client,
+            &admin_key,
+            &ident,
+            "metabase:run_query:table=pagila/*",
+            "allow",
+        )
+        .await;
 
         let resp = run_query(
             &base,
@@ -520,7 +533,10 @@ mod classified {
             .iter()
             .filter_map(Value::as_str)
             .collect();
-        assert_eq!(keys, vec!["metabase:run_query:table=pagila/public.film"]);
+        assert_eq!(
+            keys,
+            vec!["metabase:run_query:table_mut=pagila/public.film"]
+        );
         assert_eq!(resp["risk"].as_str(), Some("med"));
     }
 
@@ -882,7 +898,10 @@ mod real_e2e {
             .iter()
             .filter_map(Value::as_str)
             .collect();
-        assert_eq!(keys, vec!["metabase:run_query:table=pagila/public.actor"]);
+        assert_eq!(
+            keys,
+            vec!["metabase:run_query:table_mut=pagila/public.actor"]
+        );
     }
 
     #[ignore] // real-Metabase e2e: run with --ignored after `make metabase-up`

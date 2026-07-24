@@ -154,7 +154,10 @@ see **D43** for the deltas discovered during implementation:
   nested object, which is what forced extraction mode).
 - Classifier in `overslash_core::sql_policy` behind the default-off
   `sql_policy` feature (release builds enable it; Windows stays fail-closed).
-- Per-table keys + sentinel, `column=`/`column_star=` deny screen, ladder
-  `**` rungs, deny-sweep under the `auto_approve_reads` bypass.
+- Per-table keys split by context — reads mint `table={label}/{relation}`,
+  mutation targets mint `table_mut={label}/{relation}` (+ mutation-shaped
+  sentinel), so a remembered read grant never authorizes writes and
+  asymmetric policies are expressible; `column=`/`column_star=` deny screen,
+  ladder `**` rungs, deny-sweep under the `auto_approve_reads` bypass.
 - Verified against a live Metabase + Pagila (views, partitioned `payment`,
   CSV export): `make metabase-up` / `make metabase-e2e`.

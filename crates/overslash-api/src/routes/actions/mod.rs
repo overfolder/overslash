@@ -774,7 +774,8 @@ async fn evaluate_sql_policy(
         SqlAnalysis {
             class: SqlClass::Write,
             write_reason: Some(WriteReason::UnsupportedDialect(dialect)),
-            tables: Vec::new(),
+            read_tables: Vec::new(),
+            mut_tables: Vec::new(),
             columns: Vec::new(),
             tables_exhaustive: false,
         }
@@ -788,7 +789,8 @@ async fn evaluate_sql_policy(
                 write_reason: Some(WriteReason::ParseError(
                     "sql param value is not a string at the nominated path".to_string(),
                 )),
-                tables: Vec::new(),
+                read_tables: Vec::new(),
+                mut_tables: Vec::new(),
                 columns: Vec::new(),
                 tables_exhaustive: false,
             },

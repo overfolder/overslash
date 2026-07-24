@@ -125,11 +125,21 @@ impl PermissionKey {
         }
     }
 
-    /// D42 per-table keys for one analyzed SQL statement:
-    /// `{service}:{action}:table={label}/{relation}`, one per referenced
-    /// relation, plus the **sentinel** `table={label}/*` when the statement's
-    /// relations cannot be exhaustively enumerated (parse failure, `DO`/
-    /// `CALL` bodies, the parser compiled out, an unsupported dialect).
+    /// D42/D43 per-table keys for one analyzed SQL statement, split by
+    /// context: `{service}:{action}:table={label}/{relation}` per relation
+    /// read (select context) and `{service}:{action}:table_mut={label}/
+    /// {relation}` per **mutation target** (DML/DDL context), plus the
+    /// **sentinel** `table_mut={label}/*` when the statement's relations
+    /// cannot be exhaustively enumerated (parse failure, `DO`/`CALL`
+    /// bodies, the parser compiled out, an unsupported dialect — all of
+    /// which also classify write, hence the mutation-shaped sentinel).
+    ///
+    /// The split is what keeps Allow & Remember honest: a rule remembered
+    /// from a read approval (`table=…`) never covers a later mutation of
+    /// the same table, and asymmetric policies ("read anything, write only
+    /// scratch") become expressible. The **value-only** compat form
+    /// (`{service}:{action}:{label-less value}`, D40) covers both labels —
+    /// "this table, read or write" — and is the ladder's middle rung.
     ///
     /// Relations come verbatim from the parser: schema-qualified iff the SQL
     /// qualified them, unquoted identifiers already lowercased, quoted ones
@@ -139,11 +149,12 @@ impl PermissionKey {
     /// gated as its own name.
     ///
     /// Glob shapes that fall out (`*` does not span `/`):
-    /// - `…:table=reveni-prod/*` — every table in one DB (covers the
-    ///   sentinel too, deliberately: whoever may touch the whole DB may run
-    ///   statements the parser cannot enumerate);
+    /// - `…:table=reveni-prod/*` — read every table in one DB;
+    /// - `…:table_mut=reveni-prod/*` — mutate anything there (covers the
+    ///   sentinel too, deliberately: whoever may mutate the whole DB may
+    ///   run statements the parser cannot enumerate);
     /// - `…:table=reveni-prod/public.*` — one schema (`*` spans `.`);
-    /// - `…:table=*/public.orders` — one table across DB labels;
+    /// - `…:reveni-prod/public.orders` — value-only: this table, either way;
     /// - `{service}:{action}:*` does **not** cover table keys — action-wide
     ///   grants over SQL actions are written `{service}:{action}:**`.
     pub fn from_sql_analysis(
@@ -155,15 +166,21 @@ impl PermissionKey {
         let label = sanitize_db_label(db_label);
         let mut keys: Vec<Self> = dedup_preserving(
             analysis
-                .tables
+                .read_tables
                 .iter()
-                .map(|t| format!("{service_key}:{action_key}:table={label}/{t}")),
+                .map(|t| format!("{service_key}:{action_key}:table={label}/{t}"))
+                .chain(
+                    analysis
+                        .mut_tables
+                        .iter()
+                        .map(|t| format!("{service_key}:{action_key}:table_mut={label}/{t}")),
+                ),
         )
         .into_iter()
         .map(Self)
         .collect();
         if !analysis.tables_exhaustive {
-            let sentinel = Self(format!("{service_key}:{action_key}:table={label}/*"));
+            let sentinel = Self(format!("{service_key}:{action_key}:table_mut={label}/*"));
             if !keys.contains(&sentinel) {
                 keys.push(sentinel);
             }
@@ -1802,60 +1819,81 @@ mod tests {
     // ── D42 SQL-policy keys ──────────────────────────────────────────────
 
     fn analysis(
-        tables: &[&str],
+        read_tables: &[&str],
+        mut_tables: &[&str],
         columns: &[&str],
         exhaustive: bool,
     ) -> crate::sql_policy::SqlAnalysis {
         crate::sql_policy::SqlAnalysis {
             class: crate::sql_policy::SqlClass::Read,
             write_reason: None,
-            tables: tables.iter().map(|s| s.to_string()).collect(),
+            read_tables: read_tables.iter().map(|s| s.to_string()).collect(),
+            mut_tables: mut_tables.iter().map(|s| s.to_string()).collect(),
             columns: columns.iter().map(|s| s.to_string()).collect(),
             tables_exhaustive: exhaustive,
         }
     }
 
     #[test]
-    fn sql_table_keys_enumerate_and_dedup() {
-        let a = analysis(&["public.orders", "users", "public.orders"], &[], true);
+    fn sql_table_keys_enumerate_split_and_dedup() {
+        // INSERT INTO archive SELECT … FROM public.orders JOIN users —
+        // read-context relations mint `table=`, the mutation target mints
+        // `table_mut=`, duplicates collapse.
+        let a = analysis(
+            &["public.orders", "users", "public.orders"],
+            &["archive"],
+            &[],
+            true,
+        );
         let keys = PermissionKey::from_sql_analysis("metabase", "run_query", "reveni-prod", &a);
         assert_eq!(
             keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
             vec![
                 "metabase:run_query:table=reveni-prod/public.orders",
                 "metabase:run_query:table=reveni-prod/users",
+                "metabase:run_query:table_mut=reveni-prod/archive",
             ]
+        );
+        // A relation both read and mutated appears under both labels.
+        let a = analysis(&["a"], &["a"], &[], true);
+        let keys = PermissionKey::from_sql_analysis("m", "q", "db", &a);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec!["m:q:table=db/a", "m:q:table_mut=db/a"]
         );
     }
 
     #[test]
-    fn sql_table_keys_emit_sentinel_when_not_exhaustive() {
-        let a = analysis(&["orders"], &[], false);
+    fn sql_table_keys_emit_mut_sentinel_when_not_exhaustive() {
+        // The sentinel is mutation-shaped: every non-exhaustive case also
+        // classifies write, so only a mutate-anything (or broader) grant
+        // covers it.
+        let a = analysis(&["orders"], &[], &[], false);
         let keys = PermissionKey::from_sql_analysis("metabase", "run_query", "prod", &a);
         assert_eq!(
             keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
             vec![
                 "metabase:run_query:table=prod/orders",
-                "metabase:run_query:table=prod/*",
+                "metabase:run_query:table_mut=prod/*",
             ]
         );
         // No tables at all (feature off / parse error) → sentinel only.
-        let a = analysis(&[], &[], false);
+        let a = analysis(&[], &[], &[], false);
         let keys = PermissionKey::from_sql_analysis("metabase", "run_query", "prod", &a);
         assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].0, "metabase:run_query:table=prod/*");
+        assert_eq!(keys[0].0, "metabase:run_query:table_mut=prod/*");
     }
 
     #[test]
     fn sql_db_label_is_sanitized() {
-        let a = analysis(&["t"], &[], true);
+        let a = analysis(&["t"], &[], &[], true);
         let keys = PermissionKey::from_sql_analysis("m", "q", "a/b=c d", &a);
         assert_eq!(keys[0].0, "m:q:table=a-b-c-d/t");
     }
 
     #[test]
     fn sql_column_keys_split_star_from_named() {
-        let a = analysis(&[], &["*", "id", "ssn", "id"], true);
+        let a = analysis(&[], &[], &["*", "id", "ssn", "id"], true);
         let keys = PermissionKey::from_sql_columns("metabase", "run_query", "prod", &a);
         assert_eq!(
             keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
@@ -1891,16 +1929,84 @@ mod tests {
             "metabase:run_query:table=reveni-prod/public.orders",
             "metabase:run_query:table=reveni-prod/orders"
         ));
-        // The sentinel is only covered by the db-wide (or broader) grants.
-        let sentinel = "metabase:run_query:table=reveni-prod/*";
+        // The sentinel is only covered by the db-wide-mut (or broader) grants.
+        let sentinel = "metabase:run_query:table_mut=reveni-prod/*";
         assert!(key_covers(
-            "metabase:run_query:table=reveni-prod/*",
+            "metabase:run_query:table_mut=reveni-prod/*",
             sentinel
         ));
         assert!(!key_covers(
-            "metabase:run_query:table=reveni-prod/public.orders",
+            "metabase:run_query:table_mut=reveni-prod/public.orders",
             sentinel
         ));
+    }
+
+    /// The D43 read/mut split: a read grant never covers a mutation of the
+    /// same table (and vice versa), while the value-only form covers both —
+    /// "this table, whichever way".
+    #[test]
+    fn sql_table_read_and_mut_labels_are_disjoint() {
+        let read_key = "metabase:run_query:table=pagila/public.film";
+        let mut_key = "metabase:run_query:table_mut=pagila/public.film";
+
+        // A remembered read grant does not authorize writes…
+        assert!(!key_covers(
+            "metabase:run_query:table=pagila/public.film",
+            mut_key
+        ));
+        assert!(!key_covers("metabase:run_query:table=pagila/*", mut_key));
+        // …and a write grant does not cover reads.
+        assert!(!key_covers(
+            "metabase:run_query:table_mut=pagila/public.film",
+            read_key
+        ));
+
+        // The label-less value-only form covers both classes (D40 compat).
+        for key in [read_key, mut_key] {
+            assert!(
+                key_covers("metabase:run_query:pagila/public.film", key),
+                "{key}"
+            );
+            assert!(key_covers("metabase:run_query:pagila/*", key), "{key}");
+        }
+
+        // Asymmetric policy: read anything + write only scratch.
+        let rules = vec![
+            rule("metabase:run_query:table=pagila/*", PermissionEffect::Allow),
+            rule(
+                "metabase:run_query:table_mut=pagila/public.scratch",
+                PermissionEffect::Allow,
+            ),
+        ];
+        let allowed = vec![
+            PermissionKey("metabase:run_query:table=pagila/public.film".to_string()),
+            PermissionKey("metabase:run_query:table_mut=pagila/public.scratch".to_string()),
+        ];
+        assert_eq!(
+            check_permissions(&rules, &allowed),
+            PermissionResult::Allowed
+        );
+        let blocked = vec![PermissionKey(
+            "metabase:run_query:table_mut=pagila/public.film".to_string(),
+        )];
+        assert!(matches!(
+            check_permissions(&rules, &blocked),
+            PermissionResult::NeedsApproval(_)
+        ));
+
+        // Write-only deny: mutations blocked, reads untouched.
+        let rules = vec![
+            rule("metabase:**", PermissionEffect::Allow),
+            rule("metabase:*:table_mut=pagila/*", PermissionEffect::Deny),
+        ];
+        assert!(matches!(
+            check_permissions(&rules, &[PermissionKey(mut_key.to_string())]),
+            PermissionResult::Denied(_)
+        ));
+        assert_eq!(
+            check_permissions(&rules, &[PermissionKey(read_key.to_string())]),
+            PermissionResult::Allowed
+        );
     }
 
     #[test]
@@ -1916,12 +2022,26 @@ mod tests {
                 "metabase:**",
             ]
         );
-        // The sentinel skips the db-wide rung (it *is* the db-wide shape).
-        let dk = parse_derived_key("metabase:run_query:table=reveni-prod/*");
+        // A mut key ladders identically within its own label, with the
+        // value-only rung as the read-or-write middle step.
+        let dk = parse_derived_key("metabase:run_query:table_mut=reveni-prod/public.orders");
         assert_eq!(
             broadening_ladder(&dk),
             vec![
-                "metabase:run_query:table=reveni-prod/*",
+                "metabase:run_query:table_mut=reveni-prod/public.orders",
+                "metabase:run_query:reveni-prod/public.orders",
+                "metabase:run_query:table_mut=reveni-prod/*",
+                "metabase:run_query:**",
+                "metabase:**",
+            ]
+        );
+
+        // The sentinel skips the db-wide rung (it *is* the db-wide shape).
+        let dk = parse_derived_key("metabase:run_query:table_mut=reveni-prod/*");
+        assert_eq!(
+            broadening_ladder(&dk),
+            vec![
+                "metabase:run_query:table_mut=reveni-prod/*",
                 "metabase:run_query:reveni-prod/*",
                 "metabase:run_query:**",
                 "metabase:**",
