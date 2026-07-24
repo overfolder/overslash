@@ -1,182 +1,11 @@
-//! Runtime argument validation against a lowered `input_schema`.
-//!
-//! The OpenAPI loader compiles every action's `input_schema` into a
-//! `HashMap<String, ActionParam>` (see `extract::lower_input_schema`). At
-//! call time we re-use that compiled shape to enforce the contract the
-//! template advertised: required fields must be present, unknown keys are
-//! rejected (mirrors `additionalProperties: false`), and `enum` members must
-//! be respected.
-//!
-//! The checks run in two passes. [`coerce_args`] first repairs the obvious
-//! fixable cases in place — an integer where a `string` is declared is
-//! stringified, an enum value is case-normalized to its canonical member — so
-//! a well-intentioned call just works instead of burning an approval on a
-//! knowable failure. [`validate_args`] then rejects what coercion could not
-//! rescue — a value outside a declared `enum` — with a 400 the agent can
-//! self-correct.
-//!
-//! Type *rejection* is deliberately out of scope: hand-written service schemas
-//! under-specify types (e.g. Gmail's `labelIds` is declared `string` but
-//! legitimately accepts an array that the query renderer expands to repeated
-//! pairs), so rejecting a value purely because its JSON type differs from the
-//! declared one produces false 400s on valid calls. We coerce the safe scalar
-//! cases and otherwise let the value through. Params whose type is unspecified
-//! (empty `param_type` — the `anyOf`/`oneOf`/untyped case) are never coerced.
+//! Argument repair passes that run before validation: alias rewriting,
+//! defaults, and scalar/enum coercion.
 
 use std::collections::HashMap;
 
 use serde_json::Value;
 
 use crate::types::ActionParam;
-
-/// One reason a call's arguments failed to match the action contract.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ArgError {
-    /// A field listed as required was either absent or set to `null`.
-    Missing { field: String },
-    /// An argument key not declared in `properties`. `suggestion` is the
-    /// closest declared name (Levenshtein) when one is within typo
-    /// distance; `expected` is the full sorted list of declared keys,
-    /// always populated so semantic-miss errors (e.g. `jid` for an action
-    /// declaring `recipient`) still tell the caller what's available.
-    Unknown {
-        field: String,
-        suggestion: Option<String>,
-        expected: Vec<String>,
-    },
-    /// A supplied value is not one of the param's declared `enum` members
-    /// (after case-normalization). `value` is the offending value (stringified
-    /// for non-string inputs); `allowed` is the full member list.
-    NotInEnum {
-        field: String,
-        value: String,
-        allowed: Vec<String>,
-    },
-}
-
-impl ArgError {
-    pub fn message(&self) -> String {
-        match self {
-            ArgError::Missing { field } => format!("missing required argument `{field}`"),
-            ArgError::Unknown {
-                field,
-                suggestion,
-                expected,
-            } => match suggestion {
-                Some(s) => format!("unknown argument `{field}` (did you mean `{s}`?)"),
-                None => {
-                    let list = expected
-                        .iter()
-                        .map(|s| format!("`{s}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    if list.is_empty() {
-                        format!("unknown argument `{field}`")
-                    } else {
-                        format!("unknown argument `{field}` (expected one of: {list})")
-                    }
-                }
-            },
-            ArgError::NotInEnum {
-                field,
-                value,
-                allowed,
-            } => {
-                let list = allowed
-                    .iter()
-                    .map(|s| format!("`{s}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("argument `{field}` value `{value}` is not one of: {list}")
-            }
-        }
-    }
-}
-
-/// Validate `args` against `params` (a lowered `input_schema`).
-///
-/// Returns `Ok(())` when every required field is present and every
-/// supplied key is declared. Otherwise returns the full set of issues so
-/// the caller can report all problems in one round-trip.
-///
-/// When `params` is empty (e.g. the action declared no input contract),
-/// validation is a no-op — we cannot reject arguments without a schema to
-/// compare against.
-pub fn validate_args(
-    params: &HashMap<String, ActionParam>,
-    args: &HashMap<String, Value>,
-) -> Result<(), Vec<ArgError>> {
-    if params.is_empty() {
-        return Ok(());
-    }
-
-    let mut errors = Vec::new();
-
-    for (name, p) in params {
-        if p.required {
-            match args.get(name) {
-                Some(v) if !v.is_null() => {}
-                _ => errors.push(ArgError::Missing {
-                    field: name.clone(),
-                }),
-            }
-        }
-    }
-
-    let mut expected: Vec<String> = params.keys().cloned().collect();
-    expected.sort();
-    for name in args.keys() {
-        if !params.contains_key(name) {
-            errors.push(ArgError::Unknown {
-                field: name.clone(),
-                suggestion: closest_match(name, params.keys().map(String::as_str)),
-                expected: expected.clone(),
-            });
-        }
-    }
-
-    // Enum contract for supplied values. Runs after `coerce_args` has had its
-    // chance to case-normalize, so a value still outside the member set is a
-    // genuine miss. `null` is handled by the required pass above.
-    for (name, p) in params {
-        let Some(v) = args.get(name) else { continue };
-        if v.is_null() {
-            continue;
-        }
-        // An empty member list is not a constraint: the loader collects enum
-        // members via `as_str`, so a numeric/boolean enum (e.g. `[200, 404]`)
-        // lowers to `Some(vec![])`. Treat that as unconstrained rather than
-        // rejecting every value against an empty allow-list.
-        if let Some(allowed) = p.enum_values.as_ref().filter(|a| !a.is_empty()) {
-            let is_member = v.as_str().is_some_and(|s| allowed.iter().any(|a| a == s));
-            if !is_member {
-                errors.push(ArgError::NotInEnum {
-                    field: name.clone(),
-                    value: value_to_plain_string(v),
-                    allowed: allowed.clone(),
-                });
-            }
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        // Stable ordering helps callers (and tests) — Missing, then Unknown,
-        // then NotInEnum, each alphabetical by field.
-        errors.sort_by(|a, b| key(a).cmp(&key(b)));
-        Err(errors)
-    }
-}
-
-/// Render a value for an error message: a string yields its raw contents (no
-/// surrounding quotes), anything else its compact JSON form.
-fn value_to_plain_string(v: &Value) -> String {
-    match v.as_str() {
-        Some(s) => s.to_string(),
-        None => v.to_string(),
-    }
-}
 
 /// Rewrite caller-supplied argument keys that match a declared param's
 /// `aliases` to that param's canonical name, in place, so a well-known synonym
@@ -192,7 +21,7 @@ fn value_to_plain_string(v: &Value) -> String {
 /// wins and the alias is dropped.
 ///
 /// Call this *first* — before [`apply_defaults`], [`coerce_args`], and
-/// [`validate_args`] — so the rest of the pipeline (defaults, coercion,
+/// [`validate_args`](super::validate_args) — so the rest of the pipeline (defaults, coercion,
 /// validation, resolution, the approval replay payload) only ever sees
 /// canonical names. When `params` is empty (no declared contract) this is a
 /// no-op: without a schema there are no canonical names to rewrite toward.
@@ -255,7 +84,7 @@ pub fn apply_aliases(params: &HashMap<String, ActionParam>, args: &mut HashMap<S
 /// `required`-ness and any location — OpenAPI treats a `default` as the value
 /// used when the field is not supplied. Mutates `args` in place.
 ///
-/// Call this *before* [`validate_args`] so a `required` param carrying a
+/// Call this *before* [`validate_args`](super::validate_args) so a `required` param carrying a
 /// default is no longer reported as missing, and before request resolution so
 /// the default flows into the outgoing path/query/body like any other value.
 pub fn apply_defaults(params: &HashMap<String, ActionParam>, args: &mut HashMap<String, Value>) {
@@ -271,7 +100,7 @@ pub fn apply_defaults(params: &HashMap<String, ActionParam>, args: &mut HashMap<
 /// Repair the obvious, fixable argument-shape problems in place so a
 /// well-intentioned call succeeds instead of burning an approval on a knowable
 /// failure. Best-effort: anything it can't safely coerce is left untouched for
-/// [`validate_args`] to reject.
+/// [`validate_args`](super::validate_args) to reject.
 ///
 /// Two nudges per supplied value:
 /// 1. **Scalar type** — toward the param's declared type: a number/bool sent to
@@ -286,7 +115,7 @@ pub fn apply_defaults(params: &HashMap<String, ActionParam>, args: &mut HashMap<
 /// they are the `anyOf`/`oneOf`/untyped case, where guessing a target type
 /// could corrupt a legitimately non-string value.
 ///
-/// Call this *after* [`apply_defaults`] and *before* [`validate_args`] and
+/// Call this *after* [`apply_defaults`] and *before* [`validate_args`](super::validate_args) and
 /// request resolution, so the coerced value is what gets validated, approved,
 /// stored in the replay payload, and executed.
 pub fn coerce_args(params: &HashMap<String, ActionParam>, args: &mut HashMap<String, Value>) {
@@ -376,165 +205,15 @@ fn coerce_enum(allowed: Option<&[String]>, v: &Value) -> Option<Value> {
     }
 }
 
-/// Format a list of errors into a single human-readable line.
-pub fn format_errors(errors: &[ArgError]) -> String {
-    errors
-        .iter()
-        .map(ArgError::message)
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn key(e: &ArgError) -> (u8, &str) {
-    match e {
-        ArgError::Missing { field } => (0, field.as_str()),
-        ArgError::Unknown { field, .. } => (1, field.as_str()),
-        ArgError::NotInEnum { field, .. } => (2, field.as_str()),
-    }
-}
-
-/// Return the candidate within `edit_distance ≤ max(2, len/3)` of `target`,
-/// preferring the lexicographically smaller name on ties. None if no
-/// candidate is close enough — better to say nothing than to suggest a
-/// wildly different field.
-fn closest_match<'a>(target: &str, candidates: impl Iterator<Item = &'a str>) -> Option<String> {
-    let max_dist = (target.len() / 3).max(2);
-    let mut best: Option<(usize, &str)> = None;
-    for c in candidates {
-        let d = levenshtein(target, c);
-        if d > max_dist {
-            continue;
-        }
-        match best {
-            None => best = Some((d, c)),
-            Some((bd, bc)) if d < bd || (d == bd && c < bc) => best = Some((d, c)),
-            _ => {}
-        }
-    }
-    best.map(|(_, c)| c.to_string())
-}
-
-fn levenshtein(a: &str, b: &str) -> usize {
-    let av: Vec<char> = a.chars().collect();
-    let bv: Vec<char> = b.chars().collect();
-    let (n, m) = (av.len(), bv.len());
-    if n == 0 {
-        return m;
-    }
-    if m == 0 {
-        return n;
-    }
-    let mut prev: Vec<usize> = (0..=m).collect();
-    let mut curr = vec![0usize; m + 1];
-    for i in 1..=n {
-        curr[0] = i;
-        for j in 1..=m {
-            let cost = if av[i - 1] == bv[j - 1] { 0 } else { 1 };
-            curr[j] = (curr[j - 1] + 1).min(prev[j] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[m]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    fn p(t: &str, required: bool) -> ActionParam {
-        ActionParam {
-            param_type: t.into(),
-            required,
-            description: String::new(),
-            enum_values: None,
-            default: None,
-            resolve: None,
-            aliases: Vec::new(),
-            location: crate::types::ParamLocation::Body,
-            instance_config: false,
-            sql_field: None,
-            sql_database: None,
-        }
-    }
-
-    fn p_alias(t: &str, required: bool, aliases: &[&str]) -> ActionParam {
-        ActionParam {
-            aliases: aliases.iter().map(|s| s.to_string()).collect(),
-            ..p(t, required)
-        }
-    }
-
-    fn p_default(t: &str, required: bool, default: Value) -> ActionParam {
-        ActionParam {
-            default: Some(default),
-            ..p(t, required)
-        }
-    }
-
-    fn p_enum(members: &[&str], required: bool) -> ActionParam {
-        ActionParam {
-            enum_values: Some(members.iter().map(|s| s.to_string()).collect()),
-            ..p("string", required)
-        }
-    }
-
-    fn schema(entries: &[(&str, ActionParam)]) -> HashMap<String, ActionParam> {
-        entries
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect()
-    }
-
-    fn args(entries: &[(&str, Value)]) -> HashMap<String, Value> {
-        entries
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect()
-    }
-
-    #[test]
-    fn ok_when_all_required_present_and_no_unknowns() {
-        let s = schema(&[
-            ("recipient", p("string", true)),
-            ("text", p("string", true)),
-            ("reply_to_id", p("string", false)),
-        ]);
-        let a = args(&[
-            ("recipient", json!("x@s.whatsapp.net")),
-            ("text", json!("hi")),
-        ]);
-        assert!(validate_args(&s, &a).is_ok());
-    }
-
-    #[test]
-    fn missing_required_reported() {
-        let s = schema(&[
-            ("recipient", p("string", true)),
-            ("text", p("string", true)),
-        ]);
-        let a = args(&[("text", json!("hi"))]);
-        let err = validate_args(&s, &a).unwrap_err();
-        assert_eq!(
-            err,
-            vec![ArgError::Missing {
-                field: "recipient".into()
-            }]
-        );
-    }
-
-    #[test]
-    fn null_value_treated_as_missing() {
-        let s = schema(&[("recipient", p("string", true))]);
-        let a = args(&[("recipient", json!(null))]);
-        let err = validate_args(&s, &a).unwrap_err();
-        assert_eq!(
-            err,
-            vec![ArgError::Missing {
-                field: "recipient".into()
-            }]
-        );
-    }
+    use crate::openapi::validate_input::test_helpers::{
+        args, p, p_alias, p_default, p_enum, schema,
+    };
+    use crate::openapi::validate_input::{ArgError, validate_args};
 
     #[test]
     fn default_satisfies_required() {
@@ -580,105 +259,6 @@ mod tests {
                 field: "recipient".into()
             }]
         );
-    }
-
-    #[test]
-    fn unknown_key_reports_candidates_for_semantic_miss() {
-        // The exact case that triggered this fix: caller passed `jid` for
-        // an action whose schema declares `recipient`. They share no
-        // characters, so Levenshtein offers no suggestion — but the
-        // candidate list still tells the agent what's accepted.
-        let s = schema(&[
-            ("recipient", p("string", true)),
-            ("text", p("string", true)),
-        ]);
-        let a = args(&[("jid", json!("x@s.whatsapp.net")), ("text", json!("hi"))]);
-        let err = validate_args(&s, &a).unwrap_err();
-        assert!(
-            err.iter()
-                .any(|e| matches!(e, ArgError::Missing { field } if field == "recipient"))
-        );
-        let unknown = err
-            .iter()
-            .find(|e| matches!(e, ArgError::Unknown { field, .. } if field == "jid"))
-            .unwrap_or_else(|| panic!("expected Unknown(jid), got {err:?}"));
-        match unknown {
-            ArgError::Unknown {
-                expected,
-                suggestion,
-                ..
-            } => {
-                assert_eq!(suggestion, &None, "jid→recipient is not a typo");
-                assert_eq!(expected, &vec!["recipient".to_string(), "text".to_string()]);
-            }
-            _ => unreachable!(),
-        }
-        // The rendered message names the available fields.
-        let msg = unknown.message();
-        assert!(
-            msg.contains("`recipient`") && msg.contains("`text`"),
-            "expected candidates in error, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn unknown_key_suggests_when_levenshtein_close() {
-        // Real typo: `recipien` (missing 't') → distance 1 from `recipient`.
-        let s = schema(&[("recipient", p("string", true))]);
-        let a = args(&[("recipien", json!("x"))]);
-        let err = validate_args(&s, &a).unwrap_err();
-        let unknown = err
-            .iter()
-            .find(|e| matches!(e, ArgError::Unknown { field, .. } if field == "recipien"))
-            .unwrap();
-        match unknown {
-            ArgError::Unknown { suggestion, .. } => {
-                assert_eq!(suggestion.as_deref(), Some("recipient"));
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn empty_schema_is_noop() {
-        // No declared params → can't validate, accept anything.
-        let s: HashMap<String, ActionParam> = HashMap::new();
-        let a = args(&[("anything", json!(1))]);
-        assert!(validate_args(&s, &a).is_ok());
-    }
-
-    #[test]
-    fn errors_ordered_missing_then_unknown_alphabetical() {
-        let s = schema(&[("a", p("string", true)), ("b", p("string", true))]);
-        let a = args(&[("z", json!(1)), ("y", json!(2))]);
-        let err = validate_args(&s, &a).unwrap_err();
-        let fields: Vec<&str> = err
-            .iter()
-            .map(|e| match e {
-                ArgError::Missing { field }
-                | ArgError::Unknown { field, .. }
-                | ArgError::NotInEnum { field, .. } => field.as_str(),
-            })
-            .collect();
-        assert_eq!(fields, vec!["a", "b", "y", "z"]);
-    }
-
-    #[test]
-    fn format_errors_combines_messages() {
-        let errs = vec![
-            ArgError::Missing {
-                field: "recipient".into(),
-            },
-            ArgError::Unknown {
-                field: "jid".into(),
-                suggestion: Some("recipient".into()),
-                expected: vec!["recipient".into(), "text".into()],
-            },
-        ];
-        let s = format_errors(&errs);
-        assert!(s.contains("missing required argument `recipient`"));
-        assert!(s.contains("unknown argument `jid` (did you mean `recipient`?)"));
-        assert!(s.contains(';'));
     }
 
     // ── coercion ──────────────────────────────────────────────────────
@@ -776,20 +356,6 @@ mod tests {
         assert!(validate_args(&s, &a).is_ok());
     }
 
-    // ── enum rejection ────────────────────────────────────────────────
-
-    #[test]
-    fn wrong_json_type_is_not_rejected() {
-        // Type rejection is deliberately out of scope: service schemas
-        // under-specify types (e.g. Gmail's `labelIds` is `type: string` but
-        // legitimately accepts an array). A value whose JSON type differs from
-        // the declared scalar type passes through — coercion handles the safe
-        // cases, everything else is the upstream's business.
-        let s = schema(&[("labelIds", p("string", false))]);
-        assert!(validate_args(&s, &args(&[("labelIds", json!(["INBOX", "UNREAD"]))])).is_ok());
-        assert!(validate_args(&s, &args(&[("labelIds", json!({"nested": 1}))])).is_ok());
-    }
-
     #[test]
     fn non_numeric_string_for_integer_param_is_not_rejected() {
         // Coercion can't turn "abc" into an integer, and we don't reject on
@@ -799,67 +365,6 @@ mod tests {
         coerce_args(&s, &mut a);
         assert!(validate_args(&s, &a).is_ok());
         assert_eq!(a.get("count"), Some(&json!("abc")));
-    }
-
-    #[test]
-    fn not_in_enum_reported_for_non_member() {
-        let s = schema(&[("parse_mode", p_enum(&["HTML", "Markdown"], false))]);
-        let mut a = args(&[("parse_mode", json!("Fancy"))]);
-        coerce_args(&s, &mut a);
-        let err = validate_args(&s, &a).unwrap_err();
-        assert_eq!(
-            err,
-            vec![ArgError::NotInEnum {
-                field: "parse_mode".into(),
-                value: "Fancy".into(),
-                allowed: vec!["HTML".into(), "Markdown".into()],
-            }]
-        );
-    }
-
-    #[test]
-    fn empty_enum_list_is_unconstrained() {
-        // A numeric enum (`enum: [200, 404, 500]`) lowers to `Some(vec![])`
-        // because the loader keeps only string members. That empty list must
-        // NOT reject every value — the param is effectively unconstrained.
-        let param = ActionParam {
-            enum_values: Some(vec![]),
-            ..p("integer", false)
-        };
-        let s = schema(&[("status", param)]);
-        assert!(validate_args(&s, &args(&[("status", json!(404))])).is_ok());
-    }
-
-    #[test]
-    fn unspecified_type_accepts_any_scalar() {
-        // Empty param_type is unconstrained — any value passes.
-        let s = schema(&[("val", p("", false))]);
-        assert!(validate_args(&s, &args(&[("val", json!(7))])).is_ok());
-        assert!(validate_args(&s, &args(&[("val", json!(true))])).is_ok());
-        assert!(validate_args(&s, &args(&[("val", json!("x"))])).is_ok());
-    }
-
-    #[test]
-    fn errors_ordered_enum_after_missing_unknown() {
-        // Sort order: Missing, Unknown, NotInEnum.
-        let s = schema(&[
-            ("req", p("string", true)),
-            ("mode", p_enum(&["a", "b"], false)),
-        ]);
-        let a = args(&[
-            ("zzz", json!(1)),       // Unknown
-            ("mode", json!("nope")), // NotInEnum
-        ]);
-        let err = validate_args(&s, &a).unwrap_err();
-        let tags: Vec<&str> = err
-            .iter()
-            .map(|e| match e {
-                ArgError::Missing { .. } => "missing",
-                ArgError::Unknown { .. } => "unknown",
-                ArgError::NotInEnum { .. } => "enum",
-            })
-            .collect();
-        assert_eq!(tags, vec!["missing", "unknown", "enum"]);
     }
 
     // ── apply_aliases ─────────────────────────────────────────────────
