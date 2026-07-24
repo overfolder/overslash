@@ -1,177 +1,12 @@
-//! D42 SQL content policy: classify a SQL string as read or write and
-//! enumerate the relations (and column identifiers) it references.
-//!
-//! The parser is Postgres's own (`pg_query` — Rust bindings over libpg_query),
-//! gated behind the `sql_policy` Cargo feature because it adds a C-toolchain
-//! build dependency and binary weight. The types here are compiled
-//! unconditionally so callers never need `cfg` branches; compiled without the
-//! feature, [`analyze`] **fails closed** — everything classifies as a write on
-//! unknown tables, so risk elevates and only an explicit all-tables grant
-//! covers the call.
-//!
-//! What this module guarantees is deliberately asymmetric (D42):
-//!
-//! - **Read vs write** is enforceable: `SELECT`/read-only-`WITH` → read;
-//!   DML/DDL/`TRUNCATE`/`COPY`, multi-statement input, writable CTEs,
-//!   `DO`/`CALL`, utility statements, or anything unparseable → write.
-//! - **Table names** are enforceable: referenced relations become per-table
-//!   permission keys (see `PermissionKey::from_sql_analysis`).
-//! - **Column names are detection only**: the parse yields *referenced
-//!   identifiers*, not resolved columns. `SELECT *` (and `t.*`) surface the
-//!   literal `"*"`, so a deny-`*` rule fails closed and forces explicit
-//!   enumeration — but views/CTEs hide base-table columns from any parser, so
-//!   true column masking (PII) is the database's / Metabase's job, never
-//!   promised here.
-//!
-//! Documented non-guarantees: volatile functions inside a SELECT
-//! (`SELECT nextval('s')`) classify read — function-level policy is out of
-//! scope, DB grants own it; Metabase `{{template_vars}}` do not parse and
-//! therefore classify write; a read-only upstream key remains the backstop
-//! regardless (belt and suspenders).
+//! Classification entry points: [`available`], [`extract_sql`] and the two
+//! [`analyze`] arms — the real parser-backed one under the `sql_policy`
+//! feature, the fail-closed stub without it.
 
 use std::collections::HashMap;
 
-use crate::types::service::Risk;
-
-/// Read-or-write verdict for one SQL string.
-///
-/// Deliberately not [`Risk`]: the classifier never has grounds to assert
-/// `Delete` (`DROP` and `DELETE` are both just "not a read"), and callers
-/// merge with [`Risk::max_severity`], so a template-declared `delete` risk
-/// survives the merge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqlClass {
-    Read,
-    Write,
-}
-
-impl SqlClass {
-    /// The risk floor this verdict imposes.
-    pub fn as_risk(self) -> Risk {
-        match self {
-            SqlClass::Read => Risk::Read,
-            SqlClass::Write => Risk::Write,
-        }
-    }
-}
-
-/// Why a statement classified as write. Carried into tracing/audit so an
-/// operator can see *which* fail-closed rule fired, not just "write".
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WriteReason {
-    /// Compiled without the `sql_policy` feature — nothing was parsed.
-    Unavailable,
-    /// The nominated database resolves to a dialect this build cannot parse.
-    UnsupportedDialect(String),
-    ParseError(String),
-    /// Zero parsed statements (empty or comment-only input). Nothing would
-    /// execute, but an empty query attests nothing and costs nothing to gate.
-    EmptyInput,
-    /// More than one statement; the count is the number parsed.
-    MultiStatement(usize),
-    /// A top-level statement other than a plain `SELECT`; carries the parse
-    /// node name (`"InsertStmt"`, `"ExplainStmt"`, `"VariableSetStmt"`, …).
-    Statement(String),
-    /// DML/DDL nested under a top-level `SELECT` (writable CTE or sub-select
-    /// data modification).
-    WritableCte,
-    /// `SELECT … INTO t` / `CREATE TABLE … AS` shape under a SELECT.
-    SelectInto,
-    /// `FOR UPDATE` / `FOR NO KEY UPDATE` / `FOR SHARE` / `FOR KEY SHARE` at
-    /// any depth: acquires row locks that block writers — the SELECT whose
-    /// purpose is to precede a write.
-    RowLocking,
-}
-
-impl WriteReason {
-    /// Short machine-readable tag for audit/tracing fields.
-    pub fn tag(&self) -> &'static str {
-        match self {
-            WriteReason::Unavailable => "unavailable",
-            WriteReason::UnsupportedDialect(_) => "unsupported_dialect",
-            WriteReason::ParseError(_) => "parse_error",
-            WriteReason::EmptyInput => "empty_input",
-            WriteReason::MultiStatement(_) => "multi_statement",
-            WriteReason::Statement(_) => "statement",
-            WriteReason::WritableCte => "writable_cte",
-            WriteReason::SelectInto => "select_into",
-            WriteReason::RowLocking => "row_locking",
-        }
-    }
-}
-
-/// The outcome of analyzing one SQL string.
-#[derive(Debug, Clone)]
-pub struct SqlAnalysis {
-    pub class: SqlClass,
-    /// `None` iff `class == Read`.
-    pub write_reason: Option<WriteReason>,
-    /// Relations referenced in **read (select) context**, exactly as the
-    /// parser reports them: `"public.orders"` when the SQL schema-qualified
-    /// the name, `"orders"` when it did not (unquoted identifiers arrive
-    /// already lowercased by Postgres's lexer; quoted identifiers keep their
-    /// case). CTE names are excluded. Order-preserving, deduped.
-    pub read_tables: Vec<String>,
-    /// Relations that are **mutation targets** (DML/DDL context): the table
-    /// an INSERT/UPDATE/DELETE/MERGE lands on, a DROP/ALTER/TRUNCATE target,
-    /// a `CREATE TABLE … AS` / `SELECT INTO` destination. Same normalization
-    /// as [`read_tables`](Self::read_tables). A relation both read and
-    /// mutated in one statement appears in both lists.
-    pub mut_tables: Vec<String>,
-    /// Referenced column identifiers (the last segment of each column
-    /// reference). `*` and `t.*` both surface as the literal `"*"`.
-    /// Order-preserving, deduped.
-    pub columns: Vec<String>,
-    /// `false` when the statement may touch relations not listed above
-    /// (parse failure, `DO`/`CALL`/`EXECUTE` bodies, feature off,
-    /// unsupported dialect). Callers must then emit the all-tables sentinel
-    /// permission key — mutation-shaped, because every such case also
-    /// classifies write.
-    pub tables_exhaustive: bool,
-}
-
-impl SqlAnalysis {
-    fn write(
-        reason: WriteReason,
-        read_tables: Vec<String>,
-        mut_tables: Vec<String>,
-        columns: Vec<String>,
-        exhaustive: bool,
-    ) -> Self {
-        SqlAnalysis {
-            class: SqlClass::Write,
-            write_reason: Some(reason),
-            read_tables,
-            mut_tables,
-            columns,
-            tables_exhaustive: exhaustive,
-        }
-    }
-}
-
-/// Reserved instance-config key (D38 `components.x-overslash-config`) whose
-/// value is a JSON object *string* mapping the db-key produced by an action's
-/// `x-overslash-sql-database` jq expression to a dialect + audit label:
-/// `{ "5": {"dialect": "postgres", "label": "reveni-prod"} }`.
-pub const SQL_DATABASES_CONFIG_KEY: &str = "sql_databases";
-
-/// One entry of the `sql_databases` instance-config map.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct SqlDatabaseEntry {
-    /// Parser dialect. `None` → `"postgres"` (D42 fail-closed default).
-    #[serde(default)]
-    pub dialect: Option<String>,
-    /// Human label for audit + permission keys. `None` → the db-key itself.
-    #[serde(default)]
-    pub label: Option<String>,
-}
-
-/// Parse the `sql_databases` config value. `Err` carries a short description
-/// of the malformation; the call site falls back to postgres/label-from-key
-/// and warns.
-pub fn parse_sql_databases(raw: &str) -> Result<HashMap<String, SqlDatabaseEntry>, String> {
-    serde_json::from_str(raw).map_err(|e| e.to_string())
-}
+use super::types::SqlAnalysis;
+#[cfg(not(feature = "sql_policy"))]
+use super::types::WriteReason;
 
 /// Whether this build carries the parser.
 pub const fn available() -> bool {
@@ -229,7 +64,7 @@ pub fn analyze(sql: &str) -> SqlAnalysis {
 
 #[cfg(feature = "sql_policy")]
 mod imp {
-    use super::{SqlAnalysis, SqlClass, WriteReason};
+    use crate::sql_policy::types::{SqlAnalysis, SqlClass, WriteReason};
     use pg_query::NodeRef;
     use pg_query::protobuf::node::Node as NodeEnum;
 
@@ -450,6 +285,7 @@ mod imp {
 #[cfg(all(test, not(feature = "sql_policy")))]
 mod stub_tests {
     use super::*;
+    use crate::sql_policy::SqlClass;
 
     #[test]
     fn analyze_without_feature_fails_closed() {
@@ -512,6 +348,7 @@ mod extract_tests {
 #[cfg(all(test, feature = "sql_policy"))]
 mod tests {
     use super::*;
+    use crate::sql_policy::{SqlClass, WriteReason};
 
     /// Expected classification for one case of the matrix.
     enum Expect {
@@ -950,21 +787,5 @@ mod tests {
     #[test]
     fn available_reports_feature() {
         assert!(available());
-    }
-
-    #[test]
-    fn parse_sql_databases_shapes() {
-        let map = parse_sql_databases(r#"{"5": {"dialect": "postgres", "label": "reveni-prod"}}"#)
-            .expect("valid map");
-        let e = &map["5"];
-        assert_eq!(e.dialect.as_deref(), Some("postgres"));
-        assert_eq!(e.label.as_deref(), Some("reveni-prod"));
-
-        // Entries may omit both fields.
-        let map = parse_sql_databases(r#"{"7": {}}"#).expect("empty entry");
-        assert!(map["7"].dialect.is_none());
-
-        assert!(parse_sql_databases("not json").is_err());
-        assert!(parse_sql_databases(r#"["a"]"#).is_err());
     }
 }

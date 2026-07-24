@@ -229,4 +229,4 @@ Two adjacent small items:
 - **`EXPLAIN` (without `ANALYZE`) classifies write** — a deliberate
   fail-closed simplification (`EXPLAIN ANALYZE` executes DML, so
   whitelisting bare EXPLAIN means recursing into the option list). Relax in
-  `sql_policy.rs` if the prompt-noise ever matters.
+  `sql_policy/analyze.rs` if the prompt-noise ever matters.
