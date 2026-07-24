@@ -1,0 +1,262 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO identities (org_id, name, kind, parent_id, depth, owner_id, inherit_permissions, metadata, auto_call_on_approve)\n         VALUES ($1, $2, $3, $4, $5, $6, false, $7, (SELECT NOT default_deferred_execution FROM orgs WHERE id = $1))\n         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "external_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "external_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "metadata",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "parent_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "parent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "depth",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "depth"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "owner_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "owner_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "inherit_permissions",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "inherit_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "last_active_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "last_active_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "archived_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "archived_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "archived_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "archived_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "preferences",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "preferences"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "is_org_admin",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "is_org_admin"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "auto_call_on_approve",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "auto_call_on_approve"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid",
+        "Int4",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cd1e4e5731fbd7ea17185e439c3ca51aae8ada27dce40c9562a00ba94b3b20e6"
+}

@@ -1,7 +1,7 @@
 //! Integration tests for the server-side response filter (jq via jaq).
 //! See `services::response_filter`.
 
-mod common;
+use crate::common;
 
 use serde_json::json;
 

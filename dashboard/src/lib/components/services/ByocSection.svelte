@@ -92,8 +92,9 @@
 			<span class="configured-title">Your {label} OAuth app is configured</span>
 		</div>
 		<p class="configured-hint">
-			To replace it, remove it from your profile first. Replacing here would
-			invalidate existing {label} connections.
+			To rotate its client ID/secret, use <strong>Replace</strong> on the app in your
+			profile's “My OAuth apps.” Existing {label} connections will require
+			re-authorization afterward.
 		</p>
 	</section>
 {:else}

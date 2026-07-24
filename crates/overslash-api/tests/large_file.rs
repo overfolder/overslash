@@ -1,6 +1,6 @@
 //! Integration tests for large file handling: size limits and streaming proxy.
 
-mod common;
+use crate::common;
 
 use serde_json::json;
 

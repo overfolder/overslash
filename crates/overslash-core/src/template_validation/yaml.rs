@@ -245,7 +245,9 @@ components:
       type: apiKey
       in: header
       name: Authorization
-      x-overslash-prefix: "Bearer "
+      template:
+        lang: jq
+        expr: '"Bearer " + .token'
       default_secret_name: svc_token
 paths:
   /items:

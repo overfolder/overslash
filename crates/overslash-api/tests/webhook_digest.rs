@@ -15,7 +15,7 @@
 // compile-time DATABASE_URL dependency — matches `tests/common/mod.rs`.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use std::sync::{Arc, Mutex};
 
@@ -28,7 +28,7 @@ use sqlx::PgPool;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
-use common::test_pool;
+use crate::common::test_pool;
 
 #[derive(Clone, Default)]
 struct Capturing {

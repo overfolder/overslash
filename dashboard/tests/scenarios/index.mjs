@@ -16,7 +16,8 @@
 // stack.
 
 export { resolveEnv } from './env.mjs';
-export { login, attachToContext } from './auth.mjs';
+export { login, attachToContext, freshOrgSlug, deleteOrg } from './auth.mjs';
+export { purgeMail, seedMailbox, listMailboxMessages } from './mail.mjs';
 export { api } from './api.mjs';
 export {
 	seedAgent,
@@ -36,7 +37,9 @@ export {
 	setAuditResponseBodyMode,
 	setManagedSignin,
 	setTemplateSettings,
-	enableGlobalTemplate
+	enableGlobalTemplate,
+	getTemplate,
+	seedDerivedLayer
 } from './seed.mjs';
 export { makeSnapper } from './snap.mjs';
 export { connectGithubService } from './connect.mjs';

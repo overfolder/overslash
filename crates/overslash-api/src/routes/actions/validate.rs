@@ -74,6 +74,20 @@ pub(super) async fn validate_action_impl(
     )
     .await?;
 
+    // Rewrite parameter aliases to canonical names in lockstep with `/call`
+    // so the dry-run validates the exact keys the real call would execute.
+    overslash_core::openapi::validate_input::apply_aliases(
+        &meta.validation_params,
+        &mut req.params,
+    );
+    // Overlay the pinned config (instance's own, then the org layer's defaults)
+    // in lockstep with `/call`, so a param satisfied by a pin doesn't validate
+    // here as missing.
+    super::apply_instance_config(
+        &meta.validation_params,
+        resolved_mode_c.as_ref(),
+        &mut req.params,
+    );
     // Fill template-declared defaults before validating — mirrors `/call`
     // so a defaulted-required param (e.g. `calendarId: primary`) omitted by
     // the caller validates here exactly as it would execute there.
@@ -81,6 +95,9 @@ pub(super) async fn validate_action_impl(
         &meta.validation_params,
         &mut req.params,
     );
+    // Coerce in lockstep with `/call` so the dry-run validates the same value
+    // the real call would execute, keeping the 400 bodies byte-identical.
+    overslash_core::openapi::validate_input::coerce_args(&meta.validation_params, &mut req.params);
 
     // Argument validation runs before the risk gate so a request with
     // both bad params and a wrong-risk assertion produces the same
@@ -125,7 +142,7 @@ pub(super) async fn validate_action_impl(
         PermissionKey::from_service_action(
             &svc.service_key,
             &svc.action_key,
-            svc.scope_param.as_deref(),
+            &svc.scope_param,
             &req.params,
         )
     };

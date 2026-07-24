@@ -65,6 +65,7 @@ x-overslash-mcp:
         - label: "Channel"
           filter: ".arguments.channel"
         - label: "Message"
+          primary: true
           filter: ".arguments.text"
           max_chars: 2000
         - label: "Thread"

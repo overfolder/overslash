@@ -96,7 +96,7 @@ same user pick it up immediately. The response carries
 
 | Value | Meaning | Next step |
 |---|---|---|
-| `needs_authentication` | OAuth template with no connection bound, **or** an API-key / MCP-bearer template with no secret set | OAuth → step 3; API key → [Providing an API key](#providing-an-api-key-non-oauth-services) |
+| `needs_authentication` | OAuth template with no connection bound, **or** a secret-based / MCP-bearer template with no secret set | OAuth → step 3; secret-based → [Providing a secret](#providing-a-secret-non-oauth-services) |
 | `ok` | secret/connection inferred from existing user state | skip to step 5 |
 | `partially_degraded` | a connection is bound but does not cover every action's scopes — uncovered actions return `403 missing_scopes` | click the upgrade `auth_url` returned in that 403 |
 | `needs_reconnect` | a connection is bound but covers none of the scope-bearing actions | re-run consent (step 3) |
@@ -159,12 +159,17 @@ servers:
   - url: https://api.acme.com    # calls are bounded to this host
 components:
   securitySchemes:
-    # API-key style — Overslash injects a vault secret:
+    # Secret-based — Overslash injects a vault secret:
     token:
       type: apiKey
       in: header
       name: Authorization
-      x-overslash-prefix: "Bearer "
+      # How to build the header value from the secrets below. Absent means
+      # "inject the one secret verbatim". Slots are named literally so the
+      # gateway knows which secrets to decrypt.
+      x-overslash-template:
+        lang: jq
+        expr: '"Bearer " + .token'
       default_secret_name: acme_key
     # …or OAuth style instead:
     # oauth:
@@ -178,6 +183,11 @@ paths:
       summary: "Send a message to {channel}"   # templated into approval prompts
       risk: write                               # read | write | delete — gates approval/auto-approve
       scope_param: channel                      # binds the permission/approval scope
+      # A list scopes several params at once, and `param:label` files them
+      # under one namespace — services/email.yaml scopes every recipient with
+      #   scope_param: [to:recipient, cc:recipient, bcc:recipient]
+      # so each address mints `email:send:recipient=<addr>` and a bcc is gated
+      # like a to. Keys dedupe, so an address on two headers is one approval.
       requestBody:
         required: true
         content:
@@ -218,8 +228,8 @@ overslash_call {
 Editing and **promoting** a draft to active is REST-only today (no MCP action):
 `PUT /v1/templates/drafts/{id}` then `POST /v1/templates/drafts/{id}/promote`
 (both `Authorization: Bearer …`). See `SPEC.md` for the full `x-overslash-*`
-extension table (`risk`, `scope_param`, `resolve`, `provider`,
-`default_secret_name`).
+extension table (`risk`, `scope_param` — including its list and `param:label`
+forms, `resolve`, `provider`, `default_secret_name`).
 
 ## When credentials are missing
 
@@ -249,9 +259,10 @@ user and point them at the setup guide:
 A related `400 "pinned BYOC credential '<id>' not found"` means the connection's
 BYOC client was deleted — tell the user to create a new connection.
 
-### Providing an API key (non-OAuth services)
+### Providing a secret (non-OAuth services)
 
-For API-key (or HMAC / inline-secret) services there is **no `auth_url`**. When
+For secret-based services — an API key, a bearer token, an HMAC secret, or a
+`user:password` pair — there is **no `auth_url`**. When
 the required secret is absent, calling the action returns a `400`:
 
 ```json
@@ -294,50 +305,79 @@ When `overslash_call` hits a permission gap it does not execute — it returns:
 
 **Step 1 — show the user `approval_url`** so they can allow or deny in the dashboard.
 
-**Step 2 — wait for resolution.**
-
-If the `overslash` CLI is available (see [Installing the CLI](#installing-the-cli) above), use it — works in any harness:
-
-```bash
-overslash watch abc-123          # --timeout 15m --poll 3s by default
-```
-
-Exit codes: **0** allowed · **1** denied / expired / timed out · **2** error.
-On exit 0, stdout is the resolved JSON; `execution.result` will be present if
-the action was auto-executed on approval.
-
-If the CLI is not installed, poll with a bare shell loop:
-
-```bash
-TOKEN="$(jq -r .token ~/.config/overslash/mcp.json)"
-until [ "$(curl -sf -H "Authorization: Bearer $TOKEN" \
-  https://app.overslash.com/v1/approvals/abc-123 \
-  | jq -r '.status')" != "pending" ]; do sleep 3; done
-curl -sf -H "Authorization: Bearer $TOKEN" \
-  https://app.overslash.com/v1/approvals/abc-123
-```
-
-**Step 3 — execute.** If `execution.result` is not in the resolved JSON, call:
+**Step 2 — poll your inbox** until the approval turns into something you can act on:
 
 ```
-overslash_call { "approval_id": "abc-123" }
+overslash_call { "service": "overslash", "action": "get_events" }
 ```
+
+It returns an array of events. The two that concern you here:
+
+| `type` | What it means | What to do |
+|---|---|---|
+| `ready_to_call` | Approved, waiting for you to dispatch it (15-minute TTL) | `overslash_call { "approval_id": "abc-123" }` |
+| `result_unread` | Already ran on your behalf — the output is waiting | `get_result` (Step 3) |
+
+Which one you get depends on your identity's `auto_call_on_approve` setting. It
+is **on by default**, meaning the gateway runs the action for you the moment it
+is approved and you collect the output afterwards.
+
+An empty array means nothing has changed yet — sleep briefly and poll again.
+The approval itself expires, so this is not an infinite wait.
+
+**Step 3 — collect the result.**
+
+```
+overslash_call { "service": "overslash", "action": "get_result",
+                 "params": { "approval_id": "abc-123" } }
+```
+
+This returns the execution's `status`, `result`, `error`, and
+`http_status_code`. Reaching for `overslash_call { "approval_id": … }` instead
+will not work — that answers 409 once the action has already run.
+
+Use `get_result` even if you already glimpsed the body elsewhere (`list_pending`
+nests it too): it is the only call that marks the output as read, and an unread
+result keeps reappearing in `get_events`.
 
 **Never re-submit the original parameters once an approval exists** — that
 creates a second approval instead of resuming the first.
 
-## Pending executions
+Shell-capable harnesses can use the CLI instead of polling in-protocol (see
+[Installing the CLI](#installing-the-cli) above):
 
-An approved action sits as a pending execution (15-minute TTL) until the agent
-triggers it. Use the built-in `overslash` platform service — handy at session
-start to catch work that survived an interrupted session:
+```bash
+overslash inbox                  # same event array, as JSON on stdout
+overslash get-result abc-123     # exit 0 = executed, 1 = failed/pending, 2 = error
+overslash watch abc-123          # block until resolved; --timeout 15m --poll 3s
+```
+
+## Your inbox
+
+`get_events` is the one call that answers "is anything waiting on me?" — worth
+running at session start to pick up work that survived an interrupted session.
+A third event type appears when you have descendants:
+
+| `type` | Meaning |
+|---|---|
+| `approval_needed` | A sub-agent below you is blocked and **you** can unblock it — resolve with `overslash_approve`. These are always someone else's request (`relationship: "downstream"`); your own parked requests never appear here |
+| `ready_to_call` | Your approved action is waiting to be dispatched |
+| `result_unread` | Your action already ran and you have not read the output |
+
+Events carry `approval_id`, `action_summary`, `risk`, `relationship`, and the
+execution's lifecycle — but never the result body. Use `get_result` for that.
+
+The rest of the pending-execution surface, on the built-in `overslash` platform
+service:
 
 | Action | Effect |
 |---|---|
-| `list_pending` | Lists your approved-but-unexecuted actions |
-| `call_pending` | Executes one — `params: { "approval_id": "…" }` |
+| `get_events` | Everything waiting on you (above) |
+| `get_result` | Fetch one execution's outcome — `params: { "approval_id": "…" }` |
+| `list_pending` | Your approved actions still needing attention (dispatch or unread output) |
+| `call_pending` | Dispatches one — `params: { "approval_id": "…" }` |
 | `cancel_pending` | Discards one — `params: { "approval_id": "…" }` |
 
 ```
-overslash_call { "service": "overslash", "action": "list_pending" }
+overslash_call { "service": "overslash", "action": "get_events" }
 ```

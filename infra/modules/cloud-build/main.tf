@@ -68,6 +68,10 @@ resource "google_cloudbuild_trigger" "deploy" {
       args = [
         "--dockerfile=crates/overslash-api/Dockerfile",
         "--context=dir:///workspace",
+        # Bake the commit into the binary so /health and GET /v1/version can
+        # report which build is serving. The build context has no .git, so
+        # this substitution is the only way the SHA reaches the compiler.
+        "--build-arg=OVERSLASH_GIT_SHA=$COMMIT_SHA",
         "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:$COMMIT_SHA",
         "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:latest",
         "--cache=true",

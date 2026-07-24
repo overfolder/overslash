@@ -16,6 +16,7 @@ import { resolveEnv } from './env.mjs';
  *
  * @typedef {{
  *   profile: DevProfile,
+ *   orgSlug?: string,
  *   apiUrl: string,
  *   dashboardUrl: string,
  *   cookieHeader: string,
@@ -27,12 +28,23 @@ import { resolveEnv } from './env.mjs';
  */
 
 /**
+ * Sign in as a dev profile.
+ *
+ * Without `opts.org` this lands in the shared `dev-org`, which every existing
+ * screenshot script and spec uses. Pass an org slug to sign into a private
+ * org instead — the server creates it on demand with slug-scoped profile
+ * emails, so nothing a spec does there is visible to any other spec. Pair it
+ * with `deleteOrg` in teardown; see `freshOrgSlug`.
+ *
  * @param {DevProfile} [profile='admin']
+ * @param {{ org?: string }} [opts]
  * @returns {Promise<Session>}
  */
-export async function login(profile = 'admin') {
+export async function login(profile = 'admin', opts = {}) {
 	const { apiUrl, dashboardUrl } = resolveEnv();
-	const res = await fetch(`${apiUrl}/auth/dev/token?profile=${profile}`, {
+	const query = new URLSearchParams({ profile });
+	if (opts.org) query.set('org', opts.org);
+	const res = await fetch(`${apiUrl}/auth/dev/token?${query}`, {
 		redirect: 'manual'
 	});
 	if (!res.ok && res.status !== 302) {
@@ -54,6 +66,7 @@ export async function login(profile = 'admin') {
 
 	return {
 		profile,
+		orgSlug: opts.org,
 		apiUrl,
 		dashboardUrl,
 		cookieHeader: `oss_session=${session.value}`,
@@ -82,6 +95,35 @@ export async function attachToContext(ctx, session) {
 		sameSite: /** @type {'Lax'} */ ('Lax')
 	}));
 	await ctx.addCookies(cookies);
+}
+
+/**
+ * A slug for a run-private org. Short and collision-proof enough that two
+ * concurrent workers (or a re-run against a warm stack) can't meet.
+ *
+ * @param {string} prefix
+ */
+export function freshOrgSlug(prefix = 'e2e') {
+	const rand = Math.random().toString(36).slice(2, 8);
+	return `${prefix}-${rand}`;
+}
+
+/**
+ * Delete a dev org and everything in it. Idempotent — deleting an org that
+ * was never created (a spec that failed before login) is not an error, so
+ * this is safe to call unconditionally from teardown.
+ *
+ * @param {string} slug
+ */
+export async function deleteOrg(slug) {
+	const { apiUrl } = resolveEnv();
+	const res = await fetch(`${apiUrl}/auth/dev/orgs/${encodeURIComponent(slug)}`, {
+		method: 'DELETE'
+	});
+	if (!res.ok) {
+		throw new Error(`delete dev org ${slug} failed: HTTP ${res.status} ${await res.text()}`);
+	}
+	return /** @type {{ slug: string, deleted: boolean }} */ (await res.json());
 }
 
 /** @param {Response} res */

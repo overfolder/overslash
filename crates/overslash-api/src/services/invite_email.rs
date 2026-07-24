@@ -24,18 +24,24 @@ use overslash_core::email::{
     EmailMessage, ORG_INVITE_TEMPLATE_HTML, ORG_INVITE_TEMPLATE_SUBJECT, render,
 };
 use overslash_db::repos::org::OrgRow;
-use overslash_db::repos::org_invite::OrgInviteRow;
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::AppState;
 use crate::routes::auth::build_org_redirect;
 
-/// Send the invite notification. `inviter_name` falls back to a generic
-/// label when the caller can't resolve a display name for the inviter
-/// identity (e.g. invite minted via an API key with no user identity).
+/// Send the invite notification for a pre-created member identity.
+///
+/// A pending invite is now an `identities` row (`external_id IS NULL`) rather
+/// than an `org_invites` row, so this takes the recipient's `(email, role,
+/// identity_id)` directly. `inviter_name` falls back to a generic label when
+/// the caller can't resolve a display name for the inviter identity (e.g. the
+/// invite was minted via an API key with no user identity).
 pub async fn send(
     state: &AppState,
-    invite: &OrgInviteRow,
+    email: &str,
+    role: &str,
+    identity_id: Uuid,
     org: &OrgRow,
     inviter_name: Option<&str>,
 ) {
@@ -51,7 +57,7 @@ pub async fn send(
         "inviter_name".into(),
         Value::String(inviter_label.to_string()),
     );
-    params.insert("role".into(), Value::String(invite.role.clone()));
+    params.insert("role".into(), Value::String(role.to_string()));
     params.insert("accept_url".into(), Value::String(accept_url));
 
     let html = render(ORG_INVITE_TEMPLATE_HTML, &params);
@@ -59,7 +65,7 @@ pub async fn send(
 
     let msg = EmailMessage {
         from: String::new(), // ResendMailer falls back to default_from
-        to: invite.email.clone(),
+        to: email.to_string(),
         subject,
         html,
         reply_to: None,
@@ -68,8 +74,8 @@ pub async fn send(
 
     if let Err(e) = state.mailer.send(msg).await {
         tracing::warn!(
-            invite_id = %invite.id,
-            org_id = %invite.org_id,
+            identity_id = %identity_id,
+            org_id = %org.id,
             error = %e,
             "org-invite email send failed",
         );

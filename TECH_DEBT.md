@@ -72,9 +72,20 @@ IdP credentials fall back to `GOOGLE_AUTH_CLIENT_ID` / `GITHUB_AUTH_CLIENT_ID` (
 
 ---
 
-## Dashboard: no BYOC replacement UX
+## Dashboard: no BYOC replacement UX — RESOLVED
 
-The Create Service form surfaces user-level BYOC state via `has_user_byoc_credential` (from `/v1/oauth-providers`) and `ByocSection` renders a read-only "✓ Your {provider} OAuth app is configured" card when present. There is no in-place replace action: silently swapping the BYOC would invalidate every existing `connections` row authorized against the old client_id (tokens minted by one OAuth app are not redeemable by another). A proper replace flow needs (a) a settings page listing BYOC credentials with explicit delete, (b) a warning that lists impacted connections, and ideally (c) re-auth prompts or a dual-creds overlap window. Until then, users have to delete + recreate via `DELETE /v1/byoc-credentials/{id}` from profile/settings.
+~~The Create Service form surfaces user-level BYOC state via `has_user_byoc_credential`…~~
+
+Resolved by the §6 token-vault work (`docs/design/agent-credential-provisioning.md`):
+`PUT /v1/byoc-credentials/{id}` replaces the encrypted client pair **in place** so the
+credential id — and every `connections` row pinned to it — survives the rotation. Because
+tokens minted under the old OAuth app can't be redeemed by the new one, the replace path
+proactively sets the persisted `connections.reauth_required` flag on every pinned connection;
+the action auth path short-circuits a flagged connection to the existing `reauth_required`
+recovery envelope, and a fresh reconnect clears the flag. The dashboard exposes this as a
+**Replace** action on each app in the profile's "My OAuth apps" list, and connections render a
+"Reauth required" badge. (A dual-creds overlap window remains a possible future refinement, but
+is not needed for correctness.)
 
 ---
 
@@ -87,3 +98,113 @@ The dashboard's approvals list shows the timestamp as `Requested Invalid Date`. 
 ## Reusing existing Google OAuth connections fails
 
 Choosing a previously-authorized Google connection on a newly-created Google service does not bind the service to the existing token; the connection stays unlinked and the service remains in `pending_credentials`. Suspected cause: the service-instance → connection mapping does not match by `(provider, subject)` — probably by `connection_id` only — so the dashboard's "reuse existing" picker writes a binding the backend doesn't honor. Relates to the broader 2026-04-20 review ask to support reusing connections across services sharing a provider. Tracked under card `c2575`.
+
+---
+
+## Manual `cargo update` is not covered by the 7-day dependency cooldown
+
+D30 gates automated dependency bumps behind Dependabot's 7-day `cooldown`, but a manual `cargo update` on the stable toolchain can still pull a version published minutes ago. Cargo's client-side gate (`min-publish-age`, RFC 3923) is nightly-only as of 2026-07, and the forward-compatible `.cargo/config.toml` staging used in overfolder isn't possible here because `.cargo/` is gitignored (reserved for developers' local mold-linker config). When `min-publish-age` stabilizes, either commit a tracked `.cargo/config.toml` (migrating the mold convention to e.g. `.cargo/config.local.toml` isn't a thing — cargo reads a fixed filename — so this means un-ignoring the path and folding mold config in, or documenting `CARGO_*` env vars instead) or set `CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE` in CI. Low urgency: updates normally flow through Dependabot, which does enforce the window.
+
+---
+
+## Two SHA-pinned actions track branches, so Dependabot won't bump them
+
+D31 pins every third-party action in `.github/workflows/*.yml` to a commit SHA so D30's `cooldown` applies. Two of those pins freeze a *moving pointer* rather than a release tag, and Dependabot's version-update logic tracks tags/releases — so it will not reliably propose bumps for either:
+
+- `dtolnay/rust-toolchain@4be7066` — its ref is the `stable` **branch**, not a semver tag; the branch tip is what we froze. (Overfolder carries the same debt.)
+- `rui314/setup-mold@9c9c13b` — the repo publishes no semver releases at all, only a mutable `v1` tag that moves.
+
+Both still behave correctly at runtime — rustup resolves `stable` and installs the current stable toolchain; mold installs normally. Only the *action code* is frozen, so upstream fixes won't be picked up automatically and the pins can drift stale silently with no PR. Low risk (both actions are small and stable), but they're untracked pins. Ideal fix: re-pin each to its current tip by hand periodically (e.g. quarterly), or switch to a version-tagged equivalent with the same ergonomics if one appears, so Dependabot can manage it.
+
+---
+
+## `SecretRef::encode` is deserialized and ignored for one release
+
+D35 replaced `x-overslash-encode` with a jq credential template, but
+`ActionRequest`s persisted on approvals created *before* that deploy still
+carry `encode` on their `secrets[]`. `SecretRef` keeps the field as
+`#[serde(default, skip_serializing)]` — accepted on read, never written, never
+applied — purely so such an approval still *deserialises* rather than failing
+to parse.
+
+It is not replayable, though, and deliberately so: applying the surviving
+prefix without the dropped base64 would send `Basic user:pass` upstream, which
+reads as a wrong password rather than as our bug. `resolve_credential_values`
+therefore rejects any `SecretRef` still carrying `encode` with "re-issue the
+call". In practice this is the one `email`/`mailbox` shape, whose instances
+must be rebound to two slots anyway (see D35 rollout). Drop the field once no
+pending approval predates the deploy.
+
+## Non-JSON `requestBody` media types are parsed but never sent
+
+`ServiceAction::request_body` records whatever media type a template declares
+under `requestBody.content` (`crates/overslash-core/src/openapi/extract.rs`,
+`parse_request_body`), but two places still only understand JSON:
+
+- `collect_body_parameters` reads the schema from `content["application/json"]`
+  only, so a form-encoded or multipart body extracts **zero** params — the
+  action shows no body fields to agents, and validation has nothing to check.
+- Routing (`crates/overslash-api/src/routes/actions/resolve.rs`) sends a body
+  only when `RequestBodySpec::is_json()`, so a declared non-JSON body results in
+  no body and no `Content-Type` at all.
+
+This is latent: every shipped template in `services/` declares
+`application/json`. Before, such a body would have been silently re-serialised
+*as JSON* under a `Content-Type: application/json` the template never asked for;
+recording the real media type at least makes the mismatch legible rather than
+wrong-on-the-wire. To actually support one (a multipart attachment upload is the
+likely first caller), teach `collect_body_parameters` to pick the schema for the
+declared media type and give routing an encoder per type, keyed off
+`RequestBodySpec::content_type`.
+
+## An unresolvable instance credential sends an unauthenticated request
+
+When a service instance cannot resolve its credentials — an unbound secret slot,
+or (since D38) a `required` config var with no value — `resolve_instance_auth`
+sets `instance_secret_missing` and deliberately declines to return a partial
+credential set. It then falls through to `resolve_service_auth`, which only
+knows about OAuth and env-backed secrets. For a template like `email` that has
+neither, resolution ends with *no* credentials and the call is sent upstream
+**unauthenticated**, returning whatever the upstream says (a 401 from a real
+overfwd) rather than a `needs_authentication` prompt naming what to configure.
+
+Verified on `email`: both an unbound `mailbox_pass` and a missing `mailbox_user`
+produce an outbound request carrying neither `X-Mailbox-Auth` nor the org
+`Authorization` — correct in that nothing partial or truncated is ever sent, but
+the caller gets a confusing upstream error instead of "go set this field".
+
+The safety property is covered (`email_unbound_mailbox_never_injects_gateway_key_alone`,
+`email_missing_required_config_never_sends_a_truncated_credential`); the UX is
+not. Fixing it means short-circuiting to `needs_authentication` when the template
+declares no OAuth and no env fallback, which changes behaviour for every
+secret-backed template — deliberately out of scope for D38, which only had to
+match the existing unbound-slot contract.
+
+---
+
+## Object-array recipients can't be scoped — `scope_param` names params, not values inside them
+
+`scope_param` now accepts a list with per-entry labels
+(`[to:recipient, cc:recipient, bcc:recipient]` on `services/email.yaml`), which
+gates a send on every address regardless of header. That works because
+`email`'s recipient params are arrays of plain strings.
+
+The other mail/calendar templates cannot use it:
+
+- `outlook.yaml` — `toRecipients`/`ccRecipients`/`bccRecipients` are arrays of
+  `{emailAddress: {address, name}}` objects.
+- `google_calendar.yaml` — `create_event.attendees` is an array of `{email}`.
+- `gmail.yaml` — `send_message` takes one base64url RFC 2822 `raw` blob; there
+  is no recipient param at all (it scopes on `userId`).
+
+Pointing `scope_param` at an object array would derive keys whose value is the
+JSON literal of the object — nothing a rule can match and nothing a human can
+read — so those templates keep their existing service/mailbox-level scoping
+(`outlook` has no `scope_param` on `send_mail`; the others scope on the
+mailbox/calendar id).
+
+Closing it needs a value *extractor* on a scope entry (a jq filter, in the
+shape `disclose` already uses) so a template can say "the scope values are
+`.toRecipients[].emailAddress.address`". That is a bigger change than the
+label syntax: it puts a filter on the permission-derivation path, which today
+is pure string handling and runs before any approval exists.

@@ -13,9 +13,19 @@ pub struct ServiceTemplateRow {
     pub category: String,
     pub hosts: Vec<String>,
     /// Full OpenAPI 3.1 document (with `x-overslash-*` extensions), canonical
-    /// source of truth for the template. The scalar fields above are
-    /// denormalized at write time for fast listing.
-    pub openapi: serde_json::Value,
+    /// source of truth for a **standalone** layer. The scalar fields above are
+    /// denormalized at write time for fast listing. `NULL` for a **derived**
+    /// layer (see [`extends`]/[`delta`]); the shape CHECK guarantees it is
+    /// present whenever `extends IS NULL`.
+    pub openapi: Option<serde_json::Value>,
+    /// Base template key this layer derives from. `None` → **standalone** layer
+    /// (full `openapi` doc). `Some(key)` → **derived** layer whose effective
+    /// template is `apply(delta, resolve(extends))`. The base is resolved by
+    /// key (DB rows, then the global registry) — deliberately not an FK.
+    pub extends: Option<String>,
+    /// Derived-layer content: masks + extensions over the base named by
+    /// `extends`. `None` for a standalone layer.
+    pub delta: Option<serde_json::Value>,
     /// `'draft'` rows are the in-progress output of `POST /v1/templates/import`;
     /// they are invisible to the runtime registry and all public listing
     /// queries filter them out. `'active'` rows are the regular published
@@ -33,7 +43,14 @@ pub struct CreateServiceTemplate<'a> {
     pub description: &'a str,
     pub category: &'a str,
     pub hosts: &'a [String],
-    pub openapi: serde_json::Value,
+    /// Present for a standalone layer; `None` for a derived layer (which
+    /// supplies `delta`/`extends` instead). The shape CHECK enforces exactly
+    /// one of (openapi) / (extends+delta).
+    pub openapi: Option<serde_json::Value>,
+    /// Base key for a derived layer; `None` for a standalone layer.
+    pub extends: Option<&'a str>,
+    /// Delta for a derived layer; `None` for a standalone layer.
+    pub delta: Option<serde_json::Value>,
     /// Defaults to `'active'` when creating a new template directly. Imports
     /// pass `'draft'` to park the row until the user promotes it.
     pub status: &'a str,
@@ -46,6 +63,8 @@ pub struct UpdateServiceTemplate<'a> {
     pub hosts: Option<&'a [String]>,
     pub openapi: Option<serde_json::Value>,
     pub key: Option<&'a str>,
+    /// Derived-layer delta update. `None` leaves the stored delta unchanged.
+    pub delta: Option<serde_json::Value>,
 }
 
 pub async fn create(
@@ -55,10 +74,10 @@ pub async fn create(
     sqlx::query_as!(
         ServiceTemplateRow,
         "INSERT INTO service_templates (org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         category, hosts, openapi, extends, delta, status) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
          RETURNING id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status, created_at, updated_at",
+         category, hosts, openapi, extends, delta, status, created_at, updated_at",
         input.org_id,
         input.owner_identity_id,
         input.key,
@@ -66,7 +85,9 @@ pub async fn create(
         input.description,
         input.category,
         input.hosts,
-        input.openapi,
+        input.openapi.clone() as Option<serde_json::Value>,
+        input.extends,
+        input.delta.clone() as Option<serde_json::Value>,
         input.status,
     )
     .fetch_one(pool)
@@ -77,7 +98,7 @@ pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<ServiceTemplate
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status, created_at, updated_at \
+         category, hosts, openapi, extends, delta, status, created_at, updated_at \
          FROM service_templates WHERE id = $1",
         id,
     )
@@ -97,7 +118,7 @@ pub async fn get_by_key(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status, created_at, updated_at \
+         category, hosts, openapi, extends, delta, status, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND key = $3 \
            AND status = 'active'",
@@ -117,7 +138,7 @@ pub async fn list_by_org(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status, created_at, updated_at \
+         category, hosts, openapi, extends, delta, status, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 AND owner_identity_id IS NULL AND status = 'active' ORDER BY key",
         org_id,
@@ -135,7 +156,7 @@ pub async fn list_by_user(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status, created_at, updated_at \
+         category, hosts, openapi, extends, delta, status, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 AND owner_identity_id = $2 AND status = 'active' ORDER BY key",
         org_id,
@@ -155,7 +176,7 @@ pub async fn list_available(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status, created_at, updated_at \
+         category, hosts, openapi, extends, delta, status, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 AND (owner_identity_id IS NULL OR owner_identity_id = $2) \
            AND status = 'active' \
@@ -176,7 +197,7 @@ pub async fn list_all_by_org(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status, created_at, updated_at \
+         category, hosts, openapi, extends, delta, status, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 AND status = 'active' ORDER BY key",
         org_id,
@@ -196,7 +217,7 @@ pub async fn list_user_drafts(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status, created_at, updated_at \
+         category, hosts, openapi, extends, delta, status, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 AND status = 'draft' AND owner_identity_id = $2 \
          ORDER BY updated_at DESC",
@@ -217,11 +238,33 @@ pub async fn list_all_drafts_in_org(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status, created_at, updated_at \
+         category, hosts, openapi, extends, delta, status, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 AND status = 'draft' \
          ORDER BY updated_at DESC",
         org_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// List active derived layers in an org that `extends` the given base key —
+/// i.e. the live dependents of a base. Used by the delete referential guard
+/// (block removing a base that still has descendants) and by resolution-warning
+/// recomputation when a base changes.
+pub async fn list_dependents(
+    pool: &PgPool,
+    org_id: Uuid,
+    base_key: &str,
+) -> Result<Vec<ServiceTemplateRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ServiceTemplateRow,
+        "SELECT id, org_id, owner_identity_id, key, display_name, description, \
+         category, hosts, openapi, extends, delta, status, created_at, updated_at \
+         FROM service_templates \
+         WHERE org_id = $1 AND extends = $2 AND status = 'active' ORDER BY key",
+        org_id,
+        base_key,
     )
     .fetch_all(pool)
     .await
@@ -241,10 +284,11 @@ pub async fn update(
          hosts = COALESCE($5, hosts), \
          openapi = COALESCE($6, openapi), \
          key = COALESCE($7, key), \
+         delta = COALESCE($8, delta), \
          updated_at = now() \
          WHERE id = $1 \
          RETURNING id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status, created_at, updated_at",
+         category, hosts, openapi, extends, delta, status, created_at, updated_at",
         id,
         input.display_name,
         input.description,
@@ -252,6 +296,7 @@ pub async fn update(
         input.hosts as Option<&[String]>,
         input.openapi.clone() as Option<serde_json::Value>,
         input.key,
+        input.delta.clone() as Option<serde_json::Value>,
     )
     .fetch_optional(pool)
     .await
@@ -270,7 +315,7 @@ pub async fn promote_draft(
         "UPDATE service_templates SET status = 'active', updated_at = now() \
          WHERE id = $1 AND status = 'draft' \
          RETURNING id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, openapi, status, created_at, updated_at",
+         category, hosts, openapi, extends, delta, status, created_at, updated_at",
         id,
     )
     .fetch_optional(pool)

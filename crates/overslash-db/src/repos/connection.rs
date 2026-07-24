@@ -20,6 +20,14 @@ pub struct ConnectionRow {
     pub account_email: Option<String>,
     pub byoc_credential_id: Option<Uuid>,
     pub is_default: bool,
+    /// When true, this connection is preserved (never auto-deleted) when a
+    /// service instance bound to it is deleted, regardless of reference count.
+    pub keep: bool,
+    /// When true, the connection must be re-authorized before use — e.g. its
+    /// pinned BYOC client was replaced, invalidating the stored tokens. The
+    /// action auth path short-circuits a flagged connection to the
+    /// `reauth_required` recovery envelope; a fresh token write clears it.
+    pub reauth_required: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -75,7 +83,7 @@ where
                  ))
          RETURNING id, org_id, identity_id, provider_key, encrypted_access_token,
                    encrypted_refresh_token, token_expires_at, scopes, account_email,
-                   byoc_credential_id, is_default, created_at, updated_at",
+                   byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at",
         input.org_id,
         input.identity_id,
         input.provider_key,
@@ -113,7 +121,7 @@ pub(crate) async fn find_for_import(
         // (migration 083) as non-`Option` and panics on a NULL. See `get_by_id`.
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, created_at, updated_at
+                account_email, byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at
          FROM connections
          WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3
            AND ($4::text IS NULL OR account_email IS NOT DISTINCT FROM $4)
@@ -143,7 +151,7 @@ pub(crate) async fn get_by_id(
         // explicitly. See `scopes/user_connections.rs` (its JOIN sidesteps this).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, created_at, updated_at
+                account_email, byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at
          FROM connections WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -165,7 +173,7 @@ pub(crate) async fn list_all_in_org(
         // `scopes AS "scopes?"`: force the nullable override (see `get_by_id`).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, created_at, updated_at
+                account_email, byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at
          FROM connections WHERE org_id = $1 ORDER BY created_at DESC",
         org_id,
     )
@@ -189,10 +197,14 @@ pub(crate) async fn update_tokens(
     // and re-consent flows mint one. Unconditionally writing $4 would wipe
     // the stored refresh_token on the first refresh, leaving the connection
     // unable to refresh ever again.
+    // Writing a fresh valid token heals a `reauth_required` connection: this is
+    // the path the reauth/upgrade OAuth callback runs, so clearing the flag here
+    // is what turns the proactive mark (set at BYOC replace) back off.
     sqlx::query!(
         "UPDATE connections SET encrypted_access_token = $3,
          encrypted_refresh_token = COALESCE($4, encrypted_refresh_token),
-         token_expires_at = $5, updated_at = now() WHERE id = $1 AND org_id = $2",
+         token_expires_at = $5, reauth_required = false, updated_at = now()
+         WHERE id = $1 AND org_id = $2",
         id,
         org_id,
         encrypted_access_token,
@@ -202,6 +214,26 @@ pub(crate) async fn update_tokens(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Mark every connection pinned to `byoc_credential_id` as requiring
+/// re-authorization, scoped to its org. Called when a BYOC credential's client
+/// pair is replaced: tokens minted under the old OAuth app can no longer
+/// refresh. Returns the number of connections flagged.
+pub(crate) async fn mark_reauth_by_byoc(
+    pool: &PgPool,
+    org_id: Uuid,
+    byoc_credential_id: Uuid,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE connections SET reauth_required = true, updated_at = now()
+         WHERE org_id = $1 AND byoc_credential_id = $2",
+        org_id,
+        byoc_credential_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Update tokens *and* scopes in place, scoped to an org. Used by the
@@ -229,7 +261,8 @@ pub(crate) async fn update_tokens_and_scopes(
         "UPDATE connections SET encrypted_access_token = $3,
          encrypted_refresh_token = COALESCE($4, encrypted_refresh_token),
          token_expires_at = $5, scopes = $6,
-         account_email = COALESCE($7, account_email), updated_at = now()
+         account_email = COALESCE($7, account_email),
+         reauth_required = false, updated_at = now()
          WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -264,7 +297,7 @@ pub(crate) async fn get_by_ids(
         // `scopes AS "scopes?"`: force the nullable override (see `get_by_id`).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, created_at, updated_at
+                account_email, byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at
          FROM connections WHERE org_id = $1 AND id = ANY($2)",
         org_id,
         ids,
@@ -384,6 +417,57 @@ pub(crate) async fn delete_by_org(
         "DELETE FROM connections WHERE id = $1 AND org_id = $2",
         id,
         org_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Atomically delete a connection for the service-deletion auto-cleanup, but
+/// only when it is eligible: not marked `keep` and referenced by no service
+/// instance in the org (across *all* statuses — draft/active/archived, so a
+/// non-active bound service is never orphaned). Returns whether it deleted.
+///
+/// The reference check (`NOT EXISTS`) and the delete are a **single** statement
+/// on purpose. A two-step "check `has_any_binding`, then `delete`" leaves a
+/// TOCTOU window where a concurrent request binds a new service to this
+/// connection after the check passes but before the delete — the
+/// `ON DELETE SET NULL` FK would then silently null that fresh binding. As one
+/// statement, the delete's exclusive row lock and the FK `KEY SHARE` lock a
+/// concurrent bind takes on this row serialize the two, closing the window.
+pub(crate) async fn delete_if_orphaned(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM connections c
+         WHERE c.id = $1 AND c.org_id = $2 AND c.keep = false
+           AND NOT EXISTS (
+               SELECT 1 FROM service_instances si WHERE si.connection_id = c.id
+           )",
+        id,
+        org_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Set (or clear) the `keep` preserve flag on a connection, scoped to its org.
+/// Returns `false` when the id isn't in this org.
+pub(crate) async fn set_keep(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+    keep: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE connections SET keep = $3, updated_at = now()
+         WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+        keep,
     )
     .execute(pool)
     .await?;

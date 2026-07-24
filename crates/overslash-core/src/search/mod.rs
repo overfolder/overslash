@@ -168,13 +168,21 @@ mod tests {
 
     fn mk_service(key: &str, display: &str, desc: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            secrets: Vec::new(),
+            config: Vec::new(),
             key: key.into(),
             display_name: display.into(),
             description: desc.map(String::from),
             hosts: vec![],
             category: None,
             hidden: false,
-            auth: vec![ServiceAuth::ApiKey {
+            auth: vec![ServiceAuth::Secret {
+                template: None,
+                slots: Vec::new(),
+                config_keys: Vec::new(),
+                scheme: String::new(),
+                label: String::new(),
+                description: String::new(),
                 default_secret_name: "k".into(),
                 injection: TokenInjection {
                     inject_as: "header".into(),
@@ -182,10 +190,13 @@ mod tests {
                     query_param: None,
                     prefix: None,
                 },
+                secret_source: crate::types::SecretSource::Instance,
+                optional: false,
             }],
             actions: HashMap::new(),
             runtime: crate::types::Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         }
     }
 
@@ -194,10 +205,11 @@ mod tests {
             method: "POST".into(),
             path: "/x".into(),
             description: desc.into(),
+            summary: None,
             risk,
             response_type: None,
             params: HashMap::new(),
-            scope_param: None,
+            scope_param: Default::default(),
             required_scopes: vec![],
             permission: None,
             disclose: vec![],
@@ -205,6 +217,7 @@ mod tests {
             mcp_tool: None,
             output_schema: None,
             disabled: false,
+            request_body: None,
         }
     }
 

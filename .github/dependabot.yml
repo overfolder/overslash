@@ -7,6 +7,8 @@ updates:
       interval: "weekly"
     target-branch: "dev"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       cargo-deps:
         patterns: ["*"]
@@ -18,16 +20,26 @@ updates:
       interval: "weekly"
     target-branch: "dev"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       dashboard-deps:
         patterns: ["*"]
+    ignore:
+      # TypeScript 7 (the native port) breaks the dashboard build — stay on 6.x.
+      - dependency-name: "typescript"
+        versions: ["7.x"]
 
-  # GitHub Actions
+  # GitHub Actions — pinned to full commit SHAs (see DECISIONS D31); Dependabot
+  # maintains SHA + version comment, and cooldown gates every bump like cargo/npm.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     target-branch: "dev"
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       github-actions-deps:
         patterns: ["*"]

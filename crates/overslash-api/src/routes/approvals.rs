@@ -745,21 +745,42 @@ async fn resolve_approval(
                 ));
             }
 
+            // A remember key must be *about this request*: either it is one of
+            // the suggested tiers verbatim, or it covers at least one of the
+            // keys the approval was raised for. The second arm is what makes
+            // the dashboard's "Custom… (advanced)" field usable — a hand-typed
+            // key that genuinely relates to the request no longer 400s just
+            // for not appearing verbatim in a tier. The first arm still
+            // matters: a broadening rung like `http:ANY:{host}/**` is offered
+            // as a tier even though `ANY` is not a glob for the concrete verb,
+            // so coverage alone would reject a tier the UI put in front of the
+            // approver. Unrelated grants are still refused, and the
+            // group-ceiling check below applies either way.
             let tiers = overslash_core::permissions::suggest_tiers(&approval.permission_keys);
-            let allowed_keys: std::collections::HashSet<&str> = tiers
+            let tier_keys: std::collections::HashSet<&str> = tiers
                 .iter()
                 .flat_map(|t| t.keys.iter().map(|k| k.as_str()))
                 .collect();
 
             for key in keys {
-                if !allowed_keys.contains(key.as_str()) {
+                let relates = tier_keys.contains(key.as_str())
+                    || approval
+                        .permission_keys
+                        .iter()
+                        .any(|requested| overslash_core::permissions::key_covers(key, requested));
+                if !relates {
                     return Err(AppError::BadRequest(format!(
-                        "remember_key '{key}' is not in any suggested tier"
+                        "remember_key '{key}' does not cover any permission key this approval requested"
                     )));
                 }
             }
 
-            keys.clone()
+            // Duplicates would each write their own identical rule below.
+            let mut seen = std::collections::HashSet::new();
+            keys.iter()
+                .filter(|k| seen.insert(k.as_str()))
+                .cloned()
+                .collect()
         } else {
             approval.permission_keys.clone()
         };
@@ -1092,6 +1113,24 @@ async fn call_approval(
         auth.identity_id,
     )
     .await?;
+
+    // A manual dispatch hands the result straight back in this response, so
+    // the requester has already seen it — stamp it read. Without this the
+    // execution would sit in the agent's inbox as a permanently unread
+    // `result_unread` event (see `services::inbox`), clearable only by
+    // re-fetching a body the caller already holds. Resolver-triggered calls
+    // deliberately don't stamp: the requesting agent still hasn't seen it.
+    let finalised = if auth.identity_id == Some(approval.identity_id) {
+        match scope.mark_execution_viewed(finalised.id).await {
+            Ok(true) => scope
+                .get_execution_by_approval(id)
+                .await?
+                .unwrap_or(finalised),
+            _ => finalised,
+        }
+    } else {
+        finalised
+    };
 
     let (identity_path, identity_path_ids) =
         crate::services::identity_path::build_for_identity(&scope, approval.identity_id)
@@ -1462,7 +1501,7 @@ async fn execute_claimed_approval(
                         }
                     };
                     match crate::routes::actions::resolve_mcp_oauth_bearer(
-                        state, ext, scope, owner, provider, None,
+                        state, ext, scope, owner, None, provider, None,
                     )
                     .await
                     {
@@ -1746,10 +1785,20 @@ async fn execute_claimed_approval(
         let placement_id =
             crate::services::permission_chain::rule_placement_for(scope, approval.identity_id)
                 .await?;
-        let keys_owned: Vec<String> = finalised
-            .remember_keys
-            .clone()
-            .unwrap_or_else(|| approval.permission_keys.clone());
+        // Dedupe defensively: a broad tier used to arrive with the same key
+        // once per originating permission key (an N-recipient send collapsing
+        // to one `svc:send:*`), and rows stored before that fix — or a direct
+        // API caller — can still carry repeats. One key, one rule.
+        let keys_owned: Vec<String> = {
+            let mut seen = std::collections::HashSet::new();
+            finalised
+                .remember_keys
+                .clone()
+                .unwrap_or_else(|| approval.permission_keys.clone())
+                .into_iter()
+                .filter(|k| seen.insert(k.clone()))
+                .collect()
+        };
         for key in &keys_owned {
             let _ = scope
                 .create_permission_rule(placement_id, key, "allow", finalised.remember_rule_ttl)
@@ -2043,8 +2092,22 @@ fn execution_conflict_error(current: Option<ExecutionRow>) -> AppError {
                 }
             }
             "executing" => AppError::Conflict("execution is already in progress".into()),
-            "executed" => AppError::Conflict("execution has already completed".into()),
-            "failed" => AppError::Conflict("execution already attempted and failed".into()),
+            // Terminal-with-output states name the recovery path. Under the
+            // `auto_call_on_approve` default the agent's own /call loses this
+            // race routinely, and the output it wanted is already sitting in
+            // GET /v1/approvals/{id}/execution.
+            "executed" => AppError::Conflict(
+                "execution has already completed — fetch the output from \
+                 GET /v1/approvals/{id}/execution (MCP: the overslash `get_result` \
+                 action; CLI: `overslash get-result <approval_id>`)"
+                    .into(),
+            ),
+            "failed" => AppError::Conflict(
+                "execution already attempted and failed — fetch the error from \
+                 GET /v1/approvals/{id}/execution (MCP: the overslash `get_result` \
+                 action; CLI: `overslash get-result <approval_id>`)"
+                    .into(),
+            ),
             "cancelled" => AppError::Conflict("execution was cancelled".into()),
             "expired" => AppError::Gone("pending execution has expired".into()),
             other => AppError::Conflict(format!("execution in unexpected state: {other}")),
@@ -2067,10 +2130,11 @@ mod risk_tests {
                 method: "GET".into(),
                 path: "/".into(),
                 description: String::new(),
+                summary: None,
                 risk,
                 response_type: None,
                 params: HashMap::new(),
-                scope_param: None,
+                scope_param: Default::default(),
                 required_scopes: vec![],
                 permission: None,
                 disclose: vec![],
@@ -2078,10 +2142,13 @@ mod risk_tests {
                 mcp_tool: None,
                 output_schema: None,
                 disabled: false,
+                request_body: None,
             },
         );
         let mut registry = ServiceRegistry::default();
         registry.insert(ServiceDefinition {
+            secrets: Vec::new(),
+            config: Vec::new(),
             key: key.into(),
             display_name: key.into(),
             description: None,
@@ -2092,17 +2159,13 @@ mod risk_tests {
             actions,
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         });
         registry
     }
 
     fn dk(service: &str, action: &str) -> DerivedKey {
-        DerivedKey {
-            key: format!("{service}:{action}:*"),
-            service: service.into(),
-            action: action.into(),
-            arg: "*".into(),
-        }
+        overslash_core::permissions::parse_derived_key(&format!("{service}:{action}:*"))
     }
 
     #[test]

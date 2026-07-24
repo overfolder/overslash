@@ -95,6 +95,7 @@ paths:
         - label: Calendar
           filter: .resolved.calendarId // .params.calendarId
         - label: Title
+          primary: true
           filter: .body.summary
         - label: Start
           filter: .body.start.dateTime // .body.start.date // empty

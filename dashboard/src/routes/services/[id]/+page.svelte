@@ -2,7 +2,7 @@
 	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { ApiError, session } from '$lib/session';
+	import { ApiError, apiErrorReason, session } from '$lib/session';
 	import {
 		getService,
 		getServiceActions,
@@ -10,7 +10,7 @@
 		listConnections,
 		listServiceGroups,
 		initiateOAuth,
-		resyncMcpTemplate,
+		resyncMcpService,
 		updateService,
 		setServiceStatus,
 		deleteService,
@@ -22,6 +22,8 @@
 		ConnectionSummary,
 		Identity,
 		SecretSummary,
+		SecretSlot,
+		ServiceAuth,
 		ServiceGroupRef,
 		ServiceInstanceDetail,
 		ServiceStatus,
@@ -31,7 +33,11 @@
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
+	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
+	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
+	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+
 
 	const id = $derived($page.params.id ?? '');
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
@@ -50,6 +56,11 @@
 	let editName = $state('');
 	let editConnection = $state('');
 	let editSecret = $state('');
+	// Per-scheme secret bindings, keyed by the template's securityScheme keys
+	// ("gateway", "mailbox"). Seeded from svc.credentials with the legacy
+	// scalar secret_name mapped into its instance-source slot for display.
+	let editCredentials = $state<Record<string, string>>({});
+	let editConfig = $state<Record<string, string>>({});
 	let editUrl = $state('');
 	let editUseDefaultConnection = $state(true);
 	let availableSecrets = $state<SecretSummary[]>([]);
@@ -61,22 +72,51 @@
 	let resyncing = $state(false);
 	let resyncError = $state<string | null>(null);
 
+	function isNeedsAuth(e: unknown): boolean {
+		return (
+			e instanceof ApiError &&
+			e.status === 401 &&
+			!!e.body &&
+			typeof e.body === 'object' &&
+			(e.body as { error?: unknown }).error === 'needs_authentication'
+		);
+	}
+
+	async function doResync() {
+		if (!svc) return;
+		await resyncMcpService(svc.id);
+		// Refresh actions + the instance itself to reflect the resync: actions
+		// come from the instance id (not name/key) so user-shadows-org can't
+		// surface a different instance's actions, and `svc.discovered_at`
+		// drives the "last resync" line.
+		actions = await getServiceActions(svc.id);
+		svc = await getService(svc.id);
+	}
+
 	async function resyncMcpTools() {
-		if (!template) return;
+		if (!svc) return;
 		resyncing = true;
 		resyncError = null;
 		try {
-			await resyncMcpTemplate(template.key);
-			// Reload template + actions to pick up the refreshed discovered_tools.
-			// Actions must come from the service instance id (not name/key) — same
-			// invariant as load(): user-shadows-org mustn't return a different
-			// instance's actions.
-			const tpl = await getTemplate(template.key);
-			const acts = svc ? await getServiceActions(svc.id) : [];
-			template = tpl;
-			actions = acts;
+			await doResync();
 		} catch (e) {
-			resyncError = e instanceof ApiError ? e.message : String(e);
+			// OAuth instance with no/expired connection: drive the same connect
+			// popup the reconnect button uses, then retry the resync once.
+			if (isNeedsAuth(e) && oauthProvider) {
+				await reconnect();
+				if (error) {
+					resyncError = error;
+					error = null;
+					return;
+				}
+				try {
+					await doResync();
+				} catch (e2) {
+					resyncError = (e2 instanceof ApiError ? apiErrorReason(e2) : null) ?? String(e2);
+				}
+			} else {
+				resyncError = (e instanceof ApiError ? apiErrorReason(e) : null) ?? String(e);
+			}
 		} finally {
 			resyncing = false;
 		}
@@ -84,6 +124,9 @@
 	let loadAbort: AbortController | null = null;
 	let destroyed = false;
 	let confirmDelete = $state(false);
+	// When the service is bound to a connection, offer to preserve it. Default
+	// off → the backend cleans up the connection if nothing else uses it.
+	let keepConnection = $state(false);
 	let activeTab = $state<'overview' | 'credentials' | 'actions'>('overview');
 
 	// Group-assignment form state
@@ -107,10 +150,27 @@
 	// request nothing and mint a token missing every permission.
 	const oauthScopes = $derived<string[]>(oauthAuth?.scopes ?? template?.mcp?.scopes ?? []);
 	const usesOAuth = $derived(!!oauthProvider);
-	const usesApiKey = $derived(
-		(template?.auth ?? []).some((a: any) => a?.type === 'api_key')
+	// Every credential slot the template declares — one picker each, bound
+	// independently via `credentials[slot]`. A template may declare several
+	// (email's org-wide `gateway` key plus the per-instance mailbox username
+	// and password its header joins).
+	const secretSlots = $derived((template?.secrets ?? []) as SecretSlot[]);
+	const usesSecret = $derived(
+		secretSlots.length > 0 || (template?.auth ?? []).some((a: any) => a?.type === 'secret')
 	);
+	// An API from before credential slots sends no `secrets` — fall back to the
+	// legacy single scalar field in that case.
+	const schemeKeyed = $derived(usesSecret && secretSlots.length > 0);
 	const isSystem = $derived(!!svc?.is_system);
+	// Non-secret per-instance values the template lets an org pin (e.g. the
+	// mailbox gateway's IMAP/SMTP endpoint). System services are not editable.
+	const hasInstanceConfig = $derived(
+		!isSystem && (template?.instance_config_params ?? []).length > 0
+	);
+	// An org layer's default endpoint, shown as the placeholder so leaving the
+	// field blank visibly means "inherit the org's deployment".
+	const inheritedUrl = $derived(template?.instance_defaults?.url
+	);
 	const ownerDisplay = $derived.by(() => {
 		const s = svc;
 		if (!s) return '';
@@ -209,6 +269,39 @@
 	let upgrading = $state(false);
 	let upgradeAbort: AbortController | null = null;
 
+	// Build the editable per-slot map: one entry per credential slot, seeded
+	// from svc.credentials. A legacy row (empty map, scalar secret_name set)
+	// shows its scalar in the sole instance-source slot so nothing looks
+	// unbound that isn't — and only when there IS a sole slot, since the
+	// scalar never stood for one half of a composed credential.
+	function seedCredentials(
+		tpl: TemplateDetail | null,
+		s: ServiceInstanceDetail
+	): Record<string, string> {
+		const slots = ((tpl?.secrets ?? []) as SecretSlot[]).filter((sl) => !!sl.key);
+		const map: Record<string, string> = {};
+		for (const sl of slots) map[sl.key] = s.credentials?.[sl.key] ?? '';
+		const instanceSlots = slots.filter((sl) => (sl.source ?? 'instance') === 'instance');
+		if (instanceSlots.length === 1 && !map[instanceSlots[0].key] && s.secret_name) {
+			map[instanceSlots[0].key] = s.secret_name;
+		}
+		return map;
+	}
+
+	// Seed one entry per instance-pinnable param with the instance's stored
+	// value, so the form shows what is actually pinned rather than a blank.
+	function seedConfig(
+		tpl: TemplateDetail | null,
+		s: ServiceInstanceDetail
+	): Record<string, string> {
+		const map: Record<string, string> = {};
+		for (const p of tpl?.instance_config_params ?? []) {
+			map[p.name] = s.config?.[p.name] ?? '';
+		}
+		return map;
+	}
+
+
 	async function load() {
 		// Cancel any in-flight load from a previous service navigation so
 		// stale responses can't clobber the newly-loaded state.
@@ -254,6 +347,8 @@
 			]);
 			if (ctrl.signal.aborted) return;
 			template = tpl;
+			editCredentials = seedCredentials(tpl, fresh);
+			editConfig = seedConfig(tpl, fresh);
 			actions = acts;
 			connections = conns;
 			identities = ids;
@@ -279,14 +374,24 @@
 		saving = true;
 		error = null;
 		try {
+			// Per-scheme bindings ride the `credentials` map (the server mirrors
+			// the legacy scalar). The scalar `secret_name` is only sent on the
+			// paths that still edit it directly — MCP bearer, or a secret
+			// template from an API without scheme keys — never alongside the
+			// map, so the two can't conflict.
+			const sendCredentials = schemeKeyed && !usesOAuth && !isSystem;
 			const updated = await updateService(svc.id, {
 				name: trimmedName !== svc.name ? trimmedName : undefined,
 				connection_id:
 					editConnection !== (svc.connection_id ?? '')
 						? editConnection || null
 						: undefined,
+				credentials: sendCredentials ? cleanServiceMap(editCredentials) : undefined,
+				config: hasInstanceConfig ? cleanServiceMap(editConfig) : undefined,
 				secret_name:
-					editSecret !== (svc.secret_name ?? '') ? editSecret || null : undefined,
+					!sendCredentials && editSecret !== (svc.secret_name ?? '')
+						? editSecret || null
+						: undefined,
 				url:
 					editUrl !== (svc.url ?? '') ? editUrl.trim() || null : undefined,
 				use_default_connection:
@@ -295,6 +400,8 @@
 						: undefined
 			});
 			svc = updated;
+			editCredentials = seedCredentials(template, updated);
+			editConfig = seedConfig(template, updated);
 		} catch (e) {
 			error = e instanceof ApiError ? `Save failed (${e.status})` : 'Save failed';
 		} finally {
@@ -448,10 +555,16 @@
 		if (!svc) return;
 		confirmDelete = false;
 		try {
-			await deleteService(svc.id);
+			await deleteService(svc.id, { keepConnection });
 			await goto('/services');
 		} catch (e) {
-			error = e instanceof ApiError ? `Delete failed (${e.status})` : 'Delete failed';
+			if (e instanceof ApiError && e.status === 403) {
+				error =
+					apiErrorReason(e) ??
+					'You do not have permission to delete this service — admin access required.';
+			} else {
+				error = e instanceof ApiError ? `Delete failed (${e.status})` : 'Delete failed';
+			}
 		}
 	}
 
@@ -538,7 +651,7 @@
 	$effect(() => {
 		if (secretsLoaded || !svc || isSystem) return;
 		const fieldVisible =
-			(usesApiKey && !usesOAuth) ||
+			(usesSecret && !usesOAuth) ||
 			(isMcp && template?.mcp?.auth_kind === 'bearer');
 		if (!fieldVisible) return;
 		secretsLoaded = true;
@@ -616,7 +729,14 @@
 							Activate
 						</button>
 					{/if}
-					<button type="button" class="btn danger" onclick={() => (confirmDelete = true)}>Delete</button>
+					<button
+						type="button"
+						class="btn danger"
+						onclick={() => {
+							keepConnection = false;
+							confirmDelete = true;
+						}}>Delete</button
+					>
 				{/if}
 			</div>
 		</header>
@@ -647,17 +767,56 @@
 				{#if isMcp && !isSystem}
 					<label class="field">
 						<span class="label">MCP server URL</span>
-						<input type="text" bind:value={editUrl} placeholder={template?.mcp?.url ?? 'http://host:8081/mcp'} />
-						{#if template?.mcp?.url}
+						<input
+							type="text"
+							bind:value={editUrl}
+							placeholder={inheritedUrl ?? template?.mcp?.url ?? 'http://host:8081/mcp'}
+						/>
+						{#if inheritedUrl}
+							<small>Leave blank to use your org's deployment ({inheritedUrl}).</small>
+						{:else if template?.mcp?.url}
 							<small>Leave blank to use the template's default.</small>
 						{:else}
 							<small>The URL of the MCP server endpoint.</small>
 						{/if}
 					</label>
+				{:else if template?.configurable_url && !isSystem}
+					<label class="field">
+						<span class="label">Gateway URL</span>
+						<input
+							type="text"
+							bind:value={editUrl}
+							placeholder={inheritedUrl ??
+								(template?.hosts?.[0]
+									? `https://${template.hosts[0]}`
+									: 'https://mailbox.your-org.com')}
+						/>
+						{#if inheritedUrl}
+							<small>Leave blank to use your org's gateway ({inheritedUrl}).</small>
+						{:else}
+							<small>Point this instance at your own deployment. Leave blank to use the default.</small>
+						{/if}
+					</label>
 				{/if}
-				{#if (usesApiKey && !usesOAuth && !isSystem) || (isMcp && template?.mcp?.auth_kind === 'bearer' && !isSystem)}
+				{#if hasInstanceConfig}
+					<ServiceInstanceConfig
+						params={template?.instance_config_params ?? []}
+						bind:config={editConfig}
+						inherited={template?.instance_defaults?.config}
+						idPrefix="edit-service-config"
+					/>
+				{/if}
+				{#if usesSecret && !usesOAuth && !isSystem && schemeKeyed}
+					<ServiceCredentials
+						slots={secretSlots}
+						bind:credentials={editCredentials}
+						available={availableSecrets}
+						loading={secretsLoading}
+						idPrefix="edit-service-cred"
+					/>
+				{:else if (usesSecret && !usesOAuth && !isSystem) || (isMcp && template?.mcp?.auth_kind === 'bearer' && !isSystem)}
 					<div class="field">
-						<label class="label" for="edit-service-secret">{isMcp ? 'Bearer token secret name' : 'API key secret name'}</label>
+						<label class="label" for="edit-service-secret">{#if isMcp}Bearer token secret name{:else}Secret name{/if}</label>
 						<SecretNamePicker
 							id="edit-service-secret"
 							bind:value={editSecret}
@@ -902,9 +1061,22 @@
 							{saving ? 'Saving…' : 'Save'}
 						</button>
 					</div>
-				{:else if usesApiKey || (isMcp && template?.mcp?.auth_kind === 'bearer')}
+				{:else if usesSecret && schemeKeyed}
+					<ServiceCredentials
+						slots={secretSlots}
+						bind:credentials={editCredentials}
+						available={availableSecrets}
+						loading={secretsLoading}
+						idPrefix="cred-tab"
+					/>
+					<div class="actions">
+						<button type="button" class="btn primary" onclick={save} disabled={saving}>
+							{saving ? 'Saving…' : 'Save'}
+						</button>
+					</div>
+				{:else if usesSecret || (isMcp && template?.mcp?.auth_kind === 'bearer')}
 					<div class="field">
-						<label class="label" for="edit-service-secret">{isMcp ? 'Bearer token secret name' : 'API key secret name'}</label>
+						<label class="label" for="edit-service-secret">{#if isMcp}Bearer token secret name{:else}Secret name{/if}</label>
 						<SecretNamePicker
 							id="edit-service-secret"
 							bind:value={editSecret}
@@ -930,17 +1102,18 @@
 							<span class="muted">
 								{#if template.mcp?.autodiscover === false}
 									discovery disabled
-								{:else if template.mcp?.discovered_at}
-									last resync: {template.mcp.discovered_at}
+								{:else if svc?.discovered_at}
+									last resync: {svc.discovered_at}
 								{:else}
 									never resynced
 								{/if}
 							</span>
 						</div>
-						<!-- Resync isn't supported for oauth-auth MCP servers (the admin
-						     resync path carries no per-user token) — the backend 400s, so
-						     don't offer the button even if autodiscover is left on. -->
-						{#if template.mcp?.autodiscover !== false && template.tier !== 'global' && template.mcp?.auth_kind !== 'oauth'}
+						<!-- Resync runs against this instance (which carries the url/
+						     secret or OAuth connection), so it works for global-template
+						     instances and OAuth servers too — offer it whenever autodiscover
+						     is on and an effective URL exists. -->
+						{#if template.mcp?.autodiscover !== false && (svc?.url || template.mcp?.url)}
 							<button
 								type="button"
 								class="btn"
@@ -971,7 +1144,11 @@
 							{#each actions as a}
 								<tr class:disabled={a.disabled}>
 									<td><span class="mono">{a.mcp_tool ?? a.key}</span></td>
-									<td>{a.description}</td>
+									<!-- The one-line label; the full agent-facing description can run to
+									     a paragraph, so it rides as the hover title instead of the cell. -->
+									<td title={a.summary ? a.description : undefined}
+										>{a.summary ?? a.description}</td
+									>
 									<td><span class="mono">{a.risk}</span></td>
 									<td>
 										{#if a.disabled}<span class="pill pill-muted">hidden</span>{/if}
@@ -995,7 +1172,9 @@
 								<tr>
 									<td><span class="method">{a.method}</span></td>
 									<td><span class="mono">{a.path}</span></td>
-									<td>{a.description}</td>
+									<td title={a.summary ? a.description : undefined}
+										>{a.summary ?? a.description}</td
+									>
 									<td><span class="mono">{a.risk}</span></td>
 								</tr>
 							{/each}
@@ -1011,15 +1190,37 @@
 	open={confirmDelete}
 	title="Delete service?"
 	message={svc
-		? `Delete ${svc.name}? Agents using this service will lose access. This cannot be undone.`
+		? `Delete ${svc.name}? Agents using this service will lose access. This cannot be undone.` +
+			(svc.connection_id
+				? ' Its OAuth connection is also removed if no other service uses it.'
+				: '')
 		: ''}
 	confirmLabel="Delete"
 	danger
 	onconfirm={doDelete}
 	oncancel={() => (confirmDelete = false)}
-/>
+>
+	{#if svc?.connection_id}
+		<label class="keep-conn">
+			<input type="checkbox" bind:checked={keepConnection} />
+			<span>Keep the OAuth connection (don't remove even if unused)</span>
+		</label>
+	{/if}
+</ConfirmDialog>
 
 <style>
+	.keep-conn {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.5rem;
+		margin: -0.5rem 0 1.25rem;
+		font-size: 0.85rem;
+		color: var(--color-text-muted);
+		cursor: pointer;
+	}
+	.keep-conn input {
+		margin-top: 0.15rem;
+	}
 	.page {
 		max-width: 1000px;
 	}

@@ -1,12 +1,18 @@
 //! Admin CRUD for MCP OAuth clients registered via DCR.
 //!
-//! - `GET  /v1/oauth/mcp-clients`                 — list every registered client (admin).
+//! - `GET  /v1/oauth/mcp-clients`                 — list this org's clients (admin).
 //! - `POST /v1/oauth/mcp-clients/:client_id/revoke` — flip `is_revoked` and
 //!   revoke every outstanding refresh token bound to the client.
 //!
 //! DCR itself is unauthenticated — clients self-register at
 //! `POST /oauth/register`. This admin surface is the escape hatch for
 //! revoking clients that turn hostile or are no longer wanted.
+//!
+//! Both endpoints are scoped to the admin's own org: a client is stamped with
+//! its subdomain org at registration (`oauth_mcp_clients.org_id`), and an admin
+//! only ever sees or revokes clients stamped for their org. Root-registered
+//! (NULL-`org_id`) clients belong to no org and are intentionally invisible
+//! here. See docs/design/mcp-enrollment-org-scoping.md.
 
 use axum::{
     Json, Router,
@@ -34,9 +40,9 @@ pub fn router() -> Router<AppState> {
 async fn list(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
-    _acl: AdminAcl,
+    acl: AdminAcl,
 ) -> Result<impl IntoResponse, AppError> {
-    let rows = oauth_mcp_client::list_all(state.db(&ext)).await?;
+    let rows = oauth_mcp_client::list_for_org(state.db(&ext), acl.0.org_id).await?;
     let clients: Vec<_> = rows
         .into_iter()
         .map(|r| {
@@ -58,9 +64,16 @@ async fn list(
 async fn revoke(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
-    _acl: AdminAcl,
+    acl: AdminAcl,
     Path(client_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Only revoke clients stamped for the admin's own org. A client belonging
+    // to another org — or a root/NULL-org client — is treated as not found so
+    // the admin surface can't reach across the org boundary.
+    match oauth_mcp_client::get_by_client_id(state.db(&ext), &client_id).await? {
+        Some(c) if c.org_id == Some(acl.0.org_id) => {}
+        _ => return Err(AppError::NotFound("mcp client not found".into())),
+    }
     let found = oauth_mcp_client::revoke(state.db(&ext), &client_id).await?;
     if !found {
         return Err(AppError::NotFound("mcp client not found".into()));

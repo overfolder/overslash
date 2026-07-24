@@ -33,8 +33,8 @@ jobs:
       infra: ${{ steps.filter.outputs.infra }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         id: filter
         with:
           filters: |
@@ -55,9 +55,9 @@ jobs:
               - '.github/workflows/ci.yml'
 
   # Lint and the sqlx offline-cache check share one job: both are short
-  # (~1.5 min each), neither is on the critical path (coverage shards are),
-  # and one fewer job per run means one fewer runner slot competing with the
-  # coverage shards when the org hits its concurrency limit.
+  # (~1.5 min each), neither is on the critical path (coverage is), and one
+  # fewer job per run means one fewer runner slot competing with coverage
+  # when the org hits its concurrency limit.
   lint:
     name: Lint + SQLx Verify
     needs: changes
@@ -95,8 +95,8 @@ jobs:
           ALTER SYSTEM SET work_mem = '32MB';
           SELECT pg_reload_conf();
           SQL
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           components: rustfmt, clippy
       # The `key` suffix must be rotated whenever [profile.*] settings in
@@ -105,15 +105,15 @@ jobs:
       # (full rebuild every run) and never saves the new ones because the
       # primary key already exists. -deps-opt1 dates from the
       # [profile.dev.package."*"] opt-level bump.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: lint-deps-opt1
       # cdn.pyke.io (ort-sys prebuilt binaries) 403s from CI runners; seed
       # its cache from a release asset so cold-cache builds don't touch it.
       - uses: ./.github/actions/seed-ort-cache
-      # Pin the major so the CLI's offline-cache format matches the workspace
-      # sqlx 0.9 (the .sqlx/ files it verifies).
-      - uses: taiki-e/install-action@v2
+      # Pin sqlx-cli to 0.9 so the CLI's offline-cache format matches the
+      # workspace sqlx 0.9 (the .sqlx/ files it verifies).
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: sqlx-cli@0.9
 
@@ -136,15 +136,19 @@ jobs:
       - name: Verify sqlx offline cache
         run: cargo sqlx prepare --workspace --check -- --tests
 
+  # Single job, not a shard matrix. Sharding only pays when test execution
+  # dominates; here it never did — every shard paid the full ~3m36s compile
+  # to run 25-53s of tests (run 29754452256). Five shards therefore bought
+  # ~3 min of wall clock for 5x the runner time, and those five slots were
+  # the main thing queueing behind the org concurrency limit. Consolidating
+  # the api integration tests into one binary (crates/overslash-api/tests/
+  # api.rs) cut the compile enough that one job runs the whole suite in
+  # about what a single shard used to take.
   coverage:
-    name: Test + Coverage (${{ matrix.partition }}/5)
+    name: Test + Coverage
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        partition: [1, 2, 3, 4, 5]
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -218,13 +222,13 @@ jobs:
           # Fail the step if Postgres never comes back (timeout exits 124)
           # instead of letting the test step run against a dead database.
           timeout 60 bash -c 'until pg_isready -h localhost -U overslash; do sleep 1; done'
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           components: llvm-tools-preview
       # See the lint job for why the key carries a -deps-opt1 suffix (and
       # must be rotated again on the next [profile.*] change).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: coverage-deps-opt1
       # cdn.pyke.io (ort-sys prebuilt binaries) 403s from CI runners; seed
@@ -233,27 +237,25 @@ jobs:
       # mold replaces the system linker (no RUSTFLAGS change, so cached
       # artifacts stay valid). Linking ~99 instrumented test binaries is
       # the bulk of a warm-cache "compile" phase; mold cuts it sharply.
-      - uses: rui314/setup-mold@v1
-      - uses: taiki-e/install-action@v2
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1 (mutable tag)
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
       # --profile ci selects the nextest profile in .config/nextest.toml
-      # (test-threads = 10 — the suite is IO-bound, see the profile comments).
-      - name: Tests with coverage (shard ${{ matrix.partition }}/5)
+      # (test-threads = 8 — the suite is IO-bound, see the profile comments).
+      - name: Tests with coverage
         run: >-
           cargo llvm-cov nextest --workspace
           --profile ci
-          --partition count:${{ matrix.partition }}/5
           --lcov --output-path lcov.info
         env:
           RUST_LOG: warn
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: lcov.info
-          flags: shard-${{ matrix.partition }}
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: overfolder/overslash
           # Coverage reporting is non-critical — don't block CI on Codecov-side
@@ -271,10 +273,10 @@ jobs:
         working-directory: infra
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install OpenTofu
-        uses: opentofu/setup-opentofu@v2
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: "1.8"
           tofu_wrapper: false
@@ -297,8 +299,8 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
@@ -349,21 +351,21 @@ jobs:
           ALTER SYSTEM SET work_mem = '32MB';
           SELECT pg_reload_conf();
           SQL
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
       # See the lint job for why the key carries a -deps-opt1 suffix (and
       # must be rotated again on the next [profile.*] change).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: e2e-deps-opt1
       # cdn.pyke.io (ort-sys prebuilt binaries) 403s from CI runners; seed
       # its cache from a release asset so cold-cache builds don't touch it.
       - uses: ./.github/actions/seed-ort-cache
-      - uses: rui314/setup-mold@v1
-      - uses: taiki-e/install-action@v2
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1 (mutable tag)
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: sqlx-cli@0.9
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
@@ -382,7 +384,7 @@ jobs:
 
       - name: Upload Playwright trace artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-traces
           # `runner.temp` is available in step `with:` (unlike job-level `env:`).

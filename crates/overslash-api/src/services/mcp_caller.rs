@@ -56,37 +56,32 @@ impl From<McpInvokeError> for AppError {
     }
 }
 
-pub async fn invoke(
+/// Resolve auth headers and build an SSRF-pinned [`McpClient`] for `url`.
+///
+/// Shared by [`invoke`] (`tools/call`) and the instance-scoped resync route
+/// (`tools/list`) so the two cannot drift on auth merging, host overrides,
+/// SSRF pinning, or the timeout.
+///
+/// `oauth_header` is the out-of-band bearer for `McpAuth::OAuth`: the live
+/// access token resolved by the action resolver (which has the owner-identity
+/// and connection context that `resolve_headers` lacks). It is merged over
+/// the vault-derived headers so it is never persisted in the resolved request.
+pub async fn build_client(
     state: &AppState,
     scope: &OrgScope,
     url: &str,
     auth: &McpAuth,
-    tool: &str,
-    arguments: &Value,
-    // Out-of-band bearer for `McpAuth::OAuth`: the live access token, resolved
-    // by the action resolver (which has the owner-identity + connection
-    // context that `resolve_headers` lacks). Merged over the vault-derived
-    // headers so it is never persisted in the resolved request.
     oauth_header: Option<&overslash_core::types::AuthHeader>,
-) -> Result<ActionResult, McpInvokeError> {
-    let mut headers = mcp_auth::resolve_headers(state, scope, auth)
-        .await
-        .map_err(|app| McpInvokeError { app, audit: None })?;
+) -> Result<(McpClient, reqwest::header::HeaderMap), AppError> {
+    let mut headers = mcp_auth::resolve_headers(state, scope, auth).await?;
 
     if let Some(h) = oauth_header {
         let name = reqwest::header::HeaderName::from_bytes(h.name.as_bytes()).map_err(|_| {
-            McpInvokeError {
-                app: AppError::Internal(format!("invalid MCP auth header name `{}`", h.name)),
-                audit: None,
-            }
+            AppError::Internal(format!("invalid MCP auth header name `{}`", h.name))
         })?;
-        let value =
-            reqwest::header::HeaderValue::from_str(&h.value).map_err(|_| McpInvokeError {
-                app: AppError::Internal(
-                    "resolved OAuth token is not a valid HTTP header value".into(),
-                ),
-                audit: None,
-            })?;
+        let value = reqwest::header::HeaderValue::from_str(&h.value).map_err(|_| {
+            AppError::Internal("resolved OAuth token is not a valid HTTP header value".into())
+        })?;
         headers.insert(name, value);
     }
 
@@ -94,16 +89,30 @@ pub async fn invoke(
     // can route MCP calls at a local fake. Same semantics as the HTTP path
     // in `action_caller::call_action_request`.
     let resolved_url = state.config.apply_base_overrides(url);
-    let url = resolved_url.as_str();
 
     // SSRF guard: validate url's host resolves to a public IP and pin
     // the reqwest client to that IP so a compromised resolver cannot rebind
     // to an internal target between validation and connect. Timeouts live
     // on this client too — state.http_client has no per-request deadline.
-    let (http, base) = ssrf_guard::build_pinned_client(url, MCP_TIMEOUT)
+    let (http, base) = ssrf_guard::build_pinned_client(&resolved_url, MCP_TIMEOUT).await?;
+    Ok((
+        McpClient::with_client_and_base(http, base, DEFAULT_MAX_BODY_BYTES),
+        headers,
+    ))
+}
+
+pub async fn invoke(
+    state: &AppState,
+    scope: &OrgScope,
+    url: &str,
+    auth: &McpAuth,
+    tool: &str,
+    arguments: &Value,
+    oauth_header: Option<&overslash_core::types::AuthHeader>,
+) -> Result<ActionResult, McpInvokeError> {
+    let (client, headers) = build_client(state, scope, url, auth, oauth_header)
         .await
         .map_err(|app| McpInvokeError { app, audit: None })?;
-    let client = McpClient::with_client_and_base(http, base, DEFAULT_MAX_BODY_BYTES);
 
     let start = Instant::now();
     let result = client

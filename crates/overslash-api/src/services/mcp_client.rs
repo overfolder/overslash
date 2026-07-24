@@ -16,6 +16,7 @@
 //! payload, we do not aggregate further SSE frames).
 
 use futures_util::StreamExt;
+use overslash_core::build_info::build_info;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -125,7 +126,7 @@ impl McpClient {
             "params": {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": { "name": "overslash", "version": env!("CARGO_PKG_VERSION") }
+                "clientInfo": { "name": "overslash", "version": build_info().version }
             }
         });
         self.rpc(auth_headers, &req).await

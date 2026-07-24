@@ -13,7 +13,7 @@
 //!   connection.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use overslash_core::crypto;
 use serde_json::{Value, json};

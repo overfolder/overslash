@@ -149,7 +149,8 @@ CREATE TABLE public.connections (
     byoc_credential_id uuid,
     is_default boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    keep boolean DEFAULT false NOT NULL
 );
 
 
@@ -427,7 +428,8 @@ CREATE TABLE public.oauth_mcp_clients (
     capabilities jsonb,
     client_info jsonb,
     protocol_version text,
-    last_session_id uuid
+    last_session_id uuid,
+    org_id uuid
 );
 
 
@@ -487,24 +489,6 @@ CREATE TABLE public.org_idp_configs (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     is_default boolean DEFAULT false NOT NULL,
     CONSTRAINT org_idp_configs_creds_both_or_neither CHECK ((((encrypted_client_id IS NULL) AND (encrypted_client_secret IS NULL)) OR ((encrypted_client_id IS NOT NULL) AND (encrypted_client_secret IS NOT NULL))))
-);
-
-
---
--- Name: org_invites; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.org_invites (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    org_id uuid NOT NULL,
-    email text NOT NULL,
-    role text NOT NULL,
-    invited_by uuid,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    accepted_at timestamp with time zone,
-    accepted_by_user_id uuid,
-    CONSTRAINT org_invites_email_lower CHECK ((email = lower(email))),
-    CONSTRAINT org_invites_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'member'::text])))
 );
 
 
@@ -712,6 +696,10 @@ CREATE TABLE public.service_instances (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     is_system boolean DEFAULT false NOT NULL,
     url text,
+    credentials jsonb DEFAULT '{}'::jsonb NOT NULL,
+    discovered_tools jsonb,
+    discovered_at timestamp with time zone,
+    config jsonb DEFAULT '{}'::jsonb NOT NULL,
     CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text]))),
     CONSTRAINT service_instances_template_source_check CHECK ((template_source = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
 );
@@ -978,11 +966,11 @@ ALTER TABLE ONLY public.mcp_client_agent_bindings
 
 
 --
--- Name: mcp_client_agent_bindings mcp_client_agent_bindings_user_identity_id_client_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_user_client_org_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.mcp_client_agent_bindings
-    ADD CONSTRAINT mcp_client_agent_bindings_user_identity_id_client_id_key UNIQUE (user_identity_id, client_id);
+    ADD CONSTRAINT mcp_client_agent_bindings_user_client_org_key UNIQUE (user_identity_id, client_id, org_id);
 
 
 --
@@ -1088,13 +1076,6 @@ ALTER TABLE ONLY public.org_idp_configs
 ALTER TABLE ONLY public.org_idp_configs
     ADD CONSTRAINT org_idp_configs_pkey PRIMARY KEY (id);
 
-
---
--- Name: org_invites org_invites_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_invites
-    ADD CONSTRAINT org_invites_pkey PRIMARY KEY (id);
 
 
 --
@@ -1595,6 +1576,13 @@ CREATE INDEX idx_oauth_mcp_clients_active ON public.oauth_mcp_clients USING btre
 
 
 --
+-- Name: idx_oauth_mcp_clients_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_mcp_clients_org ON public.oauth_mcp_clients USING btree (org_id);
+
+
+--
 -- Name: idx_oauth_preview_origins_expires; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1809,20 +1797,6 @@ CREATE INDEX idx_webhook_deliveries_retry ON public.webhook_deliveries USING btr
 --
 
 CREATE UNIQUE INDEX org_idp_configs_one_default_per_org ON public.org_idp_configs USING btree (org_id) WHERE is_default;
-
-
---
--- Name: org_invites_by_org_email; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX org_invites_by_org_email ON public.org_invites USING btree (org_id, email);
-
-
---
--- Name: org_invites_one_pending_per_email; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX org_invites_one_pending_per_email ON public.org_invites USING btree (org_id, email) WHERE (accepted_at IS NULL);
 
 
 --
@@ -2267,6 +2241,14 @@ ALTER TABLE ONLY public.oauth_connection_flows
 
 
 --
+-- Name: oauth_mcp_clients oauth_mcp_clients_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_mcp_clients
+    ADD CONSTRAINT oauth_mcp_clients_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: org_idp_configs org_idp_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2280,30 +2262,6 @@ ALTER TABLE ONLY public.org_idp_configs
 
 ALTER TABLE ONLY public.org_idp_configs
     ADD CONSTRAINT org_idp_configs_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
-
-
---
--- Name: org_invites org_invites_accepted_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_invites
-    ADD CONSTRAINT org_invites_accepted_by_user_id_fkey FOREIGN KEY (accepted_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
-
-
---
--- Name: org_invites org_invites_invited_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_invites
-    ADD CONSTRAINT org_invites_invited_by_fkey FOREIGN KEY (invited_by) REFERENCES public.identities(id) ON DELETE SET NULL;
-
-
---
--- Name: org_invites org_invites_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_invites
-    ADD CONSTRAINT org_invites_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
 
 
 --

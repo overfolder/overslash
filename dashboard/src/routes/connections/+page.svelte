@@ -285,6 +285,11 @@
 							</td>
 							<td data-label="Account">
 								<span class="account mono">{c.account_email ?? '—'}</span>
+								{#if c.reauth_required}
+									<span class="reauth-badge" title="This connection's OAuth app was replaced — it must be re-authorized before its next use."
+										>Reauth required</span
+									>
+								{/if}
 							</td>
 							{#if showAllUsers}
 								<td data-label="Owner" class="owner-cell muted" title={c.owner_identity_id}>
@@ -518,6 +523,18 @@
 		font-size: 13px;
 		font-weight: 500;
 		color: var(--color-text-heading);
+	}
+	.reauth-badge {
+		display: inline-block;
+		margin-left: 8px;
+		padding: 1px 7px;
+		border-radius: 4px;
+		background: var(--badge-bg-warning, var(--color-primary-bg));
+		color: var(--color-danger);
+		font-size: 11px;
+		font-weight: 600;
+		white-space: nowrap;
+		vertical-align: middle;
 	}
 	.mono {
 		font-family: var(--font-mono);

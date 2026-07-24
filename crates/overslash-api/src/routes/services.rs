@@ -1,17 +1,18 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::{get, patch, put},
+    routing::{get, patch, post, put},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use overslash_db::repos::audit::AuditEntry;
 use overslash_db::scopes::OrgScope;
 
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, OrgAcl, ReqExt, WriteAcl},
+    extractors::{AuthContext, ClientIp, OrgAcl, ReqExt, WriteAcl},
     services::{
         group_ceiling,
         platform_caller::PlatformCallContext,
@@ -30,6 +31,7 @@ pub fn router() -> Router<AppState> {
             get(get_service).delete(delete_service),
         )
         .route("/v1/services/{name}/actions", get(list_service_actions))
+        .route("/v1/services/{id}/mcp/resync", post(resync_mcp_service))
         .route("/v1/services/{id}/manage", put(update_service))
         .route("/v1/services/{id}/status", patch(update_service_status))
         .route("/v1/services/{id}/groups", get(list_service_groups))
@@ -283,22 +285,31 @@ async fn create_service(
 
 /// Authorize a mutation (delete/update/status) of a service instance.
 ///
-/// Write-level callers may mutate a service they own; mutating another
-/// identity's service, or an org-level (`owner_identity_id IS NULL`) service,
-/// requires Admin. This is strict identity equality — deliberately NOT a
-/// ceiling/family check, so an agent cannot reach its owner-user's or a
-/// sibling agent's services through the API (those are managed on the
-/// integrating app's dashboard). Mirrors `update_template` (templates.rs).
-fn require_owner_or_admin(
+/// Write-level callers may mutate a service they own, or one owned by an
+/// identity they are an ancestor of — the parent→child ceiling allowance that
+/// lets a user manage its own agents'/sub-agents' services (the dashboard runs
+/// as the user identity). This is one-directional: an agent is NOT an ancestor
+/// of its owner-user, so it still cannot reach up to a parent's or a sibling's
+/// services through the API. Org-level (`owner_identity_id IS NULL`) services
+/// never match the ancestry branch and still require Admin. Mirrors the
+/// template checks (templates.rs / platform_templates.rs) via the shared
+/// `caller_may_manage_owned` helper.
+async fn require_owner_or_admin(
+    scope: &OrgScope,
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
     acl: &OrgAcl,
 ) -> Result<()> {
-    if instance.owner_identity_id != acl.identity_id
-        && acl.access_level < overslash_core::permissions::AccessLevel::Admin
+    if crate::services::permission_chain::caller_may_manage_owned(
+        scope,
+        instance.owner_identity_id,
+        acl.identity_id,
+        acl.access_level,
+    )
+    .await?
     {
-        return Err(AppError::Forbidden("admin access required".into()));
+        return Ok(());
     }
-    Ok(())
+    Err(AppError::Forbidden("admin access required".into()))
 }
 
 async fn update_service(
@@ -316,7 +327,7 @@ async fn update_service(
     if instance.is_system {
         return Err(AppError::BadRequest("cannot modify system service".into()));
     }
-    require_owner_or_admin(&instance, &acl)?;
+    require_owner_or_admin(&scope, &instance, &acl).await?;
 
     let ctx = ctx_from_acl(&state, &ext, &acl)?;
     let detail = platform_services::kernel_update_service(ctx, id, req).await?;
@@ -336,7 +347,7 @@ async fn update_service_status(
     if existing.is_system {
         return Err(AppError::BadRequest("cannot modify system service".into()));
     }
-    require_owner_or_admin(&existing, &acl)?;
+    require_owner_or_admin(&scope, &existing, &acl).await?;
 
     if !["draft", "active", "archived"].contains(&req.status.as_str()) {
         return Err(AppError::BadRequest(format!(
@@ -352,18 +363,35 @@ async fn update_service_status(
     Ok(Json(platform_services::row_to_detail(row)))
 }
 
-/// Delete a service instance.
+/// Query params for `DELETE /v1/services/{name}`.
+#[derive(Deserialize, Default)]
+struct DeleteServiceQuery {
+    /// Opt out of the connection auto-cleanup. When true, the OAuth connection
+    /// the service was bound to is left intact even if nothing else references
+    /// it. Default (false) deletes an orphaned, unprotected connection.
+    #[serde(default)]
+    keep_connection: bool,
+}
+
+/// Delete a service instance. By default this also cleans up the OAuth
+/// connection the service was bound to, but only when it is safe: the caller
+/// did not pass `keep_connection=true`, the connection is not marked `keep`,
+/// and no other service instance (any status) still references it.
 async fn delete_service(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
+    ip: ClientIp,
     scope: OrgScope,
     Path(name): Path<String>,
+    Query(q): Query<DeleteServiceQuery>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
     // Destructive op: intentionally do NOT reach up to the ceiling user for
     // name resolution. An agent must not be able to target its owner user's
-    // services via the shadowing lookup; callers that really mean to delete a
-    // parent-owned service can address it by UUID (and still need Admin — see
-    // the ownership check below).
+    // services via the shadowing lookup (child→parent). Callers that mean to
+    // manage a service owned lower in their own subtree address it by UUID; the
+    // ownership check below then applies the parent→child ceiling allowance.
     let instance = if let Ok(uuid) = name.parse::<Uuid>() {
         scope
             .get_service_instance(uuid)
@@ -380,13 +408,68 @@ async fn delete_service(
         return Err(AppError::BadRequest("cannot delete system service".into()));
     }
 
-    require_owner_or_admin(&instance, &auth)?;
+    require_owner_or_admin(&scope, &instance, &auth).await?;
+
+    // Capture the bound connection before deleting — the row is about to go.
+    let conn_id = instance.connection_id;
 
     let deleted = scope.delete_service_instance(instance.id).await?;
     if !deleted {
         return Err(AppError::NotFound("service instance not found".into()));
     }
-    Ok(Json(serde_json::json!({ "deleted": true })))
+
+    // Cascade: clean up the now-possibly-orphaned connection. Best-effort — the
+    // service is already deleted, so a cleanup error must not fail the request;
+    // log it and report the connection as not deleted.
+    let mut connection_deleted = false;
+    if let (Some(cid), false) = (conn_id, q.keep_connection) {
+        connection_deleted =
+            cleanup_orphaned_connection(&state, &ext, &scope, &auth, ip.0.as_deref(), cid)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        connection_id = %cid,
+                        error = %e,
+                        "service delete: orphaned-connection cleanup failed"
+                    );
+                    false
+                });
+    }
+
+    Ok(Json(
+        serde_json::json!({ "deleted": true, "connection_deleted": connection_deleted }),
+    ))
+}
+
+/// Best-effort cleanup of the OAuth connection a just-deleted service was bound
+/// to. Deletes it only when the connection isn't marked `keep` and no other
+/// service instance (any status) references it — leaving a shared or protected
+/// connection intact. The eligibility check and the delete are one atomic
+/// statement (see [`OrgScope::delete_connection_if_orphaned`]) so a concurrent
+/// re-bind can't be silently nulled by the `ON DELETE SET NULL` FK. Returns
+/// whether the connection was deleted; errors are surfaced to the caller for
+/// logging but never undo the service delete.
+async fn cleanup_orphaned_connection(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    scope: &OrgScope,
+    auth: &OrgAcl,
+    ip: Option<&str>,
+    connection_id: Uuid,
+) -> Result<bool> {
+    if scope.delete_connection_if_orphaned(connection_id).await? {
+        super::connections::fire_connection_deleted(
+            state,
+            ext,
+            auth.org_id,
+            auth.identity_id,
+            ip,
+            connection_id,
+        )
+        .await;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// List actions for a service instance (delegates to the underlying template).
@@ -410,7 +493,7 @@ async fn list_service_actions(
     // Resolve the same template + connection the exec path would use, then
     // annotate each scope-bearing action with its coverage so the agent sees
     // `needs_reconnect` here instead of after a 403.
-    let def = super::templates::resolve_template_definition(
+    let mut def = super::templates::resolve_template_definition(
         &state,
         &ext,
         instance.org_id,
@@ -418,6 +501,9 @@ async fn list_service_actions(
         &instance.template_key,
     )
     .await?;
+    // Overlay this instance's MCP resync result on top of the template's
+    // authored tools (authored wins; instance-only tools are added).
+    crate::routes::actions::overlay_instance_discovered_tools(Some(&instance), &mut def);
     let effective =
         platform_services::resolve_effective_scopes(state.db(&ext), &scope, &def, &instance).await;
     let knowledge = match effective.as_ref() {
@@ -430,4 +516,174 @@ async fn list_service_actions(
     Ok(Json(
         super::templates::actions_from_definition_with_coverage(&def, knowledge),
     ))
+}
+
+#[derive(Serialize)]
+struct McpResyncResponse {
+    service_id: Uuid,
+    tool_count: usize,
+    discovered_at: String,
+}
+
+/// POST /v1/services/{id}/mcp/resync — refresh `discovered_tools` on an MCP
+/// **service instance** by calling tools/list against its effective MCP server.
+///
+/// Unlike a template, an instance carries the `url`/`secret_name` (or OAuth
+/// connection) needed to actually reach the server, so this works for
+/// templates like `telegram` that defer both to their instances. The result
+/// is stored per-instance (one fast-mcp container per user must not clobber a
+/// shared row) and overlaid on the template's authored tools at read time.
+async fn resync_mcp_service(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+) -> Result<Json<McpResyncResponse>> {
+    use overslash_core::types::Runtime;
+
+    let identity_id = acl
+        .identity_id
+        .ok_or_else(|| AppError::Forbidden("identity-bound credential required".into()))?;
+    let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
+
+    let instance = scope
+        .get_service_instance(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("service '{id}' not found")))?;
+    // Resync mutates the instance and drives an outbound call using its
+    // configured URL + credential, so it needs an owner gate —
+    // `get_service_instance` is org-scoped but not owner-scoped, so without
+    // this any write-level identity in the org could resync (and reach the
+    // server behind) someone else's private instance.
+    //
+    // Gated on the *ceiling user*, not the raw caller: an agent creates
+    // services at its owner-user level (`on_behalf_of`), so the agent that set
+    // an instance up must still be able to resync it. A different user's agent
+    // resolves to a different ceiling and is refused.
+    if !crate::services::permission_chain::caller_may_manage_owned(
+        &scope,
+        instance.owner_identity_id,
+        Some(ceiling_user_id),
+        acl.access_level,
+    )
+    .await?
+    {
+        return Err(AppError::Forbidden(
+            "only the service owner or an org admin can resync this service".into(),
+        ));
+    }
+
+    // Resolve the same template the exec path would use.
+    let def = super::templates::resolve_template_definition(
+        &state,
+        &ext,
+        instance.org_id,
+        instance.owner_identity_id,
+        &instance.template_key,
+    )
+    .await?;
+    if def.runtime != Runtime::Mcp {
+        return Err(AppError::BadRequest(format!(
+            "service '{}' is not an MCP-runtime template",
+            instance.name
+        )));
+    }
+    let mcp = def
+        .mcp
+        .clone()
+        .ok_or_else(|| AppError::Internal("mcp runtime without mcp block".into()))?;
+    if !mcp.autodiscover {
+        return Err(AppError::BadRequest(
+            "autodiscover=false on this template — resync disabled".into(),
+        ));
+    }
+
+    // Effective url + auth: instance wins, template fallback. OAuth resolves a
+    // live bearer (or gates with needs_authentication); Bearer resolves the
+    // vault secret name; missing url/secret → structured 400.
+    let crate::routes::actions::ResolvedMcp {
+        url,
+        auth,
+        oauth_header,
+    } = crate::routes::actions::resolve_effective_mcp(
+        &state,
+        &ext,
+        &scope,
+        acl.identity_id,
+        ceiling_user_id,
+        &instance.template_key,
+        Some(&instance),
+        &mcp,
+        def.instance_defaults
+            .as_ref()
+            .and_then(|d| d.url.as_deref()),
+        None,
+    )
+    .await?;
+
+    // Auth headers + SSRF-pinned client, shared with the tools/call path so
+    // the two can't drift on auth merging, host overrides, or the timeout.
+    let (client, headers) = crate::services::mcp_caller::build_client(
+        &state,
+        &scope,
+        &url,
+        &auth,
+        oauth_header.as_ref(),
+    )
+    .await?;
+    let tools = client
+        .tools_list(&headers)
+        .await
+        .map_err(|e| AppError::BadGateway(format!("mcp tools/list failed: {e}")))?;
+
+    let discovered_json: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            let mut m = serde_json::Map::new();
+            m.insert("name".into(), serde_json::Value::String(t.name.clone()));
+            if let Some(d) = &t.description {
+                m.insert("description".into(), serde_json::Value::String(d.clone()));
+            }
+            if let Some(s) = &t.input_schema {
+                m.insert("input_schema".into(), s.clone());
+            }
+            if let Some(s) = &t.output_schema {
+                m.insert("output_schema".into(), s.clone());
+            }
+            serde_json::Value::Object(m)
+        })
+        .collect();
+
+    let at = time::OffsetDateTime::now_utc();
+    let discovered_at = at
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    scope
+        .update_service_instance_discovered_tools(instance.id, &discovered_json, at)
+        .await?;
+
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "service.mcp_resync",
+            resource_type: Some("service_instance"),
+            resource_id: Some(instance.id),
+            detail: serde_json::json!({
+                "template_key": instance.template_key,
+                "tool_count": tools.len(),
+                "url": url,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(McpResyncResponse {
+        service_id: instance.id,
+        tool_count: tools.len(),
+        discovered_at,
+    }))
 }

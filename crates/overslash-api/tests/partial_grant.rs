@@ -14,7 +14,7 @@
 
 #![allow(clippy::disallowed_methods)] // runtime sqlx::query for one-off test seeds
 
-mod common;
+use crate::common;
 
 use overslash_core::crypto;
 use serde_json::{Value, json};

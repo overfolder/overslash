@@ -1,0 +1,76 @@
+name: Sync dev
+
+# Merges `master` back into `dev` after a release, so the version/changelog
+# commit release-please lands on `master` doesn't leave `dev` behind. Without
+# this the two branches drift a little further every release: `dev` kept
+# claiming 0.4.0 while master was already on 0.5.0, and every non-release build
+# derives its version from `.release-please-manifest.json` (see
+# `crates/overslash-core/build.rs`), so the drift is visible in `/v1/version`.
+#
+# A merge, never a rebase: `dev` is the default branch and its ruleset has a
+# `non_fast_forward` rule, so rewriting it is both blocked and wrong. Merging
+# keeps `master` an ancestor of `dev`, which is the invariant that makes this
+# job idempotent.
+#
+# IMPORTANT: pushing straight to `dev` needs the RELEASE_PLEASE_TOKEN secret —
+# the same fine-grained PAT `release-please.yml` uses. The `dev` ruleset
+# requires a pull request and allows squash merges only; the repository-admin
+# role is a bypass actor, so the PAT works exactly as long as its owner is an
+# admin. A sync *PR* is not an option: squashing never makes the release commit
+# an ancestor of `dev`, so the drift would return next release. If the token
+# lapses the push 403s and this job fails loudly — fall back to the manual merge
+# in docs/runbooks/release.md.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+# Two releases in quick succession must not race for the same push.
+concurrency:
+  group: sync-dev
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge master into dev
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: dev
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+
+      - name: Configure committer
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge master into dev
+        env:
+          # `github.ref_name` is the tag on a tag push and the branch on a
+          # manual dispatch; both read fine in the commit message.
+          RELEASE: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch origin master
+
+          if git merge-base --is-ancestor origin/master HEAD; then
+            echo "dev already contains origin/master ($(git rev-parse --short origin/master)) — nothing to sync."
+            exit 0
+          fi
+
+          if ! git merge --no-ff origin/master \
+              -m "chore: sync master into dev (post-release ${RELEASE})"; then
+            git merge --abort
+            echo "::error::master → dev merge conflicts. Resolve it by hand — see docs/runbooks/release.md ('Sync back')."
+            exit 1
+          fi
+
+          git push origin HEAD:dev
+          echo "Merged origin/master into dev."

@@ -19,7 +19,7 @@
 //!      `deny_unknown_fields`), so callers that haven't migrated to
 //!      Service + HTTP verb get a clear error instead of silent acceptance.
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 
@@ -94,6 +94,36 @@ x-overslash-mcp:
     )
 }
 
+/// Telegram-flavored stub with a typed `chat_id: string` and an enum
+/// `parse_mode` — the two shapes that burned real approvals (`chat_id` sent as
+/// an integer, `parse_mode` as a bad member).
+fn telegram_template_yaml(key: &str, url: &str, secret_name: &str) -> String {
+    format!(
+        r#"openapi: "3.1.0"
+info:
+  title: Telegram Stub
+  x-overslash-key: {key}
+x-overslash-runtime: mcp
+paths: {{}}
+x-overslash-mcp:
+  url: {url}
+  auth: {{ kind: bearer, secret_name: {secret_name} }}
+  autodiscover: false
+  tools:
+    - name: send_message
+      risk: write
+      scope_param: chat_id
+      input_schema:
+        type: object
+        properties:
+          chat_id: {{ type: string }}
+          text: {{ type: string }}
+          parse_mode: {{ type: string, enum: [HTML, Markdown, MarkdownV2] }}
+        required: [chat_id, text]
+"#
+    )
+}
+
 fn auth_header(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
 }
@@ -107,6 +137,16 @@ struct Fixture {
 }
 
 async fn setup_with_template(template_key: &str) -> Fixture {
+    setup_with_yaml(template_key, |url| {
+        whatsapp_template_yaml(template_key, url, "whatsapp_token")
+    })
+    .await
+}
+
+/// Like [`setup_with_template`] but lets the caller supply the template YAML
+/// (built from the live stub URL) — used by the type/enum coercion tests, which
+/// need a template shape different from the shared WhatsApp stub.
+async fn setup_with_yaml(template_key: &str, build_yaml: impl FnOnce(&str) -> String) -> Fixture {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let stub_addr = start_stub().await;
     let stub_url = format!("http://{stub_addr}/mcp");
@@ -116,7 +156,7 @@ async fn setup_with_template(template_key: &str) -> Fixture {
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let admin_key = fx.org_key.clone();
 
-    let yaml = whatsapp_template_yaml(template_key, &stub_url, "whatsapp_token");
+    let yaml = build_yaml(&stub_url);
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth_header(&admin_key).0, auth_header(&admin_key).1)
@@ -480,4 +520,265 @@ async fn passes_when_caller_has_permission() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["ok"], true);
     assert_eq!(body["permission"]["status"], "allowed");
+}
+
+/// A bad enum member is rejected with a 400 `not_in_enum` **before** the
+/// approval branch — the burned-approval class. Mirrors
+/// `call_returns_400_for_bad_args_even_when_approval_would_fire` but for the
+/// new enum check.
+#[tokio::test]
+async fn call_rejects_bad_enum_before_approval() {
+    let fx = setup_with_yaml("telegram_bad_enum", |url| {
+        telegram_template_yaml("telegram_bad_enum", url, "whatsapp_token")
+    })
+    .await;
+
+    let resp = fx
+        .client
+        .post(format!("{}/v1/actions/call", fx.base))
+        .header(auth_header(&fx.agent_key).0, auth_header(&fx.agent_key).1)
+        .json(&json!({
+            "service": "telegram_bad_enum",
+            "action": "send_message",
+            "params": {
+                "chat_id": "612616872",
+                "text": "hi",
+                "parse_mode": "Fancy"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "expected 400, not approval (202)");
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "invalid_action_args");
+    let has_enum_error = body["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["kind"] == "not_in_enum" && e["field"] == "parse_mode");
+    assert!(
+        has_enum_error,
+        "expected not_in_enum(parse_mode), got: {body}"
+    );
+
+    let count: i64 = sqlx::query("SELECT COUNT(*)::bigint AS c FROM approvals")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap()
+        .get("c");
+    assert_eq!(
+        count, 0,
+        "enum check must run before approval; found {count}"
+    );
+}
+
+/// An integer `chat_id` sent to a `string` param is coerced (not rejected), so
+/// the call proceeds past validation and lands as a pending approval — exactly
+/// the request that previously failed post-approval. Proves the coerced value
+/// carries through to the approval branch.
+#[tokio::test]
+async fn call_coerces_integer_chat_id_past_validation() {
+    let fx = setup_with_yaml("telegram_coerce", |url| {
+        telegram_template_yaml("telegram_coerce", url, "whatsapp_token")
+    })
+    .await;
+
+    let resp = fx
+        .client
+        .post(format!("{}/v1/actions/call", fx.base))
+        .header(auth_header(&fx.agent_key).0, auth_header(&fx.agent_key).1)
+        .json(&json!({
+            "service": "telegram_coerce",
+            "action": "send_message",
+            "params": {
+                "chat_id": 612616872,
+                "text": "hi"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    // 202 = pending approval (agent has no grant) — the point is it is NOT a
+    // 400 validation error; the integer was coerced to a string and accepted.
+    assert_eq!(
+        resp.status(),
+        202,
+        "expected pending-approval, got: {:?}",
+        resp.text().await
+    );
+
+    let count: i64 = sqlx::query("SELECT COUNT(*)::bigint AS c FROM approvals")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap()
+        .get("c");
+    assert_eq!(count, 1, "coerced call should reach the approval branch");
+}
+
+/// The new enum/type error kinds keep the `/call` vs `/validate` byte-identical
+/// 400 contract — same envelope, same `errors`.
+#[tokio::test]
+async fn bad_enum_400_is_byte_equivalent_across_call_and_validate() {
+    let fx = setup_with_yaml("telegram_byte_equiv", |url| {
+        telegram_template_yaml("telegram_byte_equiv", url, "whatsapp_token")
+    })
+    .await;
+
+    let bad_body = json!({
+        "service": "telegram_byte_equiv",
+        "action": "send_message",
+        "params": {
+            "chat_id": "612616872",
+            "text": "hi",
+            "parse_mode": "Fancy"
+        }
+    });
+
+    let call_resp = fx
+        .client
+        .post(format!("{}/v1/actions/call", fx.base))
+        .header(auth_header(&fx.agent_key).0, auth_header(&fx.agent_key).1)
+        .json(&bad_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(call_resp.status(), 400);
+    let call_body: Value = call_resp.json().await.unwrap();
+
+    let validate_resp = fx
+        .client
+        .post(format!("{}/v1/actions/validate", fx.base))
+        .header(auth_header(&fx.agent_key).0, auth_header(&fx.agent_key).1)
+        .json(&bad_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(validate_resp.status(), 400);
+    let validate_body: Value = validate_resp.json().await.unwrap();
+
+    assert_eq!(call_body, validate_body, "400 bodies must match exactly");
+    assert_eq!(call_body["error"], "invalid_action_args");
+}
+
+/// A telegram-shaped template whose `chat_id`/`text` params declare
+/// caller-facing aliases (`chat`/`to`, `body`/`message`). Exercises the
+/// `x-overslash-aliases` extension end-to-end through the loader.
+fn telegram_aliased_template_yaml(key: &str, url: &str, secret_name: &str) -> String {
+    format!(
+        r#"openapi: "3.1.0"
+info:
+  title: Telegram Aliased Stub
+  x-overslash-key: {key}
+x-overslash-runtime: mcp
+paths: {{}}
+x-overslash-mcp:
+  url: {url}
+  auth: {{ kind: bearer, secret_name: {secret_name} }}
+  autodiscover: false
+  tools:
+    - name: send_message
+      risk: write
+      scope_param: chat_id
+      input_schema:
+        type: object
+        properties:
+          chat_id: {{ type: string, x-overslash-aliases: [chat, to] }}
+          text: {{ type: string, x-overslash-aliases: [body, message] }}
+        required: [chat_id, text]
+"#
+    )
+}
+
+/// A call that supplies the aliases instead of the canonical param names is
+/// rewritten to canonical before validation — so it clears the arg gate and
+/// reaches the approval branch (202) instead of a 400 unknown-argument error.
+#[tokio::test]
+async fn call_accepts_param_aliases() {
+    let fx = setup_with_yaml("telegram_alias", |url| {
+        telegram_aliased_template_yaml("telegram_alias", url, "whatsapp_token")
+    })
+    .await;
+
+    let resp = fx
+        .client
+        .post(format!("{}/v1/actions/call", fx.base))
+        .header(auth_header(&fx.agent_key).0, auth_header(&fx.agent_key).1)
+        .json(&json!({
+            "service": "telegram_alias",
+            "action": "send_message",
+            "params": {
+                "chat": "612616872",
+                "body": "hi"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        202,
+        "aliased call should validate and reach approval, got: {:?}",
+        resp.text().await
+    );
+
+    let count: i64 = sqlx::query("SELECT COUNT(*)::bigint AS c FROM approvals")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap()
+        .get("c");
+    assert_eq!(count, 1, "aliased call should reach the approval branch");
+}
+
+/// An unknown key that is *not* a declared alias is still rejected — and the
+/// 400 is byte-identical across `/call` and `/validate`.
+#[tokio::test]
+async fn unknown_non_alias_key_still_rejected_byte_equivalent() {
+    let fx = setup_with_yaml("telegram_alias_neg", |url| {
+        telegram_aliased_template_yaml("telegram_alias_neg", url, "whatsapp_token")
+    })
+    .await;
+
+    let bad_body = json!({
+        "service": "telegram_alias_neg",
+        "action": "send_message",
+        "params": {
+            "chat": "612616872",
+            "body": "hi",
+            "nonsense": "x"
+        }
+    });
+
+    let call_resp = fx
+        .client
+        .post(format!("{}/v1/actions/call", fx.base))
+        .header(auth_header(&fx.agent_key).0, auth_header(&fx.agent_key).1)
+        .json(&bad_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(call_resp.status(), 400);
+    let call_body: Value = call_resp.json().await.unwrap();
+
+    let validate_resp = fx
+        .client
+        .post(format!("{}/v1/actions/validate", fx.base))
+        .header(auth_header(&fx.agent_key).0, auth_header(&fx.agent_key).1)
+        .json(&bad_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(validate_resp.status(), 400);
+    let validate_body: Value = validate_resp.json().await.unwrap();
+
+    assert_eq!(call_body, validate_body, "400 bodies must match exactly");
+    assert_eq!(call_body["error"], "invalid_action_args");
+    // Only `nonsense` is unknown — the aliased keys were accepted.
+    let fields: Vec<&str> = call_body["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["field"].as_str())
+        .collect();
+    assert_eq!(fields, vec!["nonsense"]);
 }

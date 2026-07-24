@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::service::Risk;
+use crate::types::service::{Risk, ScopeParams};
 use crate::types::{PermissionEffect, PermissionRule};
 
 /// A derived permission key from an action request.
@@ -21,7 +21,21 @@ pub struct DerivedKey {
     pub key: String,
     pub service: String,
     pub action: String,
+    /// The third segment verbatim, `label=value` included. Surfaces that match
+    /// or display the raw key use this; surfaces that want the two halves read
+    /// [`label`](Self::label) and [`value`](Self::value).
     pub arg: String,
+    /// The scope label when the arg carries one (`recipient` in
+    /// `email:send:recipient=jane@example.com`). `None` for a bare arg — every
+    /// key written before labels existed, and every rule an operator types by
+    /// hand.
+    ///
+    /// A label is not a param name: `to`, `cc`, and `bcc` all file under
+    /// `recipient`, which is no param at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The arg with any `label=` prefix stripped.
+    pub value: String,
 }
 
 /// A suggested tier of permission keys at a specific broadness level.
@@ -46,37 +60,137 @@ impl PermissionKey {
     }
 
     /// Derive permission keys from a service action request.
-    /// Format: `{service}:{action}:{arg}` where arg comes from `scope_param` or defaults to `*`.
+    /// Format: `{service}:{action}:{label}={value}`, where the label and value
+    /// come from `scope_param`. An unscoped action derives `{service}:{action}:*`.
+    ///
+    /// Two fan-outs happen here, and both exist so a grant can be about one
+    /// concrete thing rather than the whole action:
+    ///
+    /// - An **array-valued** param yields one key per element instead of
+    ///   stringifying the array. A send to two recipients derives two keys, so
+    ///   `email:send:*@example.com` covers the internal one while the external
+    ///   one bubbles as an approval naming only itself. Without it the arg
+    ///   would be the JSON literal `["a@b.com","c@d.com"]` — unmatchable by any
+    ///   rule and unreadable by any human.
+    /// - **Several scoped params** each contribute their values. `to`, `cc`,
+    ///   and `bcc` all mint keys, so a bcc to an outsider is gated exactly like
+    ///   a to.
+    ///
+    /// The label is what decides whether two params share a namespace: authored
+    /// as `to:recipient`/`cc:recipient` they collapse into one
+    /// `recipient=<addr>` key (one approval for an address on both headers);
+    /// authored bare they stay distinguishable as `to=`/`cc=`.
+    ///
+    /// Keys are deduped (order-preserving) so a repeated value does not raise
+    /// the same approval twice. No values at all — every scoped param missing,
+    /// or all of them empty arrays — falls back to `*`.
     pub fn from_service_action(
         service_key: &str,
         action_key: &str,
-        scope_param: Option<&str>,
+        scope_param: &ScopeParams,
         params: &HashMap<String, serde_json::Value>,
     ) -> Vec<Self> {
-        let arg = scope_param
-            .and_then(|sp| params.get(sp))
-            .map(|v| match v.as_str() {
-                Some(s) => s.to_string(),
-                None => v.to_string(),
+        let mut seen = std::collections::HashSet::new();
+        let keys: Vec<Self> = scope_param
+            .refs()
+            .iter()
+            .flat_map(|r| {
+                let values: Vec<String> = match params.get(&r.param) {
+                    Some(serde_json::Value::Array(items)) => {
+                        items.iter().map(Self::scope_arg).collect()
+                    }
+                    Some(v) => vec![Self::scope_arg(v)],
+                    None => Vec::new(),
+                };
+                let label = r.label.clone();
+                values
+                    .into_iter()
+                    .map(move |v| format!("{service_key}:{action_key}:{label}={v}"))
             })
-            .unwrap_or_else(|| "*".to_string());
-        vec![Self(format!("{service_key}:{action_key}:{arg}"))]
+            .filter(|k| seen.insert(k.clone()))
+            .map(Self)
+            .collect();
+        if keys.is_empty() {
+            return vec![Self(format!("{service_key}:{action_key}:*"))];
+        }
+        keys
+    }
+
+    /// Render one `scope_param` value as the `{arg}` segment. Strings pass
+    /// through unquoted; anything else falls back to its JSON form.
+    fn scope_arg(v: &serde_json::Value) -> String {
+        match v.as_str() {
+            Some(s) => s.to_string(),
+            None => v.to_string(),
+        }
     }
 }
 
 /// Parse a flat permission key string into its structured components.
-/// Format: `{service}:{action}:{arg}` where arg may contain colons.
+/// Format: `{service}:{action}:{arg}` where arg may contain colons, and may
+/// itself be `{label}={value}`.
 pub fn parse_derived_key(key: &str) -> DerivedKey {
     let mut parts = key.splitn(3, ':');
     let service = parts.next().unwrap_or("").to_string();
     let action = parts.next().unwrap_or("").to_string();
     let arg = parts.next().unwrap_or("*").to_string();
+    let (label, value) = split_scope_arg(&arg);
     DerivedKey {
         key: key.to_string(),
         service,
         action,
         arg,
+        label,
+        value,
     }
+}
+
+/// Split a `{label}={value}` arg. The prefix only counts as a label when it is
+/// a bare identifier, so a value that itself contains `=` (a query string, a
+/// base64 pad) is returned whole rather than sliced at an arbitrary `=`.
+fn split_scope_arg(arg: &str) -> (Option<String>, String) {
+    match arg.split_once('=') {
+        Some((label, value)) if crate::types::is_scope_ident(label) => {
+            (Some(label.to_string()), value.to_string())
+        }
+        _ => (None, arg.to_string()),
+    }
+}
+
+/// The strings a rule may be matched against for one key.
+///
+/// A labelled key also answers to its **value-only** form, so a rule written
+/// before labels existed — or written deliberately label-agnostic, like
+/// `email:send:*@example.com` — still covers it no matter which param carried
+/// the value. A `label=`-qualified rule only matches keys with that label,
+/// which is what makes `email:send:cc=*@example.com` narrower than the bare
+/// form rather than a synonym for it.
+fn match_forms(key: &str) -> Vec<String> {
+    let dk = parse_derived_key(key);
+    match dk.label {
+        Some(_) => vec![
+            key.to_string(),
+            format!("{}:{}:{}", dk.service, dk.action, dk.value),
+        ],
+        None => vec![key.to_string()],
+    }
+}
+
+/// Does `pattern` cover `key`, in either of the key's [`match_forms`]?
+fn rule_matches(pattern: &str, key: &str) -> bool {
+    match_forms(key)
+        .iter()
+        .any(|form| glob_match::glob_match(pattern, form))
+}
+
+/// Does the permission key `pattern` cover the concrete key `key`?
+///
+/// Same glob + [`match_forms`] semantics the rule engine uses, exposed for
+/// callers that need to validate a hand-typed key against what a request
+/// actually asked for (e.g. an approval's "Custom…" remember key) without
+/// synthesizing a `PermissionRule`.
+pub fn key_covers(pattern: &str, key: &str) -> bool {
+    rule_matches(pattern, key)
 }
 
 /// Parse all permission key strings into structured `DerivedKey`s.
@@ -123,7 +237,17 @@ fn broadening_ladder(dk: &DerivedKey) -> Vec<String> {
                 }
                 ladder.push(format!("{}:*:/**", dk.service));
             } else {
-                // Service action: {service}:{action}:{arg} → {service}:{action}:* → {service}:*:*
+                // Service action:
+                // {service}:{action}:{label}={value} → {service}:{action}:{value}
+                //   → {service}:{action}:* → {service}:*:*
+                //
+                // The value-only rung is a real widening step, not cosmetics:
+                // it grants the same correspondent/resource under *any* label,
+                // which for `email:send` is "this address, whichever header it
+                // is on". Unlabelled args skip it.
+                if dk.label.is_some() {
+                    ladder.push(format!("{}:{}:{}", dk.service, dk.action, dk.value));
+                }
                 if dk.arg != "*" {
                     ladder.push(format!("{}:{}:*", dk.service, dk.action));
                 }
@@ -145,11 +269,53 @@ fn humanize_action(action: &str) -> String {
     s
 }
 
+/// Name the wildcard in a scoped arg, as the noun phrase that follows "on".
+///
+/// A stored rule is a *pattern*, not a concrete key, so its arg is routinely a
+/// glob — `*` for the whole action, `*@acme.com` for a domain. Left verbatim
+/// those render as "Send on recipient *", which reads like a bug. `subject` is
+/// the label when the key carries one, so the same two shapes come out as "any
+/// recipient" and "any recipient at acme.com".
+///
+/// Returns `None` for a glob with no shape we can name (`jane@*`, `*-prod-*`);
+/// the caller then falls back to the arg verbatim rather than inventing prose.
+fn describe_arg_glob(value: &str, subject: Option<&str>) -> Option<String> {
+    let anything = match subject {
+        Some(s) => format!("any {s}"),
+        None => "anything".to_string(),
+    };
+    if value == "*" {
+        return Some(anything);
+    }
+    value
+        .strip_prefix("*@")
+        .filter(|domain| !domain.contains('*'))
+        .map(|domain| format!("{anything} at {domain}"))
+}
+
+/// Name a `/**` path glob, as the noun phrase that follows "to".
+/// `/repos/**` → "anything under /repos"; a bare `/**` → "any path".
+fn describe_path_glob(path: &str) -> Option<String> {
+    let prefix = path.strip_suffix("/**")?;
+    if prefix.is_empty() {
+        Some("any path".to_string())
+    } else {
+        Some(format!("anything under {prefix}"))
+    }
+}
+
+/// Does this segment stand for "everything"? A rule an operator typed by hand
+/// is as likely to say `github:**` as `github:*:*`, and both mean the service
+/// entire.
+fn is_catch_all(segment: &str) -> bool {
+    segment == "*" || segment == "**"
+}
+
 /// Generate a human-readable description for a single derived key at a given broadness.
 fn describe_key(dk: &DerivedKey) -> String {
     match dk.service.as_str() {
         "http" => {
-            if dk.action == "ANY" {
+            if dk.action == "ANY" || is_catch_all(&dk.action) {
                 let host = dk.arg.split('/').next().unwrap_or(&dk.arg);
                 if host == "*" {
                     "Any HTTP request".to_string()
@@ -157,7 +323,8 @@ fn describe_key(dk: &DerivedKey) -> String {
                     format!("Any request to {host}")
                 }
             } else {
-                format!("{} to {}", dk.action, dk.arg)
+                let target = describe_path_glob(&dk.arg).unwrap_or_else(|| dk.arg.clone());
+                format!("{} to {}", dk.action, target)
             }
         }
         "secret" => {
@@ -168,15 +335,46 @@ fn describe_key(dk: &DerivedKey) -> String {
             }
         }
         _ => {
-            if dk.action == "*" {
+            if is_catch_all(&dk.action) {
                 format!("Any {} action", humanize_action(&dk.service))
             } else if dk.arg == "*" {
                 format!("{} on any resource", humanize_action(&dk.action))
+            } else if dk.arg.starts_with('/') {
+                // Service-HTTP key: the arg is a path, so it reads "to", not "on".
+                match describe_path_glob(&dk.arg) {
+                    Some(target) => format!("{} to {}", humanize_action(&dk.action), target),
+                    None => format!("{} on {}", humanize_action(&dk.action), dk.arg),
+                }
+            } else if let Some(ref label) = dk.label {
+                // "Send on recipient=jane@example.com" reads like a bug; the
+                // label is a noun the approver already understands.
+                let target = describe_arg_glob(&dk.value, Some(label))
+                    .unwrap_or_else(|| format!("{label} {}", dk.value));
+                format!("{} on {}", humanize_action(&dk.action), target)
             } else {
-                format!("{} on {}", humanize_action(&dk.action), dk.arg)
+                let target = describe_arg_glob(&dk.arg, None).unwrap_or_else(|| dk.arg.clone());
+                format!("{} on {}", humanize_action(&dk.action), target)
             }
         }
     }
+}
+
+/// Drop repeats while keeping first-seen order.
+fn dedup_preserving(items: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    items
+        .into_iter()
+        .filter(|s| seen.insert(s.clone()))
+        .collect()
+}
+
+/// Describe a stored permission rule's `action_pattern` in one line.
+///
+/// The public entry point onto [`describe_key`], so a rule list and an approval's
+/// suggested tiers say the same thing about the same key rather than drifting
+/// apart in two implementations.
+pub fn describe_pattern(pattern: &str) -> String {
+    describe_key(&parse_derived_key(pattern))
 }
 
 /// Generate a combined description for a tier's set of derived keys.
@@ -185,18 +383,16 @@ fn generate_tier_description(keys: &[DerivedKey]) -> String {
     let primary: Vec<&DerivedKey> = keys.iter().filter(|k| k.service != "secret").collect();
     let secrets: Vec<&DerivedKey> = keys.iter().filter(|k| k.service == "secret").collect();
 
+    // At the broader rungs several keys collapse onto the same phrase — two
+    // recipients both become "Send on any resource". Say it once.
     let mut desc = if primary.is_empty() {
         keys.first().map(describe_key).unwrap_or_default()
     } else {
-        primary
-            .iter()
-            .map(|k| describe_key(k))
-            .collect::<Vec<_>>()
-            .join(", ")
+        dedup_preserving(primary.iter().map(|k| describe_key(k))).join(", ")
     };
 
     if !secrets.is_empty() {
-        let secret_names: Vec<String> = secrets.iter().map(|s| s.action.clone()).collect();
+        let secret_names = dedup_preserving(secrets.iter().map(|s| s.action.clone()));
         desc.push_str(&format!(" with {}", secret_names.join(", ")));
     }
 
@@ -220,13 +416,14 @@ pub fn suggest_tiers(permission_keys: &[String]) -> Vec<SuggestedTier> {
 
     for i in 0..max_len {
         // For each key, pick the tier at index i (or the last available)
-        let tier_keys: Vec<String> = ladders
-            .iter()
-            .map(|ladder| {
-                let idx = i.min(ladder.len() - 1);
-                ladder[idx].clone()
-            })
-            .collect();
+        // Several keys converge on the same rung as the ladders broaden — an
+        // N-recipient send collapses to one `svc:send:*`. Dedupe so the tier
+        // (and the rules "Allow & Remember" writes from it) carries each key
+        // once.
+        let tier_keys: Vec<String> = dedup_preserving(ladders.iter().map(|ladder| {
+            let idx = i.min(ladder.len() - 1);
+            ladder[idx].clone()
+        }));
 
         // Deduplicate: skip if same as previous tier
         if prev_keys.as_ref() == Some(&tier_keys) {
@@ -280,9 +477,7 @@ pub fn check_permissions(rules: &[PermissionRule], keys: &[PermissionKey]) -> Pe
     // First check for explicit denies
     for key in keys {
         for rule in rules {
-            if rule.effect == PermissionEffect::Deny
-                && glob_match::glob_match(&rule.action_pattern, &key.0)
-            {
+            if rule.effect == PermissionEffect::Deny && rule_matches(&rule.action_pattern, &key.0) {
                 return PermissionResult::Denied(format!(
                     "denied by rule: {}",
                     rule.action_pattern
@@ -295,8 +490,7 @@ pub fn check_permissions(rules: &[PermissionRule], keys: &[PermissionKey]) -> Pe
     let mut uncovered = Vec::new();
     for key in keys {
         let covered = rules.iter().any(|rule| {
-            rule.effect == PermissionEffect::Allow
-                && glob_match::glob_match(&rule.action_pattern, &key.0)
+            rule.effect == PermissionEffect::Allow && rule_matches(&rule.action_pattern, &key.0)
         });
         if !covered {
             uncovered.push(key.clone());
@@ -532,10 +726,66 @@ mod tests {
         let keys = PermissionKey::from_service_action(
             "github",
             "create_pull_request",
-            Some("repo"),
+            &"repo".into(),
             &params,
         );
-        assert_eq!(keys[0].0, "github:create_pull_request:overfolder/backend");
+        assert_eq!(
+            keys[0].0,
+            "github:create_pull_request:repo=overfolder/backend"
+        );
+    }
+
+    #[test]
+    fn service_action_array_scope_param_fans_out_per_element() {
+        let mut params = HashMap::new();
+        params.insert(
+            "to".to_string(),
+            serde_json::json!(["a@example.com", "b@example.org"]),
+        );
+        let keys = PermissionKey::from_service_action("email", "send", &"to".into(), &params);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec!["email:send:to=a@example.com", "email:send:to=b@example.org"]
+        );
+    }
+
+    /// A grant scoped to one domain covers only the recipients in it; the rest
+    /// stay uncovered and bubble as an approval naming just them.
+    #[test]
+    fn domain_scoped_rule_covers_only_matching_recipients() {
+        let mut params = HashMap::new();
+        params.insert(
+            "to".to_string(),
+            serde_json::json!(["a@example.com", "b@example.org"]),
+        );
+        let keys = PermissionKey::from_service_action("email", "send", &"to".into(), &params);
+        let covered: Vec<&str> = keys
+            .iter()
+            .filter(|k| rule_matches("email:send:*@example.com", &k.0))
+            .map(|k| k.0.as_str())
+            .collect();
+        assert_eq!(covered, vec!["email:send:to=a@example.com"]);
+    }
+
+    #[test]
+    fn service_action_array_scope_param_dedups_repeated_elements() {
+        let mut params = HashMap::new();
+        params.insert("to".to_string(), serde_json::json!(["a@b.com", "a@b.com"]));
+        let keys = PermissionKey::from_service_action("email", "send", &"to".into(), &params);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].0, "email:send:to=a@b.com");
+    }
+
+    #[test]
+    fn service_action_empty_array_scope_param_falls_back_to_wildcard() {
+        // No recipient carries no scope, so the key is as broad as a missing
+        // param — and a domain-scoped rule therefore does not cover it.
+        let mut params = HashMap::new();
+        params.insert("to".to_string(), serde_json::json!([]));
+        let keys = PermissionKey::from_service_action("email", "send", &"to".into(), &params);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].0, "email:send:*");
+        assert!(!rule_matches("email:send:*@example.com", &keys[0].0));
     }
 
     #[test]
@@ -544,7 +794,7 @@ mod tests {
         let keys = PermissionKey::from_service_action(
             "github",
             "create_pull_request",
-            Some("repo"),
+            &"repo".into(),
             &params,
         );
         assert_eq!(keys[0].0, "github:create_pull_request:*");
@@ -553,8 +803,283 @@ mod tests {
     #[test]
     fn service_action_no_scope_param() {
         let params = HashMap::new();
-        let keys = PermissionKey::from_service_action("github", "list_repos", None, &params);
+        let keys = PermissionKey::from_service_action(
+            "github",
+            "list_repos",
+            &ScopeParams::default(),
+            &params,
+        );
         assert_eq!(keys[0].0, "github:list_repos:*");
+    }
+
+    /// Recipient params: a shared label puts every header in one namespace,
+    /// so the same address on `to` and `cc` is one key — one approval to
+    /// resolve, not two for what a human reads as a single decision.
+    fn recipient_scope() -> ScopeParams {
+        ScopeParams::parse_list(["to:recipient", "cc:recipient", "bcc:recipient"]).unwrap()
+    }
+
+    fn recipients(
+        to: serde_json::Value,
+        cc: serde_json::Value,
+        bcc: serde_json::Value,
+    ) -> HashMap<String, serde_json::Value> {
+        HashMap::from([
+            ("to".to_string(), to),
+            ("cc".to_string(), cc),
+            ("bcc".to_string(), bcc),
+        ])
+    }
+
+    #[test]
+    fn shared_label_unions_every_scoped_param() {
+        let params = recipients(
+            serde_json::json!(["a@example.com"]),
+            serde_json::json!(["b@example.com"]),
+            serde_json::json!(["c@example.net"]),
+        );
+        let keys = PermissionKey::from_service_action("email", "send", &recipient_scope(), &params);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec![
+                "email:send:recipient=a@example.com",
+                "email:send:recipient=b@example.com",
+                "email:send:recipient=c@example.net"
+            ]
+        );
+    }
+
+    #[test]
+    fn shared_label_collapses_an_address_on_two_headers() {
+        let params = recipients(
+            serde_json::json!(["a@example.com"]),
+            serde_json::json!(["a@example.com"]),
+            serde_json::json!([]),
+        );
+        let keys = PermissionKey::from_service_action("email", "send", &recipient_scope(), &params);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec!["email:send:recipient=a@example.com"]
+        );
+    }
+
+    /// Without a shared label the params keep their own namespaces — which is
+    /// the point of making the label author-controlled rather than implicit.
+    #[test]
+    fn unlabelled_params_keep_distinct_namespaces() {
+        let params = recipients(
+            serde_json::json!(["a@example.com"]),
+            serde_json::json!(["a@example.com"]),
+            serde_json::json!([]),
+        );
+        let scope = ScopeParams::parse_list(["to", "cc", "bcc"]).unwrap();
+        let keys = PermissionKey::from_service_action("email", "send", &scope, &params);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec!["email:send:to=a@example.com", "email:send:cc=a@example.com"]
+        );
+    }
+
+    #[test]
+    fn scoped_params_absent_from_the_call_contribute_nothing() {
+        // Only `to` was supplied; cc/bcc are simply not in the args.
+        let mut params = HashMap::new();
+        params.insert("to".to_string(), serde_json::json!(["a@example.com"]));
+        let keys = PermissionKey::from_service_action("email", "send", &recipient_scope(), &params);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec!["email:send:recipient=a@example.com"]
+        );
+    }
+
+    #[test]
+    fn every_scoped_param_empty_falls_back_to_wildcard() {
+        let params = recipients(
+            serde_json::json!([]),
+            serde_json::json!([]),
+            serde_json::json!([]),
+        );
+        let keys = PermissionKey::from_service_action("email", "send", &recipient_scope(), &params);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec!["email:send:*"]
+        );
+    }
+
+    #[test]
+    fn scalar_and_array_scoped_params_mix() {
+        let mut params = HashMap::new();
+        params.insert("to".to_string(), serde_json::json!("a@example.com"));
+        params.insert("cc".to_string(), serde_json::json!(["b@example.com"]));
+        let keys = PermissionKey::from_service_action("email", "send", &recipient_scope(), &params);
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec![
+                "email:send:recipient=a@example.com",
+                "email:send:recipient=b@example.com"
+            ]
+        );
+    }
+
+    // ── Value-only rules stay label-agnostic ─────────────────────────────
+
+    /// The compat direction that matters, and the only one that can be
+    /// inferred: rules are long-lived, keys are re-derived on every call, so a
+    /// grant written before labels existed must keep covering the labelled key
+    /// the same call derives today. The value-only match form bridges them.
+    #[test]
+    fn value_only_rule_covers_a_labelled_key() {
+        let rules = vec![rule("email:send:*@example.com", PermissionEffect::Allow)];
+        let keys = vec![PermissionKey("email:send:recipient=a@example.com".into())];
+        assert_eq!(check_permissions(&rules, &keys), PermissionResult::Allowed);
+    }
+
+    #[test]
+    fn label_qualified_rule_does_not_cover_another_label() {
+        let rules = vec![rule("email:send:cc=*@example.com", PermissionEffect::Allow)];
+        let cc = vec![PermissionKey("email:send:cc=a@example.com".into())];
+        assert_eq!(check_permissions(&rules, &cc), PermissionResult::Allowed);
+
+        let to = vec![PermissionKey("email:send:to=a@example.com".into())];
+        assert_eq!(
+            check_permissions(&rules, &to),
+            PermissionResult::NeedsApproval(to.clone()),
+            "a cc-scoped grant must not launder the same address on `to`"
+        );
+    }
+
+    /// The reverse direction does **not** hold, deliberately: a `label=`-
+    /// qualified rule does not cover a *label-less* key.
+    ///
+    /// This is reachable, because approvals persist their derived keys and
+    /// `cascade_resolve` re-matches those stored strings against rules written
+    /// later. An approval filed before labels shipped holds
+    /// `email:send:a@example.com`; a rule remembered afterwards may well be
+    /// `email:send:recipient=a@example.com`, and the two do not match.
+    ///
+    /// Matching them would mean guessing: the stored key records no label, so
+    /// nothing says whether that address was a `to`, a `cc`, or a `bcc`, and
+    /// honouring a `cc=`-scoped grant over it would grant strictly more than
+    /// the operator wrote. Failing closed costs one human click on approvals
+    /// filed in the window before the upgrade (they expire in
+    /// `APPROVAL_EXPIRY_SECS`, 30 min by default); failing open would silently
+    /// widen a narrow grant. Operators who want the old keys covered write the
+    /// value-only form, which is the tier the ladder offers directly beneath
+    /// the labelled one.
+    #[test]
+    fn a_labelled_rule_does_not_cover_a_label_less_key() {
+        let legacy = vec![PermissionKey("email:send:a@example.com".into())];
+
+        for pattern in [
+            "email:send:recipient=a@example.com",
+            "email:send:recipient=*@example.com",
+        ] {
+            let rules = vec![rule(pattern, PermissionEffect::Allow)];
+            assert_eq!(
+                check_permissions(&rules, &legacy),
+                PermissionResult::NeedsApproval(legacy.clone()),
+                "{pattern} must not cover a key that records no label"
+            );
+        }
+
+        // The value-only form is the one that does cover it.
+        let rules = vec![rule("email:send:*@example.com", PermissionEffect::Allow)];
+        assert_eq!(
+            check_permissions(&rules, &legacy),
+            PermissionResult::Allowed
+        );
+    }
+
+    #[test]
+    fn value_only_deny_denies_whatever_label_carries_it() {
+        let rules = vec![
+            rule("email:send:*", PermissionEffect::Allow),
+            rule("email:send:blocked@example.com", PermissionEffect::Deny),
+        ];
+        let keys = vec![PermissionKey(
+            "email:send:recipient=blocked@example.com".into(),
+        )];
+        assert!(matches!(
+            check_permissions(&rules, &keys),
+            PermissionResult::Denied(_)
+        ));
+    }
+
+    /// `=` inside a *value* must not be mistaken for a label separator — the
+    /// prefix only counts when it is a bare identifier.
+    #[test]
+    fn a_non_identifier_prefix_is_not_a_label() {
+        let dk = parse_derived_key("http:GET:api.example.com/x?a=1");
+        assert_eq!(dk.label, None);
+        assert_eq!(dk.value, "api.example.com/x?a=1");
+        assert_eq!(match_forms(&dk.key), vec!["http:GET:api.example.com/x?a=1"]);
+    }
+
+    /// The split is lexical, so an arg that merely *reads* like `ident=rest` is
+    /// taken as labelled and therefore also answers to its value-only form.
+    /// Pinned because it widens what a rule matches: the exact key matches as
+    /// always, and `sheets:query:* from t` now matches too. Derived args are
+    /// `*`, a URL/host, or a real `label=` scope value, so this only concerns
+    /// hand-written rules.
+    #[test]
+    fn an_identifier_prefix_is_always_read_as_a_label() {
+        let dk = parse_derived_key("sheets:query:select=* from t");
+        assert_eq!(dk.label.as_deref(), Some("select"));
+        assert_eq!(dk.value, "* from t");
+
+        let keys = vec![PermissionKey("sheets:query:select=* from t".into())];
+        let exact = vec![rule("sheets:query:select=*", PermissionEffect::Allow)];
+        assert_eq!(check_permissions(&exact, &keys), PermissionResult::Allowed);
+        let value_only = vec![rule("sheets:query:* from t", PermissionEffect::Allow)];
+        assert_eq!(
+            check_permissions(&value_only, &keys),
+            PermissionResult::Allowed
+        );
+    }
+
+    #[test]
+    fn parse_derived_key_splits_the_label() {
+        let dk = parse_derived_key("email:send:recipient=jane@example.com");
+        assert_eq!(dk.service, "email");
+        assert_eq!(dk.action, "send");
+        assert_eq!(dk.arg, "recipient=jane@example.com");
+        assert_eq!(dk.label.as_deref(), Some("recipient"));
+        assert_eq!(dk.value, "jane@example.com");
+    }
+
+    #[test]
+    fn describe_key_reads_the_label_as_a_noun() {
+        let dk = parse_derived_key("email:send:recipient=jane@example.com");
+        assert_eq!(describe_key(&dk), "Send on recipient jane@example.com");
+    }
+
+    /// The ladder gains one rung for a labelled key: the same value under any
+    /// label ("this correspondent, whichever header").
+    #[test]
+    fn broadening_ladder_offers_the_value_only_rung() {
+        let dk = parse_derived_key("email:send:recipient=jane@example.com");
+        assert_eq!(
+            broadening_ladder(&dk),
+            vec![
+                "email:send:recipient=jane@example.com",
+                "email:send:jane@example.com",
+                "email:send:*",
+                "email:*:*"
+            ]
+        );
+    }
+
+    #[test]
+    fn broadening_ladder_unchanged_for_unlabelled_args() {
+        let dk = parse_derived_key("github:create_pull_request:overfolder/backend");
+        assert_eq!(
+            broadening_ladder(&dk),
+            vec![
+                "github:create_pull_request:overfolder/backend",
+                "github:create_pull_request:*",
+                "github:*:*"
+            ]
+        );
     }
 
     #[test]
@@ -711,6 +1236,49 @@ mod tests {
         assert_eq!(tiers[1].keys, vec!["github:*:*"]);
     }
 
+    /// A multi-recipient send derives one key per recipient. The exact tier
+    /// must keep both, but every broader rung collapses them onto one key —
+    /// and must say so once, not "Send on any resource, Send on any resource".
+    #[test]
+    fn tiers_multi_recipient_dedupes_broad_rungs() {
+        let keys = vec![
+            "email:send:recipient=ada@example.com".to_string(),
+            "email:send:recipient=bob@example.com".to_string(),
+        ];
+        let tiers = suggest_tiers(&keys);
+
+        assert_eq!(tiers[0].keys, keys);
+        assert!(tiers[0].description.contains("ada@example.com"));
+        assert!(tiers[0].description.contains("bob@example.com"));
+
+        let broad = tiers
+            .iter()
+            .find(|t| t.keys == vec!["email:send:*"])
+            .expect("a `send on any resource` tier");
+        assert_eq!(broad.description, "Send on any resource");
+
+        let broadest = tiers.last().unwrap();
+        assert_eq!(broadest.keys, vec!["email:*:*"]);
+        assert_eq!(broadest.description, "Any Email action");
+    }
+
+    #[test]
+    fn key_covers_label_stripped_form() {
+        assert!(key_covers(
+            "email:send:*",
+            "email:send:recipient=ada@example.com"
+        ));
+        assert!(key_covers(
+            "email:send:recipient=ada@example.com",
+            "email:send:recipient=ada@example.com"
+        ));
+        assert!(!key_covers(
+            "email:send:recipient=bob@example.com",
+            "email:send:recipient=ada@example.com"
+        ));
+        assert!(!key_covers("github:*:*", "email:send:recipient=ada@x.com"));
+    }
+
     #[test]
     fn tiers_empty_input() {
         assert!(suggest_tiers(&[]).is_empty());
@@ -753,6 +1321,58 @@ mod tests {
     fn description_http_any() {
         let dk = parse_derived_key("http:ANY:api.stripe.com/**");
         assert_eq!(describe_key(&dk), "Any request to api.stripe.com");
+    }
+
+    /// Stored rules are patterns, not concrete keys, so every glob shape the
+    /// rule list can hold has to read as a sentence. `describe_pattern` is the
+    /// entry point the permissions API renders through.
+    #[test]
+    fn description_of_stored_rule_patterns() {
+        let cases = [
+            ("github:*:*", "Any Github action"),
+            (
+                "github:create_pull_request:*",
+                "Create pull request on any resource",
+            ),
+            ("email:send:recipient=*", "Send on any recipient"),
+            (
+                "email:send:recipient=*@acme.com",
+                "Send on any recipient at acme.com",
+            ),
+            ("email:send:*@acme.com", "Send on anything at acme.com"),
+            (
+                "email:send:recipient=jane@example.com",
+                "Send on recipient jane@example.com",
+            ),
+            (
+                "http:ANY:api.stripe.com/**",
+                "Any request to api.stripe.com",
+            ),
+            (
+                "http:POST:api.stripe.com/v1/**",
+                "POST to anything under api.stripe.com/v1",
+            ),
+            ("github:POST:/**", "POST to any path"),
+            // Two-segment patterns an operator types by hand.
+            ("github:**", "Any Github action"),
+            ("http:**", "Any HTTP request"),
+            ("github:POST:/repos/**", "POST to anything under /repos"),
+            ("github:POST:/repos/overfolder", "POST on /repos/overfolder"),
+        ];
+        for (pattern, expected) in cases {
+            assert_eq!(describe_pattern(pattern), expected, "pattern: {pattern}");
+        }
+    }
+
+    /// A glob we have no wording for stays verbatim — better a raw key than
+    /// prose that misstates what the rule covers.
+    #[test]
+    fn description_leaves_unnameable_globs_verbatim() {
+        assert_eq!(
+            describe_pattern("email:send:recipient=jane@*"),
+            "Send on recipient jane@*"
+        );
+        assert_eq!(describe_pattern("deploy:run:*-prod-*"), "Run on *-prod-*");
     }
 
     #[test]

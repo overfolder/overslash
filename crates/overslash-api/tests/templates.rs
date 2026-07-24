@@ -1,7 +1,7 @@
 //! Integration tests for the three-tier template registry:
 //! global (shipped OpenAPI YAML) + org (DB, admin CRUD) + user (DB, CRUD gated by org setting).
 
-mod common;
+use crate::common;
 
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -58,14 +58,14 @@ async fn bootstrap(
 }
 
 // ---------------------------------------------------------------------------
-// User template CRUD — gated by allow_user_templates
+// User template CRUD — gated by user_template_policy
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_user_template_blocked_when_setting_off() {
     let (base, client, _org_id, _admin_key, write_key, _, _, _) = bootstrap(false).await;
 
-    // Default: allow_user_templates is false
+    // Default: user_template_policy is 'none'
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
@@ -87,13 +87,13 @@ async fn test_user_template_crud_when_setting_on() {
     let resp = client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"allow_user_templates": true}))
+        .json(&json!({"user_template_policy": "full"}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["allow_user_templates"], true);
+    assert_eq!(body["user_template_policy"], "full");
 
     // Write user creates a user-level template
     let resp = client
@@ -190,7 +190,7 @@ async fn test_user_cannot_modify_other_users_template() {
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"allow_user_templates": true}))
+        .json(&json!({"user_template_policy": "full"}))
         .send()
         .await
         .unwrap();
@@ -411,7 +411,7 @@ async fn test_template_settings_get_and_patch_roundtrip() {
         .await
         .unwrap();
     assert_eq!(settings["global_templates_enabled"], true);
-    assert_eq!(settings["allow_user_templates"], false);
+    assert_eq!(settings["user_template_policy"], "none");
     assert_eq!(settings["allow_services_outside_catalog"], false);
 
     let updated: Value = client
@@ -665,7 +665,7 @@ async fn test_admin_compliance_view() {
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"allow_user_templates": true}))
+        .json(&json!({"user_template_policy": "full"}))
         .send()
         .await
         .unwrap();
@@ -792,7 +792,7 @@ async fn test_template_operations_produce_audit_entries() {
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"allow_user_templates": true}))
+        .json(&json!({"user_template_policy": "full"}))
         .send()
         .await
         .unwrap();
@@ -854,7 +854,7 @@ async fn test_template_settings_write_user_forbidden() {
     let resp = client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&write_key).0, auth(&write_key).1)
-        .json(&json!({"allow_user_templates": true}))
+        .json(&json!({"user_template_policy": "full"}))
         .send()
         .await
         .unwrap();
@@ -1067,5 +1067,198 @@ async fn test_org_template_detail_includes_scopes() {
     assert!(
         body["scopes"].is_array(),
         "org template detail missing scopes array: {body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Parent→child ceiling allowance for owned templates. Mirrors the service
+// allowance (services_admin_view.rs): a user may manage a template owned by an
+// identity it is an ancestor of, but the reach is one-directional (no child→
+// parent, no sibling). See `caller_may_manage_owned`.
+// ---------------------------------------------------------------------------
+
+/// Create an `agent`/`sub_agent` under `parent_id` and mint an API key for it.
+async fn create_child(
+    base: &str,
+    client: &Client,
+    admin_key: &str,
+    org_id: Uuid,
+    kind: &str,
+    parent_id: Uuid,
+    name: &str,
+) -> (Uuid, String) {
+    let ident: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header(auth(admin_key).0, auth(admin_key).1)
+        .json(&json!({ "name": name, "kind": kind, "parent_id": parent_id }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id: Uuid = ident["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("identity create failed: {ident}"))
+        .parse()
+        .unwrap();
+    let key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header(auth(admin_key).0, auth(admin_key).1)
+        .json(&json!({ "org_id": org_id, "identity_id": id, "name": format!("{name}-key") }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    (id, key_resp["key"].as_str().unwrap().to_string())
+}
+
+async fn enable_user_templates(base: &str, client: &Client, admin_key: &str, org_id: Uuid) {
+    client
+        .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header(auth(admin_key).0, auth(admin_key).1)
+        .json(&json!({ "user_template_policy": "full" }))
+        .send()
+        .await
+        .unwrap();
+}
+
+/// The owning user may update AND delete a template owned by one of its agents.
+#[tokio::test]
+async fn user_manages_agent_owned_template() {
+    let (base, client, org_id, admin_key, write_key, _, _, user_ids) = bootstrap(false).await;
+    enable_user_templates(&base, &client, &admin_key, org_id).await;
+
+    // Agent under the write-user creates a user-level template (owned by agent).
+    let (_agent_id, agent_key) = create_child(
+        &base,
+        &client,
+        &admin_key,
+        org_id,
+        "agent",
+        user_ids[1],
+        "tmpl-agent",
+    )
+    .await;
+    let created: Value = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({ "openapi": minimal_openapi("agent-api", "Agent API"), "user_level": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let template_id = created["id"].as_str().unwrap();
+
+    // Parent user updates it -> 200 (ceiling allowance).
+    let resp = client
+        .put(format!("{base}/v1/templates/{template_id}/manage"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .json(&json!({ "openapi": minimal_openapi("agent-api", "Parent Edit") }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "a user may update a template owned by its agent"
+    );
+
+    // Parent user deletes it -> 200.
+    let resp = client
+        .delete(format!("{base}/v1/templates/{template_id}/manage"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "a user may delete a template owned by its agent"
+    );
+}
+
+/// One-directional: an agent may NOT manage its owner-user's template, and a
+/// sibling agent may NOT manage another agent's template.
+#[tokio::test]
+async fn template_allowance_is_one_directional() {
+    let (base, client, org_id, admin_key, write_key, _, _, user_ids) = bootstrap(false).await;
+    enable_user_templates(&base, &client, &admin_key, org_id).await;
+
+    // Parent user owns a template.
+    let parent_tmpl: Value = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .json(
+            &json!({ "openapi": minimal_openapi("parent-api", "Parent API"), "user_level": true }),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let parent_tmpl_id = parent_tmpl["id"].as_str().unwrap();
+
+    // Agent under the parent user: child→parent must be denied.
+    let (agent_id, agent_key) = create_child(
+        &base,
+        &client,
+        &admin_key,
+        org_id,
+        "agent",
+        user_ids[1],
+        "up-agent",
+    )
+    .await;
+    let resp = client
+        .delete(format!("{base}/v1/templates/{parent_tmpl_id}/manage"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "an agent must not delete its owner-user's template"
+    );
+
+    // Sibling agent owns a template; the first agent must not reach laterally.
+    let (_sib_id, sib_key) = create_child(
+        &base,
+        &client,
+        &admin_key,
+        org_id,
+        "agent",
+        user_ids[1],
+        "sib-agent",
+    )
+    .await;
+    let sib_tmpl: Value = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&sib_key).0, auth(&sib_key).1)
+        .json(&json!({ "openapi": minimal_openapi("sib-api", "Sibling API"), "user_level": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let sib_tmpl_id = sib_tmpl["id"].as_str().unwrap();
+    let _ = agent_id;
+    let resp = client
+        .delete(format!("{base}/v1/templates/{sib_tmpl_id}/manage"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "a sibling agent must not delete another agent's template"
     );
 }

@@ -16,6 +16,22 @@ export class ApiError extends Error {
 	}
 }
 
+/**
+ * Pull the human-readable reason out of an error response body. The backend's
+ * simple errors serialize as `{ "error": "<message>" }` (see AppError
+ * IntoResponse), so surface that string when present — lets callers show the
+ * server's actual reason (e.g. "admin access required") instead of a bare
+ * status code.
+ */
+export function apiErrorReason(e: unknown): string | undefined {
+	if (e instanceof ApiError && e.body && typeof e.body === 'object') {
+		const b = e.body as { error?: unknown; message?: unknown };
+		if (typeof b.error === 'string') return b.error;
+		if (typeof b.message === 'string') return b.message;
+	}
+	return undefined;
+}
+
 async function request<T>(
 	method: string,
 	path: string,
@@ -192,6 +208,9 @@ export interface PermissionRule {
 	id: string;
 	identity_id: string;
 	action_pattern: string;
+	/** `action_pattern` as a sentence, rendered server-side by the same describer
+	 *  that writes an approval's suggested tiers. */
+	description: string;
 	effect: string;
 	expires_at: string | null;
 	created_at: string;
@@ -207,7 +226,15 @@ export interface UserPreferences {
 export interface DerivedKey {
 	service: string;
 	action: string;
+	/** Third key segment verbatim, `label=value` included when the action's
+	 *  scope carries a label (`recipient=jane@example.com`). */
 	arg: string;
+	/** The scope label, when `arg` carries one. Absent for a bare arg — keys
+	 *  from unlabelled scopes and rules typed by hand. Not a param name: an
+	 *  email send files `to`/`cc`/`bcc` alike under `recipient`. */
+	label?: string;
+	/** `arg` with any `label=` prefix stripped. */
+	value: string;
 }
 
 /** Mirrors overslash_core::permissions::SuggestedTier */
@@ -230,6 +257,11 @@ export interface DisclosedField {
 	/** True when the value hit the per-field `max_chars` clamp or a 10 KB
 	 *  hard ceiling. The returned `value` is still the prefix. */
 	truncated: boolean;
+	/** True when the template marked this disclose entry `primary`. The detail
+	 *  screen renders primary fields as prominent "hero" values (multiple
+	 *  primaries render in declaration order); unmarked fields form the table.
+	 *  Omitted (falsy) when false — the backend skips serializing it. */
+	primary?: boolean;
 }
 
 /** Mirrors crates/overslash-api/src/routes/approvals.rs ApprovalResponse */

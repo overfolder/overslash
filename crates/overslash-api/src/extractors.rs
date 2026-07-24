@@ -302,35 +302,41 @@ impl FromRequestParts<AppState> for AuthContext {
         });
 
         // X-Overslash-As: identity substitution for keys with "impersonate" scope.
+        // Copy the value out to an owned String so the immutable borrow of
+        // `parts.headers` ends before the `ClientIp` extractor takes `&mut`.
         let has_impersonate_scope = key_row.scopes.iter().any(|s| s == "impersonate");
-        let as_header = parts.headers.get("x-overslash-as");
+        let as_value = match parts.headers.get("x-overslash-as") {
+            Some(raw) => Some(
+                raw.to_str()
+                    .map_err(|_| AppError::BadRequest("x-overslash-as is not valid UTF-8".into()))?
+                    .to_owned(),
+            ),
+            None => None,
+        };
 
-        let (effective_identity_id, impersonated_by) = match as_header {
+        let (effective_identity_id, impersonated_by) = match as_value {
             Some(raw) if has_impersonate_scope => {
-                let target_id: Uuid =
-                    raw.to_str()
-                        .ok()
-                        .and_then(|s| s.parse().ok())
-                        .ok_or_else(|| {
-                            AppError::BadRequest("x-overslash-as must be a valid UUID".into())
-                        })?;
-
                 let tmp_scope = OrgScope::new(key_row.org_id, state.db_pool(&parts.extensions));
-                let target = tmp_scope
-                    .get_identity(target_id)
-                    .await
-                    .map_err(|e| AppError::Internal(format!("db error: {e}")))?
-                    .ok_or_else(|| AppError::NotFound("impersonation target not found".into()))?;
 
-                if target.archived_at.is_some() {
-                    return Err(AppError::Forbidden(
-                        "impersonation target is archived".into(),
-                    ));
-                }
+                // Resolve (and provision, for the email / name-path forms) the
+                // effective identity. UUID targets resolve directly; nothing
+                // here bypasses the ACL cap applied just below.
+                let client_ip = ClientIp::from_request_parts(parts, state)
+                    .await
+                    .ok()
+                    .and_then(|c| c.0);
+                let target_id = crate::impersonation::resolve_target(
+                    &tmp_scope,
+                    &raw,
+                    key_row.identity_id,
+                    client_ip.as_deref(),
+                )
+                .await?;
 
                 // ACL cap: prevent privilege escalation via impersonation.
                 // The key's own identity cannot impersonate an identity whose
-                // effective access level exceeds its own.
+                // effective access level exceeds its own. Applied to the
+                // final effective identity regardless of how it was named.
                 let caller_access =
                     resolve_identity_access(&tmp_scope, key_row.identity_id).await?;
                 let target_access = resolve_identity_access(&tmp_scope, target_id).await?;

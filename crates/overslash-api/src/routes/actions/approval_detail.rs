@@ -189,7 +189,7 @@ mod tests {
             service_scope: Some(ServiceScope {
                 service_key: "github".into(),
                 action_key: "create_issue".into(),
-                scope_param: None,
+                scope_param: Default::default(),
                 http_verb: None,
             }),
             risk: None,

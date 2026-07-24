@@ -7,9 +7,7 @@ use uuid::Uuid;
 use overslash_db::scopes::OrgScope;
 
 use crate::{AppState, error::AppError, extractors::AuthContext, services::platform_connections};
-use overslash_core::types::{
-    ActionRequest, McpAuth, ParamLocation, ResolvedActionRequest, Runtime,
-};
+use overslash_core::types::{ActionRequest, ParamLocation, ResolvedActionRequest, Runtime};
 
 use super::*;
 use super::{auth::*, errors::*, service_resolve::*};
@@ -76,7 +74,7 @@ pub(super) async fn resolve_action_metadata(
             service_scope: Some(ServiceScope {
                 service_key: service_key.clone(),
                 action_key: String::new(),
-                scope_param: None,
+                scope_param: Default::default(),
                 http_verb: Some(HttpVerb {
                     method: raw_method.clone(),
                     path,
@@ -102,7 +100,7 @@ pub(super) async fn resolve_action_metadata(
         )
         .await?;
 
-        let svc = if let Some(ref inst) = instance {
+        let mut svc = if let Some(ref inst) = instance {
             crate::routes::templates::resolve_template_definition(
                 state,
                 ext,
@@ -134,6 +132,7 @@ pub(super) async fn resolve_action_metadata(
                 }
             }
         };
+        overlay_instance_discovered_tools(instance.as_ref(), &mut svc);
 
         let action = svc.actions.get(action_key).ok_or_else(|| {
             AppError::NotFound(format!(
@@ -322,7 +321,7 @@ pub(super) async fn resolve_request(
                 service_scope: Some(ServiceScope {
                     service_key: service_key.clone(),
                     action_key: String::new(),
-                    scope_param: None,
+                    scope_param: Default::default(),
                     http_verb: Some(HttpVerb {
                         method: raw_method,
                         path,
@@ -345,7 +344,7 @@ pub(super) async fn resolve_request(
         // Reuse the template/instance lookup performed by
         // `resolve_action_metadata` if the caller threaded it through.
         // Otherwise fall back to the same DB walk it would have run.
-        let (instance, svc) = if let Some(pre) = pre_resolved_mode_c {
+        let (instance, mut svc) = if let Some(pre) = pre_resolved_mode_c {
             (pre.instance, pre.svc)
         } else {
             let instance = resolve_instance_for_call(
@@ -397,6 +396,7 @@ pub(super) async fn resolve_request(
             };
             (instance, svc)
         };
+        overlay_instance_discovered_tools(instance.as_ref(), &mut svc);
 
         let action = svc.actions.get(action_key).ok_or_else(|| {
             AppError::NotFound(format!(
@@ -427,103 +427,27 @@ pub(super) async fn resolve_request(
                 ))
             })?;
 
-            // Resolve URL: instance wins, template is fallback.
-            let resolved_url = match instance
-                .as_ref()
-                .and_then(|i| i.url.as_deref().map(str::to_string))
-                .or(mcp_spec.url.clone())
-            {
-                Some(u) => u,
-                None => {
-                    return Err(mcp_missing_config_error(
-                        scope,
-                        auth.identity_id,
-                        Some(ceiling_user_id),
-                        service_key,
-                        instance.as_ref(),
-                        "url",
-                    )
-                    .await);
-                }
-            };
-
-            // Resolve auth. For Bearer: pick secret_name (instance wins,
-            // template fallback). For OAuth: resolve a live bearer from the
-            // caller's connection now (out-of-band), gating to a fresh auth
-            // URL when no connection exists yet.
-            let mut mcp_oauth_header: Option<overslash_core::types::AuthHeader> = None;
-            let resolved_auth = match &mcp_spec.auth {
-                McpAuth::None => McpAuth::None,
-                McpAuth::Bearer {
-                    secret_name: tpl_sn,
-                } => {
-                    let sn = match instance
-                        .as_ref()
-                        .and_then(|i| i.secret_name.as_deref())
-                        .or(tpl_sn.as_deref())
-                    {
-                        Some(s) => s.to_string(),
-                        None => {
-                            return Err(mcp_missing_config_error(
-                                scope,
-                                auth.identity_id,
-                                Some(ceiling_user_id),
-                                service_key,
-                                instance.as_ref(),
-                                "secret_name",
-                            )
-                            .await);
-                        }
-                    };
-                    McpAuth::Bearer {
-                        secret_name: Some(sn),
-                    }
-                }
-                McpAuth::OAuth { provider, scopes } => {
-                    match resolve_mcp_oauth_bearer(
-                        state,
-                        ext,
-                        scope,
-                        ceiling_user_id,
-                        provider,
-                        return_url_hint,
-                    )
-                    .await?
-                    {
-                        Some(header) => mcp_oauth_header = Some(header),
-                        None => {
-                            // No connection yet — mint a gated auth URL and
-                            // hand the agent a `needs_authentication` envelope,
-                            // mirroring the HTTP OAuth path.
-                            let urls = platform_connections::mint_initial_auth_url(
-                                state,
-                                scope.org_id(),
-                                ceiling_user_id,
-                                provider,
-                                scopes,
-                                None,
-                                return_url_hint,
-                            )
-                            .await?;
-                            return Err(AppError::NeedsAuthentication {
-                                service: Some(service_key.clone()),
-                                service_instance_id: instance.as_ref().map(|i| i.id),
-                                connection_id: None,
-                                auth_url: Some(urls.auth_url),
-                                short: urls.short,
-                                provider: Some(provider.clone()),
-                                required_scopes: scopes.clone(),
-                                account_email: None,
-                                headless: false,
-                            });
-                        }
-                    }
-                    McpAuth::OAuth {
-                        provider: provider.clone(),
-                        scopes: scopes.clone(),
-                    }
-                }
-            };
+            // Effective URL + auth: instance wins, template is fallback.
+            // Shared with the instance-scoped resync route (mcp_resolve).
+            let ResolvedMcp {
+                url: resolved_url,
+                auth: resolved_auth,
+                oauth_header: mcp_oauth_header,
+            } = resolve_effective_mcp(
+                state,
+                ext,
+                scope,
+                auth.identity_id,
+                ceiling_user_id,
+                service_key,
+                instance.as_ref(),
+                &mcp_spec,
+                svc.instance_defaults
+                    .as_ref()
+                    .and_then(|d| d.url.as_deref()),
+                return_url_hint,
+            )
+            .await?;
 
             let tool = action
                 .mcp_tool
@@ -537,7 +461,7 @@ pub(super) async fn resolve_request(
             // {team}". Resolvers don't apply (MCP has no HTTP parameter
             // schema), so we pass an empty resolved map.
             let interpolated = overslash_core::description::interpolate_description_with_resolved(
-                &action.description,
+                action.label_template(),
                 &req.params,
                 &std::collections::HashMap::new(),
             );
@@ -631,11 +555,6 @@ pub(super) async fn resolve_request(
             ));
         }
 
-        let host = svc
-            .hosts
-            .first()
-            .ok_or_else(|| AppError::Internal(format!("service '{service_key}' has no hosts")))?;
-
         let mut path = action.path.clone();
         for (k, v) in &req.params {
             let placeholder = format!("{{{k}}}");
@@ -645,12 +564,9 @@ pub(super) async fn resolve_request(
             }
         }
 
-        // Support hosts with explicit scheme (e.g. "http://localhost:1234" for tests)
-        let base_url = if host.contains("://") {
-            format!("{host}{path}")
-        } else {
-            format!("https://{host}{path}")
-        };
+        let base = effective_base(instance.as_ref(), &svc)
+            .ok_or_else(|| AppError::Internal(format!("service '{service_key}' has no hosts")))?;
+        let base_url = format!("{base}{path}");
 
         // Header-located params (e.g. a template-pinned `Notion-Version`) are
         // routed into the request headers below — they must not leak into the
@@ -703,21 +619,35 @@ pub(super) async fn resolve_request(
             } else {
                 format!("{base_url}?{}", pairs.join("&"))
             };
-            let body = if body_params.is_empty() {
-                None
-            } else {
-                let map: serde_json::Map<String, serde_json::Value> = body_params
-                    .into_iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                Some(serde_json::to_string(&map).unwrap_or_default())
-            };
+            // Whether a body is sent follows the template's declared
+            // `requestBody`, not whether the caller happened to supply fields.
+            // An operation whose fields are all optional (`POST /email/search`)
+            // still sends `{}` — a strict upstream extractor checks
+            // `Content-Type` before it ever looks at the body, so omitting the
+            // body omits the header and the call is rejected outright.
+            let body = action
+                .request_body
+                .as_ref()
+                .filter(|rb| rb.is_json())
+                .map(|_| {
+                    let map: serde_json::Map<String, serde_json::Value> = body_params
+                        .into_iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    serde_json::to_string(&map).unwrap_or_default()
+                });
             (url, body)
         };
 
         let mut headers = HashMap::new();
+        // `Content-Type` describes the payload, so it is emitted with the body
+        // and only with the body — never on a bodyless GET, and never without
+        // one. Template-chosen headers travel their own channel (`in: header`
+        // params and `securitySchemes`), so the two never contend.
         if body.is_some() {
-            headers.insert("Content-Type".to_string(), "application/json".to_string());
+            if let Some(rb) = &action.request_body {
+                headers.insert("Content-Type".to_string(), rb.content_type.clone());
+            }
         }
         // Template-declared header params (`in: header`) are sent verbatim as
         // request headers. `apply_defaults` has already filled any that carry a
@@ -810,11 +740,9 @@ pub(super) async fn resolve_request(
             }
         }
 
-        let resolver_base = if host.contains("://") {
-            host.to_string()
-        } else {
-            format!("https://{host}")
-        };
+        // Reuse the same base the action URL resolved to (instance override or
+        // template host) so display-param GETs hit the same deployment.
+        let resolver_base = base.clone();
         // Display-param resolution makes authenticated GETs against the
         // provider — merge the live auth header into a throwaway map for
         // those calls only; it never lands on the ActionRequest itself.
@@ -835,8 +763,12 @@ pub(super) async fn resolve_request(
         )
         .await;
 
+        // The approval title and audit row use the short `summary` (falling
+        // back to `description` when an action authors only the long form) —
+        // the agent-facing `description` is free to run to a paragraph, which
+        // no approval prompt should render.
         let interpolated = overslash_core::description::interpolate_description_with_resolved(
-            &action.description,
+            action.label_template(),
             &req.params,
             &resolved,
         );

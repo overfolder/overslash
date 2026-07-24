@@ -11,6 +11,7 @@ import type {
 	CreateByocCredentialRequest,
 	CreateServiceRequest,
 	CreateTemplateRequest,
+	Delta,
 	DraftTemplateDetail,
 	ImportTemplateRequest,
 	InitiateConnectionRequest,
@@ -25,6 +26,7 @@ import type {
 	TemplateSettings,
 	TemplateSummary,
 	UpdateDraftRequest,
+	UpdateByocCredentialRequest,
 	UpdateServiceRequest,
 	UpdateTemplateRequest,
 	ValidationResult
@@ -113,14 +115,18 @@ export const discardDraft = (id: string) =>
 // -- MCP tools resync --
 
 export interface McpResyncResponse {
-	key: string;
+	service_id: string;
 	tool_count: number;
 	discovered_at: string;
 }
 
-export const resyncMcpTemplate = (key: string) =>
+// Resync runs against a service *instance* (which carries the url/secret or
+// OAuth connection needed to reach the MCP server); the result is stored per
+// instance. An OAuth instance with no connection yields a `needs_authentication`
+// envelope (ApiError) the caller drives through the connect flow.
+export const resyncMcpService = (id: string) =>
 	session.post<McpResyncResponse>(
-		`/v1/templates/${encodeURIComponent(key)}/mcp/resync`,
+		`/v1/services/${encodeURIComponent(id)}/mcp/resync`,
 		{}
 	);
 
@@ -129,6 +135,26 @@ export const resyncMcpTemplate = (key: string) =>
 export async function validateTemplate(yaml: string): Promise<ValidationResult | null> {
 	try {
 		return await session.postText<ValidationResult>('/v1/templates/validate', yaml);
+	} catch (e) {
+		if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
+		throw e;
+	}
+}
+
+/** Lint a derived-layer delta against its resolved base (live editor feedback).
+ * `userLevel` must match the scope the layer will be created at so the preview
+ * folds over the same base the server will. */
+export async function validateDelta(
+	extendsKey: string,
+	delta: Delta,
+	userLevel = false
+): Promise<ValidationResult | null> {
+	try {
+		return await session.post<ValidationResult>('/v1/templates/validate-delta', {
+			extends: extendsKey,
+			delta,
+			user_level: userLevel
+		});
 	} catch (e) {
 		if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
 		throw e;
@@ -172,9 +198,15 @@ export const setServiceStatus = (id: string, status: ServiceStatus) =>
  * because the backend's name-based resolution uses user-shadows-org semantics
  * and would delete a user-owned instance that happens to share a name with the
  * org-level row the user actually clicked.
+ *
+ * By default the OAuth connection the service was bound to is also cleaned up
+ * when it becomes orphaned (no other service uses it and it isn't marked
+ * `keep`). Pass `{ keepConnection: true }` to preserve the connection.
  */
-export const deleteService = (id: string) =>
-	session.delete<{ deleted: boolean }>(`/v1/services/${id}`);
+export const deleteService = (id: string, opts: { keepConnection?: boolean } = {}) =>
+	session.delete<{ deleted: boolean; connection_deleted: boolean }>(
+		`/v1/services/${id}${opts.keepConnection ? '?keep_connection=true' : ''}`
+	);
 
 export const getServiceActions = (name: string, signal?: AbortSignal) =>
 	session.get<ActionSummary[]>(`/v1/services/${encodeURIComponent(name)}/actions`, signal);
@@ -215,6 +247,14 @@ export const deleteConnection = (id: string) => session.delete<void>(`/v1/connec
 export const setConnectionDefault = (id: string) =>
 	session.post<{ is_default: boolean }>(`/v1/connections/${id}/set_default`, {});
 
+/**
+ * Set (or clear) the `keep` flag on a connection. When `keep` is true the
+ * connection is preserved from the service-deletion auto-cleanup even when no
+ * service references it. Owner-or-admin gated; fired from the detail toggle.
+ */
+export const setConnectionKeep = (id: string, keep: boolean) =>
+	session.post<{ keep: boolean }>(`/v1/connections/${id}/keep`, { keep });
+
 export interface UpgradeScopesResponse {
 	auth_url: string;
 	state: string;
@@ -250,6 +290,12 @@ export const listByocCredentials = (signal?: AbortSignal) =>
 
 export const createByocCredential = (req: CreateByocCredentialRequest) =>
 	session.post<ByocCredentialSummary>('/v1/byoc-credentials', req);
+
+// Replace an existing credential's client id/secret in place. The credential id
+// (and every connection pinned to it) survives; pinned connections are marked
+// `reauth_required` server-side.
+export const updateByocCredential = (id: string, req: UpdateByocCredentialRequest) =>
+	session.put<ByocCredentialSummary>(`/v1/byoc-credentials/${id}`, req);
 
 export const deleteByocCredential = (id: string) =>
 	session.delete<{ deleted: boolean }>(`/v1/byoc-credentials/${id}`);

@@ -172,6 +172,7 @@ paths:
         - label: Block
           filter: .resolved.block_id // .params.block_id
         - label: Content
+          primary: true
           filter: .body.children
           max_chars: 2000
         - label: Insert after

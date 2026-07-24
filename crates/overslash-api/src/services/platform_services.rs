@@ -13,11 +13,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_core::permissions::AccessLevel;
-use overslash_core::types::{McpAuth, Runtime, ServiceAction, ServiceAuth, ServiceDefinition};
+use overslash_core::types::{
+    McpAuth, Runtime, SecretSource, ServiceAction, ServiceAuth, ServiceDefinition,
+};
 use overslash_db::repos::group::ServiceGroupRow;
 use overslash_db::repos::org as org_repo;
 use overslash_db::repos::service_instance::{
-    CreateServiceInstance, ServiceInstanceRow, UpdateServiceInstance,
+    ConfigMap, CreateServiceInstance, CredentialsMap, ServiceInstanceRow, UpdateServiceInstance,
 };
 use overslash_db::repos::service_template;
 use overslash_db::scopes::{OrgScope, UserScope};
@@ -34,7 +36,18 @@ pub struct CreateServiceInput {
     pub template_key: String,
     pub name: Option<String>,
     pub connection_id: Option<Uuid>,
+    /// Legacy scalar alias for the template's sole instance-source secret
+    /// scheme (or the MCP bearer secret). Rejected when the template declares
+    /// several instance-source schemes — bind those via `credentials`.
     pub secret_name: Option<String>,
+    /// Per-scheme secret bindings: securityScheme key → secret NAME in the
+    /// org vault. Keys must match the template's secret scheme keys.
+    #[serde(default)]
+    pub credentials: Option<CredentialsMap>,
+    /// Per-instance non-secret param values: param name → value. Keys must
+    /// name a template param marked `x-overslash-instance-config`.
+    #[serde(default)]
+    pub config: Option<ConfigMap>,
     pub url: Option<String>,
     #[serde(default = "default_status")]
     pub status: String,
@@ -74,7 +87,21 @@ fn default_status() -> String {
 pub struct UpdateServiceInput {
     pub name: Option<String>,
     pub connection_id: Option<Option<Uuid>>,
+    /// Legacy scalar alias for the template's sole instance-source secret
+    /// scheme (or the MCP bearer secret). Rejected when the template declares
+    /// several instance-source schemes — bind those via `credentials`.
     pub secret_name: Option<Option<String>>,
+    /// Per-scheme secret bindings: securityScheme key → secret NAME in the
+    /// org vault. `Some` = whole-map replace (an empty map clears every
+    /// binding); absent = leave unchanged. Keys must match the template's
+    /// secret scheme keys.
+    #[serde(default)]
+    pub credentials: Option<CredentialsMap>,
+    /// Per-instance non-secret param values. `Some` = whole-map replace (an
+    /// empty map clears every value); absent = leave unchanged. Keys must name
+    /// a template param marked `x-overslash-instance-config`.
+    #[serde(default)]
+    pub config: Option<ConfigMap>,
     pub url: Option<Option<String>>,
     /// `Some` = update the flag; `None` = leave unchanged.
     pub use_default_connection: Option<bool>,
@@ -103,6 +130,14 @@ pub struct ServiceInstanceSummary {
     pub connection_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret_name: Option<String>,
+    /// Per-scheme secret bindings: securityScheme key → secret NAME in the
+    /// org vault. Names only — secret values never leave the vault.
+    #[serde(skip_serializing_if = "CredentialsMap::is_empty")]
+    pub credentials: CredentialsMap,
+    /// Per-instance non-secret param values. Plain values, not vault
+    /// references — see `service_instances.config`.
+    #[serde(skip_serializing_if = "ConfigMap::is_empty")]
+    pub config: ConfigMap,
     /// Per-instance MCP server URL override. Overrides the template's `mcp.url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -155,6 +190,14 @@ pub struct ServiceInstanceDetail {
     pub connection_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret_name: Option<String>,
+    /// Per-scheme secret bindings: securityScheme key → secret NAME in the
+    /// org vault. Names only — secret values never leave the vault.
+    #[serde(skip_serializing_if = "CredentialsMap::is_empty")]
+    pub credentials: CredentialsMap,
+    /// Per-instance non-secret param values. Plain values, not vault
+    /// references — see `service_instances.config`.
+    #[serde(skip_serializing_if = "ConfigMap::is_empty")]
+    pub config: ConfigMap,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// When `false`, an unbound instance won't fall back to the default
@@ -164,6 +207,10 @@ pub struct ServiceInstanceDetail {
     pub is_system: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// When this instance's MCP tools were last resynced (RFC3339). Absent
+    /// until the first `POST /v1/services/{id}/mcp/resync`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovered_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials_status: Option<CredentialsStatus>,
     /// Present on the response to `POST /v1/services` when the kernel
@@ -344,7 +391,7 @@ pub async fn kernel_list_services(
                 } else {
                     ScopeKnowledge::NoConnection
                 };
-                derive_credentials_status(tpl, scopes, row.secret_name.as_deref())
+                derive_credentials_status(tpl, scopes, &row.credentials, row.secret_name.as_deref())
             });
             let groups = groups_by_service.remove(&row.id).unwrap_or_default();
             let mut summary = row_to_summary(row, groups);
@@ -545,24 +592,51 @@ pub async fn kernel_create_service(
             secret_name: Some(_)
         })
     );
+    // An org layer's `instance_defaults.url` counts as a default here, exactly
+    // as it does at execution (`resolve_effective_mcp`'s `layer_url`) — that is
+    // the whole point for an MCP template that ships without a URL: the org
+    // names its own deployment once on the layer, and instances need no `url`.
     let mcp_has_default_url = template_def
         .mcp
         .as_ref()
         .and_then(|m| m.url.as_ref())
-        .is_some();
+        .is_some()
+        || template_def
+            .instance_defaults
+            .as_ref()
+            .is_some_and(|d| d.url.is_some());
 
     if input.secret_name.as_deref().is_some_and(|s| !s.is_empty()) {
-        let has_api_key = template_def
-            .auth
-            .iter()
-            .any(|a| matches!(a, ServiceAuth::ApiKey { .. }));
-        if !has_api_key && !is_mcp_bearer {
+        // The scalar alias only makes sense for a template with an
+        // instance-source secret scheme to bind (or an MCP bearer secret) —
+        // org-source schemes resolve their fixed default name and are bound
+        // per scheme via `credentials`.
+        let has_instance_secret = template_def.auth.iter().any(|a| {
+            matches!(
+                a,
+                ServiceAuth::Secret {
+                    secret_source: SecretSource::Instance,
+                    ..
+                }
+            )
+        });
+        if !has_instance_secret && !is_mcp_bearer {
             return Err(AppError::BadRequest(format!(
-                "template '{}' does not use api key or MCP bearer auth",
+                "template '{}' does not use secret or MCP bearer auth",
                 input.template_key
             )));
         }
     }
+
+    // Reconcile per-scheme `credentials` with the legacy `secret_name` alias
+    // into the map to store + the mirrored scalar (rolling-deploy compat).
+    let (credentials, stored_secret_name) = reconcile_credentials(
+        &template_def,
+        input.credentials.as_ref(),
+        input.secret_name.as_deref(),
+    )?;
+
+    let config = validate_instance_config(&template_def, input.config.as_ref())?;
 
     if is_mcp && !mcp_has_default_url {
         let provided = input.url.as_deref().is_some_and(|u| !u.is_empty());
@@ -600,7 +674,9 @@ pub async fn kernel_create_service(
         template_key: &input.template_key,
         template_id,
         connection_id: input.connection_id,
-        secret_name: input.secret_name.as_deref(),
+        secret_name: stored_secret_name.as_deref(),
+        credentials: &credentials,
+        config: &config,
         url: input.url.as_deref(),
         use_default_connection: input.use_default_connection.unwrap_or(true),
         status: &input.status,
@@ -632,6 +708,7 @@ pub async fn kernel_create_service(
         &template_def,
         // No connection bulk-fetch here; if pinned, look it up.
         ScopeKnowledge::NoConnection,
+        &row.credentials,
         row.secret_name.as_deref(),
     );
     // If a connection was pinned at create time, refine via real scopes.
@@ -645,6 +722,7 @@ pub async fn kernel_create_service(
                 derive_credentials_status(
                     &template_def,
                     scope_knowledge(conn.scopes.as_deref()),
+                    &row.credentials,
                     row.secret_name.as_deref(),
                 )
             })
@@ -758,33 +836,90 @@ pub async fn kernel_update_service(
         return Err(AppError::BadRequest("cannot modify system service".into()));
     }
 
-    if let Some(Some(ref new_secret)) = input.secret_name {
-        if !new_secret.is_empty() {
-            let template_lookup_identity = existing.owner_identity_id.or(Some(auth_identity));
-            let template_def = resolve_template_definition(
+    // Reconcile credential changes against the template. Any of: a whole-map
+    // `credentials` replace, the legacy `secret_name` alias (set or clear), or
+    // both — merged and validated by `reconcile_credentials`, then stored as
+    // one consistent (map, mirrored scalar) pair.
+    let touches_credentials = input.credentials.is_some() || input.secret_name.is_some();
+    // `config` is validated against the same template definition, so resolve
+    // it once here rather than twice inside each branch.
+    let template_def = if touches_credentials || input.config.is_some() {
+        let template_lookup_identity = existing.owner_identity_id.or(Some(auth_identity));
+        Some(
+            resolve_template_definition(
                 &ctx.db,
                 &ctx.registry,
                 ctx.org_id,
                 template_lookup_identity,
                 &existing.template_key,
             )
-            .await?;
-            let has_api_key = template_def
-                .auth
-                .iter()
-                .any(|a| matches!(a, ServiceAuth::ApiKey { .. }));
+            .await?,
+        )
+    } else {
+        None
+    };
+
+    let (new_credentials, new_secret_name) = if touches_credentials {
+        let template_def = template_def
+            .as_ref()
+            .expect("resolved above whenever touches_credentials");
+
+        if input
+            .secret_name
+            .as_ref()
+            .is_some_and(|o| o.as_deref().is_some_and(|s| !s.is_empty()))
+        {
+            let has_instance_secret = template_def.auth.iter().any(|a| {
+                matches!(
+                    a,
+                    ServiceAuth::Secret {
+                        secret_source: SecretSource::Instance,
+                        ..
+                    }
+                )
+            });
             let is_mcp_bearer = matches!(
                 template_def.mcp.as_ref().map(|m| &m.auth),
                 Some(McpAuth::Bearer { .. })
             );
-            if !has_api_key && !is_mcp_bearer {
+            if !has_instance_secret && !is_mcp_bearer {
                 return Err(AppError::BadRequest(format!(
-                    "template '{}' does not use api key or MCP bearer auth",
+                    "template '{}' does not use secret or MCP bearer auth",
                     existing.template_key
                 )));
             }
         }
-    }
+
+        // Base map: an explicit `credentials` is a whole-map replace; a
+        // scalar-only request patches the existing map so the two stay in
+        // sync. On a scalar-only request the stored slot value is what the
+        // alias is REPLACING, not a competing caller intent — drop it before
+        // the fold or `reconcile_credentials` would flag every legacy rebind
+        // as a conflict (the create path mirrors the scalar into the map, so
+        // the slot is always populated). `secret_name: null` clears the slot.
+        // When both fields ride one request, the slot stays so a disagreement
+        // between them still 400s.
+        let instance_slots = instance_slot_keys(template_def);
+        let mut base = match input.credentials.as_ref() {
+            Some(explicit) => explicit.clone(),
+            None => existing.credentials.0.clone(),
+        };
+        if input.credentials.is_none() && input.secret_name.is_some() {
+            if let [sole] = instance_slots.as_slice() {
+                base.remove(sole);
+            }
+        }
+        let legacy = input.secret_name.as_ref().and_then(|o| o.as_deref());
+        let (map, mut scalar) = reconcile_credentials(template_def, Some(&base), legacy)?;
+        // A credentials-only request on a template with no instance-source
+        // slot (MCP bearer) mustn't clobber the scalar the map doesn't cover.
+        if instance_slots.is_empty() && input.secret_name.is_none() {
+            scalar = existing.secret_name.clone();
+        }
+        (Some(map), Some(scalar))
+    } else {
+        (None, None)
+    };
 
     if let Some(Some(ref url)) = input.url {
         if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
@@ -794,10 +929,24 @@ pub async fn kernel_update_service(
         }
     }
 
+    // An explicit `config` is a whole-map replace (an empty map clears every
+    // pinned value); absent leaves the stored map untouched.
+    let new_config = match input.config.as_ref() {
+        Some(explicit) => {
+            let template_def = template_def
+                .as_ref()
+                .expect("resolved above whenever config is present");
+            Some(validate_instance_config(template_def, Some(explicit))?)
+        }
+        None => None,
+    };
+
     let update = UpdateServiceInstance {
         name: input.name.as_deref(),
         connection_id: input.connection_id,
-        secret_name: input.secret_name.as_ref().map(|o| o.as_deref()),
+        secret_name: new_secret_name.as_ref().map(|o| o.as_deref()),
+        credentials: new_credentials.as_ref(),
+        config: new_config.as_ref(),
         url: input.url.as_ref().map(|o| o.as_deref()),
         use_default_connection: input.use_default_connection,
     };
@@ -810,6 +959,138 @@ pub async fn kernel_update_service(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+/// The template's credential slot keys whose fallback is the instance's legacy
+/// scalar `secret_name` (i.e. `source: instance`). Empty keys
+/// (programmatically-built templates) are skipped — they can't key a binding.
+fn instance_slot_keys(template: &ServiceDefinition) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for slot in template.all_slots() {
+        if slot.source == SecretSource::Instance && !slot.key.is_empty() && !out.contains(&slot.key)
+        {
+            out.push(slot.key);
+        }
+    }
+    out
+}
+
+/// Every credential slot key the template declares, in `auth` order.
+fn all_slot_keys(template: &ServiceDefinition) -> Vec<String> {
+    template
+        .all_slots()
+        .into_iter()
+        .map(|s| s.key)
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
+/// Validate a per-instance `config` map against the template.
+///
+/// The rules themselves live in `overslash_core::instance_config`, shared with
+/// the layer write path — an org layer supplying `instance_defaults.config`
+/// must accept exactly the same keys an instance may pin. This wrapper only
+/// renders the outcome as an `AppError`.
+fn validate_instance_config(
+    template: &ServiceDefinition,
+    explicit: Option<&ConfigMap>,
+) -> Result<ConfigMap, AppError> {
+    let Some(explicit) = explicit else {
+        return Ok(ConfigMap::new());
+    };
+    overslash_core::instance_config::validate_config(template, explicit)
+        .map_err(|e| AppError::BadRequest(e.message(&template.key)))
+}
+
+/// Reconcile explicit per-slot `credentials` with the legacy scalar
+/// `secret_name` alias into the map to store, validating both against the
+/// template.
+///
+/// - Every explicit key must name one of the template's credential slots, and
+///   every value must be non-empty (whole-map replace: omit a key to unbind).
+/// - A non-empty `secret_name` folds into the sole instance-source slot.
+///   With several instance-source slots the alias is ambiguous → 400. With
+///   none (MCP bearer) it stays scalar-only and the map is untouched.
+/// - Both provided with different values for the same slot → 400.
+///
+/// Returns `(credentials_to_store, secret_name_to_store)`. The scalar is kept
+/// mirrored (dual-write) so binaries from the previous release keep resolving
+/// during a rolling deploy; it is dropped once the column goes.
+fn reconcile_credentials(
+    template: &ServiceDefinition,
+    explicit: Option<&CredentialsMap>,
+    legacy_secret_name: Option<&str>,
+) -> Result<(CredentialsMap, Option<String>), AppError> {
+    let slot_keys = all_slot_keys(template);
+    let instance_slots = instance_slot_keys(template);
+
+    let mut map = CredentialsMap::new();
+    if let Some(explicit) = explicit {
+        for (key, value) in explicit {
+            if !slot_keys.contains(key) {
+                // A key that is now a config var is the shape of a template
+                // that stopped vaulting a value (the `email` mailbox username).
+                // Saying only "unknown credential" would leave the operator
+                // hunting; this is the one message they get.
+                if template.config.iter().any(|c| &c.key == key) {
+                    return Err(AppError::BadRequest(format!(
+                        "'{key}' is no longer a credential on template '{}'; it is a \
+                         plain config value — move it from `credentials` to `config`",
+                        template.key
+                    )));
+                }
+                return Err(AppError::BadRequest(format!(
+                    "unknown credential '{key}'; template '{}' declares: {}",
+                    template.key,
+                    if slot_keys.is_empty() {
+                        "none".to_string()
+                    } else {
+                        slot_keys.join(", ")
+                    }
+                )));
+            }
+            if value.trim().is_empty() {
+                return Err(AppError::BadRequest(format!(
+                    "credential '{key}' must name a secret; omit the key to unbind it"
+                )));
+            }
+            map.insert(key.clone(), value.clone());
+        }
+    }
+
+    let legacy = legacy_secret_name.filter(|s| !s.is_empty());
+    if let Some(legacy) = legacy {
+        match instance_slots.as_slice() {
+            [] => {} // MCP bearer / legacy scalar-only template: stays scalar.
+            [sole] => match map.get(sole) {
+                Some(bound) if bound != legacy => {
+                    return Err(AppError::BadRequest(format!(
+                        "secret_name '{legacy}' conflicts with credentials['{sole}'] = '{bound}'; \
+                         pass one or the other"
+                    )));
+                }
+                _ => {
+                    map.insert(sole.clone(), legacy.to_string());
+                }
+            },
+            _ => {
+                return Err(AppError::BadRequest(format!(
+                    "template '{}' declares several instance credentials ({}); \
+                     bind them via `credentials` instead of `secret_name`",
+                    template.key,
+                    instance_slots.join(", ")
+                )));
+            }
+        }
+    }
+
+    // Dual-write the scalar: mirror the sole instance-source slot's binding
+    // (whatever provided it), else preserve a scalar-only legacy value.
+    let secret_name = match instance_slots.as_slice() {
+        [sole] => map.get(sole).cloned(),
+        _ => legacy.map(str::to_string),
+    };
+    Ok((map, secret_name))
+}
 
 pub fn row_to_summary(
     row: ServiceInstanceRow,
@@ -825,6 +1106,8 @@ pub fn row_to_summary(
         owner_identity_id: row.owner_identity_id,
         connection_id: row.connection_id,
         secret_name: row.secret_name,
+        credentials: row.credentials.0,
+        config: row.config.0,
         url: row.url,
         use_default_connection: row.use_default_connection,
         groups,
@@ -843,19 +1126,22 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
         template_id: row.template_id,
         connection_id: row.connection_id,
         secret_name: row.secret_name,
+        credentials: row.credentials.0,
+        config: row.config.0,
         url: row.url,
         use_default_connection: row.use_default_connection,
         status: row.status,
         is_system: row.is_system,
         created_at: fmt_time(row.created_at),
         updated_at: fmt_time(row.updated_at),
+        discovered_at: row.discovered_at.map(fmt_time),
         credentials_status: None,
         connect: None,
     }
 }
 
 /// Pull the OAuth provider declared on a template's auth schemes, if any.
-/// Returns `None` for templates that don't declare an OAuth auth (api-key
+/// Returns `None` for templates that don't declare an OAuth auth (secret-based
 /// only, MCP bearer only, no auth, etc.) — in which case the auto-connect
 /// orchestration in `kernel_create_service` is a no-op.
 pub(crate) fn template_oauth_provider(def: &ServiceDefinition) -> Option<&str> {
@@ -897,7 +1183,9 @@ fn template_action_scopes(def: &ServiceDefinition) -> Vec<String> {
     scopes.into_iter().collect()
 }
 
-/// Resolve the [`ServiceDefinition`] for a template key across user/org/global tiers.
+/// Resolve the [`ServiceDefinition`] for a template key through the
+/// layered-template fold (user/org/global tiers, derived layers folded over
+/// their base). Thin wrapper over the shared resolver.
 pub async fn resolve_template_definition(
     db: &sqlx::PgPool,
     registry: &overslash_core::registry::ServiceRegistry,
@@ -905,29 +1193,8 @@ pub async fn resolve_template_definition(
     identity_id: Option<Uuid>,
     key: &str,
 ) -> Result<ServiceDefinition, AppError> {
-    if let Some(identity_id) = identity_id {
-        if let Some(t) = service_template::get_by_key(db, org_id, Some(identity_id), key).await? {
-            return compile_row(&t);
-        }
-    }
-    if let Some(t) = service_template::get_by_key(db, org_id, None, key).await? {
-        return compile_row(&t);
-    }
-    registry
-        .get(key)
-        .cloned()
-        .ok_or_else(|| AppError::NotFound(format!("template '{key}' not found")))
-}
-
-fn compile_row(t: &service_template::ServiceTemplateRow) -> Result<ServiceDefinition, AppError> {
-    overslash_core::openapi::compile_service(&t.openapi)
-        .map(|(def, _)| def)
-        .map_err(|errors| {
-            AppError::Internal(format!(
-                "stored openapi for '{}' failed to compile: {:?}",
-                t.key, errors
-            ))
-        })
+    crate::services::template_resolve::resolve_definition(db, registry, org_id, identity_id, key)
+        .await
 }
 
 /// Determine the template source tier and optional DB template id for a given key.
@@ -974,7 +1241,12 @@ pub async fn compute_credentials_status(
         None => ScopeKnowledge::NoConnection,
         Some(opt) => scope_knowledge(opt.as_deref()),
     };
-    derive_credentials_status(&template, scopes, row.secret_name.as_deref())
+    derive_credentials_status(
+        &template,
+        scopes,
+        &row.credentials,
+        row.secret_name.as_deref(),
+    )
 }
 
 /// Granted scopes of the connection the *execution* path would actually use.
@@ -1094,12 +1366,13 @@ pub fn action_scope_coverage(
     }
 }
 
-/// Pure classifier: takes a template + scope knowledge + secret name and
-/// returns a [`CredentialsStatus`] or `None` when the template has no auth
-/// scheme to evaluate.
+/// Pure classifier: takes a template + scope knowledge + the instance's
+/// credential bindings and returns a [`CredentialsStatus`] or `None` when the
+/// template has no auth scheme to evaluate.
 pub fn derive_credentials_status(
     template: &ServiceDefinition,
     scopes: ScopeKnowledge<'_>,
+    credentials: &CredentialsMap,
     secret_name: Option<&str>,
 ) -> Option<CredentialsStatus> {
     // An OAuth MCP server (mcp.auth kind: oauth) needs the same connection
@@ -1113,10 +1386,43 @@ pub fn derive_credentials_status(
             .auth
             .iter()
             .any(|a| matches!(a, ServiceAuth::OAuth { .. }));
-    let has_api_key = template
+    let has_secret = template
         .auth
         .iter()
-        .any(|a| matches!(a, ServiceAuth::ApiKey { .. }));
+        .any(|a| matches!(a, ServiceAuth::Secret { .. }));
+    // A required credential slot is unbound when the execution-time resolution
+    // chain (`credentials[slot]` → legacy `secret_name` for instance-source
+    // → fixed `default_secret_name` for org-source) yields no name. Mirrors
+    // `resolve_instance_auth`; whether the named secret actually exists in
+    // the vault is a send-time concern a pure classifier can't check. In
+    // particular a template whose slots are all org-source needs no instance
+    // binding at all — it must NOT report NeedsAuthentication just because the
+    // instance's scalar `secret_name` is empty.
+    //
+    // Per *slot*, not per scheme: a header joined from a username and a
+    // password is only bound once both halves are.
+    // Counted over ALL instance-source slots, including the unkeyed one a
+    // programmatically-built template carries — the scalar alias stood for
+    // that credential too, so excluding it would report every such instance
+    // unbound.
+    let single_instance_slot = template
+        .all_slots()
+        .iter()
+        .filter(|s| s.source == SecretSource::Instance)
+        .count()
+        <= 1;
+    let secret_unbound = template.all_slots().into_iter().any(|slot| {
+        !slot.optional
+            && credentials.get(&slot.key).is_none_or(|n| n.is_empty())
+            && match slot.source {
+                // The scalar alias only ever stood for a single credential, so
+                // it cannot vouch for one half of a composed one.
+                SecretSource::Instance => {
+                    !single_instance_slot || secret_name.is_none() || secret_name == Some("")
+                }
+                SecretSource::Org => slot.default_secret_name.is_empty(),
+            }
+    });
     let mcp_bearer = matches!(
         template.mcp.as_ref().map(|m| &m.auth),
         Some(McpAuth::Bearer { .. })
@@ -1131,8 +1437,10 @@ pub fn derive_credentials_status(
             if has_oauth {
                 return Some(CredentialsStatus::NeedsAuthentication);
             }
-            if has_api_key || mcp_bearer {
-                return Some(if no_secret {
+            if has_secret || mcp_bearer {
+                let missing =
+                    (has_secret && secret_unbound) || (!has_secret && mcp_bearer && no_secret);
+                return Some(if missing {
                     CredentialsStatus::NeedsAuthentication
                 } else {
                     CredentialsStatus::Ok
@@ -1204,6 +1512,8 @@ mod tests {
 
     fn mcp_bearer_template(default_secret: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            secrets: Vec::new(),
+            config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1220,11 +1530,14 @@ mod tests {
                 },
                 autodiscover: false,
             }),
+            instance_defaults: None,
         }
     }
 
     fn mcp_oauth_template(provider: &str, scopes: &[&str]) -> ServiceDefinition {
         ServiceDefinition {
+            secrets: Vec::new(),
+            config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1244,6 +1557,7 @@ mod tests {
                 },
                 autodiscover: false,
             }),
+            instance_defaults: None,
         }
     }
 
@@ -1265,38 +1579,61 @@ mod tests {
         let def = mcp_oauth_template("slack", &["chat:write", "channels:read"]);
         // No connection → must connect.
         assert_eq!(
-            derive_credentials_status(&def, ScopeKnowledge::NoConnection, None),
+            derive_credentials_status(
+                &def,
+                ScopeKnowledge::NoConnection,
+                &CredentialsMap::new(),
+                None
+            ),
             Some(CredentialsStatus::NeedsAuthentication)
         );
         // Connection covers every mcp scope → Ok.
         let full = ["chat:write".to_string(), "channels:read".to_string()];
         assert_eq!(
-            derive_credentials_status(&def, ScopeKnowledge::Known(&full), None),
+            derive_credentials_status(
+                &def,
+                ScopeKnowledge::Known(&full),
+                &CredentialsMap::new(),
+                None
+            ),
             Some(CredentialsStatus::Ok)
         );
         // Connection missing a scope → NeedsReconnect (not a false Ok from the
         // per-action loop, which is empty for MCP tools).
         let partial = ["channels:read".to_string()];
         assert_eq!(
-            derive_credentials_status(&def, ScopeKnowledge::Known(&partial), None),
+            derive_credentials_status(
+                &def,
+                ScopeKnowledge::Known(&partial),
+                &CredentialsMap::new(),
+                None
+            ),
             Some(CredentialsStatus::NeedsReconnect)
         );
         // Unknown granted scopes → benefit of the doubt (Ok), matching the gate.
         assert_eq!(
-            derive_credentials_status(&def, ScopeKnowledge::Unknown, None),
+            derive_credentials_status(&def, ScopeKnowledge::Unknown, &CredentialsMap::new(), None),
             Some(CredentialsStatus::Ok)
         );
     }
 
-    fn api_key_template() -> ServiceDefinition {
+    fn secret_template() -> ServiceDefinition {
         ServiceDefinition {
+            secrets: Vec::new(),
+            config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
             hosts: vec![],
             category: None,
             hidden: false,
-            auth: vec![ServiceAuth::ApiKey {
+            auth: vec![ServiceAuth::Secret {
+                template: None,
+                slots: Vec::new(),
+                config_keys: Vec::new(),
+                scheme: String::new(),
+                label: String::new(),
+                description: String::new(),
                 default_secret_name: "default".into(),
                 injection: TokenInjection {
                     inject_as: "header".into(),
@@ -1304,10 +1641,13 @@ mod tests {
                     query_param: None,
                     prefix: Some("Bearer ".into()),
                 },
+                secret_source: overslash_core::types::SecretSource::Instance,
+                optional: false,
             }],
             actions: HashMap::new(),
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         }
     }
 
@@ -1320,10 +1660,11 @@ mod tests {
                     method: "GET".into(),
                     path: "/".into(),
                     description: String::new(),
+                    summary: None,
                     risk: Risk::Read,
                     response_type: None,
                     params: HashMap::new(),
-                    scope_param: None,
+                    scope_param: Default::default(),
                     required_scopes: required.iter().map(|s| s.to_string()).collect(),
                     permission: None,
                     disclose: Vec::new(),
@@ -1331,10 +1672,13 @@ mod tests {
                     mcp_tool: None,
                     output_schema: None,
                     disabled: false,
+                    request_body: None,
                 },
             );
         }
         ServiceDefinition {
+            secrets: Vec::new(),
+            config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1354,6 +1698,7 @@ mod tests {
             actions: map,
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         }
     }
 
@@ -1365,7 +1710,12 @@ mod tests {
     fn needs_authentication_when_oauth_template_has_no_connection() {
         let tpl = oauth_template(vec![("a", vec!["s1"])]);
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, None),
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::NoConnection,
+                &CredentialsMap::new(),
+                None
+            ),
             Some(CredentialsStatus::NeedsAuthentication)
         );
     }
@@ -1373,6 +1723,8 @@ mod tests {
     #[test]
     fn none_when_template_has_no_auth_and_no_connection() {
         let tpl = ServiceDefinition {
+            secrets: Vec::new(),
+            config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
             description: None,
@@ -1383,8 +1735,17 @@ mod tests {
             actions: HashMap::new(),
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         };
-        assert!(derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, None).is_none());
+        assert!(
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::NoConnection,
+                &CredentialsMap::new(),
+                None
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1392,7 +1753,12 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
         let granted = scopes(&["s1", "s2"]);
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::Known(&granted),
+                &CredentialsMap::new(),
+                None
+            ),
             Some(CredentialsStatus::Ok)
         );
     }
@@ -1402,7 +1768,12 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec![]), ("b", vec![])]);
         let granted = scopes(&[]);
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::Known(&granted),
+                &CredentialsMap::new(),
+                None
+            ),
             Some(CredentialsStatus::Ok)
         );
     }
@@ -1414,7 +1785,7 @@ mod tests {
         // the doubt.
         let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::Unknown, None),
+            derive_credentials_status(&tpl, ScopeKnowledge::Unknown, &CredentialsMap::new(), None),
             Some(CredentialsStatus::Ok)
         );
     }
@@ -1424,7 +1795,12 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
         let granted = scopes(&["s1"]);
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::Known(&granted),
+                &CredentialsMap::new(),
+                None
+            ),
             Some(CredentialsStatus::PartiallyDegraded)
         );
     }
@@ -1434,7 +1810,12 @@ mod tests {
         let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
         let granted = scopes(&["other"]);
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::Known(&granted), None),
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::Known(&granted),
+                &CredentialsMap::new(),
+                None
+            ),
             Some(CredentialsStatus::NeedsReconnect)
         );
     }
@@ -1446,6 +1827,7 @@ mod tests {
             derive_credentials_status(
                 &tpl,
                 ScopeKnowledge::NoConnection,
+                &CredentialsMap::new(),
                 Some("whatsapp_mcp_token")
             ),
             Some(CredentialsStatus::Ok)
@@ -1456,22 +1838,160 @@ mod tests {
     fn needs_authentication_when_mcp_bearer_has_no_secret_and_no_connection() {
         let tpl = mcp_bearer_template(None);
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, None),
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::NoConnection,
+                &CredentialsMap::new(),
+                None
+            ),
             Some(CredentialsStatus::NeedsAuthentication)
         );
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, Some("")),
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::NoConnection,
+                &CredentialsMap::new(),
+                Some("")
+            ),
             Some(CredentialsStatus::NeedsAuthentication)
         );
     }
 
     #[test]
-    fn ok_when_api_key_template_has_secret_and_no_connection() {
-        let tpl = api_key_template();
+    fn ok_when_secret_template_has_secret_and_no_connection() {
+        let tpl = secret_template();
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, Some("my_api_key")),
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::NoConnection,
+                &CredentialsMap::new(),
+                Some("my_api_key")
+            ),
             Some(CredentialsStatus::Ok)
         );
+    }
+
+    /// email.yaml-shaped auth: an optional org-source `gateway` slot plus a
+    /// required instance-source `mailbox` slot.
+    fn dual_scheme_template() -> ServiceDefinition {
+        let mut tpl = secret_template();
+        let injection = TokenInjection {
+            inject_as: "header".into(),
+            header_name: Some("Authorization".into()),
+            query_param: None,
+            prefix: Some("Bearer ".into()),
+        };
+        tpl.auth = vec![
+            ServiceAuth::Secret {
+                template: None,
+                slots: Vec::new(),
+                config_keys: Vec::new(),
+                scheme: "gateway".into(),
+                label: String::new(),
+                description: String::new(),
+                default_secret_name: "overfwd_gateway_key".into(),
+                injection: injection.clone(),
+                secret_source: overslash_core::types::SecretSource::Org,
+                optional: true,
+            },
+            ServiceAuth::Secret {
+                template: None,
+                slots: Vec::new(),
+                config_keys: Vec::new(),
+                scheme: "mailbox".into(),
+                label: String::new(),
+                description: String::new(),
+                default_secret_name: "mailbox_credential".into(),
+                injection,
+                secret_source: overslash_core::types::SecretSource::Instance,
+                optional: false,
+            },
+        ];
+        tpl
+    }
+
+    /// A template whose only secret scheme resolves an org-vault default needs
+    /// no instance binding — the old `.any(ApiKey)` predicate (pre-rename) misreported it
+    /// as NeedsAuthentication forever.
+    #[test]
+    fn ok_when_all_secret_schemes_are_org_source_and_nothing_bound() {
+        let mut tpl = secret_template();
+        if let ServiceAuth::Secret { secret_source, .. } = &mut tpl.auth[0] {
+            *secret_source = overslash_core::types::SecretSource::Org;
+        }
+        assert_eq!(
+            derive_credentials_status(
+                &tpl,
+                ScopeKnowledge::NoConnection,
+                &CredentialsMap::new(),
+                None
+            ),
+            Some(CredentialsStatus::Ok)
+        );
+    }
+
+    #[test]
+    fn credentials_map_binding_satisfies_instance_scheme_without_scalar() {
+        let tpl = dual_scheme_template();
+        let bound = CredentialsMap::from([("mailbox".to_string(), "my_login".to_string())]);
+        assert_eq!(
+            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, &bound, None),
+            Some(CredentialsStatus::Ok)
+        );
+        // Binding only the optional org slot leaves the required mailbox slot
+        // empty → still needs authentication.
+        let gateway_only = CredentialsMap::from([("gateway".to_string(), "gw".to_string())]);
+        assert_eq!(
+            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, &gateway_only, None),
+            Some(CredentialsStatus::NeedsAuthentication)
+        );
+    }
+
+    // ── reconcile_credentials ────────────────────────────────────────
+
+    #[test]
+    fn reconcile_rejects_unknown_scheme_and_empty_value() {
+        let tpl = dual_scheme_template();
+        let unknown = CredentialsMap::from([("gatway".to_string(), "x".to_string())]);
+        assert!(reconcile_credentials(&tpl, Some(&unknown), None).is_err());
+        let blank = CredentialsMap::from([("mailbox".to_string(), "  ".to_string())]);
+        assert!(reconcile_credentials(&tpl, Some(&blank), None).is_err());
+    }
+
+    #[test]
+    fn reconcile_folds_legacy_scalar_into_sole_instance_slot_and_mirrors_it() {
+        let tpl = dual_scheme_template();
+        let (map, scalar) = reconcile_credentials(&tpl, None, Some("my_login")).unwrap();
+        assert_eq!(map.get("mailbox").map(String::as_str), Some("my_login"));
+        assert_eq!(scalar.as_deref(), Some("my_login"));
+        // Map binding wins the mirror when both agree; a disagreement is a 400.
+        let explicit = CredentialsMap::from([("mailbox".to_string(), "my_login".to_string())]);
+        assert!(reconcile_credentials(&tpl, Some(&explicit), Some("my_login")).is_ok());
+        assert!(reconcile_credentials(&tpl, Some(&explicit), Some("other")).is_err());
+    }
+
+    #[test]
+    fn reconcile_rejects_scalar_alias_when_several_instance_slots_exist() {
+        let mut tpl = dual_scheme_template();
+        if let ServiceAuth::Secret {
+            secret_source,
+            optional,
+            ..
+        } = &mut tpl.auth[0]
+        {
+            *secret_source = overslash_core::types::SecretSource::Instance;
+            *optional = false;
+        }
+        assert!(reconcile_credentials(&tpl, None, Some("ambiguous")).is_err());
+        // …but per-scheme bindings work, and no scalar is mirrored (it would
+        // be ambiguous for old readers).
+        let both = CredentialsMap::from([
+            ("gateway".to_string(), "gw".to_string()),
+            ("mailbox".to_string(), "mb".to_string()),
+        ]);
+        let (map, scalar) = reconcile_credentials(&tpl, Some(&both), None).unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(scalar, None);
     }
 
     fn scoped_action(required: &[&str]) -> ServiceAction {

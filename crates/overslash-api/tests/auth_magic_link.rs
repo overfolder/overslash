@@ -8,7 +8,7 @@
 //! claims a single-use, unexpired, hashed token and provisions/loads the
 //! Overslash-backed `email`-provider user via the shared root path.
 
-mod common;
+use crate::common;
 
 use serde_json::Value;
 use uuid::Uuid;

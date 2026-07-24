@@ -43,13 +43,14 @@ use crate::{
 };
 use overslash_core::{
     permissions::SuggestedTier,
-    types::{ActionResult, DisclosureField, McpAuth, SecretRef, service::Risk},
+    types::{ActionResult, DisclosureField, McpAuth, ScopeParams, SecretRef, service::Risk},
 };
 
 mod approval_detail;
 mod auth;
 mod call;
 mod errors;
+mod mcp_resolve;
 mod resolve;
 mod service_resolve;
 mod validate;
@@ -60,6 +61,11 @@ use validate::validate_action_impl;
 // Used by the approval-replay path to re-mint the OAuth credential that
 // replay payloads deliberately don't persist.
 pub(crate) use auth::{resolve_mcp_oauth_bearer, resolve_replay_auth_header};
+
+// Effective-MCP resolution shared with the instance-scoped resync route.
+pub(crate) use mcp_resolve::{
+    ResolvedMcp, overlay_instance_discovered_tools, resolve_effective_mcp,
+};
 
 /// Cap on the number of instance names we surface in `ServiceResolution`
 /// error payloads. Agents only need a handful to disambiguate; the full
@@ -442,8 +448,8 @@ enum CallResponse {
         // White-label integrations (Telegram/WhatsApp/web bots) render an
         // approval prompt straight off this envelope. The four fields below
         // mirror the matching `ApprovalResponse` fields the dashboard's
-        // `ApprovalResolver` renders from, so a caller can draw the same card
-        // without a second `GET /v1/approvals/{id}` round-trip.
+        // `ApprovalRow` / `ApprovalDetail` render from, so a caller can draw
+        // the same card without a second `GET /v1/approvals/{id}` round-trip.
         /// Labeled, human-readable slice of the resolved request extracted via
         /// the template's `x-overslash-disclose` filters. Omitted when the
         /// template declared none. Same shape as
@@ -543,7 +549,7 @@ struct ServiceScope {
     service_key: String,
     /// Empty string for the Service + HTTP verb shape (then `http_verb` is `Some`).
     action_key: String,
-    scope_param: Option<String>,
+    scope_param: ScopeParams,
     /// Service + HTTP verb (SPEC §8) — when `Some`, permission keys derive as
     /// `{service_key}:{METHOD}:{path}` instead of `{service_key}:{action_key}:{arg}`.
     http_verb: Option<HttpVerb>,
@@ -599,6 +605,52 @@ struct ActionMetadata {
 struct ResolvedModeC {
     svc: overslash_core::types::ServiceDefinition,
     instance: Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
+}
+
+/// Overlay the pinned `config` onto a call's args — the instance's own pins
+/// first, then any an org layer supplies as defaults.
+///
+/// Precedence falls out of `entry().or_insert_with()` and the pass ordering:
+///
+/// ```text
+/// caller arg  >  instance.config  >  layer instance_defaults.config  >  template default
+/// ```
+///
+/// (`apply_defaults` runs after this, so template defaults stay last.)
+///
+/// Only params the template marks `x-overslash-instance-config` are eligible —
+/// the API refuses to store anything else, and re-checking here means a
+/// template that *stops* declaring a param can't have a stale pinned value
+/// keep flowing into requests, from either source.
+///
+/// A key the caller already supplied is left alone: the pin is a default for
+/// the deployment, not an override of an explicit argument. Values are stored
+/// as strings; `coerce_args` (which runs just after this) casts them to the
+/// param's declared type, so a pinned `"993"` on an integer param behaves
+/// exactly like a caller-supplied `"993"`.
+fn apply_instance_config(
+    params: &std::collections::HashMap<String, overslash_core::types::ActionParam>,
+    resolved: Option<&ResolvedModeC>,
+    args: &mut std::collections::HashMap<String, serde_json::Value>,
+) {
+    let Some(resolved) = resolved else { return };
+    let instance_config = resolved.instance.as_ref().map(|i| &i.config.0);
+    let layer_config = resolved
+        .svc
+        .instance_defaults
+        .as_ref()
+        .map(|d| &d.config)
+        .filter(|c| !c.is_empty());
+
+    for source in [instance_config, layer_config].into_iter().flatten() {
+        for (key, value) in source.iter() {
+            if !params.get(key).is_some_and(|p| p.instance_config) {
+                continue;
+            }
+            args.entry(key.clone())
+                .or_insert_with(|| serde_json::Value::String(value.clone()));
+        }
+    }
 }
 
 /// Classify an OAuth resolver error so the action handler can respond

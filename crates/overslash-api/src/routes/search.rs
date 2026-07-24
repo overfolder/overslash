@@ -28,7 +28,7 @@ use overslash_db::scopes::{OrgScope, UserScope};
 
 use crate::{
     AppState,
-    error::{AppError, Result},
+    error::Result,
     extractors::{AuthContext, ReqExt},
     services::group_ceiling,
     services::platform_services::{
@@ -101,11 +101,11 @@ struct SearchResult {
     service_display_name: String,
     /// OAuth account identifier sourced from `connections.account_email`
     /// (e.g. `alice@gmail.com`). Hoisted to the top level since each row is
-    /// already a single instance. Absent for api-key rows and for OAuth
+    /// already a single instance. Absent for secret-based rows and for OAuth
     /// connections whose userinfo lookup didn't return an email.
     #[serde(skip_serializing_if = "Option::is_none")]
     account_email: Option<String>,
-    /// Variable name of the secret backing an api-key instance — the label
+    /// Variable name of the secret backing a secret-based instance — the label
     /// only, never the value. Hoisted to the top level since each row is a
     /// single instance. Absent for OAuth rows.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,11 +144,18 @@ struct SearchResult {
 
 #[derive(Serialize, Clone)]
 struct AuthStatus {
-    /// `"oauth"` or `"api_key"`. Mirrors `ServiceAuth` so agents don't have
+    /// `"oauth"` or `"secret"`. Mirrors `ServiceAuth` so agents don't have
     /// to crack open the template themselves.
+    ///
+    /// This string is hand-built, not derived from `ServiceAuth`'s serde
+    /// tag, so `ServiceAuth::Secret`'s `alias = "api_key"` does NOT apply:
+    /// it only rescues *inbound* parsing. Outbound, this field emits
+    /// `"secret"` where it used to emit `"api_key"` — a deliberate break for
+    /// any client branching on the old discriminant. Agents read the current
+    /// vocabulary from SKILL.md, and the dashboard ships with the API.
     #[serde(rename = "type")]
     kind: String,
-    /// OAuth provider key when `kind == "oauth"`. Absent for api-key auth.
+    /// OAuth provider key when `kind == "oauth"`. Absent for secret-based auth.
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
     /// `true` when this row represents a configured instance the caller can
@@ -164,13 +171,17 @@ struct InstanceRow {
     name: String,
     /// OAuth account identifier (when applicable).
     account_email: Option<String>,
-    /// Secret-name label for api-key instances (when applicable).
+    /// Secret-name label for secret-based instances (when applicable).
     secret_name: Option<String>,
     /// Granted-scope knowledge of the connection the exec path would use for
     /// this instance (explicit binding, else owner-provider auto-resolve),
     /// resolved the same way `list_services` derives `credentials_status`.
     /// Drives per-action `scope_coverage`. See [`InstanceScopes`].
     scopes: InstanceScopes,
+    /// This instance's MCP resync result, if any. Overlaid on the template's
+    /// authored tools so tools discovered on the instance become searchable —
+    /// visibility-scoped, since only instances the caller can see reach here.
+    discovered_tools: Option<Vec<serde_json::Value>>,
 }
 
 /// Owned mirror of [`ScopeKnowledge`] carried per instance from
@@ -452,7 +463,7 @@ async fn search(
                 // tie-break sort below stabilises by service name.
                 for inst in &connected_instances {
                     // Per-action coverage, but only for actions that actually
-                    // declare scopes (OAuth-secured). Unscoped/api-key actions
+                    // declare scopes (OAuth-secured). Unscoped/secret-based actions
                     // leave the fields absent.
                     let (scope_coverage, missing_scopes) = if action.required_scopes.is_empty() {
                         (None, Vec::new())
@@ -477,6 +488,69 @@ async fn search(
                         missing_scopes,
                     });
                 }
+            }
+        }
+
+        // Second pass: tools discovered on an *instance* (via MCP resync) that
+        // the template doesn't declare. Only connected/visible instances reach
+        // here, so a caller without access to an instance never sees its
+        // instance-only tools. Instance-only tools have no template-scoped
+        // embedding row, so they score on the keyword/fuzzy path.
+        for inst in &connected_instances {
+            let Some(discovered) = inst.discovered_tools.as_ref() else {
+                continue;
+            };
+            let mut inst_def = t.def.clone();
+            // Calls the core overlay directly rather than the
+            // `overlay_instance_discovered_tools` row wrapper: search carries a
+            // projected `InstanceRow`, not a `ServiceInstanceRow`.
+            overslash_core::openapi::overlay_discovered_tools(&mut inst_def, discovered);
+            for (action_key, action) in inst_def.actions.iter() {
+                if t.def.actions.contains_key(action_key) {
+                    // Already scored + emitted in the template loop above.
+                    continue;
+                }
+                let cand = Candidate {
+                    service: &inst_def,
+                    action_key,
+                    action,
+                };
+                let kw = keyword_fuzzy_score(q, &cand);
+                let emb = emb_scores
+                    .get(&(t.tier.to_string(), t.def.key.clone(), action_key.clone()))
+                    .copied()
+                    .unwrap_or(0.0);
+                let raw = if emb > 0.0 {
+                    KEYWORD_WEIGHT * kw + EMBEDDING_WEIGHT * emb
+                } else {
+                    kw
+                };
+                let final_score = apply_post_bonuses(raw, connected, action.risk);
+                if final_score < MIN_SCORE {
+                    continue;
+                }
+                let (scope_coverage, missing_scopes) = if action.required_scopes.is_empty() {
+                    (None, Vec::new())
+                } else {
+                    let (c, m) = action_scope_coverage(action, inst.scopes.knowledge());
+                    (Some(c), m)
+                };
+                scored.push(SearchResult {
+                    service: Some(inst.name.clone()),
+                    template: t.def.key.clone(),
+                    service_display_name: t.def.display_name.clone(),
+                    account_email: inst.account_email.clone(),
+                    secret_name: inst.secret_name.clone(),
+                    action: Some(action_key.clone()),
+                    description: Some(action.description.clone()),
+                    risk: Some(action.risk),
+                    tier: t.tier.into(),
+                    auth: auth_status.clone(),
+                    score: Some(final_score),
+                    setup_required: None,
+                    scope_coverage,
+                    missing_scopes,
+                });
             }
         }
     }
@@ -544,13 +618,16 @@ async fn collect_visible_templates(
         if is_user_tier && !user_templates_allowed {
             continue;
         }
-        let (def, _warnings) =
-            overslash_core::openapi::compile_service(&t.openapi).map_err(|errors| {
-                AppError::Internal(format!(
-                    "template '{}' failed to compile: {errors:?}",
-                    t.key
-                ))
-            })?;
+        // Resolve through the layered-template fold so a derived layer's masked
+        // surface (and hidden actions) are what search advertises.
+        let def = crate::services::template_resolve::resolve_definition(
+            state.db(ext),
+            &state.registry,
+            auth.org_id,
+            auth.identity_id,
+            &t.key,
+        )
+        .await?;
         templates.push(TemplateCandidate {
             tier: if is_user_tier { "user" } else { "org" },
             def,
@@ -610,13 +687,33 @@ async fn collect_visible_templates(
         }
     }
 
+    // Templates that name an identity-bearing config var (`identity: true`),
+    // so a secret-based instance can report which account it speaks for.
+    let identity_key_by_template: HashMap<&str, &str> = templates
+        .iter()
+        .filter_map(|t| t.def.identity_config_key().map(|k| (t.def.key.as_str(), k)))
+        .collect();
+
     let mut instances_by_template: HashMap<String, Vec<InstanceRow>> = HashMap::new();
     for r in instances {
         if r.status != "active" {
             continue;
         }
         let bound_conn = r.connection_id.and_then(|id| connections_by_id.get(&id));
-        let account_email = bound_conn.and_then(|c| c.account_email.clone());
+        // A bound OAuth connection is authoritative — it is the account the
+        // call actually authenticates as. The config value is the fallback for
+        // secret-based instances, which have no connection to ask.
+        let account_email = bound_conn
+            .and_then(|c| c.account_email.clone())
+            .or_else(|| {
+                let key = identity_key_by_template.get(r.template_key.as_str())?;
+                r.config
+                    .0
+                    .get(*key)
+                    .map(String::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string)
+            });
         let scopes = if let Some(cid) = r.connection_id {
             match connections_by_id.get(&cid) {
                 Some(c) => InstanceScopes::from_recorded(c.scopes.as_deref()),
@@ -641,6 +738,7 @@ async fn collect_visible_templates(
                 account_email,
                 secret_name: r.secret_name,
                 scopes,
+                discovered_tools: r.discovered_tools.map(|j| j.0),
             });
     }
 
@@ -658,7 +756,7 @@ fn build_auth_status(def: &ServiceDefinition, connected: bool) -> AuthStatus {
     // the preferred one first — exactly how the dashboard displays them.
     let (kind, provider) = match def.auth.first() {
         Some(ServiceAuth::OAuth { provider, .. }) => ("oauth".into(), Some(provider.clone())),
-        Some(ServiceAuth::ApiKey { .. }) => ("api_key".into(), None),
+        Some(ServiceAuth::Secret { .. }) => ("secret".into(), None),
         None => ("none".into(), None),
     };
     AuthStatus {

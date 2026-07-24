@@ -42,6 +42,10 @@ struct PermissionResponse {
     id: Uuid,
     identity_id: Uuid,
     action_pattern: String,
+    /// The pattern as a sentence ("Send on any recipient at acme.com"), so a
+    /// rule list reads without decoding key syntax. Rendered from the same
+    /// `overslash-core` describer that writes an approval's suggested tiers.
+    description: String,
     effect: String,
     expires_at: Option<String>,
     created_at: String,
@@ -80,6 +84,7 @@ async fn create_permission(
     Ok(Json(PermissionResponse {
         id: row.id,
         identity_id: row.identity_id,
+        description: overslash_core::permissions::describe_pattern(&row.action_pattern),
         action_pattern: row.action_pattern,
         effect: row.effect,
         expires_at: row.expires_at.map(fmt_time),
@@ -122,6 +127,7 @@ async fn list_permissions(
             .map(|r| PermissionResponse {
                 id: r.id,
                 identity_id: r.identity_id,
+                description: overslash_core::permissions::describe_pattern(&r.action_pattern),
                 action_pattern: r.action_pattern,
                 effect: r.effect,
                 expires_at: r.expires_at.map(fmt_time),

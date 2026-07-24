@@ -59,7 +59,31 @@ async function ensureAgent(name, parent) {
 	}
 }
 
+// Seed a spread of permission-rule shapes so the detail panel's rule table
+// shows the human-readable descriptions rendered server-side (the sentence on
+// top, the raw key underneath). Idempotent: skip any pattern already present.
+async function ensureRules(agent, patterns) {
+	const existing = await api(session, `/v1/permissions?identity_id=${agent.id}`, {
+		expect: [200]
+	});
+	const have = new Set(existing.map((r) => r.action_pattern));
+	for (const action_pattern of patterns) {
+		if (have.has(action_pattern)) continue;
+		await api(session, '/v1/permissions', {
+			method: 'POST',
+			body: { identity_id: agent.id, action_pattern, effect: 'allow' },
+			expect: [200, 201]
+		});
+	}
+}
+
 const research = await ensureAgent('research-agent');
+await ensureRules(research, [
+	'github:*:*',
+	'github:create_pull_request:*',
+	'email:send:recipient=*@acme.com',
+	'http:POST:api.stripe.com/v1/**'
+]);
 const code = await ensureAgent('code-agent');
 const _githubWorker = await ensureAgent('github-worker', code);
 const _deployWorker = await ensureAgent('deploy-worker', code);

@@ -1,0 +1,129 @@
+//! Single integration-test binary for `overslash-api`.
+//!
+//! Every file in this directory is a module of this one binary rather than a
+//! test target of its own. With 100+ files, per-file targets meant 100+ link
+//! steps that each pulled in the whole api dependency graph — under coverage
+//! instrumentation that was ~3.5 min of the CI job against ~30 s of actual
+//! test execution. One binary links once.
+//!
+//! nextest still runs every test in its own process, so test isolation is
+//! unchanged. To add a test file, drop it in `tests/` and add a `mod` line
+//! below (`autotests = false` in Cargo.toml means cargo will not pick it up
+//! on its own).
+
+mod common;
+
+mod actions_reauth;
+mod actions_reauth_return_url;
+mod actions_validate;
+mod admin_cross_user_call;
+mod approval_disclosure;
+mod approval_token_leak;
+mod approvals_cascade;
+mod approvals_remember_keys;
+mod audit;
+mod auth_login;
+mod auth_magic_link;
+mod auto_call_on_approve;
+mod billing;
+mod byoc_self_service;
+mod compact_response;
+mod connection_credential_source;
+mod connection_import;
+mod connection_owner_migration;
+mod connection_webhooks;
+mod connections_admin_view;
+mod cross_tenant_isolation;
+mod cross_user_group_reauth;
+mod dashboard_only_endpoints;
+mod dev_e2e_seed;
+mod email_overfwd;
+mod email_smoke;
+mod eventbrite;
+mod free_unlimited;
+mod github;
+mod gmail;
+mod google_calendar;
+mod google_drive;
+mod google_keep;
+mod google_tasks;
+mod groups;
+mod headless_oauth;
+mod health;
+mod hubspot;
+mod identity_archive;
+mod identity_hierarchy;
+mod identity_idle_cleanup;
+mod identity_remove_user;
+mod identity_repo;
+mod impersonation;
+mod inherit_permissions;
+mod instance_admin;
+mod instance_visibility_consistency;
+mod integration;
+mod invite_adoption;
+mod key_rotation;
+mod large_file;
+mod layered_templates;
+mod linkedin;
+mod mcp_approve_split;
+mod mcp_elicitation;
+mod mcp_external;
+mod mcp_external_e2e;
+mod mcp_inbox;
+mod mcp_oauth;
+mod mcp_replay;
+mod mcp_require_risk;
+mod mcp_typed_errors;
+mod multi_org;
+mod multi_org_backfill;
+mod myself_groups;
+mod notion;
+mod oauth_connections_ux;
+mod oauth_default_identity_scopes;
+mod oauth_mcp_org_scoping;
+mod oauth_preview_handoff;
+mod oauth_return_url;
+mod oauth_upstream;
+mod oauth_x;
+mod oidc_auth;
+mod on_behalf_of;
+mod org_acl;
+mod org_invite_email;
+mod org_member_role;
+mod org_oauth_credentials;
+mod org_service_keys;
+mod outlook;
+mod overslash_managed_signin;
+mod owner_scoped_connections;
+mod partial_grant;
+mod permission_chain_helpers;
+mod permission_chain_walk;
+mod platform_dispatch;
+mod platform_replay;
+mod preferences;
+mod rate_limits;
+mod request_secret_kernel;
+mod response_filter;
+mod search;
+mod secret_requests;
+mod secrets_chain_visibility;
+mod secrets_dashboard;
+mod service_connection_cleanup;
+mod service_instances;
+mod service_pin_connection;
+mod services_admin_view;
+mod services_auto_connect;
+mod shared_router_isolation;
+mod short_url;
+mod slack;
+mod subdomain_oauth_as;
+mod template_validation;
+mod templates;
+mod templates_import;
+mod trial;
+mod upstream_metrics;
+mod version;
+mod webhook_digest;
+mod welcome_unsubscribe;
+mod whatsapp;

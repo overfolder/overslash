@@ -14,9 +14,10 @@ x-overslash-mcp:
   url: https://mcp.deepwiki.com/mcp
   auth:
     kind: none
-  # The tool list below is authored; run `POST /v1/templates/deepwiki/mcp/resync`
-  # to populate x-overslash-mcp.discovered_tools with the live tools/list response
-  # and have it merged on top of these entries.
+  # The tool list below is authored; run `POST /v1/services/{id}/mcp/resync`
+  # against an instance of this template to populate that instance's
+  # discovered_tools with the live tools/list response, which is then overlaid
+  # on top of these entries at read time.
   autodiscover: true
   tools:
     - name: read_wiki_structure

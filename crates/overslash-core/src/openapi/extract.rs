@@ -18,11 +18,51 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 
+use crate::credential_template::TemplateReads;
 use crate::template_validation::ValidationIssue;
 use crate::types::{
-    ActionParam, DisclosureField, McpAuth, McpSpec, ParamLocation, ParamResolver, Risk,
-    ServiceAction, ServiceAuth, TokenInjection,
+    ActionParam, ConfigVar, CredentialTemplate, DisclosureField, McpAuth, McpSpec, ParamLocation,
+    ParamResolver, RequestBodySpec, Risk, ScopeParams, SecretSlot, ServiceAction, ServiceAuth,
+    ServiceDefinition, TokenInjection,
 };
+
+/// Lower `x-overslash-scope_param` — a param name, a `param:label` pair, or a
+/// list of either — into [`ScopeParams`].
+///
+/// Absent is the common case and means "unscoped" (`{service}:{action}:*`).
+/// A shape that is neither a string nor a list of strings is an **error**
+/// rather than a silent drop: dropping it would quietly widen the action's
+/// permission key to the wildcard, which is the opposite of what the author
+/// asked for.
+fn parse_scope_params(raw: Option<&Value>, base: &str) -> Result<ScopeParams, ValidationIssue> {
+    let invalid = |msg: String| {
+        ValidationIssue::new(
+            "invalid_scope_param",
+            msg,
+            format!("{base}.x-overslash-scope_param"),
+        )
+    };
+    let entries: Vec<&str> = match raw {
+        None | Some(Value::Null) => return Ok(ScopeParams::default()),
+        Some(Value::String(s)) => vec![s.as_str()],
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| {
+                v.as_str().ok_or_else(|| {
+                    invalid(format!(
+                        "x-overslash-scope_param list entries must be strings (got {v})"
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?,
+        Some(other) => {
+            return Err(invalid(format!(
+                "x-overslash-scope_param must be a param name or a list of them (got {other})"
+            )));
+        }
+    };
+    ScopeParams::parse_list(entries).map_err(invalid)
+}
 
 // ── servers → hosts ──────────────────────────────────────────────────
 
@@ -37,7 +77,7 @@ pub(super) fn extract_hosts(servers: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn url_to_host(url: &str) -> Option<String> {
+pub fn url_to_host(url: &str) -> Option<String> {
     let s = url.trim();
     let s = s
         .strip_prefix("https://")
@@ -53,17 +93,72 @@ pub(super) fn url_to_host(url: &str) -> Option<String> {
 
 // ── securitySchemes → Vec<ServiceAuth> ───────────────────────────────
 
+/// A template's whole credential model: what an operator fills in, and the
+/// injections that read it.
+pub(super) struct CompiledCredentials {
+    /// The injections — one per securityScheme.
+    pub auth: Vec<ServiceAuth>,
+    /// Vault secrets an instance binds.
+    pub secrets: Vec<SecretSlot>,
+    /// Non-secret values an instance sets.
+    pub config: Vec<ConfigVar>,
+}
+
+/// Compile `components.x-overslash-secrets` + `components.x-overslash-config` +
+/// `components.securitySchemes` into the credential model: the slots an
+/// operator binds, the non-secret values they set, and the injections that read
+/// both.
 pub(super) fn extract_auth(
     components: Option<&Value>,
-) -> Result<Vec<ServiceAuth>, Vec<ValidationIssue>> {
+) -> Result<CompiledCredentials, Vec<ValidationIssue>> {
     let mut out = Vec::new();
     let mut errors = Vec::new();
+
+    let mut slots = match extract_secret_slots(components) {
+        Ok(s) => s,
+        Err(mut es) => {
+            errors.append(&mut es);
+            Vec::new()
+        }
+    };
+    let config = match extract_config_vars(components) {
+        Ok(c) => c,
+        Err(mut es) => {
+            errors.append(&mut es);
+            Vec::new()
+        }
+    };
+    let declared: Vec<String> = slots.iter().map(|s| s.key.clone()).collect();
+    let declared_config: Vec<String> = config.iter().map(|c| c.key.clone()).collect();
+
+    // One key, one meaning. Declared in both blocks there is no answer to "is
+    // this value vaulted?", and the partition would silently pick config.
+    for key in &declared_config {
+        if declared.contains(key) {
+            errors.push(ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!(
+                    "`{key}` is declared as both a secret and a config value; \
+                     a template input is either vaulted or it is not"
+                ),
+                format!("components.x-overslash-config.{key}"),
+            ));
+        }
+    }
+
     let Some(schemes) = components
         .and_then(Value::as_object)
         .and_then(|c| c.get("securitySchemes"))
         .and_then(Value::as_object)
     else {
-        return Ok(out);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        return Ok(CompiledCredentials {
+            auth: out,
+            secrets: slots,
+            config,
+        });
     };
 
     // Deterministic order so tests/snapshots are stable.
@@ -81,11 +176,11 @@ pub(super) fn extract_auth(
                 Ok(a) => out.push(a),
                 Err(mut es) => errors.append(&mut es),
             },
-            "apiKey" => match extract_api_key(obj, &base) {
+            "apiKey" => match extract_api_key(obj, &base, name, &declared, &declared_config) {
                 Ok(a) => out.push(a),
                 Err(mut es) => errors.append(&mut es),
             },
-            "http" => match extract_http_auth(obj, &base) {
+            "http" => match extract_http_auth(obj, &base, name) {
                 Ok(a) => out.push(a),
                 Err(mut es) => errors.append(&mut es),
             },
@@ -97,11 +192,237 @@ pub(super) fn extract_auth(
         }
     }
 
+    // Every scheme implicitly declares a slot named after itself, carrying the
+    // scheme's own label/source/optional. That is the shape of a credential
+    // that needs just one secret, so those templates declare no secrets block.
+    for auth in &out {
+        if let ServiceAuth::Secret {
+            scheme,
+            label,
+            description,
+            default_secret_name,
+            slots: read,
+            secret_source,
+            optional,
+            ..
+        } = auth
+        {
+            if read.iter().any(|s| s == scheme) && !slots.iter().any(|s| &s.key == scheme) {
+                slots.push(SecretSlot {
+                    key: scheme.clone(),
+                    label: label.clone(),
+                    description: description.clone(),
+                    default_secret_name: default_secret_name.clone(),
+                    source: *secret_source,
+                    optional: *optional,
+                });
+            }
+        }
+    }
+
+    // A slot nothing reads is dead config: the dashboard would ask for a
+    // secret that can never reach a request.
+    let read: Vec<&str> = out
+        .iter()
+        .filter_map(|a| match a {
+            ServiceAuth::Secret { slots, .. } => Some(slots.iter().map(String::as_str)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    for slot in &slots {
+        if !read.contains(&slot.key.as_str()) {
+            errors.push(ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!(
+                    "secret `{}` is declared but no security scheme reads it",
+                    slot.key
+                ),
+                format!("components.x-overslash-secrets.{}", slot.key),
+            ));
+        }
+    }
+
+    // Same reasoning for config: a var nothing reads is a field on the instance
+    // form whose value can never reach a request.
+    let read_config: Vec<&str> = out
+        .iter()
+        .filter_map(|a| match a {
+            ServiceAuth::Secret { config_keys, .. } => Some(config_keys.iter().map(String::as_str)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    for var in &config {
+        if !read_config.contains(&var.key.as_str()) {
+            errors.push(ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!(
+                    "config `{}` is declared but no security scheme reads it",
+                    var.key
+                ),
+                format!("components.x-overslash-config.{}", var.key),
+            ));
+        }
+    }
+
+    slots.sort_by(|a, b| a.key.cmp(&b.key));
+
+    if errors.is_empty() {
+        Ok(CompiledCredentials {
+            auth: out,
+            secrets: slots,
+            config,
+        })
+    } else {
+        Err(errors)
+    }
+}
+
+/// Parse `components.x-overslash-config` — the non-secret per-instance values
+/// this template's credential expressions may read. Same declaration shape as
+/// the secrets block minus everything vault-specific (no source, no default
+/// secret name), because there is no vault entry behind one.
+fn extract_config_vars(components: Option<&Value>) -> Result<Vec<ConfigVar>, Vec<ValidationIssue>> {
+    let Some(map) = components
+        .and_then(Value::as_object)
+        .and_then(|c| c.get("x-overslash-config"))
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(map) = map.as_object() else {
+        return Err(vec![ValidationIssue::new(
+            "openapi_unsupported_construct",
+            "x-overslash-config must be a map of config key to declaration",
+            "components.x-overslash-config",
+        )]);
+    };
+
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort();
+    for key in keys {
+        let base = format!("components.x-overslash-config.{key}");
+        let Some(obj) = map[key].as_object() else {
+            errors.push(ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!("config `{key}` must be an object"),
+                base,
+            ));
+            continue;
+        };
+        let required = match obj.get("required") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(other) => {
+                errors.push(ValidationIssue::new(
+                    "openapi_unsupported_construct",
+                    format!("config `required` must be a boolean (got {other})"),
+                    format!("{base}.required"),
+                ));
+                continue;
+            }
+        };
+        let identity = match obj.get("identity") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(other) => {
+                errors.push(ValidationIssue::new(
+                    "openapi_unsupported_construct",
+                    format!("config `identity` must be a boolean (got {other})"),
+                    format!("{base}.identity"),
+                ));
+                continue;
+            }
+        };
+        out.push(ConfigVar {
+            key: key.clone(),
+            label: str_field(obj, "label"),
+            description: str_field(obj, "description"),
+            required,
+            identity,
+        });
+    }
+
     if errors.is_empty() {
         Ok(out)
     } else {
         Err(errors)
     }
+}
+
+/// Parse `components.x-overslash-secrets` — the credential slots this template
+/// needs, declared once and referenced by name from the schemes' templates.
+fn extract_secret_slots(
+    components: Option<&Value>,
+) -> Result<Vec<SecretSlot>, Vec<ValidationIssue>> {
+    let Some(map) = components
+        .and_then(Value::as_object)
+        .and_then(|c| c.get("x-overslash-secrets"))
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(map) = map.as_object() else {
+        return Err(vec![ValidationIssue::new(
+            "openapi_unsupported_construct",
+            "x-overslash-secrets must be a map of slot key to declaration",
+            "components.x-overslash-secrets",
+        )]);
+    };
+
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort();
+    for key in keys {
+        let base = format!("components.x-overslash-secrets.{key}");
+        let Some(obj) = map[key].as_object() else {
+            errors.push(ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!("secret `{key}` must be an object"),
+                base,
+            ));
+            continue;
+        };
+        let source = match obj.get("source").and_then(Value::as_str) {
+            Some("org") => crate::types::SecretSource::Org,
+            Some("instance") | None => crate::types::SecretSource::Instance,
+            Some(other) => {
+                errors.push(ValidationIssue::new(
+                    "openapi_unsupported_construct",
+                    format!("secret source must be `instance` or `org` (got {other:?})"),
+                    format!("{base}.source"),
+                ));
+                continue;
+            }
+        };
+        out.push(SecretSlot {
+            key: key.clone(),
+            label: str_field(obj, "label"),
+            description: str_field(obj, "description"),
+            default_secret_name: str_field(obj, "default_secret_name"),
+            source,
+            optional: obj
+                .get("optional")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        });
+    }
+
+    if errors.is_empty() {
+        Ok(out)
+    } else {
+        Err(errors)
+    }
+}
+
+fn str_field(obj: &Map<String, Value>, key: &str) -> String {
+    obj.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn extract_oauth2(
@@ -152,6 +473,13 @@ fn extract_oauth2(
 fn extract_api_key(
     obj: &Map<String, Value>,
     base: &str,
+    // The securitySchemes map key (`gateway`, `mailbox`, …) — NOT the scheme
+    // object's `name` field, which is the HTTP header/query-param name.
+    scheme_key: &str,
+    // Slot keys declared under `components.x-overslash-secrets`.
+    declared_slots: &[String],
+    // Config keys declared under `components.x-overslash-config`.
+    declared_config: &[String],
 ) -> Result<ServiceAuth, Vec<ValidationIssue>> {
     let default_secret_name = obj
         .get("x-overslash-default_secret_name")
@@ -162,15 +490,62 @@ fn extract_api_key(
     let inject_as = obj.get("in").and_then(Value::as_str).unwrap_or("header");
     let name = obj.get("name").and_then(Value::as_str).map(str::to_string);
 
+    // Predecessors of `x-overslash-template`. A live template in the wild
+    // still carrying them would silently lose its transform, so name the
+    // replacement rather than ignoring the key.
+    for (legacy, replacement) in [
+        ("x-overslash-prefix", r#""Bearer " + .SLOT"#),
+        ("x-overslash-encode", r#"(.SLOT | @base64)"#),
+    ] {
+        if obj.contains_key(legacy) {
+            return Err(vec![ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!(
+                    "{legacy} was replaced by x-overslash-template; express it as \
+                     `{{lang: jq, expr: '{replacement}'}}`"
+                ),
+                format!("{base}.{legacy}"),
+            )]);
+        }
+    }
+
+    let (template, reads) =
+        extract_template(obj, base, scheme_key, declared_slots, declared_config)?;
+    let TemplateReads {
+        slots,
+        config: config_keys,
+    } = reads;
+
+    let secret_source = match obj.get("x-overslash-secret_source").and_then(Value::as_str) {
+        Some("org") => crate::types::SecretSource::Org,
+        Some("instance") | None => crate::types::SecretSource::Instance,
+        Some(other) => {
+            return Err(vec![ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!("x-overslash-secret_source must be `instance` or `org` (got {other:?})"),
+                format!("{base}.x-overslash-secret_source"),
+            )]);
+        }
+    };
+
+    let optional = match obj.get("x-overslash-optional") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(other) => {
+            return Err(vec![ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!("x-overslash-optional must be a boolean (got {other})"),
+                format!("{base}.x-overslash-optional"),
+            )]);
+        }
+    };
+
     let injection = match inject_as {
         "header" => TokenInjection {
             inject_as: "header".into(),
             header_name: name,
             query_param: None,
-            prefix: obj
-                .get("x-overslash-prefix")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            prefix: None,
         },
         "query" => TokenInjection {
             inject_as: "query".into(),
@@ -187,15 +562,146 @@ fn extract_api_key(
         }
     };
 
-    Ok(ServiceAuth::ApiKey {
+    let label = match obj.get("x-overslash-label") {
+        None => String::new(),
+        Some(Value::String(s)) => s.trim().to_string(),
+        Some(other) => {
+            return Err(vec![ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!("x-overslash-label must be a string (got {other})"),
+                format!("{base}.x-overslash-label"),
+            )]);
+        }
+    };
+
+    Ok(ServiceAuth::Secret {
+        scheme: scheme_key.to_string(),
+        label,
+        description: scheme_description(obj),
         default_secret_name,
         injection,
+        template,
+        slots,
+        config_keys,
+        secret_source,
+        optional,
     })
+}
+
+/// Parse `x-overslash-template` and resolve the inputs it reads, split into
+/// vault slots and non-secret config keys.
+///
+/// Returns `(None, {slots: [scheme_key], config: []})` when absent: the
+/// credential is one secret injected verbatim, from the slot named after the
+/// scheme.
+fn extract_template(
+    obj: &Map<String, Value>,
+    base: &str,
+    scheme_key: &str,
+    declared_slots: &[String],
+    declared_config: &[String],
+) -> Result<(Option<CredentialTemplate>, TemplateReads), Vec<ValidationIssue>> {
+    let issue = |msg: String, path: String| {
+        vec![ValidationIssue::new(
+            "openapi_unsupported_construct",
+            msg,
+            path,
+        )]
+    };
+    let path = format!("{base}.x-overslash-template");
+
+    let Some(raw) = obj.get("x-overslash-template") else {
+        return Ok((
+            None,
+            TemplateReads {
+                slots: vec![scheme_key.to_string()],
+                config: Vec::new(),
+            },
+        ));
+    };
+    let Some(raw) = raw.as_object() else {
+        return Err(issue(
+            "x-overslash-template must be an object with `lang` and `expr`".into(),
+            path,
+        ));
+    };
+
+    match raw.get("lang").and_then(Value::as_str) {
+        Some("jq") => {}
+        Some(other) => {
+            return Err(issue(
+                format!("credential template lang must be `jq` (got {other:?})"),
+                format!("{path}.lang"),
+            ));
+        }
+        None => {
+            return Err(issue(
+                "credential template needs a `lang` (only `jq` today)".into(),
+                format!("{path}.lang"),
+            ));
+        }
+    }
+    let Some(expr) = raw.get("expr").and_then(Value::as_str) else {
+        return Err(issue(
+            "credential template needs an `expr` string".into(),
+            format!("{path}.expr"),
+        ));
+    };
+
+    let template = CredentialTemplate::Jq {
+        expr: expr.to_string(),
+    };
+    // Resolved once here so nothing on the request path parses jq to decide
+    // which secrets to decrypt.
+    let reads = crate::credential_template::partition_reads(&template, declared_config)
+        .map_err(|e| issue(e.to_string(), format!("{path}.expr")))?;
+
+    if reads.slots.is_empty() {
+        // Config values alone are not a credential — they are public by
+        // declaration, so a header built only from them authenticates nothing
+        // and belongs in `parameters` (where `x-overslash-instance-config`
+        // already pins per-instance values) rather than securitySchemes.
+        return Err(issue(
+            "credential template reads no secret; a credential that needs no \
+             secret should not be a security scheme"
+                .into(),
+            format!("{path}.expr"),
+        ));
+    }
+    for slot in &reads.slots {
+        // A scheme always implicitly declares a slot named after itself, so a
+        // single-secret credential needs no x-overslash-secrets entry at all.
+        if slot != scheme_key && !declared_slots.iter().any(|d| d == slot) {
+            return Err(issue(
+                format!(
+                    "credential template reads undeclared input `{slot}`; \
+                     components.x-overslash-secrets declares: {}; \
+                     components.x-overslash-config declares: {}",
+                    join_or_none(declared_slots),
+                    join_or_none(declared_config),
+                ),
+                format!("{path}.expr"),
+            ));
+        }
+    }
+
+    Ok((Some(template), reads))
+}
+
+fn join_or_none(keys: &[String]) -> String {
+    if keys.is_empty() {
+        "none".to_string()
+    } else {
+        keys.join(", ")
+    }
 }
 
 fn extract_http_auth(
     obj: &Map<String, Value>,
     base: &str,
+    // The securitySchemes map key — NOT the `scheme` field below, which is
+    // the HTTP auth scheme (`bearer`).
+    scheme_key: &str,
 ) -> Result<ServiceAuth, Vec<ValidationIssue>> {
     let scheme = obj.get("scheme").and_then(Value::as_str).unwrap_or("");
     if scheme != "bearer" {
@@ -210,15 +716,45 @@ fn extract_http_auth(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    Ok(ServiceAuth::ApiKey {
+    Ok(ServiceAuth::Secret {
+        scheme: scheme_key.to_string(),
+        label: obj
+            .get("x-overslash-label")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        description: scheme_description(obj),
         default_secret_name,
         injection: TokenInjection {
             inject_as: "header".into(),
             header_name: Some("Authorization".into()),
             query_param: None,
-            prefix: Some("Bearer ".into()),
+            prefix: None,
         },
+        // `http`+`bearer` is exactly "prepend `Bearer ` to the one secret",
+        // so it compiles to the template that says so rather than to a
+        // special case the injector has to know about.
+        template: Some(CredentialTemplate::Jq {
+            expr: format!(r#""Bearer " + .{scheme_key}"#),
+        }),
+        slots: vec![scheme_key.to_string()],
+        // A bearer scheme composes nothing: its template is generated, not
+        // authored, so there is no place for a config read.
+        config_keys: Vec::new(),
+        secret_source: crate::types::SecretSource::Instance,
+        optional: false,
     })
+}
+
+/// The standard OpenAPI securityScheme `description`, verbatim (empty when
+/// absent). Surfaces as help text for the credential's dashboard row.
+fn scheme_description(obj: &Map<String, Value>) -> String {
+    obj.get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn parse_token_injection(v: Option<&Value>) -> Option<TokenInjection> {
@@ -297,12 +833,21 @@ pub(super) fn extract_http_action(
         })?
         .to_string();
 
-    let description = op
+    // `description` is what the agent reads and what search scores against;
+    // `summary` is the one-line label a human sees on an approval, with its
+    // `{param}` placeholders interpolated. An operation authoring only one of
+    // the two gets it used for both, which is how every template behaved
+    // before the split. Matches `extract_platform_action` below.
+    let summary = op
         .get("summary")
         .and_then(Value::as_str)
-        .or_else(|| op.get("description").and_then(Value::as_str))
-        .unwrap_or("")
-        .to_string();
+        .map(str::to_string);
+    let description = op
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| summary.clone())
+        .unwrap_or_default();
 
     let risk = match op.get("x-overslash-risk").and_then(Value::as_str) {
         Some("read") => Risk::Read,
@@ -318,10 +863,8 @@ pub(super) fn extract_http_action(
         None => Risk::from_http_method(method),
     };
 
-    let scope_param = op
-        .get("x-overslash-scope_param")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let scope_param =
+        parse_scope_params(op.get("x-overslash-scope_param"), &base).map_err(|e| vec![e])?;
 
     let response_type = detect_response_type(op);
 
@@ -335,6 +878,7 @@ pub(super) fn extract_http_action(
         collect_parameters(arr, &mut params);
     }
     collect_body_parameters(op.get("requestBody"), &mut params);
+    let request_body = parse_request_body(op.get("requestBody"));
 
     // Per-action OAuth scopes. The operation's own `security` key, when present
     // (even as an empty array `[]`, which OpenAPI 3.1 treats as an explicit
@@ -359,6 +903,7 @@ pub(super) fn extract_http_action(
             method: method.to_uppercase(),
             path: path_key.to_string(),
             description,
+            summary,
             risk,
             response_type,
             params,
@@ -370,6 +915,7 @@ pub(super) fn extract_http_action(
             mcp_tool: None,
             output_schema: None,
             disabled: false,
+            request_body,
         },
     );
 
@@ -413,17 +959,18 @@ pub(super) fn extract_platform_action(
         .and_then(Value::as_str)
         .map(str::to_string);
 
+    let scope_param =
+        parse_scope_params(op.get("x-overslash-scope_param"), &base).map_err(|e| vec![e])?;
+
     Ok(ServiceAction {
         method: String::new(),
         path: String::new(),
         description,
+        summary: None,
         risk,
         response_type: None,
         params,
-        scope_param: op
-            .get("x-overslash-scope_param")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        scope_param,
         required_scopes: Vec::new(),
         permission,
         // Platform actions don't have outbound HTTP payloads — disclosure
@@ -433,6 +980,8 @@ pub(super) fn extract_platform_action(
         mcp_tool: None,
         output_schema: None,
         disabled: false,
+        // Platform actions are dispatched in-process, never over HTTP.
+        request_body: None,
     })
 }
 
@@ -442,10 +991,12 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
     raw.iter()
         .filter_map(|(name, spec)| {
             let obj = spec.as_object()?;
+            // Empty = type unspecified (see `schema_fields`) — runtime type
+            // checks skip it rather than guess "string".
             let param_type = obj
                 .get("type")
                 .and_then(Value::as_str)
-                .unwrap_or("string")
+                .unwrap_or("")
                 .to_string();
             let required = obj
                 .get("required")
@@ -456,6 +1007,8 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
+            let aliases = parse_aliases(Some(obj), name);
+            let instance_config = parse_instance_config(Some(obj));
             Some((
                 name.clone(),
                 ActionParam {
@@ -465,7 +1018,9 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     enum_values: None,
                     default: None,
                     resolve: None,
+                    aliases,
                     location: ParamLocation::Body,
+                    instance_config,
                 },
             ))
         })
@@ -525,10 +1080,12 @@ fn parse_disclose(
             .get("max_chars")
             .and_then(Value::as_u64)
             .map(|n| n as usize);
+        let primary = obj.get("primary").and_then(Value::as_bool).unwrap_or(false);
         out.push(DisclosureField {
             label,
             filter,
             max_chars,
+            primary,
         });
     }
     out
@@ -787,89 +1344,143 @@ pub(super) fn extract_mcp_actions(
 
     // Lower merged entries to ServiceAction.
     for (name, obj) in merged {
-        let base = format!("x-overslash-mcp.tools[{name}]");
-
-        let risk = match obj.get("x-overslash-risk").and_then(Value::as_str) {
-            Some("read") | None => Risk::Read,
-            Some("write") => Risk::Write,
-            Some("delete") => Risk::Delete,
-            Some(other) => {
-                errors.push(ValidationIssue::new(
-                    "invalid_risk",
-                    format!("x-overslash-risk must be one of read/write/delete (got {other:?})"),
-                    format!("{base}.x-overslash-risk"),
-                ));
-                continue;
-            }
-        };
-
-        let description = obj
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let scope_param = obj
-            .get("x-overslash-scope_param")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let disabled = obj
-            .get("disabled")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let output_schema = obj.get("output_schema").cloned();
-
-        // input_schema required when autodiscover=false; otherwise optional.
-        let input_schema = obj.get("input_schema");
-        if !autodiscover && input_schema.is_none() {
-            errors.push(ValidationIssue::new(
-                "mcp_invalid",
-                format!("tool `{name}` missing `input_schema` (required when autodiscover=false)"),
-                format!("{base}.input_schema"),
-            ));
-            continue;
+        if let Some(action) = lower_mcp_tool(&name, &obj, autodiscover, &mut errors) {
+            sink.insert(name, action);
         }
-        let params = input_schema.map(lower_input_schema).unwrap_or_default();
-
-        let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, &mut errors);
-        let redact = parse_redact(obj.get("x-overslash-redact"), &base, &mut errors);
-
-        // The upstream MCP tool name defaults to the action key, but may be
-        // overridden with `mcp_tool` when the server's tool name isn't a valid
-        // Overslash action key — e.g. a server naming its tools with dashes
-        // (`some-list-tool`), which the action-key grammar `^[a-z][a-z0-9_]*$`
-        // rejects: the key becomes `some_list_tool` and
-        // `mcp_tool: some-list-tool` carries the real name upstream.
-        let mcp_tool = obj
-            .get("mcp_tool")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| name.clone());
-
-        sink.insert(
-            name.clone(),
-            ServiceAction {
-                method: String::new(),
-                path: String::new(),
-                description,
-                risk,
-                response_type: None,
-                params,
-                scope_param,
-                required_scopes: Vec::new(),
-                permission: None,
-                disclose,
-                redact,
-                mcp_tool: Some(mcp_tool),
-                output_schema,
-                disabled,
-            },
-        );
     }
 
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors)
+    }
+}
+
+/// Lower a single merged MCP tool object into a [`ServiceAction`]. Returns
+/// `None` (pushing to `errors`) when the object is malformed — an invalid
+/// risk, or a missing `input_schema` while `autodiscover=false`. Shared by the
+/// compile-time [`extract_mcp_actions`] and the per-instance
+/// [`overlay_discovered_tools`].
+fn lower_mcp_tool(
+    name: &str,
+    obj: &Map<String, Value>,
+    autodiscover: bool,
+    errors: &mut Vec<ValidationIssue>,
+) -> Option<ServiceAction> {
+    let base = format!("x-overslash-mcp.tools[{name}]");
+
+    let risk = match obj.get("x-overslash-risk").and_then(Value::as_str) {
+        Some("read") | None => Risk::Read,
+        Some("write") => Risk::Write,
+        Some("delete") => Risk::Delete,
+        Some(other) => {
+            errors.push(ValidationIssue::new(
+                "invalid_risk",
+                format!("x-overslash-risk must be one of read/write/delete (got {other:?})"),
+                format!("{base}.x-overslash-risk"),
+            ));
+            return None;
+        }
+    };
+
+    let description = obj
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let scope_param = match parse_scope_params(obj.get("x-overslash-scope_param"), &base) {
+        Ok(sp) => sp,
+        Err(issue) => {
+            errors.push(issue);
+            return None;
+        }
+    };
+    let disabled = obj
+        .get("disabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let output_schema = obj.get("output_schema").cloned();
+
+    // input_schema required when autodiscover=false; otherwise optional.
+    let input_schema = obj.get("input_schema");
+    if !autodiscover && input_schema.is_none() {
+        errors.push(ValidationIssue::new(
+            "mcp_invalid",
+            format!("tool `{name}` missing `input_schema` (required when autodiscover=false)"),
+            format!("{base}.input_schema"),
+        ));
+        return None;
+    }
+    let params = input_schema.map(lower_input_schema).unwrap_or_default();
+
+    let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, errors);
+    let redact = parse_redact(obj.get("x-overslash-redact"), &base, errors);
+
+    // The upstream MCP tool name defaults to the action key, but may be
+    // overridden with `mcp_tool` when the server's tool name isn't a valid
+    // Overslash action key — e.g. a server naming its tools with dashes
+    // (`some-list-tool`), which the action-key grammar `^[a-z][a-z0-9_]*$`
+    // rejects: the key becomes `some_list_tool` and
+    // `mcp_tool: some-list-tool` carries the real name upstream.
+    let mcp_tool = obj
+        .get("mcp_tool")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| name.to_string());
+
+    Some(ServiceAction {
+        method: String::new(),
+        path: String::new(),
+        description,
+        summary: None,
+        risk,
+        response_type: None,
+        params,
+        scope_param,
+        required_scopes: Vec::new(),
+        permission: None,
+        disclose,
+        redact,
+        mcp_tool: Some(mcp_tool),
+        output_schema,
+        disabled,
+        // MCP tool calls are framed by the MCP client (which sets its own
+        // JSON-RPC content type), never routed through `resolve`.
+        request_body: None,
+    })
+}
+
+/// Overlay a service instance's `discovered_tools` onto an already-compiled
+/// [`ServiceDefinition`], in place.
+///
+/// Applied only where an instance is in scope (actions listing, the call/
+/// validate resolver, and visibility-scoped search), so `ServiceDefinition`
+/// stays a pure function of the template key everywhere else.
+///
+/// Precedence: **existing actions win** — a tool the template already declares
+/// (authored `tools:` or template-level `discovered_tools`) is left untouched,
+/// so authored `input_schema`/aliases/disclose remain authoritative. Instance-
+/// discovered tools that the template does not declare are added. Malformed
+/// discovered entries are skipped silently (they came from a live server, not
+/// authored config, so there is no author to warn).
+pub fn overlay_discovered_tools(def: &mut ServiceDefinition, discovered: &[Value]) {
+    for entry in discovered {
+        let Some(obj) = entry.as_object() else {
+            continue;
+        };
+        let Some(name) = obj.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if def.actions.contains_key(name) {
+            // Authored / existing tool wins — don't overwrite.
+            continue;
+        }
+        // Discovered tools come from a live tools/list, so autodiscover=true
+        // semantics apply (input_schema optional). Errors are non-fatal here.
+        let mut errors = Vec::new();
+        if let Some(action) = lower_mcp_tool(name, obj, true, &mut errors) {
+            def.actions.insert(name.to_string(), action);
+        }
     }
 }
 
@@ -892,10 +1503,13 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
     };
     for (name, pv) in props {
         let Some(po) = pv.as_object() else { continue };
+        // Empty when no concrete `type` is declared (e.g. anyOf/oneOf/untyped)
+        // — a sentinel that keeps runtime type checks from guessing "string"
+        // and false-rejecting a param that legitimately accepts other types.
         let param_type = po
             .get("type")
             .and_then(Value::as_str)
-            .unwrap_or("string")
+            .unwrap_or("")
             .to_string();
         let description = po
             .get("description")
@@ -908,6 +1522,8 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
                 .collect()
         });
         let default = po.get("default").cloned();
+        let aliases = parse_aliases(Some(po), name);
+        let instance_config = parse_instance_config(Some(po));
         out.insert(
             name.clone(),
             ActionParam {
@@ -917,7 +1533,9 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
                 enum_values,
                 default,
                 resolve: None,
+                aliases,
                 location: ParamLocation::Body,
+                instance_config,
             },
         );
     }
@@ -979,6 +1597,7 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
         let (param_type, enum_values, default) = schema_fields(schema);
 
         let resolve = obj.get("x-overslash-resolve").and_then(parse_resolver);
+        let aliases = parse_aliases(Some(obj), name);
 
         let location = match obj.get("in").and_then(Value::as_str) {
             Some("query") => ParamLocation::Query,
@@ -986,6 +1605,8 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
             Some("header") => ParamLocation::Header,
             _ => ParamLocation::Body,
         };
+
+        let instance_config = parse_instance_config(Some(obj));
 
         out.insert(
             name.to_string(),
@@ -996,10 +1617,36 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
                 enum_values,
                 default,
                 resolve,
+                aliases,
                 location,
+                instance_config,
             },
         );
     }
+}
+
+/// Parse an operation's `requestBody` into the spec routing needs. Returns
+/// `None` when the operation declares no body, or declares one with no usable
+/// media type — routing then sends neither body nor `Content-Type`.
+///
+/// The media type is taken from the declared `content` key rather than assumed,
+/// so a non-JSON body surfaces as itself instead of being silently re-sent as
+/// JSON. `application/json` wins when several are offered, since that is the
+/// only shape `collect_body_parameters` can extract fields from.
+fn parse_request_body(body: Option<&Value>) -> Option<RequestBodySpec> {
+    let b = body.and_then(Value::as_object)?;
+    let content = b.get("content").and_then(Value::as_object)?;
+
+    let content_type = if content.contains_key("application/json") {
+        "application/json".to_string()
+    } else {
+        content.keys().next()?.clone()
+    };
+
+    Some(RequestBodySpec {
+        content_type,
+        required: b.get("required").and_then(Value::as_bool).unwrap_or(false),
+    })
 }
 
 fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, ActionParam>) {
@@ -1043,6 +1690,8 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
         let resolve = pobj
             .and_then(|o| o.get("x-overslash-resolve"))
             .and_then(parse_resolver);
+        let aliases = parse_aliases(pobj, name);
+        let instance_config = parse_instance_config(pobj);
 
         out.insert(
             name.clone(),
@@ -1053,7 +1702,9 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
                 enum_values,
                 default,
                 resolve,
+                aliases,
                 location: ParamLocation::Body,
+                instance_config,
             },
         );
     }
@@ -1062,13 +1713,16 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
 fn schema_fields(
     schema: Option<&Map<String, Value>>,
 ) -> (String, Option<Vec<String>>, Option<Value>) {
+    // Empty `param_type` is the "type unspecified" sentinel (no schema, or a
+    // schema with no concrete `type` such as anyOf/oneOf) — runtime type
+    // checks skip these rather than guess "string".
     let Some(s) = schema else {
-        return ("string".into(), None, None);
+        return (String::new(), None, None);
     };
     let param_type = s
         .get("type")
         .and_then(Value::as_str)
-        .unwrap_or("string")
+        .unwrap_or("")
         .to_string();
     let enum_values = s.get("enum").and_then(Value::as_array).map(|a| {
         a.iter()
@@ -1086,12 +1740,83 @@ fn parse_resolver(v: &Value) -> Option<ParamResolver> {
     Some(ParamResolver { get, pick })
 }
 
+/// Read a parameter's `x-overslash-aliases` — a list of alternate caller-facing
+/// names — off its object (a `parameters[]` entry, a schema property, or a
+/// platform-action param spec). Non-string entries and blanks are dropped, and
+/// an alias equal to the canonical `name` is skipped (it would be a no-op
+/// rewrite). Returns an empty `Vec` when the extension is absent or malformed —
+/// aliases are a convenience, never a load-time error.
+/// `x-overslash-instance-config` — whether an org may pin this param per
+/// service instance. Read from the same four param shapes `parse_aliases`
+/// covers (operation params, body properties, platform params, lowered input
+/// schemas), so the vocabulary means the same thing wherever it is authored.
+fn parse_instance_config(obj: Option<&Map<String, Value>>) -> bool {
+    obj.and_then(|o| o.get("x-overslash-instance-config"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn parse_aliases(obj: Option<&Map<String, Value>>, name: &str) -> Vec<String> {
+    obj.and_then(|o| o.get("x-overslash-aliases"))
+        .and_then(Value::as_array)
+        .map(|a| {
+            // Dedup within one param's list (order-preserving): `[to, to]` is
+            // a single alias, not an ambiguity.
+            let mut seen = std::collections::HashSet::new();
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && *s != name)
+                .filter(|s| seen.insert(*s))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::compile_service;
     use super::*;
     use crate::types::{Risk, ServiceAuth};
     use serde_json::json;
+
+    // ── parse_aliases / lower_input_schema ───────────────────────────
+
+    #[test]
+    fn lower_input_schema_reads_param_aliases() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "recipient": { "type": "string", "x-overslash-aliases": ["to", "dest"] },
+                "text": { "type": "string" }
+            },
+            "required": ["recipient"]
+        });
+        let params = lower_input_schema(&schema);
+        let mut aliases = params["recipient"].aliases.clone();
+        aliases.sort();
+        assert_eq!(aliases, vec!["dest".to_string(), "to".to_string()]);
+        assert!(params["text"].aliases.is_empty());
+    }
+
+    #[test]
+    fn parse_aliases_dedups_within_one_param() {
+        let obj = json!({ "x-overslash-aliases": ["to", "to", "dest", "to"] });
+        let aliases = parse_aliases(obj.as_object(), "recipient");
+        assert_eq!(aliases, vec!["to".to_string(), "dest".to_string()]);
+    }
+
+    #[test]
+    fn parse_aliases_drops_blanks_self_and_non_strings() {
+        let obj = json!({
+            "x-overslash-aliases": ["to", "", "  ", "recipient", 7, "dest"]
+        });
+        let aliases = parse_aliases(obj.as_object(), "recipient");
+        // Blank, whitespace-only, the canonical name itself, and non-strings
+        // are dropped.
+        assert_eq!(aliases, vec!["to".to_string(), "dest".to_string()]);
+    }
 
     // ── url_to_host / extract_hosts ──────────────────────────────────
 
@@ -1183,6 +1908,70 @@ mod tests {
     }
 
     #[test]
+    fn auth_carries_scheme_keys_and_descriptions_in_sorted_order() {
+        // Two apiKey schemes à la services/email.yaml: the securitySchemes map
+        // KEY (`gateway`/`mailbox`) — not the header `name` — must ride into
+        // `ServiceAuth::Secret.scheme`, in the deterministic sorted order the
+        // dashboard's per-scheme credential rows key off.
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {"securitySchemes": {
+                "mailbox": {
+                    "type": "apiKey", "in": "header", "name": "X-Mailbox-Auth",
+                    "description": "Per-mailbox IMAP/SMTP login.",
+                    "x-overslash-default_secret_name": "mailbox_credential"
+                },
+                "gateway": {
+                    "type": "apiKey", "in": "header", "name": "Authorization",
+                    "x-overslash-label": "Overfwd API Token",
+                    "x-overslash-template": {"lang": "jq", "expr": "\"Bearer \" + .gateway"},
+                    "x-overslash-secret_source": "org",
+                    "x-overslash-optional": true,
+                    "x-overslash-default_secret_name": "overfwd_gateway_key"
+                }
+            }}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert_eq!(svc.auth.len(), 2);
+        match &svc.auth[0] {
+            ServiceAuth::Secret {
+                scheme,
+                label,
+                description,
+                secret_source,
+                optional,
+                ..
+            } => {
+                assert_eq!(scheme, "gateway");
+                assert_eq!(label, "Overfwd API Token");
+                assert!(description.is_empty());
+                assert_eq!(*secret_source, crate::types::SecretSource::Org);
+                assert!(optional);
+            }
+            other => panic!("expected Secret, got {other:?}"),
+        }
+        match &svc.auth[1] {
+            ServiceAuth::Secret {
+                scheme,
+                label,
+                description,
+                secret_source,
+                injection,
+                ..
+            } => {
+                assert_eq!(scheme, "mailbox");
+                assert!(label.is_empty());
+                assert_eq!(description, "Per-mailbox IMAP/SMTP login.");
+                assert_eq!(*secret_source, crate::types::SecretSource::Instance);
+                // The header name stays injection config — proves the scheme
+                // key wasn't confused with the scheme object's `name` field.
+                assert_eq!(injection.header_name.as_deref(), Some("X-Mailbox-Auth"));
+            }
+            other => panic!("expected Secret, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn auth_skips_non_object_scheme_value() {
         let doc = json!({
             "info": {"title": "T", "x-overslash-key": "t"},
@@ -1190,14 +1979,380 @@ mod tests {
                 "junk": "string-value",
                 "real": {
                     "type": "apiKey", "in": "header", "name": "Authorization",
-                    "x-overslash-prefix": "Bearer ",
+                    "x-overslash-template": {"lang": "jq", "expr": "\"Bearer \" + .real"},
                     "x-overslash-default_secret_name": "svc_token"
                 }
             }}
         });
         let (svc, _) = compile_service(&doc).unwrap();
         assert_eq!(svc.auth.len(), 1);
-        assert!(matches!(svc.auth[0], ServiceAuth::ApiKey { .. }));
+        assert!(matches!(svc.auth[0], ServiceAuth::Secret { .. }));
+    }
+
+    // ── credential slots + templates ─────────────────────────────────
+
+    /// The services/email.yaml shape: two declared secrets joined into one
+    /// header by a jq template.
+    fn composed_mailbox_doc() -> serde_json::Value {
+        json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {
+                "x-overslash-secrets": {
+                    "mailbox_user": {"label": "Mailbox username", "source": "instance"},
+                    "mailbox_pass": {"label": "Mailbox password", "source": "instance"}
+                },
+                "securitySchemes": {"mailbox": {
+                    "type": "apiKey", "in": "header", "name": "X-Mailbox-Auth",
+                    "x-overslash-template": {
+                        "lang": "jq",
+                        "expr": "\"Basic \" + (.mailbox_user + \":\" + .mailbox_pass | @base64)"
+                    }
+                }}
+            }
+        })
+    }
+
+    #[test]
+    fn composed_scheme_declares_its_slots() {
+        let (svc, _) = compile_service(&composed_mailbox_doc()).unwrap();
+        let ServiceAuth::Secret {
+            slots,
+            template,
+            injection,
+            ..
+        } = &svc.auth[0]
+        else {
+            panic!("expected Secret");
+        };
+        // Slot order follows the expression, so the send path decrypts in the
+        // order the header reads.
+        assert_eq!(slots, &["mailbox_user", "mailbox_pass"]);
+        assert!(template.is_some());
+        assert_eq!(injection.header_name.as_deref(), Some("X-Mailbox-Auth"));
+
+        // Declared slots keep their own labels; the scheme key is NOT a slot
+        // here, because nothing reads it.
+        let all = svc.all_slots();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].key, "mailbox_user");
+        assert_eq!(all[0].label, "Mailbox username");
+        assert!(!all.iter().any(|s| s.key == "mailbox"));
+    }
+
+    #[test]
+    fn slots_are_sorted_for_determinism() {
+        let (svc, _) = compile_service(&composed_mailbox_doc()).unwrap();
+        let keys: Vec<&str> = svc.secrets.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(keys, ["mailbox_pass", "mailbox_user"]);
+    }
+
+    /// The property that makes static analysis worth having: a template with
+    /// four declared secrets whose header names two reads exactly two.
+    #[test]
+    fn scheme_reads_only_the_slots_its_template_names() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {
+                "x-overslash-secrets": {
+                    "a": {}, "b": {}, "c": {}, "d": {}
+                },
+                "securitySchemes": {
+                    "one": {
+                        "type": "apiKey", "in": "header", "name": "X-One",
+                        "x-overslash-template": {"lang": "jq", "expr": ".a + \":\" + .b"}
+                    },
+                    "two": {
+                        "type": "apiKey", "in": "header", "name": "X-Two",
+                        "x-overslash-template": {"lang": "jq", "expr": ".c + .d"}
+                    }
+                }
+            }
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert_eq!(svc.slots_for(&svc.auth[0]).len(), 2);
+        assert_eq!(
+            svc.slots_for(&svc.auth[0])
+                .iter()
+                .map(|s| s.key.clone())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert_eq!(svc.all_slots().len(), 4);
+    }
+
+    #[test]
+    fn template_reading_undeclared_slot_is_rejected() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {
+                "x-overslash-secrets": {"user": {}},
+                "securitySchemes": {"cred": {
+                    "type": "apiKey", "in": "header", "name": "X-Cred",
+                    "x-overslash-template": {"lang": "jq", "expr": ".user + \":\" + .pass"}
+                }}
+            }
+        });
+        let err = compile_service(&doc).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|i| i.message.contains("undeclared input `pass`")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn declared_but_unread_slot_is_rejected() {
+        // Dead config: the dashboard would ask for a secret that can never
+        // reach a request.
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {
+                "x-overslash-secrets": {"user": {}, "unused": {}},
+                "securitySchemes": {"cred": {
+                    "type": "apiKey", "in": "header", "name": "X-Cred",
+                    "x-overslash-template": {"lang": "jq", "expr": ".user"}
+                }}
+            }
+        });
+        let err = compile_service(&doc).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|i| i.message.contains("`unused` is declared")),
+            "got: {err:?}"
+        );
+    }
+
+    /// The `services/email.yaml` shape: a non-secret username joined with a
+    /// vaulted password. The username must NOT become a credential slot — that
+    /// is the whole point — and must land on the definition as a config var.
+    #[test]
+    fn config_var_is_read_by_a_template_without_becoming_a_slot() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {
+                "x-overslash-config": {"mailbox_user": {
+                    "label": "Mailbox username", "required": true
+                }},
+                "x-overslash-secrets": {"mailbox_pass": {"source": "instance"}},
+                "securitySchemes": {"mailbox": {
+                    "type": "apiKey", "in": "header", "name": "X-Mailbox-Auth",
+                    "x-overslash-template": {
+                        "lang": "jq",
+                        "expr": "\"Basic \" + (.mailbox_user + \":\" + .mailbox_pass | @base64)"
+                    }
+                }}
+            }
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+
+        assert_eq!(
+            svc.all_slots().iter().map(|s| &s.key).collect::<Vec<_>>(),
+            ["mailbox_pass"],
+            "the username must not be a vault slot"
+        );
+        assert_eq!(svc.config.len(), 1);
+        assert_eq!(svc.config[0].key, "mailbox_user");
+        assert_eq!(svc.config[0].label, "Mailbox username");
+        assert!(svc.config[0].required);
+        assert_eq!(
+            svc.config_for(&svc.auth[0])
+                .iter()
+                .map(|c| c.key.clone())
+                .collect::<Vec<_>>(),
+            ["mailbox_user"]
+        );
+    }
+
+    #[test]
+    fn key_declared_as_both_secret_and_config_is_rejected() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {
+                "x-overslash-config": {"user": {}},
+                "x-overslash-secrets": {"user": {}},
+                "securitySchemes": {"cred": {
+                    "type": "apiKey", "in": "header", "name": "X-Cred",
+                    "x-overslash-template": {"lang": "jq", "expr": ".user + .cred"}
+                }}
+            }
+        });
+        let err = compile_service(&doc).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|i| i.message.contains("both a secret and a config value")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn declared_but_unread_config_is_rejected() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {
+                "x-overslash-config": {"unused": {}},
+                "securitySchemes": {"cred": {
+                    "type": "apiKey", "in": "header", "name": "X-Cred"
+                }}
+            }
+        });
+        let err = compile_service(&doc).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|i| i.message.contains("config `unused` is declared")),
+            "got: {err:?}"
+        );
+    }
+
+    /// A header built only from public values authenticates nobody; it belongs
+    /// in `parameters` with `x-overslash-instance-config`, not in a scheme.
+    #[test]
+    fn template_reading_only_config_is_rejected() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {
+                "x-overslash-config": {"region": {}},
+                "securitySchemes": {"cred": {
+                    "type": "apiKey", "in": "header", "name": "X-Cred",
+                    "x-overslash-template": {"lang": "jq", "expr": "\"r=\" + .region"}
+                }}
+            }
+        });
+        let err = compile_service(&doc).unwrap_err();
+        assert!(
+            err.iter().any(|i| i.message.contains("reads no secret")),
+            "got: {err:?}"
+        );
+    }
+
+    /// One `config` map on the instance, so one namespace: a config var and an
+    /// instance-config param of the same name would be one form field feeding
+    /// two unrelated consumers.
+    #[test]
+    fn config_var_colliding_with_an_instance_config_param_is_rejected() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://api.example.com"}],
+            "components": {
+                "x-overslash-config": {"tenant": {}},
+                "x-overslash-secrets": {"pass": {}},
+                "securitySchemes": {"cred": {
+                    "type": "apiKey", "in": "header", "name": "X-Cred",
+                    "x-overslash-template": {"lang": "jq", "expr": ".tenant + .pass"}
+                }}
+            },
+            "paths": {"/thing": {"get": {
+                "operationId": "thing",
+                "parameters": [{
+                    "name": "tenant", "in": "header",
+                    "x-overslash-instance-config": true,
+                    "schema": {"type": "string"}
+                }]
+            }}}
+        });
+        let err = compile_service(&doc).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|i| i.message.contains("instance config is one namespace")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn template_with_dynamic_key_is_rejected() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {
+                "x-overslash-secrets": {"user": {}},
+                "securitySchemes": {"cred": {
+                    "type": "apiKey", "in": "header", "name": "X-Cred",
+                    "x-overslash-template": {"lang": "jq", "expr": "to_entries"}
+                }}
+            }
+        });
+        let err = compile_service(&doc).unwrap_err();
+        assert!(
+            err.iter().any(|i| i.message.contains("computed key")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn template_syntax_error_is_rejected() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {"securitySchemes": {"cred": {
+                "type": "apiKey", "in": "header", "name": "X-Cred",
+                "x-overslash-template": {"lang": "jq", "expr": "\"unterminated"}
+            }}}
+        });
+        let err = compile_service(&doc).unwrap_err();
+        assert!(
+            err.iter().any(|i| i.message.contains("invalid jq")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_template_lang_is_rejected() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {"securitySchemes": {"cred": {
+                "type": "apiKey", "in": "header", "name": "X-Cred",
+                "x-overslash-template": {"lang": "handlebars", "expr": "{{user}}"}
+            }}}
+        });
+        let err = compile_service(&doc).unwrap_err();
+        assert!(
+            err.iter().any(|i| i.message.contains("must be `jq`")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn removed_extensions_name_their_replacement() {
+        // A template in the wild still carrying these would silently lose its
+        // transform, so the error is the migration guide.
+        for legacy in ["x-overslash-prefix", "x-overslash-encode"] {
+            let doc = json!({
+                "info": {"title": "T", "x-overslash-key": "t"},
+                "components": {"securitySchemes": {"cred": {
+                    "type": "apiKey", "in": "header", "name": "X-Cred",
+                    legacy: "Bearer ",
+                    "x-overslash-default_secret_name": "k"
+                }}}
+            });
+            let err = compile_service(&doc).unwrap_err();
+            assert!(
+                err.iter()
+                    .any(|i| i.message.contains("x-overslash-template")),
+                "{legacy} -> got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn template_less_scheme_keeps_its_implicit_slot() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "components": {"securitySchemes": {"token": {
+                "type": "apiKey", "in": "header", "name": "X-Key",
+                "x-overslash-label": "API key",
+                "x-overslash-default_secret_name": "svc_key"
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let ServiceAuth::Secret {
+            template, slots, ..
+        } = &svc.auth[0]
+        else {
+            panic!("expected Secret");
+        };
+        assert!(template.is_none(), "no template means inject verbatim");
+        assert_eq!(slots, &["token"]);
+        let all = svc.all_slots();
+        assert_eq!(all[0].key, "token");
+        assert_eq!(all[0].label, "API key");
+        assert_eq!(all[0].default_secret_name, "svc_key");
     }
 
     #[test]
@@ -1215,9 +2370,10 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         match svc.auth.into_iter().next().unwrap() {
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 default_secret_name,
                 injection,
+                ..
             } => {
                 assert_eq!(default_secret_name, "t_token");
                 assert_eq!(injection.inject_as, "query");
@@ -1225,7 +2381,7 @@ mod tests {
                 assert!(injection.header_name.is_none());
                 assert!(injection.prefix.is_none());
             }
-            _ => panic!("expected ApiKey"),
+            _ => panic!("expected Secret"),
         }
     }
 
@@ -1264,11 +2420,11 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         match &svc.auth[0] {
-            ServiceAuth::ApiKey { injection, .. } => {
+            ServiceAuth::Secret { injection, .. } => {
                 assert_eq!(injection.inject_as, "header");
                 assert_eq!(injection.header_name.as_deref(), Some("Authorization"));
             }
-            _ => panic!("expected ApiKey"),
+            _ => panic!("expected Secret"),
         }
     }
 
@@ -1288,18 +2444,34 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         match &svc.auth[0] {
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 default_secret_name,
                 injection,
+                template,
+                slots,
+                ..
             } => {
                 assert_eq!(default_secret_name, "t_token");
                 assert_eq!(injection.inject_as, "header");
                 assert_eq!(injection.header_name.as_deref(), Some("Authorization"));
-                assert_eq!(injection.prefix.as_deref(), Some("Bearer "));
                 assert!(injection.query_param.is_none());
+                // `http`+`bearer` is "prepend Bearer to the one secret", which
+                // compiles to the template that says so rather than to a
+                // special case the injector would have to know about.
+                assert_eq!(
+                    template.as_ref().map(CredentialTemplate::expr),
+                    Some(r#""Bearer " + .bearer"#)
+                );
+                assert_eq!(slots, &["bearer"]);
             }
-            _ => panic!("expected ApiKey for http/bearer"),
+            _ => panic!("expected Secret for http/bearer"),
         }
+        // The implicit self-named slot carries the scheme's own metadata, so a
+        // single-secret template declares no x-overslash-secrets block.
+        let all = svc.all_slots();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].key, "bearer");
+        assert_eq!(all[0].default_secret_name, "t_token");
     }
 
     #[test]
@@ -1312,11 +2484,11 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         match &svc.auth[0] {
-            ServiceAuth::ApiKey {
+            ServiceAuth::Secret {
                 default_secret_name,
                 ..
             } => assert!(default_secret_name.is_empty()),
-            _ => panic!("expected ApiKey for http/bearer"),
+            _ => panic!("expected Secret for http/bearer"),
         }
     }
 
@@ -1542,6 +2714,72 @@ mod tests {
         assert_eq!(svc.actions["act"].description, "Summary fallback");
     }
 
+    /// The agent reads `description`; the approval screen reads `summary`. An
+    /// operation authoring both must keep them separate — cramming the long
+    /// form into `summary` used to be the only way to reach the model, and it
+    /// made the approval title a paragraph.
+    #[test]
+    fn http_action_description_wins_and_summary_is_kept_for_the_label() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://x.test"}],
+            "paths": {"/search": {"post": {
+                "operationId": "search",
+                "summary": "Search folder '{folder}' for {criteria}",
+                "description": "Raw IMAP SEARCH criteria — not free text.",
+                "x-overslash-risk": "read"
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let a = &svc.actions["search"];
+        assert_eq!(a.description, "Raw IMAP SEARCH criteria — not free text.");
+        assert_eq!(
+            a.summary.as_deref(),
+            Some("Search folder '{folder}' for {criteria}")
+        );
+        assert_eq!(
+            a.label_template(),
+            "Search folder '{folder}' for {criteria}"
+        );
+    }
+
+    /// The overwhelmingly common shape: `summary` only. It must still be both
+    /// the agent text and the label, exactly as before the split.
+    #[test]
+    fn http_action_summary_only_serves_as_both_description_and_label() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://x.test"}],
+            "paths": {"/send": {"post": {
+                "operationId": "send",
+                "summary": "Send email '{subject}' to {to}",
+                "x-overslash-risk": "write"
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let a = &svc.actions["send"];
+        assert_eq!(a.description, "Send email '{subject}' to {to}");
+        assert_eq!(a.label_template(), "Send email '{subject}' to {to}");
+    }
+
+    /// `description` only: no summary to fall back on, so the label reuses it.
+    #[test]
+    fn http_action_description_only_labels_with_the_description() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://x.test"}],
+            "paths": {"/list": {"get": {
+                "operationId": "list",
+                "description": "List everything."
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let a = &svc.actions["list"];
+        assert_eq!(a.description, "List everything.");
+        assert_eq!(a.summary, None);
+        assert_eq!(a.label_template(), "List everything.");
+    }
+
     #[test]
     fn platform_action_default_risk_is_read() {
         let doc = json!({
@@ -1652,7 +2890,10 @@ mod tests {
     }
 
     #[test]
-    fn parameter_without_schema_defaults_to_string() {
+    fn parameter_without_schema_has_unspecified_type() {
+        // No `schema` → no concrete `type`, so `param_type` is the empty
+        // "unspecified" sentinel (opts the param out of runtime type checks)
+        // rather than a fabricated "string".
         let doc = json!({
             "info": {"title": "T", "x-overslash-key": "t"},
             "paths": {"/x": {"get": {
@@ -1661,7 +2902,7 @@ mod tests {
             }}}
         });
         let (svc, _) = compile_service(&doc).unwrap();
-        assert_eq!(svc.actions["x"].params["q"].param_type, "string");
+        assert_eq!(svc.actions["x"].params["q"].param_type, "");
     }
 
     #[test]
@@ -1840,6 +3081,93 @@ mod tests {
         });
         let (svc, _) = compile_service(&doc).unwrap();
         assert!(svc.actions["x"].params.is_empty());
+
+        // The media type is still carried verbatim rather than coerced to
+        // JSON, so routing can tell it apart instead of silently re-sending an
+        // XML body as `application/json`.
+        let rb = svc.actions["x"].request_body.as_ref().unwrap();
+        assert_eq!(rb.content_type, "application/xml");
+        assert!(!rb.is_json());
+    }
+
+    #[test]
+    fn request_body_records_json_media_type() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x": {"post": {
+                "operationId": "x",
+                "requestBody": {
+                    "required": true,
+                    "content": {"application/json": {
+                        "schema": {"type": "object", "properties": {"foo": {"type": "string"}}}
+                    }}
+                }
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let rb = svc.actions["x"].request_body.as_ref().unwrap();
+        assert_eq!(rb.content_type, "application/json");
+        assert!(rb.required);
+        assert!(rb.is_json());
+    }
+
+    #[test]
+    fn request_body_absent_when_operation_declares_none() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x/{id}": {"post": {"operationId": "x"}}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        // No `requestBody` in the contract ⇒ routing sends neither body nor
+        // `Content-Type`.
+        assert!(svc.actions["x"].request_body.is_none());
+    }
+
+    #[test]
+    fn request_body_optional_fields_still_declared() {
+        // The `POST /email/search` shape: a body whose every field is optional.
+        // The spec must still record it, or routing omits the body, omits
+        // `Content-Type`, and a strict upstream rejects the call.
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x": {"post": {
+                "operationId": "x",
+                "requestBody": {
+                    "content": {"application/json": {
+                        "schema": {"type": "object", "properties": {"q": {"type": "string"}}}
+                    }}
+                }
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let rb = svc.actions["x"].request_body.as_ref().unwrap();
+        assert_eq!(rb.content_type, "application/json");
+        assert!(!rb.required);
+    }
+
+    #[test]
+    fn request_body_prefers_json_when_several_offered() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x": {"post": {
+                "operationId": "x",
+                "requestBody": {
+                    "content": {
+                        "application/xml": {"schema": {"type": "object"}},
+                        "application/json": {"schema": {
+                            "type": "object", "properties": {"foo": {"type": "string"}}
+                        }}
+                    }
+                }
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        // JSON wins — it is the only shape whose fields we can extract.
+        assert_eq!(
+            svc.actions["x"].request_body.as_ref().unwrap().content_type,
+            "application/json"
+        );
+        assert!(svc.actions["x"].params.contains_key("foo"));
     }
 
     #[test]

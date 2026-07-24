@@ -18,7 +18,7 @@
 // Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 
@@ -67,7 +67,13 @@ async fn test_notion_mode_c() {
     let encrypted_csec =
         overslash_core::crypto::encrypt(&enc_key, b"notion_client_secret").unwrap();
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(ident_id, "notion", &encrypted_cid, &encrypted_csec)
+        .create_byoc_credential(
+            ident_id,
+            "notion",
+            &encrypted_cid,
+            &encrypted_csec,
+            &serde_json::json!({}),
+        )
         .await
         .unwrap();
     let _conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
@@ -282,7 +288,13 @@ async fn test_notion_real() {
     let encrypted_csec =
         overslash_core::crypto::encrypt(&enc_key, b"notion_client_secret").unwrap();
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(ident_id, "notion", &encrypted_cid, &encrypted_csec)
+        .create_byoc_credential(
+            ident_id,
+            "notion",
+            &encrypted_cid,
+            &encrypted_csec,
+            &serde_json::json!({}),
+        )
         .await
         .unwrap();
     let _conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())

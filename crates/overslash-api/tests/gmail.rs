@@ -21,7 +21,7 @@
 //! Optional env vars:
 //!   GMAIL_TEST_SEND_TO  — Recipient email for the send_message + send_draft tests. If unset, send tests are skipped.
 
-mod common;
+use crate::common;
 
 use base64::Engine;
 use serde_json::{Value, json};
@@ -932,7 +932,13 @@ async fn test_gmail_array_query_param_expands_to_repeated_pairs() {
     let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
     let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(ident_id, "google", &encrypted_cid, &encrypted_csec)
+        .create_byoc_credential(
+            ident_id,
+            "google",
+            &encrypted_cid,
+            &encrypted_csec,
+            &serde_json::json!({}),
+        )
         .await
         .unwrap();
     overslash_db::scopes::OrgScope::new(org_id, pool.clone())

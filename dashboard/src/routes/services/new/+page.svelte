@@ -15,6 +15,8 @@
 		ConnectionSummary,
 		OAuthProviderInfo,
 		SecretSummary,
+		SecretSlot,
+		ServiceAuth,
 		TemplateDetail,
 		TemplateSummary
 	} from '$lib/types';
@@ -25,7 +27,11 @@
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
+	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
+	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
+	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean } } = $props();
 
@@ -51,6 +57,9 @@
 	let nameInput = $state('');
 	let connectionId = $state<string>('');
 	let secretName = $state('');
+	// Per-scheme secret bindings, keyed by the template's securityScheme keys.
+	let credentialsInput = $state<Record<string, string>>({});
+	let configInput = $state<Record<string, string>>({});
 	let urlInput = $state('');
 	let userLevel = $state(true);
 	let useDefaultConnection = $state(true);
@@ -64,12 +73,25 @@
 
 	// MCP-derived helpers
 	const isMcp = $derived(selectedDetail?.runtime === 'mcp');
-	const mcpNeedsUrl = $derived(isMcp && !selectedDetail?.mcp?.url);
+	// An org layer's default endpoint counts as a default, same as at execution:
+	// leaving the field blank inherits it, so the URL is not "required".
+	const layerDefaults = $derived(selectedDetail?.instance_defaults);
+	const inheritedUrl = $derived(layerDefaults?.url);
+	const mcpNeedsUrl = $derived(isMcp && !selectedDetail?.mcp?.url && !inheritedUrl);
 	const mcpNeedsSecret = $derived(
 		isMcp &&
 		selectedDetail?.mcp?.auth_kind === 'bearer' &&
 		!selectedDetail?.mcp?.has_default_secret_name
 	);
+
+	// HTTP gateways (e.g. the `email` Mailbox Gateway) set their endpoint per
+	// instance too — reveal the same URL field the MCP path uses.
+	const httpNeedsUrl = $derived(!isMcp && selectedDetail?.configurable_url === true);
+
+	// Non-secret values the org pins per instance (e.g. the mailbox gateway's
+	// IMAP/SMTP endpoint). Declared by the template via
+	// `x-overslash-instance-config`; empty for templates that declare none.
+	const instanceConfigParams = $derived(selectedDetail?.instance_config_params ?? []);
 
 	const searchKeys = $derived<SearchKey[]>([
 		{
@@ -121,11 +143,18 @@
 		})
 	);
 
-	// Auth modes available on the selected template (oauth | api_key)
+	// Auth modes available on the selected template (oauth or secret)
 	const authModes = $derived(
 		(selectedDetail?.auth ?? []).map((a: any) => a?.type as string).filter(Boolean)
 	);
-	const usesApiKey = $derived(authModes.includes('api_key'));
+	const usesSecret = $derived(authModes.includes('secret'));
+	// Every credential slot the template declares — one picker each, bound via
+	// `credentials[slot]` (e.g. email's `gateway` plus its mailbox username
+	// and password).
+	const secretSlots = $derived((selectedDetail?.secrets ?? []) as SecretSlot[]);
+	// An API from before credential slots sends no `secrets` — fall back to the
+	// legacy single scalar field in that case.
+	const schemeKeyed = $derived(usesSecret && secretSlots.length > 0);
 	// An HTTP `oauth` scheme, or an MCP-runtime `auth.kind: oauth` provider
 	// (D24) normalized to the same {provider, scopes} shape so the connect
 	// surface below is shared. MCP OAuth declares no template-level scopes.
@@ -193,7 +222,7 @@
 	$effect(() => {
 		if (step !== 'configure') return;
 		if (secretsLoaded) return;
-		if (!((usesApiKey && !usesOAuth) || mcpNeedsSecret)) return;
+		if (!((usesSecret && !usesOAuth) || mcpNeedsSecret)) return;
 		secretsLoaded = true;
 		secretsLoading = true;
 		listSecrets()
@@ -281,6 +310,20 @@
 		try {
 			selectedDetail = await getTemplate(t.key);
 			nameInput = t.key;
+			// Seed one entry per secret scheme so the per-scheme pickers bind
+			// to defined slots on the configure step's first render.
+			const seeded: Record<string, string> = {};
+			for (const a of selectedDetail?.auth ?? []) {
+				if (a.type === 'secret' && a.scheme) seeded[a.scheme] = '';
+			}
+			credentialsInput = seeded;
+			// Same for instance-pinned config: a stale value from a previously
+			// selected template must not carry into this one's form.
+			const seededConfig: Record<string, string> = {};
+			for (const p of selectedDetail?.instance_config_params ?? []) {
+				seededConfig[p.name] = '';
+			}
+			configInput = seededConfig;
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to load template (${e.status})` : 'Failed to load template';
 		} finally {
@@ -406,11 +449,21 @@
 					return;
 				}
 			}
+			// Per-scheme bindings ride the `credentials` map (the server mirrors
+			// the legacy scalar); the scalar `secret_name` is only sent for the
+			// paths still editing it directly (MCP bearer, pre-scheme APIs).
+			const cleanedCredentials = cleanServiceMap(credentialsInput);
+			const sendCredentials =
+				schemeKeyed && !usesOAuth && Object.keys(cleanedCredentials).length > 0;
+			const cleanedConfig = cleanServiceMap(configInput);
+			const sendConfig = Object.keys(cleanedConfig).length > 0;
 			const created = await createService({
 				template_key: selectedDetail.key,
 				name: nameInput.trim() || undefined,
 				connection_id: connectionId || undefined,
-				secret_name: secretName.trim() || undefined,
+				credentials: sendCredentials ? cleanedCredentials : undefined,
+				secret_name: !sendCredentials ? secretName.trim() || undefined : undefined,
+				config: sendConfig ? cleanedConfig : undefined,
 				url: urlInput.trim() || undefined,
 				status: 'active',
 				user_level: userLevel,
@@ -662,20 +715,56 @@
 					<input
 						type="text"
 						bind:value={urlInput}
-						placeholder={selectedDetail?.mcp?.url ?? 'http://host:8081/mcp'}
+						placeholder={inheritedUrl ?? selectedDetail?.mcp?.url ?? 'http://host:8081/mcp'}
 					/>
 					{#if mcpNeedsUrl}
 						<small>Required — this template has no default URL.</small>
+					{:else if inheritedUrl}
+						<small>Leave blank to use your org's deployment ({inheritedUrl}).</small>
 					{:else}
 						<small>Leave blank to use the template's default.</small>
 					{/if}
 				</label>
+			{:else if httpNeedsUrl}
+				<label class="field">
+					<span class="label">Gateway URL</span>
+					<input
+						type="text"
+						bind:value={urlInput}
+						placeholder={inheritedUrl ??
+							(selectedDetail?.hosts?.[0]
+								? `https://${selectedDetail.hosts[0]}`
+								: 'https://mailbox.your-org.com')}
+					/>
+					{#if inheritedUrl}
+						<small>Leave blank to use your org's gateway ({inheritedUrl}).</small>
+					{:else}
+						<small>Point this instance at your own deployment. Leave blank to use the default.</small>
+					{/if}
+				</label>
 			{/if}
 
-			{#if (usesApiKey && !usesOAuth) || mcpNeedsSecret}
+			{#if instanceConfigParams.length > 0}
+				<ServiceInstanceConfig
+					params={instanceConfigParams}
+					bind:config={configInput}
+					inherited={layerDefaults?.config}
+					idPrefix="new-service-config"
+				/>
+			{/if}
+
+			{#if usesSecret && !usesOAuth && schemeKeyed}
+				<ServiceCredentials
+					slots={secretSlots}
+					bind:credentials={credentialsInput}
+					available={availableSecrets}
+					loading={secretsLoading}
+					idPrefix="new-service-cred"
+				/>
+			{:else if (usesSecret && !usesOAuth) || mcpNeedsSecret}
 				<div class="field">
 					<label class="label" for="new-service-secret">
-						{mcpNeedsSecret ? 'Bearer token secret name' : 'API key secret name'}
+						{#if mcpNeedsSecret}Bearer token secret name{:else}Secret name{/if}
 					</label>
 					<SecretNamePicker
 						id="new-service-secret"
@@ -685,6 +774,8 @@
 					/>
 					{#if mcpNeedsSecret}
 						<small>Vault key holding the MCP server's bearer token. Required — this template has no default.</small>
+					{:else if httpNeedsUrl}
+						<small>The per-instance credential this gateway presents (e.g. a mailbox <code>user:pass</code>). Any shared gateway key is a separate org secret.</small>
 					{:else}
 						<small>Pick an existing secret from your vault, or type a new name to use later.</small>
 					{/if}

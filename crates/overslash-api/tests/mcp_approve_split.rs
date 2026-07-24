@@ -27,7 +27,7 @@
 
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use overslash_api::services::jwt;
 use overslash_db::repos as db;
@@ -160,6 +160,7 @@ async fn bootstrap() -> Fx {
                 software_version: Some("1.0.0"),
                 created_ip: None,
                 created_user_agent: None,
+                org_id: None,
             },
         )
         .await

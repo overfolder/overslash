@@ -28,9 +28,12 @@ fn http_pseudo_service() -> ServiceDefinition {
         category: Some("Platform".to_string()),
         hidden: false,
         auth: Vec::new(),
+        secrets: Vec::new(),
+        config: Vec::new(),
         actions: HashMap::new(),
         runtime: Runtime::Http,
         mcp: None,
+        instance_defaults: None,
     }
 }
 
@@ -225,7 +228,9 @@ components:
       type: apiKey
       in: header
       name: Authorization
-      x-overslash-prefix: "Bearer "
+      x-overslash-template:
+        lang: jq
+        expr: '"Bearer " + .token'
       default_secret_name: github_token
 paths:
   /user/repos:
@@ -328,9 +333,9 @@ paths:
         let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
         let gh = reg.get("github").unwrap();
         let create_pr = gh.actions.get("create_pull_request").unwrap();
-        assert_eq!(create_pr.scope_param.as_deref(), Some("repo"));
+        assert_eq!(create_pr.scope_param, "repo".into());
         let list_repos = gh.actions.get("list_repos").unwrap();
-        assert_eq!(list_repos.scope_param, None);
+        assert!(list_repos.scope_param.is_empty());
     }
 
     #[test]
@@ -419,6 +424,257 @@ paths:
             .join("services");
         let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
         assert!(!reg.is_empty(), "no shipped templates loaded");
+    }
+
+    #[test]
+    fn shipped_email_declares_instance_pinnable_mailbox_endpoint() {
+        // The email template reaches overfwd, which resolves the IMAP/SMTP
+        // endpoint by autoconfig unless the request carries `X-Mailbox-Imap` /
+        // `X-Mailbox-Smtp`. Autoconfig cannot resolve a self-hosted mailbox, so
+        // without these params the template can only ever reach public
+        // providers. They must stay header-located (a body param would be sent
+        // as JSON and silently ignored by the gateway) and instance-pinnable
+        // (an agent has no way to know its org's mail host).
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let email = reg.get("email").expect("email template registered");
+
+        // All three operations carry them — a pin that only reached `search`
+        // would leave `send` silently autoconfiguring against a host the org
+        // never chose.
+        for action_key in ["search", "get", "send"] {
+            let action = &email.actions[action_key];
+            for param_name in ["X-Mailbox-Imap", "X-Mailbox-Smtp"] {
+                let p = action
+                    .params
+                    .get(param_name)
+                    .unwrap_or_else(|| panic!("email.{action_key} must declare {param_name}"));
+                assert_eq!(
+                    p.location,
+                    crate::types::ParamLocation::Header,
+                    "email.{action_key}.{param_name} must be header-located"
+                );
+                assert!(
+                    p.instance_config,
+                    "email.{action_key}.{param_name} must be instance-pinnable"
+                );
+                assert!(
+                    !p.required,
+                    "email.{action_key}.{param_name} must stay optional — \
+                     autoconfig is the default path for public providers"
+                );
+            }
+        }
+    }
+
+    /// The search parameter is named for what it is. `query` implied a
+    /// free-text box, so an agent searched for a sender by name, got `200 []`,
+    /// and concluded the mailbox was empty. The old name stays accepted so no
+    /// caller breaks, and the explanation lives on `description` because that
+    /// is the only string about an action the model ever sees.
+    #[test]
+    fn shipped_email_search_names_its_imap_criteria_and_keeps_query_accepted() {
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let search = &reg.get("email").expect("email template").actions["search"];
+
+        let criteria = search
+            .params
+            .get("criteria")
+            .expect("email.search must declare `criteria`");
+        assert!(
+            !search.params.contains_key("query"),
+            "`query` must be an alias, not a second declared param"
+        );
+        assert!(
+            criteria.aliases.contains(&"query".to_string()),
+            "the old name must stay accepted, got {:?}",
+            criteria.aliases
+        );
+        assert_eq!(criteria.default, Some(serde_json::json!("ALL")));
+
+        // The agent-facing text must say the thing that would have prevented
+        // the burned calls, and must not be the terse label.
+        assert!(
+            search.description.contains("IMAP SEARCH"),
+            "description must name the syntax: {:?}",
+            search.description
+        );
+        assert_ne!(
+            Some(search.description.as_str()),
+            search.summary.as_deref(),
+            "the approval label must stay short and separate from the explainer"
+        );
+    }
+
+    /// Every instance of this template renders the same display name, because
+    /// the name belongs to the template. Marking the mailbox address as the
+    /// identity config var is what lets discovery tell three mailboxes apart.
+    #[test]
+    fn shipped_email_marks_the_mailbox_address_as_its_account_identity() {
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let email = reg.get("email").expect("email template");
+        assert_eq!(email.identity_config_key(), Some("mailbox_user"));
+    }
+
+    /// Permission keys for a send are derived per recipient, so a grant can be
+    /// scoped to one correspondent or one domain.
+    #[test]
+    fn shipped_email_send_scopes_permissions_by_recipient() {
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let send = &reg.get("email").expect("email template").actions["send"];
+
+        assert_eq!(
+            send.scope_param
+                .refs()
+                .iter()
+                .map(|r| (r.param.as_str(), r.label.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("to", "recipient"),
+                ("cc", "recipient"),
+                ("bcc", "recipient")
+            ],
+            "every header is scoped, and all three share one namespace"
+        );
+        for header in ["to", "cc", "bcc"] {
+            assert_eq!(
+                send.params[header].param_type, "array",
+                "the recipient fan-out relies on `{header}` lowering as an array"
+            );
+        }
+
+        let mut params = std::collections::HashMap::new();
+        params.insert(
+            "to".to_string(),
+            serde_json::json!(["a@example.com", "b@example.org"]),
+        );
+        params.insert("cc".to_string(), serde_json::json!(["a@example.com"]));
+        params.insert("bcc".to_string(), serde_json::json!(["c@example.net"]));
+        let keys = crate::permissions::PermissionKey::from_service_action(
+            "email",
+            "send",
+            &crate::types::ScopeParams::default(),
+            &params,
+        );
+        assert_eq!(keys.len(), 1, "no scope_param passed → single wildcard key");
+        let keys = crate::permissions::PermissionKey::from_service_action(
+            "email",
+            "send",
+            &send.scope_param,
+            &params,
+        );
+        assert_eq!(
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
+            vec![
+                "email:send:recipient=a@example.com",
+                "email:send:recipient=b@example.org",
+                "email:send:recipient=c@example.net"
+            ],
+            "cc/bcc mint keys too, and the address on both `to` and `cc` collapses to one"
+        );
+    }
+
+    #[test]
+    fn shipped_telegram_send_message_declares_param_aliases() {
+        // Pin the ergonomics fix from the burned-approval traces: the Telegram
+        // `send_message` tool must accept `text`/`body` as aliases for its
+        // canonical `message` param (agents reach for Telegram's Bot-API field
+        // name `text`) and `to`/`chat` for `chat_id`. If a resync or edit drops
+        // these, this fails loudly instead of at call time.
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let tg = reg.get("telegram").expect("telegram template registered");
+        let send = &tg.actions["send_message"];
+        assert!(
+            send.params["message"].aliases.contains(&"text".to_string()),
+            "send_message.message must alias `text`, got {:?}",
+            send.params["message"].aliases
+        );
+        assert!(
+            send.params["chat_id"].aliases.contains(&"to".to_string()),
+            "send_message.chat_id must alias `to`, got {:?}",
+            send.params["chat_id"].aliases
+        );
+    }
+
+    #[test]
+    fn shipped_services_have_no_silent_skips() {
+        // `load_from_dir` logs-and-skips any file that fails to
+        // parse/compile/validate, so a broken template silently disappears from
+        // the registry (and `shipped_services_load_clean` still passes because
+        // it only checks non-emptiness). Assert every shipped `*.yaml` both
+        // validates AND lands in the registry under its declared key, so a
+        // validation regression fails loudly here instead of at call time.
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+
+        for entry in std::fs::read_dir(&services_dir).unwrap() {
+            let path = entry.unwrap().path();
+            let is_yaml = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e == "yaml" || e == "yml");
+            if !is_yaml {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let report = crate::template_validation::validate_template_yaml(&source);
+            assert!(
+                report.valid,
+                "{} failed validation (would be silently skipped): {:#?}",
+                path.display(),
+                report.errors
+            );
+            // The compiled key must be registered — proves the file wasn't dropped.
+            let key = crate::openapi::parse_yaml(&source)
+                .ok()
+                .and_then(|mut doc| {
+                    crate::openapi::normalize_aliases(&mut doc);
+                    doc.get("info")
+                        .and_then(|i| i.get("x-overslash-key"))
+                        .and_then(|k| k.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| panic!("{}: missing info.key", path.display()));
+            assert!(
+                reg.get(&key).is_some(),
+                "{} declares key '{key}' but it is not in the registry",
+                path.display()
+            );
+        }
     }
 
     #[test]

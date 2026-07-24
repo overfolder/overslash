@@ -27,7 +27,7 @@ pub fn validate_service_definition(
 
     check_service_shape(def, &mut issues);
     if def.runtime != Runtime::Platform {
-        check_auth(&def.auth, &mut issues);
+        check_auth(def, &mut issues);
     }
     check_mcp(def, &mut issues);
     check_duplicate_action_keys(raw_action_keys, &mut issues);
@@ -108,8 +108,9 @@ fn is_valid_hostname(s: &str) -> bool {
 
 // --- auth ------------------------------------------------------------------
 
-fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
-    for (i, entry) in auth.iter().enumerate() {
+fn check_auth(def: &ServiceDefinition, issues: &mut Issues) {
+    let mut seen_schemes: Vec<&str> = Vec::new();
+    for (i, entry) in def.auth.iter().enumerate() {
         match entry {
             ServiceAuth::OAuth {
                 provider,
@@ -129,16 +130,44 @@ fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
                     issues,
                 );
             }
-            ServiceAuth::ApiKey {
-                default_secret_name,
-                injection,
+            ServiceAuth::Secret {
+                scheme, injection, ..
             } => {
-                if default_secret_name.trim().is_empty() {
-                    issues.err(
-                        "missing_field",
-                        "api_key default_secret_name is required",
-                        format!("auth[{i}].default_secret_name"),
-                    );
+                // An org-source slot resolves ONLY through its default secret
+                // name — with none, the credential can never be found. An
+                // instance-source slot resolves from the instance's binding,
+                // so it needs no default.
+                for slot in def.slots_for(entry) {
+                    if slot.source == crate::types::SecretSource::Org
+                        && slot.default_secret_name.trim().is_empty()
+                    {
+                        issues.err(
+                            "missing_field",
+                            format!(
+                                "secret `{}` is org-sourced and needs a default_secret_name \
+                                 to resolve against the org vault",
+                                slot.key
+                            ),
+                            format!("auth[{i}].default_secret_name"),
+                        );
+                    }
+                }
+                // Instances bind secrets per scheme key (`credentials[scheme]`),
+                // so any number of secret schemes is fine — but the keys must be
+                // unambiguous. Unique by construction when compiled from a
+                // securitySchemes map; guard the programmatic construction paths.
+                if !scheme.is_empty() {
+                    if seen_schemes.contains(&scheme.as_str()) {
+                        issues.err(
+                            "duplicate_scheme_key",
+                            format!(
+                                "security scheme key {scheme:?} appears more than once; \
+                                 per-instance credential bindings are keyed by scheme"
+                            ),
+                            format!("auth[{i}].scheme"),
+                        );
+                    }
+                    seen_schemes.push(scheme.as_str());
                 }
                 check_token_injection(injection, &format!("auth[{i}].injection"), issues);
             }
@@ -289,7 +318,12 @@ fn check_mcp(def: &ServiceDefinition, issues: &mut Issues) {
 // --- per-action ------------------------------------------------------------
 
 const VALID_HTTP_METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
-const VALID_PARAM_TYPES: &[&str] = &["string", "number", "integer", "boolean", "array", "object"];
+// `""` is the "type unspecified" sentinel produced by the OpenAPI loader for
+// params with no concrete `type` (anyOf/oneOf/untyped); it is valid and simply
+// opts the param out of runtime type checks.
+const VALID_PARAM_TYPES: &[&str] = &[
+    "", "string", "number", "integer", "boolean", "array", "object",
+];
 const VALID_RESPONSE_TYPES: &[&str] = &["json", "binary"];
 
 fn check_action(key: &str, action: &ServiceAction, issues: &mut Issues) {
@@ -342,6 +376,7 @@ fn check_action(key: &str, action: &ServiceAction, issues: &mut Issues) {
     let is_mcp_action = action.mcp_tool.is_some();
     check_description(
         &action.description,
+        action.summary.as_deref(),
         &action.params,
         &action_path,
         is_mcp_action,
@@ -353,12 +388,17 @@ fn check_action(key: &str, action: &ServiceAction, issues: &mut Issues) {
         check_param(name, param, &action.params, &action_path, issues);
     }
 
-    // scope_param must reference an existing param.
-    if let Some(ref scope) = action.scope_param {
-        if !action.params.contains_key(scope) {
+    // Every scope_param entry must reference an existing param. The *label*
+    // half needs no check — it names a permission namespace the author invents
+    // (`to:recipient`), not something the schema declares.
+    for scope in action.scope_param.refs() {
+        if !action.params.contains_key(&scope.param) {
             issues.err(
                 "unknown_scope_param",
-                format!("scope_param {scope:?} does not reference a defined param"),
+                format!(
+                    "scope_param {:?} does not reference a defined param",
+                    scope.param
+                ),
                 format!("{action_path}.scope_param"),
             );
         }
@@ -508,46 +548,81 @@ fn check_action_path(
     }
 }
 
+/// Check the action's agent-facing `description` for presence, then check the
+/// **label template** — `summary` when authored, else `description` — for
+/// placeholder and bracket grammar.
+///
+/// The two are separated because only the label is ever interpolated
+/// ([`ServiceAction::label_template`]). A `description` is prose the model
+/// reads, and prose legitimately contains braces: LinkedIn's `create_post`
+/// explains that an author URN looks like `urn:li:person:{sub}`, which is
+/// documentation, not a placeholder referencing a param. Validating it as one
+/// would force authors to mangle their own examples.
+///
+/// When an action authors only `description`, the label *is* that description
+/// and the grammar checks apply to it exactly as before — which is the case
+/// for nearly every shipped template.
+///
+/// Takes `summary` rather than a pre-resolved label so the reported field is a
+/// structural fact, not an inference: comparing the two strings would call an
+/// action that authors the same text in both fields a `description` error and
+/// send the author editing the wrong line.
 fn check_description(
     desc: &str,
+    summary: Option<&str>,
     params: &std::collections::HashMap<String, ActionParam>,
     action_path: &str,
     optional: bool,
     issues: &mut Issues,
 ) {
-    if desc.trim().is_empty() {
-        if !optional {
-            issues.err(
-                "missing_field",
-                "description is required",
-                format!("{action_path}.description"),
-            );
-        }
-        return;
+    if desc.trim().is_empty() && !optional {
+        issues.err(
+            "missing_field",
+            "description is required",
+            format!("{action_path}.description"),
+        );
     }
 
-    if let Err(off) = validate_flat_brackets(desc) {
+    // Mirrors `ServiceAction::label_template`, and names the field the author
+    // actually wrote the offending text in.
+    let (label, field) = match summary {
+        Some(s) => (s, "summary"),
+        None => (desc, "description"),
+    };
+
+    // Grammar is checked even when `description` is absent. Presence and
+    // syntax are independent questions, and only the *label* is interpolated —
+    // an action that omits its description but carries a malformed `summary`
+    // must still be caught. Today that combination cannot be built (only the
+    // HTTP path sets `summary`, and it is never `optional`), so this is
+    // structural rather than a live fix — but the invariant lives in another
+    // module, and returning early here would silently drop the check the day
+    // an MCP tool gains a relabelled summary. An empty label makes every check
+    // below a no-op, so the ordinary "no description, no summary" case is
+    // unaffected.
+
+    if let Err(off) = validate_flat_brackets(label) {
         issues.err(
             "unbalanced_brackets",
-            format!("description has an unbalanced or nested '[' at byte offset {off}"),
-            format!("{action_path}.description"),
+            format!("{field} has an unbalanced or nested '[' at byte offset {off}"),
+            format!("{action_path}.{field}"),
         );
     }
 
-    if has_unclosed_brace(desc) {
+    if has_unclosed_brace(label) {
         issues.err(
             "invalid_description_syntax",
-            "description has an unclosed '{' placeholder",
-            format!("{action_path}.description"),
+            format!("{field} has an unclosed '{{' placeholder"),
+            format!("{action_path}.{field}"),
         );
     }
 
-    for (_, ident) in iter_placeholders(desc) {
+    for (_, ident) in iter_placeholders(label) {
         if !params.contains_key(ident) {
             issues.err(
                 "unknown_description_param",
-                format!("description placeholder {{{ident}}} does not reference a defined param"),
-                format!("{action_path}.description"),
+                format!("{field} placeholder {{{ident}}} does not reference a defined param"),
+                format!("{action_path}.{field}"),
             );
         }
     }
@@ -645,20 +720,28 @@ fn has_unclosed_brace(s: &str) -> bool {
 mod tests {
     use super::*;
     use crate::types::{
-        ActionParam, ParamResolver, Risk, Runtime, ServiceAction, ServiceAuth, ServiceDefinition,
-        TokenInjection,
+        ActionParam, ParamResolver, Risk, Runtime, SecretSource, ServiceAction, ServiceAuth,
+        ServiceDefinition, TokenInjection,
     };
     use std::collections::HashMap;
 
     fn minimal_valid() -> ServiceDefinition {
         ServiceDefinition {
+            secrets: Vec::new(),
+            config: Vec::new(),
             key: "svc".into(),
             display_name: "Service".into(),
             description: None,
             hosts: vec!["api.example.com".into()],
             category: None,
             hidden: false,
-            auth: vec![ServiceAuth::ApiKey {
+            auth: vec![ServiceAuth::Secret {
+                template: None,
+                slots: Vec::new(),
+                config_keys: Vec::new(),
+                scheme: String::new(),
+                label: String::new(),
+                description: String::new(),
                 default_secret_name: "svc_token".into(),
                 injection: TokenInjection {
                     inject_as: "header".into(),
@@ -666,6 +749,8 @@ mod tests {
                     query_param: None,
                     prefix: Some("Bearer ".into()),
                 },
+                secret_source: SecretSource::Instance,
+                optional: false,
             }],
             actions: {
                 let mut m = HashMap::new();
@@ -675,10 +760,11 @@ mod tests {
                         method: "GET".into(),
                         path: "/items".into(),
                         description: "List items".into(),
+                        summary: None,
                         risk: Risk::Read,
                         response_type: None,
                         params: HashMap::new(),
-                        scope_param: None,
+                        scope_param: Default::default(),
                         required_scopes: Vec::new(),
                         permission: None,
                         disclose: Vec::new(),
@@ -686,12 +772,14 @@ mod tests {
                         mcp_tool: None,
                         output_schema: None,
                         disabled: false,
+                        request_body: None,
                     },
                 );
                 m
             },
             runtime: Runtime::Http,
             mcp: None,
+            instance_defaults: None,
         }
     }
 
@@ -703,7 +791,9 @@ mod tests {
             enum_values: None,
             default: None,
             resolve: None,
+            aliases: Vec::new(),
             location: crate::types::ParamLocation::Body,
+            instance_config: false,
         }
     }
 
@@ -843,6 +933,107 @@ mod tests {
         assert!(run(&d).valid);
     }
 
+    /// Prose the agent reads is not a label template. LinkedIn's `create_post`
+    /// documents that an author URN looks like `urn:li:person:{sub}` — real
+    /// documentation, not a placeholder. Only the `summary` is interpolated,
+    /// so only the `summary` is grammar-checked.
+    #[test]
+    fn braces_in_description_are_prose_when_a_summary_exists() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.description = "The author URN is urn:li:person:{sub}.".into();
+        a.summary = Some("List items".into());
+        assert!(run(&d).valid);
+    }
+
+    /// ...but a bad placeholder in the `summary` still fails, and the issue
+    /// points at `summary` rather than at `description`.
+    #[test]
+    fn summary_unknown_param_is_reported_against_summary() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.description = "List items".into();
+        a.summary = Some("List {ghost}".into());
+        let r = run(&d);
+        let issue = r
+            .errors
+            .iter()
+            .find(|e| e.code == "unknown_description_param")
+            .expect("summary placeholder must still be validated");
+        assert!(
+            issue.path.ends_with(".summary"),
+            "issue should name the summary field, got {:?}",
+            issue.path
+        );
+    }
+
+    /// An action may author the same text in both fields. The reported field
+    /// has to come from which field exists, not from comparing their contents
+    /// — otherwise this case blames `description` and sends the author editing
+    /// a line that is not the one being validated.
+    #[test]
+    fn identical_summary_and_description_still_blames_summary() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.description = "List {ghost}".into();
+        a.summary = Some("List {ghost}".into());
+        let r = run(&d);
+        let issue = r
+            .errors
+            .iter()
+            .find(|e| e.code == "unknown_description_param")
+            .expect("the placeholder must still be caught");
+        assert!(
+            issue.path.ends_with(".summary"),
+            "identical text must still be attributed to the field that is \
+             interpolated, got {:?}",
+            issue.path
+        );
+    }
+
+    /// Presence and syntax are independent: a missing `description` must not
+    /// buy a malformed `summary` a free pass. Both issues are reported, each
+    /// against its own field.
+    #[test]
+    fn absent_description_does_not_suppress_summary_grammar_checks() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.description = String::new();
+        a.summary = Some("List {ghost}".into());
+        let r = run(&d);
+
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.code == "missing_field" && e.path.ends_with(".description")),
+            "the absent description must still be reported: {:?}",
+            r.errors
+        );
+        let placeholder = r
+            .errors
+            .iter()
+            .find(|e| e.code == "unknown_description_param")
+            .expect("an empty description must not skip the summary's grammar");
+        assert!(placeholder.path.ends_with(".summary"), "{placeholder:?}");
+    }
+
+    /// The ordinary shape of an MCP tool that declares neither — the MCP spec
+    /// makes a tool description optional and `tools/list` often omits it. An
+    /// empty label has no grammar to be wrong about, so dropping the early
+    /// return must not start reporting anything here.
+    #[test]
+    fn absent_description_and_summary_report_nothing_extra() {
+        let mut d = minimal_mcp(McpAuth::Bearer {
+            secret_name: Some("tok".into()),
+        });
+        for a in d.actions.values_mut() {
+            a.description = String::new();
+            a.summary = None;
+        }
+        let r = run(&d);
+        assert!(r.valid, "expected a clean report, got {:?}", r.errors);
+    }
+
     #[test]
     fn description_required() {
         let mut d = minimal_valid();
@@ -858,9 +1049,44 @@ mod tests {
     #[test]
     fn unknown_scope_param() {
         let mut d = minimal_valid();
-        d.actions.get_mut("list").unwrap().scope_param = Some("ghost".into());
+        d.actions.get_mut("list").unwrap().scope_param = "ghost".into();
         let r = run(&d);
         assert!(r.errors.iter().any(|e| e.code == "unknown_scope_param"));
+    }
+
+    /// Each entry in a list is checked on its own, and the message names the
+    /// offending param rather than the whole list.
+    #[test]
+    fn unknown_scope_param_inside_a_list() {
+        let mut d = minimal_valid();
+        let action = d.actions.get_mut("list").unwrap();
+        action
+            .params
+            .insert("folder".into(), param("string", false));
+        action.scope_param = crate::types::ScopeParams::parse_list(["folder", "ghost"]).unwrap();
+        let r = run(&d);
+        let issues: Vec<_> = r
+            .errors
+            .iter()
+            .filter(|e| e.code == "unknown_scope_param")
+            .collect();
+        assert_eq!(issues.len(), 1, "only the unknown entry should report");
+        assert!(issues[0].message.contains("ghost"), "{:?}", issues[0]);
+    }
+
+    /// The label half names a permission namespace the author invents, not a
+    /// param — validating it against the schema would reject the shipped
+    /// `to:recipient` form.
+    #[test]
+    fn scope_param_label_need_not_name_a_param() {
+        let mut d = minimal_valid();
+        let action = d.actions.get_mut("list").unwrap();
+        action
+            .params
+            .insert("folder".into(), param("string", false));
+        action.scope_param = crate::types::ScopeParams::parse_list(["folder:recipient"]).unwrap();
+        let r = run(&d);
+        assert!(!r.errors.iter().any(|e| e.code == "unknown_scope_param"));
     }
 
     #[test]
@@ -888,7 +1114,13 @@ mod tests {
     #[test]
     fn incomplete_token_injection_header() {
         let mut d = minimal_valid();
-        d.auth = vec![ServiceAuth::ApiKey {
+        d.auth = vec![ServiceAuth::Secret {
+            template: None,
+            slots: Vec::new(),
+            config_keys: Vec::new(),
+            scheme: String::new(),
+            label: String::new(),
+            description: String::new(),
             default_secret_name: "x".into(),
             injection: TokenInjection {
                 inject_as: "header".into(),
@@ -896,6 +1128,8 @@ mod tests {
                 query_param: None,
                 prefix: None,
             },
+            secret_source: SecretSource::Instance,
+            optional: false,
         }];
         let r = run(&d);
         assert!(
@@ -908,7 +1142,13 @@ mod tests {
     #[test]
     fn incomplete_token_injection_query() {
         let mut d = minimal_valid();
-        d.auth = vec![ServiceAuth::ApiKey {
+        d.auth = vec![ServiceAuth::Secret {
+            template: None,
+            slots: Vec::new(),
+            config_keys: Vec::new(),
+            scheme: String::new(),
+            label: String::new(),
+            description: String::new(),
             default_secret_name: "x".into(),
             injection: TokenInjection {
                 inject_as: "query".into(),
@@ -916,12 +1156,63 @@ mod tests {
                 query_param: None,
                 prefix: None,
             },
+            secret_source: SecretSource::Instance,
+            optional: false,
         }];
         let r = run(&d);
         assert!(
             r.errors
                 .iter()
                 .any(|e| e.code == "incomplete_token_injection")
+        );
+    }
+
+    fn secret(scheme: &str, source: SecretSource) -> ServiceAuth {
+        ServiceAuth::Secret {
+            template: None,
+            slots: Vec::new(),
+            config_keys: Vec::new(),
+            scheme: scheme.into(),
+            label: String::new(),
+            description: String::new(),
+            default_secret_name: "x".into(),
+            injection: TokenInjection {
+                inject_as: "header".into(),
+                header_name: Some("Authorization".into()),
+                query_param: None,
+                prefix: None,
+            },
+            secret_source: source,
+            optional: false,
+        }
+    }
+
+    #[test]
+    fn several_instance_source_schemes_are_valid() {
+        // Instances bind secrets per scheme key (`credentials[scheme]`), so a
+        // template may declare any number of instance-source secret schemes —
+        // the old `multiple_instance_secrets` scalar-storage rule is gone.
+        let mut d = minimal_valid();
+        d.auth = vec![
+            secret("first", SecretSource::Instance),
+            secret("second", SecretSource::Instance),
+        ];
+        let r = run(&d);
+        assert!(r.valid, "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn duplicate_scheme_keys_are_rejected() {
+        let mut d = minimal_valid();
+        d.auth = vec![
+            secret("token", SecretSource::Instance),
+            secret("token", SecretSource::Org),
+        ];
+        let r = run(&d);
+        assert!(
+            r.errors.iter().any(|e| e.code == "duplicate_scheme_key"),
+            "errors: {:?}",
+            r.errors
         );
     }
 
@@ -952,6 +1243,8 @@ mod tests {
         // An action with empty method/path (like overslash.yaml) must validate
         // clean as long as description is present.
         let mut d = ServiceDefinition {
+            secrets: Vec::new(),
+            config: Vec::new(),
             key: "overslash".into(),
             display_name: "Overslash".into(),
             description: None,
@@ -962,6 +1255,7 @@ mod tests {
             actions: HashMap::new(),
             runtime: Runtime::Platform,
             mcp: None,
+            instance_defaults: None,
         };
         d.actions.insert(
             "manage_secrets".into(),
@@ -969,10 +1263,11 @@ mod tests {
                 method: String::new(),
                 path: String::new(),
                 description: "Manage secrets".into(),
+                summary: None,
                 risk: Risk::Write,
                 response_type: None,
                 params: HashMap::new(),
-                scope_param: None,
+                scope_param: Default::default(),
                 required_scopes: Vec::new(),
                 permission: None,
                 disclose: Vec::new(),
@@ -980,6 +1275,7 @@ mod tests {
                 mcp_tool: None,
                 output_schema: None,
                 disabled: false,
+                request_body: None,
             },
         );
         let r = run(&d);
@@ -997,6 +1293,7 @@ mod tests {
                 method: String::new(),
                 path: String::new(),
                 description: "Search {team}".into(),
+                summary: None,
                 risk: Risk::Read,
                 response_type: None,
                 params: {
@@ -1010,12 +1307,14 @@ mod tests {
                             enum_values: None,
                             default: None,
                             resolve: None,
+                            aliases: Vec::new(),
                             location: crate::types::ParamLocation::Body,
+                            instance_config: false,
                         },
                     );
                     p
                 },
-                scope_param: Some("team".into()),
+                scope_param: "team".into(),
                 required_scopes: vec![],
                 permission: None,
                 disclose: vec![],
@@ -1023,9 +1322,12 @@ mod tests {
                 mcp_tool: Some("search".into()),
                 output_schema: None,
                 disabled: false,
+                request_body: None,
             },
         );
         ServiceDefinition {
+            secrets: Vec::new(),
+            config: Vec::new(),
             key: "linear_mcp".into(),
             display_name: "Linear".into(),
             description: None,
@@ -1040,6 +1342,7 @@ mod tests {
                 auth,
                 autodiscover: true,
             }),
+            instance_defaults: None,
         }
     }
 
@@ -1119,7 +1422,13 @@ mod tests {
     #[test]
     fn mcp_rejects_http_auth() {
         let mut d = minimal_mcp(McpAuth::None);
-        d.auth = vec![ServiceAuth::ApiKey {
+        d.auth = vec![ServiceAuth::Secret {
+            template: None,
+            slots: Vec::new(),
+            config_keys: Vec::new(),
+            scheme: String::new(),
+            label: String::new(),
+            description: String::new(),
             default_secret_name: "k".into(),
             injection: TokenInjection {
                 inject_as: "header".into(),
@@ -1127,6 +1436,8 @@ mod tests {
                 query_param: None,
                 prefix: None,
             },
+            secret_source: SecretSource::Instance,
+            optional: false,
         }];
         let r = run(&d);
         assert!(

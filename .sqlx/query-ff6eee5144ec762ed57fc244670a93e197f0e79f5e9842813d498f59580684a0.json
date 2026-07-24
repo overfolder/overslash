@@ -1,0 +1,127 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO mcp_client_agent_bindings\n           (org_id, user_identity_id, client_id, agent_identity_id)\n         VALUES ($1, $2, $3, $4)\n         ON CONFLICT (user_identity_id, client_id, org_id)\n           DO UPDATE SET agent_identity_id = EXCLUDED.agent_identity_id,\n                         updated_at = now()\n         RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,\n                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "user_identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "user_identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "client_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "client_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "agent_identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "agent_identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "elicitation_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "elicitation_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "self_approve_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "self_approve_enabled"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ff6eee5144ec762ed57fc244670a93e197f0e79f5e9842813d498f59580684a0"
+}

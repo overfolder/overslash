@@ -7,7 +7,7 @@
 //! drive the handoff endpoint directly with rows we plant in the DB,
 //! avoiding the cost of mocking Google.
 
-mod common;
+use crate::common;
 
 use overslash_db::repos::oauth_preview_handoff;
 use sqlx::PgPool;

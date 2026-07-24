@@ -98,8 +98,10 @@ paths:
         - label: Repository
           filter: .params.repo
         - label: Title
+          primary: true
           filter: .body.title
         - label: Body
+          primary: true
           filter: .body.body // empty
           max_chars: 2000
       requestBody:
@@ -124,12 +126,14 @@ paths:
         - label: Repository
           filter: .params.repo
         - label: Title
+          primary: true
           filter: .body.title
         - label: From branch
           filter: .body.head
         - label: Into branch
           filter: .body.base
         - label: Description
+          primary: true
           filter: .body.body // empty
           max_chars: 2000
       parameters:

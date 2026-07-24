@@ -20,9 +20,9 @@
 // Test setup requires dynamic SQL for DB seeding/inspection.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
-use common::{auth, bootstrap_org_identity, start_api_with_registry, start_mock};
+use crate::common::{auth, bootstrap_org_identity, start_api_with_registry, start_mock};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -67,7 +67,13 @@ async fn setup_pending_oauth_approval() -> PendingOauthApproval {
     let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
     let future_time = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(ident_id, "google", &encrypted_cid, &encrypted_csec)
+        .create_byoc_credential(
+            ident_id,
+            "google",
+            &encrypted_cid,
+            &encrypted_csec,
+            &serde_json::json!({}),
+        )
         .await
         .unwrap();
     // Connections resolve at the owner identity (D22): the agent shares its

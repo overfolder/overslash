@@ -46,6 +46,10 @@ pub struct DisclosedField {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    /// Mirrors the template's `disclose[].primary` flag: the review UI renders
+    /// primary fields as prominent "hero" values instead of table rows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub primary: bool,
 }
 
 /// Error raised when the whole disclosure batch fails (timeout, projection
@@ -135,6 +139,7 @@ fn run_one(field: &DisclosureField, input_str: &str) -> Option<DisclosedField> {
                     value: Some(clamped),
                     error: None,
                     truncated: clamp_truncated || emitted_more,
+                    primary: field.primary,
                 })
             }
         }
@@ -143,12 +148,14 @@ fn run_one(field: &DisclosureField, input_str: &str) -> Option<DisclosedField> {
             value: None,
             error: Some(cap_message(msg)),
             truncated: false,
+            primary: field.primary,
         }),
         Err(JqErr::OutputOverflow(n)) => Some(DisclosedField {
             label: field.label.clone(),
             value: None,
             error: Some(format!("filter produced more than {n} values")),
             truncated: true,
+            primary: field.primary,
         }),
     }
 }
@@ -182,6 +189,7 @@ mod tests {
             label: label.into(),
             filter: filter.into(),
             max_chars: None,
+            primary: false,
         }
     }
 
@@ -234,6 +242,7 @@ mod tests {
             label: "Body".into(),
             filter: format!(r#"{prelude} | split("\r\n\r\n")[1:] | join("\r\n\r\n")"#),
             max_chars: Some(200),
+            primary: false,
         };
         let out = run_disclosures(&[to, subject, body], &input, Duration::from_secs(2))
             .await
@@ -328,12 +337,38 @@ mod tests {
             label: "Text".into(),
             filter: ".body.text".into(),
             max_chars: Some(50),
+            primary: false,
         };
         let out = run_disclosures(&[field], &input, Duration::from_secs(2))
             .await
             .unwrap();
         assert!(out[0].truncated);
         assert_eq!(out[0].value.as_ref().unwrap().chars().count(), 50);
+    }
+
+    #[tokio::test]
+    async fn primary_flag_flows_through_to_disclosed_field() {
+        // A `disclose[]` entry marked `primary` carries that flag onto the wire
+        // `DisclosedField` so the review UI can render it as a hero, while
+        // unmarked siblings stay `primary: false`.
+        let input = json!({
+            "runtime": "mcp",
+            "tool": "send_message",
+            "arguments": {"recipient": "x@s.whatsapp.net", "text": "hi"}
+        });
+        let mut message = f("Message", ".arguments.text");
+        message.primary = true;
+        let out = run_disclosures(
+            &[f("Recipient", ".arguments.recipient"), message],
+            &input,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out[0].label, "Recipient");
+        assert!(!out[0].primary, "unmarked field must stay primary: false");
+        assert_eq!(out[1].label, "Message");
+        assert!(out[1].primary, "marked field must carry primary: true");
     }
 
     // Local base64-url encoder to avoid pulling `base64` into the API crate

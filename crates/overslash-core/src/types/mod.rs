@@ -1,5 +1,6 @@
 pub mod action;
 pub mod approval;
+pub mod credential_template;
 pub mod duration;
 pub mod identity;
 pub mod org;
@@ -10,6 +11,7 @@ pub mod service_instance;
 
 pub use action::*;
 pub use approval::*;
+pub use credential_template::*;
 pub use duration::*;
 pub use identity::*;
 pub use org::*;

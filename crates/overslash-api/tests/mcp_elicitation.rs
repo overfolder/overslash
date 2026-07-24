@@ -9,7 +9,7 @@
 
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 
@@ -95,6 +95,7 @@ async fn bootstrap_mcp(declare_elicitation: bool) -> McpFixture {
             software_version: Some("1.0.0"),
             created_ip: None,
             created_user_agent: None,
+            org_id: None,
         },
     )
     .await
@@ -339,6 +340,7 @@ async fn patch_mcp_connection_fans_out_to_all_bindings_for_agent() {
             software_version: Some("1.0.0"),
             created_ip: None,
             created_user_agent: None,
+            org_id: None,
         },
     )
     .await
@@ -801,6 +803,7 @@ async fn elicitation_eligible_keyed_on_calling_client_not_latest_binding() {
             software_version: Some("1.0.0"),
             created_ip: None,
             created_user_agent: None,
+            org_id: None,
         },
     )
     .await
@@ -1191,6 +1194,7 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        platform_credential: None,
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
         email_provider: None,

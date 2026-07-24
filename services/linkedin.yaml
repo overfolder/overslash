@@ -70,6 +70,7 @@ paths:
       # review UI and audit log so a reviewer sees exactly what will be posted.
       disclose:
         - label: Text
+          primary: true
           filter: '.body.specificContent["com.linkedin.ugc.ShareContent"].shareCommentary.text'
           max_chars: 2000
         - label: Visibility

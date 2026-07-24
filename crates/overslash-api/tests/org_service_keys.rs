@@ -14,7 +14,7 @@
 //!   - Revoke on a key from another org → 404.
 //!   - Revoke refuses to nuke a non-service (user-bound) key.
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use uuid::Uuid;

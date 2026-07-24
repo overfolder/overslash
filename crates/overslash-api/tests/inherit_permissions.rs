@@ -3,7 +3,7 @@
 //! When an identity has inherit_permissions=true, it dynamically inherits
 //! permission rules from its parent (and transitively up the chain).
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use uuid::Uuid;

@@ -2,6 +2,15 @@
 
 import type { DisclosedField, SuggestedTier } from './session';
 
+/** GET /v1/version — build identity of the API this dashboard is talking to.
+ *  `commit` is a full 40-char SHA, or the literal `"unknown"` when the build
+ *  had neither a git checkout nor an injected SHA. */
+export interface BuildInfo {
+  version: string;
+  commit: string;
+  commit_short: string;
+}
+
 export interface OrgInfo {
   id: string;
   name: string;
@@ -33,8 +42,12 @@ export interface ManagedSigninSettings {
 }
 
 /**
- * One `org_invites` row. Pending invites are the membership gate for orgs
- * with `allow_overslash_managed_signin = true`.
+ * A pre-created member, projected onto the invite wire shape. Backed by a
+ * `kind='user'` identity (the `org_invites` table was dropped in migration
+ * 103): `status: 'pending'` while the person has never signed in
+ * (`external_id IS NULL`), `'accepted'` once an SSO callback adopted the
+ * identity. Pending members are the admission gate for orgs with
+ * `allow_overslash_managed_signin = true`.
  */
 export interface OrgInvite {
   id: string;
@@ -221,6 +234,10 @@ export interface TemplateSummary {
   tier: TemplateTier;
   /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
   hidden?: boolean;
+  /** Base template key when this row is a derived layer; absent for standalone/global. */
+  extends?: string;
+  /** Count of fold-time resolution warnings (drift, shadowed extensions, dead entries). */
+  warnings?: number;
 }
 
 /**
@@ -233,18 +250,85 @@ export interface AdminTemplateSummary extends TemplateSummary {
   owner_identity_id?: string | null;
   /** For global rows: whether the template is in the org's curated catalog. */
   enabled: boolean;
+  /** Raw stored delta for a derived layer, so the catalog can toggle `hidden`
+   * without a second fetch. Absent for standalone/global rows. */
+  delta?: Delta;
 }
+
+/** Whether org members may create user-namespace layers. `restrictive` is
+ * reserved (mask-only) and not yet enforced. */
+export type UserTemplatePolicy = 'none' | 'restrictive' | 'full';
 
 /**
  * Org-level template/catalog settings (`/v1/orgs/{id}/template-settings`).
  */
 export interface TemplateSettings {
-  /** Allow members to define their own user-tier templates. */
-  allow_user_templates: boolean;
+  /** Whether members may create user-namespace layers (`none` | `restrictive` | `full`). */
+  user_template_policy: UserTemplatePolicy;
   /** When true, every global template is available; when false, only curated ones. */
   global_templates_enabled: boolean;
   /** When false (default), non-admins cannot instantiate globals outside the curated catalog. */
   allow_services_outside_catalog: boolean;
+}
+
+/** One entry in a derived layer's per-action metadata mask. */
+export interface ActionPatch {
+  /** Clamp risk upward only (adds approvals): `read` | `write` | `delete`. */
+  risk?: 'read' | 'write' | 'delete';
+  /** Relabel the action description. */
+  description?: string;
+  /** Additive disclose specs. */
+  disclose?: unknown[];
+}
+
+/** The expansive half of a delta: new actions + hosts. No auth, no rebinding. */
+export interface Extensions {
+  /** New actions keyed by action key. Each value is an OpenAPI operation fragment. */
+  actions?: Record<string, { method: string; path: string; operation?: unknown }>;
+  /** Additional hosts unioned onto the base. */
+  hosts?: string[];
+}
+
+/**
+ * Defaults an org layer supplies for the surface a service instance would
+ * otherwise fill in by hand. Non-secret only — credentials and connections are
+ * never expressible in a delta. Org-tier layers only; the API rejects these on
+ * a user layer.
+ *
+ * Precedence at execution is `instance > layer > template`.
+ */
+export interface InstanceDefaults {
+  /** Endpoint every instance dials unless it sets its own `url`. */
+  url?: string;
+  /** Defaults for params declared `x-overslash-instance-config`, by param name. */
+  config?: Record<string, string>;
+}
+
+/**
+ * A derived layer's stored content — a mask half (restrictive) and an extension
+ * half (expansive). Resolved by the fold as `apply(delta, resolve(extends))`.
+ */
+export interface Delta {
+  /** Drop the derived template from the catalog. */
+  hidden?: boolean;
+  /** Relabel the template / description. */
+  display_name?: string;
+  description?: string;
+  /** Keep only these action keys (∩). `[]` = expose nothing; omit = keep all. */
+  allowlist?: string[];
+  /** Drop these action keys (\). */
+  denylist?: string[];
+  /** Per-action metadata masks over the base's actions. */
+  action_patch?: Record<string, ActionPatch>;
+  /** New actions + hosts. */
+  extensions?: Extensions;
+  /** Defaults every instance of this layer inherits. Org-tier layers only. */
+  instance_defaults?: InstanceDefaults;
+}
+
+/** Non-blocking resolution warnings computed during the fold. */
+export interface ResolutionReport {
+  warnings: ValidationMessage[];
 }
 
 export interface TemplateDetail {
@@ -255,6 +339,12 @@ export interface TemplateDetail {
   hosts: string[];
   /** Compiled auth view for rendering the detail/connect UIs without re-parsing. */
   auth: ServiceAuth[];
+  /**
+   * Credential slots an instance binds — one vault secret each. A slot may
+   * feed several injections and an injection may join several slots, so this
+   * is not derivable from `auth`; it is what the credentials form renders.
+   */
+  secrets?: SecretSlot[];
   /** Raw OpenAPI 3.1 YAML source. This is the editable document. */
   openapi: string;
   /** Compiled actions view for rendering the detail page without re-parsing. */
@@ -267,17 +357,62 @@ export interface TemplateDetail {
   mcp?: McpDetail;
   /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
   hidden?: boolean;
+  /** True when the endpoint URL is set per instance (MCP servers, or HTTP
+   * gateways like the `email` Mailbox Gateway). The instance form reveals a
+   * URL field when this is set. */
+  configurable_url?: boolean;
+  /** Params an org may pin per instance (`x-overslash-instance-config`), deduped
+   * across actions. The instance form renders one field each and submits them
+   * as `config`. */
+  instance_config_params?: InstanceConfigParam[];
+  /** Effective defaults an org layer in this chain supplies for the per-instance
+   * surface. The instance form renders these as placeholders — leaving a field
+   * blank inherits the layer's value. */
+  instance_defaults?: InstanceDefaults;
+  /** Base template key when this is a derived layer; absent for standalone/global. */
+  extends?: string;
+  /** The stored delta for a derived layer; absent for standalone/global. */
+  delta?: Delta;
+  /** Fold-time resolution warnings (drift, shadowed extensions, dead entries). */
+  resolution_report?: ResolutionReport;
+}
+
+/** A value an org can set on a service instance — either a pinnable action
+ * param (`x-overslash-instance-config`) or a credential template's non-secret
+ * input (`components.x-overslash-config`). Both live in the instance's one
+ * `config` map, so the form renders them as one list. */
+export interface InstanceConfigParam {
+  name: string;
+  type: string;
+  description?: string;
+  required?: boolean;
+  /** Human label, when the declaration gives one. Config vars carry one
+   * ("Mailbox username") because their key is not a header name an operator
+   * would recognise; params have none and fall back to `name`. */
+  label?: string;
 }
 
 export interface CreateTemplateRequest {
-  /** Raw OpenAPI 3.1 YAML. Must include `info.key` (or alias) as the template key. */
-  openapi: string;
+  /** Raw OpenAPI 3.1 YAML for a standalone layer. Mutually exclusive with `extends`. */
+  openapi?: string;
   user_level?: boolean;
+  /** Base template key for a derived layer. Requires `delta`. */
+  extends?: string;
+  /** The derived-layer delta. Required iff `extends` is set. */
+  delta?: Delta;
+  /** Layer key for a derived layer. Defaults to `extends` (shadow-with-delta). */
+  key?: string;
+  /** Display name for a derived layer. */
+  display_name?: string;
+  /** Category for a derived layer. */
+  category?: string;
 }
 
 export interface UpdateTemplateRequest {
-  /** Full replacement OpenAPI YAML. Template key cannot change via update. */
-  openapi: string;
+  /** Full replacement OpenAPI YAML for a standalone layer. Key cannot change. */
+  openapi?: string;
+  /** Replacement delta for a derived layer. */
+  delta?: Delta;
 }
 
 export interface ValidationResult {
@@ -358,7 +493,12 @@ export interface ActionSummary {
   key: string;
   method: string;
   path: string;
+  /** Agent-facing text: the full contract, examples included. May be a
+   *  paragraph — prefer `summary` for a table cell. */
   description: string;
+  /** Short one-line label. Absent when the action authors a single string for
+   *  both jobs, in which case `description` is already short. */
+  summary?: string;
   risk: string;
   /** MCP tool name when the owning service has `runtime: mcp`. Absent for HTTP. */
   mcp_tool?: string;
@@ -386,6 +526,12 @@ export interface McpDetail {
   discovered_at?: string;
 }
 
+/** Mirrors overslash_core::types::ScopeParamRef */
+export interface ScopeParamRef {
+  param: string;
+  label: string;
+}
+
 /** Full action details including the parameter schema — returned by
  *  `GET /v1/templates/{key}/actions/{action_key}`. Used by the API Explorer
  *  to auto-generate a parameter form. */
@@ -393,10 +539,19 @@ export interface ActionDetail {
   key: string;
   method: string;
   path: string;
+  /** Agent-facing text: what the model reads when choosing this action. */
   description: string;
+  /** Short interpolatable label used for the approval title. Absent when the
+   *  action authors only one string for both jobs. */
+  summary?: string;
   risk: string;
   params: Record<string, ActionParam>;
-  scope_param?: string;
+  /** Which params supply the `{arg}` segment of the action's permission keys,
+   *  each resolved to the label its values are filed under (`to` → `recipient`).
+   *  Params sharing a label share one key namespace. Absent when the action is
+   *  unscoped. The template document's compact `param:label` shorthand is
+   *  parsed server-side — never here. */
+  scope_param?: ScopeParamRef[];
 }
 
 // -- Service instances --
@@ -435,6 +590,11 @@ export interface ServiceInstanceSummary {
   owner_identity_id?: string;
   connection_id?: string;
   secret_name?: string;
+  /** Per-scheme secret bindings: securityScheme key → secret NAME in the org vault. */
+  credentials?: Record<string, string>;
+  /** Per-instance non-secret param values (plain values, not vault references).
+   * Keys are template params marked `x-overslash-instance-config`. */
+  config?: Record<string, string>;
   /** Per-instance MCP server URL override. Present only for MCP runtime services. */
   url?: string;
   /** When `false`, an unbound instance won't fall back to the identity's default connection for the provider. Defaults to `true`. */
@@ -448,6 +608,8 @@ export interface ServiceInstanceDetail extends ServiceInstanceSummary {
   template_id?: string;
   created_at: string;
   updated_at: string;
+  /** When this instance's MCP tools were last resynced (RFC3339). Absent until the first resync. */
+  discovered_at?: string;
 }
 
 export interface CreateServiceRequest {
@@ -455,6 +617,11 @@ export interface CreateServiceRequest {
   name?: string;
   connection_id?: string;
   secret_name?: string;
+  /** Per-scheme secret bindings: securityScheme key → secret NAME in the org vault. */
+  credentials?: Record<string, string>;
+  /** Per-instance non-secret param values. Keys must be template params marked
+   * `x-overslash-instance-config`. */
+  config?: Record<string, string>;
   url?: string;
   status?: ServiceStatus;
   user_level?: boolean;
@@ -466,6 +633,11 @@ export interface UpdateServiceRequest {
   name?: string;
   connection_id?: string | null;
   secret_name?: string | null;
+  /** Per-scheme secret bindings: whole-map replace ({} clears every binding); omit to leave unchanged. */
+  credentials?: Record<string, string>;
+  /** Per-instance non-secret param values: whole-map replace ({} clears every
+   * value); omit to leave unchanged. */
+  config?: Record<string, string>;
   url?: string | null;
   use_default_connection?: boolean;
 }
@@ -515,8 +687,21 @@ export interface ByocCredentialSummary {
   org_id: string;
   identity_id: string;
   provider_key: string;
+  /** Opaque caller-supplied provenance tag (key=value), echoed verbatim. */
+  metadata: Record<string, string>;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * Body of `PUT /v1/byoc-credentials/{id}` — replaces the client id/secret in
+ * place (the credential id and its connection pins survive). Replacing marks
+ * every pinned connection `reauth_required`.
+ */
+export interface UpdateByocCredentialRequest {
+  client_id: string;
+  client_secret: string;
+  metadata?: Record<string, string>;
 }
 
 export interface InitiateConnectionResponse {
@@ -546,12 +731,65 @@ export interface ServiceDetail {
   display_name: string;
   hosts: string[];
   auth: ServiceAuth[];
+  /**
+   * Credential slots the operator binds — one vault secret each. Declared once
+   * per template and referenced by the auth entries' templates, so one secret
+   * can feed several headers and one header can join several secrets. This is
+   * the list the credentials form renders.
+   */
+  secrets?: SecretSlot[];
   actions: Record<string, ServiceAction>;
+}
+
+/** One vault secret an instance binds, keyed by `key` in its `credentials` map. */
+export interface SecretSlot {
+  key: string;
+  /** Display name for the row (e.g. "Mailbox username"). */
+  label?: string;
+  /** Help text under the picker. */
+  description?: string;
+  /** Org-vault secret used when `source: 'org'` and nothing is bound. */
+  default_secret_name?: string;
+  source?: 'instance' | 'org';
+  /** When true, an unbound credential is skipped instead of failing the request. */
+  optional?: boolean;
 }
 
 export type ServiceAuth =
   | { type: 'oauth'; provider: string; scopes?: string[]; token_injection: TokenInjection }
-  | { type: 'api_key'; default_secret_name: string; injection: TokenInjection };
+  | {
+      type: 'secret';
+      /** The securitySchemes key this injection was compiled from (e.g. `gateway`, `mailbox`). */
+      scheme?: string;
+      /** Short display name from `x-overslash-label` (e.g. "Overfwd API Token"). */
+      label?: string;
+      /** The OpenAPI securityScheme `description`. */
+      description?: string;
+      default_secret_name: string;
+      injection: TokenInjection;
+      /**
+       * How the value is built from `slots` — e.g.
+       * `'"Basic " + (.mailbox_user + ":" + .mailbox_pass | @base64)'`.
+       * Absent means the single slot's secret is injected verbatim. Never
+       * rendered to end users.
+       */
+      template?: CredentialTemplate;
+      /** Slot keys this injection reads. */
+      slots?: string[];
+      /**
+       * Fallback when the instance has no explicit `credentials[slot]` binding:
+       * `instance` (default) → the legacy scalar `secret_name`; `org` → the fixed
+       * `default_secret_name` from the org vault.
+       */
+      secret_source?: 'instance' | 'org';
+      /** When true, an unbound credential is skipped instead of failing the request. */
+      optional?: boolean;
+    };
+
+export interface CredentialTemplate {
+  lang: 'jq';
+  expr: string;
+}
 
 export interface TokenInjection {
   as: string;
@@ -587,6 +825,12 @@ export interface ConnectionSummary {
   scopes: string[];
   used_by_service_templates: string[];
   is_default: boolean;
+  /** When true, this connection is preserved when a service bound to it is
+   *  deleted, even if nothing else references it. */
+  keep: boolean;
+  /** When true, the connection must be re-authorized before use (e.g. its
+   *  pinned BYOC client was replaced). Cleared on the next successful reconnect. */
+  reauth_required: boolean;
   created_at: string;
 }
 
@@ -618,12 +862,18 @@ export interface ConnectionDetail {
   account_email: string | null;
   scopes: string[];
   is_default: boolean;
+  /** When true, this connection is preserved from the service-deletion
+   *  auto-cleanup (toggled via `setConnectionKeep`). */
+  keep: boolean;
   /**
    * `true` for imported (token-vault) connections whose refresh the
    * integration owns. Overslash injects the stored token until expiry, then
    * signals reauth with no reconnect link (the partner refreshes & re-imports).
    */
   integration_managed: boolean;
+  /** When true, the connection must be re-authorized before use (e.g. its
+   *  pinned BYOC client was replaced). Cleared on the next successful reconnect. */
+  reauth_required: boolean;
   created_at: string;
   /** Advances on an in-place reconnect — the detail page polls it. */
   updated_at: string;
@@ -789,6 +1039,17 @@ export interface Identity {
    * builds; treat `undefined` as `true` for display fallback.
    */
   auto_call_on_approve?: boolean;
+  /**
+   * `true` for a `user` identity that was pre-created (invited or
+   * impersonation-provisioned) but has never completed a sign-in
+   * (`external_id IS NULL`). Drives the Members-page "pending" badge.
+   */
+  pending?: boolean;
+  /**
+   * How this identity was auto-provisioned, e.g. `"impersonation"`.
+   * Absent for identities created through the normal API/UI/SSO paths.
+   */
+  provisioned_by?: string | null;
   created_at?: string;
   last_active_at?: string;
   archived_at?: string | null;
@@ -799,7 +1060,12 @@ export interface PermissionRule {
   id: string;
   identity_id: string;
   action_pattern: string;
+  /** `action_pattern` as a sentence, rendered server-side by the same describer
+   *  that writes an approval's suggested tiers. */
+  description: string;
   effect: string;
+  expires_at: string | null;
+  created_at: string;
 }
 
 export interface ActionResult {

@@ -41,8 +41,8 @@ comment:
 # encrypted-column target table) only runs against a live Postgres with
 # real seeded rows — covered end-to-end by
 # `crates/overslash-api/tests/key_rotation.rs`, but llvm-cov never sees
-# those line hits attributed to the lib's `src/` because nextest shards
-# the integration binaries separately. The pure decision helpers
+# those line hits attributed to the lib's `src/` because nextest runs each
+# integration test in its own process. The pure decision helpers
 # (`classify_row`, `Stats::add`, `Options::default`) and the unit-
 # testable parts of `Keyring` stay covered in `crypto.rs`; what's
 # excluded is the per-row SQL machinery, which is structurally

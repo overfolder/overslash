@@ -35,7 +35,13 @@ export async function api(session, path, opts = {}) {
 	const ok = Array.isArray(expected) ? expected.includes(res.status) : res.status === expected;
 	if (!ok) {
 		const text = await res.text().catch(() => '');
-		throw new Error(`${opts.method ?? 'GET'} ${path} → ${res.status}: ${text}`);
+		const err = new Error(`${opts.method ?? 'GET'} ${path} → ${res.status}: ${text}`);
+		// Callers that treat a specific status as benign (a re-run hitting a 409
+		// on an already-seeded fixture) need it machine-readable, not just in the
+		// message — see `seedDerivedLayer`.
+		/** @type {any} */ (err).status = res.status;
+		/** @type {any} */ (err).body = text;
+		throw err;
 	}
 	if (res.status === 204) return /** @type {T} */ (undefined);
 	const ct = res.headers.get('content-type') ?? '';

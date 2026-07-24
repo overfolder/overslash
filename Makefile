@@ -5,7 +5,7 @@
        logs logs-deploy \
        shortener-dev shortener-down shortener-deploy \
        deploy db-shell \
-       e2e e2e-up e2e-down
+       e2e e2e-up e2e-down mail-up mail-down
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 ENGINE := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null || echo docker)
@@ -54,7 +54,7 @@ net:
 # kept as an alias of `local`.
 local dev: net
 	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans 2>/dev/null; \
-	$(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up --build
+	$(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up --build postgres api dashboard
 
 # Stop the full local dev stack (alias of `down`).
 local-down: down
@@ -62,6 +62,18 @@ local-down: down
 # Start local infra only (postgres) — used by e2e-up.sh and worktree isolation.
 local-db:
 	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up -d postgres
+
+# Start the e2e mail stack (GreenMail IMAP/SMTP + the overfwd gateway) — used
+# by e2e-up.sh so `services/email.yaml` has a real mailbox to talk to.
+#
+# Started explicitly by name rather than via the compose `profiles:` key:
+# podman-compose 1.0.6 has no `--profile` flag. `local` and `dev-api` likewise
+# name their services, so a bare `make local` never starts these.
+mail-up:
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up -d greenmail overfwd
+
+mail-down:
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml stop greenmail overfwd
 
 # Start only the API (postgres + api)
 dev-api:

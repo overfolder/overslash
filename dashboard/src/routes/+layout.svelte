@@ -3,6 +3,8 @@
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/stores';
 	import { type MeIdentity } from '$lib/session';
+	import { getVersion } from '$lib/api/version';
+	import type { BuildInfo } from '$lib/types';
 	import {
 		sidebarCollapsed,
 		theme,
@@ -15,12 +17,12 @@
 	import TopBar from '$lib/components/shell/TopBar.svelte';
 	import MobileTabBar from '$lib/components/shell/MobileTabBar.svelte';
 	import TrialBanner from '$lib/components/shell/TrialBanner.svelte';
+	import Toaster from '$lib/components/Toaster.svelte';
 
 	let { children, data }: { children: Snippet; data: { user: MeIdentity | null } } = $props();
 
 	const standalone = $derived(
 		$page.url.pathname === '/login' ||
-			$page.url.pathname.startsWith('/approvals/') ||
 			$page.url.pathname.startsWith('/secrets/provide/') ||
 			$page.url.pathname.startsWith('/oauth/consent')
 	);
@@ -53,6 +55,18 @@
 		if (data?.user) {
 			void hydrateUserPreferences();
 		}
+	});
+
+	// Build identity of the API, shown in the sidebar footer. Fetched once per
+	// session rather than per navigation — it cannot change without a reload of
+	// the whole page anyway. A failure leaves the footer line unrendered; an
+	// unidentifiable build is not worth an error toast.
+	let buildInfo = $state<BuildInfo | null>(null);
+	$effect(() => {
+		if (!data?.user || buildInfo) return;
+		getVersion()
+			.then((info) => (buildInfo = info))
+			.catch(() => {});
 	});
 
 	$effect(() => {
@@ -96,6 +110,7 @@
 			currentOrgId={data?.user?.org_id ?? ''}
 			mobileOpen={mobileDrawerOpen}
 			onCloseMobile={() => (mobileDrawerOpen = false)}
+			{buildInfo}
 		/>
 		<div class="main-col">
 			<TopBar
@@ -113,6 +128,8 @@
 		<MobileTabBar user={data?.user ?? null} {isAdmin} />
 	</div>
 {/if}
+
+<Toaster />
 
 <style>
 	.app {

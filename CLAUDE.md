@@ -43,6 +43,7 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 ## Testing
 
 - **Split integration tests by provider.** Provider-specific tests (OAuth flows, service actions) go in their own file under `crates/overslash-api/tests/` (e.g., `oauth_x.rs`, `google_calendar.rs`). Shared helpers live in `tests/common/mod.rs`. The main `integration.rs` keeps core/generic tests only.
+- **Register every new test file in `tests/api.rs`.** Those files are modules of one test binary, not targets of their own (`autotests = false` in `crates/overslash-api/Cargo.toml`) — 100+ per-file binaries meant 100+ link steps and dominated CI. Add a `mod <filename>;` line to `tests/api.rs` or the file is silently never compiled or run. Inside the file, use `use crate::common;` (not `mod common;`).
 - **Use `--test-threads=4`** (or similar) when running the full suite locally to avoid Postgres connection pool exhaustion.
 - **PR screenshots use the scenarios library.** `dashboard/tests/scenarios/` is the canonical way to capture dashboard screenshots for PRs. Boot the real stack with `make e2e-up`, then run a `dashboard/scripts/screenshot-*.mjs` script — each one signs in via `/auth/dev/token` and seeds fixtures by hitting the real API, so the resulting PNGs reflect what the dashboard actually renders, not a hand-rolled JSON fake. Do not add new route-interception screenshot scripts; extend the scenarios library instead. See [dashboard/tests/scenarios/README.md](dashboard/tests/scenarios/README.md).
 
@@ -61,7 +62,14 @@ When running in a Kanban worktree (`.cline/worktrees/<id>/`), `make local` autom
 2. **Parse, don't validate.** Config and API inputs are parsed into typed structs at the boundary.
 3. **Secrets never leave the vault.** Encrypted at rest, injected at execution time, never returned via API.
 4. **No platform-specific logic.** Overslash is a generic gateway. Telegram buttons, Slack bots, etc. are caller-side concerns.
-5. **Vertical integration.** Every task that introduces new functionality must also implement the corresponding dashboard UI if it makes sense to expose it. Backend-only tasks are acceptable only when there is no user-facing surface (e.g., internal refactors, infra, CI). Do not split "build the API" and "build the dashboard page" into separate tasks — deliver them together.
+5. **Never slice a string by a raw byte index.** `&s[..n]` panics when `n`
+   lands mid-codepoint — and the strings we truncate (upstream error text,
+   user-supplied names, log lines) are exactly the ones that carry non-ASCII.
+   Snap down to a valid boundary with `while !s.is_char_boundary(n) { n -= 1 }`,
+   or iterate with `chars()`/`char_indices()`. Same for `split_at`/`get`.
+   (`str::floor_char_boundary` does this in one call but is stable only since
+   1.91 — above our 1.85 MSRV, and `clippy::incompatible_msrv` will reject it.)
+6. **Vertical integration.** Every task that introduces new functionality must also implement the corresponding dashboard UI if it makes sense to expose it. Backend-only tasks are acceptable only when there is no user-facing surface (e.g., internal refactors, infra, CI). Do not split "build the API" and "build the dashboard page" into separate tasks — deliver them together.
 
 ## Agent skills
 

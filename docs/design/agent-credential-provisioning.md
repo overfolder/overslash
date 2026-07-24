@@ -1,7 +1,7 @@
 # Agent-Driven Credential Provisioning
 
 **Status:** Draft
-**Date:** 2026-06-03
+**Date:** 2026-06-03 (§6 token-vault addendum added 2026-07-10)
 
 ---
 
@@ -169,6 +169,13 @@ Overfolder calls Overslash over REST with an org service key + `X-Overslash-As` 
 (`agent-runner/src/overslash/client.rs`), not over MCP. The **recommended** integration is the
 *delegated-backend* mode, because it keeps the credential inside the PAI's own trust boundary:
 
+> **`X-Overslash-As` is name-based** (SPEC §4). Overfolder no longer needs to pre-sync Overslash
+> UUIDs or maintain an `overslash_user_links` table to learn a target id: it names the user by
+> email (`X-Overslash-As: alice@acme.com`) and the user identity is provisioned on demand,
+> converging with the identity that user gets when they later sign in to Overslash directly. A
+> path of agent names (`alice@acme.com/henry/researcher`) provisions the agent chain the same
+> way. The `overslash_user_links` references below predate this and are the legacy shape.
+
 **Mode 1 — delegated collection (recommended).**
 
 1. agent-runner's `configure_external_service` connect receives `oauth_client_missing`
@@ -214,6 +221,55 @@ Documented as the secondary option; Mode 1 is the recommendation.
   single-use-token, expiry, and optional require-session enforcement.
 - Dashboard (vertical-integration rule): a "Provide OAuth client" page and a "Pending
   credential requests" list so a human can see and fulfill what agents/PAIs have asked for.
+
+### 6. Token-vault partners (2026-07 addendum)
+
+`white-label-token-vault.md` shipped after this draft and changes the picture for white-label
+partners on the import path (Overfolder). Reconciliation:
+
+**The trigger moves partner-side.** A token-vault partner runs the OAuth dance with its *own*
+client and only touches Overslash at `POST /v1/byoc-credentials` + `POST /v1/connections/import`.
+Overslash never mints a flow for these orgs, so `oauth_client_missing` (§2) is not the signal
+they see — the "no OAuth client for provider X" condition is detected in the partner's own
+connect path (Overfolder: `docs/design/structured-secret-requests.md`, which resolves it with a
+branded structured secret request and then pushes the user's client here). §2/§3 remain the
+track for MCP-native agents and orchestrated-OAuth orgs; nothing in this addendum replaces them.
+
+**The redirect URI is the partner's, not ours.** Mode 1 (§4) says the human whitelists
+*Overslash's* callback. For token-vault partners that is wrong: the OAuth dance terminates at
+the partner's callback (e.g. `api.overfolder.com/auth/oauth/google/callback`), so the
+redirect-URI read endpoint is unnecessary on this path and any provide-page / guide copy must
+treat the redirect URI as a parameter, not a constant. The docs-site provider guides
+(e.g. the Google OAuth-app how-to, still unchecked in `TODO.md`) double as shared collateral
+partners link to — write them redirect-URI-parametrized.
+
+**What the partner UX needs from Overslash (new, small, and ahead of §§1–3 in priority):**
+
+1. **BYOC replace/upsert.** Today a same-`(identity, provider)` re-registration 409s and the
+   only rotation path is DELETE + POST, which silently strands connections pinned to the old
+   credential id (`TECH_DEBT.md` "no BYOC replacement UX"). Add `PUT /v1/byoc-credentials/{id}`
+   (or an upsert flag on POST): update the encrypted pair in place so the credential id — and
+   every pin on it — survives. Tokens minted under the old client will stop refreshing; mark
+   affected connections `reauth_required` at replace time instead of letting refresh fail later.
+2. **Partner metadata on BYOC credentials (generic tagging).** List/create responses expose
+   only ids and provider keys, so a partner cannot tell whether the registered credential
+   matches its vault copy — and the `(org, identity, provider)` slot may already hold a
+   different client (e.g. the partner's org client from an earlier connect). Add
+   `metadata jsonb DEFAULT '{}'` to `byoc_credentials`, writable by the creating caller and
+   echoed verbatim on create/list/get. The partner stamps provenance at push time — e.g.
+   `{"source": "overfolder", "vault_secret_id": "<uuid>", "vault_updated_at": "<ts>"}` — and
+   reconciliation becomes a stateless read-and-compare against its own vault row; no shadow
+   link table on the partner side. Two caveats: (a) metadata is a *claim*, not content — any
+   dashboard/API path that replaces the encrypted pair must clear or rewrite it so a stale
+   claim never masks a foreign credential; (b) it is opaque to Overslash — no semantics, no
+   indexing promises beyond echo. The same column generalizes naturally to `secrets` (org +
+   optional `owner_identity_id`) for the future partner secrets-bridging track. A
+   `client_id_hint` echo (client_id is not secret) remains a cheap optional complement when
+   content-level verification is wanted, but the metadata tag is the primary mechanism.
+
+Re-scoped ordering: these two ship first as standalone PRs against the existing routes; the
+original sketch below (typed error → `credential_requests` → `request_oauth_client` → provide
+page) is unchanged and remains the MCP-agent track.
 
 ---
 

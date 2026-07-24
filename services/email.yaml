@@ -1,0 +1,315 @@
+openapi: 3.1.0
+info:
+  title: Email (Mailbox Gateway)
+  key: email
+  category: Communication
+  # Folded into the text every action is scored against
+  # (`{display_name} — {action}: {description} ({svc_desc})`), so the wording
+  # is a retrieval decision, not just prose. Deliberately phrased around
+  # IMAP/SMTP rather than the bare verbs "send an email": a generic mailbox
+  # gateway should surface for "IMAP", "mailbox", "Fastmail", not outrank
+  # gmail/resend on the plain "send an email" query that has a better answer.
+  description: >-
+    Direct IMAP/SMTP mailbox access for providers with no REST API (Migadu,
+    Fastmail, iCloud, Zoho, Yahoo, self-hosted Dovecot). Folder search uses
+    raw IMAP SEARCH criteria (RFC 3501), not free-text queries.
+  # Generic, provider-agnostic mailbox access over any standard IMAP/SMTP
+  # provider (Migadu, Fastmail, iCloud, Zoho, Yahoo, corporate Dovecot/Cyrus, …).
+  # Yahoo belongs here rather than in a native template of its own: it ships no
+  # HTTP Mail API, and its IMAP/SMTP wants an *app password* (generated in Yahoo
+  # account security) — not the account password. See D37.
+  # Backed by overfwd (https://github.com/overspiral/overfwd), a stateless REST
+  # Mailbox Gateway that holds no credentials or mail at rest. Not for
+  # Gmail/Outlook — those ship as native REST services (gmail.yaml / outlook).
+  #
+  # Credentials on each request:
+  #   • gateway  — an OPTIONAL per-deployment key (Authorization: Bearer),
+  #                shared across the org, resolved from the org vault
+  #                (source: org). Injected only if the org stored
+  #                `overfwd_gateway_key`; a keyless self-host omits it.
+  #   • mailbox  — the per-user IMAP/SMTP login, split into its two halves:
+  #                the username is a plain per-instance value
+  #                (`x-overslash-config`, usually the public email address) and
+  #                only the password is vaulted (`x-overslash-secrets`). The
+  #                `mailbox` scheme joins them into
+  #                `X-Mailbox-Auth: Basic base64(user:pass)` at send time, so
+  #                the password rotates on its own and neither half is a usable
+  #                credential alone.
+  #
+  # The overfwd deployment URL is set per instance (`service_instances.url`),
+  # so each org points its catalog entry at its own gateway; `servers` below is
+  # only the fallback default (the shared Overslash Cloud gateway).
+  #
+  # Because the mailbox credential is per-instance, every user creates their own
+  # instance — so an org with a dedicated gateway sets it ONCE on an org layer
+  # (`delta.instance_defaults.url`, plus the mailbox-endpoint headers below)
+  # rather than on each instance. An instance that sets its own value still
+  # wins. See DECISIONS.md D35.
+servers:
+  - url: https://mailbox.overslash.com
+security:
+  - gateway: []
+    mailbox: []
+components:
+  # Non-secret values an operator sets per instance, which the securitySchemes'
+  # templates below may read alongside their secrets. Stored in the instance's
+  # `config` map — the same place the X-Mailbox-Imap/Smtp pins live — so the
+  # username shows as an ordinary text field rather than a write-only secret.
+  x-overslash-config:
+    mailbox_user:
+      label: Mailbox username
+      description: >-
+        The IMAP/SMTP login, usually the full email address.
+      # Without it `X-Mailbox-Auth` would render as base64(":password") — a
+      # credential that reads downstream as a wrong password rather than as
+      # missing configuration.
+      required: true
+      # This value is also *which mailbox* the instance speaks for, so
+      # discovery surfaces it as the row's `account_email`. Without it every
+      # instance of this template renders the same "Email (Mailbox Gateway)"
+      # display name — the name belongs to the template, not the instance —
+      # and an agent holding three mailboxes has to call all three to find out
+      # which is which.
+      identity: true
+  # The secrets an operator binds for this service. Declared once here and
+  # referenced by name from the securitySchemes' templates below, so one
+  # secret can feed several headers and one header can join several secrets.
+  x-overslash-secrets:
+    mailbox_pass:
+      label: Mailbox password
+      description: >-
+        The mailbox password, or an app-specific password where the provider
+        issues them.
+      source: instance
+  securitySchemes:
+    gateway:
+      type: apiKey
+      in: header
+      name: Authorization
+      # Short display label for the dashboard row; `description` renders as
+      # help text under the picker. No x-overslash-secrets entry: a scheme
+      # implicitly declares the slot named after itself.
+      x-overslash-label: Overfwd API Token
+      description: >-
+        Bearer token for the overfwd deployment itself — leave blank when
+        the gateway runs without require_api_key.
+      x-overslash-template:
+        lang: jq
+        expr: '"Bearer " + .gateway'
+      x-overslash-secret_source: org
+      # Optional: injected only if the org has stored `overfwd_gateway_key`.
+      # A self-hosted overfwd with OVERFWD_REQUIRE_API_KEY=false needs no
+      # gateway key, so the org simply omits the secret and this header.
+      x-overslash-optional: true
+      default_secret_name: overfwd_gateway_key
+    mailbox:
+      type: apiKey
+      in: header
+      name: X-Mailbox-Auth
+      x-overslash-label: Mailbox login
+      description: >-
+        The mailbox's IMAP/SMTP login, joined from the username config value
+        and the password secret and sent base64-encoded.
+      x-overslash-template:
+        lang: jq
+        expr: '"Basic " + (.mailbox_user + ":" + .mailbox_pass | @base64)'
+      x-overslash-secret_source: instance
+paths:
+  /email/search:
+    # overfwd derives the IMAP/SMTP endpoint from the mailbox domain via
+    # autoconfig (Mozilla ISPDB + RFC 6186 SRV), which covers the public
+    # providers this template targets. It cannot cover a self-hosted or
+    # corporate mailbox whose domain publishes no autoconfig — and it cannot
+    # cover a login that isn't an email address at all, since there is then no
+    # domain to look up. For those, the org pins the endpoint on the service
+    # instance and overfwd skips autoconfig entirely.
+    #
+    # Transport is inferred from the port: overfwd treats 993/3993 (IMAP) and
+    # 465/3465 (SMTP) as implicit TLS and everything else as plaintext. There
+    # is no STARTTLS path, so a plaintext port is a deliberate choice, not a
+    # fallback.
+    parameters: &mailbox_endpoint
+      - name: X-Mailbox-Imap
+        in: header
+        required: false
+        description: >-
+          IMAP endpoint as host:port (e.g. imap.migadu.com:993). Leave unset to
+          let the gateway autoconfigure from the mailbox domain.
+        x-overslash-instance-config: true
+        schema:
+          type: string
+      - name: X-Mailbox-Smtp
+        in: header
+        required: false
+        description: >-
+          SMTP submission endpoint as host:port (e.g. smtp.migadu.com:465).
+          Leave unset to let the gateway autoconfigure from the mailbox domain.
+        x-overslash-instance-config: true
+        schema:
+          type: string
+    post:
+      operationId: search
+      # `summary` is the one-line approval/audit label, interpolated with the
+      # caller's actual arguments. `description` is what the agent reads and
+      # what search scores against — the only string about this action that
+      # ever reaches the model, since parameter descriptions and defaults do
+      # not. Hence the examples live here rather than on `criteria` below.
+      summary: "Search mailbox folder '{folder}' for {criteria}"
+      description: >-
+        Search folder {folder} using raw IMAP SEARCH criteria (RFC 3501).
+        This is NOT free-text search: a bare `Jane Doe` is not valid criteria
+        and comes back as an empty list rather than an error, which reads
+        exactly like "no results". Search for a person or a phrase with an
+        explicit key.
+        Examples: `ALL` (everything), `UNSEEN`, `FROM "jane"`,
+        `SUBJECT "invoice"`, `TEXT "deck"`, `SINCE 1-Jul-2026`, and
+        combinations like `FROM "example.com" SINCE 1-Jul-2026`.
+        Defaults to ALL. Returns `{results, total, truncated}` — `total` is the
+        true match count, so `total: 0` means "no such mail", not "the response
+        was cut". Results are newest-first by IMAP UID (arrival order, not the
+        Date header). Use `limit` to bound large folders.
+      risk: read
+      requestBody:
+        # Every field is optional — a bare "search my inbox" is a legitimate
+        # call. `required` reflects that the gateway still parses a JSON body on
+        # every request, and the `default`s below make the fallbacks part of the
+        # contract rather than prose only the gateway knows.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                # Declared as real defaults, not just documented ones. A
+                # `search` with no arguments — the obvious "list my mail" call —
+                # otherwise sends no body at all, and a body-less POST carries
+                # no `Content-Type: application/json`, which the gateway
+                # rejects outright. Declaring the defaults the description
+                # already promised makes the empty call the working call.
+                folder:
+                  type: string
+                  default: INBOX
+                  description: Mailbox folder to search. Defaults to INBOX.
+                # Named `criteria`, not `query`: `query` reads as a free-text
+                # search box, which is what sent an agent hunting for a sender
+                # by name and concluding the mailbox was empty. The gateway
+                # accepts both (`#[serde(alias = "criteria")]` on its side), so
+                # the rename costs nothing on the wire.
+                #
+                # The old name stays accepted here too. Note the canonical
+                # `x-overslash-*` spelling is required: the unprefixed
+                # `aliases:` shorthand is only normalized on `parameters[]`
+                # entries, not on requestBody schema properties.
+                criteria:
+                  type: string
+                  default: ALL
+                  x-overslash-aliases: [query, imap_search]
+                  description: >-
+                    Raw IMAP SEARCH criteria (RFC 3501) — see the action
+                    description for the syntax and examples. Defaults to ALL.
+                limit:
+                  type: integer
+                  description: >-
+                    Cap on summaries returned, newest-first by UID. Omitting it
+                    fetches every match in the folder; the response's `total`
+                    and `truncated` report what was actually found either way.
+  /email/get:
+    parameters: *mailbox_endpoint
+    post:
+      operationId: get
+      summary: "Fetch message {uid} from folder '{folder}'"
+      description: >-
+        Fetch one message in full (headers plus body) by its IMAP UID. UIDs
+        come from a prior `search` in the same folder and are unique only
+        within that folder — a UID from INBOX will not resolve in Archive.
+      risk: read
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uid]
+              properties:
+                folder:
+                  type: string
+                  default: INBOX
+                  description: Mailbox folder holding the message. Defaults to INBOX.
+                uid:
+                  type: integer
+                  description: Mailbox-unique id of the message (from a prior search).
+  /email/send:
+    parameters: *mailbox_endpoint
+    post:
+      operationId: send
+      summary: "Send email '{subject}' to {to}"
+      description: >-
+        Send an email from this mailbox over SMTP. `to`, `cc`, and `bcc` each
+        accept either a list of addresses or a single comma-separated string.
+        At least one of `text` or `html` is required.
+      risk: write
+      # Permission keys are derived per *recipient*, across all three headers:
+      # each address in `to`/`cc`/`bcc` mints one
+      # `email:send:recipient=<address>` key. A grant can therefore be scoped
+      # to one correspondent (`email:send:recipient=jane@example.com`) or a
+      # whole domain (`email:send:recipient=*@example.com`), and a send that
+      # mixes covered and uncovered addresses raises an approval naming only
+      # the uncovered ones — a bcc to an outsider is gated exactly like a to.
+      #
+      # All three share the `recipient` label deliberately: who a message
+      # reaches is what an approver is deciding about, not which header
+      # carries them, so an address on both `to` and `cc` collapses to one key
+      # and one approval. Value-only grants written before labels existed
+      # (`email:send:*@example.com`) still match.
+      scope_param: [to:recipient, cc:recipient, bcc:recipient]
+      # The mailbox credential rides as an injected SecretRef resolved only at
+      # send time, so it never lands in the persisted approval/audit payload —
+      # no `redact` needed for it. These fields disclose the human-meaningful
+      # parts of the outgoing message on the approval screen.
+      disclose:
+        - label: To
+          filter: '.body.to | if type == "array" then join(", ") else . end'
+        - label: From
+          filter: .body.from
+        - label: Subject
+          primary: true
+          filter: .body.subject
+        - label: Body
+          primary: true
+          filter: .body.text // .body.html // empty
+          max_chars: 2000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to, subject]
+              properties:
+                from:
+                  type: string
+                  description: Envelope + header From address.
+                to:
+                  type: array
+                  items:
+                    type: string
+                  description: Primary recipients (To). Must be non-empty.
+                cc:
+                  type: array
+                  items:
+                    type: string
+                  description: Carbon-copy recipients.
+                bcc:
+                  type: array
+                  items:
+                    type: string
+                  description: Blind-carbon-copy recipients.
+                subject:
+                  type: string
+                  description: The Subject header.
+                text:
+                  type: string
+                  description: A text/plain body (at least one of text/html required).
+                html:
+                  type: string
+                  description: A text/html body (at least one of text/html required).

@@ -58,6 +58,20 @@ else
     [ -n "${DATABASE_URL:-}" ] || fail "DATABASE_URL not set after make local-db — Postgres bring-up failed"
 fi
 
+# Wait for Postgres to accept connections before migrating. `make local-db`
+# returns as soon as the container is *started*, which on a fresh volume is well
+# before initdb has finished — the migrate step would then fail on connection
+# refused. (CI's `services:` block is health-gated, so this is a no-op there.)
+pg_ready=""
+for _ in $(seq 1 60); do
+    if psql "$DATABASE_URL" -c 'SELECT 1' >/dev/null 2>&1; then
+        pg_ready=1
+        break
+    fi
+    sleep 1
+done
+[ -n "$pg_ready" ] || fail "Postgres at $DATABASE_URL not accepting connections after 60s"
+
 # Migrations: the API doesn't run them on boot, so apply them once here. In CI
 # the Postgres service starts empty; locally `make local-db` also starts a clean
 # instance on the worktree's port, so this is correct in both cases.
@@ -68,6 +82,66 @@ if command -v sqlx >/dev/null 2>&1; then
 else
     log "sqlx CLI not found — assuming the DB is already migrated"
 fi
+
+# 1b. Mail stack: GreenMail (IMAP/SMTP) behind the real overfwd gateway, so
+#     `services/email.yaml` is exercised against an actual mailbox rather than
+#     an HTTP echo. Hard-fail if it can't come up: a skipped mail story looks
+#     identical to a passing one in CI output, and this is the only coverage
+#     the email template has above the API contract.
+log "starting mail stack (greenmail + overfwd)"
+# Surface compose's own stderr: "needs a container runtime" is only one of the
+# ways this fails (port collision, image pull, unhealthy greenmail), and since
+# this hard-fails the whole bring-up the real reason has to be visible.
+( cd "$REPO_ROOT" && make mail-up >/dev/null ) \
+    || fail "mail stack failed to start (see the compose output above) — a container runtime (podman/docker) is required"
+# `make mail-up` writes .env.local on first run in a worktree; outside one it is
+# never created. Guard with `if`, not `[ -f … ] && …`: under `set -e` the latter
+# aborts the script when the file is absent, which would take the whole e2e
+# bring-up down in CI and in a main-repo checkout.
+if [ -f "$REPO_ROOT/.env.local" ]; then
+    # shellcheck disable=SC1091
+    set -a && . "$REPO_ROOT/.env.local" && set +a
+fi
+GREENMAIL_API_URL="http://127.0.0.1:${GREENMAIL_API_PORT:-38080}"
+GREENMAIL_SMTP_PORT="${GREENMAIL_SMTP_PORT:-33025}"
+OVERFWD_URL="http://127.0.0.1:${OVERFWD_PORT:-38000}"
+
+# GreenMail's REST API answers /api/service/readiness only once the mail
+# services are actually listening, so this gates on the thing we depend on
+# rather than on container start.
+mail_ready=""
+for _ in $(seq 1 60); do
+    if curl -sf "$GREENMAIL_API_URL/api/service/readiness" >/dev/null 2>&1; then
+        mail_ready=1
+        break
+    fi
+    sleep 1
+done
+[ -n "$mail_ready" ] || fail "greenmail not ready at $GREENMAIL_API_URL after 60s"
+# overfwd has no /health; /openapi.json is served outside its auth gate.
+ofwd_ready=""
+for _ in $(seq 1 30); do
+    if curl -sf "$OVERFWD_URL/openapi.json" >/dev/null 2>&1; then
+        ofwd_ready=1
+        break
+    fi
+    sleep 1
+done
+[ -n "$ofwd_ready" ] || fail "overfwd not ready at $OVERFWD_URL after 30s"
+
+# The IMAP/SMTP endpoints as *overfwd* must dial them: it reaches GreenMail
+# over the compose network, so these are container hostnames, not the
+# host-published ports above. These are what the e2e suite pins onto the
+# service instance as `X-Mailbox-Imap` / `X-Mailbox-Smtp`.
+MAILBOX_IMAP="greenmail:3143"
+MAILBOX_SMTP="greenmail:3025"
+# Must match `-Dgreenmail.users` in docker-compose.dev.yml. GreenMail runs with
+# auth.disabled (the image default), so the password isn't enforced on login —
+# the e2e suite still stores the real pair so what it exercises is the shape a
+# real deployment uses.
+MAILBOX_LOGIN="e2e@example.com"
+MAILBOX_PASSWORD="e2epass"
+log "mail ready: greenmail=$GREENMAIL_API_URL overfwd=$OVERFWD_URL imap=$MAILBOX_IMAP"
 
 # 2. Build the fakes + API + puppet binaries up-front so the stack is fast
 # to boot.
@@ -327,6 +401,13 @@ AUTH0_TENANT_URL=$AUTH0_TENANT_URL
 OKTA_TENANT_URL=$OKTA_TENANT_URL
 APP_HOST_SUFFIX=$APP_HOST_SUFFIX
 API_HOST_SUFFIX=$API_HOST_SUFFIX
+OVERFWD_URL=$OVERFWD_URL
+GREENMAIL_API_URL=$GREENMAIL_API_URL
+GREENMAIL_SMTP_PORT=$GREENMAIL_SMTP_PORT
+MAILBOX_IMAP=$MAILBOX_IMAP
+MAILBOX_SMTP=$MAILBOX_SMTP
+MAILBOX_LOGIN=$MAILBOX_LOGIN
+MAILBOX_PASSWORD=$MAILBOX_PASSWORD
 $MCP_VARIANT_LINES
 EOF
 

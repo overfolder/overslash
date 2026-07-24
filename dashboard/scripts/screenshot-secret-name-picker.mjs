@@ -66,7 +66,7 @@ try {
 		await page.locator('text=Resend').first().click();
 		await page.locator('button:has-text("Use this template")').waitFor({ timeout: 10_000 });
 		await page.locator('button:has-text("Use this template")').click();
-		await page.locator('label:has-text("API key secret name")').waitFor({ timeout: 10_000 });
+		await page.locator('label:has-text("Secret name")').waitFor({ timeout: 10_000 });
 
 		// Focus the picker — its <input> is the only one in the secret-name field.
 		// The dropdown opens on focus and shows the seeded secrets.
@@ -90,7 +90,7 @@ try {
 				fullPage: false,
 				waitFor: async (p) => {
 					await p
-						.locator('label:has-text("API key secret name")')
+						.locator('label:has-text("Secret name")')
 						.waitFor({ timeout: 15_000 });
 				}
 			}

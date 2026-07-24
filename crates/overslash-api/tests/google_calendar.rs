@@ -23,7 +23,7 @@
 // Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -125,7 +125,13 @@ async fn test_google_calendar_three_modes() {
     let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
     let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool_for_setup.clone())
-        .create_byoc_credential(ident_id, "google", &encrypted_cid, &encrypted_csec)
+        .create_byoc_credential(
+            ident_id,
+            "google",
+            &encrypted_cid,
+            &encrypted_csec,
+            &serde_json::json!({}),
+        )
         .await
         .unwrap();
     let _conn = overslash_db::scopes::OrgScope::new(org_id, pool_for_setup)

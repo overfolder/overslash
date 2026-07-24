@@ -24,7 +24,7 @@
 // Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use uuid::Uuid;

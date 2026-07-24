@@ -15,7 +15,7 @@
 //!      hard-coded to empty for MCP tools), so the recipient + body land
 //!      on the approval's `disclosed_fields` for the dashboard.
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};

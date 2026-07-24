@@ -1,4 +1,4 @@
-//! Dev-only e2e seeding endpoints.
+//! Dev-only e2e seeding and teardown endpoints.
 //!
 //! Gated behind `DEV_AUTH=1` (same gate as `/auth/dev/token`). The e2e harness
 //! (`scripts/e2e-up.sh`) calls `POST /auth/dev/seed-e2e-idps` after the API
@@ -7,10 +7,19 @@
 //! per-org `org_idp_configs`. This is the only path through which the test
 //! harness can wire the multi-IdP per-org flow without operator intervention.
 //!
-//! The endpoint is idempotent: re-running the seed (e.g. after `e2e-down` /
-//! `e2e-up` cycles) updates existing rows in place.
+//! `DELETE /auth/dev/orgs/{slug}` is the teardown counterpart to
+//! `/auth/dev/token?org=<slug>`: a spec mints a private org, drives the UI
+//! against it, then drops it here (D34).
+//!
+//! Both endpoints are idempotent: re-running the seed (e.g. after `e2e-down` /
+//! `e2e-up` cycles) updates existing rows in place, and deleting an org that is
+//! already gone is a no-op rather than a 404.
 
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    routing::{delete, post},
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -19,7 +28,69 @@ use overslash_core::crypto;
 use overslash_db::repos::{oauth_provider, org, org_idp_config};
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/auth/dev/seed-e2e-idps", post(seed_e2e_idps))
+    Router::new()
+        .route("/auth/dev/seed-e2e-idps", post(seed_e2e_idps))
+        .route("/auth/dev/orgs/{slug}", delete(delete_dev_org))
+}
+
+/// Drop a dev org and everything hanging off it.
+///
+/// This is the teardown half of `/auth/dev/token?org=<slug>`: a spec mints a
+/// private org, drives the UI against it, then deletes it here so a long-lived
+/// local Postgres doesn't accumulate a run's worth of agents, secrets,
+/// services and approvals (which is what happens today — see the scenarios
+/// README's `${name}-${Date.now()}` workaround).
+///
+/// `DELETE FROM orgs` is the whole implementation because the schema already
+/// cascades: every one of the org-scoped tables declares
+/// `REFERENCES orgs(id) ON DELETE CASCADE`. The single non-cascading FK is
+/// `users.personal_org_id`, which is `ON DELETE SET NULL` — so the profile's
+/// `users` row survives as an orphan. That is harmless here (dev profile
+/// emails are per-org, so a recreated org mints fresh ones) and deliberately
+/// not "fixed" by deleting users, which would reach outside the org boundary.
+///
+/// Refuses to touch `dev-org`: that one is shared by every existing screenshot
+/// script and spec, and deleting it mid-suite would be a very confusing
+/// failure somewhere else entirely.
+async fn delete_dev_org(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    Path(slug): Path<String>,
+) -> Result<Json<DeleteOrgResponse>, AppError> {
+    if !state.config.dev_auth_enabled {
+        return Err(AppError::NotFound("not found".into()));
+    }
+    if slug == "dev-org" {
+        return Err(AppError::BadRequest(
+            "refusing to delete the shared 'dev-org'".into(),
+        ));
+    }
+
+    let Some(org_row) = org::get_by_slug(state.db(&ext), &slug).await? else {
+        // Idempotent: a spec's teardown must not fail because a previous
+        // teardown already ran, or because the spec died before creating it.
+        return Ok(Json(DeleteOrgResponse {
+            slug,
+            deleted: false,
+        }));
+    };
+
+    sqlx::query!("DELETE FROM orgs WHERE id = $1", org_row.id)
+        .execute(state.db(&ext))
+        .await
+        .map_err(|e| AppError::Internal(format!("delete dev org {slug}: {e}")))?;
+
+    Ok(Json(DeleteOrgResponse {
+        slug,
+        deleted: true,
+    }))
+}
+
+#[derive(Serialize)]
+struct DeleteOrgResponse {
+    slug: String,
+    /// `false` when the org was already gone — teardown is idempotent.
+    deleted: bool,
 }
 
 #[derive(Deserialize)]

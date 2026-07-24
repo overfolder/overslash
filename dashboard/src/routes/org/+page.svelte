@@ -906,27 +906,11 @@
 		<section class="card">
 			<h2>Service catalog</h2>
 			<p class="section-desc">
-				Controls which global service templates your members can discover and
-				turn into services. Curate the catalog per-template from the
-				<a href="/services?tab=catalog">Services → Catalog</a> tab.
+				Which services members can discover — including the “make all global
+				services available” default and per-service visibility — is curated from
+				the <a href="/services?tab=catalog">Services → Catalog</a> tab.
 			</p>
 			{#if templateSettings}
-				<div class="toggle-row">
-					<div class="toggle-body">
-						<div class="toggle-label">Make all global services available</div>
-						<div class="toggle-help">
-							When on (default), every shipped global template is available to
-							members. When off, only the templates you explicitly enable in the
-							Catalog tab appear — everything else is hidden from discovery.
-						</div>
-					</div>
-					<ToggleSwitch
-						checked={templateSettings.global_templates_enabled}
-						onchange={(next) => patchTemplateSettings({ global_templates_enabled: next })}
-						disabled={templateSettingsSaving}
-						label="Make all global services available"
-					/>
-				</div>
 				<div class="toggle-row">
 					<div class="toggle-body">
 						<div class="toggle-label">Allow services outside the curated catalog</div>
@@ -947,18 +931,28 @@
 				</div>
 				<div class="toggle-row">
 					<div class="toggle-body">
-						<div class="toggle-label">Allow user-defined templates</div>
+						<div class="toggle-label">User-defined layers</div>
 						<div class="toggle-help">
-							Let members define their own user-tier service templates in
-							addition to the org and global catalog.
+							Whether members may create their own user-namespace layers
+							(standalone templates or derived layers). <strong>Restrictive</strong>
+							(mask-only) is reserved and not yet available.
 						</div>
 					</div>
-					<ToggleSwitch
-						checked={templateSettings.allow_user_templates}
-						onchange={(next) => patchTemplateSettings({ allow_user_templates: next })}
+					<select
+						class="policy-select"
+						value={templateSettings.user_template_policy}
+						onchange={(e) =>
+							patchTemplateSettings({
+								user_template_policy: (e.currentTarget as HTMLSelectElement)
+									.value as TemplateSettings['user_template_policy']
+							})}
 						disabled={templateSettingsSaving}
-						label="Allow user-defined templates"
-					/>
+						aria-label="User-defined layer policy"
+					>
+						<option value="none">None</option>
+						<option value="restrictive" disabled>Restrictive (reserved)</option>
+						<option value="full">Full</option>
+					</select>
 				</div>
 				{#if templateSettingsError}
 					<div class="form-error">{templateSettingsError}</div>
@@ -2181,6 +2175,14 @@
 		border: 1px solid var(--color-border);
 		border-radius: 4px;
 		font-size: 0.9rem;
+	}
+	.policy-select {
+		padding: 0.4rem 0.6rem;
+		border: 1px solid var(--color-border);
+		border-radius: 4px;
+		font-size: 0.9rem;
+		background: var(--color-surface, #fff);
+		color: inherit;
 	}
 	.form-actions {
 		display: flex;

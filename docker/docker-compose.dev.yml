@@ -94,6 +94,75 @@ services:
     depends_on:
       - api
 
+  # ── Mail stack (e2e only) ────────────────────────────────────────────
+  #
+  # A real mailbox, reached through the real gateway. `services/email.yaml`
+  # targets overfwd, a REST→IMAP/SMTP gateway; pointing it at a hand-written
+  # HTTP fake would prove only that we can echo JSON back to ourselves. These
+  # two give the e2e suite an actual IMAP conversation to assert on.
+  #
+  # Both carry the `mail` profile, but don't rely on it alone: podman-compose
+  # 1.0.6 has no `--profile` flag and ignores the key. Every other target names
+  # its services explicitly, so a bare `make local` never starts these;
+  # `scripts/e2e-up.sh` (via `make mail-up`) does.
+  greenmail:
+    profiles: ["mail"]
+    image: greenmail/standalone:2.1.11
+    environment:
+      # Appended to the image's own GREENMAIL_OPTS (which already sets
+      # setup.test.all, hostname=0.0.0.0 and auth.disabled), so the stock
+      # port layout stays: smtp 3025, imap 3143, REST api 8080.
+      #
+      # `users.login=email` makes the full address the login. Without it the
+      # login is the local part only (`e2e`), which would then be a username
+      # with no `@` — and a login with no domain is exactly the case overfwd's
+      # autoconfig cannot resolve.
+      GREENMAIL_ADDITIONAL_OPTS: >-
+        -Dgreenmail.users=e2e:e2epass@example.com
+        -Dgreenmail.users.login=email
+    ports:
+      - "127.0.0.1:${GREENMAIL_API_PORT:-38080}:8080"
+      - "127.0.0.1:${GREENMAIL_SMTP_PORT:-33025}:3025"
+    healthcheck:
+      # The image ships no curl/wget/nc — only bash. /dev/tcp is the one
+      # in-container probe available.
+      test:
+        - CMD
+        - bash
+        - -c
+        - "exec 3<>/dev/tcp/127.0.0.1/8080; printf 'GET /api/service/readiness HTTP/1.0\\r\\n\\r\\n' >&3; head -1 <&3 | grep -q '200 OK'"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  overfwd:
+    profiles: ["mail"]
+    # Pinned, not `:latest`. e2e-up.sh hard-fails the whole bring-up when the
+    # mail stack doesn't start, so an upstream push to a mutable tag would
+    # break every e2e run, not just the email story.
+    # 0.4.0 is the first release where an unparseable IMAP SEARCH key fails
+    # loudly instead of coming back as `200 []`. The e2e mail story asserts
+    # that behaviour, so the pin is a floor, not just a stability choice.
+    image: angelmanuel/overfwd:0.4.0
+    environment:
+      OVERFWD_BIND: 0.0.0.0:8000
+      # Keyless: exercises the template's `optional` gateway scheme, where the
+      # Authorization header is omitted rather than failing on a missing
+      # secret. The e2e suite still stores a gateway key to prove the org-vault
+      # path works; overfwd simply doesn't require it.
+      OVERFWD_REQUIRE_API_KEY: "false"
+      # Autoconfig does live ISPDB/DNS lookups that can't resolve a container
+      # hostname. Off means a missing endpoint header fails loudly as
+      # `bad_request` instead of silently reaching for the public internet
+      # from inside a test run.
+      OVERFWD_AUTOCONFIG_ENABLE: "false"
+    ports:
+      - "127.0.0.1:${OVERFWD_PORT:-38000}:8000"
+    depends_on:
+      greenmail:
+        condition: service_healthy
+
 volumes:
   pgdata:
   cargo-cache:

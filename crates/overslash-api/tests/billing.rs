@@ -4,7 +4,7 @@
 // Test setup requires dynamic SQL.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use axum::{Json, Router, extract::Form, routing::post};
 use hmac::{Hmac, KeyInit, Mac};

@@ -55,6 +55,7 @@ pub(super) fn classify_oauth(err: &OAuthError) -> OAuthOutcome {
     match err {
         OAuthError::RefreshFailed(_) => OAuthOutcome::Reauth("refresh_token_failed"),
         OAuthError::NoRefreshToken => OAuthOutcome::Reauth("no_refresh_token"),
+        OAuthError::ReauthRequired(_) => OAuthOutcome::Reauth("credential_replaced"),
         OAuthError::CryptoError(_)
         | OAuthError::DbError(_)
         | OAuthError::ParseError(_)
@@ -551,25 +552,29 @@ pub(crate) async fn resolve_mcp_oauth_bearer(
     // Owner identity (D22): connections resolve at the owner, shared by every
     // child agent, so one reauth heals all.
     owner_identity_id: Uuid,
+    // Instance whose OAuth actions we're minting for. Drives connection
+    // precedence (explicit binding → default → opt-out); `None` (e.g. the
+    // replay path) always uses the owner's default connection.
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
     provider: &str,
     return_url_hint: Option<&str>,
 ) -> Result<Option<AuthHeader>, AppError> {
     let org_id = scope.org_id();
-    let user_scope =
-        overslash_db::scopes::UserScope::new(org_id, owner_identity_id, scope.db().clone());
     let enc_key = state
         .config
         .keyring()
         .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
 
-    let conn = match user_scope.find_my_connection_by_provider(provider).await {
-        Ok(Some(conn)) => conn,
-        Ok(None) => return Ok(None),
-        Err(e) => {
-            return Err(AppError::Internal(format!(
-                "connection lookup for provider '{provider}' failed: {e}"
-            )));
-        }
+    let conn = match super::mcp_resolve::resolve_instance_connection(
+        scope,
+        owner_identity_id,
+        instance,
+        provider,
+    )
+    .await?
+    {
+        Some(conn) => conn,
+        None => return Ok(None),
     };
 
     // Client credentials for refresh — resolves the connection's pinned BYOC,
@@ -661,25 +666,18 @@ pub(super) async fn check_required_scopes(
     };
 
     let org_id = scope.org_id();
-    let user_scope =
-        overslash_db::scopes::UserScope::new(org_id, owner_identity_id, scope.db().clone());
 
     // Resolve the connection the exec path would actually use — instance's
-    // explicit binding takes precedence, else `find_my_connection_by_provider`.
-    let connection = if let Some(inst) = instance {
-        if let Some(conn_id) = inst.connection_id {
-            scope.get_connection(conn_id).await?
-        } else if inst.use_default_connection {
-            user_scope.find_my_connection_by_provider(&provider).await?
-        } else {
-            // Opted out of the default-connection fallback: the exec path
-            // resolves no connection (yields `needs_authentication`), so there
-            // is nothing to gate here. Mirror `resolve_instance_auth`.
-            None
-        }
-    } else {
-        user_scope.find_my_connection_by_provider(&provider).await?
-    };
+    // explicit binding takes precedence, else the owner's default connection.
+    // Shared with the exec/resync OAuth-bearer path so the gate and the token
+    // are always read from the same connection.
+    let connection = super::mcp_resolve::resolve_instance_connection(
+        scope,
+        owner_identity_id,
+        instance,
+        &provider,
+    )
+    .await?;
 
     let Some(connection) = connection else {
         // Fall through — auth resolution will report the missing connection
@@ -1068,25 +1066,189 @@ pub(crate) async fn resolve_instance_auth(
         }
     }
 
-    // If instance has a bound secret_name AND the template declares ApiKey auth, use it.
-    // OAuth-only templates never reach the ApiKey branch; `secret_name` would be either
-    // already NULL (migration 037) or blocked at create/update by the services API.
-    if let Some(ref secret_name) = instance.secret_name {
-        for service_auth in &svc.auth {
-            if let overslash_core::types::ServiceAuth::ApiKey { injection, .. } = service_auth {
-                return Ok(ResolvedAuth::secrets_only(vec![SecretRef {
-                    name: secret_name.clone(),
-                    inject_as: if injection.inject_as == "query" {
-                        InjectAs::Query
-                    } else {
-                        InjectAs::Header
-                    },
-                    header_name: injection.header_name.clone(),
-                    query_param: injection.query_param.clone(),
-                    prefix: injection.prefix.clone(),
-                }]));
+    // Build a SecretRef per secret-backed scheme the template declares. Each
+    // scheme reads one or more credential *slots*, and each slot resolves its
+    // vault secret name independently:
+    //   1. the instance's explicit per-slot binding (`credentials[slot]`),
+    //   2. else the legacy scalar `secret_name` (instance-source, and only for
+    //      a scheme that reads a single slot — with several the alias would be
+    //      ambiguous, which is what `reconcile_credentials` refuses to store),
+    //   3. else the slot's fixed `default_secret_name` from the org vault
+    //      (org-source slots only — a shared org-wide default).
+    // That is what lets one overfwd instance carry both the per-mailbox
+    // `X-Mailbox-Auth: Basic base64(user:pass)` — itself joined from two
+    // separate secrets — and its own gateway `Authorization: Bearer …` on the
+    // same request. OAuth-only templates declare no secret scheme and fall
+    // through; instances with empty `credentials` keep the historical
+    // behaviour exactly (steps 2 and 3).
+    let mut secret_refs: Vec<SecretRef> = Vec::new();
+    let mut instance_secret_missing = false;
+    // Where this instance's traffic lands — the same derivation the executor
+    // uses, so the platform-credential host check below can't disagree with the
+    // URL actually dialled. Only consulted for the platform rung.
+    let platform_base =
+        crate::routes::actions::service_resolve::effective_base(Some(instance), svc);
+    for service_auth in &svc.auth {
+        let overslash_core::types::ServiceAuth::Secret {
+            scheme,
+            injection,
+            template,
+            ..
+        } = service_auth
+        else {
+            continue;
+        };
+
+        let slots = svc.slots_for(service_auth);
+        let single_slot = slots.len() == 1;
+        let mut bindings = std::collections::BTreeMap::new();
+        let mut config = std::collections::BTreeMap::new();
+        // A scheme is emitted only when every slot it reads resolved; a
+        // half-composed header would authenticate as nobody.
+        let mut scheme_unresolved = false;
+
+        for slot in &slots {
+            let name = if let Some(bound) = instance.credentials.get(&slot.key) {
+                // Explicitly bound per instance. An explicit binding on an
+                // `optional` slot makes it required: the user asked for this
+                // credential, so a missing secret surfaces as a send-time
+                // error instead of being silently skipped.
+                bound.clone()
+            } else {
+                match slot.source {
+                    overslash_core::types::SecretSource::Org => {
+                        // An optional org credential (e.g. an overfwd gateway key
+                        // when the gateway runs with OVERFWD_REQUIRE_API_KEY=false)
+                        // is injected only if the org has configured it — a keyless
+                        // deployment simply omits it rather than failing on a
+                        // missing secret. Required org slots fall through to the
+                        // send-time `secret not found` error as before.
+                        //
+                        // …unless the platform itself holds a credential for
+                        // this slot on the host this request is bound for
+                        // (D39): the shared Mailbox Gateway requires a key, and
+                        // asking every org to store the same platform key would
+                        // be absurd. The org vault still wins — this only
+                        // decides whether an *absent* org secret means "skip
+                        // the header" or "the platform will supply it at send
+                        // time"; the value itself is resolved (and host-checked
+                        // again) in `resolve_credential_values`.
+                        if slot.optional
+                            && scope
+                                .get_current_secret_value(&slot.default_secret_name)
+                                .await?
+                                .is_none()
+                            && platform_base
+                                .as_deref()
+                                .and_then(|base| {
+                                    state
+                                        .config
+                                        .platform_credential_for(&slot.default_secret_name, base)
+                                })
+                                .is_none()
+                        {
+                            scheme_unresolved = true;
+                            break;
+                        }
+                        slot.default_secret_name.clone()
+                    }
+                    overslash_core::types::SecretSource::Instance => {
+                        match instance.secret_name.as_ref().filter(|_| single_slot) {
+                            Some(n) => n.clone(),
+                            // The template requires a per-instance credential but
+                            // the instance has none bound. Record it so we DON'T
+                            // return the org-source keys alone — a partial
+                            // injection would send an incomplete request (e.g.
+                            // gateway Bearer without the mailbox `X-Mailbox-Auth`)
+                            // that fails downstream instead of cleanly prompting
+                            // the caller to bind the credential.
+                            None => {
+                                if !slot.optional {
+                                    instance_secret_missing = true;
+                                }
+                                scheme_unresolved = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            };
+            // A blank resolved name can only come from corrupted stored data
+            // (API validation rejects blank bindings and blank org defaults).
+            // For a required slot treat it like an unbound credential —
+            // silently skipping would inject the OTHER schemes and send a
+            // partially-authenticated request downstream.
+            if name.is_empty() {
+                if !slot.optional {
+                    instance_secret_missing = true;
+                }
+                scheme_unresolved = true;
+                break;
+            }
+            bindings.insert(slot.key.clone(), name);
+        }
+
+        // The non-secret half of the same credential. Same two sources, same
+        // precedence, as any other key of the instance's `config` map: the
+        // instance's own value, else the org layer's `instance_defaults.config`
+        // (see `apply_instance_config`). Unlike a slot there is no vault
+        // fallback — a config var is never in the vault.
+        for var in svc.config_for(service_auth) {
+            let value = instance
+                .config
+                .0
+                .get(&var.key)
+                .or_else(|| {
+                    svc.instance_defaults
+                        .as_ref()
+                        .and_then(|d| d.config.get(&var.key))
+                })
+                .cloned();
+            match value {
+                Some(v) => {
+                    config.insert(var.key.clone(), v);
+                }
+                // Required and unset is the same failure as an unbound slot,
+                // and must be treated the same: emitting the scheme anyway
+                // would render a truncated credential (`Basic base64(":pass")`)
+                // that reads downstream as a wrong password rather than as
+                // missing configuration.
+                None if var.required => {
+                    instance_secret_missing = true;
+                    scheme_unresolved = true;
+                    break;
+                }
+                // Optional and unset: the expression must tolerate it (jq's
+                // `// ""`), so leave the key out and let the template decide.
+                None => {}
             }
         }
+
+        if scheme_unresolved || bindings.is_empty() {
+            continue;
+        }
+
+        secret_refs.push(SecretRef {
+            name: scheme.clone(),
+            inject_as: if injection.inject_as == "query" {
+                InjectAs::Query
+            } else {
+                InjectAs::Header
+            },
+            header_name: injection.header_name.clone(),
+            query_param: injection.query_param.clone(),
+            template: template.clone(),
+            bindings,
+            config,
+            ..Default::default()
+        });
+    }
+    // Only return credentials when the full set the template requires is
+    // available. A missing instance-source secret falls through to the
+    // auto-resolve / `needs_authentication` path below (matching the historical
+    // single-apiKey behaviour: an unbound instance was never partially injected).
+    if !instance_secret_missing && !secret_refs.is_empty() {
+        return Ok(ResolvedAuth::secrets_only(secret_refs));
     }
 
     // No bound credentials on instance. Before falling back to auto-resolve
@@ -1146,6 +1308,12 @@ mod tests {
         }
         match classify_oauth(&OAuthError::NoRefreshToken) {
             OAuthOutcome::Reauth(reason) => assert_eq!(reason, "no_refresh_token"),
+            other => panic!("expected Reauth, got {other:?}"),
+        }
+        // A connection flagged `reauth_required` (its BYOC client was replaced)
+        // maps to the distinct `credential_replaced` reason.
+        match classify_oauth(&OAuthError::ReauthRequired("byoc_client_replaced".into())) {
+            OAuthOutcome::Reauth(reason) => assert_eq!(reason, "credential_replaced"),
             other => panic!("expected Reauth, got {other:?}"),
         }
     }

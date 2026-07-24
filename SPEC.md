@@ -191,7 +191,7 @@ Users authenticate to Overslash via external Identity Providers (IdPs). Overslas
 - *Corp org, as member* — sign in through any IdP the org has enabled on `<slug>.app.overslash.com` (per-org `org_idp_configs` row, or Overslash's shared OAuth app when the org opts in). Two admission paths, picked by the org admin:
   - **Domain-whitelist path** (default for pre-2026-05 orgs): auto-provisioning is gated by `org_idp_configs.allowed_email_domains` (empty list = trust the IdP entirely).
   - **Managed sign-in path** (`orgs.allow_overslash_managed_signin = true`, default for orgs created after migration 066): authentication via Overslash's shared OAuth apps is decoupled from membership — the IdP proves who you are, and a second gate proves you belong. Migration 092 makes that gate configurable via `orgs.require_invite_admission` (default `true`):
-    - *Invite-required* (`require_invite_admission = true`, the default): every new member must have a pending `org_invites(email, role)` row — regardless of which IdP authenticates them. Membership crossing trust domains is blocked unless the admin explicitly invites the email.
+    - *Invite-required* (`require_invite_admission = true`, the default): every new member must already exist as a pre-created user identity for that email (an invite, or an impersonation-provisioned member) — regardless of which IdP authenticates them. First sign-in adopts that identity by email. Membership crossing trust domains is blocked unless the admin explicitly invites the email.
     - *Domain-allowlist* (`require_invite_admission = false`): any verified email whose domain is on the org-wide `orgs.managed_signin_allowed_domains` list self-provisions as `member` on first login, no invite needed. An **empty** allowlist here is a misconfiguration, not "admit everyone" — sign-in is rejected. This is distinct from the per-provider `org_idp_configs.allowed_email_domains` used by the domain-whitelist path above; the managed list is org-wide because the managed path admits through multiple env-var providers sharing one trust boundary (the operator's env creds).
 
 **No cross-IdP account linking.** A human who uses Google for personal and Okta for Acme has two distinct `users` rows. This is intentional: Google and Okta are different trust domains and the system treats them as such. See [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md).
@@ -235,6 +235,34 @@ After enrollment, an identity's configuration remains mutable:
 
 A live pointer (not a copy). When set on an identity, it dynamically has whatever permissions its parent has — current AND future. Parent gains a rule tomorrow, child gains it too.
 
+### Impersonation (`X-Overslash-As`)
+
+An API key that carries the `impersonate` scope (admin-minted only) may execute any request as another identity **in its own org**. The target is named by the `X-Overslash-As` header, which accepts three forms:
+
+| Header value | Resolves to |
+|---|---|
+| `<uuid>` | an existing identity, by id — never created |
+| `alice@acme.com` | the user with that email — **created on demand** if the org has never seen it |
+| `alice@acme.com/henry/researcher` | that user, then a slash-separated path of agent names beneath her — **each missing level created on demand** (`henry` as an `agent`, `researcher` as a `sub_agent`, …) |
+
+The value splits on `/`: the first segment is the user (a UUID or an email — neither can contain `/`), and each remaining segment is an agent name, resolved then created one level at a time. The effective identity is the last segment; all downstream permission checks, approvals, and audit run as it. A UUID first segment may also carry a path (`<uuid>/henry`) provided it names a user.
+
+Auto-created identities are unprivileged by construction: user identities are bare org members (`external_id IS NULL` — "belongs to the org, has never signed in"), and agents never inherit permissions. Every auto-creation writes an `identity.provisioned` audit row attributing it to the impersonating key. The existing ACL cap still applies to the **final** effective identity — an impersonation key can never reach an identity whose access exceeds the key's own.
+
+A path deeper than 8 agent segments, a malformed root (neither UUID nor email), or an empty segment is a `400`; an archived target is `403`; the header without the `impersonate` scope is `403`. This is the primary integration surface for white-label backends (e.g. Overfolder) that act on their users' behalf without pre-syncing Overslash UUIDs.
+
+### Members are identities; invites are pre-created members
+
+A person "belongs to an org" iff there is a `kind='user'` identity for them in that org. There is exactly one such identity per person per org, and it is created by any of three paths — an admin invite, name-based impersonation, or a first SSO sign-in — that all converge on the same row:
+
+- A **pending invite** is a user identity with `external_id IS NULL` (invited, never signed in); an **admin invite** additionally carries `is_org_admin` + Admins-group membership.
+- **First sign-in adopts by email**: the OAuth callback finds the pre-created identity by verified email and stamps the IdP subject onto it, rather than forking a second identity — so the person lands on their pre-created agents, connections, and audit history. `orgs.require_invite_admission` keeps its meaning: with it on, a verified email with no pre-created identity is rejected `not_invited`.
+- A second IdP for the same email is admitted by email onto that same identity; one human = one identity per org. `external_id` stays pinned to the subject that *originally* claimed the identity — it is never rewritten by a later provider, so it cannot flip-flop as a member alternates IdPs (which would make the `(org_id, external_id)` fast path and cross-org subject matching depend on whichever login happened last).
+
+**Impersonation-provisioning is an admission decision.** A pre-created identity satisfies `require_invite_admission` regardless of which admin-authorized path created it — an explicit invite or name-based impersonation. This is not a bypass: the `impersonate` scope is admin-minted, and the provisioned row is *already* a full member (Everyone + Myself groups) the moment it is created, before any login. Refusing to adopt it at sign-in would not unmake the member; it would only stop the real human from ever logging into an account that is already theirs. Because adoption is the moment a pre-created identity becomes a human-usable login, it emits an `identity.adopted` audit row carrying `provisioned_by` (`invite` vs `impersonation`), so an org can tell the two admission paths apart after the fact.
+
+(The former `org_invites` table was folded into `identities` by migration 103; the `/v1/org-invites` API keeps its wire shape as a projection over user identities.)
+
 ---
 
 ## 5. Permission System
@@ -258,6 +286,42 @@ This format covers every level of abstraction — from registry-defined actions 
 | `http:POST:api.example.com` | Raw HTTP to a specific host |
 | `http:ANY:*` | Unrestricted HTTP proxy |
 | `secret:gh_token:api.github.com` | Inject a specific secret toward a specific host |
+| `email:send:recipient=jane@example.com` | Registry action, scoped to one labelled value |
+| `email:send:recipient=*@example.com` | …the same label, any address in a domain |
+
+**Labelled args.** `{arg}` is either a bare value or `{label}={value}`. The
+label comes from the action's `scope_param` (see §9) and names *what kind of
+thing* the value is, which is what lets several params share one grant: `email`
+scopes `to`, `cc`, and `bcc` all under `recipient`, so one key covers an address
+wherever it appears — and a bcc to an outsider is gated exactly like a to. An
+action scoping a single param labels it with the param name
+(`github:get_repo:repo=acme/api`).
+
+A **value-only** pattern matches a labelled key **on any label**; a
+`label=`-qualified pattern matches only that label. Every rule written before
+labels existed therefore keeps working, and a narrower rule is available when
+the header actually matters:
+
+| Rule | `to=a@example.com` | `cc=a@example.com` |
+|---|---|---|
+| `email:send:*@example.com` (value-only) | ✅ | ✅ |
+| `email:send:cc=*@example.com` | ❌ | ✅ |
+| `email:send:*` | ✅ | ✅ |
+
+The equivalence is one-way. A `label=`-qualified pattern does **not** cover a
+label-less key: nothing in `email:send:a@example.com` says which header carried
+that address, so a `cc=`-scoped grant cannot be honoured over it without
+granting more than the rule states. This is only observable for permission keys
+persisted on an approval before the action gained a label — live calls always
+derive the current shape.
+
+A prefix counts as a label only when everything before the **first** `=` is a
+bare identifier (`[A-Za-z_][A-Za-z0-9_]*`); otherwise the whole arg is the
+value, so `http:GET:api.example.com/x?a=1` is never sliced. The parse is purely
+lexical — an *unlabelled* arg that happens to read `word=rest` is therefore
+treated as labelled, and gains the value-only match form `…:rest`. Derived args
+are `*`, a URL/host, or a `label=`-prefixed scope value, none of which hit that
+case; it is a consideration only for hand-written rules.
 
 **Special action values:**
 - **HTTP verbs** (`GET`, `POST`, `PUT`, `DELETE`, etc.) — allow specific HTTP methods against the service
@@ -547,10 +611,13 @@ When an approval is created, Overslash derives the most specific permission keys
   "status": "pending",
   "identity": "spiffe://acme/user/alice/agent/henry",
   "derived_keys": [
-    { "key": "github:create_pull_request:overfolder/backend",
-      "service": "github", "action": "create_pull_request", "arg": "overfolder/backend" }
+    { "key": "github:create_pull_request:repo=overfolder/backend",
+      "service": "github", "action": "create_pull_request",
+      "arg": "repo=overfolder/backend", "param": "repo", "value": "overfolder/backend" }
   ],
   "suggested_tiers": [
+    { "keys": ["github:create_pull_request:repo=overfolder/backend"],
+      "description": "Create pull request on repo overfolder/backend" },
     { "keys": ["github:create_pull_request:overfolder/backend"],
       "description": "Create pull request on overfolder/backend" },
     { "keys": ["github:create_pull_request:*"],
@@ -568,8 +635,10 @@ For multi-key requests (e.g., `http` service with secret injection), keys within
 ```json
 {
   "derived_keys": [
-    { "key": "http:POST:api.example.com", "service": "http", "action": "POST", "arg": "api.example.com" },
-    { "key": "secret:api_key:api.example.com", "service": "secret", "action": "api_key", "arg": "api.example.com" }
+    { "key": "http:POST:api.example.com", "service": "http", "action": "POST",
+      "arg": "api.example.com", "value": "api.example.com" },
+    { "key": "secret:api_key:api.example.com", "service": "secret", "action": "api_key",
+      "arg": "api.example.com", "value": "api.example.com" }
   ],
   "suggested_tiers": [
     { "keys": ["http:POST:api.example.com", "secret:api_key:api.example.com"],
@@ -676,7 +745,7 @@ Auth-recovery for white-label end users is governed by a per-org **`headless`** 
 
 All action execution goes through a single endpoint. The caller specifies a service instance and action — the level of abstraction is determined by what they choose:
 
-**Service + defined action** — the caller names a service instance and a template-defined action (e.g., `github` + `create_pull_request`). Overslash builds the HTTP request from the template definition. Auth auto-resolved from the service's credentials. Derives key: `github:create_pull_request:{resource}`.
+**Service + defined action** — the caller names a service instance and a template-defined action (e.g., `github` + `create_pull_request`). Overslash builds the HTTP request from the template definition. Auth auto-resolved from the service's credentials. Derives key: `github:create_pull_request:repo={resource}` (the label comes from the action's `scope_param`; see §5).
 
 **Service + HTTP verb** — the caller names a service instance and an HTTP method + path (e.g., `github` + `POST /repos/X/pulls`). Auth is auto-injected from the service's credentials. For agents that know the API but want Overslash to handle auth. Derives key: `github:POST:/repos/X/pulls`.
 
@@ -746,13 +815,15 @@ Templates live in a three-tier registry:
 
 **Org**: Org-admins create templates for the org's internal or niche APIs. Visible to all org members (templates are blueprints — visibility doesn't grant access, creating a service instance does).
 
-**User**: Users create personal templates for APIs only they use. Gated by org setting (`allow_user_templates`). Private by default. Users can **propose sharing** a template to org level — org-admin reviews and approves or denies.
+**User**: Users create personal templates for APIs only they use. Gated by org setting (`user_template_policy`: `none` | `restrictive` (reserved) | `full`). Private by default. Users can **propose sharing** a template to org level — org-admin reviews and approves or denies.
 
 **Org-admin visibility**: Org-admins can see all templates in the org (global + org + user-created) in a read-only list for security/compliance — they need to know what external APIs their users are connecting to.
 
+**Layers (`extends`/`delta`).** Each org/user template row is a **layer**. A **standalone** layer (`extends` NULL) holds a full OpenAPI doc (the classic org/user template). A **derived** layer (`extends` set) holds a *delta* over a base template named by `extends` (resolved by key: DB rows then the global registry), and its effective template is the **fold** `resolve(layer) = apply(delta, resolve(extends))`. The delta's **masks** are restrictive and order-independent — action `allowlist` (∩) / `denylist` (\), per-action `risk` clamp-**up**-only, additive `disclose`, relabel, template `hidden` — so `resolve(child) ⊆ resolve(base)` (a child can never re-expose what a parent hid); its **extensions** add new actions/hosts only (no auth, no rebinding). An **org** layer may additionally carry `instance_defaults` — non-secret presets (endpoint `url` + `x-overslash-instance-config` values) that every service instance created from the layer inherits unless it sets its own, so an org running its own deployment (its overfwd Mailbox Gateway, its self-hosted MCP server) names it once instead of on every user's instance. `extends` is a **live pointer**: editing a base (or Overslash shipping a new global version) propagates to every descendant immediately. `extends` and the layer's own `key` are decoupled — reusing the base key shadows it (curation that agents get transparently), a distinct key is a separate catalog entry alongside the base. Discovery, instantiation, and **execution** all resolve through the fold, so a masked-out action is unreachable everywhere. See [DECISIONS.md D26](DECISIONS.md) and [docs/design/layered-service-templates.md](docs/design/layered-service-templates.md).
+
 ### Template Definition
 
-Templates are authored as OpenAPI 3.1 documents. Five AI-gateway-specific fields that OpenAPI cannot express natively live under the `x-overslash-*` vendor-extension namespace: `risk`, `scope_param`, `resolve`, `provider`, `default_secret_name`. For authoring ergonomics, the same keys may also be written without the prefix (just `risk:`, `scope_param:`, etc.) — the backend normalizes aliases to their canonical `x-overslash-*` form on load and before persist. Ambiguous documents (both forms present on the same object) are rejected with a stable `ambiguous_alias` error.
+Templates are authored as OpenAPI 3.1 documents. Six AI-gateway-specific fields that OpenAPI cannot express natively live under the `x-overslash-*` vendor-extension namespace: `risk`, `scope_param`, `resolve`, `aliases`, `provider`, `default_secret_name`. For authoring ergonomics, the same keys may also be written without the prefix (just `risk:`, `scope_param:`, etc.) — the backend normalizes aliases to their canonical `x-overslash-*` form on load and before persist. Ambiguous documents (both forms present on the same object) are rejected with a stable `ambiguous_alias` error.
 
 ```yaml
 openapi: 3.1.0
@@ -785,6 +856,7 @@ paths:
         resolve:                    # alias for x-overslash-resolve
           get: /calendar/v3/calendars/{calendarId}
           pick: summary
+        aliases: [calendar, cal]    # alias for x-overslash-aliases
     post:
       operationId: create_event
       summary: "Create event '{summary}' on calendar {calendarId}"
@@ -805,10 +877,11 @@ paths:
 
 **Key gateway-specific fields:**
 - **`x-overslash-risk` / `risk:`** — enum: `read`, `write`, `delete`. Defaults to a value inferred from the HTTP method (GET/HEAD/OPTIONS → read, DELETE → delete, else write). Influences auto-approve-reads behavior.
-- **`x-overslash-scope_param` / `scope_param:`** — which parameter provides the `{arg}` segment in permission keys. Without it, the arg is `*`.
+- **`x-overslash-scope_param` / `scope_param:`** — which parameter(s) provide the `{arg}` segment in permission keys. Without it, the arg is `*`. Accepts a param name (`scope_param: repo`), a `param:label` pair, or a list of either (`scope_param: [to:recipient, cc:recipient, bcc:recipient]`). Each value mints one `{service}:{action}:{label}={value}` key — an array-valued param fans out per element — and the label defaults to the param name. Keys are deduped, so params sharing a label collapse a value that appears in more than one of them into a single key (and a single approval). See §5 for how rules match labelled keys.
 - **`x-overslash-resolve` / `resolve:`** — on a parameter, fetch a human-readable name for an opaque ID. Runs a follow-up GET against the service and extracts a field. Used in agent-facing descriptions.
+- **`x-overslash-aliases` / `aliases:`** — on a parameter, a list of alternate caller-facing names (e.g. `[to, dest]` on a `recipient` param). A call that supplies an alias key instead of the canonical name has it rewritten to the canonical name before validation, so a well-known synonym is accepted rather than rejected as an unknown argument. A declared field always wins over an alias that collides with it, and an alias claimed by two params is ambiguous and ignored (the caller gets the normal unknown-argument error, with a Levenshtein "did you mean" suggestion). The unprefixed `aliases:` form is normalized on `parameters[]` entries; body-schema properties use the canonical `x-overslash-aliases` key (same as `resolve`).
 - **`x-overslash-provider` / `provider:`** — on an `oauth2` security scheme, the symbolic OAuth provider name (`google`, `slack`, `github`, ...). Decoupled from OAuth URLs so the gateway can resolve credentials independently.
-- **`x-overslash-default_secret_name` / `default_secret_name:`** — on an `apiKey` or `http` security scheme, the canonical secret name for auto-wiring. Templates are expected to declare **either** an OAuth scheme **or** an apiKey/http scheme with this field — OAuth templates don't fall back to an API key secret.
+- **`x-overslash-default_secret_name` / `default_secret_name:`** — on an `apiKey` or `http` security scheme, the canonical secret name for auto-wiring. Templates are expected to declare **either** an OAuth scheme **or** an apiKey/http scheme with this field — OAuth templates don't fall back to a secret.
 - **Platform-namespace actions** — `x-overslash-platform_actions` (alias `platform_actions:`) at the top level declares permission anchors with no HTTP binding (e.g. the `overslash` meta service's admin actions).
 
 ### OAuth Scopes
@@ -840,14 +913,14 @@ At connect time, the caller picks which scopes to request from the service's sup
 
 ### Secret-Token Templates
 
-Templates whose `auth.type` is `api_key` (or any other secret-token variant) declare two extra fields to make the secret-provide flow usable:
+Templates whose `auth.type` is `secret` declare two extra fields to make the secret-provide flow usable:
 
 ```yaml
 key: linear
 display_name: Linear
 hosts: [api.linear.app]
 auth:
-  - type: api_key
+  - type: secret
     instructions: "Paste your Linear personal API key. Find it at https://linear.app/settings/api"
     injection: { as: header, header_name: Authorization, prefix: "Bearer " }
     verify:
@@ -943,7 +1016,7 @@ There is intentionally **no `Draft` state**. A service is either configured-and-
 1. Pick a template (from global/org/user templates)
 2. Name the service instance — defaults to the template key (e.g., `google-calendar`). Rename to create additional instances (e.g., `personal-calendar`).
 3. OAuth client override (optional) — for templates that use OAuth, the user can optionally provide their own OAuth app credentials (client ID + client secret). If provided, these are stored as secrets `OAUTH_{PROVIDER}_CLIENT_ID` / `OAUTH_{PROVIDER}_CLIENT_SECRET` in the user's vault and used instead of org or system credentials for this user's connections to this provider. If omitted, the cascade (§7) resolves credentials normally.
-4. Connect credentials — OAuth flow, API key input, or shared credential (for org services)
+4. Connect credentials — OAuth flow, secret input, or shared credential (for org services)
 5. Optionally assign to groups (org-admin only)
 
 For org services with OAuth (per-user tokens): the org-admin configures the org's OAuth app credentials as org-level secrets (`OAUTH_{PROVIDER}_CLIENT_ID` / `SECRET`, configured in Org Settings → OAuth App Credentials). Users in the assigned groups see the service and complete their individual OAuth flow using the org's app credentials. The service is shared, but each user has their own token.
@@ -1062,7 +1135,7 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 | `invalid_key` | service `key` does not match `^[a-z][a-z0-9_-]*$` |
 | `invalid_action_key` | action key does not match `^[a-z][a-z0-9_]*$` |
 | `invalid_host` | host is empty, contains scheme, path, or whitespace |
-| `unknown_auth_type` | `auth[i].type` is not `oauth` or `api_key` (also surfaces as a `schema_error` on JSON input) |
+| `unknown_auth_type` | `auth[i].type` is not `oauth` or `secret` (also surfaces as a `schema_error` on JSON input) |
 | `incomplete_token_injection` | `token_injection.as="header"` without `header_name`, or `"query"` without `query_param` |
 | `invalid_token_injection` | `token_injection.as` is not `"header"` or `"query"` |
 | `invalid_http_method` | action `method` is not one of GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS |
@@ -1075,7 +1148,8 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 | `invalid_description_syntax` | description has an unclosed `{` placeholder |
 | `unknown_description_param` | `{param}` in description does not reference a defined param |
 | `unknown_resolver_param` | `{param}` in `resolve.get` does not reference a defined param on the same action |
-| `unknown_scope_param` | `scope_param` does not reference a defined param |
+| `unknown_scope_param` | a `scope_param` entry does not reference a defined param |
+| `invalid_scope_param` | `scope_param` is not a param name / `param:label` pair / list of them |
 | `invalid_response_type` | `response_type` is set to something other than `"json"` or `"binary"` |
 | `duplicate_action_key` | the `actions:` mapping in YAML defines the same key twice |
 | `yaml_parse` | YAML source could not be parsed (wrapped serde_yaml error) |
@@ -1156,7 +1230,7 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
       "description": "Send email '{subject}' to {to}",
       "risk": "write",
       "tier": "global",
-      "auth": { "type": "api_key", "connected": true },
+      "auth": { "type": "secret", "connected": true },
       "score": 0.74
     }
   ]
@@ -1173,14 +1247,14 @@ Each callable row carries everything an agent needs to pick the right instance:
 
 - **`service`** — the instance's runtime name (e.g. `gmail_work`). Unique per `(org, owner, name)`. Pass it verbatim as `overslash_call.service`.
 - **`template`** — the underlying template key (e.g. `gmail`). Lets the agent recognise that `gmail_work` and `gmail_personal` are siblings.
-- **`account_email`** — for OAuth-backed instances, the email returned by the upstream userinfo endpoint at OAuth time. Sourced from `connections.account_email`. Absent for api-key services.
-- **`secret_name`** — for api-key-backed instances, the variable name of the secret that backs the instance. The value, version, and encryption envelope are **never** exposed via this or any other API.
+- **`account_email`** — for OAuth-backed instances, the email returned by the upstream userinfo endpoint at OAuth time. Sourced from `connections.account_email`. Absent for secret-based services.
+- **`secret_name`** — for secret-based instances, the variable name of the secret that backs the instance. The value, version, and encryption envelope are **never** exposed via this or any other API.
 
 When two instances share the same `account_email` (two services pinned to one OAuth connection) or the same `secret_name`, the `service` (instance name) is the disambiguator — it always uniquely identifies the row.
 
 **Action definitions are DRY; rows are not.** Actions are defined once on the template (in the global YAML under `services/` or in `service_templates.openapi`). A keyword match against `(template, action)` fans out into one row per visible instance so the agent can pick a callable directly; the underlying definition is shared.
 
-**Visibility** matches the rest of the API: identity-bound calls apply Layer 1 group ceiling and tier visibility (global / org / user with `allow_user_templates`). Hidden global templates and out-of-ceiling instances never appear in either default or `include_catalog=true` output.
+**Visibility** matches the rest of the API: identity-bound calls apply Layer 1 group ceiling and tier visibility (global / org / user, gated by `user_template_policy`). Hidden global templates and out-of-ceiling instances never appear in either default or `include_catalog=true` output.
 
 Search is **cheap and idempotent** by design. Agents are expected to re-query rather than maintain client-side state. There is no subscribe API for service catalog changes — re-call search after any state-changing operation (e.g. after `create_service_from_template` returns active).
 
@@ -1257,7 +1331,7 @@ Overslash provides built-in standalone pages for common user interactions. These
 Platforms can always build fully white-label equivalents using the same REST API these pages consume. The API exposes all the data needed: approval details with suggested tiers, secret request metadata, OAuth consent payloads. The built-in pages are a convenience, not a requirement.
 
 - **Approval resolution** (`/approvals/apr_...`) — requires login. Shows approval details and specificity picker. See §5 Trust Model.
-- **Secret request** (`/secrets/provide/req_...?token=jwt`) — no login required *by default* for the user landing on the page (signed URL). Secure input field for secret provisioning. Safe because providing a secret doesn't grant the agent authority. **One page, two contexts:** this URL is used both for (a) mid-execution secret requests when an agent calls `overslash_auth.request_secret` and (b) initial bootstrap of a secret-based service when an agent calls `create_service_from_template` against an API-key template (§9 *Programmatic Service Creation*). Both contexts share the same security properties — the signed token scopes the page to a single secret slot on a single identity.
+- **Secret request** (`/secrets/provide/req_...?token=jwt`) — no login required *by default* for the user landing on the page (signed URL). Secure input field for secret provisioning. Safe because providing a secret doesn't grant the agent authority. **One page, two contexts:** this URL is used both for (a) mid-execution secret requests when an agent calls `overslash_auth.request_secret` and (b) initial bootstrap of a secret-based service when an agent calls `create_service_from_template` against a secret-based template (§9 *Programmatic Service Creation*). Both contexts share the same security properties — the signed token scopes the page to a single secret slot on a single identity.
 
   **The API calls that generate these URLs always require an authenticated identity** — typically an enrolled agent acting `on_behalf_of` its owner-user, or a user acting through the dashboard. There is no path for an unenrolled or anonymous caller to issue a secret-provide URL. The "no login" property describes only the user-facing redemption step, not the issuance step.
 
@@ -1403,7 +1477,9 @@ Configured by org admins via `PUT /GET /DELETE /v1/rate-limits`.
 - **429 Too Many Requests** with `Retry-After` header and JSON body when exceeded.
 - **Storage**: Redis/Valkey if available (distributed, accurate across instances); in-memory `DashMap` fallback (single-instance, no external dependency).
 - **Fail-open**: If Redis becomes unavailable at runtime, requests are allowed through (logged as warning).
-- **Health endpoint** (`/health`) is exempt from rate limiting.
+- **Health endpoint** (`/health`) and **build stamp** (`GET /v1/version`) are exempt from rate limiting.
+- **Health vs. readiness**: `/health` is liveness — it reports database reachability in the body (`db`, `db_latency_ms` / `db_error`) but always returns 200, because it backs the Cloud Run startup and liveness probes and a 503 there would restart containers during a database outage. `/ready` runs the same bounded `SELECT 1` and returns **503** when Postgres is unreachable; it is the endpoint to point a load balancer or alerting monitor at.
+- **Build stamp**: both `/health` and `/ready` also report `version` (release, or the crate version for unreleased builds) and `commit` (full git SHA, or `unknown`). `GET /v1/version` returns the same two values plus `commit_short`, without the database probe — it is unauthenticated for the same reason `/health` is, and is what the dashboard renders in its sidebar footer. The SHA is baked in at compile time (`OVERSLASH_GIT_SHA`, supplied by Cloud Build as `$COMMIT_SHA` or discovered via `git` for local builds).
 
 ---
 

@@ -17,7 +17,7 @@
 // Test setup requires dynamic SQL for DB seeding.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -143,7 +143,7 @@ async fn seed_slack_connection(
     let csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
     let future = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(owner_id, "slack", &cid, &csec)
+        .create_byoc_credential(owner_id, "slack", &cid, &csec, &serde_json::json!({}))
         .await
         .unwrap();
     overslash_db::scopes::OrgScope::new(org_id, pool.clone())
@@ -205,18 +205,18 @@ fn slack_mcp_yaml_parses() {
     // disclosure projection + channel scope; the ID-scoped reads carry scopes.
     let send = &svc.actions["send_message"];
     assert_eq!(send.risk, overslash_core::types::Risk::Write);
-    assert_eq!(send.scope_param.as_deref(), Some("channel"));
+    assert_eq!(send.scope_param, "channel".into());
     assert!(
         !send.disclose.is_empty(),
         "send_message should disclose channel + text for approval review"
     );
     assert_eq!(
-        svc.actions["read_channel_history"].scope_param.as_deref(),
-        Some("channel")
+        svc.actions["read_channel_history"].scope_param,
+        "channel".into()
     );
-    assert_eq!(svc.actions["get_user"].scope_param.as_deref(), Some("user"));
+    assert_eq!(svc.actions["get_user"].scope_param, "user".into());
     // Undecorated reads stay plain.
-    assert_eq!(svc.actions["list_channels"].scope_param, None);
+    assert!(svc.actions["list_channels"].scope_param.is_empty());
     assert_eq!(
         svc.actions["list_channels"].risk,
         overslash_core::types::Risk::Read

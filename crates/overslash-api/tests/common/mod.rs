@@ -643,6 +643,7 @@ where
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        platform_credential: None,
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
         email_provider: None,
@@ -687,6 +688,7 @@ where
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -828,6 +830,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        platform_credential: None,
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
         email_provider: None,
@@ -870,6 +873,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -966,6 +970,7 @@ pub async fn start_api_with_auth_providers(
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        platform_credential: None,
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
         email_provider: None,
@@ -1011,6 +1016,7 @@ pub async fn start_api_with_auth_providers(
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -1472,6 +1478,7 @@ where
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        platform_credential: None,
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
         email_provider: None,
@@ -1515,6 +1522,7 @@ where
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -1616,6 +1624,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        platform_credential: None,
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
         email_provider: None,
@@ -1658,6 +1667,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -1730,6 +1740,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        platform_credential: None,
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
         email_provider: None,
@@ -1772,6 +1783,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::version::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())

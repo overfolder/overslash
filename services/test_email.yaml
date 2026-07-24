@@ -25,7 +25,9 @@ components:
       type: apiKey
       in: header
       name: Authorization
-      x-overslash-prefix: "Bearer "
+      x-overslash-template:
+        lang: jq
+        expr: '"Bearer " + .token'
       default_secret_name: test_email_key
 paths:
   # risk: write -> overslash gates this behind a pending_approval when an agent

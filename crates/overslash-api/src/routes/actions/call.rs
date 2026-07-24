@@ -1,7 +1,5 @@
 //! `POST /v1/actions/call` execution handler.
 
-use std::collections::HashMap;
-
 use axum::{
     Json,
     extract::State,
@@ -26,7 +24,6 @@ use crate::{
     },
 };
 use overslash_core::{
-    crypto,
     permissions::{GroupCeilingResult, PermissionKey, suggest_tiers},
     secret_injection::inject_secrets,
     types::{ResolvedActionRequest, service::Risk},
@@ -100,11 +97,34 @@ pub(super) async fn call_action_impl(
     // the template / instance from the DB.
     let (pre_meta, pre_resolved_mode_c) =
         resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
+    // Rewrite template-declared parameter aliases (e.g. `to` → `recipient`) to
+    // their canonical names first, so defaults, coercion, validation, the
+    // approval replay payload, and resolution all see canonical keys only.
+    overslash_core::openapi::validate_input::apply_aliases(
+        &pre_meta.validation_params,
+        &mut req.params,
+    );
+    // Apply the pinned config (e.g. `X-Mailbox-Imap` on a self-hosted mailbox
+    // gateway) *after* aliases so it lands on canonical keys, and *before*
+    // defaults so a pin beats the template default while an explicit caller arg
+    // still beats the pin. Precedence, high to low: caller arg > instance config
+    // > org-layer default > template default.
+    apply_instance_config(
+        &pre_meta.validation_params,
+        pre_resolved_mode_c.as_ref(),
+        &mut req.params,
+    );
     // Fill in template-declared defaults (e.g. `calendarId: primary`) before
     // validation so a `required` param with a default isn't rejected as
     // missing, and before resolution so the default flows into the outgoing
     // path/query/body like a caller-supplied value.
     overslash_core::openapi::validate_input::apply_defaults(
+        &pre_meta.validation_params,
+        &mut req.params,
+    );
+    // Repair fixable shape problems (int→string, enum case) in place before
+    // validating — the coerced value is what gets approved and executed.
+    overslash_core::openapi::validate_input::coerce_args(
         &pre_meta.validation_params,
         &mut req.params,
     );
@@ -193,7 +213,7 @@ pub(super) async fn call_action_impl(
         PermissionKey::from_service_action(
             &scope_meta.service_key,
             &scope_meta.action_key,
-            scope_meta.scope_param.as_deref(),
+            &scope_meta.scope_param,
             &req.params,
         )
     };
@@ -709,25 +729,13 @@ pub(super) async fn call_action_impl(
     }
 
     // Resolve secrets and inject
-    let enc_key = state.config.keyring()?;
-    let mut secret_values = HashMap::new();
-    for secret_ref in &action_req.secrets {
-        let version = scope
-            .get_current_secret_value(&secret_ref.name)
-            .await?
-            .ok_or_else(|| AppError::CredentialMissing {
-                service: req.service.clone(),
-                secret_name: secret_ref.name.clone(),
-                hint_url: Some(state.config.dashboard_url_for(&format!(
-                    "/secrets?name={}",
-                    urlencoding::encode(&secret_ref.name)
-                ))),
-            })?;
-        let decrypted = crypto::decrypt(&enc_key, &version.encrypted_value)?;
-        let value = String::from_utf8(decrypted)
-            .map_err(|_| AppError::Internal("secret is not valid utf-8".into()))?;
-        secret_values.insert(secret_ref.name.clone(), value);
-    }
+    let secret_values = crate::services::action_caller::resolve_credential_values(
+        &state,
+        &scope,
+        req.service.as_deref(),
+        &action_req,
+    )
+    .await?;
 
     let (resolved_url, mut resolved_headers) = inject_secrets(&action_req, &secret_values)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;

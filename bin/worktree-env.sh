@@ -44,6 +44,13 @@ DASH_BASE=$(( (HASH % 9000) + 25000 ))
 # Standalone `overslash web` binary. Separate from API_BASE so the Docker API
 # container (compose) and the bare binary can coexist within one worktree.
 WEB_BASE=$(( (HASH % 9000) + 18000 ))
+# Mail stack for the e2e suite (docker-compose `mail` profile): the GreenMail
+# REST API + SMTP submission port, and the overfwd gateway. Only the ports the
+# host reaches are published — overfwd talks to GreenMail's IMAP over the
+# compose network, so 3143 needs no host mapping.
+GREENMAIL_API_BASE=$(( (HASH % 9000) + 38000 ))
+GREENMAIL_SMTP_BASE=$(( (HASH % 9000) + 33000 ))
+OVERFWD_BASE=$(( (HASH % 9000) + 41000 ))
 
 # Find a free port starting at $1, scanning up to 20 above. Echoes the chosen
 # port, or exits non-zero on exhaustion.
@@ -64,6 +71,9 @@ PG_PORT=$(find_free_port "$PG_BASE" postgres) || exit 1
 API_PORT=$(find_free_port "$API_BASE" api) || exit 1
 DASH_PORT=$(find_free_port "$DASH_BASE" dashboard) || exit 1
 WEB_PORT=$(find_free_port "$WEB_BASE" web) || exit 1
+GREENMAIL_API_PORT=$(find_free_port "$GREENMAIL_API_BASE" greenmail-api) || exit 1
+GREENMAIL_SMTP_PORT=$(find_free_port "$GREENMAIL_SMTP_BASE" greenmail-smtp) || exit 1
+OVERFWD_PORT=$(find_free_port "$OVERFWD_BASE" overfwd) || exit 1
 
 # Compose project name (lowercase, alphanumeric + hyphens)
 PROJECT_NAME="overslash-wt-${WORKTREE_ID}"
@@ -79,7 +89,10 @@ PG_HOST_PORT=${PG_PORT}
 API_HOST_PORT=${API_PORT}
 DASH_HOST_PORT=${DASH_PORT}
 OVERSLASH_WEB_PORT=${WEB_PORT}
+GREENMAIL_API_PORT=${GREENMAIL_API_PORT}
+GREENMAIL_SMTP_PORT=${GREENMAIL_SMTP_PORT}
+OVERFWD_PORT=${OVERFWD_PORT}
 DATABASE_URL=postgres://overslash:overslash@localhost:${PG_PORT}/overslash
 EOF
 
-echo "Worktree env: project=${PROJECT_NAME} pg=${PG_PORT} api=${API_PORT} dashboard=${DASH_PORT} web=${WEB_PORT}"
+echo "Worktree env: project=${PROJECT_NAME} pg=${PG_PORT} api=${API_PORT} dashboard=${DASH_PORT} web=${WEB_PORT} greenmail=${GREENMAIL_API_PORT} overfwd=${OVERFWD_PORT}"

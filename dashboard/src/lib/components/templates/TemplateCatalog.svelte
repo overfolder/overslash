@@ -6,10 +6,13 @@
 		listTemplates,
 		listAdminTemplates,
 		getTemplate,
+		updateTemplate,
 		deleteTemplate,
 		listDrafts,
 		discardDraft,
 		getTemplateSettings,
+		updateTemplateSettings,
+		listEnabledGlobals,
 		enableGlobalTemplate,
 		disableGlobalTemplate
 	} from '$lib/api/services';
@@ -155,17 +158,25 @@
 			if (canCurate && orgId) {
 				// Admins load the full compliance view so curated-out globals remain
 				// visible and re-enableable, plus the org setting that decides whether
-				// per-template toggles are active.
-				const [admin, settings] = await Promise.all([
+				// per-template toggles are active, plus the real curated allow-list.
+				const [admin, settings, enabledGlobals] = await Promise.all([
 					listAdminTemplates(),
-					getTemplateSettings(orgId)
+					getTemplateSettings(orgId),
+					listEnabledGlobals()
 				]);
 				templates = admin;
 				globalTemplatesEnabled = settings.global_templates_enabled;
+				// Per-row state reflects the *real* allow-list membership, not the
+				// admin list's `enabled` flag (which is masked to `true` for every
+				// global while "make all available" is on). Combined with
+				// `globalTemplatesEnabled` in the toggle's `checked` as
+				// `visible || global_visible`, this keeps rows honest so toggling
+				// one off never issues a DELETE for a key that has no row (404).
+				const enabledSet = new Set(enabledGlobals);
 				catalogEnabled = Object.fromEntries(
 					admin
 						.filter((t) => t.tier === 'global')
-						.map((t) => [t.key, (t as AdminTemplateSummary).enabled])
+						.map((t) => [t.key, enabledSet.has(t.key)])
 				);
 			} else {
 				templates = await listTemplates();
@@ -199,6 +210,59 @@
 		} finally {
 			const s = new Set(curationSaving);
 			s.delete(key);
+			curationSaving = s;
+		}
+	}
+
+	// The catalog-wide default: when on, every shipped global service is
+	// available; when off, only the ones toggled on per-row (curated mode).
+	// Moved here from Org settings so all catalog visibility lives in one place.
+	let globalDefaultSaving = $state(false);
+	async function setGlobalDefault(next: boolean) {
+		if (!canCurate || !orgId) return;
+		curationError = null;
+		globalDefaultSaving = true;
+		const prev = globalTemplatesEnabled;
+		globalTemplatesEnabled = next; // optimistic
+		try {
+			await updateTemplateSettings(orgId, { global_templates_enabled: next });
+		} catch (e) {
+			globalTemplatesEnabled = prev;
+			curationError =
+				e instanceof ApiError
+					? `Failed to update catalog default (${e.status})`
+					: 'Failed to update catalog default';
+		} finally {
+			globalDefaultSaving = false;
+		}
+	}
+
+	// Hide/show a derived layer from the catalog by flipping its `delta.hidden`.
+	// The admin row carries the raw `delta`, so no extra fetch is needed (and we
+	// patch the exact row by id — no by-key ambiguity).
+	async function toggleLayerHidden(t: AdminTemplateSummary, visible: boolean) {
+		if (!canCurate || !t.id) return;
+		curationError = null;
+		curationSaving = new Set(curationSaving).add(t.key);
+		const prevHidden = t.hidden ?? false;
+		t.hidden = !visible; // optimistic (mutates the reactive array entry)
+		templates = [...templates];
+		try {
+			const delta = { ...(t.delta ?? {}) };
+			if (visible) delete delta.hidden;
+			else delta.hidden = true;
+			await updateTemplate(t.id, { delta });
+			t.delta = delta;
+		} catch (e) {
+			t.hidden = prevHidden;
+			templates = [...templates];
+			curationError =
+				e instanceof ApiError
+					? `Failed to update visibility (${e.status})`
+					: 'Failed to update visibility';
+		} finally {
+			const s = new Set(curationSaving);
+			s.delete(t.key);
 			curationSaving = s;
 		}
 	}
@@ -251,6 +315,16 @@
 	function canDelete(t: TemplateSummary): boolean {
 		if (t.tier === 'global') return false;
 		return isAdmin;
+	}
+
+	/** A derived layer (edited via the layer editor, not the YAML editor). */
+	function isDerived(t: TemplateSummary): boolean {
+		return !!t.extends;
+	}
+
+	/** Admins can build a derived layer over any base to curate it. */
+	function canCustomize(t: TemplateSummary): boolean {
+		return isAdmin && !isDerived(t);
 	}
 
 	onMount(load);
@@ -331,11 +405,17 @@
 		<div class="error">{curationError}</div>
 	{/if}
 
-	{#if !loading && canCurate && globalTemplatesEnabled}
-		<div class="curation-note">
-			All global services are currently available. To curate the catalog per
-			template, turn off <strong>“Make all global services available”</strong> in
-			<a href="/org">Org settings → Service catalog</a>.
+	{#if !loading && canCurate}
+		<div class="catalog-default">
+			<div class="catalog-default-body">
+				<div class="catalog-default-label">Make all global services available</div>
+			</div>
+			<ToggleSwitch
+				checked={globalTemplatesEnabled}
+				onchange={setGlobalDefault}
+				disabled={globalDefaultSaving}
+				label="Make all global services available"
+			/>
 		</div>
 	{/if}
 
@@ -378,7 +458,7 @@
 						<SortableHeader label="Category" column="category" active={sortKey} dir={sortDir} onsort={sortBy} />
 						<SortableHeader label="Actions" column="actions" active={sortKey} dir={sortDir} onsort={sortBy} />
 						{#if canCurate}
-							<th class="catalog-col">Catalog</th>
+							<th class="catalog-col">Visible</th>
 						{/if}
 						<th class="actions-col"></th>
 					</tr>
@@ -397,8 +477,18 @@
 							</td>
 							<td>
 								<StatusBadge variant={t.tier} />
+								{#if isDerived(t)}
+									<span class="layer-badge" title={`Derived layer over ${t.extends}`}>
+										layer ⟵ {t.extends}
+									</span>
+								{/if}
 								{#if t.hidden}
 									<StatusBadge variant="hidden" />
+								{/if}
+								{#if t.warnings}
+									<span class="warn-badge" title="Resolution warnings — open the layer editor">
+										⚠ {t.warnings}
+									</span>
 								{/if}
 							</td>
 							<td class="muted">{t.category || '—'}</td>
@@ -411,7 +501,16 @@
 											onchange={(next) => toggleCuration(t.key, next)}
 											disabled={globalTemplatesEnabled || curationSaving.has(t.key)}
 											size="sm"
-											label={`Include ${t.display_name} in catalog`}
+											label={`Show ${t.display_name} in catalog`}
+										/>
+									{:else if isDerived(t) && (t as AdminTemplateSummary).id}
+										<ToggleSwitch
+											checked={!t.hidden}
+											onchange={(next) =>
+												toggleLayerHidden(t as AdminTemplateSummary, next)}
+											disabled={curationSaving.has(t.key)}
+											size="sm"
+											label={`Show ${t.display_name} in catalog`}
 										/>
 									{:else}
 										<span class="muted always">Always</span>
@@ -429,7 +528,31 @@
 								>
 									+ New
 								</button>
-								{#if canEdit(t)}
+								{#if canCustomize(t)}
+									<button
+										type="button"
+										class="btn small"
+										title="Curate this template with a derived layer (tracks upstream updates)"
+										onclick={() =>
+											goto(
+												`/services/templates/layer?base=${encodeURIComponent(t.key)}`
+											)}
+									>
+										Customize
+									</button>
+								{/if}
+								{#if canEdit(t) && isDerived(t)}
+									<button
+										type="button"
+										class="btn small"
+										onclick={() =>
+											goto(
+												`/services/templates/layer?edit=${encodeURIComponent(t.key)}`
+											)}
+									>
+										Edit layer
+									</button>
+								{:else if canEdit(t)}
 									<button
 										type="button"
 										class="btn small"
@@ -648,17 +771,42 @@
 	.always {
 		font-size: 0.78rem;
 	}
-	.curation-note {
+	.layer-badge {
+		display: inline-block;
+		font-size: 0.68rem;
+		font-family: var(--font-mono, monospace);
+		color: var(--color-text-muted);
+		border: 1px solid var(--color-border);
+		border-radius: 4px;
+		padding: 0.05rem 0.35rem;
+		margin-left: 0.25rem;
+		vertical-align: middle;
+	}
+	.warn-badge {
+		display: inline-block;
+		font-size: 0.68rem;
+		color: #b45309;
+		border: 1px solid rgba(180, 83, 9, 0.35);
+		background: rgba(180, 83, 9, 0.08);
+		border-radius: 4px;
+		padding: 0.05rem 0.35rem;
+		margin-left: 0.25rem;
+		vertical-align: middle;
+	}
+	.catalog-default {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
 		background: var(--color-surface);
 		border: 1px solid var(--color-border);
 		border-radius: 8px;
-		padding: 0.6rem 0.9rem;
+		padding: 0.7rem 0.9rem;
 		margin-bottom: 0.9rem;
-		font-size: 0.83rem;
-		color: var(--color-text-muted);
 	}
-	.curation-note a {
-		color: var(--color-primary, #6366f1);
+	.catalog-default-label {
+		font-size: 0.9rem;
+		font-weight: 600;
 	}
 	.actions-col {
 		text-align: right;

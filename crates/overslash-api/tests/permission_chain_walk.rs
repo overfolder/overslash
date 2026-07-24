@@ -12,7 +12,7 @@
 //! - resolver authorization: only the current resolver or one of its
 //!   ancestors can act on the approval
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use uuid::Uuid;

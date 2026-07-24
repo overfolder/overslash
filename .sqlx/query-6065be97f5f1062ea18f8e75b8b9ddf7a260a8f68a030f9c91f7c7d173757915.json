@@ -1,0 +1,184 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, extends, delta, status, created_at, updated_at FROM service_templates WHERE org_id = $1 AND owner_identity_id IS NULL AND status = 'active' ORDER BY key",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "owner_identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "key"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "category",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "hosts",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "hosts"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "openapi",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "openapi"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "extends",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "extends"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "delta",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "delta"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "service_templates",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6065be97f5f1062ea18f8e75b8b9ddf7a260a8f68a030f9c91f7c7d173757915"
+}

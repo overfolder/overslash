@@ -20,11 +20,10 @@ x-overslash-mcp:
   #   secret_name — vault key that holds the container's AUTH_TOKEN bearer token
   auth:
     kind: bearer
-  # Tools are authored inline because globals are not resync-able (see
-  # `resync_mcp_tools` in routes/templates.rs — globals ship their tool
-  # list in-repo). When an operator promotes this template to org/user
-  # tier, `autodiscover: true` lets `POST /v1/templates/whatsapp/mcp/resync`
-  # populate `discovered_tools` and merge on top of these entries.
+  # Tools are authored inline (globals ship their tool list in-repo).
+  # `autodiscover: true` lets `POST /v1/services/{id}/mcp/resync` populate the
+  # *instance's* `discovered_tools` from a live tools/list; those are overlaid
+  # on top of these entries at read time (authored fields win).
   autodiscover: true
   tools:
     # ── pairing (mutate session state; exempt from `not_paired` gate) ──
@@ -93,6 +92,7 @@ x-overslash-mcp:
         - label: "Recipient"
           filter: ".arguments.recipient"
         - label: "Message"
+          primary: true
           filter: ".arguments.text"
         - label: "Reply to"
           filter: ".arguments.reply_to_id // empty"

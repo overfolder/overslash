@@ -1,3 +1,5 @@
+// Name-based-target tests seed + assert against the DB with dynamic SQL.
+#![allow(clippy::disallowed_methods)]
 //! Integration tests for the `X-Overslash-As` header and the `"impersonate"`
 //! API key scope.
 //!
@@ -6,7 +8,7 @@
 //! admins can create such keys. Audit rows record both the effective identity
 //! and the impersonating service account.
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -532,4 +534,342 @@ async fn impersonation_cannot_escalate_to_higher_acl() {
         403,
         "low-privilege impersonation key must not be able to impersonate an admin"
     );
+}
+
+// ── Name-based targets (email + agent path) ──────────────────────────────────
+
+/// `X-Overslash-As: <email>` for an unknown email JIT-provisions a user
+/// identity in the key's org, bootstraps its groups, and audits the
+/// provisioning. A second call by the same email reuses that identity.
+#[tokio::test]
+async fn impersonation_by_email_jit_creates_then_reuses_user() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+    let email = "jit-user@example.com";
+
+    let first: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", email)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let created_id = first["identity_id"].as_str().unwrap().to_string();
+    assert_eq!(first["kind"], "user");
+
+    // The identity is real, scoped to this org, carries the email, and has
+    // NULL external_id ("never signed in").
+    let (db_org, ext_id): (Uuid, Option<String>) =
+        sqlx::query_as("SELECT org_id, external_id FROM identities WHERE id = $1")
+            .bind(Uuid::parse_str(&created_id).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(db_org, org_id);
+    assert!(ext_id.is_none(), "JIT user must have NULL external_id");
+
+    // Joined the Everyone group.
+    let in_everyone: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM identity_groups ig
+         JOIN groups g ON g.id = ig.group_id
+         WHERE ig.identity_id = $1 AND g.org_id = $2 AND g.system_kind = 'everyone'",
+    )
+    .bind(Uuid::parse_str(&created_id).unwrap())
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(in_everyone, 1, "JIT user must join the Everyone group");
+
+    // An `identity.provisioned` audit row records the provenance.
+    let provisioned: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log
+         WHERE org_id = $1 AND action = 'identity.provisioned' AND resource_id = $2",
+    )
+    .bind(org_id)
+    .bind(Uuid::parse_str(&created_id).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(provisioned, 1, "auto-creation must be audited");
+
+    // Second call with the same email reuses the same identity.
+    let second: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", email)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["identity_id"].as_str().unwrap(), created_id);
+}
+
+/// `X-Overslash-As: <email>/<agent>/<sub>` creates the whole missing chain
+/// under the user, non-inheriting, and resolves to the leaf. A second call
+/// reuses every level.
+#[tokio::test]
+async fn impersonation_agent_path_creates_and_reuses_chain() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+    let target = "chain-user@example.com/henry/researcher";
+
+    let first: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", target)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let leaf_id = first["identity_id"].as_str().unwrap().to_string();
+    assert_eq!(first["kind"], "sub_agent");
+    assert_eq!(first["name"], "researcher");
+
+    // The user, agent, and sub-agent all exist with the right kinds + owner.
+    let user_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM identities WHERE org_id = $1 AND kind = 'user' AND email = 'chain-user@example.com'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let (henry_id, henry_kind, henry_inherit): (Uuid, String, bool) = sqlx::query_as(
+        "SELECT id, kind, inherit_permissions FROM identities WHERE org_id = $1 AND parent_id = $2 AND name = 'henry'",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(henry_kind, "agent");
+    assert!(
+        !henry_inherit,
+        "auto-created agent must not inherit permissions"
+    );
+
+    let (leaf_owner, leaf_parent): (Option<Uuid>, Option<Uuid>) =
+        sqlx::query_as("SELECT owner_id, parent_id FROM identities WHERE id = $1")
+            .bind(Uuid::parse_str(&leaf_id).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        leaf_owner,
+        Some(user_id),
+        "sub-agent owner is the root user"
+    );
+    assert_eq!(leaf_parent, Some(henry_id), "sub-agent parent is henry");
+
+    // Reuse: a second identical call lands on the same leaf.
+    let second: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", target)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["identity_id"].as_str().unwrap(), leaf_id);
+}
+
+/// A malformed target value is a clean 400, not a 500.
+#[tokio::test]
+async fn impersonation_rejects_malformed_target() {
+    let (base, client, _pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+
+    for bad in ["not-a-uuid", "no-at-sign/henry", "alice@acme.com//henry"] {
+        let resp = client
+            .get(format!("{base}/v1/whoami"))
+            .header("Authorization", format!("Bearer {imp_key}"))
+            .header("X-Overslash-As", bad)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 400, "value {bad:?} must 400");
+    }
+}
+
+/// An agent path deeper than the cap is rejected before any DB writes.
+#[tokio::test]
+async fn impersonation_rejects_too_deep_agent_path() {
+    let (base, client, _pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+    let deep = format!("deep-user@example.com/{}", ["a"; 9].join("/"));
+
+    let resp = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", deep)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400, "over-deep path must 400");
+}
+
+/// Regression: revoking a pending invite whose user has an agent chain
+/// beneath them must NOT cascade-delete that subtree. `identities.parent_id`
+/// is ON DELETE CASCADE, so a raw delete would silently wipe `henry`; the
+/// endpoint must 409.
+///
+/// Models the real shape: an admin invites alice, then a backend impersonates
+/// `alice@…/henry`, which *reuses* her existing invite identity and creates
+/// the agent under it. She stays a genuine invite (created via the invite
+/// endpoint), so she is still revocable — and that revoke must be refused.
+#[tokio::test]
+async fn revoking_pending_invite_with_provisioned_agents_is_refused() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+
+    // Admin invites alice — a genuine pending invite.
+    let invite: Value = client
+        .post(format!("{base}/v1/org-invites"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "email": "cascade-alice@example.com", "role": "member" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let alice_id: Uuid = invite["id"].as_str().unwrap().parse().unwrap();
+
+    // A backend then provisions an agent beneath her, reusing her identity.
+    client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", "cascade-alice@example.com/henry")
+        .send()
+        .await
+        .unwrap();
+
+    // Revoke via the invite endpoint — must be refused, henry must survive.
+    let resp = client
+        .delete(format!("{base}/v1/org-invites/{alice_id}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        409,
+        "revoking a pending invite with provisioned agents must 409, not cascade-delete"
+    );
+
+    let alice_still_there: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM identities WHERE id = $1")
+            .bind(alice_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(alice_still_there, 1, "alice must not be deleted");
+
+    let henry_still_there: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM identities WHERE org_id = $1 AND parent_id = $2 AND name = 'henry'",
+    )
+    .bind(org_id)
+    .bind(alice_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(henry_still_there, 1, "henry must survive a refused revoke");
+}
+
+/// An impersonation-provisioned pending user is a member managed on the
+/// Members page, NOT a deliberate invitation — it must not surface in the
+/// `/v1/org-invites` list (else a white-label backend floods it).
+#[tokio::test]
+async fn impersonation_provisioned_user_is_not_listed_as_an_invite() {
+    let (base, client, _pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+
+    // Provision a pending user via impersonation.
+    client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", "not-an-invite@example.com")
+        .send()
+        .await
+        .unwrap();
+
+    // The invites list must be empty — she was never explicitly invited.
+    let invites: Vec<Value> = client
+        .get(format!("{base}/v1/org-invites"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !invites
+            .iter()
+            .any(|i| i["email"] == "not-an-invite@example.com"),
+        "impersonation-provisioned pending user must not appear as an invite: {invites:?}"
+    );
+}
+
+/// All three invite endpoints agree on what an "invite" is: an
+/// impersonation-provisioned pending user is invisible to list/get and is
+/// NOT revocable through the invites surface either (it is a Members-page
+/// concern). Deleting it there is a no-op, and the identity survives.
+#[tokio::test]
+async fn impersonation_provisioned_user_is_not_revocable_as_an_invite() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+
+    client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", "solo-provisioned@example.com")
+        .send()
+        .await
+        .unwrap();
+
+    let uid: Uuid = sqlx::query_scalar(
+        "SELECT id FROM identities WHERE org_id = $1 AND kind = 'user' AND email = 'solo-provisioned@example.com'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // GET must 404 — it is not an invite.
+    let get_resp = client
+        .get(format!("{base}/v1/org-invites/{uid}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status().as_u16(), 404, "not an invite => 404");
+
+    // DELETE is a no-op and must not remove the identity.
+    let del: Value = client
+        .delete(format!("{base}/v1/org-invites/{uid}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(del["deleted"], false, "must not be revocable as an invite");
+
+    let still_there: i64 = sqlx::query_scalar("SELECT count(*) FROM identities WHERE id = $1")
+        .bind(uid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(still_there, 1, "identity must survive the no-op delete");
 }

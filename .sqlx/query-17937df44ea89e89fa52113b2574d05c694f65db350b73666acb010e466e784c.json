@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT user_template_policy, global_templates_enabled, allow_services_outside_catalog FROM orgs WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_template_policy",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "user_template_policy"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "global_templates_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "global_templates_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "allow_services_outside_catalog",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "allow_services_outside_catalog"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "17937df44ea89e89fa52113b2574d05c694f65db350b73666acb010e466e784c"
+}

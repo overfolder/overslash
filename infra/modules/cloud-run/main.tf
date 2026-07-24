@@ -278,6 +278,33 @@ variable "shortener_api_key_secret_id" {
   description = "GSM secret ID holding the shortener API key. Only consumed when enable_shortener_client=true."
 }
 
+# --- Platform credential rung (see DECISIONS D39) ---
+#
+# A platform-hosted gateway can't ask every org to store its key. These three
+# together fill one org-source credential slot from platform config when the
+# org's vault has no secret of that name AND the request is actually landing on
+# `platform_gateway_host` — an org that stores its own key, or points its
+# instances at its own deployment, is unaffected. All three must be non-empty
+# for the rung to exist at all.
+
+variable "platform_gateway_secret_name" {
+  type        = string
+  default     = ""
+  description = "Vault secret name this rung fills — `overfwd_gateway_key` for the `email` template's gateway scheme. Feeds OVERSLASH_PLATFORM_GATEWAY_SECRET_NAME."
+}
+
+variable "platform_gateway_host" {
+  type        = string
+  default     = ""
+  description = "Host the platform key may be sent to (e.g. `mailbox.overslash.com`). Feeds OVERSLASH_PLATFORM_GATEWAY_HOST. The key is never injected on a request to any other host."
+}
+
+variable "platform_gateway_key_secret_id" {
+  type        = string
+  default     = ""
+  description = "GSM secret ID holding the gateway key — the same secret the overfwd service reads as OVERFWD_API_KEY. Feeds OVERSLASH_PLATFORM_GATEWAY_KEY."
+}
+
 variable "metrics_sidecar_image" {
   type        = string
   default     = "otel/opentelemetry-collector-contrib:0.120.0"
@@ -334,6 +361,10 @@ locals {
     var.connection_return_url_hosts != "" ? { OVERSLASH_CONNECTION_RETURN_URL_HOSTS = var.connection_return_url_hosts } : {},
     var.read_oauth_credentials_from_env ? { OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS = "1" } : {},
     var.enable_shortener_client && var.oversla_sh_base_url != "" ? { OVERSLA_SH_BASE_URL = var.oversla_sh_base_url } : {},
+    var.platform_gateway_secret_name != "" && var.platform_gateway_host != "" && var.platform_gateway_key_secret_id != "" ? {
+      OVERSLASH_PLATFORM_GATEWAY_SECRET_NAME = var.platform_gateway_secret_name
+      OVERSLASH_PLATFORM_GATEWAY_HOST        = var.platform_gateway_host
+    } : {},
   )
 
   env_secrets = merge(
@@ -361,6 +392,9 @@ locals {
     } : {},
     var.enable_shortener_client && var.shortener_api_key_secret_id != "" ? {
       OVERSLA_SH_API_KEY = var.shortener_api_key_secret_id
+    } : {},
+    var.platform_gateway_secret_name != "" && var.platform_gateway_host != "" && var.platform_gateway_key_secret_id != "" ? {
+      OVERSLASH_PLATFORM_GATEWAY_KEY = var.platform_gateway_key_secret_id
     } : {},
   )
 }

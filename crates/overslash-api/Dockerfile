@@ -51,9 +51,24 @@ COPY crates/ crates/
 COPY services/ services/
 COPY .sqlx/ .sqlx/
 COPY SKILL.md SKILL.md
+# Release line this build came from — overslash-core's build.rs reads it and
+# reports "<version>-dev", since crate versions stay pinned at 0.1.0 (D19).
+# Copied after the dependency-only build above so a release bump doesn't
+# invalidate the cached dependency layer.
+COPY .release-please-manifest.json .release-please-manifest.json
 
 # Touch source files to invalidate the dummy builds
 RUN find crates/ -name "*.rs" -exec touch {} +
+
+# Git commit of this build, reported by /health and GET /v1/version. The build
+# context has no .git, so overslash-core's build.rs cannot discover it — Cloud
+# Build passes its $COMMIT_SHA in (infra/modules/cloud-build/main.tf).
+#
+# Declared *here*, after the dependency-only build above: an ARG invalidates
+# every layer that follows it, and the SHA changes on every commit. Placing it
+# earlier would recompile all dependencies (~6 min) on each build.
+ARG OVERSLASH_GIT_SHA=unknown
+ENV OVERSLASH_GIT_SHA=${OVERSLASH_GIT_SHA}
 
 # sqlx offline mode: use cached query metadata from .sqlx/ instead of a live DB
 ENV SQLX_OFFLINE=true

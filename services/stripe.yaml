@@ -11,7 +11,9 @@ components:
       type: apiKey
       in: header
       name: Authorization
-      x-overslash-prefix: "Bearer "
+      x-overslash-template:
+        lang: jq
+        expr: '"Bearer " + .token'
       default_secret_name: stripe_key
 paths:
   /v1/charges:
@@ -32,8 +34,10 @@ paths:
       risk: write
       disclose:
         - label: Amount (smallest currency unit)
+          primary: true
           filter: .body.amount
         - label: Currency
+          primary: true
           filter: .body.currency
       # The payment source token is a credential-like value; keep it out of
       # the persisted raw payload.

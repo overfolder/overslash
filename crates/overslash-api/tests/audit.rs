@@ -3,9 +3,11 @@
 // Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 
-use common::{auth, bootstrap_agent_on_fixtures, bootstrap_org_identity, start_api, start_mock};
+use crate::common::{
+    auth, bootstrap_agent_on_fixtures, bootstrap_org_identity, start_api, start_mock,
+};
 use overslash_db::repos::audit::{AuditEntry, AuditFilter};
 use reqwest::Client;
 use serde_json::{Value, json};

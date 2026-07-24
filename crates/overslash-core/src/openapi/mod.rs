@@ -36,6 +36,8 @@ use alias::{
     HTTP_METHODS, INFO_ALIASES, MCP_TOOL_ALIASES, OAUTH2_SEC_ALIASES, OPERATION_ALIASES,
     ROOT_ALIASES, normalize_parameters_in, rewrite_aliases,
 };
+pub use extract::overlay_discovered_tools;
+pub use extract::url_to_host;
 use extract::{
     extract_auth, extract_hosts, extract_http_action, extract_mcp_actions, extract_mcp_spec,
     extract_platform_action,
@@ -235,13 +237,22 @@ pub fn compile_service(
 
     let hosts = extract_hosts(root.get("servers"));
 
-    let auth = match extract_auth(root.get("components")) {
-        Ok(a) => a,
+    let creds = match extract_auth(root.get("components")) {
+        Ok(c) => c,
         Err(mut es) => {
             errors.append(&mut es);
-            Vec::new()
+            extract::CompiledCredentials {
+                auth: Vec::new(),
+                secrets: Vec::new(),
+                config: Vec::new(),
+            }
         }
     };
+    let extract::CompiledCredentials {
+        auth,
+        secrets,
+        config,
+    } = creds;
 
     // Document root-level `security`, applied as the default required-scopes
     // for every operation that doesn't declare its own (OpenAPI 3.1 semantics).
@@ -329,6 +340,30 @@ pub fn compile_service(
         None
     };
 
+    // Credential config vars and `x-overslash-instance-config` params share one
+    // namespace: both are keys of the instance's single `config` map, and both
+    // render as one field on the instance form. A collision would make one
+    // field feed two unrelated consumers, so it is a template error rather than
+    // a precedence rule nobody could guess.
+    for var in &config {
+        if let Some(action_key) = actions
+            .iter()
+            .find(|(_, a)| a.params.get(&var.key).is_some_and(|p| p.instance_config))
+            .map(|(k, _)| k)
+        {
+            errors.push(ValidationIssue::new(
+                "openapi_unsupported_construct",
+                format!(
+                    "config `{}` collides with the instance-config param of the \
+                     same name on action `{action_key}`; instance config is one \
+                     namespace",
+                    var.key
+                ),
+                format!("components.x-overslash-config.{}", var.key),
+            ));
+        }
+    }
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -342,9 +377,14 @@ pub fn compile_service(
             category,
             hidden,
             auth,
+            secrets,
+            config,
             actions,
             runtime,
             mcp,
+            // Only the fold sets these; a shipped template expresses its
+            // defaults through `servers:` and param `default:`.
+            instance_defaults: None,
         },
         warnings,
     ))
@@ -386,7 +426,7 @@ mod tests {
                 },
                 "token": {
                     "type": "apiKey", "in": "header", "name": "Authorization",
-                    "x-overslash-prefix": "Bearer ",
+                    "x-overslash-template": {"lang": "jq", "expr": "\"Bearer \" + .token"},
                     "x-overslash-default_secret_name": "slack_token"
                 }
             }},
@@ -430,7 +470,7 @@ mod tests {
                     assert_eq!(provider, "slack");
                     assert!(scopes.contains(&"chat:write".to_string()));
                 }
-                ServiceAuth::ApiKey {
+                ServiceAuth::Secret {
                     default_secret_name,
                     ..
                 } => {
@@ -444,9 +484,71 @@ mod tests {
         let send = svc.actions.get("send_message").expect("send_message");
         assert_eq!(send.method, "POST");
         assert_eq!(send.risk, Risk::Write);
-        assert_eq!(send.scope_param.as_deref(), Some("channel"));
+        assert_eq!(send.scope_param, "channel".into());
         assert!(send.params["channel"].required);
         assert!(!svc.hidden, "hidden defaults to false when absent");
+    }
+
+    /// A list-valued `scope_param`, with and without labels, lowers to one
+    /// entry per param — this is the syntax `services/email.yaml` ships.
+    #[test]
+    fn compile_list_scope_param() {
+        let mut v = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Mail", "version": "1", "x-overslash-key": "mail"},
+            "servers": [{"url": "https://mail.example.com"}],
+            "paths": {"/send": {"post": {
+                "operationId": "send",
+                "summary": "Send",
+                "scope_param": ["to:recipient", "cc:recipient", "bcc"],
+                "requestBody": {"required": true, "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "array"},
+                        "cc": {"type": "array"},
+                        "bcc": {"type": "array"}
+                    }
+                }}}}
+            }}}
+        });
+        let issues = normalize_aliases(&mut v);
+        assert!(issues.is_empty(), "{issues:?}");
+        let (svc, _) = compile_service(&v).expect("compile ok");
+        assert_eq!(
+            svc.actions["send"]
+                .scope_param
+                .refs()
+                .iter()
+                .map(|r| (r.param.as_str(), r.label.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("to", "recipient"), ("cc", "recipient"), ("bcc", "bcc")]
+        );
+    }
+
+    /// A shape that is neither a string nor a list of strings is rejected.
+    /// Silently dropping it would widen the action's key to the wildcard —
+    /// the opposite of what an author writing `scope_param` wants.
+    #[test]
+    fn compile_rejects_a_malformed_scope_param() {
+        for bad in [json!({"to": "recipient"}), json!(["to", 7]), json!("a:b:c")] {
+            let mut v = json!({
+                "openapi": "3.1.0",
+                "info": {"title": "Mail", "version": "1", "x-overslash-key": "mail"},
+                "servers": [{"url": "https://mail.example.com"}],
+                "paths": {"/send": {"post": {
+                    "operationId": "send",
+                    "summary": "Send",
+                    "x-overslash-scope_param": bad,
+                }}}
+            });
+            let issues = normalize_aliases(&mut v);
+            assert!(issues.is_empty(), "{issues:?}");
+            let err = compile_service(&v).expect_err("should not compile");
+            assert!(
+                err.iter().any(|i| i.code == "invalid_scope_param"),
+                "{bad} → {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -542,7 +644,7 @@ mod tests {
         let a = &svc.actions["ask_question"];
         assert_eq!(a.mcp_tool.as_deref(), Some("ask_question"));
         assert_eq!(a.risk, Risk::Read);
-        assert_eq!(a.scope_param.as_deref(), Some("repo"));
+        assert_eq!(a.scope_param, "repo".into());
         assert!(a.params["repo"].required);
         assert!(a.params["question"].required);
         assert_eq!(a.params["repo"].description, "Repo slug");
@@ -586,7 +688,7 @@ mod tests {
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
         let search = &svc.actions["search_issues"];
         assert_eq!(search.risk, Risk::Read);
-        assert_eq!(search.scope_param.as_deref(), Some("team"));
+        assert_eq!(search.scope_param, "team".into());
         assert!(
             search.params["team"].required,
             "schema came from discovered"
@@ -753,7 +855,7 @@ mod tests {
         assert_eq!(svc.hosts, vec!["slack.com"]);
         let send = &svc.actions["send_message"];
         assert_eq!(send.risk, Risk::Write);
-        assert_eq!(send.scope_param.as_deref(), Some("channel"));
+        assert_eq!(send.scope_param, "channel".into());
         assert!(send.params["channel"].required);
     }
 

@@ -860,7 +860,9 @@ async fn patch_subagent_cleanup_config(
 
 #[derive(Deserialize)]
 struct PatchTemplateSettingsRequest {
-    allow_user_templates: Option<bool>,
+    /// `none` | `restrictive` | `full` — whether members may create
+    /// user-namespace layers.
+    user_template_policy: Option<String>,
     global_templates_enabled: Option<bool>,
     /// When false (default), non-admins cannot instantiate global templates
     /// that fall outside the org's curated catalog.
@@ -869,10 +871,13 @@ struct PatchTemplateSettingsRequest {
 
 #[derive(Serialize)]
 struct TemplateSettingsResponse {
-    allow_user_templates: bool,
+    user_template_policy: String,
     global_templates_enabled: bool,
     allow_services_outside_catalog: bool,
 }
+
+/// Accepted values for `user_template_policy`.
+const USER_TEMPLATE_POLICIES: [&str; 3] = ["none", "restrictive", "full"];
 
 /// Read the org's template/catalog settings. Admin-only: these govern which
 /// global templates members can see and instantiate.
@@ -888,15 +893,14 @@ async fn get_template_settings(
         ));
     }
 
-    let (allow_user_templates, global_templates_enabled, allow_services_outside_catalog) =
-        overslash_db::repos::org::get_template_settings(state.db(&ext), id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    let settings = overslash_db::repos::org::get_template_settings(state.db(&ext), id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
 
     Ok(Json(TemplateSettingsResponse {
-        allow_user_templates,
-        global_templates_enabled,
-        allow_services_outside_catalog,
+        user_template_policy: settings.user_template_policy,
+        global_templates_enabled: settings.global_templates_enabled,
+        allow_services_outside_catalog: settings.allow_services_outside_catalog,
     }))
 }
 
@@ -914,17 +918,25 @@ async fn patch_template_settings(
         ));
     }
 
-    if req.allow_user_templates.is_none()
+    if req.user_template_policy.is_none()
         && req.global_templates_enabled.is_none()
         && req.allow_services_outside_catalog.is_none()
     {
         return Err(AppError::BadRequest("no fields supplied".into()));
     }
 
-    let (allow, globals, outside) = overslash_db::repos::org::update_template_settings(
+    if let Some(policy) = &req.user_template_policy
+        && !USER_TEMPLATE_POLICIES.contains(&policy.as_str())
+    {
+        return Err(AppError::BadRequest(format!(
+            "user_template_policy must be one of {USER_TEMPLATE_POLICIES:?}"
+        )));
+    }
+
+    let settings = overslash_db::repos::org::update_template_settings(
         state.db(&ext),
         id,
-        req.allow_user_templates,
+        req.user_template_policy.as_deref(),
         req.global_templates_enabled,
         req.allow_services_outside_catalog,
     )
@@ -939,9 +951,9 @@ async fn patch_template_settings(
             resource_type: Some("org"),
             resource_id: Some(id),
             detail: serde_json::json!({
-                "allow_user_templates": allow,
-                "global_templates_enabled": globals,
-                "allow_services_outside_catalog": outside,
+                "user_template_policy": settings.user_template_policy,
+                "global_templates_enabled": settings.global_templates_enabled,
+                "allow_services_outside_catalog": settings.allow_services_outside_catalog,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -949,9 +961,9 @@ async fn patch_template_settings(
         .await;
 
     Ok(Json(TemplateSettingsResponse {
-        allow_user_templates: allow,
-        global_templates_enabled: globals,
-        allow_services_outside_catalog: outside,
+        user_template_policy: settings.user_template_policy,
+        global_templates_enabled: settings.global_templates_enabled,
+        allow_services_outside_catalog: settings.allow_services_outside_catalog,
     }))
 }
 
