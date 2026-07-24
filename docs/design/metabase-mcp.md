@@ -1,6 +1,6 @@
 # Metabase MCP — reference & service-spec notes
 
-**Status:** Draft — reference (input for a future `services/metabase.yaml`)
+**Status:** Draft — reference (input for a future `services/metabase.yaml`); SQL-policy direction settled in **DECISIONS.md D42**.
 
 Notes from installing and exercising the [Metabase MCP server]
 (`@jerichosequitin/metabase-mcp`) against a local Metabase, to inform an
@@ -71,8 +71,76 @@ Good on the mechanics; the tool *shape* tells us how to model it.
 - **`export` writes to local disk** — undesirable in a gateway. A service-spec
   `export` action should return the payload (or a URL), not touch a filesystem.
 
+## SQL policy: parser choice & enforcement scope (D42)
+
+The question beyond "gate the write action behind approval" is whether Overslash
+should **parse the SQL** to enforce read/write and per-table/column rules. The
+operator's priorities: care a lot about **read-vs-write, table names, column
+names**; care little about the rest; **Postgres first**. Settled shape (D42):
+
+### Pluggable via two field annotations (not a Metabase-specific code path)
+
+Policy attaches to **fields**, so any SQL-bearing tool (Metabase `execute`,
+HubSpot `query_crm_data`, Shopify ShopifyQL) opts in identically. Both are
+ordinary `x-overslash-*` vendor annotations (normalized via `openapi/alias.rs`) —
+**not** a synthetic OpenAPI type: 3.1 has no `sql` type and we don't invent one.
+
+- `x-overslash-sql: true` on the string param carrying the query → turns on
+  parse-and-classify for the call.
+- `x-overslash-sql-database: <jq expr>` → a **jq expression over the call params**
+  (one field `.database_id`, or a composition `.project + "/" + .dataset`) whose
+  result keys into per-instance config (`x-overslash-instance-config` /
+  `x-overslash-config`, D38): `{ "5": { dialect: "postgres", label: "reveni-prod" } }`.
+  Resolves the **dialect** to parse with + a human **DB label** for audit. Reuses
+  the jq engine already behind `x-overslash-disclose`/`-transform` (D27).
+  Unresolved → default `postgres`, fail-closed.
+
+### Parser: `pg_query` (libpg_query), not `sqlparser-rs`
+
+Use the **`pg_query` crate** (Rust bindings over `libpg_query` — Postgres's own C
+parser, as used by pganalyze). It parses anything Postgres accepts *identically*
+and exposes `.tables()`, column refs, and statement types directly; the
+dialect-approximation fragility that dogs a pure-Rust parser (`sqlparser-rs`'s
+`PostgreSqlDialect`) — and its weakness on the read/write traps — is the reason to
+prefer it, since correctness on read/write + table/column is the entire point.
+Cost: a **C-toolchain build dependency + larger binary**, so gate it behind a
+**`sql_policy` Cargo feature, off by default** (the default build and CI jobs that
+don't compile the feature stay unaffected). Dialect is resolved per DB field, not
+pinned per action, so a second backend (`sqlparser-rs` for best-effort dialects)
+can be added later without touching the rule surface.
+
+### What parsing guarantees — asymmetric, stated honestly
+
+- **Read vs write — enforceable.** Classify from the parse tree, fail-closed:
+  `SELECT`/`WITH`-only → read; DML/DDL/`TRUNCATE`/`COPY`, **multi-statement**,
+  **writable CTE** (`WITH t AS (DELETE … RETURNING …) …`), `DO`/`CALL`, or
+  unparseable → write. Elevates the action's otherwise-static `Risk` so writes
+  route to the existing approval bubbling. This is where parsing beats both the
+  MCP's regex and a read-only key *for approval routing*.
+- **Table names — enforceable.** `.tables()` lists referenced relations → one
+  derived permission key per table, DB-label-scoped, reusing the `scope_param` key
+  shape (`metabase:execute:table=reveni-prod/public.orders`) and the existing glob
+  rule engine — no new grammar. Caveats: unqualified names depend on `search_path`
+  (require schema-qualified rules); a **view** is gated as its own name.
+- **Column names — fail-closed detection only.** Parsing yields *referenced*
+  identifiers, not *resolved* columns. **`SELECT *` surfaces `*` as a literal
+  column name** (and `t.*` as `*` under `t`), so a deny-`*` rule fails closed and
+  **forces explicit enumeration**, after which listed columns bite. But views/CTEs
+  hide base-table columns from any parser, so **true column masking (PII) pushes
+  down to Metabase data-sandboxing / column DB grants** — never claimed as an
+  Overslash-side guarantee.
+
+**Net:** read/write + table rules enforce in Overslash; column masking is the
+DB's job. Keep the read-only Metabase key as the backstop regardless (belt +
+suspenders). Wiring point: `crates/overslash-api/src/routes/actions/call.rs`, where
+full `req.params` is already in memory before the ceiling/chain walk.
+
 ## Next step
 
-Draft `services/metabase.yaml`: API-key auth (`x-api-key`), the read actions
-above as low-risk, and native SQL gated behind approval — using the discrete
-REST endpoints rather than the MCP's six meta-tools.
+1. **Audit first** (the only near-term customer ask): draft `services/metabase.yaml`
+   — API-key auth (`x-api-key`), the read actions above as low-risk, native SQL as a
+   `write` action gated behind approval, and a `disclose` filter capturing the raw
+   `query` — using the discrete REST endpoints rather than the MCP's six meta-tools.
+   No parser yet.
+2. Then the read/write classifier (`pg_query` behind `sql_policy`), then per-table
+   permission keys, then column rules — per D42.
