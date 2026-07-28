@@ -36,6 +36,21 @@ pub struct ExecutionRow {
     pub tags: Vec<String>,
 }
 
+/// Create the pending execution for an approved approval.
+///
+/// `INSERT … SELECT` rather than `VALUES` so `tags` are copied from the
+/// approval in the same statement — the cascade call site
+/// (`services::permission_chain`) holds only the approval id, and a copy that
+/// cannot drift beats one threaded through two paths.
+///
+/// The `SELECT` matching no row (→ `RowNotFound`) means the approval does not
+/// exist *in this org*. That is not a new failure mode: the
+/// `executions.approval_id` FK raised a constraint violation for the same
+/// condition before, so a nonexistent approval always errored here. The
+/// `a.org_id = $2` half is in fact stricter than the old `VALUES` form, which
+/// wrote the caller-supplied `org_id` without ever checking it against the
+/// approval's. Both call sites hold the approval row when they call this, and
+/// the cascade site already treats an error as non-fatal.
 pub(crate) async fn create_pending(
     pool: &PgPool,
     org_id: Uuid,

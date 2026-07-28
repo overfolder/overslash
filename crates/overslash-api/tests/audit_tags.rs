@@ -159,6 +159,48 @@ async fn an_untagged_approval_yields_an_untagged_execution() {
     assert!(execution.tags.is_empty());
 }
 
+#[tokio::test]
+async fn an_execution_cannot_be_created_across_orgs() {
+    // The tag-copying `INSERT … SELECT` filters on `a.org_id` too, so an
+    // approval belonging to another tenant yields no row rather than an
+    // execution stamped with the caller's org. The old `VALUES` form wrote
+    // the caller-supplied org_id without checking it against the approval's.
+    let pool = common::test_pool().await;
+    let theirs = insert_org(&pool).await;
+    let mine = insert_org(&pool).await;
+    let identity_id = insert_identity(&pool, theirs, "agent").await;
+
+    let approval = overslash_db::OrgScope::new(theirs, pool.clone())
+        .create_approval(
+            identity_id,
+            identity_id,
+            "their approval",
+            None,
+            None,
+            None,
+            &[],
+            &format!("tok-{}", Uuid::new_v4()),
+            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            &tags(&["service:metabase"]),
+        )
+        .await
+        .unwrap();
+
+    let result = overslash_db::OrgScope::new(mine, pool.clone())
+        .create_pending_execution(
+            approval.id,
+            false,
+            None,
+            None,
+            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "an approval from another org must not yield an execution"
+    );
+}
+
 // ===========================================================================
 // Audit search
 // ===========================================================================
