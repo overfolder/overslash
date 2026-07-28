@@ -478,22 +478,25 @@ pub(super) async fn execute_claimed_approval(
         "approval.execution_failed"
     };
     let _ = scope
-        .log_audit(AuditEntry {
-            org_id: audit_org_id,
-            identity_id: audit_identity_id,
-            action: audit_action,
-            resource_type: Some("approval"),
-            resource_id: Some(id),
-            detail: serde_json::json!({
-                "execution_id": execution_id,
-                "triggered_by": triggered_by,
-                "status": finalised.status,
-                "error": finalised.error,
-                "cascaded_approval_ids": &cascaded_approval_ids,
-            }),
-            description: None,
-            ip_address: ip,
-        })
+        .log_audit_tagged(
+            AuditEntry {
+                org_id: audit_org_id,
+                identity_id: audit_identity_id,
+                action: audit_action,
+                resource_type: Some("approval"),
+                resource_id: Some(id),
+                detail: serde_json::json!({
+                    "execution_id": execution_id,
+                    "triggered_by": triggered_by,
+                    "status": finalised.status,
+                    "error": finalised.error,
+                    "cascaded_approval_ids": &cascaded_approval_ids,
+                }),
+                description: None,
+                ip_address: ip,
+            },
+            &replay_tags(approval, !succeeded),
+        )
         .await;
 
     {
@@ -642,4 +645,18 @@ pub(super) async fn cancel_approval_execution(
     );
     resp.decorate_relationship(&scope, auth.identity_id).await?;
     Ok(Json(resp))
+}
+
+/// The approval's tags plus the replay's outcome.
+///
+/// Replay never re-classifies — it re-executes a stored payload — so the
+/// approval's tag set is authoritative and only the outcome is new
+/// information. Shared by all three runtime branches (the HTTP path here, plus
+/// `replay_mcp` and `replay_platform`) so a replayed MCP call and a replayed
+/// HTTP call can never end up tagged by different rules.
+pub(super) fn replay_tags(
+    approval: &overslash_db::repos::approval::ApprovalRow,
+    is_error: bool,
+) -> Vec<String> {
+    overslash_core::tags::with_outcome(approval.tags.clone(), is_error)
 }

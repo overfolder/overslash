@@ -78,6 +78,7 @@ CREATE TABLE public.approvals (
     resolver_assigned_at timestamp with time zone DEFAULT now() NOT NULL,
     disclosed_fields jsonb,
     replay_payload jsonb,
+    tags text[] DEFAULT '{}'::text[] NOT NULL,
     CONSTRAINT approvals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'allowed'::text, 'denied'::text, 'expired'::text])))
 );
 
@@ -97,7 +98,8 @@ CREATE TABLE public.audit_log (
     ip_address text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     description text,
-    impersonated_by_identity_id uuid
+    impersonated_by_identity_id uuid,
+    tags text[] DEFAULT '{}'::text[] NOT NULL
 );
 
 
@@ -201,6 +203,7 @@ CREATE TABLE public.executions (
     expires_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     result_viewed_at timestamp with time zone,
+    tags text[] DEFAULT '{}'::text[] NOT NULL,
     CONSTRAINT executions_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'executing'::text, 'executed'::text, 'failed'::text, 'cancelled'::text, 'expired'::text])))
 );
 
@@ -1328,6 +1331,13 @@ CREATE INDEX idx_audit_log_impersonated_by ON public.audit_log USING btree (org_
 --
 
 CREATE INDEX idx_audit_log_org ON public.audit_log USING btree (org_id, created_at DESC);
+
+
+--
+-- Name: idx_audit_log_tags; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_audit_log_tags ON public.audit_log USING gin (tags);
 
 
 --

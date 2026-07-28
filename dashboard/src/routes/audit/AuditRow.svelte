@@ -13,13 +13,17 @@
 		entry,
 		expanded,
 		ontoggle,
-		currentUserId
+		currentUserId,
+		ontagclick
 	}: {
 		entry: AuditEntry;
 		expanded: boolean;
 		ontoggle: () => void;
 		/** Identity id of the logged-in user, so their own rows show a "Me" pill. */
 		currentUserId?: string | null;
+		/** Narrow the search to a tag. Clicking a chip is the discovery path —
+		 *  nobody types `table:warehouse/public.orders` from memory. */
+		ontagclick?: (tag: string) => void;
 	} = $props();
 
 	// Split the actor's identity path into its owning user and leaf agent so the
@@ -242,6 +246,22 @@
 					<dd class="mono">{entry.id}</dd>
 					<dt>Timestamp</dt>
 					<dd class="mono">{entry.created_at}</dd>
+					{#if entry.tags.length}
+						<dt>Tags</dt>
+						<dd class="tags">
+							{#each entry.tags as t (t)}
+								<button
+									type="button"
+									class="tag-chip"
+									title={`Filter by ${t}`}
+									onclick={(e) => {
+										e.stopPropagation();
+										ontagclick?.(t);
+									}}>{t}</button
+								>
+							{/each}
+						</dd>
+					{/if}
 					{#if resultLabel}
 						<dt>Result</dt>
 						<dd class={hasUpstreamError ? 'result-err' : 'result-ok'}>{resultLabel}</dd>
@@ -464,6 +484,25 @@
 	}
 	dd {
 		margin: 0;
+	}
+	.tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+	.tag-chip {
+		font-family: var(--font-mono, monospace);
+		font-size: var(--text-label, 0.75rem);
+		padding: 1px 6px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm, 4px);
+		background: var(--color-bg-subtle, transparent);
+		color: var(--color-text-muted);
+		cursor: pointer;
+	}
+	.tag-chip:hover {
+		border-color: var(--color-primary, #3b82f6);
+		color: var(--color-text);
 	}
 	.json-block {
 		display: flex;

@@ -22,6 +22,7 @@ mod approval_token_leak;
 mod approvals_cascade;
 mod approvals_remember_keys;
 mod audit;
+mod audit_tags;
 mod auth_login;
 mod auth_magic_link;
 mod auto_call_on_approve;

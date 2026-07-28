@@ -3,7 +3,7 @@
 
 use super::*;
 
-use super::replay::fail_and_return;
+use super::replay::{fail_and_return, replay_tags};
 
 /// Replay a stored MCP call (`ReplayPayload::Mcp`). Returns the same
 /// `(finalised, succeeded, upstream_errored, result_summary)` tuple as the
@@ -139,16 +139,19 @@ pub(super) async fn replay_mcp(
                 }
             }
             let _ = scope
-                .log_audit(AuditEntry {
-                    org_id: audit_org_id,
-                    identity_id: Some(approval.identity_id),
-                    action: "action.executed",
-                    resource_type: Some("mcp"),
-                    resource_id: None,
-                    detail: audit_detail,
-                    description: Some(approval.action_summary.as_str()),
-                    ip_address: ip,
-                })
+                .log_audit_tagged(
+                    AuditEntry {
+                        org_id: audit_org_id,
+                        identity_id: Some(approval.identity_id),
+                        action: "action.executed",
+                        resource_type: Some("mcp"),
+                        resource_id: None,
+                        detail: audit_detail,
+                        description: Some(approval.action_summary.as_str()),
+                        ip_address: ip,
+                    },
+                    &replay_tags(approval, is_error),
+                )
                 .await;
             let summary = serde_json::json!({
                 "runtime": "mcp",
@@ -167,25 +170,28 @@ pub(super) async fn replay_mcp(
             // error summary, plus the replay cross-references.
             if let Some(error_detail) = invoke_err.audit {
                 let _ = scope
-                    .log_audit(AuditEntry {
-                        org_id: audit_org_id,
-                        identity_id: Some(approval.identity_id),
-                        action: "action.executed",
-                        resource_type: Some("mcp"),
-                        resource_id: None,
-                        detail: serde_json::json!({
-                            "runtime": "mcp",
-                            "tool": call.tool,
-                            "arguments": call.arguments,
-                            "url": call.url,
-                            "is_error": true,
-                            "error": error_detail,
-                            "replayed_from_approval": id,
-                            "execution_id": execution_id,
-                        }),
-                        description: Some(approval.action_summary.as_str()),
-                        ip_address: ip,
-                    })
+                    .log_audit_tagged(
+                        AuditEntry {
+                            org_id: audit_org_id,
+                            identity_id: Some(approval.identity_id),
+                            action: "action.executed",
+                            resource_type: Some("mcp"),
+                            resource_id: None,
+                            detail: serde_json::json!({
+                                "runtime": "mcp",
+                                "tool": call.tool,
+                                "arguments": call.arguments,
+                                "url": call.url,
+                                "is_error": true,
+                                "error": error_detail,
+                                "replayed_from_approval": id,
+                                "execution_id": execution_id,
+                            }),
+                            description: Some(approval.action_summary.as_str()),
+                            ip_address: ip,
+                        },
+                        &replay_tags(approval, true),
+                    )
                     .await;
             }
             let msg = invoke_err.app.to_string();

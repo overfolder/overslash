@@ -252,6 +252,7 @@ async fn test_archive_revokes_api_keys_and_expires_approvals() {
             &[],
             &token,
             time::OffsetDateTime::now_utc() + time::Duration::hours(2),
+            &[],
         )
         .await
         .unwrap();

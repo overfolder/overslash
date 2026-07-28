@@ -423,20 +423,23 @@ pub(super) async fn resolve_approval(
         }
     }
     let _ = scope
-        .log_audit(AuditEntry {
-            org_id: auth.org_id,
-            // The event is *about* the approval's subject (the agent whose
-            // action was pending), not the resolver — so it carries the
-            // subject's user→agent path even when a user resolved it. The
-            // resolver is in `detail.resolved_by_identity_id`.
-            identity_id: Some(approval_pre.identity_id),
-            action: "approval.resolved",
-            resource_type: Some("approval"),
-            resource_id: Some(id),
-            detail: audit_detail,
-            description: None,
-            ip_address: ip.0.as_deref(),
-        })
+        .log_audit_tagged(
+            AuditEntry {
+                org_id: auth.org_id,
+                // The event is *about* the approval's subject (the agent whose
+                // action was pending), not the resolver — so it carries the
+                // subject's user→agent path even when a user resolved it. The
+                // resolver is in `detail.resolved_by_identity_id`.
+                identity_id: Some(approval_pre.identity_id),
+                action: "approval.resolved",
+                resource_type: Some("approval"),
+                resource_id: Some(id),
+                detail: audit_detail,
+                description: None,
+                ip_address: ip.0.as_deref(),
+            },
+            &approval_pre.tags,
+        )
         .await;
 
     // Dispatch webhook (fire-and-forget)

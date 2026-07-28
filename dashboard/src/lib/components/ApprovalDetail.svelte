@@ -367,6 +367,17 @@
 							<dt>Operation</dt>
 							<dd><code class="mono">{primaryKey.action}</code></dd>
 						{/if}
+						{#if current.tags?.length}
+							<!-- Read-only here: the approval queue has no server-side
+							     tag filtering, so a chip would have nothing to narrow.
+							     The audit log is where tags are searchable. -->
+							<dt>Tags</dt>
+							<dd class="aq-taglist">
+								{#each current.tags as t (t)}
+									<code class="mono">{t}</code>
+								{/each}
+							</dd>
+						{/if}
 						{#if current.permission_keys.length > 0}
 							<!-- Every uncovered key, one per line: these are exactly what
 							     still needs granting, and an action can derive several
@@ -975,6 +986,14 @@
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
+		gap: 4px;
+		overflow-wrap: anywhere;
+	}
+	/* Tags wrap inline — there are more of them than permission keys and each
+	   is short, so a column would run the panel long for no gain. */
+	.aq-taglist {
+		display: flex;
+		flex-wrap: wrap;
 		gap: 4px;
 		overflow-wrap: anywhere;
 	}

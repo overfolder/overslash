@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE approvals SET status = $2, resolved_at = now(), resolved_by = $3, remember = $4\n         WHERE id = $1 AND org_id = $6 AND status = 'pending' AND current_resolver_identity_id = $5\n         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
+  "query": "INSERT INTO approvals (org_id, identity_id, current_resolver_identity_id, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, token, expires_at, tags)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags",
   "describe": {
     "columns": [
       {
@@ -189,16 +189,32 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 17,
+        "name": "tags",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "tags"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Text",
-        "Text",
-        "Bool",
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Jsonb",
+        "TextArray",
+        "Text",
+        "Timestamptz",
+        "TextArray"
       ]
     },
     "nullable": [
@@ -218,8 +234,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "104ad5ede969d5f434276a06b028c7fb1b5e8179a66a8a6a735442212352ecdc"
+  "hash": "f0a0406c445ecf93051230de35fb97dac3769ba4cf5029732b2946d97dd14f70"
 }

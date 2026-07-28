@@ -12,6 +12,7 @@
 		current_resolver_identity_id: 'idn_agent',
 		identity_path: 'spiffe://acme/user/alice/agent/deploy-bot',
 		identity_path_ids: ['idn_user', 'idn_agent'],
+		tags: ['service:github', 'action:create_issue', 'risk:write', 'mode:c'],
 		action_summary: 'Send an email to jane@example.com',
 		permission_keys: ['gmail:send:recipient=jane@example.com'],
 		derived_keys: [

@@ -167,6 +167,17 @@ pub(super) async fn enforce_permission_chain(
                     .ok()
                 };
 
+                // The same tag set the execution will inherit and the audit
+                // rows will carry — minted once, here, so an approval can
+                // never disagree with what it later becomes.
+                let tags = super::tags::call_tags(
+                    meta,
+                    sql_policy,
+                    effective,
+                    super::tags::Transport::of(meta, req.prefer_stream.unwrap_or(false)),
+                    &action_req.url,
+                );
+
                 let approval = scope
                     .create_approval(
                         identity_id,
@@ -182,6 +193,7 @@ pub(super) async fn enforce_permission_chain(
                         &keys,
                         &token,
                         expires_at,
+                        &tags,
                     )
                     .await?;
 
@@ -207,16 +219,19 @@ pub(super) async fn enforce_permission_chain(
 
                 let _ = scope
                     .clone()
-                    .log_audit(AuditEntry {
-                        org_id: auth.org_id,
-                        identity_id: Some(identity_id),
-                        action: "approval.created",
-                        resource_type: Some("approval"),
-                        resource_id: Some(approval.id),
-                        detail: approval_audit_detail,
-                        description: Some(&summary),
-                        ip_address: ip.0.as_deref(),
-                    })
+                    .log_audit_tagged(
+                        AuditEntry {
+                            org_id: auth.org_id,
+                            identity_id: Some(identity_id),
+                            action: "approval.created",
+                            resource_type: Some("approval"),
+                            resource_id: Some(approval.id),
+                            detail: approval_audit_detail,
+                            description: Some(&summary),
+                            ip_address: ip.0.as_deref(),
+                        },
+                        &tags,
+                    )
                     .await;
 
                 // ── approval.created webhook (SPEC §5) ───────────────────

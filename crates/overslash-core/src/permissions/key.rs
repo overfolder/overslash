@@ -223,7 +223,7 @@ impl PermissionKey {
 /// label from the value, so a config-supplied label containing either would
 /// silently change the key shape; whitespace would make keys untypable.
 /// All three collapse to `-`.
-fn sanitize_db_label(label: &str) -> String {
+pub(crate) fn sanitize_db_label(label: &str) -> String {
     label
         .chars()
         .map(|c| {

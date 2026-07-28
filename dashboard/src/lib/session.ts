@@ -283,6 +283,11 @@ export interface ApprovalResponse {
 	 *  IdentityPath uses these to build `/agents/<id>` links per segment. */
 	identity_path_ids: string[];
 	action_summary: string;
+	/** System-derived metadata tags describing the gated call (`sql:write`,
+	 *  `table:wh/orders`, `service:metabase`, …). Shown read-only on the
+	 *  approval detail so a reviewer sees what the call actually touches.
+	 *  Empty for approvals created before tagging existed. */
+	tags: string[];
 	permission_keys: string[];
 	derived_keys: DerivedKey[];
 	suggested_tiers: SuggestedTier[];

@@ -18,6 +18,19 @@ impl OrgScope {
         crate::repos::audit::log(self.db(), &entry, self.impersonated_by_identity_id).await
     }
 
+    /// Append an audit row carrying system-derived metadata tags. Same org
+    /// rewrite as [`Self::log_audit`]; used by the action-call and approval
+    /// paths, which are the only places tags are minted.
+    pub async fn log_audit_tagged(
+        &self,
+        mut entry: AuditEntry<'_>,
+        tags: &[String],
+    ) -> Result<(), sqlx::Error> {
+        entry.org_id = self.org_id();
+        crate::repos::audit::log_tagged(self.db(), &entry, self.impersonated_by_identity_id, tags)
+            .await
+    }
+
     /// Query this org's audit log. The filter's `org_id` field is
     /// overwritten with `self.org_id()` so callers cannot read another
     /// tenant's log even if they construct a misaligned filter.

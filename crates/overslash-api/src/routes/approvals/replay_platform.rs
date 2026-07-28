@@ -3,6 +3,8 @@
 
 use super::*;
 
+use super::replay::replay_tags;
+
 /// Replay a stored platform call (`ReplayPayload::Platform`). Returns the same
 /// `(finalised, succeeded, upstream_errored, result_summary)` tuple as the other
 /// runtime branches; `upstream_errored` is always false because platform
@@ -83,16 +85,21 @@ pub(super) async fn replay_platform(
                 "execution_id": execution_id,
             });
             let _ = scope
-                .log_audit(AuditEntry {
-                    org_id: audit_org_id,
-                    identity_id: Some(approval.identity_id),
-                    action: "action.executed",
-                    resource_type: call.service.as_deref(),
-                    resource_id: None,
-                    detail: audit_detail,
-                    description: Some(approval.action_summary.as_str()),
-                    ip_address: ip,
-                })
+                .log_audit_tagged(
+                    AuditEntry {
+                        org_id: audit_org_id,
+                        identity_id: Some(approval.identity_id),
+                        action: "action.executed",
+                        resource_type: call.service.as_deref(),
+                        resource_id: None,
+                        detail: audit_detail,
+                        description: Some(approval.action_summary.as_str()),
+                        ip_address: ip,
+                    },
+                    // Platform handlers surface failures as AppError, so a
+                    // row written here is always a success.
+                    &replay_tags(approval, false),
+                )
                 .await;
             let summary = serde_json::json!({
                 "runtime": "platform",
