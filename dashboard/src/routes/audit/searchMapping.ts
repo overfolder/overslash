@@ -46,6 +46,23 @@ const RESOURCE_VALUES = [
 
 const AGENT_KINDS = ['agent', 'sub_agent'];
 
+/** Tag namespaces the backend mints, offered as autocomplete seeds. Nobody
+ *  recalls a whole tag, but the namespace is enough to start from — and the
+ *  detail pane's chips are the other (and primary) way in. */
+const TAG_NAMESPACE_HINTS = [
+	'sql:read',
+	'sql:write',
+	'outcome:error',
+	'outcome:ok',
+	'risk:read',
+	'risk:write',
+	'risk:delete',
+	'transport:http',
+	'transport:mcp',
+	'transport:platform',
+	'transport:stream'
+];
+
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 /** The logged-in user, used to resolve the special `user = me` value. */
@@ -87,6 +104,12 @@ export function buildAuditSearchKeys(
 		{ name: 'description', operators: ['=', '~'], values: [], hint: 'description text' },
 		{ name: 'ip', operators: ['=', '~'], values: [], hint: 'IP address' },
 		{
+			name: 'tag',
+			operators: ['=', '~'],
+			values: TAG_NAMESPACE_HINTS,
+			hint: 'metadata tag · repeat to narrow (AND)'
+		},
+		{
 			name: 'uuid',
 			operators: ['='],
 			values: [],
@@ -113,6 +136,8 @@ export function buildAuditSearchKeys(
  * - `user ~ NAME`           → owner_user_contains (substring on owning-user name)
  * - `identity = NAME`       → identity_id=<resolved UUID> (any kind), else q
  * - `identity ~ NAME`       → identity_name_contains (any kind)
+ * - `tag = X` (repeatable)  → tag (comma-joined; a row must carry all of them)
+ * - `tag ~ X`               → tag_contains (substring against any one tag)
  * - `<key> = <uuid>`        → the id field directly, skipping name resolution
  * - `time = preset`         → since/until window
  * - free text               → folded into q
@@ -129,6 +154,7 @@ export function searchToFilters(
 ): AuditFilters {
 	const filters: AuditFilters = {};
 	const qTerms: string[] = [];
+	const tagTerms: string[] = [];
 	if (value.freeText) qTerms.push(value.freeText);
 	// Resolve a name to an identity id, optionally constrained to a set of
 	// kinds (so `agent = bot` doesn't match a user also named `bot`).
@@ -189,6 +215,14 @@ export function searchToFilters(
 				if (id) filters.identity_id = id;
 				else qTerms.push(expr.value);
 			}
+		} else if (expr.key === 'tag') {
+			if (expr.op === '~') {
+				filters.tag_contains = expr.value;
+			} else {
+				// Repeated `tag =` narrows (AND); the API takes them as one
+				// comma-separated param, matching the `identity_kind` shape.
+				tagTerms.push(expr.value);
+			}
 		} else if (expr.key === 'uuid') {
 			filters.uuid = expr.value;
 		} else if (expr.key === 'time') {
@@ -200,6 +234,7 @@ export function searchToFilters(
 		}
 	}
 	if (qTerms.length) filters.q = qTerms.join(' ');
+	if (tagTerms.length) filters.tag = tagTerms.join(',');
 	return filters;
 }
 
@@ -252,6 +287,13 @@ export function filtersToSearch(
 	if (filters.owner_user_contains) {
 		expressions.push({ key: 'user', op: '~', value: filters.owner_user_contains });
 	}
+	if (filters.tag) {
+		// One expression per tag, so editing or removing one doesn't drop the rest.
+		for (const t of filters.tag.split(',').filter(Boolean)) {
+			expressions.push({ key: 'tag', op: '=', value: t });
+		}
+	}
+	if (filters.tag_contains) expressions.push({ key: 'tag', op: '~', value: filters.tag_contains });
 	if (filters.uuid) expressions.push({ key: 'uuid', op: '=', value: filters.uuid });
 	// We can't reliably reverse `time` from since/until alone (presets are
 	// snapshotted to ISO timestamps); leave it out and let the user re-pick.

@@ -41,6 +41,9 @@ struct AuditEntry {
     /// `identity_path`.
     impersonated_by_path: Option<String>,
     impersonated_by_path_ids: Vec<Uuid>,
+    /// System-derived metadata tags. Empty for events outside the
+    /// action/approval path.
+    tags: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -87,6 +90,13 @@ struct AuditQuery {
     /// executions whose upstream reported failure; `false` → executions
     /// that succeeded. Powers the `result =` search bar key.
     is_error: Option<bool>,
+    /// Comma-separated metadata tags; a row must carry **all** of them
+    /// (`service:metabase,sql:write` means "writes against Metabase"). Same
+    /// comma convention as `identity_kind`. Powers the `tag =` search key.
+    tag: Option<String>,
+    /// Substring against any one tag — finds `table:warehouse/orders` without
+    /// knowing the db label. Powers `tag ~`.
+    tag_contains: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
     since: Option<OffsetDateTime>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
@@ -125,6 +135,12 @@ async fn query_audit(
             .filter(|k| !k.is_empty())
             .collect::<Vec<_>>()
     });
+    let tags = params.tag.and_then(empty).map(|s| {
+        s.split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+    });
     let filter = AuditFilter {
         org_id: scope.org_id(),
         action: params.action,
@@ -146,6 +162,8 @@ async fn query_audit(
         owner_user_id: params.owner_user_id,
         owner_user_contains: params.owner_user_contains.and_then(empty),
         is_error: params.is_error,
+        tags: tags.filter(|v| !v.is_empty()),
+        tag_contains: params.tag_contains.and_then(empty),
         limit: params.limit,
         offset: params.offset,
     };
@@ -272,6 +290,7 @@ async fn query_audit(
                     impersonated_by_name,
                     impersonated_by_path,
                     impersonated_by_path_ids,
+                    tags: r.tags,
                 }
             })
             .collect(),

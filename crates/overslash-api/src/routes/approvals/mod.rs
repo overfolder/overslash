@@ -160,6 +160,10 @@ struct ApprovalResponse {
     /// names → ids on the client.
     identity_path_ids: Vec<Uuid>,
     action_summary: String,
+    /// System-derived metadata tags describing the gated call (`sql:write`,
+    /// `table:wh/orders`, `service:metabase`, …). Shown as chips on the
+    /// approval detail so a reviewer sees what the call actually touches.
+    tags: Vec<String>,
     permission_keys: Vec<String>,
     derived_keys: Vec<overslash_core::permissions::DerivedKey>,
     suggested_tiers: Vec<overslash_core::permissions::SuggestedTier>,
@@ -231,6 +235,7 @@ impl ApprovalResponse {
             identity_path,
             identity_path_ids,
             action_summary: r.action_summary,
+            tags: r.tags,
             permission_keys: r.permission_keys,
             derived_keys,
             suggested_tiers,

@@ -39,6 +39,13 @@ pub(crate) struct ResolvedAuth {
     /// token injection (no header to build); kept so the
     /// `needs_authentication` gate behaves identically for those.
     pub oauth_injected: bool,
+    /// The account this call authenticates *as* — the resolved connection's
+    /// `account_email`. Not a credential: it names the principal, which is
+    /// what the `connection:` metadata tag records. Populated only on OAuth
+    /// paths, where the connection row was loaded anyway; secret-based
+    /// instances fall back to the template's identity config var (see
+    /// [`crate::services::principals`]).
+    pub principal: Option<String>,
 }
 
 impl ResolvedAuth {
@@ -47,6 +54,7 @@ impl ResolvedAuth {
             secrets,
             auth_header: None,
             oauth_injected: false,
+            principal: None,
         }
     }
 
@@ -55,11 +63,20 @@ impl ResolvedAuth {
             secrets: Vec::new(),
             auth_header,
             oauth_injected: true,
+            principal: None,
         }
     }
 
     pub(super) fn none() -> Self {
         Self::secrets_only(Vec::new())
+    }
+
+    /// Name the account this resolution authenticates as. Called at the OAuth
+    /// return sites, where the connection row is already in hand — naming the
+    /// principal costs no extra query.
+    pub(super) fn with_principal(mut self, principal: Option<String>) -> Self {
+        self.principal = principal;
+        self
     }
 }
 

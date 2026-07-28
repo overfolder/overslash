@@ -138,7 +138,9 @@ pub(crate) async fn resolve_service_auth(
                                 name: header_name.clone(),
                                 value,
                             });
-                    return Ok(ResolvedAuth::oauth(auth_header));
+                    return Ok(
+                        ResolvedAuth::oauth(auth_header).with_principal(conn.account_email.clone())
+                    );
                 }
                 Err(e) => {
                     let err_str = e.to_string();
@@ -445,7 +447,8 @@ pub(crate) async fn resolve_instance_auth(
                                             value,
                                         }
                                     });
-                                return Ok(ResolvedAuth::oauth(auth_header));
+                                return Ok(ResolvedAuth::oauth(auth_header)
+                                    .with_principal(conn.account_email.clone()));
                             }
                         }
                     }
@@ -453,7 +456,8 @@ pub(crate) async fn resolve_instance_auth(
                     return Ok(ResolvedAuth::oauth(Some(AuthHeader {
                         name: "Authorization".into(),
                         value: format!("Bearer {access_token}"),
-                    })));
+                    }))
+                    .with_principal(conn.account_email.clone()));
                 }
                 Err(e) => {
                     // Surface the typed AppError up the call stack — the

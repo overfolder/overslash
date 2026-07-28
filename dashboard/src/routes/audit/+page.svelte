@@ -120,6 +120,19 @@
 		applyFilters(searchToFilters(next, identities, currentUser));
 	}
 
+	/** Add `tag = <t>` to the active search. Tags AND, so clicking a second chip
+	 *  narrows rather than replaces; clicking one already present is a no-op. */
+	function onTagClick(t: string) {
+		const already = searchValue.expressions.some(
+			(e) => e.key === 'tag' && e.op === '=' && e.value === t
+		);
+		if (already) return;
+		onSearchChange({
+			...searchValue,
+			expressions: [...searchValue.expressions, { key: 'tag', op: '=', value: t }]
+		});
+	}
+
 	function refresh() {
 		fetchPage(true);
 	}
@@ -205,6 +218,7 @@
 							expanded={expandedId === anchor.id}
 							ontoggle={() => toggleExpand(anchor!.id)}
 							currentUserId={data.user?.identity_id}
+							ontagclick={onTagClick}
 						/>
 					</tbody>
 				</table>
@@ -241,6 +255,7 @@
 								expanded={expandedId === entry.id}
 								ontoggle={() => toggleExpand(entry.id)}
 								currentUserId={data.user?.identity_id}
+							ontagclick={onTagClick}
 							/>
 							{#snippet failed(error)}
 								<tr>

@@ -19,6 +19,21 @@ use crate::error::Result;
 use crate::services::group_ceiling;
 use crate::services::platform_services::template_oauth_provider;
 
+/// The last step of the principal precedence, in isolation: a secret-based
+/// instance's identity-bearing config var (email's `mailbox_user`).
+///
+/// Pure — no queries — so the action call path can reach for it after the
+/// auth resolvers came back without a connection to name. Steps 1 and 2 of the
+/// precedence both need a connection row, and on that path the resolvers have
+/// already loaded (or declined to load) one.
+pub fn instance_config_principal(
+    def: &overslash_core::types::ServiceDefinition,
+    instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
+) -> Option<String> {
+    let key = def.identity_config_key()?;
+    instance.config.0.get(key).cloned()
+}
+
 /// Distinct principals per service **template key**, across the active instances
 /// the given identity can use.
 ///
@@ -97,9 +112,7 @@ pub async fn resolve_service_principals(
 
         // 3. Secret-based instance: the identity-bearing config var.
         if principal.is_none() {
-            if let Some(k) = def.identity_config_key() {
-                principal = r.config.0.get(k).cloned();
-            }
+            principal = instance_config_principal(def, r);
         }
 
         if let Some(p) = principal {

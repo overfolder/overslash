@@ -200,6 +200,7 @@ mod tests {
             mcp_target: None,
             platform_target: None,
             instance_id: None,
+            binding: Default::default(),
         }
     }
 

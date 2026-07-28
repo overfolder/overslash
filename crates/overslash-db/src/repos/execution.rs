@@ -31,6 +31,9 @@ pub struct ExecutionRow {
     /// "called but output unread" surfaces on the dashboard's pending-calls
     /// list — NULL means the agent hasn't seen the upstream response yet.
     pub result_viewed_at: Option<OffsetDateTime>,
+    /// Copied verbatim from the originating approval at insert time — see
+    /// `create_pending`. An execution never re-derives its own tags.
+    pub tags: Vec<String>,
 }
 
 pub(crate) async fn create_pending(
@@ -44,9 +47,10 @@ pub(crate) async fn create_pending(
 ) -> Result<ExecutionRow, sqlx::Error> {
     sqlx::query_as!(
         ExecutionRow,
-        "INSERT INTO executions (approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, expires_at)
-         VALUES ($1, $2, 'pending', $3, $4, $5, $6)
-         RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
+        "INSERT INTO executions (approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, expires_at, tags)
+         SELECT $1, $2, 'pending', $3, $4, $5, $6, a.tags
+           FROM approvals a WHERE a.id = $1 AND a.org_id = $2
+         RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags",
         approval_id,
         org_id,
         remember,
@@ -78,7 +82,7 @@ pub(crate) async fn claim_for_execution(
             AND org_id = $2
             AND status = 'pending'
             AND expires_at > now()
-          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
+          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags",
         approval_id,
         org_id,
         triggered_by,
@@ -102,7 +106,7 @@ pub(crate) async fn finalize_executed(
           WHERE id = $1
             AND org_id = $2
             AND status = 'executing'
-          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
+          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags",
         id,
         org_id,
         result,
@@ -126,7 +130,7 @@ pub(crate) async fn finalize_failed(
           WHERE id = $1
             AND org_id = $2
             AND status = 'executing'
-          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
+          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags",
         id,
         org_id,
         error,
@@ -150,7 +154,7 @@ pub(crate) async fn cancel_if_pending(
           WHERE approval_id = $1
             AND org_id = $2
             AND status = 'pending'
-          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
+          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags",
         approval_id,
         org_id,
     )
@@ -165,7 +169,7 @@ pub(crate) async fn find_by_approval(
 ) -> Result<Option<ExecutionRow>, sqlx::Error> {
     sqlx::query_as!(
         ExecutionRow,
-        "SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at
+        "SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags
          FROM executions
          WHERE approval_id = $1 AND org_id = $2",
         approval_id,
@@ -182,7 +186,7 @@ pub(crate) async fn find_by_approval_ids(
 ) -> Result<Vec<ExecutionRow>, sqlx::Error> {
     sqlx::query_as!(
         ExecutionRow,
-        "SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at
+        "SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags
          FROM executions
          WHERE org_id = $1 AND approval_id = ANY($2)",
         org_id,

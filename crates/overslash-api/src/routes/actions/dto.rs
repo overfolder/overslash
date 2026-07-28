@@ -208,6 +208,51 @@ pub(super) struct ResolvedMeta {
     /// replay payloads so the replay path can re-resolve OAuth against the
     /// same binding instead of persisting a live token.
     pub(super) instance_id: Option<uuid::Uuid>,
+    /// Which template, instance and account this call resolved to. Captured
+    /// during resolution because the instance row is consumed there, and read
+    /// back out by the metadata tagger.
+    pub(super) binding: BindingFacts,
+}
+
+/// The resolved service binding, reduced to the three names worth tagging.
+///
+/// Exists because resolution *consumes* the `ServiceInstanceRow` — by the time
+/// the handler wants to tag the call, the row is gone and re-fetching it would
+/// add a query per call to name something already in hand a moment earlier.
+#[derive(Default, Clone)]
+pub(super) struct BindingFacts {
+    pub(super) template_key: Option<String>,
+    pub(super) instance_name: Option<String>,
+    /// The account the call authenticates as — see
+    /// [`crate::services::principals`] for the precedence.
+    pub(super) principal: Option<String>,
+}
+
+impl BindingFacts {
+    pub(super) fn new(
+        instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+        svc: &overslash_core::types::ServiceDefinition,
+        principal: Option<String>,
+    ) -> Self {
+        Self {
+            // An instance names its own template; a template-only call (no
+            // instance bound) is still a call against that template.
+            template_key: Some(
+                instance
+                    .map(|i| i.template_key.clone())
+                    .unwrap_or_else(|| svc.key.clone()),
+            ),
+            instance_name: instance.map(|i| i.name.clone()),
+            // The OAuth resolvers name the account they authenticated as. A
+            // secret-based instance has no connection to ask, so fall back to
+            // the template's identity config var — the same last step
+            // `resolve_service_principals` takes.
+            principal: principal.or_else(|| {
+                instance
+                    .and_then(|i| crate::services::principals::instance_config_principal(svc, i))
+            }),
+        }
+    }
 }
 
 pub(super) struct McpTarget {
@@ -303,10 +348,15 @@ pub(super) struct SqlPolicyOutcome {
     pub(super) table_keys: Vec<overslash_core::permissions::PermissionKey>,
     /// `column=…` / `column_star=…` keys — deny-screen only.
     pub(super) column_keys: Vec<overslash_core::permissions::PermissionKey>,
-    /// Sanitized audit label ("reveni-prod", the raw db-key, or "unknown").
+    /// Audit label as configured ("reveni-prod", the raw db-key, or
+    /// "unknown"). Sanitized at the point of use — `PermissionKey` and
+    /// `overslash_core::tags` both run it through the same sanitizer.
     pub(super) db_label: String,
-    /// Why the floor is Write, when it is. For tracing/audit.
-    pub(super) write_reason: Option<overslash_core::sql_policy::WriteReason>,
+    /// The full classifier verdict. Kept whole rather than reduced to the
+    /// risk floor: the tables, columns and write reason are what get minted
+    /// into metadata tags and written to the audit `detail.sql` block, and
+    /// reducing here is how they used to get thrown away.
+    pub(super) analysis: overslash_core::sql_policy::SqlAnalysis,
 }
 
 /// Classify an OAuth resolver error so the action handler can respond

@@ -63,6 +63,7 @@ mod resolve;
 mod resolve_encode;
 mod resolve_metadata;
 mod service_resolve;
+mod tags;
 mod validate;
 
 use call::call_action_impl;
@@ -523,7 +524,7 @@ async fn evaluate_sql_policy(
         table_keys,
         column_keys,
         db_label,
-        write_reason: analysis.write_reason,
+        analysis,
     })
 }
 

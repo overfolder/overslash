@@ -678,6 +678,138 @@ mod classified {
             "validate and call must derive identical keys"
         );
     }
+
+    /// The classifier's facts survive as metadata tags on the approval row.
+    ///
+    /// Before tagging, the analysis was reduced to a risk floor plus a set of
+    /// permission keys and then dropped — the columns a statement touched were
+    /// never persisted anywhere, and the tables only survived by accident,
+    /// string-encoded inside the *uncovered* key subset.
+    #[tokio::test]
+    async fn approval_tags_carry_the_sql_facts() {
+        let pool = common::test_pool().await;
+        let (mock, _seen) = start_mock_metabase().await;
+        let (base, client, agent_key, admin_key, ident) =
+            setup(pool.clone(), mock, "write", false, Some(DBS)).await;
+        add_rule(
+            &base,
+            &client,
+            &admin_key,
+            &ident,
+            "metabase:run_query:table=pagila/*",
+            "allow",
+        )
+        .await;
+
+        let resp = run_query(
+            &base,
+            &client,
+            &agent_key,
+            "INSERT INTO public.film (title) VALUES ('x')",
+            json!({}),
+        )
+        .await;
+        assert_eq!(
+            resp["status"].as_str(),
+            Some("pending_approval"),
+            "{resp:?}"
+        );
+
+        let tags: Vec<String> =
+            sqlx::query_scalar("SELECT tags FROM approvals ORDER BY created_at DESC LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        // SQL-derived facts.
+        assert!(tags.contains(&"sql:write".to_string()), "{tags:?}");
+        assert!(
+            tags.contains(&"sql_reason:statement".to_string()),
+            "{tags:?}"
+        );
+        assert!(
+            tags.contains(&"sql_stmt:insertstmt".to_string()),
+            "{tags:?}"
+        );
+        assert!(tags.contains(&"db:pagila".to_string()), "{tags:?}");
+        assert!(
+            tags.contains(&"table_mut:pagila/public.film".to_string()),
+            "{tags:?}"
+        );
+        // A mutation target is not exhaustive-flagged; the parser enumerated it.
+        assert!(
+            !tags.contains(&"sql_exhaustive:false".to_string()),
+            "{tags:?}"
+        );
+
+        // Call-context facts.
+        assert!(tags.contains(&"service:metabase".to_string()), "{tags:?}");
+        assert!(tags.contains(&"action:run_query".to_string()), "{tags:?}");
+        assert!(tags.contains(&"mode:c".to_string()), "{tags:?}");
+        assert!(tags.contains(&"transport:http".to_string()), "{tags:?}");
+        // Effective risk — the classifier elevated a `dynamic` action.
+        assert!(tags.contains(&"risk:write".to_string()), "{tags:?}");
+
+        // The approval.created audit row carries the identical set.
+        let audit: Vec<String> = sqlx::query_scalar(
+            "SELECT tags FROM audit_log WHERE action = 'approval.created' ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audit, tags, "approval and its audit row must not drift");
+    }
+
+    /// An executed read tags the audit row, including the outcome the
+    /// approval could not know.
+    #[tokio::test]
+    async fn executed_read_tags_the_audit_row() {
+        let pool = common::test_pool().await;
+        let (mock, _seen) = start_mock_metabase().await;
+        let (base, client, agent_key, admin_key, ident) =
+            setup(pool.clone(), mock, "read", false, Some(DBS)).await;
+        add_rule(
+            &base,
+            &client,
+            &admin_key,
+            &ident,
+            "metabase:run_query:table=pagila/public.*",
+            "allow",
+        )
+        .await;
+
+        let resp = run_query(
+            &base,
+            &client,
+            &agent_key,
+            "SELECT title FROM public.film",
+            json!({}),
+        )
+        .await;
+        assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+        let tags: Vec<String> = sqlx::query_scalar(
+            "SELECT tags FROM audit_log WHERE action = 'action.executed' ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(tags.contains(&"sql:read".to_string()), "{tags:?}");
+        assert!(
+            tags.contains(&"table:pagila/public.film".to_string()),
+            "{tags:?}"
+        );
+        assert!(
+            tags.contains(&"column:pagila/title".to_string()),
+            "{tags:?}"
+        );
+        assert!(tags.contains(&"outcome:ok".to_string()), "{tags:?}");
+        // A read carries no write reason.
+        assert!(
+            tags.iter().all(|t| !t.starts_with("sql_reason:")),
+            "{tags:?}"
+        );
+    }
 }
 
 // ─── Gated real-Metabase suite (docker/metabase + Pagila) ──────────────────

@@ -147,6 +147,7 @@ pub(super) async fn resolve_request(
                 mcp_target: None,
                 platform_target: None,
                 instance_id: instance.as_ref().map(|i| i.id),
+                binding: BindingFacts::new(instance.as_ref(), &svc, resolved_auth.principal),
             },
         ));
     }
@@ -313,6 +314,7 @@ pub(super) async fn resolve_request(
                     }),
                     platform_target: None,
                     instance_id: None,
+                    binding: BindingFacts::new(instance.as_ref(), &svc, None),
                 },
             ));
         }
@@ -363,6 +365,7 @@ pub(super) async fn resolve_request(
                         params: params_map,
                     }),
                     instance_id: None,
+                    binding: BindingFacts::new(instance.as_ref(), &svc, None),
                 },
             ));
         }
@@ -632,6 +635,7 @@ pub(super) async fn resolve_request(
                 mcp_target: None,
                 platform_target: None,
                 instance_id: instance.as_ref().map(|i| i.id),
+                binding: BindingFacts::new(instance.as_ref(), &svc, resolved_auth.principal),
             },
         ));
     }

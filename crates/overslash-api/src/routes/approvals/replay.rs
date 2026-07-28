@@ -478,22 +478,31 @@ pub(super) async fn execute_claimed_approval(
         "approval.execution_failed"
     };
     let _ = scope
-        .log_audit(AuditEntry {
-            org_id: audit_org_id,
-            identity_id: audit_identity_id,
-            action: audit_action,
-            resource_type: Some("approval"),
-            resource_id: Some(id),
-            detail: serde_json::json!({
-                "execution_id": execution_id,
-                "triggered_by": triggered_by,
-                "status": finalised.status,
-                "error": finalised.error,
-                "cascaded_approval_ids": &cascaded_approval_ids,
-            }),
-            description: None,
-            ip_address: ip,
-        })
+        .log_audit_tagged(
+            AuditEntry {
+                org_id: audit_org_id,
+                identity_id: audit_identity_id,
+                action: audit_action,
+                resource_type: Some("approval"),
+                resource_id: Some(id),
+                detail: serde_json::json!({
+                    "execution_id": execution_id,
+                    "triggered_by": triggered_by,
+                    "status": finalised.status,
+                    "error": finalised.error,
+                    "cascaded_approval_ids": &cascaded_approval_ids,
+                }),
+                description: None,
+                ip_address: ip,
+            },
+            &overslash_core::tags::with_outcome(
+                // Replay never re-classifies — it re-executes a stored payload.
+                // The approval's tags are what the approver was shown, so they
+                // are what the execution and this row inherit.
+                approval.tags.clone(),
+                !succeeded,
+            ),
+        )
         .await;
 
     {

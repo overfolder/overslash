@@ -514,6 +514,7 @@ async fn auto_bubble_advances_resolver() {
             &["http:GET:example.com/x".to_string()],
             &token,
             time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            &[],
         )
         .await
         .unwrap();
@@ -901,6 +902,7 @@ async fn stale_expected_resolver_rejects_resolve_and_update() {
             &["http:GET:example.com/x".to_string()],
             &token,
             time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            &[],
         )
         .await
         .unwrap();
@@ -984,6 +986,7 @@ async fn requester_cannot_resolve_own_approval_orphan() {
             &["http:GET:example.com/x".to_string()],
             &token,
             time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            &[],
         )
         .await
         .unwrap();

@@ -40,14 +40,32 @@ use super::{approval_detail::*, resolve::*, service_resolve::*, validate::*};
 #[derive(Clone, Copy)]
 pub(crate) struct UpstreamErrored;
 
-/// The `sql` audit block for one evaluated policy outcome: the DB label,
-/// the classification, and (for writes) which fail-closed rule fired. The
-/// raw query itself travels via the template's `disclose` filters.
+/// The `sql` audit block for one evaluated policy outcome: the DB label, the
+/// classification, which fail-closed rule fired (for writes), and the relations
+/// and columns the statement referenced. The raw query itself travels via the
+/// template's `disclose` filters.
+///
+/// This is the *record*; the metadata tags minted alongside it are the search
+/// index. The two differ on purpose — `reason_detail` carries the unbounded
+/// payload (a parse error's message, the parse-node name) that `write_reason`'s
+/// short tag flattens away and that a tag has no business holding.
 pub(super) fn sql_audit_block(sp: &SqlPolicyOutcome) -> serde_json::Value {
+    use overslash_core::sql_policy::WriteReason;
+    let a = &sp.analysis;
     serde_json::json!({
         "db": sp.db_label,
         "classified": sp.floor.to_string(),
-        "write_reason": sp.write_reason.as_ref().map(|r| r.tag()),
+        "write_reason": a.write_reason.as_ref().map(|r| r.tag()),
+        "reason_detail": a.write_reason.as_ref().and_then(|r| match r {
+            WriteReason::UnsupportedDialect(s) | WriteReason::ParseError(s)
+            | WriteReason::Statement(s) => Some(s.clone()),
+            WriteReason::MultiStatement(n) => Some(n.to_string()),
+            _ => None,
+        }),
+        "read_tables": a.read_tables,
+        "mut_tables": a.mut_tables,
+        "columns": a.columns,
+        "tables_exhaustive": a.tables_exhaustive,
     })
 }
 
@@ -165,7 +183,7 @@ pub(super) async fn call_action_impl(
         tracing::info!(
             db_label = %sp.db_label,
             floor = %sp.floor,
-            write_reason = sp.write_reason.as_ref().map(|r| r.tag()),
+            write_reason = sp.analysis.write_reason.as_ref().map(|r| r.tag()),
             tables = sp.table_keys.len(),
             "sql policy evaluated"
         );
@@ -231,6 +249,21 @@ pub(super) async fn call_action_impl(
             )));
         }
     }
+
+    // System-derived metadata tags for this call. Minted from the *resolved*
+    // request but the *pre-injection* URL — `action_req.url` still carries
+    // `{secret}` placeholders, so a `host:` tag can never leak an injected
+    // credential the way the post-injection `resolved_url` might.
+    //
+    // `enforce_permission_chain` mints the identical set for the approval it
+    // may create; both go through `tags::call_tags` so the two cannot drift.
+    let call_tags = tags::call_tags(
+        &meta,
+        sql_policy.as_ref(),
+        effective,
+        tags::Transport::of(&meta, req.prefer_stream.unwrap_or(false)),
+        &action_req.url,
+    );
 
     // After the no-`service` rejection in `resolve_action_metadata`,
     // `meta.service_scope` is always `Some` — both the action shape and
@@ -390,25 +423,28 @@ pub(super) async fn call_action_impl(
                 if let Some(error_detail) = invoke_err.audit {
                     let _ = scope
                         .clone()
-                        .log_audit(AuditEntry {
-                            org_id: auth.org_id,
-                            identity_id: Some(identity_id),
-                            action: "action.executed",
-                            resource_type: req.service.as_deref(),
-                            resource_id: None,
-                            detail: serde_json::json!({
-                                "runtime": "mcp",
-                                "tool": mcp_target.tool,
-                                "arguments": mcp_target.arguments,
-                                "url": mcp_target.url,
-                                "is_error": true,
-                                "error": error_detail,
-                                "service": req.service,
-                                "action": req.action,
-                            }),
-                            description: meta.description.as_deref(),
-                            ip_address: ip.0.as_deref(),
-                        })
+                        .log_audit_tagged(
+                            AuditEntry {
+                                org_id: auth.org_id,
+                                identity_id: Some(identity_id),
+                                action: "action.executed",
+                                resource_type: req.service.as_deref(),
+                                resource_id: None,
+                                detail: serde_json::json!({
+                                    "runtime": "mcp",
+                                    "tool": mcp_target.tool,
+                                    "arguments": mcp_target.arguments,
+                                    "url": mcp_target.url,
+                                    "is_error": true,
+                                    "error": error_detail,
+                                    "service": req.service,
+                                    "action": req.action,
+                                }),
+                                description: meta.description.as_deref(),
+                                ip_address: ip.0.as_deref(),
+                            },
+                            &tags::with_outcome(call_tags.clone(), true),
+                        )
                         .await;
                 }
                 return Err(invoke_err.app);
@@ -472,16 +508,19 @@ pub(super) async fn call_action_impl(
 
         let _ = scope
             .clone()
-            .log_audit(AuditEntry {
-                org_id: auth.org_id,
-                identity_id: Some(identity_id),
-                action: "action.executed",
-                resource_type: req.service.as_deref(),
-                resource_id: None,
-                detail: audit_detail,
-                description: meta.description.as_deref(),
-                ip_address: ip.0.as_deref(),
-            })
+            .log_audit_tagged(
+                AuditEntry {
+                    org_id: auth.org_id,
+                    identity_id: Some(identity_id),
+                    action: "action.executed",
+                    resource_type: req.service.as_deref(),
+                    resource_id: None,
+                    detail: audit_detail,
+                    description: meta.description.as_deref(),
+                    ip_address: ip.0.as_deref(),
+                },
+                &tags::with_outcome(call_tags.clone(), is_error),
+            )
             .await;
 
         let mut resp = (
@@ -527,16 +566,19 @@ pub(super) async fn call_action_impl(
         });
         let _ = scope
             .clone()
-            .log_audit(AuditEntry {
-                org_id: auth.org_id,
-                identity_id: Some(identity_id),
-                action: "action.executed",
-                resource_type: req.service.as_deref(),
-                resource_id: None,
-                detail: audit_detail,
-                description: meta.description.as_deref(),
-                ip_address: None,
-            })
+            .log_audit_tagged(
+                AuditEntry {
+                    org_id: auth.org_id,
+                    identity_id: Some(identity_id),
+                    action: "action.executed",
+                    resource_type: req.service.as_deref(),
+                    resource_id: None,
+                    detail: audit_detail,
+                    description: meta.description.as_deref(),
+                    ip_address: None,
+                },
+                &tags::with_outcome(call_tags.clone(), false),
+            )
             .await;
 
         let result = overslash_core::types::ActionResult {
@@ -601,6 +643,7 @@ pub(super) async fn call_action_impl(
                     audit_capture::scrub_transport_error(&e),
                     meta.description.as_deref(),
                     ip.0.as_deref(),
+                    &tags::with_outcome(call_tags.clone(), true),
                 )
                 .await;
                 return Err(map_call_error(e));
@@ -664,16 +707,21 @@ pub(super) async fn call_action_impl(
 
         let _ = scope
             .clone()
-            .log_audit(AuditEntry {
-                org_id: auth.org_id,
-                identity_id: Some(identity_id),
-                action: "action.streamed",
-                resource_type: req.service.as_deref(),
-                resource_id: None,
-                detail: streamed_detail,
-                description: meta.description.as_deref(),
-                ip_address: ip.0.as_deref(),
-            })
+            .log_audit_tagged(
+                AuditEntry {
+                    org_id: auth.org_id,
+                    identity_id: Some(identity_id),
+                    action: "action.streamed",
+                    resource_type: req.service.as_deref(),
+                    resource_id: None,
+                    detail: streamed_detail,
+                    description: meta.description.as_deref(),
+                    ip_address: ip.0.as_deref(),
+                },
+                // Same predicate `streamed_detail.is_error` uses, so the tag
+                // and the detail block can never disagree.
+                &tags::with_outcome(call_tags.clone(), upstream_status.as_u16() >= 400),
+            )
             .await;
 
         // Build streaming response — pipe upstream bytes through to caller
@@ -733,6 +781,7 @@ pub(super) async fn call_action_impl(
                 audit_capture::scrub_transport_error(&e),
                 meta.description.as_deref(),
                 ip.0.as_deref(),
+                &tags::with_outcome(call_tags.clone(), true),
             )
             .await;
             return Err(map_call_error(e));
@@ -820,16 +869,19 @@ pub(super) async fn call_action_impl(
 
     let _ = scope
         .clone()
-        .log_audit(AuditEntry {
-            org_id: auth.org_id,
-            identity_id: Some(identity_id),
-            action: "action.executed",
-            resource_type: req.service.as_deref(),
-            resource_id: None,
-            detail: audit_detail,
-            description: meta.description.as_deref(),
-            ip_address: ip.0.as_deref(),
-        })
+        .log_audit_tagged(
+            AuditEntry {
+                org_id: auth.org_id,
+                identity_id: Some(identity_id),
+                action: "action.executed",
+                resource_type: req.service.as_deref(),
+                resource_id: None,
+                detail: audit_detail,
+                description: meta.description.as_deref(),
+                ip_address: ip.0.as_deref(),
+            },
+            &tags::with_outcome(call_tags.clone(), upstream_error),
+        )
         .await;
 
     // Google's metadata-scope denial (403 `"Metadata scope does not support…"`)
@@ -909,25 +961,29 @@ async fn log_transport_error_audit(
     error_detail: serde_json::Value,
     description: Option<&str>,
     ip: Option<&str>,
+    tags: &[String],
 ) {
     let _ = scope
         .clone()
-        .log_audit(AuditEntry {
-            org_id,
-            identity_id: Some(identity_id),
-            action: "action.executed",
-            resource_type: service,
-            resource_id: None,
-            detail: serde_json::json!({
-                "method": action_req.method,
-                "url": action_req.url,
-                "is_error": true,
-                "error": error_detail,
-                "service": service,
-                "action": action,
-            }),
-            description,
-            ip_address: ip,
-        })
+        .log_audit_tagged(
+            AuditEntry {
+                org_id,
+                identity_id: Some(identity_id),
+                action: "action.executed",
+                resource_type: service,
+                resource_id: None,
+                detail: serde_json::json!({
+                    "method": action_req.method,
+                    "url": action_req.url,
+                    "is_error": true,
+                    "error": error_detail,
+                    "service": service,
+                    "action": action,
+                }),
+                description,
+                ip_address: ip,
+            },
+            tags,
+        )
         .await;
 }
