@@ -13,6 +13,10 @@
 //!
 //! The real-Metabase (+ Pagila) suite lives at the bottom behind
 //! `#[ignore]` + env guards — see docker/metabase/README.md.
+// The tag assertions read `approvals.tags` / `audit_log.tags` back out with
+// runtime-checked queries; the columns aren't part of any API response, so
+// there is nothing typed to assert against. Same allow as tests/audit.rs.
+#![allow(clippy::disallowed_methods)]
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
