@@ -255,7 +255,7 @@
 								expanded={expandedId === entry.id}
 								ontoggle={() => toggleExpand(entry.id)}
 								currentUserId={data.user?.identity_id}
-							ontagclick={onTagClick}
+								ontagclick={onTagClick}
 							/>
 							{#snippet failed(error)}
 								<tr>

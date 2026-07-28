@@ -3,6 +3,8 @@
 
 use super::*;
 
+use super::replay::replay_tags;
+
 /// Replay a stored platform call (`ReplayPayload::Platform`). Returns the same
 /// `(finalised, succeeded, upstream_errored, result_summary)` tuple as the other
 /// runtime branches; `upstream_errored` is always false because platform
@@ -127,14 +129,4 @@ pub(super) async fn replay_platform(
             (finalised, false, false, None)
         }
     })
-}
-
-/// The approval's tags plus the replay's outcome. Replay does not
-/// re-classify — it re-executes a stored payload — so the approval's tag set
-/// is the authoritative one; only the outcome is new information.
-fn replay_tags(
-    approval: &overslash_db::repos::approval::ApprovalRow,
-    is_error: bool,
-) -> Vec<String> {
-    overslash_core::tags::with_outcome(approval.tags.clone(), is_error)
 }

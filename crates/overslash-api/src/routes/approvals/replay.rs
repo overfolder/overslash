@@ -495,13 +495,7 @@ pub(super) async fn execute_claimed_approval(
                 description: None,
                 ip_address: ip,
             },
-            &overslash_core::tags::with_outcome(
-                // Replay never re-classifies — it re-executes a stored payload.
-                // The approval's tags are what the approver was shown, so they
-                // are what the execution and this row inherit.
-                approval.tags.clone(),
-                !succeeded,
-            ),
+            &replay_tags(approval, !succeeded),
         )
         .await;
 
@@ -651,4 +645,18 @@ pub(super) async fn cancel_approval_execution(
     );
     resp.decorate_relationship(&scope, auth.identity_id).await?;
     Ok(Json(resp))
+}
+
+/// The approval's tags plus the replay's outcome.
+///
+/// Replay never re-classifies — it re-executes a stored payload — so the
+/// approval's tag set is authoritative and only the outcome is new
+/// information. Shared by all three runtime branches (the HTTP path here, plus
+/// `replay_mcp` and `replay_platform`) so a replayed MCP call and a replayed
+/// HTTP call can never end up tagged by different rules.
+pub(super) fn replay_tags(
+    approval: &overslash_db::repos::approval::ApprovalRow,
+    is_error: bool,
+) -> Vec<String> {
+    overslash_core::tags::with_outcome(approval.tags.clone(), is_error)
 }

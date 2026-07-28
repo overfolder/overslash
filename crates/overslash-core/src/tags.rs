@@ -151,9 +151,15 @@ pub fn sql_tags(db_label: &str, analysis: &SqlAnalysis) -> Vec<String> {
 /// is dispatched — only the audit row written afterwards knows how the call
 /// actually went. Both the inline call path and the replay path go through
 /// here so `outcome:` means the same thing on either.
-pub fn with_outcome(mut tags: Vec<String>, is_error: bool) -> Vec<String> {
-    tags.push(tag("outcome", if is_error { "error" } else { "ok" }));
-    clamp(tags)
+pub fn with_outcome(tags: Vec<String>, is_error: bool) -> Vec<String> {
+    // Prepended, not appended: [`clamp`] drops from the tail, so appending
+    // would make the outcome the *first* casualty on a maximally-tagged row —
+    // and `?tag=outcome:error` would then silently miss exactly the calls that
+    // touched the most tables. It is the last thing a clipped row should lose.
+    let mut out = Vec::with_capacity(tags.len() + 1);
+    out.push(tag("outcome", if is_error { "error" } else { "ok" }));
+    out.extend(tags);
+    clamp(out)
 }
 
 /// Dedupe (order-preserving) and cap a tag list before it is persisted.
@@ -354,6 +360,18 @@ mod tests {
             "table:wh/orders".into(),
         ]);
         assert_eq!(out, vec!["sql:read", "db:wh", "table:wh/orders"]);
+    }
+
+    #[test]
+    fn outcome_survives_a_maximally_tagged_row() {
+        // A row already at the cap must not lose its outcome to truncation —
+        // that would make `?tag=outcome:error` miss the calls that touched the
+        // most tables, which are the ones worth finding.
+        let full: Vec<String> = (0..MAX_TAGS).map(|i| format!("x:{i}")).collect();
+        let out = with_outcome(full, true);
+        assert_eq!(out.len(), MAX_TAGS);
+        assert!(out.contains(&"outcome:error".to_string()));
+        assert!(out.contains(&"truncated:tags".to_string()));
     }
 
     #[test]

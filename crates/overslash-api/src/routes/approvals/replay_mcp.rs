@@ -3,7 +3,7 @@
 
 use super::*;
 
-use super::replay::fail_and_return;
+use super::replay::{fail_and_return, replay_tags};
 
 /// Replay a stored MCP call (`ReplayPayload::Mcp`). Returns the same
 /// `(finalised, succeeded, upstream_errored, result_summary)` tuple as the
@@ -209,14 +209,4 @@ pub(super) async fn replay_mcp(
             (finalised, false, false, None)
         }
     })
-}
-
-/// The approval's tags plus the replay's outcome. Replay does not
-/// re-classify — it re-executes a stored payload — so the approval's tag set
-/// is the authoritative one; only the outcome is new information.
-fn replay_tags(
-    approval: &overslash_db::repos::approval::ApprovalRow,
-    is_error: bool,
-) -> Vec<String> {
-    overslash_core::tags::with_outcome(approval.tags.clone(), is_error)
 }
