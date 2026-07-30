@@ -12,9 +12,12 @@ info:
     belt-and-suspenders.
 # Metabase is self-hosted: the shipped default matches the docker/metabase
 # dev harness, and every real deployment pins its own URL on the service
-# instance (or an org layer's instance_defaults).
+# instance (or an org layer's instance_defaults). Unlike email.yaml's gateway
+# host this one KEEPS a default (D44) — the dev harness is a meaningful
+# standalone answer, so a deployment that never touches Metabase should not
+# have to set a variable to boot.
 servers:
-  - url: http://localhost:3033
+  - url: ${METABASE_URL:http://localhost:3033}
 components:
   securitySchemes:
     # The scheme name doubles as the implicit credential slot (`token`),

@@ -72,8 +72,9 @@ pub(super) async fn create_template(
     let openapi_yaml = req.openapi.as_deref().ok_or_else(|| {
         AppError::BadRequest("a standalone template requires `openapi` (or set `extends`)".into())
     })?;
-    let (doc, def) = parse_normalize_compile_and_check_disclose(openapi_yaml)
-        .map_err(|report| AppError::TemplateValidationFailed { report })?;
+    let (doc, def) =
+        parse_normalize_compile_and_check_disclose(openapi_yaml, state.registry.vars())
+            .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     if def.key.is_empty() {
         return Err(AppError::BadRequest(
@@ -359,8 +360,9 @@ pub(super) async fn update_template(
     let openapi_yaml = req.openapi.as_deref().ok_or_else(|| {
         AppError::BadRequest("updating a standalone template requires `openapi`".into())
     })?;
-    let (mut doc, def) = parse_normalize_compile_and_check_disclose(openapi_yaml)
-        .map_err(|report| AppError::TemplateValidationFailed { report })?;
+    let (mut doc, def) =
+        parse_normalize_compile_and_check_disclose(openapi_yaml, state.registry.vars())
+            .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     // Template key cannot change via update — the unique index pins it.
     if def.key != existing.key {

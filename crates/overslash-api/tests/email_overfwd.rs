@@ -173,7 +173,32 @@ async fn setup_email_instance_configured<F>(
 where
     F: FnOnce(&mut overslash_api::config::Config),
 {
-    let (base, client) = common::start_api_with_registry_customized(pool, None, customize).await;
+    setup_email_instance_with_vars(
+        pool,
+        overslash_core::template_vars::Vars::for_tests(),
+        secrets,
+        layer,
+        body,
+        customize,
+    )
+    .await
+}
+
+/// As [`setup_email_instance_configured`], but boots the registry against an
+/// explicit template-variable set (D44) — for the tests that assert on the host
+/// `${MAILBOX_HOST}` resolved to.
+async fn setup_email_instance_with_vars<F>(
+    pool: sqlx::PgPool,
+    vars: overslash_core::template_vars::Vars,
+    secrets: &[(&str, &str)],
+    layer: Option<Value>,
+    body: Value,
+    customize: F,
+) -> (String, String, String, Value)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
+    let (base, client) = common::start_api_with_registry_vars(pool, None, vars, customize).await;
     let (_org_id, _ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     if let Some(delta) = layer {
@@ -1622,6 +1647,76 @@ async fn email_platform_gateway_key_injected_when_org_stored_none() {
     );
     // The per-mailbox credential is still the org's own.
     assert_eq!(req.mailbox_auth.as_deref(), Some(MAILBOX_BASIC));
+}
+
+/// D44 end-to-end: the drift this mechanism removes.
+///
+/// Before template variables, `services/email.yaml` shipped a literal
+/// `mailbox.overslash.com` while dev deployed `mailbox.dev.overslash.com`. A
+/// dev default instance therefore did two wrong things at once — it sent mail
+/// through the *prod* gateway, and because `platform_credential_for` matches
+/// the host for exact equality, it was silently denied the platform key and
+/// got a bare unauthenticated request.
+///
+/// Here the deployment sets `MAILBOX_HOST` to a non-prod host and both halves
+/// follow it: `hosts[0]` becomes that host, and the platform key pinned to it
+/// is injected. Asserting them together is the point — a fix that moved the
+/// host without moving the key gate would leave the second failure in place.
+#[tokio::test]
+async fn email_template_host_and_platform_key_follow_the_deployment_variable() {
+    const DEV_HOST: &str = "mailbox.dev.overslash.com";
+
+    let pool = common::test_pool().await;
+    let (gateway_url, sink) = start_mock_overfwd().await;
+    let (base, agent_key, admin_key, _inst) = setup_email_instance_with_vars(
+        pool,
+        overslash_core::template_vars::Vars::from_pairs([("MAILBOX_HOST", DEV_HOST)]),
+        &MAILBOX_SECRETS,
+        None,
+        default_instance_body(),
+        move |cfg: &mut overslash_api::config::Config| {
+            cfg.platform_credential = Some(overslash_api::config::PlatformCredential {
+                secret_name: "overfwd_gateway_key".into(),
+                host: DEV_HOST.into(),
+                value: PLATFORM_KEY.into(),
+            });
+            cfg.service_base_overrides
+                .insert(DEV_HOST.into(), gateway_url);
+        },
+    )
+    .await;
+
+    // The catalog reports the deployment's host, not a literal from the YAML.
+    let detail: Value = reqwest::Client::new()
+        .get(format!("{base}/v1/templates/email"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        detail["hosts"],
+        json!([DEV_HOST]),
+        "template host should come from MAILBOX_HOST"
+    );
+
+    let resp = call_search(&base, &agent_key).await;
+    assert_eq!(
+        resp.status(),
+        200,
+        "read should auto-execute: {}",
+        resp.text().await.unwrap()
+    );
+
+    let captured = sink.lock().unwrap().clone();
+    let req = captured.first().expect("gateway saw no request");
+    assert_eq!(
+        req.authorization.as_deref(),
+        Some(&format!("Bearer {PLATFORM_KEY}")[..]),
+        "the platform key is pinned to MAILBOX_HOST and must be injected there"
+    );
 }
 
 /// An org that stores its own `overfwd_gateway_key` wins. The rung is a

@@ -18,4 +18,5 @@ pub mod service_layer;
 pub mod sql_policy;
 pub mod tags;
 pub mod template_validation;
+pub mod template_vars;
 pub mod types;

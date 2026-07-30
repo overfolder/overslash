@@ -52,7 +52,7 @@ pub async fn run_once(db: PgPool, registry: Arc<ServiceRegistry>, embedder: Arc<
             0
         }
     };
-    let db_n = match backfill_db_templates(&db, embedder.as_ref()).await {
+    let db_n = match backfill_db_templates(&db, &registry, embedder.as_ref()).await {
         Ok(n) => n,
         Err(e) => {
             tracing::warn!("db-template backfill failed: {e}");
@@ -120,7 +120,11 @@ async fn backfill_global(
 /// Embed DB-backed templates (org + user tiers). Scope diffing is per
 /// `(tier, org_id, owner_identity_id)` so one org's edits don't trip
 /// another org's staleness check.
-async fn backfill_db_templates(db: &PgPool, embedder: &dyn Embedder) -> Result<usize, sqlx::Error> {
+async fn backfill_db_templates(
+    db: &PgPool,
+    registry: &ServiceRegistry,
+    embedder: &dyn Embedder,
+) -> Result<usize, sqlx::Error> {
     // Pull every active template row across all orgs. The full-scan is
     // acceptable at boot: the table is small, and the alternative
     // (per-scope queries) duplicates bookkeeping for no real savings.
@@ -181,6 +185,18 @@ async fn backfill_db_templates(db: &PgPool, embedder: &dyn Embedder) -> Result<u
             owner_identity_id,
         };
         let existing_map = scope_cache.get(&scope).cloned().unwrap_or_default();
+
+        // Same expansion the resolve path applies, so the embedded action text
+        // matches what a caller actually sees.
+        let mut openapi = openapi;
+        if let Err(errors) = overslash_core::template_vars::expand(&mut openapi, registry.vars()) {
+            tracing::warn!(
+                "skipping embedding for template '{}' (org={org_id}): unresolved template variables {:?}",
+                key,
+                errors
+            );
+            continue;
+        }
 
         let (def, _warnings) = match overslash_core::openapi::compile_service(&openapi) {
             Ok(d) => d,

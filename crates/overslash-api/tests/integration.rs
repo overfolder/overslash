@@ -1818,9 +1818,11 @@ async fn test_service_registry_api() {
         .unwrap()
         .parent()
         .unwrap();
-    let registry =
-        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
-            .unwrap_or_default();
+    let registry = overslash_core::registry::ServiceRegistry::load_from_dir(
+        &ws_root.join("services"),
+        overslash_core::template_vars::Vars::for_tests(),
+    )
+    .unwrap_or_default();
 
     let state = overslash_api::AppState {
         db: pool,
@@ -2767,9 +2769,11 @@ async fn start_api_with_registry(
         .unwrap()
         .parent()
         .unwrap();
-    let mut registry =
-        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
-            .unwrap_or_default();
+    let mut registry = overslash_core::registry::ServiceRegistry::load_from_dir(
+        &ws_root.join("services"),
+        overslash_core::template_vars::Vars::for_tests(),
+    )
+    .unwrap_or_default();
 
     if let Some((service_key, new_host)) = host_override {
         if let Some(svc) = registry.get(service_key) {

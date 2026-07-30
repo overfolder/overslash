@@ -44,6 +44,11 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
       GOOGLE_AUTH_CLIENT_ID: ${GOOGLE_AUTH_CLIENT_ID:-}
       GOOGLE_AUTH_CLIENT_SECRET: ${GOOGLE_AUTH_CLIENT_SECRET:-}
+      # Service-template variables (D44). Non-secret deployment facts only —
+      # any tenant who can author a template can read these back. Unset
+      # MAILBOX_HOST simply means this deployment ships no `email` template,
+      # which is the right answer for a self-host with no Mailbox Gateway.
+      OVERSLASH_TEMPLATE_VAR_MAILBOX_HOST: ${OVERSLASH_TEMPLATE_VAR_MAILBOX_HOST:-}
       REDIS_URL: redis://valkey:6379
     ports:
       - "8080:8080"

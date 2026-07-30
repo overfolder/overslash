@@ -279,11 +279,18 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     // when shipped templates fail to load — without it, `service: "http"`
     // requests would 404 in the same boot where the migration created the
     // `http` service_instances row.
-    let registry = ServiceRegistry::load_from_dir(std::path::Path::new(&config.services_dir))
-        .unwrap_or_else(|e| {
-            tracing::warn!("Failed to load service registry: {e}");
-            ServiceRegistry::with_builtins()
-        });
+    let template_vars = overslash_core::template_vars::Vars::from_env();
+    tracing::info!(
+        vars = ?template_vars.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+        "Loaded {} template variables",
+        template_vars.len()
+    );
+    let registry =
+        ServiceRegistry::load_from_dir(std::path::Path::new(&config.services_dir), template_vars)
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to load service registry: {e}");
+                ServiceRegistry::with_builtins()
+            });
     tracing::info!("Loaded {} service definitions", registry.len());
 
     let (rate_limiter, in_memory_store) =

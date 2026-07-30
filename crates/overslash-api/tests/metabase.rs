@@ -254,7 +254,11 @@ async fn metabase_template_ships() {
         .parent()
         .unwrap()
         .join("services");
-    let reg = overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root).unwrap();
+    let reg = overslash_core::registry::ServiceRegistry::load_from_dir(
+        &ws_root,
+        overslash_core::template_vars::Vars::for_tests(),
+    )
+    .unwrap();
     let svc = reg.get("metabase").expect("metabase template registered");
 
     use overslash_core::types::DeclaredRisk;

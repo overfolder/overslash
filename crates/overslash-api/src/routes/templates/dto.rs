@@ -286,6 +286,22 @@ pub(super) struct EnableGlobalRequest {
     pub(super) template_key: String,
 }
 
+/// One deployment-supplied service-template variable (D44), for the template
+/// editor's reference panel.
+///
+/// The value is returned in the clear, and to any authenticated caller.
+/// Withholding it would be theatre: anyone who can author a template can
+/// recover it by writing `${NAME}` into a `servers[].url` and reading the
+/// resolved definition back. That is why `OVERSLASH_TEMPLATE_VAR_*` is a
+/// non-secret-by-declaration namespace — see the module docs on
+/// `overslash_core::template_vars`.
+#[derive(Serialize)]
+pub(super) struct TemplateVar {
+    /// The name a template references, i.e. the env var minus its prefix.
+    pub(super) name: String,
+    pub(super) value: String,
+}
+
 /// One instance-settable value, flattened for the dashboard form. Covers both
 /// sources — an `x-overslash-instance-config` param and a credential template's
 /// `x-overslash-config` var — because they share the instance's one `config`

@@ -10,9 +10,25 @@
 //! inline on every keystroke.
 
 use crate::openapi;
+use crate::template_vars::{self, Vars};
 use crate::types::ServiceDefinition;
 
 use super::{Issues, ValidationReport, core::validate_service_definition};
+
+/// Expand `${VAR}` references into a **copy** of the document, for compiling.
+///
+/// The copy matters: the persisted document must keep its references intact.
+/// Storing an expanded doc would bake whichever host the *authoring*
+/// deployment happened to have into the row forever, which is the drift this
+/// mechanism removes rather than relocates.
+fn expanded_for_compile(
+    doc: &serde_json::Value,
+    vars: &Vars,
+) -> Result<serde_json::Value, Vec<crate::template_validation::ValidationIssue>> {
+    let mut copy = doc.clone();
+    template_vars::expand(&mut copy, vars)?;
+    Ok(copy)
+}
 
 /// Parse OpenAPI YAML source and validate the resulting service definition.
 ///
@@ -20,7 +36,7 @@ use super::{Issues, ValidationReport, core::validate_service_definition};
 /// issue in the report (`openapi_parse_error`, `ambiguous_alias`,
 /// `duplicate_operation_id`, or whatever the compiler surfaces) rather than
 /// a transport error.
-pub fn validate_template_yaml(source: &str) -> ValidationReport {
+pub fn validate_template_yaml(source: &str, vars: &Vars) -> ValidationReport {
     // Pass 1: detect duplicate YAML mapping keys (shipped serde_yaml rejects
     // them at parse time and we surface them as structured issues).
     if let Err(e) = serde_yaml::from_str::<serde_yaml::Value>(source) {
@@ -60,7 +76,18 @@ pub fn validate_template_yaml(source: &str) -> ValidationReport {
         return dup_report;
     }
 
-    let def = match openapi::compile_service(&doc) {
+    let compile_doc = match expanded_for_compile(&doc, vars) {
+        Ok(d) => d,
+        Err(errors) => {
+            let mut issues = Issues::default();
+            for i in errors {
+                issues.err(i.code, i.message, i.path);
+            }
+            return issues.finish();
+        }
+    };
+
+    let def = match openapi::compile_service(&compile_doc) {
         Ok((def, _warnings)) => def,
         Err(errors) => {
             let mut issues = Issues::default();
@@ -79,8 +106,12 @@ pub fn validate_template_yaml(source: &str) -> ValidationReport {
 /// (alias-free — suitable for storing in the DB) and the compiled
 /// [`ServiceDefinition`]. On failure returns a structured `ValidationReport`
 /// so the caller can surface it back to the client as-is.
+///
+/// The returned document keeps its `${VAR}` references **unexpanded**; only
+/// the definition compiled alongside it sees resolved values.
 pub fn parse_normalize_compile_yaml(
     source: &str,
+    vars: &Vars,
 ) -> std::result::Result<(serde_json::Value, ServiceDefinition), ValidationReport> {
     let mut issues = Issues::default();
 
@@ -113,7 +144,17 @@ pub fn parse_normalize_compile_yaml(
         return Err(dup_report);
     }
 
-    let def = match openapi::compile_service(&doc) {
+    let compile_doc = match expanded_for_compile(&doc, vars) {
+        Ok(d) => d,
+        Err(errors) => {
+            for i in errors {
+                issues.err(i.code, i.message, i.path);
+            }
+            return Err(issues.finish());
+        }
+    };
+
+    let def = match openapi::compile_service(&compile_doc) {
         Ok((def, _warnings)) => def,
         Err(errors) => {
             for i in errors {
@@ -147,6 +188,7 @@ pub fn parse_normalize_compile_yaml(
 /// against the edited source and rejects promotion if it still has errors.
 pub fn prepare_draft_from_value(
     mut doc: serde_json::Value,
+    vars: &Vars,
 ) -> (
     serde_json::Value,
     Option<ServiceDefinition>,
@@ -169,14 +211,25 @@ pub fn prepare_draft_from_value(
         issues.warn(w.code, w.message, w.path);
     }
 
-    let compiled = match crate::openapi::compile_service(&doc) {
-        Ok((def, _warnings)) => Some(def),
+    // A draft may legitimately reference a variable this deployment has not
+    // set — the author is mid-edit. Report it like any other error and skip
+    // compiling, rather than compiling against a half-expanded document.
+    let compiled = match expanded_for_compile(&doc, vars) {
         Err(errors) => {
             for i in errors {
                 issues.err(i.code, i.message, i.path);
             }
             None
         }
+        Ok(compile_doc) => match crate::openapi::compile_service(&compile_doc) {
+            Ok((def, _warnings)) => Some(def),
+            Err(errors) => {
+                for i in errors {
+                    issues.err(i.code, i.message, i.path);
+                }
+                None
+            }
+        },
     };
 
     // Struct-level linting: only meaningful when compile succeeded.
@@ -259,13 +312,16 @@ paths:
 
     #[test]
     fn valid_yaml_parses_clean() {
-        let report = validate_template_yaml(VALID_YAML);
+        let report = validate_template_yaml(VALID_YAML, &crate::template_vars::Vars::for_tests());
         assert!(report.valid, "errors: {:?}", report.errors);
     }
 
     #[test]
     fn yaml_parse_error_surfaces_as_issue() {
-        let report = validate_template_yaml("key: svc\n  bad_indent: :::");
+        let report = validate_template_yaml(
+            "key: svc\n  bad_indent: :::",
+            &crate::template_vars::Vars::for_tests(),
+        );
         assert!(!report.valid);
         assert_eq!(report.errors[0].code, "yaml_parse");
     }
@@ -281,7 +337,7 @@ info:
 servers:
   - url: https://api.example.com
 "#;
-        let report = validate_template_yaml(src);
+        let report = validate_template_yaml(src, &crate::template_vars::Vars::for_tests());
         assert!(!report.valid);
         assert!(
             report.errors.iter().any(|e| e.code == "ambiguous_alias"),
@@ -309,7 +365,7 @@ paths:
       operationId: same
       summary: b
 "#;
-        let report = validate_template_yaml(src);
+        let report = validate_template_yaml(src, &crate::template_vars::Vars::for_tests());
         assert!(!report.valid);
         assert!(
             report
@@ -335,7 +391,7 @@ paths:
     get:
       summary: no id
 "#;
-        let report = validate_template_yaml(src);
+        let report = validate_template_yaml(src, &crate::template_vars::Vars::for_tests());
         assert!(!report.valid);
         assert!(report.errors.iter().any(|e| e.code == "missing_field"));
     }
@@ -359,7 +415,7 @@ paths:
                 continue;
             }
             let content = std::fs::read_to_string(&path).unwrap();
-            let report = validate_template_yaml(&content);
+            let report = validate_template_yaml(&content, &crate::template_vars::Vars::for_tests());
             assert!(
                 report.valid,
                 "shipped template {path:?} failed validation: {:?}",

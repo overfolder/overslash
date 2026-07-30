@@ -305,6 +305,20 @@ variable "platform_gateway_key_secret_id" {
   description = "GSM secret ID holding the gateway key — the same secret the overfwd service reads as OVERFWD_API_KEY. Feeds OVERSLASH_PLATFORM_GATEWAY_KEY."
 }
 
+# Deployment-supplied service-template variables (D44). Each entry becomes
+# `OVERSLASH_TEMPLATE_VAR_<KEY>`, which a shipped or org-authored template
+# references as `${<KEY>}`. The prefix is the security boundary: a template can
+# only ever name a variable an operator put here, never DATABASE_URL or a key.
+#
+# These are readable by any tenant who can author a template (they need only
+# reference the variable and read the resolved definition back), so this map is
+# for non-secret deployment facts — hostnames, base URLs. Never a credential.
+variable "template_vars" {
+  type        = map(string)
+  default     = {}
+  description = "Service-template variables, keyed WITHOUT the OVERSLASH_TEMPLATE_VAR_ prefix (e.g. `MAILBOX_HOST`). Non-secret only — tenants can read these."
+}
+
 variable "metrics_sidecar_image" {
   type        = string
   default     = "otel/opentelemetry-collector-contrib:0.120.0"
@@ -365,6 +379,7 @@ locals {
       OVERSLASH_PLATFORM_GATEWAY_SECRET_NAME = var.platform_gateway_secret_name
       OVERSLASH_PLATFORM_GATEWAY_HOST        = var.platform_gateway_host
     } : {},
+    { for k, v in var.template_vars : "OVERSLASH_TEMPLATE_VAR_${k}" => v if v != "" },
   )
 
   env_secrets = merge(

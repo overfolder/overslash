@@ -313,9 +313,19 @@ variable "overfwd_image" {
 }
 
 variable "overfwd_domain" {
-  description = "Hostname the gateway serves (e.g. mailbox.overslash.com). Must match `servers[0]` in services/email.yaml for the platform key to be injected on default instances. Empty = no domain mapping and no platform rung."
+  description = "Hostname the gateway serves (e.g. mailbox.overslash.com). Feeds BOTH the platform-key host gate and `OVERSLASH_TEMPLATE_VAR_MAILBOX_HOST`, which is what services/email.yaml's `servers[0]` resolves to (D44) — so the template and the key gate cannot drift. Empty = no domain mapping, no platform rung, and no `email` template."
   type        = string
   default     = ""
+}
+
+# Extra service-template variables beyond the ones this config derives itself
+# (MAILBOX_HOST comes from overfwd_domain). Keyed WITHOUT the
+# OVERSLASH_TEMPLATE_VAR_ prefix. Non-secret only — any tenant who can author a
+# template can read these back. See D44.
+variable "template_vars" {
+  description = "Additional service-template variables, e.g. { METABASE_URL = \"https://metabase.example.com\" }. Non-secret only."
+  type        = map(string)
+  default     = {}
 }
 
 variable "overfwd_cpu" {

@@ -18,7 +18,12 @@ use super::*;
 /// ambiguity, or duplicate operationId is itself a reported validation error,
 /// not a transport-level error — the dashboard editor calls this on every
 /// keystroke and wants structured diagnostics, not HTTP 400s.
+///
+/// Org-independent, but not deployment-independent: a `${VAR}` this deployment
+/// cannot resolve is reported as `template_var_unset`, so the editor surfaces
+/// it while the author is still typing rather than at first call.
 pub(super) async fn validate_template(
+    State(state): State<AppState>,
     auth: AuthContext,
     body: String,
 ) -> Result<Json<ValidationReport>> {
@@ -34,7 +39,7 @@ pub(super) async fn validate_template(
             body.len()
         )));
     }
-    Ok(Json(validate_template_yaml(&body)))
+    Ok(Json(validate_template_yaml(&body, state.registry.vars())))
 }
 
 #[derive(Deserialize)]
