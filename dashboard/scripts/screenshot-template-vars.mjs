@@ -14,7 +14,7 @@
 // Prereq: `make e2e-up`. Output:
 //   dashboard/screenshots/template-vars-panel.png
 //   dashboard/screenshots/template-vars-unset-error.png
-//   dashboard/screenshots/template-vars-email-host.png
+//   dashboard/screenshots/template-vars-email-source.png
 
 import { login, makeSnapper } from '../tests/scenarios/index.mjs';
 
@@ -36,16 +36,23 @@ paths:
 `;
 
 /** Replace the CodeMirror document via the editor's own input path so the
- * debounced validate round-trip runs exactly as it does for a typing user. */
+ * debounced validate round-trip runs exactly as it does for a real user.
+ *
+ * `insertText` rather than `pressSequentially`: CodeMirror's `indentOnInput`
+ * re-indents on every typed newline, so character-by-character entry of
+ * already-indented YAML compounds the leading whitespace into a document that
+ * no longer parses — and `validateRemotely` bails on a parse error, so the
+ * server-side result we came to photograph never renders. One insertText is a
+ * single input event, which is also what a paste does. */
 async function setEditorDoc(page, text) {
 	const editor = page.locator('.cm-content');
 	await editor.waitFor({ timeout: 15_000 });
 	await editor.click();
 	await page.keyboard.press('ControlOrMeta+a');
 	await page.keyboard.press('Delete');
-	await editor.pressSequentially(text, { delay: 1 });
+	await page.keyboard.insertText(text);
 	// The editor debounces remote validation by 400ms.
-	await page.waitForTimeout(1200);
+	await page.waitForTimeout(1500);
 }
 
 const snap = await makeSnapper(session);
@@ -71,14 +78,26 @@ try {
 	await snap.snap(page, 'template-vars-unset-error');
 	await ctx.close();
 
-	// 3. The payoff: the shipped `email` template's host is the deployment's,
-	//    resolved from ${MAILBOX_HOST} rather than baked into the YAML.
+	// 3. The shipped `email` template as the catalog now serves it: `servers[0]`
+	//    is `https://${MAILBOX_HOST}`, not a baked-in host. Viewport-sized
+	//    (`fullPage: false`) because this template's source runs to several
+	//    thousand pixels and a full-page capture is unreadable as a review
+	//    artifact.
 	await snap
-		.navigateAndSnap('template-vars-email-host', '/services/templates/email', {
+		.navigateAndSnap('template-vars-email-source', '/services/templates/email', {
 			viewport: { width: 1280, height: 900 },
+			fullPage: false,
 			waitFor: async (p) => {
-				await p.locator('text=mailbox.overslash.com').first().waitFor({ timeout: 15_000 });
-				await p.waitForTimeout(300);
+				// Anchor on the reference itself, not on prose: `mailbox.overslash.com`
+				// still appears in this template's comments, so matching that would
+				// pass even if the substitution had been reverted.
+				const ref = p.locator('.cm-content', { hasText: '${MAILBOX_HOST}' }).first();
+				await ref.waitFor({ timeout: 15_000 });
+				await p
+					.getByText('url: https://${MAILBOX_HOST}', { exact: false })
+					.first()
+					.scrollIntoViewIfNeeded();
+				await p.waitForTimeout(400);
 			}
 		})
 		.then((r) => r.ctx.close());
