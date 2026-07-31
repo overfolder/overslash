@@ -379,8 +379,18 @@ pub(super) async fn resolve_request(
             }
         }
 
-        let base = effective_base(instance.as_ref(), &svc)
-            .ok_or_else(|| AppError::Internal(format!("service '{service_key}' has no hosts")))?;
+        // Not `Internal`: an instance created before the template lost its host
+        // (or restored from a backup that predates the endpoint check in
+        // `kernel_create_service`) is a configuration gap the operator can
+        // close, not a bug in the gateway — so say what to do rather than
+        // returning an opaque 500.
+        let base = effective_base(instance.as_ref(), &svc).ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "service '{service_key}' has no endpoint: the template declares no host and \
+                 this instance sets no `url`. Set one on the instance, or org-wide on a \
+                 layer's `instance_defaults.url`."
+            ))
+        })?;
         let base_url = format!("{base}{path}");
 
         // Header-located params (e.g. a template-pinned `Notion-Version`) are

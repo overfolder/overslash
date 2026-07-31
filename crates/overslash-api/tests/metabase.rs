@@ -1152,3 +1152,210 @@ mod real_e2e {
         assert!(body.contains("film"), "search found nothing: {body}");
     }
 }
+
+// ─── D44: no shipped host, so the endpoint is asked for at instantiation ────
+
+/// With `OVERSLASH_TEMPLATE_VAR_METABASE_URL` unset, `${METABASE_URL?}`
+/// resolves to null and the template ships **host-less** — still offered, but
+/// with nowhere to send a request until an instance names one.
+///
+/// The contrast with `email.yaml` is the whole point of having both spellings:
+/// email's `${MAILBOX_HOST}` has no fallback, so an unset deployment loses the
+/// template entirely (there is no gateway to talk to). Metabase is self-hosted,
+/// so losing the template would be wrong — the deployment simply doesn't know
+/// the URL yet, and the operator does.
+#[tokio::test]
+async fn metabase_without_a_url_variable_requires_one_per_instance() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry_vars(
+        pool,
+        None,
+        // Deliberately no METABASE_URL. MAILBOX_HOST is present only so the
+        // rest of the shipped catalog loads normally.
+        overslash_core::template_vars::Vars::from_pairs([(
+            "MAILBOX_HOST",
+            "mailbox.overslash.com",
+        )]),
+        |_| {},
+    )
+    .await;
+    let (_org_id, _ident_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    // Still in the catalog, and the dashboard is told to ask for a URL.
+    let detail: Value = client
+        .get(format!("{base}/v1/templates/metabase"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(detail["hosts"], json!([]), "no host without the variable");
+    assert_eq!(
+        detail["configurable_url"],
+        json!(true),
+        "a host-less template must reveal the URL field"
+    );
+
+    // Creating an instance without one is rejected here, where the operator is
+    // looking — not at send time with an opaque failure.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "template_key": "metabase",
+            "name": "mb-no-url",
+            "user_level": false,
+            "status": "active",
+            "credentials": { "token": "metabase_api_key" },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("declares no endpoint"),
+        "error should say what to supply, got: {body}"
+    );
+
+    // Supplying one is all it takes.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "template_key": "metabase",
+            "name": "mb-with-url",
+            "url": "https://mb.example.com",
+            "user_level": false,
+            "status": "active",
+            "credentials": { "token": "metabase_api_key" },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "instance with an explicit url should create: {:?}",
+        resp.text().await
+    );
+}
+
+/// The other half: when the deployment *does* set the variable, the template
+/// carries that host and an instance needs no `url` at all.
+#[tokio::test]
+async fn metabase_with_a_url_variable_needs_no_per_instance_url() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry_vars(
+        pool,
+        None,
+        overslash_core::template_vars::Vars::from_pairs([
+            ("MAILBOX_HOST", "mailbox.overslash.com"),
+            ("METABASE_URL", "https://mb.example.com"),
+        ]),
+        |_| {},
+    )
+    .await;
+    let (_org_id, _ident_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let detail: Value = client
+        .get(format!("{base}/v1/templates/metabase"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(detail["hosts"], json!(["mb.example.com"]));
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "template_key": "metabase",
+            "name": "mb-default",
+            "user_level": false,
+            "status": "active",
+            "credentials": { "token": "metabase_api_key" },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "the deployment's host is the default: {:?}",
+        resp.text().await
+    );
+}
+
+/// A host-less template must **not** become a raw-HTTP escape hatch.
+///
+/// `resolve_verb_host_and_path` reads `hosts: []` as "unbound — the caller
+/// names the target", which was safe while `http` was the only host-less HTTP
+/// template. `${METABASE_URL?}` makes a *named* service compile host-less, and
+/// without the pseudo-service guard an agent holding `metabase` permissions
+/// could point the HTTP-verb shape at any host in the world — the host-binding
+/// gap D14 closed by removing Mode B, reopened through the back door.
+#[tokio::test]
+async fn host_less_metabase_is_not_a_raw_http_escape_hatch() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry_vars(
+        pool,
+        None,
+        overslash_core::template_vars::Vars::from_pairs([(
+            "MAILBOX_HOST",
+            "mailbox.overslash.com",
+        )]),
+        |_| {},
+    )
+    .await;
+    let (_org_id, _ident_id, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "template_key": "metabase",
+            "name": "metabase",
+            "url": "https://mb.example.com",
+            "user_level": false,
+            "status": "active",
+            "credentials": { "token": "metabase_api_key" },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+
+    // The template still has no host (the *instance* has a url), so the verb
+    // shape must refuse rather than forward to an arbitrary target.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "method": "GET",
+            "url": "https://evil.example.com/steal",
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = resp.text().await.unwrap();
+    assert_ne!(
+        status, 200,
+        "a host-less template must not forward an arbitrary url: {body}"
+    );
+    assert!(
+        body.contains("declares no host"),
+        "expected the host-binding refusal specifically (so this test can't pass \
+         for an unrelated reason), got {status}: {body}"
+    );
+}

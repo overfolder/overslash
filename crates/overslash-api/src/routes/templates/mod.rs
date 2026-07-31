@@ -359,7 +359,14 @@ fn instance_config_params(def: &ServiceDefinition) -> Vec<InstanceConfigParam> {
 /// dashboard shows a URL field on the instance form.
 fn configurable_url(def: &ServiceDefinition) -> bool {
     use overslash_core::types::{Runtime, SecretSource, ServiceAuth};
-    def.runtime == Runtime::Mcp
+    // A template that names no host has nowhere to send a request until the
+    // instance supplies one, so the field is not merely available — it is the
+    // only way the instance can work. Covers `servers: []` (telegram, whatsapp)
+    // and, since D44, a `${VAR?}` endpoint the deployment left unset
+    // (metabase). The `http` pseudo-service is the one host-less template this
+    // must not claim: its callers pass a full URL per call.
+    (def.hosts.is_empty() && def.key != "http")
+        || def.runtime == Runtime::Mcp
         || def.auth.iter().any(|a| {
             matches!(
                 a,

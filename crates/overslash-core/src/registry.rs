@@ -18,6 +18,15 @@ pub struct ServiceRegistry {
     vars: Vars,
 }
 
+/// Key of the synthetic raw-HTTP pseudo-service.
+///
+/// The one template for which `hosts: []` means "unbound — the caller names the
+/// target on every call". Every other host-less template is one whose endpoint
+/// simply isn't known yet (`servers: []`, or an unset `${VAR?}`), and must not
+/// be treated as an escape hatch. Named so the two places that care can't drift
+/// apart on a string literal.
+pub const HTTP_PSEUDO_SERVICE: &str = "http";
+
 /// The synthetic `http` pseudo-service template — Mode A's resolution path
 /// runs through the standard Service+HTTP-verb code as `service: "http"`.
 /// `hosts: []` is the signal that the caller supplies the full URL (no
@@ -25,7 +34,7 @@ pub struct ServiceRegistry {
 /// (only per-call `secrets[]`).
 fn http_pseudo_service() -> ServiceDefinition {
     ServiceDefinition {
-        key: "http".to_string(),
+        key: HTTP_PSEUDO_SERVICE.to_string(),
         display_name: "Raw HTTP".to_string(),
         description: Some(
             "Raw HTTP — caller supplies the full URL. Per-call secrets injection only.".to_string(),
@@ -145,7 +154,7 @@ impl ServiceRegistry {
         // path can flow through the same Service+HTTP-verb code as real
         // services. Only injected if no shipped YAML claimed the key.
         services
-            .entry("http".to_string())
+            .entry(HTTP_PSEUDO_SERVICE.to_string())
             .or_insert_with(http_pseudo_service);
 
         Ok(Self { services, vars })
@@ -505,13 +514,42 @@ paths:
         // silently pointed at somebody else's mailbox gateway.
         let reg = ServiceRegistry::load_from_dir(&shipped_services_dir(), Vars::empty()).unwrap();
         assert!(reg.get("email").is_none(), "email loaded without a host");
-        // Only `email` is affected — templates with literal or defaulted hosts
-        // still load, so one unset variable can't empty the catalog.
+        // Only `email` is affected — templates with literal hosts still load,
+        // so one unset variable can't empty the catalog.
         assert!(reg.get("github").is_some());
+    }
+
+    #[test]
+    fn shipped_metabase_loads_host_less_when_its_url_variable_is_unset() {
+        // The `${VAR?}` half of D44, and the reason metabase does NOT use the
+        // no-fallback form email does: Metabase is self-hosted, so a deployment
+        // that sets nothing should still be able to OFFER the template and ask
+        // for the endpoint at instantiation — not lose it entirely.
+        let reg = ServiceRegistry::load_from_dir(&shipped_services_dir(), Vars::empty()).unwrap();
+        let metabase = reg.get("metabase").expect("metabase still registered");
+        assert!(
+            metabase.hosts.is_empty(),
+            "unset ${{METABASE_URL?}} should leave no host, got {:?}",
+            metabase.hosts
+        );
+        // Host-less but otherwise whole — the actions are still there to bind
+        // once an instance supplies a `url`.
+        assert!(!metabase.actions.is_empty());
+    }
+
+    #[test]
+    fn shipped_metabase_takes_its_host_from_the_deployment_variable() {
+        let reg = ServiceRegistry::load_from_dir(
+            &shipped_services_dir(),
+            Vars::from_pairs([
+                ("MAILBOX_HOST", "mailbox.overslash.com"),
+                ("METABASE_URL", "https://mb.example.com"),
+            ]),
+        )
+        .unwrap();
         assert_eq!(
             reg.get("metabase").map(|m| m.hosts.clone()),
-            Some(vec!["localhost".to_string()]),
-            "metabase keeps its default"
+            Some(vec!["mb.example.com".to_string()])
         );
     }
 

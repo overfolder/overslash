@@ -43,6 +43,14 @@
 //!   `MAILBOX_HOST` deliberately has none, because a self-hoster has no
 //!   Overslash gateway and `mailbox.overslash.com` would be a wrong answer
 //!   rather than a safe one.
+//! - `${NAME?}` — **defaults to null**: unset replaces the whole value with
+//!   JSON `null` rather than erroring. For a `servers[].url` that means
+//!   `extract_hosts` skips the entry and the template compiles with no host,
+//!   which is already the established "the operator supplies the endpoint when
+//!   they create the instance" shape (`telegram`, `whatsapp`, every MCP
+//!   template). So a self-hosted service like Metabase needs no default *and*
+//!   does not vanish when the deployment sets nothing — it just asks at
+//!   instantiation. Must be the entire value; see [`OPTIONAL_PARTIAL_CODE`].
 //! - `$${` renders a literal `${`.
 //! - Anything else following `$` is copied verbatim, so jq expressions and
 //!   shell-ish prose in a `description` don't trip the parser.
@@ -59,6 +67,14 @@ pub const ENV_PREFIX: &str = "OVERSLASH_TEMPLATE_VAR_";
 
 /// [`ValidationIssue::code`] for a reference with no value and no default.
 pub const UNSET_CODE: &str = "template_var_unset";
+
+/// [`ValidationIssue::code`] for a `${NAME?}` that is not the entire value.
+///
+/// Nulling a value is an all-or-nothing edit, so `"https://${HOST?}/v1"` has no
+/// sensible answer: keeping `https:///v1` is a broken URL and discarding the
+/// literal text silently throws away part of what the author wrote. Rejecting
+/// at compile time costs the author one edit and removes the guesswork.
+pub const OPTIONAL_PARTIAL_CODE: &str = "template_var_optional_not_whole";
 
 /// The deployment's template variables, keyed by the name templates use
 /// (prefix already stripped).
@@ -184,8 +200,10 @@ fn walk(node: &mut Value, vars: &Vars, path: &mut String, errors: &mut Vec<Valid
             if !s.contains('$') {
                 return;
             }
-            if let Some(expanded) = expand_str(s, vars, path, errors) {
-                *s = expanded;
+            match expand_str(s, vars, path, errors) {
+                Expanded::Unchanged => {}
+                Expanded::Text(t) => *s = t,
+                Expanded::Null => *node = Value::Null,
             }
         }
         Value::Array(items) => {
@@ -218,19 +236,22 @@ fn push_segment(path: &mut String, segment: &str) -> usize {
     len
 }
 
-/// Expand one string. Returns `None` when nothing changed, so an unreferenced
-/// string keeps its allocation.
+/// Outcome of expanding one string value.
+enum Expanded {
+    /// No reference and no escape — the caller keeps the original allocation.
+    Unchanged,
+    Text(String),
+    /// An unset `${NAME?}`: the value becomes JSON `null`.
+    Null,
+}
+
+/// Expand one string.
 ///
 /// Byte indexing is safe throughout: every delimiter this scans for (`$`, `{`,
-/// `}`, `:`) is ASCII, and an ASCII byte can never occur inside a multi-byte
-/// UTF-8 sequence — so a match is always on a character boundary even when the
-/// surrounding text (or a default value) is not ASCII.
-fn expand_str(
-    src: &str,
-    vars: &Vars,
-    path: &str,
-    errors: &mut Vec<ValidationIssue>,
-) -> Option<String> {
+/// `}`, `:`, `?`) is ASCII, and an ASCII byte can never occur inside a
+/// multi-byte UTF-8 sequence — so a match is always on a character boundary
+/// even when the surrounding text (or a default value) is not ASCII.
+fn expand_str(src: &str, vars: &Vars, path: &str, errors: &mut Vec<ValidationIssue>) -> Expanded {
     let bytes = src.as_bytes();
     let mut out = String::with_capacity(src.len());
     let mut i = 0;
@@ -257,23 +278,53 @@ fn expand_str(
         }
 
         match parse_reference(src, i) {
-            Some(Reference { name, default, end }) => {
-                match vars.get(name).or(default) {
+            Some(Reference {
+                name,
+                fallback,
+                end,
+            }) => {
+                match vars.get(name) {
                     Some(value) => out.push_str(value),
-                    None => {
-                        errors.push(ValidationIssue::new(
-                            UNSET_CODE,
-                            format!(
-                                "template variable `{name}` is not set and declares no default; \
-                                 set `{ENV_PREFIX}{name}` on this deployment or write \
-                                 `${{{name}:<default>}}`"
-                            ),
-                            path,
-                        ));
-                        // Keep the reference verbatim so a partially-expanded
-                        // string never reaches a caller as if it had resolved.
-                        out.push_str(&src[i..end]);
-                    }
+                    None => match fallback {
+                        Fallback::Text(d) => out.push_str(d),
+                        Fallback::Null => {
+                            // All-or-nothing: nulling a value that also carries
+                            // literal text has no honest answer, so the author
+                            // is told rather than guessed at.
+                            if i != 0 || end != bytes.len() {
+                                errors.push(ValidationIssue::new(
+                                    OPTIONAL_PARTIAL_CODE,
+                                    format!(
+                                        "`${{{name}?}}` defaults to null, so it must be the \
+                                         entire value — it cannot be combined with other text. \
+                                         Move the surrounding text into `{ENV_PREFIX}{name}`, or \
+                                         give the reference a default instead."
+                                    ),
+                                    path,
+                                ));
+                                out.push_str(&src[i..end]);
+                                i = end;
+                                changed = true;
+                                continue;
+                            }
+                            return Expanded::Null;
+                        }
+                        Fallback::NoFallback => {
+                            errors.push(ValidationIssue::new(
+                                UNSET_CODE,
+                                format!(
+                                    "template variable `{name}` is not set and declares no \
+                                     default; set `{ENV_PREFIX}{name}` on this deployment, or \
+                                     write `${{{name}:<default>}}` — or `${{{name}?}}` to leave \
+                                     it unset and have the value supplied per instance"
+                                ),
+                                path,
+                            ));
+                            // Keep the reference verbatim so a partially-expanded
+                            // string never reaches a caller as if it had resolved.
+                            out.push_str(&src[i..end]);
+                        }
+                    },
                 }
                 i = end;
                 changed = true;
@@ -287,18 +338,37 @@ fn expand_str(
         }
     }
 
-    changed.then_some(out)
+    if changed {
+        Expanded::Text(out)
+    } else {
+        Expanded::Unchanged
+    }
+}
+
+/// What a reference resolves to when the variable is unset.
+///
+/// `NoFallback` rather than `None`: this enum is matched right next to
+/// `Option`s of the same values, and two `None`s in one `match` is a needless
+/// re-reading. Worth the redundant-sounding name, hence the lint suppression.
+#[allow(clippy::enum_variant_names)]
+enum Fallback<'a> {
+    /// `${NAME}` — an error.
+    NoFallback,
+    /// `${NAME:default}`.
+    Text(&'a str),
+    /// `${NAME?}` — JSON `null`.
+    Null,
 }
 
 struct Reference<'a> {
     name: &'a str,
-    default: Option<&'a str>,
+    fallback: Fallback<'a>,
     /// Byte index just past the closing `}`.
     end: usize,
 }
 
-/// Parse a `${NAME}` / `${NAME:default}` reference starting at `start` (which
-/// must index a `$`). `None` if what follows isn't one.
+/// Parse a `${NAME}` / `${NAME:default}` / `${NAME?}` reference starting at
+/// `start` (which must index a `$`). `None` if what follows isn't one.
 fn parse_reference(src: &str, start: usize) -> Option<Reference<'_>> {
     let bytes = src.as_bytes();
     if !bytes[start..].starts_with(b"${") {
@@ -320,8 +390,15 @@ fn parse_reference(src: &str, start: usize) -> Option<Reference<'_>> {
     match bytes.get(i) {
         Some(b'}') => Some(Reference {
             name,
-            default: None,
+            fallback: Fallback::NoFallback,
             end: i + 1,
+        }),
+        // `${NAME?}` — the `?` must be the last thing before `}`, so a stray
+        // `${NAME?x}` is left verbatim rather than silently read as optional.
+        Some(b'?') if bytes.get(i + 1) == Some(&b'}') => Some(Reference {
+            name,
+            fallback: Fallback::Null,
+            end: i + 2,
         }),
         Some(b':') => {
             let default_start = i + 1;
@@ -333,7 +410,7 @@ fn parse_reference(src: &str, start: usize) -> Option<Reference<'_>> {
                 .map(|off| default_start + off)?;
             Some(Reference {
                 name,
-                default: Some(&src[default_start..close]),
+                fallback: Fallback::Text(&src[default_start..close]),
                 end: close + 1,
             })
         }
@@ -364,6 +441,14 @@ mod tests {
         let mut doc = json!({ "url": input });
         expand(&mut doc, vars)?;
         Ok(doc["url"].as_str().unwrap().to_string())
+    }
+
+    /// Expand a whole value, keeping its JSON type — `expand_one` asserts the
+    /// result is a string, which the `?` mode deliberately isn't.
+    fn expand_value(input: &str, vars: &Vars) -> Result<Value, Vec<ValidationIssue>> {
+        let mut doc = json!({ "url": input });
+        expand(&mut doc, vars)?;
+        Ok(doc["url"].clone())
     }
 
     #[test]
@@ -503,6 +588,65 @@ mod tests {
         let mut doc = json!({ "url": "https://${A:ok}/${B}" });
         let _ = expand(&mut doc, &Vars::empty());
         assert_eq!(doc["url"], "https://ok/${B}");
+    }
+
+    #[test]
+    fn optional_reference_resolves_to_null_when_unset() {
+        // The point of `?`: a self-hosted service whose URL this deployment
+        // does not know must still ship a usable template — the operator is
+        // asked for the endpoint when they create the instance.
+        assert_eq!(
+            expand_value("${METABASE_URL?}", &Vars::empty()).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn optional_reference_still_prefers_a_set_value() {
+        let v = Vars::from_pairs([("METABASE_URL", "https://mb.example.com")]);
+        assert_eq!(
+            expand_value("${METABASE_URL?}", &v).unwrap(),
+            json!("https://mb.example.com")
+        );
+    }
+
+    #[test]
+    fn a_null_server_url_leaves_no_host() {
+        // The property the metabase template relies on: `extract_hosts` skips a
+        // `servers` entry whose `url` is not a string, so an unset optional
+        // reference compiles to a template with no host rather than a broken
+        // one — which is the existing "operator supplies the endpoint at
+        // instantiation" shape.
+        let mut doc = json!({ "servers": [{ "url": "${METABASE_URL?}" }] });
+        expand(&mut doc, &Vars::empty()).unwrap();
+        assert_eq!(doc["servers"][0]["url"], Value::Null);
+    }
+
+    #[test]
+    fn optional_reference_must_be_the_entire_value() {
+        // `https://${HOST?}` has no honest answer when HOST is unset: keeping
+        // `https://` is a broken URL and dropping it silently discards what the
+        // author wrote. Rejected rather than guessed.
+        let errs = expand_value("https://${HOST?}", &Vars::empty()).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].code, OPTIONAL_PARTIAL_CODE);
+
+        // Set is fine either way — the restriction is about the unset case
+        // being a type change, so it applies uniformly rather than depending on
+        // the deployment's configuration.
+        let v = Vars::from_pairs([("HOST", "h.example")]);
+        let errs = expand_value("https://${HOST?}", &v);
+        assert_eq!(errs.unwrap(), json!("https://h.example"));
+    }
+
+    #[test]
+    fn question_mark_is_only_special_immediately_before_the_brace() {
+        // `${NAME?x}` is not a reference at all — left verbatim rather than
+        // silently read as optional-with-junk.
+        assert_eq!(
+            expand_one("${HOST?x}", &Vars::empty()).unwrap(),
+            "${HOST?x}"
+        );
     }
 
     #[test]
