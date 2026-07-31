@@ -88,7 +88,7 @@ test('user configures the email template against their own gateway and lists mai
 			.click();
 		await page.getByRole('button', { name: 'Use this template' }).click();
 
-		const gatewayUrl = page.getByLabel('Gateway URL');
+		const gatewayUrl = page.getByLabel('Endpoint URL');
 		await expect(gatewayUrl).toBeVisible();
 		await gatewayUrl.fill(env.overfwdUrl!);
 
