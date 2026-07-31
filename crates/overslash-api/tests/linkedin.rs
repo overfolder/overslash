@@ -62,8 +62,11 @@ fn linkedin_yaml_parses() {
         .parent()
         .unwrap()
         .to_path_buf();
-    let reg = ServiceRegistry::load_from_dir(&ws_root.join("services"))
-        .expect("services/ should load cleanly");
+    let reg = ServiceRegistry::load_from_dir(
+        &ws_root.join("services"),
+        overslash_core::template_vars::Vars::for_tests(),
+    )
+    .expect("services/ should load cleanly");
     let svc = reg.get("linkedin").expect("linkedin should be registered");
     assert_eq!(svc.display_name, "LinkedIn");
     assert_eq!(svc.hosts, vec!["api.linkedin.com".to_string()]);

@@ -54,7 +54,8 @@ use admin::{
 use drafts::{discard_draft, get_draft, import_template, list_drafts, promote_draft, update_draft};
 use dto::*;
 use read::{
-    get_template, get_template_action, list_template_actions, list_templates, search_templates,
+    get_template, get_template_action, list_template_actions, list_template_vars, list_templates,
+    search_templates,
 };
 use validate::{validate_delta_route, validate_template};
 use write::{create_template, delete_template, update_template};
@@ -71,8 +72,9 @@ pub(crate) use dto::ActionSummary;
 /// import / promote path must go through.
 fn parse_normalize_compile_and_check_disclose(
     yaml: &str,
+    vars: &overslash_core::template_vars::Vars,
 ) -> std::result::Result<(serde_json::Value, ServiceDefinition), ValidationReport> {
-    let (doc, def) = parse_normalize_compile_yaml(yaml)?;
+    let (doc, def) = parse_normalize_compile_yaml(yaml, vars)?;
     let mut extra = Vec::new();
     for (action_key, action) in &def.actions {
         for (i, f) in action.disclose.iter().enumerate() {
@@ -119,6 +121,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/templates", get(list_templates).post(create_template))
         .route("/v1/templates/search", get(search_templates))
         // Fixed-path routes MUST come before the `{key}` wildcard.
+        .route("/v1/templates/vars", get(list_template_vars))
         .route("/v1/templates/validate", post(validate_template))
         .route("/v1/templates/validate-delta", post(validate_delta_route))
         .route("/v1/templates/import", post(import_template))
@@ -356,7 +359,14 @@ fn instance_config_params(def: &ServiceDefinition) -> Vec<InstanceConfigParam> {
 /// dashboard shows a URL field on the instance form.
 fn configurable_url(def: &ServiceDefinition) -> bool {
     use overslash_core::types::{Runtime, SecretSource, ServiceAuth};
-    def.runtime == Runtime::Mcp
+    // A template that names no host has nowhere to send a request until the
+    // instance supplies one, so the field is not merely available — it is the
+    // only way the instance can work. Covers `servers: []` (telegram, whatsapp)
+    // and, since D44, a `${VAR?}` endpoint the deployment left unset
+    // (metabase). The `http` pseudo-service is the one host-less template this
+    // must not claim: its callers pass a full URL per call.
+    (def.hosts.is_empty() && def.key != "http")
+        || def.runtime == Runtime::Mcp
         || def.auth.iter().any(|a| {
             matches!(
                 a,
@@ -534,7 +544,10 @@ mod tests {
                 continue;
             }
             let yaml = std::fs::read_to_string(&path).unwrap();
-            if let Err(report) = parse_normalize_compile_and_check_disclose(&yaml) {
+            if let Err(report) = parse_normalize_compile_and_check_disclose(
+                &yaml,
+                &overslash_core::template_vars::Vars::for_tests(),
+            ) {
                 panic!(
                     "shipped template {} failed disclose jq validation: {:?}",
                     path.display(),

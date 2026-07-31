@@ -219,6 +219,12 @@ DASH_URL="http://127.0.0.1:$DASH_PORT"
 # the upstream hostnames the shipped service templates use. Add more as needed.
 OPENAPI_HOST=$(python3 -c "from urllib.parse import urlparse; import sys; print(urlparse('$OPENAPI_URL').netloc.split(':')[0])")
 OVERRIDES="api.github.com=$OPENAPI_URL,api.slack.com=$OPENAPI_URL,api.stripe.com=$STRIPE_URL"
+# `services/email.yaml` resolves `servers[0]` from ${MAILBOX_HOST} (D44) and
+# has no default, so without this the whole `email` template is skipped at load
+# and every mail story 404s. The value itself is never dialed: the e2e suite
+# pins the real gateway per instance as `url=$OVERFWD_URL` (loopback), which
+# outranks the template host. It stays domain-shaped rather than pointing at
+# OVERFWD_URL because a template host can only ever render as https://.
 # Hex 32-byte secrets (deterministic — these are local-only).
 ENCRYPTION_KEY="ab$(printf 'cd%.0s' $(seq 1 31))"
 SIGNING_KEY="ef$(printf '01%.0s' $(seq 1 31))"
@@ -239,6 +245,7 @@ log "starting API on $API_URL"
 DEV_AUTH=1 \
 OVERSLASH_SSRF_ALLOW_PRIVATE=1 \
 OVERSLASH_SERVICE_BASE_OVERRIDES="$OVERRIDES" \
+OVERSLASH_TEMPLATE_VAR_MAILBOX_HOST="mailbox.overslash.com" \
 OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1 \
 OAUTH_GITHUB_CLIENT_ID=e2e-github-client-id \
 OAUTH_GITHUB_CLIENT_SECRET=e2e-github-client-secret \

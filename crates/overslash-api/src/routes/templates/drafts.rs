@@ -196,7 +196,7 @@ pub(super) async fn list_drafts(
     };
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        out.push(row_to_draft_detail(row));
+        out.push(row_to_draft_detail(row, state.registry.vars()));
     }
     Ok(Json(out))
 }
@@ -227,7 +227,7 @@ pub(super) async fn get_draft(
             "admin access required to read org-level drafts".into(),
         ));
     }
-    Ok(Json(row_to_draft_detail(row)))
+    Ok(Json(row_to_draft_detail(row, state.registry.vars())))
 }
 
 /// PUT /v1/templates/drafts/{id}
@@ -267,7 +267,8 @@ pub(super) async fn update_draft(
     // `info.x-overslash-key` derivation + `$ref` dereferencing for any
     // newly-added refs. This is idempotent on already-canonical documents.
     let prep = prepare_from_value(doc, &ImportOptions::default());
-    let (canonical_doc, compiled, validation) = prepare_draft_from_value(prep.doc);
+    let (canonical_doc, compiled, validation) =
+        prepare_draft_from_value(prep.doc, state.registry.vars());
     let canonical_yaml = openapi::to_yaml_string(&canonical_doc).unwrap_or_default();
 
     let scalars = scalars_from_compiled(compiled.as_ref());
@@ -340,8 +341,9 @@ pub(super) async fn promote_draft(
     let yaml_source = openapi::to_yaml_string(existing_doc).map_err(|i| {
         AppError::Internal(format!("stored draft serializer failed: {}", i.message))
     })?;
-    let (_doc, def) = parse_normalize_compile_and_check_disclose(&yaml_source)
-        .map_err(|report| AppError::TemplateValidationFailed { report })?;
+    let (_doc, def) =
+        parse_normalize_compile_and_check_disclose(&yaml_source, state.registry.vars())
+            .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     if def.key.is_empty() {
         return Err(AppError::BadRequest(
@@ -469,7 +471,10 @@ async fn load_draft_for_write(
     .await
 }
 
-fn row_to_draft_detail(row: service_template::ServiceTemplateRow) -> DraftTemplateDetail {
+fn row_to_draft_detail(
+    row: service_template::ServiceTemplateRow,
+    vars: &overslash_core::template_vars::Vars,
+) -> DraftTemplateDetail {
     // Run the import pre-pass first to enumerate operations and capture
     // warnings, then feed its output to the lenient validator. This avoids
     // walking+normalizing the document twice per draft (hot path for
@@ -479,7 +484,7 @@ fn row_to_draft_detail(row: service_template::ServiceTemplateRow) -> DraftTempla
     let doc = row.openapi.unwrap_or_default();
     let canonical_yaml = openapi::to_yaml_string(&doc).unwrap_or_default();
     let prep = prepare_from_value(doc, &ImportOptions::default());
-    let (_canonical_doc, compiled, validation) = prepare_draft_from_value(prep.doc);
+    let (_canonical_doc, compiled, validation) = prepare_draft_from_value(prep.doc, vars);
     DraftTemplateDetail {
         id: row.id,
         tier: tier_of_parts(row.owner_identity_id).into(),

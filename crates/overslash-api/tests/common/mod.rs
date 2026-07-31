@@ -1406,6 +1406,27 @@ pub async fn start_api_with_registry_customized<F>(
 where
     F: FnOnce(&mut overslash_api::config::Config),
 {
+    start_api_with_registry_vars(
+        pool,
+        host_override,
+        overslash_core::template_vars::Vars::for_tests(),
+        customize,
+    )
+    .await
+}
+
+/// Like [`start_api_with_registry_customized`] but boots the shipped registry
+/// against an explicit set of template variables (D44) instead of the standard
+/// test set — for the cases that assert on what `${VAR}` resolved to.
+pub async fn start_api_with_registry_vars<F>(
+    pool: PgPool,
+    host_override: Option<(&str, String)>,
+    vars: overslash_core::template_vars::Vars,
+    customize: F,
+) -> (String, Client)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
     let enc_key_hex = "ab".repeat(32);
     let ws_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1413,7 +1434,7 @@ where
         .parent()
         .unwrap();
     let mut registry =
-        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
+        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"), vars)
             .unwrap_or_default();
 
     if let Some((service_key, new_host)) = host_override {
@@ -1572,9 +1593,11 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .unwrap()
         .parent()
         .unwrap();
-    let registry =
-        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
-            .unwrap_or_default();
+    let registry = overslash_core::registry::ServiceRegistry::load_from_dir(
+        &ws_root.join("services"),
+        overslash_core::template_vars::Vars::for_tests(),
+    )
+    .unwrap_or_default();
 
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),

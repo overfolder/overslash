@@ -88,6 +88,15 @@
 	// instance too — reveal the same URL field the MCP path uses.
 	const httpNeedsUrl = $derived(!isMcp && selectedDetail?.configurable_url === true);
 
+	// …and when the template names no host at all, the field is not an override
+	// but the only endpoint this instance will ever have. Two ways to get here:
+	// `servers: []`, or a `${VAR?}` endpoint the deployment left unset (D44 —
+	// e.g. self-hosted Metabase). The server rejects a blank one, so say so
+	// here rather than letting the form post and bounce.
+	const httpUrlRequired = $derived(
+		httpNeedsUrl && (selectedDetail?.hosts?.length ?? 0) === 0 && !inheritedUrl
+	);
+
 	// Non-secret values the org pins per instance (e.g. the mailbox gateway's
 	// IMAP/SMTP endpoint). Declared by the template via
 	// `x-overslash-instance-config`; empty for templates that declare none.
@@ -727,17 +736,19 @@
 				</label>
 			{:else if httpNeedsUrl}
 				<label class="field">
-					<span class="label">Gateway URL</span>
+					<span class="label">Endpoint URL</span>
 					<input
 						type="text"
 						bind:value={urlInput}
 						placeholder={inheritedUrl ??
 							(selectedDetail?.hosts?.[0]
 								? `https://${selectedDetail.hosts[0]}`
-								: 'https://mailbox.your-org.com')}
+								: 'https://service.your-org.com')}
 					/>
-					{#if inheritedUrl}
-						<small>Leave blank to use your org's gateway ({inheritedUrl}).</small>
+					{#if httpUrlRequired}
+						<small>Required — this template has no default endpoint.</small>
+					{:else if inheritedUrl}
+						<small>Leave blank to use your org's deployment ({inheritedUrl}).</small>
 					{:else}
 						<small>Point this instance at your own deployment. Leave blank to use the default.</small>
 					{/if}

@@ -170,9 +170,11 @@ pub async fn kernel_create_template(
         None
     };
 
-    let (doc, def) =
-        overslash_core::template_validation::parse_normalize_compile_yaml(&openapi_yaml)
-            .map_err(|report| AppError::TemplateValidationFailed { report })?;
+    let (doc, def) = overslash_core::template_validation::parse_normalize_compile_yaml(
+        &openapi_yaml,
+        ctx.registry.vars(),
+    )
+    .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     if def.key.is_empty() {
         return Err(AppError::BadRequest(
@@ -263,7 +265,8 @@ pub async fn kernel_import_template(
     extra_warnings.extend(prepared.warnings);
     let operations = prepared.operations;
 
-    let (canonical_doc, compiled, validation) = prepare_draft_from_value(prepared.doc);
+    let (canonical_doc, compiled, validation) =
+        prepare_draft_from_value(prepared.doc, ctx.registry.vars());
     let canonical_yaml = openapi::to_yaml_string(&canonical_doc).unwrap_or_default();
     let scalars = scalars_from_compiled(compiled.as_ref());
 

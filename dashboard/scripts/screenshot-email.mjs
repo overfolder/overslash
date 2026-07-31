@@ -60,11 +60,11 @@ try {
 
 	const id = instance?.id;
 	if (id) {
-		// 2. The bound instance's detail page (Gateway URL + both credential rows).
+		// 2. The bound instance's detail page (Endpoint URL + both credential rows).
 		const detail = await snap.navigateAndSnap('email-instance', `/services/${id}`, {
 			viewport: { width: 1200, height: 1100 },
 			waitFor: async (p) => {
-				await p.getByText('Gateway URL', { exact: false }).first().waitFor({ timeout: 15_000 });
+				await p.getByText('Endpoint URL', { exact: false }).first().waitFor({ timeout: 15_000 });
 				await p.getByText('Overfwd API Token', { exact: false }).first().waitFor({ timeout: 15_000 });
 				await p.waitForTimeout(300);
 			}

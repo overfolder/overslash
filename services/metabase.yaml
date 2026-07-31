@@ -10,11 +10,20 @@ info:
     Metabase API key (Admin → Settings → Authentication → API keys) sent as
     x-api-key; pair it with a read-only Metabase group for
     belt-and-suspenders.
-# Metabase is self-hosted: the shipped default matches the docker/metabase
-# dev harness, and every real deployment pins its own URL on the service
-# instance (or an org layer's instance_defaults).
+# Metabase is self-hosted, so there is no host this template could honestly
+# name: every deployment runs its own. `${METABASE_URL?}` (D44) resolves to
+# JSON null when the deployment sets nothing, which `extract_hosts` skips —
+# leaving a template with no host, i.e. the same shape as telegram/whatsapp,
+# where the operator supplies the endpoint when they create the instance.
+#
+# Deliberately NOT a default. `http://localhost:3033` (the docker/metabase dev
+# harness) would be a plausible-looking wrong answer for every deployment that
+# is not that harness, and silently pointing an instance at localhost is worse
+# than asking for the URL. And deliberately not the no-fallback form either:
+# unset would then skip the whole template, so a deployment could not offer
+# Metabase at all without a platform-level env var.
 servers:
-  - url: http://localhost:3033
+  - url: ${METABASE_URL?}
 components:
   securitySchemes:
     # The scheme name doubles as the implicit credential slot (`token`),

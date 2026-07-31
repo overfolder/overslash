@@ -171,6 +171,12 @@
 	// field blank visibly means "inherit the org's deployment".
 	const inheritedUrl = $derived(template?.instance_defaults?.url
 	);
+	// A template that names no host has nothing to fall back to, so blanking the
+	// field breaks the instance. Mirrors the create form (D44) — reachable via
+	// `servers: []` or a `${VAR?}` endpoint the deployment left unset.
+	const editUrlRequired = $derived(
+		(template?.hosts?.length ?? 0) === 0 && !inheritedUrl
+	);
 	const ownerDisplay = $derived.by(() => {
 		const s = svc;
 		if (!s) return '';
@@ -782,17 +788,19 @@
 					</label>
 				{:else if template?.configurable_url && !isSystem}
 					<label class="field">
-						<span class="label">Gateway URL</span>
+						<span class="label">Endpoint URL</span>
 						<input
 							type="text"
 							bind:value={editUrl}
 							placeholder={inheritedUrl ??
 								(template?.hosts?.[0]
 									? `https://${template.hosts[0]}`
-									: 'https://mailbox.your-org.com')}
+									: 'https://service.your-org.com')}
 						/>
-						{#if inheritedUrl}
-							<small>Leave blank to use your org's gateway ({inheritedUrl}).</small>
+						{#if editUrlRequired}
+							<small>Required — this template has no default endpoint.</small>
+						{:else if inheritedUrl}
+							<small>Leave blank to use your org's deployment ({inheritedUrl}).</small>
 						{:else}
 							<small>Point this instance at your own deployment. Leave blank to use the default.</small>
 						{/if}

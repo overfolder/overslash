@@ -93,7 +93,20 @@ pub async fn resolve(
                         row.key
                     ))
                 })?;
-                let (def, _w) = openapi::compile_service(doc).map_err(|errs| {
+                // Expand `${VAR}` here rather than at persist time: the stored
+                // document keeps its references, so the same row resolves to
+                // this deployment's hosts instead of whichever deployment the
+                // author happened to be on.
+                let mut doc = doc.clone();
+                overslash_core::template_vars::expand(&mut doc, registry.vars()).map_err(
+                    |errs| {
+                        AppError::Internal(format!(
+                            "stored openapi for '{}' has unresolved template variables: {errs:?}",
+                            row.key
+                        ))
+                    },
+                )?;
+                let (def, _w) = openapi::compile_service(&doc).map_err(|errs| {
                     AppError::Internal(format!(
                         "stored openapi for '{}' failed to compile: {errs:?}",
                         row.key

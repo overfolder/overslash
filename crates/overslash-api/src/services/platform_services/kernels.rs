@@ -401,6 +401,26 @@ pub async fn kernel_create_service(
         }
     }
 
+    // The HTTP twin of the MCP check above. A template with no host has nothing
+    // for `effective_base` to fall back to, so without `url` every call would
+    // fail at send time with an opaque error instead of here, where the
+    // operator is actually looking. Reachable two ways: `servers: []`, and
+    // since D44 a `${VAR?}` endpoint this deployment left unset (metabase).
+    if !is_mcp && template_def.hosts.is_empty() {
+        let has_default = template_def
+            .instance_defaults
+            .as_ref()
+            .is_some_and(|d| d.url.is_some());
+        let provided = input.url.as_deref().is_some_and(|u| !u.is_empty());
+        if !has_default && !provided {
+            return Err(AppError::BadRequest(format!(
+                "template '{}' declares no endpoint; provide `url` in the request \
+                 (or set one org-wide on a layer's `instance_defaults.url`)",
+                input.template_key
+            )));
+        }
+    }
+
     if is_mcp && is_mcp_bearer && !mcp_bearer_has_default_secret {
         let provided = input.secret_name.as_deref().is_some_and(|s| !s.is_empty());
         if !provided {

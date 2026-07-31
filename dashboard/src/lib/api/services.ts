@@ -25,6 +25,7 @@ import type {
 	TemplateDetail,
 	TemplateSettings,
 	TemplateSummary,
+	TemplateVar,
 	UpdateDraftRequest,
 	UpdateByocCredentialRequest,
 	UpdateServiceRequest,
@@ -129,6 +130,20 @@ export const resyncMcpService = (id: string) =>
 		`/v1/services/${encodeURIComponent(id)}/mcp/resync`,
 		{}
 	);
+
+// -- Template variables (D44) --
+
+/** The `${VAR}` references a template authored on this deployment can resolve.
+ * Graceful 404 for the same reason `validateTemplate` has one: the editor must
+ * still work against an API that predates the endpoint. */
+export async function listTemplateVars(): Promise<TemplateVar[] | null> {
+	try {
+		return await session.get<TemplateVar[]>('/v1/templates/vars');
+	} catch (e) {
+		if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
+		throw e;
+	}
+}
 
 // -- Template validation (pending endpoint, graceful 404) --
 

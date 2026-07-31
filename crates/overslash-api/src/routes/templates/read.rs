@@ -63,6 +63,36 @@ pub(super) async fn list_templates(
     Ok(Json(templates))
 }
 
+/// GET /v1/templates/vars
+///
+/// The `${VAR}` references a template authored on this deployment can resolve
+/// (D44). Backs the template editor's reference panel: without it an author
+/// has to guess names and finds out only when `validate` reports
+/// `template_var_unset`.
+///
+/// Values are returned in the clear to any authenticated caller — see
+/// [`TemplateVar`] for why hiding them would buy nothing, and why nothing
+/// secret may be configured under this prefix.
+pub(super) async fn list_template_vars(
+    State(state): State<AppState>,
+    auth: AuthContext,
+) -> Result<Json<Vec<TemplateVar>>> {
+    // Deployment-scoped, not org-scoped; bound to satisfy the ignored-auth
+    // pre-commit gate (see PR #60), as `validate` does.
+    let _ = auth.org_id;
+    Ok(Json(
+        state
+            .registry
+            .vars()
+            .iter()
+            .map(|(name, value)| TemplateVar {
+                name: name.to_string(),
+                value: value.to_string(),
+            })
+            .collect(),
+    ))
+}
+
 /// Search templates across all tiers by query string.
 pub(super) async fn search_templates(
     State(state): State<AppState>,
