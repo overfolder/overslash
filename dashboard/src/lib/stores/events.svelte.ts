@@ -11,7 +11,7 @@
 // Events are notifications, not state. Handlers should refetch the resource
 // they care about; the payloads here are for routing, not for rendering.
 
-export type StreamState = 'idle' | 'connecting' | 'live' | 'down';
+export type StreamStatus = 'idle' | 'connecting' | 'live' | 'down';
 
 export const APPROVAL_EVENT_TYPES = [
 	'approval.created',
@@ -79,7 +79,15 @@ interface Subscription {
 }
 
 let source: EventSource | null = null;
-let state = $state<StreamState>('idle');
+// Connection status is held twice on purpose. `status` is a plain variable and
+// is what every branch in this module reads; `uiStatus` is the rune the UI
+// binds to, and is only ever written. Reading a rune here would be a trap:
+// `startEventStream`/`stopEventStream` are called from an `$effect` in the
+// root layout, so a synchronous rune *read* inside them would make that effect
+// depend on state these same functions write — an infinite effect loop that
+// takes down every page, not just the ones using the stream.
+let status: StreamStatus = 'idle';
+let uiStatus = $state<StreamStatus>('idle');
 let retryDelay = BACKOFF_START_MS;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let graceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -88,13 +96,19 @@ let hadGap = false;
 
 const subscribers = new Set<Subscription>();
 
+/** The single writer for both copies of the status. */
+function setStatus(next: StreamStatus): void {
+	status = next;
+	uiStatus = next;
+}
+
 /** Reactive connection state, for UI that reports liveness. */
 export const eventStream = {
-	get state(): StreamState {
-		return state;
+	get state(): StreamStatus {
+		return uiStatus;
 	},
 	get live(): boolean {
-		return state === 'live';
+		return uiStatus === 'live';
 	}
 };
 
@@ -141,7 +155,7 @@ function clearTimer(timer: ReturnType<typeof setTimeout> | null) {
 function markLive(): void {
 	graceTimer = clearTimer(graceTimer);
 	retryDelay = BACKOFF_START_MS;
-	state = 'live';
+	setStatus('live');
 
 	if (hadGap) {
 		hadGap = false;
@@ -164,7 +178,7 @@ function nextDelay(): number {
 
 function connect(): void {
 	retryTimer = clearTimer(retryTimer);
-	if (state !== 'live') state = 'connecting';
+	if (status !== 'live') setStatus('connecting');
 
 	const es = new EventSource(STREAM_URL, { withCredentials: true });
 	source = es;
@@ -192,7 +206,7 @@ function connect(): void {
 			es.close();
 			source = null;
 			hadGap = true;
-			state = 'down';
+			setStatus('down');
 			retryTimer = setTimeout(connect, nextDelay());
 			return;
 		}
@@ -202,7 +216,7 @@ function connect(): void {
 		if (graceTimer === null) {
 			graceTimer = setTimeout(() => {
 				graceTimer = null;
-				if (source === es && es.readyState !== EventSource.OPEN) state = 'down';
+				if (source === es && es.readyState !== EventSource.OPEN) setStatus('down');
 			}, RECONNECT_GRACE_MS);
 		}
 	};
@@ -221,7 +235,7 @@ export function stopEventStream(): void {
 	graceTimer = clearTimer(graceTimer);
 	source?.close();
 	source = null;
-	state = 'idle';
+	setStatus('idle');
 	retryDelay = BACKOFF_START_MS;
 }
 
