@@ -15,6 +15,7 @@
 //   dashboard/screenshots/template-vars-panel.png
 //   dashboard/screenshots/template-vars-unset-error.png
 //   dashboard/screenshots/template-vars-email-source.png
+//   dashboard/screenshots/template-vars-metabase-endpoint.png
 
 import { login, makeSnapper } from '../tests/scenarios/index.mjs';
 
@@ -98,6 +99,26 @@ try {
 					.first()
 					.scrollIntoViewIfNeeded();
 				await p.waitForTimeout(400);
+			}
+		})
+		.then((r) => r.ctx.close());
+	// 4. The `${VAR?}` half. The e2e stack sets no METABASE_URL, so the shipped
+	//    metabase template compiles host-less rather than vanishing — and the
+	//    create-service form asks for the endpoint instead of silently
+	//    defaulting to somebody else's localhost.
+	await snap
+		.navigateAndSnap('template-vars-metabase-endpoint', '/services/new?template=metabase', {
+			viewport: { width: 1280, height: 900 },
+			fullPage: false,
+			waitFor: async (p) => {
+				// Anchor on the required-hint itself: the field is also shown for
+				// templates that merely *allow* an override, so waiting on the
+				// input alone would pass without proving the required case.
+				await p
+					.getByText('Required — this template has no default endpoint.')
+					.first()
+					.waitFor({ timeout: 20_000 });
+				await p.waitForTimeout(300);
 			}
 		})
 		.then((r) => r.ctx.close());
