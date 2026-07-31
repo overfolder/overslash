@@ -316,6 +316,42 @@ async fn reconnecting_with_a_cursor_replays_the_gap_exactly_once() {
 }
 
 #[tokio::test]
+async fn the_open_frame_never_advances_past_events_it_precedes() {
+    let pool = common::test_pool().await;
+    let (base, client) = start(pool).await;
+    let (_org, _ident, agent_key, _org_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    mint_secret_request(&client, &base, &agent_key, "OPEN_CURSOR_ONE").await;
+    mint_secret_request(&client, &base, &agent_key, "OPEN_CURSOR_TWO").await;
+
+    let frames = read_stream(&client, &base, &agent_key, "", Some(0)).await;
+    let open = frames.first().expect("open frame");
+    let replayed: Vec<i64> = frames
+        .iter()
+        .filter(|f| f.event.as_deref() == Some("secret_request.created"))
+        .map(|f| f.cursor())
+        .collect();
+    assert_eq!(replayed.len(), 2, "both events replayed");
+
+    // `stream.open` is written before the replayed rows, and EventSource
+    // updates `lastEventId` per frame as it arrives. If the open frame claimed
+    // the end of the batch, a connection dropping mid-replay would leave the
+    // client believing it had consumed rows it never saw — and its reconnect
+    // would resume past them, losing them permanently.
+    assert!(
+        open.cursor() < replayed[0],
+        "open frame ({}) must not advance past the rows that follow it ({:?})",
+        open.cursor(),
+        replayed
+    );
+    assert_eq!(
+        open.json()["cursor"].as_i64(),
+        Some(0),
+        "resumes from the requested cursor"
+    );
+}
+
+#[tokio::test]
 async fn events_are_scoped_to_the_identity_chain_not_the_org() {
     let pool = common::test_pool().await;
     let (base, client) = start(pool.clone()).await;

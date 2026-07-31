@@ -222,11 +222,18 @@ function connect(): void {
 	};
 }
 
-/** Idempotent — safe to call from an effect that re-runs. */
+/**
+ * Idempotent — safe to call from an effect that re-runs.
+ *
+ * Deliberately does not clear `hadGap`. If the stream died fatally and the user
+ * then passed through a standalone route (`/login`, a consent screen), the stop
+ * on the way out and the start on the way back would otherwise erase the fact
+ * that events were missed, and `markLive` would skip the `stream.resync` that
+ * tells subscribers to refetch. Only a successful open clears it.
+ */
 export function startEventStream(): void {
 	if (typeof window === 'undefined') return;
 	if (source !== null || retryTimer !== null) return;
-	hadGap = false;
 	connect();
 }
 

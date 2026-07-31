@@ -143,9 +143,18 @@ async fn events_stream(
         None => Vec::new(),
     };
 
-    // A fresh subscriber gets the org's current high-water mark so its first
-    // reconnect resumes from now rather than replaying all of history.
-    let open_cursor = match replay.last().map(|r| r.id).or(cursor) {
+    // The resume point *as of this frame* — where the client already is, or the
+    // org's high-water mark for a fresh subscriber so its first reconnect
+    // resumes from now rather than replaying all of history.
+    //
+    // Deliberately NOT the last id in the replay batch. `stream.open` is
+    // emitted before the replayed rows, and `EventSource` updates its
+    // `lastEventId` per frame as it arrives — so advertising the end of the
+    // batch up front would mean a connection dying mid-replay leaves the client
+    // believing it consumed rows it never received, and its next reconnect
+    // would skip straight past them. Each replayed row advances the cursor on
+    // its own as it lands.
+    let open_cursor = match cursor {
         Some(cursor) => cursor,
         None => scope.latest_event_cursor().await?,
     };
@@ -214,8 +223,12 @@ async fn produce(
     let mut sent: HashSet<i64> = HashSet::new();
     for row in replay {
         sent.insert(row.id);
+        // A row we cannot serialize is undeliverable on any connection, so
+        // ending the stream would only make the client reconnect, hit the same
+        // row, and end again — an unbreakable loop that locks it out of every
+        // later event. Skip it and keep the cursor moving.
         let Some(event) = to_sse_event(&row) else {
-            return;
+            continue;
         };
         if tx.send(event).await.is_err() {
             return;
@@ -236,8 +249,9 @@ async fn produce(
                     if !subscriber.may_see(&event) || !sent.insert(event.id) {
                         continue;
                     }
+                    // Same reasoning as the replay loop: skip, don't disconnect.
                     let Some(frame) = to_sse_event(&event) else {
-                        return;
+                        continue;
                     };
                     if tx.send(frame).await.is_err() {
                         return;
