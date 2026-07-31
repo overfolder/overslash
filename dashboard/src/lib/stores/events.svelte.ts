@@ -75,7 +75,7 @@ const BACKOFF_MAX_MS = 30_000;
 
 interface Subscription {
 	types: ReadonlySet<string>;
-	handler: (event: StreamEvent) => void;
+	handler: (event: StreamEvent<never>) => void;
 }
 
 let source: EventSource | null = null;
@@ -101,12 +101,20 @@ export const eventStream = {
 /**
  * Subscribe to one or more event types. Returns an unsubscribe function; call
  * it from an `$effect` teardown.
+ *
+ * `T` is the payload shape the subscriber expects (e.g. `ApprovalEventData`).
+ * It is an assertion, not a guarantee — the wire payload is untyped JSON — so
+ * subscribers should treat it as a routing hint and refetch the resource
+ * rather than render straight from it.
  */
-export function onEvent(
+export function onEvent<T = Record<string, unknown>>(
 	types: readonly StreamEventType[],
-	handler: (event: StreamEvent) => void
+	handler: (event: StreamEvent<T>) => void
 ): () => void {
-	const subscription: Subscription = { types: new Set(types), handler };
+	const subscription: Subscription = {
+		types: new Set(types),
+		handler: handler as (event: StreamEvent<never>) => void
+	};
 	subscribers.add(subscription);
 	return () => {
 		subscribers.delete(subscription);
@@ -117,7 +125,7 @@ function dispatch(event: StreamEvent): void {
 	for (const subscription of subscribers) {
 		if (!subscription.types.has(event.type)) continue;
 		try {
-			subscription.handler(event);
+			subscription.handler(event as StreamEvent<never>);
 		} catch (e) {
 			// One bad handler must not stop delivery to the others.
 			console.error('[events] subscriber threw', e);

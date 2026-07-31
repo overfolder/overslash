@@ -59,7 +59,7 @@ export function createResolution(
 	// another operator, which polling never did: it only ran while *this* tab was
 	// waiting on an execution it had itself just triggered.
 	$effect(() =>
-		onEvent(
+		onEvent<ApprovalEventData>(
 			[
 				'approval.resolved',
 				'approval.executed',
@@ -67,8 +67,7 @@ export function createResolution(
 				'approval.execution_cancelled'
 			],
 			(event) => {
-				const data = event.data as ApprovalEventData;
-				if (data?.approval_id !== current.id) return;
+				if (event.data?.approval_id !== current.id) return;
 				void refetch(current.id);
 			}
 		)
