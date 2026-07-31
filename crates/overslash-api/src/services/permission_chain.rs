@@ -503,42 +503,46 @@ pub async fn cascade_resolve(
             })
             .await;
 
-        let db = state.db.clone();
-        let client = state.http_client.clone();
-        let org_id = scope.org_id();
-        let approval_id = approval.id;
-        let summary = approval.action_summary.clone();
-        let exec_for_webhook = execution.as_ref().map(|e| {
-            serde_json::json!({
-                "id": e.id,
-                "status": e.status,
-                "expires_at": e.expires_at
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default(),
-            })
+        let mut payload = serde_json::json!({
+            "approval_id": approval.id,
+            "status": "allowed",
+            "action_summary": approval.action_summary,
+            "resolved_by": "cascade",
         });
-        tokio::spawn(async move {
-            let mut payload = serde_json::json!({
-                "approval_id": approval_id,
-                "status": "allowed",
-                "action_summary": summary,
-                "resolved_by": "cascade",
-            });
-            if let Some(exec) = exec_for_webhook {
-                payload
-                    .as_object_mut()
-                    .expect("payload is a json object")
-                    .insert("execution".into(), exec);
-            }
-            crate::services::webhook_dispatcher::dispatch(
-                &db,
-                &client,
-                org_id,
-                "approval.resolved",
+        if let Some(exec) = execution.as_ref() {
+            payload
+                .as_object_mut()
+                .expect("payload is a json object")
+                .insert(
+                    "execution".into(),
+                    serde_json::json!({
+                        "id": exec.id,
+                        "status": exec.status,
+                        "expires_at": exec.expires_at
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .unwrap_or_default(),
+                    }),
+                );
+        }
+        // No human actor here — the audience derives entirely from the
+        // approval row, which is what makes this path work without an
+        // `AuthContext`.
+        let audience = crate::services::events::audience::for_approval(
+            scope,
+            approval.identity_id,
+            Some(approval.current_resolver_identity_id),
+        )
+        .await;
+        crate::services::events::emit(
+            state.db.clone(),
+            state.http_client.clone(),
+            crate::services::events::EventDraft {
+                org_id: scope.org_id(),
+                event_type: crate::services::events::EventType::ApprovalResolved,
                 payload,
-            )
-            .await;
-        });
+                audience,
+            },
+        );
 
         resolved.push(CascadeResolved {
             execution_id: execution.as_ref().map(|e| e.id),

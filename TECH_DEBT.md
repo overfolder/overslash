@@ -230,3 +230,24 @@ Two adjacent small items:
   fail-closed simplification (`EXPLAIN ANALYZE` executes DML, so
   whitelisting bare EXPLAIN means recursing into the option list). Relax in
   `sql_policy/analyze.rs` if the prompt-noise ever matters.
+
+## Approval expiry emits no event on any transport
+
+The expiry sweep (`SystemScope::expire_stale_approvals`, driven from the
+background loop in `lib.rs`) flips stale pending approvals in a single bulk
+cross-org `UPDATE` and records only a metric — no audit row, no webhook, and
+now no stream event. So a caller watching `GET /v1/events/stream` sees
+`approval.created` and then silence: the approval it was waiting on expires
+invisibly, and the only way to learn that is to poll the resource.
+
+The blocker is shape, not intent. Emitting per-approval events needs the rows
+themselves (to derive each one's `audience` from its requester/resolver chains,
+per D45) and an `OrgScope` per distinct org in the batch, whereas the sweep
+deliberately returns a count. To close: have `expire_stale_approvals` return the
+expired rows, group them by `org_id`, and emit `approval.resolved` with
+`status: "expired"` through `services::events::emit` — the same treatment
+`services/permission_chain.rs`'s cascade path already gets, which likewise has
+no `AuthContext` and derives its audience entirely from the approval row.
+
+The auto-bubble sweep (`permission_chain::process_auto_bubble`) is silent for
+the same reason and would be fixed by the same change.

@@ -442,42 +442,44 @@ pub(super) async fn resolve_approval(
         )
         .await;
 
-    // Dispatch webhook (fire-and-forget)
+    // Notify subscribers (fire-and-forget)
     {
-        let db = state.db_pool(&ext);
-        let client = state.http_client.clone();
-        let org_id = auth.org_id;
-        let approval_id = row.id;
-        let summary = row.action_summary.clone();
-        let final_status = row.status.clone();
-        let exec_for_webhook = execution.as_ref().map(|e| {
-            serde_json::json!({
-                "id": e.id,
-                "status": e.status,
-                "expires_at": fmt_time(e.expires_at),
-            })
+        let mut payload = serde_json::json!({
+            "approval_id": row.id,
+            "status": row.status,
+            "action_summary": row.action_summary,
         });
-        tokio::spawn(async move {
-            let mut payload = serde_json::json!({
-                "approval_id": approval_id,
-                "status": final_status,
-                "action_summary": summary,
-            });
-            if let Some(exec) = exec_for_webhook {
-                payload
-                    .as_object_mut()
-                    .expect("payload is a json object")
-                    .insert("execution".into(), exec);
-            }
-            crate::services::webhook_dispatcher::dispatch(
-                &db,
-                &client,
-                org_id,
-                "approval.resolved",
+        if let Some(exec) = execution.as_ref() {
+            payload
+                .as_object_mut()
+                .expect("payload is a json object")
+                .insert(
+                    "execution".into(),
+                    serde_json::json!({
+                        "id": exec.id,
+                        "status": exec.status,
+                        "expires_at": fmt_time(exec.expires_at),
+                    }),
+                );
+        }
+        // Audience comes from the pre-resolution row so everyone who could see
+        // the approval while it was pending also sees how it ended.
+        let audience = crate::services::events::audience::for_approval(
+            &scope,
+            approval_pre.identity_id,
+            Some(approval_pre.current_resolver_identity_id),
+        )
+        .await;
+        crate::services::events::emit(
+            state.db_pool(&ext),
+            state.http_client.clone(),
+            crate::services::events::EventDraft {
+                org_id: auth.org_id,
+                event_type: crate::services::events::EventType::ApprovalResolved,
                 payload,
-            )
-            .await;
-        });
+                audience,
+            },
+        );
     }
 
     let (identity_path, identity_path_ids) =

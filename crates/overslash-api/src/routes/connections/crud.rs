@@ -520,7 +520,8 @@ pub(crate) async fn fire_connection_deleted(
     ip: Option<&str>,
     connection_id: Uuid,
 ) {
-    let _ = OrgScope::new(org_id, state.db_pool(ext))
+    let scope = OrgScope::new(org_id, state.db_pool(ext));
+    let _ = scope
         .log_audit(AuditEntry {
             org_id,
             identity_id,
@@ -533,21 +534,24 @@ pub(crate) async fn fire_connection_deleted(
         })
         .await;
 
-    let db = state.db_pool(ext);
-    let client = state.http_client.clone();
-    tokio::spawn(async move {
-        let payload = serde_json::json!({
-            "connection_id": connection_id,
-            "org_id": org_id,
-            "identity_id": identity_id,
-        });
-        crate::services::webhook_dispatcher::dispatch(
-            &db,
-            &client,
+    // The row is already gone, so `identity_id` — the caller acting on it — is
+    // the only identity left to derive an audience from. It is the owner on
+    // the `DELETE /v1/connections/{id}` path and the actor on the
+    // service-deletion cascade.
+    let audience =
+        crate::services::events::audience::for_connection(&scope, identity_id, identity_id).await;
+    crate::services::events::emit(
+        state.db_pool(ext),
+        state.http_client.clone(),
+        crate::services::events::EventDraft {
             org_id,
-            "connection.deleted",
-            payload,
-        )
-        .await;
-    });
+            event_type: crate::services::events::EventType::ConnectionDeleted,
+            payload: serde_json::json!({
+                "connection_id": connection_id,
+                "org_id": org_id,
+                "identity_id": identity_id,
+            }),
+            audience,
+        },
+    );
 }

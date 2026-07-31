@@ -323,7 +323,7 @@ async fn oauth_callback_inner(
     // would have to forge.
     let scope = OrgScope::new(org_id, state.db_pool(ext));
 
-    let (connection_id, audit_action, effective_scopes) =
+    let (connection_id, event_type, effective_scopes) =
         if let Some(existing_id) = upgrade_connection_id {
             // Incremental upgrade: union the granted scope set with what was on
             // the connection, update tokens, keep the same row id so every
@@ -361,7 +361,11 @@ async fn oauth_callback_inner(
                     "connection was deleted during upgrade".into(),
                 ));
             }
-            (existing_id, "connection.scopes_upgraded", merged)
+            (
+                existing_id,
+                crate::services::events::EventType::ConnectionScopesUpgraded,
+                merged,
+            )
         } else {
             let conn = scope
                 .create_connection(overslash_db::repos::connection::CreateConnection {
@@ -379,14 +383,18 @@ async fn oauth_callback_inner(
                     byoc_credential_id: effective_byoc_id,
                 })
                 .await?;
-            (conn.id, "connection.created", granted_scopes.clone())
+            (
+                conn.id,
+                crate::services::events::EventType::ConnectionCreated,
+                granted_scopes.clone(),
+            )
         };
 
     let _ = scope
         .log_audit(AuditEntry {
             org_id,
             identity_id: Some(actor_identity_id),
-            action: audit_action,
+            action: event_type.as_str(),
             resource_type: Some("connection"),
             resource_id: Some(connection_id),
             detail: serde_json::json!({
@@ -400,31 +408,32 @@ async fn oauth_callback_inner(
         .await;
 
     {
-        let db = state.db_pool(ext);
-        let client = state.http_client.clone();
-        let provider_key = provider_key.to_string();
-        let account_email = account_email.clone();
-        // For upgrades, this is the merged scope set (the connection's full
-        // current scopes), not just the delta granted in this OAuth flow.
-        // Webhook consumers want the resulting state, not the diff.
-        let scopes = effective_scopes;
-        tokio::spawn(async move {
-            let payload = serde_json::json!({
-                "connection_id": connection_id,
-                "provider": provider_key,
-                "account_email": account_email,
-                "scopes": scopes,
-                "identity_id": identity_id,
-            });
-            crate::services::webhook_dispatcher::dispatch(
-                &db,
-                &client,
-                org_id,
-                audit_action,
-                payload,
-            )
-            .await;
+        // For upgrades, `effective_scopes` is the merged scope set (the
+        // connection's full current scopes), not just the delta granted in
+        // this OAuth flow. Subscribers want the resulting state, not the diff.
+        let payload = serde_json::json!({
+            "connection_id": connection_id,
+            "provider": provider_key,
+            "account_email": account_email,
+            "scopes": effective_scopes,
+            "identity_id": identity_id,
         });
+        let audience = crate::services::events::audience::for_connection(
+            &scope,
+            Some(identity_id),
+            Some(actor_identity_id),
+        )
+        .await;
+        crate::services::events::emit(
+            state.db_pool(ext),
+            state.http_client.clone(),
+            crate::services::events::EventDraft {
+                org_id,
+                event_type,
+                payload,
+                audience,
+            },
+        );
     }
 
     // Best-effort bind: if `POST /v1/services` orchestrated this flow, the

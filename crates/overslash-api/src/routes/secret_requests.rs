@@ -146,7 +146,8 @@ async fn create_secret_request(
         .dashboard_url_for(&format!("/secrets/provide/{req_id}?token={token}"));
     let short_url = short_url::mint(&state, &url, expires_at).await;
 
-    let _ = OrgScope::new(acl.org_id, state.db_pool(&ext))
+    let audit_scope = OrgScope::new(acl.org_id, state.db_pool(&ext));
+    let _ = audit_scope
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: Some(caller_identity),
@@ -163,6 +164,32 @@ async fn create_secret_request(
             ip_address: ip.0.as_deref(),
         })
         .await;
+
+    // Deliberately no `token`, `url` or `short_url` in the payload: those are
+    // bearer capabilities that would let any webhook subscriber — or any
+    // stream subscriber in the audience — fulfil the request themselves.
+    let audience = crate::services::events::audience::for_secret_request(
+        &audit_scope,
+        caller_identity,
+        target_identity,
+    )
+    .await;
+    crate::services::events::emit(
+        state.db_pool(&ext),
+        state.http_client.clone(),
+        crate::services::events::EventDraft {
+            org_id: acl.org_id,
+            event_type: crate::services::events::EventType::SecretRequestCreated,
+            payload: serde_json::json!({
+                "request_id": &req_id,
+                "secret_name": req.secret_name.trim(),
+                "identity_id": target_identity,
+                "requested_by": caller_identity,
+                "expires_at": fmt_time(expires_at),
+            }),
+            audience,
+        },
+    );
 
     Ok(Json(CreateSecretRequestResponse {
         id: req_id,
@@ -344,6 +371,35 @@ async fn submit_provide(
             ip_address: ip.0.as_deref(),
         })
         .await;
+
+    // This is the event an agent blocked on a missing credential is waiting
+    // for. It is emitted from a public, unauthenticated route, so the audience
+    // comes entirely from the request row rather than from a caller identity —
+    // whoever pasted the value is not, by that act, entitled to the stream.
+    let audience = crate::services::events::audience::for_secret_request(
+        &scope,
+        row.requested_by,
+        row.identity_id,
+    )
+    .await;
+    crate::services::events::emit(
+        state.db_pool(&ext),
+        state.http_client.clone(),
+        crate::services::events::EventDraft {
+            org_id: row.org_id,
+            event_type: crate::services::events::EventType::SecretRequestFulfilled,
+            payload: serde_json::json!({
+                "request_id": &row.id,
+                "secret_name": &stored.name,
+                "version": stored.current_version,
+                "identity_id": row.identity_id,
+                "requested_by": row.requested_by,
+                "provisioned_by_user_id": provisioned_by_user_id,
+                "user_signed": provisioned_by_user_id.is_some(),
+            }),
+            audience,
+        },
+    );
 
     Ok(Json(SubmitResponse {
         ok: true,

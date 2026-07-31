@@ -1,8 +1,10 @@
 <script lang="ts">
 	import {
+		session,
 		type ApprovalResponse,
 		type ResolveApprovalRequest
 	} from '$lib/session';
+	import { onEvent } from '$lib/stores/events.svelte';
 	import { page } from '$app/stores';
 	import IdentityPath from './IdentityPath.svelte';
 	import RiskBadge from './approval/RiskBadge.svelte';
@@ -40,6 +42,21 @@
 	// all three); we invoke it only from our own resolve wrapper.
 	const ctrl = createResolution(() => approval);
 	const current = $derived(ctrl.current);
+
+	// The controller already refreshes itself from per-approval events. This
+	// covers the other case: the stream reconnected without its cursor, so
+	// events may have been missed entirely and the only safe move is to re-read.
+	$effect(() =>
+		onEvent(['stream.resync'], async () => {
+			try {
+				ctrl.applyServerUpdate(
+					await session.get<ApprovalResponse>(`/v1/approvals/${current.id}`)
+				);
+			} catch {
+				// Transient — the next event or navigation refreshes.
+			}
+		})
+	);
 
 	let selectedTier = $state(0);
 	let useCustomKey = $state(false);

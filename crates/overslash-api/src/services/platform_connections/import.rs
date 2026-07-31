@@ -210,112 +210,112 @@ pub async fn kernel_import_connection(
         _ => None,
     };
 
-    let (connection_id, is_default, effective_scopes, audit_action) =
-        if let Some(existing) = existing {
-            // Preserve the existing expiry on a token-only re-import that carries
-            // no fresh one — otherwise we'd null `token_expires_at` and the
-            // connection would look perpetually valid, so a connection with a
-            // dead refresh token would never surface `reauth_required` (and would
-            // keep injecting a token that has actually expired upstream). A
-            // re-import that *does* supply `expires_at`/`expires_in` overrides it.
-            let next_expires_at = expires_at.or(existing.token_expires_at);
-            // Likewise preserve the recorded scopes when the re-import omits them
-            // (`scopes` is now `null`/`None` ⇒ "unknown", not `[]`). Overwriting
-            // with NULL would discard a known granted set; a re-import that
-            // supplies `scopes` overrides it.
-            let next_scopes = input.scopes.clone().or_else(|| existing.scopes.clone());
+    let (connection_id, is_default, effective_scopes, event_type) = if let Some(existing) = existing
+    {
+        // Preserve the existing expiry on a token-only re-import that carries
+        // no fresh one — otherwise we'd null `token_expires_at` and the
+        // connection would look perpetually valid, so a connection with a
+        // dead refresh token would never surface `reauth_required` (and would
+        // keep injecting a token that has actually expired upstream). A
+        // re-import that *does* supply `expires_at`/`expires_in` overrides it.
+        let next_expires_at = expires_at.or(existing.token_expires_at);
+        // Likewise preserve the recorded scopes when the re-import omits them
+        // (`scopes` is now `null`/`None` ⇒ "unknown", not `[]`). Overwriting
+        // with NULL would discard a known granted set; a re-import that
+        // supplies `scopes` overrides it.
+        let next_scopes = input.scopes.clone().or_else(|| existing.scopes.clone());
 
-            // Guard the metadata-refresh-token-behind-readonly-scopes divergence
-            // (connection `85844f1a`). A re-import that BROADENS the recorded
-            // scopes while carrying NO fresh refresh token would COALESCE-preserve
-            // the *old* refresh token (below) — but that token was minted for the
-            // narrower grant and, on the next self-refresh, echoes only the
-            // narrower scopes. The scopes advance to (say) gmail.readonly while the
-            // stored refresh token is metadata-only, so calls 403 forever and the
-            // refresh path can't heal it. Google reuses one refresh token per
-            // client+user and returns `None` on re-consent, so the partner's
-            // re-import legitimately can carry no refresh token — but then it must
-            // NOT also broaden scopes against a preserved token we can't trust.
-            // Reject loudly so the partner re-runs consent with `prompt=consent`
-            // (or `access_type=offline` + revoke) to force a fresh refresh token
-            // that actually backs the wider grant.
-            let import_has_fresh_refresh = encrypted_refresh.is_some();
-            let existing_has_refresh = existing.encrypted_refresh_token.is_some();
-            if !import_has_fresh_refresh && existing_has_refresh {
-                if let Some(broadened) =
-                    scopes_broadened(existing.scopes.as_deref(), input.scopes.as_deref())
-                {
-                    return Err(AppError::BadRequest(format!(
-                        "re-import broadens granted scopes ({broadened}) but carries no fresh \
+        // Guard the metadata-refresh-token-behind-readonly-scopes divergence
+        // (connection `85844f1a`). A re-import that BROADENS the recorded
+        // scopes while carrying NO fresh refresh token would COALESCE-preserve
+        // the *old* refresh token (below) — but that token was minted for the
+        // narrower grant and, on the next self-refresh, echoes only the
+        // narrower scopes. The scopes advance to (say) gmail.readonly while the
+        // stored refresh token is metadata-only, so calls 403 forever and the
+        // refresh path can't heal it. Google reuses one refresh token per
+        // client+user and returns `None` on re-consent, so the partner's
+        // re-import legitimately can carry no refresh token — but then it must
+        // NOT also broaden scopes against a preserved token we can't trust.
+        // Reject loudly so the partner re-runs consent with `prompt=consent`
+        // (or `access_type=offline` + revoke) to force a fresh refresh token
+        // that actually backs the wider grant.
+        let import_has_fresh_refresh = encrypted_refresh.is_some();
+        let existing_has_refresh = existing.encrypted_refresh_token.is_some();
+        if !import_has_fresh_refresh && existing_has_refresh {
+            if let Some(broadened) =
+                scopes_broadened(existing.scopes.as_deref(), input.scopes.as_deref())
+            {
+                return Err(AppError::BadRequest(format!(
+                    "re-import broadens granted scopes ({broadened}) but carries no fresh \
                          refresh_token: the preserved refresh token was minted for the narrower \
                          grant and cannot self-refresh the wider scopes (it would silently \
                          downgrade the connection to metadata-only). Re-run the OAuth consent \
                          with prompt=consent so the provider issues a fresh refresh token for the \
                          wider grant, then re-import with it."
-                    )));
-                }
+                )));
             }
+        }
 
-            let updated = scope
-                .update_connection_tokens_and_scopes(
-                    existing.id,
-                    &encrypted_access,
-                    encrypted_refresh.as_deref(),
-                    next_expires_at,
-                    next_scopes.as_deref(),
-                    account_email.as_deref(),
-                )
-                .await?;
-            if !updated {
-                return Err(AppError::NotFound(
-                    "connection was deleted during import".into(),
-                ));
-            }
-            // Re-import reuses the existing row; bind any requested pins in their
-            // own transaction (the connection already exists, so there's nothing
-            // to roll back on the connection itself — but the binds are still
-            // all-or-nothing and ownership-gated).
-            scope
-                .pin_service_instances(existing.id, existing.identity_id, &input.pin_service_ids)
-                .await
-                .map_err(pin_error_to_app_error)?;
-            (
+        let updated = scope
+            .update_connection_tokens_and_scopes(
                 existing.id,
-                existing.is_default,
-                next_scopes,
-                "connection.updated",
+                &encrypted_access,
+                encrypted_refresh.as_deref(),
+                next_expires_at,
+                next_scopes.as_deref(),
+                account_email.as_deref(),
             )
-        } else {
-            let conn = scope
-                .create_connection_and_pin(
-                    CreateConnection {
-                        org_id: ctx.org_id,
-                        identity_id,
-                        provider_key: &input.provider,
-                        encrypted_access_token: &encrypted_access,
-                        encrypted_refresh_token: encrypted_refresh.as_deref(),
-                        token_expires_at: expires_at,
-                        scopes: input.scopes.as_deref(),
-                        account_email: account_email.as_deref(),
-                        byoc_credential_id: byoc_id,
-                    },
-                    &input.pin_service_ids,
-                )
-                .await
-                .map_err(pin_error_to_app_error)?;
-            (
-                conn.id,
-                conn.is_default,
-                input.scopes.clone(),
-                "connection.created",
+            .await?;
+        if !updated {
+            return Err(AppError::NotFound(
+                "connection was deleted during import".into(),
+            ));
+        }
+        // Re-import reuses the existing row; bind any requested pins in their
+        // own transaction (the connection already exists, so there's nothing
+        // to roll back on the connection itself — but the binds are still
+        // all-or-nothing and ownership-gated).
+        scope
+            .pin_service_instances(existing.id, existing.identity_id, &input.pin_service_ids)
+            .await
+            .map_err(pin_error_to_app_error)?;
+        (
+            existing.id,
+            existing.is_default,
+            next_scopes,
+            crate::services::events::EventType::ConnectionUpdated,
+        )
+    } else {
+        let conn = scope
+            .create_connection_and_pin(
+                CreateConnection {
+                    org_id: ctx.org_id,
+                    identity_id,
+                    provider_key: &input.provider,
+                    encrypted_access_token: &encrypted_access,
+                    encrypted_refresh_token: encrypted_refresh.as_deref(),
+                    token_expires_at: expires_at,
+                    scopes: input.scopes.as_deref(),
+                    account_email: account_email.as_deref(),
+                    byoc_credential_id: byoc_id,
+                },
+                &input.pin_service_ids,
             )
-        };
+            .await
+            .map_err(pin_error_to_app_error)?;
+        (
+            conn.id,
+            conn.is_default,
+            input.scopes.clone(),
+            crate::services::events::EventType::ConnectionCreated,
+        )
+    };
 
     let _ = scope
         .log_audit(overslash_db::repos::audit::AuditEntry {
             org_id: ctx.org_id,
             identity_id: Some(caller_identity_id),
-            action: audit_action,
+            action: event_type.as_str(),
             resource_type: Some("connection"),
             resource_id: Some(connection_id),
             detail: serde_json::json!({
@@ -330,25 +330,30 @@ pub async fn kernel_import_connection(
         .await;
 
     {
-        let db = ctx.db.clone();
-        let client = ctx.http_client.clone();
-        let org_id = ctx.org_id;
-        let provider_key = input.provider.clone();
-        let account_email = account_email.clone();
-        let scopes = effective_scopes.clone();
-        let action = audit_action;
-        tokio::spawn(async move {
-            let payload = serde_json::json!({
-                "connection_id": connection_id,
-                "provider": provider_key,
-                "account_email": account_email,
-                "scopes": scopes,
-                "identity_id": identity_id,
-                "imported": true,
-            });
-            crate::services::webhook_dispatcher::dispatch(&db, &client, org_id, action, payload)
-                .await;
+        let payload = serde_json::json!({
+            "connection_id": connection_id,
+            "provider": input.provider,
+            "account_email": account_email,
+            "scopes": effective_scopes,
+            "identity_id": identity_id,
+            "imported": true,
         });
+        let audience = crate::services::events::audience::for_connection(
+            &scope,
+            Some(identity_id),
+            Some(caller_identity_id),
+        )
+        .await;
+        crate::services::events::emit(
+            ctx.db.clone(),
+            ctx.http_client.clone(),
+            crate::services::events::EventDraft {
+                org_id: ctx.org_id,
+                event_type,
+                payload,
+                audience,
+            },
+        );
     }
 
     Ok(ImportConnectionResponse {

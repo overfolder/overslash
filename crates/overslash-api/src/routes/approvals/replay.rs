@@ -500,13 +500,10 @@ pub(super) async fn execute_claimed_approval(
         .await;
 
     {
-        let db = state.db_pool(ext);
-        let client = state.http_client.clone();
-        let org_id = audit_org_id;
-        let webhook_event = if succeeded {
-            "approval.executed"
+        let event_type = if succeeded {
+            crate::services::events::EventType::ApprovalExecuted
         } else {
-            "approval.execution_failed"
+            crate::services::events::EventType::ApprovalExecutionFailed
         };
         let mut payload = serde_json::json!({
             "approval_id": id,
@@ -533,16 +530,22 @@ pub(super) async fn execute_claimed_approval(
                 .expect("payload is a json object")
                 .insert("result".into(), truncate_json_value(result));
         }
-        tokio::spawn(async move {
-            crate::services::webhook_dispatcher::dispatch(
-                &db,
-                &client,
-                org_id,
-                webhook_event,
+        let audience = crate::services::events::audience::for_approval(
+            scope,
+            approval.identity_id,
+            Some(approval.current_resolver_identity_id),
+        )
+        .await;
+        crate::services::events::emit(
+            state.db_pool(ext),
+            state.http_client.clone(),
+            crate::services::events::EventDraft {
+                org_id: audit_org_id,
+                event_type,
                 payload,
-            )
-            .await;
-        });
+                audience,
+            },
+        );
     }
 
     Ok((finalised, succeeded, cascaded_approval_ids))
@@ -610,24 +613,26 @@ pub(super) async fn cancel_approval_execution(
         .await;
 
     {
-        let db = state.db_pool(&ext);
-        let client = state.http_client.clone();
-        let org_id = auth.org_id;
-        let payload = serde_json::json!({
-            "approval_id": id,
-            "execution_id": execution_id,
-            "status": "cancelled",
-        });
-        tokio::spawn(async move {
-            crate::services::webhook_dispatcher::dispatch(
-                &db,
-                &client,
-                org_id,
-                "approval.execution_cancelled",
-                payload,
-            )
-            .await;
-        });
+        let audience = crate::services::events::audience::for_approval(
+            &scope,
+            approval.identity_id,
+            Some(approval.current_resolver_identity_id),
+        )
+        .await;
+        crate::services::events::emit(
+            state.db_pool(&ext),
+            state.http_client.clone(),
+            crate::services::events::EventDraft {
+                org_id: auth.org_id,
+                event_type: crate::services::events::EventType::ApprovalExecutionCancelled,
+                payload: serde_json::json!({
+                    "approval_id": id,
+                    "execution_id": execution_id,
+                    "status": "cancelled",
+                }),
+                audience,
+            },
+        );
     }
 
     let (identity_path, identity_path_ids) =

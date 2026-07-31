@@ -35,7 +35,11 @@ impl Config {
             db_background_max_connections: env::var("DB_BACKGROUND_MAX_CONNECTIONS")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(5),
+                .unwrap_or(6),
+            events_stream_max_connection_secs: env::var("EVENTS_STREAM_MAX_CONNECTION_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
             secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
                 .expect("SECRETS_ENCRYPTION_KEY is required"),
             secrets_encryption_key_previous: env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS")

@@ -264,21 +264,22 @@ pub(super) async fn enforce_permission_chain(
                     "permission_keys": keys,
                     "can_be_handled_by": can_be_handled_by,
                 });
-                {
-                    let db = state.db_pool(ext);
-                    let client = state.http_client.clone();
-                    let org_id = auth.org_id;
-                    tokio::spawn(async move {
-                        crate::services::webhook_dispatcher::dispatch(
-                            &db,
-                            &client,
-                            org_id,
-                            "approval.created",
-                            webhook_payload,
-                        )
-                        .await;
-                    });
-                }
+                let audience = crate::services::events::audience::for_approval_with_resolver_chain(
+                    scope,
+                    identity_id,
+                    resolver_chain.iter().map(|i| i.id),
+                )
+                .await;
+                crate::services::events::emit(
+                    state.db_pool(ext),
+                    state.http_client.clone(),
+                    crate::services::events::EventDraft {
+                        org_id: auth.org_id,
+                        event_type: crate::services::events::EventType::ApprovalCreated,
+                        payload: webhook_payload,
+                        audience,
+                    },
+                );
 
                 // Carry the approval's org in the deep-link so the dashboard can
                 // switch the recipient's session into that org before loading the
