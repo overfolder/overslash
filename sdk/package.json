@@ -23,6 +23,10 @@
       "import": "./dist/controllers/index.js",
       "require": "./dist/controllers/index.cjs"
     },
+    "./elements": {
+      "types": "./dist/elements/index.d.ts",
+      "import": "./dist/elements/index.js"
+    },
     "./format": {
       "types": "./dist/format/index.d.ts",
       "import": "./dist/format/index.js",
@@ -33,7 +37,8 @@
     "build": "tsup",
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "demo": "vite --config demo/vite.config.ts"
   },
   "keywords": [
     "overslash",
@@ -44,6 +49,7 @@
   "devDependencies": {
     "@types/node": "^24.10.1",
     "happy-dom": "^20.0.10",
+    "playwright": "^1.61.1",
     "tsup": "^8.5.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
