@@ -314,7 +314,10 @@ pub async fn rule_placement_for(scope: &OrgScope, requester_id: Uuid) -> Result<
 ///
 /// Exposed as a standalone function so the background loop and tests can both
 /// call it.
-pub async fn process_auto_bubble(system: &SystemScope) -> Result<u64, AppError> {
+pub async fn process_auto_bubble(
+    system: &SystemScope,
+    http_client: &reqwest::Client,
+) -> Result<u64, AppError> {
     let stale = system.list_pending_approvals_for_auto_bubble().await?;
     let mut bubbled = 0u64;
     for approval in stale {
@@ -357,6 +360,35 @@ pub async fn process_auto_bubble(system: &SystemScope) -> Result<u64, AppError> 
                     ip_address: None,
                 })
                 .await;
+
+            // Same pair a human bubble emits — the sweep is invisible to the
+            // new resolver otherwise, and "it landed in my inbox while I was
+            // away" is exactly what this signal is for. Audience derives from
+            // the approval row, so the absence of a caller costs nothing.
+            crate::services::events::emit_all(
+                system.db().clone(),
+                http_client.clone(),
+                vec![
+                    crate::services::events::approvals::bubbled(
+                        &org_scope,
+                        approval.id,
+                        approval.identity_id,
+                        approval.current_resolver_identity_id,
+                        next,
+                        crate::services::events::approvals::BubbleVia::Auto,
+                    )
+                    .await,
+                    crate::services::events::approvals::pending(
+                        &org_scope,
+                        approval.id,
+                        approval.identity_id,
+                        next,
+                        &approval.action_summary,
+                        crate::services::events::approvals::PendingReason::Bubbled,
+                    )
+                    .await,
+                ],
+            );
             bubbled += 1;
         }
     }

@@ -359,6 +359,9 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     {
         let db = background_db.clone();
         let system = overslash_db::scopes::SystemScope::new_internal(db.clone());
+        // The auto-bubble sweep emits the same events a human bubble does, so
+        // it needs a client for the webhook half of that.
+        let bg_http_client = state.http_client.clone();
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
@@ -394,7 +397,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                 .await;
                 instrumented_step(
                     "auto_bubble",
-                    services::permission_chain::process_auto_bubble(&system),
+                    services::permission_chain::process_auto_bubble(&system, &bg_http_client),
                     |n| tracing::info!("Auto-bubbled {n} approvals"),
                 )
                 .await;

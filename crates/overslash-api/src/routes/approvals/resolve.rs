@@ -164,6 +164,33 @@ pub(super) async fn resolve_approval(
             })
             .await;
 
+        // The item just moved between inboxes. Without these two the identity
+        // that gained it would not learn so until its next poll.
+        crate::services::events::emit_all(
+            state.db_pool(&ext),
+            state.http_client.clone(),
+            vec![
+                crate::services::events::approvals::bubbled(
+                    &scope,
+                    id,
+                    approval_pre.identity_id,
+                    approval_pre.current_resolver_identity_id,
+                    next,
+                    crate::services::events::approvals::BubbleVia::User,
+                )
+                .await,
+                crate::services::events::approvals::pending(
+                    &scope,
+                    id,
+                    approval_pre.identity_id,
+                    next,
+                    &approval_pre.action_summary,
+                    crate::services::events::approvals::PendingReason::Bubbled,
+                )
+                .await,
+            ],
+        );
+
         return Ok(Json(
             build_response(&scope, &state.registry, updated, auth.identity_id).await?,
         ));

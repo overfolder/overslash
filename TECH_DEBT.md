@@ -249,5 +249,6 @@ expired rows, group them by `org_id`, and emit `approval.resolved` with
 `services/permission_chain.rs`'s cascade path already gets, which likewise has
 no `AuthContext` and derives its audience entirely from the approval row.
 
-The auto-bubble sweep (`permission_chain::process_auto_bubble`) is silent for
-the same reason and would be fixed by the same change.
+Bubbling — both the user-initiated path and the auto-bubble sweep — is no
+longer silent: it emits `approval.bubbled` plus the derived `approval.pending`.
+Expiry is the one remaining transition a subscriber cannot observe.

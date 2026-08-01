@@ -270,15 +270,29 @@ pub(super) async fn enforce_permission_chain(
                     resolver_chain.iter().map(|i| i.id),
                 )
                 .await;
-                crate::services::events::emit(
+                // `created` states the fact; `pending` says who it is now
+                // waiting on. Emitted as one ordered unit so a subscriber
+                // never sees the derived signal before its cause.
+                crate::services::events::emit_all(
                     state.db_pool(ext),
                     state.http_client.clone(),
-                    crate::services::events::EventDraft {
-                        org_id: auth.org_id,
-                        event_type: crate::services::events::EventType::ApprovalCreated,
-                        payload: webhook_payload,
-                        audience,
-                    },
+                    vec![
+                        crate::services::events::EventDraft {
+                            org_id: auth.org_id,
+                            event_type: crate::services::events::EventType::ApprovalCreated,
+                            payload: webhook_payload,
+                            audience,
+                        },
+                        crate::services::events::approvals::pending(
+                            scope,
+                            approval.id,
+                            identity_id,
+                            initial_resolver_id,
+                            &summary,
+                            crate::services::events::approvals::PendingReason::Created,
+                        )
+                        .await,
+                    ],
                 );
 
                 // Carry the approval's org in the deep-link so the dashboard can

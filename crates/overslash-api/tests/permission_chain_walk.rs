@@ -528,9 +528,12 @@ async fn auto_bubble_advances_resolver() {
     .unwrap();
 
     let system = overslash_db::scopes::SystemScope::new_internal(pool.clone());
-    let bubbled = overslash_api::services::permission_chain::process_auto_bubble(&system)
-        .await
-        .unwrap();
+    let bubbled = overslash_api::services::permission_chain::process_auto_bubble(
+        &system,
+        &reqwest::Client::new(),
+    )
+    .await
+    .unwrap();
     assert!(bubbled >= 1);
 
     let updated = test_scope.get_approval(approval.id).await.unwrap().unwrap();

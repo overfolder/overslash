@@ -180,6 +180,17 @@ async fn events_stream(
             .map(|event| (Ok::<_, Infallible>(event), rx))
     });
 
+    // 15s is not here to defeat proxy idle timeouts: at the default 30s
+    // ceiling we hang up long before any common proxy would (nginx and ALB
+    // both idle at 60s), and `stream.open` guarantees a byte at t=0 so nothing
+    // upstream sits buffering for first output either.
+    //
+    // What it earns at 30s is a single mid-connection write, which is how a
+    // client that vanished without a FIN gets noticed — halving the worst-case
+    // time its slot stays booked against the per-identity cap. A fixed
+    // interval rather than one derived from the ceiling, because if an
+    // operator raises `EVENTS_STREAM_MAX_CONNECTION_SECS` the same 15s becomes
+    // a genuine proxy keepalive without needing to be re-tuned.
     Ok(Sse::new(body)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
         .into_response())

@@ -570,6 +570,242 @@ async fn an_unidentified_credential_cannot_open_a_stream() {
     );
 }
 
+// ─── approval.pending: the inbox signal ───────────────────────────────
+
+/// Drive a gated call so the permission chain raises a real approval.
+///
+/// The call comes from a sub-agent one level below the bootstrap agent: it
+/// holds no rules of its own and does not inherit, so the chain walk finds a
+/// gap immediately and opens an approval at the first ancestor that could
+/// grant one. Returns `(approval_id, sub_agent_id, org_key)`.
+async fn raise_approval(base: &str, client: &Client) -> (String, Uuid, String) {
+    let caller = gated_caller(base, client).await;
+    let approval_id = trigger_gated_call(base, client, &caller).await;
+    (approval_id, caller.sub_id, caller.org_key)
+}
+
+/// A sub-agent positioned to gap, plus the org it lives in. Split out from
+/// [`raise_approval`] so a test can subscribe a webhook to the org *before*
+/// the event it wants to observe is emitted.
+struct GatedCaller {
+    org_key: String,
+    sub_key: String,
+    sub_id: Uuid,
+    mock_addr: std::net::SocketAddr,
+}
+
+async fn gated_caller(base: &str, client: &Client) -> GatedCaller {
+    common::allow_loopback_ssrf();
+    let mock_addr = common::start_mock().await;
+    let (org_id, agent_id, _agent_key, org_key) =
+        common::bootstrap_org_identity(base, client).await;
+
+    let sub_id: Uuid = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&serde_json::json!({
+            "name": "gated-sub", "kind": "sub_agent", "parent_id": agent_id,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let sub_key = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&serde_json::json!({
+            "org_id": org_id, "identity_id": sub_id, "name": "sub-key",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap()["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    GatedCaller {
+        org_key,
+        sub_key,
+        sub_id,
+        mock_addr,
+    }
+}
+
+/// Make the call that gaps, returning the approval it raised.
+async fn trigger_gated_call(base: &str, client: &Client, caller: &GatedCaller) -> String {
+    let (sub_key, mock_addr) = (&caller.sub_key, caller.mock_addr);
+    let body: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {sub_key}"))
+        .json(&serde_json::json!({
+            "service": "http",
+            "method": "POST",
+            "url": format!("http://{mock_addr}/echo"),
+            "headers": {"Content-Type": "application/json"},
+            "body": "{}",
+            "secrets": [{"name": "test_token", "inject_as": "header", "header_name": "X-Token"}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    body["approval_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected the call to be gated into an approval, got {body}"))
+        .to_string()
+}
+
+#[tokio::test]
+async fn raising_an_approval_emits_created_then_pending_in_that_order() {
+    let pool = common::test_pool().await;
+    let (base, client) = start(pool).await;
+    let (approval_id, requester_id, org_key) = raise_approval(&base, &client).await;
+
+    let frames = read_stream(&client, &base, &org_key, "", Some(0)).await;
+    let created = frames
+        .iter()
+        .find(|f| f.event.as_deref() == Some("approval.created"))
+        .expect("approval.created delivered");
+    let pending = frames
+        .iter()
+        .find(|f| f.event.as_deref() == Some("approval.pending"))
+        .expect("approval.pending delivered");
+
+    // The derived signal must never precede the fact it derives from. Two
+    // independent emits would have raced here.
+    assert!(
+        created.cursor() < pending.cursor(),
+        "pending ({}) must follow created ({})",
+        pending.cursor(),
+        created.cursor()
+    );
+
+    let p = pending.payload();
+    assert_eq!(p["approval_id"], approval_id.as_str());
+    assert_eq!(p["identity_id"], requester_id.to_string());
+    assert_eq!(p["reason"], "created");
+    assert!(
+        p["current_resolver_identity_id"].is_string(),
+        "pending names who it is waiting on: {p}"
+    );
+    assert!(
+        p["can_be_handled_by"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "pending carries who can act, so no subscriber walks the tree: {p}"
+    );
+}
+
+#[tokio::test]
+async fn bubbling_emits_bubbled_then_pending_for_the_new_resolver() {
+    let pool = common::test_pool().await;
+    let (base, client) = start(pool).await;
+    let (approval_id, requester_id, org_key) = raise_approval(&base, &client).await;
+
+    // Hand it up. The org-admin key can resolve on the current resolver's
+    // behalf, which is what the dashboard does.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&serde_json::json!({ "resolution": "bubble_up" }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    if status == 409 {
+        // Already at the final resolver — this chain has nowhere to bubble,
+        // so there is no hand-up to assert on.
+        return;
+    }
+    assert_eq!(status, 200, "bubble_up should succeed");
+
+    let frames = read_stream(&client, &base, &org_key, "", Some(0)).await;
+    let bubbled = frames
+        .iter()
+        .find(|f| f.event.as_deref() == Some("approval.bubbled"))
+        .expect("approval.bubbled delivered");
+    let pending: Vec<&Frame> = frames
+        .iter()
+        .filter(|f| f.event.as_deref() == Some("approval.pending"))
+        .collect();
+
+    assert_eq!(
+        pending.len(),
+        2,
+        "one pending at creation, one at the hand-up: {frames:?}"
+    );
+    let handoff = pending.last().unwrap();
+    assert!(
+        bubbled.cursor() < handoff.cursor(),
+        "the pending that follows a hand-up must come after the hand-up itself"
+    );
+
+    let b = bubbled.payload();
+    assert_eq!(b["approval_id"], approval_id.as_str());
+    assert_eq!(b["identity_id"], requester_id.to_string());
+    assert_eq!(b["via"], "user");
+    assert_ne!(b["from"], b["to"], "a hand-up changes the resolver");
+
+    assert_eq!(handoff.payload()["reason"], "bubbled");
+    assert_eq!(handoff.payload()["current_resolver_identity_id"], b["to"]);
+}
+
+#[tokio::test]
+async fn pending_reaches_webhook_subscribers_too() {
+    let pool = common::test_pool().await;
+    let (base, client) = start(pool.clone()).await;
+
+    // Same org for both halves: webhook subscriptions are org-scoped, so a
+    // subscription in one org would never see another org's approval.
+    let caller = gated_caller(&base, &client).await;
+    let resp = client
+        .post(format!("{base}/v1/webhooks"))
+        .header("Authorization", format!("Bearer {}", caller.org_key))
+        .json(&serde_json::json!({
+            "url": "http://127.0.0.1:9/unused",
+            "events": ["approval.pending"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    trigger_gated_call(&base, &client, &caller).await;
+
+    // The delivery attempt fails (nothing listens on port 9) but the row
+    // records that the event was routed to webhooks at all.
+    let mut delivered: Option<Value> = None;
+    for _ in 0..50 {
+        delivered = sqlx::query_scalar!(
+            "SELECT payload FROM webhook_deliveries WHERE event = $1 ORDER BY created_at DESC LIMIT 1",
+            "approval.pending",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        if delivered.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let delivered = delivered.expect("approval.pending dispatched to webhooks");
+    assert_eq!(delivered["reason"], "created");
+    assert!(delivered["can_be_handled_by"].is_array());
+}
+
 /// Frames are keyed by event name for assertions that only care about which
 /// types arrived. Unused today but kept next to the parser it belongs to.
 #[allow(dead_code)]

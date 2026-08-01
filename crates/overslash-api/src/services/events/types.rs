@@ -55,6 +55,17 @@ impl FromStr for Topic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventType {
     ApprovalCreated,
+    /// Derived signal: this approval is now waiting on a decision from its
+    /// current resolver. Fired after creation and again after every
+    /// reassignment, so a caller that only wants an inbox wake-up can
+    /// subscribe to one type instead of interpreting creation and bubbling
+    /// separately.
+    ///
+    /// Deliberately has no audit-log counterpart — it restates a fact
+    /// `approval.created` and `approval.bubbled` already recorded, and an
+    /// audit row per gated agent call would be pure volume.
+    ApprovalPending,
+    ApprovalBubbled,
     ApprovalResolved,
     ApprovalExecuted,
     ApprovalExecutionFailed,
@@ -71,6 +82,8 @@ impl EventType {
     pub fn as_str(&self) -> &'static str {
         match self {
             EventType::ApprovalCreated => "approval.created",
+            EventType::ApprovalPending => "approval.pending",
+            EventType::ApprovalBubbled => "approval.bubbled",
             EventType::ApprovalResolved => "approval.resolved",
             EventType::ApprovalExecuted => "approval.executed",
             EventType::ApprovalExecutionFailed => "approval.execution_failed",
@@ -87,6 +100,8 @@ impl EventType {
     pub fn topic(&self) -> Topic {
         match self {
             EventType::ApprovalCreated
+            | EventType::ApprovalPending
+            | EventType::ApprovalBubbled
             | EventType::ApprovalResolved
             | EventType::ApprovalExecuted
             | EventType::ApprovalExecutionFailed
@@ -144,6 +159,8 @@ mod tests {
         // Guards against a new variant landing in `as_str` but not `topic`.
         for (event, expected) in [
             (EventType::ApprovalCreated, Topic::Approvals),
+            (EventType::ApprovalPending, Topic::Approvals),
+            (EventType::ApprovalBubbled, Topic::Approvals),
             (EventType::ApprovalExecutionCancelled, Topic::Approvals),
             (EventType::ConnectionDeleted, Topic::Connections),
             (EventType::SecretRequestFulfilled, Topic::Secrets),

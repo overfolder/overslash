@@ -112,6 +112,42 @@ between the single-replica case under test and the multi-replica case deployed.
 Retention is 7 days, swept hourly. The log only has to outlive a reconnect
 window; the rest is forensic slack.
 
+### The approval taxonomy
+
+Three moments in an approval's life need a decision from someone new, and they
+are three separate events because they answer different questions:
+
+| Event | Question it answers | Audit row |
+|---|---|---|
+| `approval.created` | Was an approval raised? | yes |
+| `approval.bubbled` | Did it move between resolvers? | yes |
+| `approval.pending` | Is something waiting on *me* right now? | **no** |
+
+`approval.pending` is **derived**. It fires immediately after `created`, and
+again after every `bubbled` — user-initiated or from the auto-bubble sweep — so
+a caller that only wants an inbox subscribes to one type instead of
+reconstructing "is this mine now?" from two different event shapes. It carries
+`current_resolver_identity_id`, `can_be_handled_by` and a `reason` of `created`
+or `bubbled`.
+
+It deliberately has **no audit-log counterpart**. The audit log records facts;
+`pending` restates one that `created` and `bubbled` already recorded, and a row
+per gated agent call would be pure volume on the hottest path in the system.
+The two surfaces have different jobs, and a derived convenience event belongs
+only on the notification one.
+
+Ordering matters here, which is why [`emit_all`] exists: a derived signal must
+never reach a subscriber before the fact it derives from. Two separate `emit`
+calls could not promise that — each spawns its own task, so the inserts would
+race and the cursors could come out reversed. `emit_all` appends the whole
+sequence in order within one task, and only then delivers the webhooks (a
+webhook call can take ten seconds against an endpoint we do not control;
+interleaving would let a third party delay the second event on the stream).
+
+`approval.bubbled` spans **both** resolvers in its audience — the one losing
+the item needs to know as much as the one gaining it, and after a hand-up the
+previous resolver may no longer sit on the new resolver's chain.
+
 ### Visibility
 
 `audience` is the access-control decision, resolved once by the code path that

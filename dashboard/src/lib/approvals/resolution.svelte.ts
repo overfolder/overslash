@@ -64,7 +64,10 @@ export function createResolution(
 				'approval.resolved',
 				'approval.executed',
 				'approval.execution_failed',
-				'approval.execution_cancelled'
+				'approval.execution_cancelled',
+				// A hand-up changes who may act, which is what the controls
+				// are bound to — so it needs a refetch as much as a verdict.
+				'approval.bubbled'
 			],
 			(event) => {
 				if (event.data?.approval_id !== current.id) return;

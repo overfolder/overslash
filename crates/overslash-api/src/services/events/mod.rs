@@ -7,6 +7,7 @@
 //! Call sites do not choose a transport, and adding a third one later means
 //! editing this function rather than hunting call sites again.
 
+pub mod approvals;
 pub mod audience;
 pub mod bus;
 pub mod types;
@@ -39,29 +40,51 @@ pub struct EventDraft {
 /// The two transports are independent: a failed log append still attempts
 /// webhook delivery, and vice versa.
 pub fn emit(pool: PgPool, http_client: reqwest::Client, draft: EventDraft) {
-    tokio::spawn(async move {
-        let event = draft.event_type.as_str();
+    emit_all(pool, http_client, vec![draft]);
+}
 
-        let org = OrgScope::new(draft.org_id, pool.clone());
-        if let Err(e) = org
-            .insert_event(
-                event,
-                draft.event_type.topic().as_str(),
-                draft.payload.clone(),
-                &draft.audience,
-            )
-            .await
-        {
-            tracing::error!("failed to append {event} to the event log: {e}");
+/// Publish several events as one ordered unit.
+///
+/// Cursors come out strictly increasing in the order given, which is what lets
+/// a derived signal follow the fact it derives from — `approval.pending` after
+/// the `approval.created` that raised it. Two separate [`emit`] calls could not
+/// promise that: each spawns its own task, so the inserts would race and a
+/// subscriber could see the consequence before the cause.
+///
+/// The log is written for every draft *first*, then the webhooks are delivered.
+/// Interleaving them would put a webhook's HTTP call (up to 10s, to an endpoint
+/// we do not control) between two appends, delaying the second event on the
+/// stream by however long some third party takes to answer.
+pub fn emit_all(pool: PgPool, http_client: reqwest::Client, drafts: Vec<EventDraft>) {
+    if drafts.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        for draft in &drafts {
+            let event = draft.event_type.as_str();
+            let org = OrgScope::new(draft.org_id, pool.clone());
+            if let Err(e) = org
+                .insert_event(
+                    event,
+                    draft.event_type.topic().as_str(),
+                    draft.payload.clone(),
+                    &draft.audience,
+                )
+                .await
+            {
+                tracing::error!("failed to append {event} to the event log: {e}");
+            }
         }
 
-        super::webhook_dispatcher::dispatch(
-            &pool,
-            &http_client,
-            draft.org_id,
-            event,
-            draft.payload,
-        )
-        .await;
+        for draft in drafts {
+            super::webhook_dispatcher::dispatch(
+                &pool,
+                &http_client,
+                draft.org_id,
+                draft.event_type.as_str(),
+                draft.payload,
+            )
+            .await;
+        }
     });
 }

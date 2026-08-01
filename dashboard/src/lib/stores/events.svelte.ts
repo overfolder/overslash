@@ -15,6 +15,10 @@ export type StreamStatus = 'idle' | 'connecting' | 'live' | 'down';
 
 export const APPROVAL_EVENT_TYPES = [
 	'approval.created',
+	// Fired after creation and after every hand-up, so it alone answers
+	// "is something waiting on me?" without diffing the other two.
+	'approval.pending',
+	'approval.bubbled',
 	'approval.resolved',
 	'approval.executed',
 	'approval.execution_failed',
