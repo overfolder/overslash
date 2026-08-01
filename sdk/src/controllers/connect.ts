@@ -79,10 +79,24 @@ export function createConnectController(
   let beforeIds = new Set<string>();
   let deadline = 0;
   let settle: ((c: ConnectionSummary | null) => void) | null = null;
+  /**
+   * True only between `start()` and settling.
+   *
+   * The controller subscribes at construction — one shared stream, and
+   * unsubscribing per flow would churn it — so a `connection.*` event for
+   * something else entirely can arrive before this flow begins. Without the
+   * guard that event runs `checkForNew` against `deadline = 0` and an empty
+   * `beforeIds`, which is wrong twice over: the deadline has already "passed",
+   * and every pre-existing connection looks new.
+   */
+  let active = false;
 
   function finish(status: ConnectStatus, connection: ConnectionSummary | null): void {
+    active = false;
     poller.stop();
-    unsubscribeEvents?.();
+    // Deliberately keeps the subscription: `cancel()` then `start()` is a
+    // legitimate retry, and a controller that silently lost its push channel on
+    // the first attempt would quietly fall back to polling for good.
     popup?.close();
     popup = null;
     store.set({ status, connection });
@@ -92,6 +106,7 @@ export function createConnectController(
 
   /** Look for a connection that was not there when we started. */
   async function checkForNew(): Promise<void> {
+    if (!active) return;
     if (Date.now() > deadline) {
       finish('timed_out', null);
       return;
@@ -146,6 +161,7 @@ export function createConnectController(
       }
       popup = opened;
       deadline = Date.now() + (timeoutMs ?? 90_000);
+      active = true;
       store.set({ status: 'awaiting_user' });
       poller.restart();
 
@@ -171,6 +187,7 @@ export function createConnectController(
     getState: store.getState,
     subscribe: store.subscribe,
     dispose() {
+      active = false;
       poller.stop();
       unsubscribeEvents?.();
       popup?.close();

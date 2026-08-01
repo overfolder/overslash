@@ -30,7 +30,9 @@ function routed(routes: Array<[string, StubResponse | (() => StubResponse)]>) {
 }
 
 /** An `EventsTransport` a test can push events into. */
-function fakeEvents(live = true): EventsTransport & { emit(event: EventEnvelope): void } {
+function fakeEvents(
+  live = true,
+): EventsTransport & { emit(event: EventEnvelope): void; subscriberCount(): number } {
   const subs = new Set<{ types: Set<string>; handler: (e: EventEnvelope) => void }>();
   return {
     live,
@@ -45,6 +47,7 @@ function fakeEvents(live = true): EventsTransport & { emit(event: EventEnvelope)
     emit(event) {
       for (const sub of subs) if (sub.types.has(event.type)) sub.handler(event);
     },
+    subscriberCount: () => subs.size,
   };
 }
 
@@ -438,6 +441,54 @@ describe('createConnectController', () => {
     expect(ctrl.getState().status).toBe('needs_external_auth');
     expect(seen).toEqual([{ provider: 'google', requiredScopes: ['gmail.send'] }]);
     ctrl.dispose();
+  });
+
+  it('ignores connection events that arrive before the flow starts', async () => {
+    // The controller subscribes at construction, so an unrelated connection
+    // event can land first. Acting on it timed the flow out before it began —
+    // and, because `beforeIds` was still empty, could even have reported a
+    // pre-existing connection as the one just made.
+    const { transport } = routed([['GET /v1/connections', { body: [connection] }]]);
+    const client = new OverslashClient({ auth: { transport } });
+    const events = fakeEvents();
+    const ctrl = createConnectController(client, {
+      provider: 'google',
+      events,
+      openWindow: () => ({ closed: false, close() {} }),
+    });
+
+    events.emit({
+      id: '1',
+      type: 'connection.created',
+      created_at: '',
+      data: { connection_id: 'someone-elses' },
+    });
+    await flush();
+
+    expect(ctrl.getState().status).toBe('idle');
+    expect(ctrl.getState().connection).toBeNull();
+    ctrl.dispose();
+  });
+
+  it('keeps its event subscription after a cancelled attempt, so a retry is still live', async () => {
+    const { transport } = routed([
+      ['GET /v1/connections', { body: [] }],
+      ['POST /v1/connections', { body: { auth_url: 'https://gate', state: 's', provider: 'google', expires_at: '', flow_id: 'f' } }],
+    ]);
+    const client = new OverslashClient({ auth: { transport } });
+    const events = fakeEvents();
+    const ctrl = createConnectController(client, {
+      provider: 'google',
+      events,
+      openWindow: () => ({ closed: false, close() {} }),
+    });
+
+    ctrl.cancel();
+    await flush();
+
+    expect(events.subscriberCount()).toBe(1);
+    ctrl.dispose();
+    expect(events.subscriberCount()).toBe(0);
   });
 
   it('resolves once a connection appears that was not there before', async () => {
