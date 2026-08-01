@@ -31,7 +31,7 @@ time = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
 aes-gcm = "0.11"
-base64 = "0.22"
+base64 = "0.23"
 glob-match = "0.2"
 # Lexer + parser only: credential templates are analysed at compile time to
 # learn which secret slots they read. Evaluation (jaq-std/jaq-json) stays in
