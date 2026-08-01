@@ -12,6 +12,7 @@ export default defineConfig([
     entry: {
       index: 'src/index.ts',
       'controllers/index': 'src/controllers/index.ts',
+      'node/index': 'src/node/index.ts',
       'format/index': 'src/format/index.ts',
     },
     format: ['esm', 'cjs'],
