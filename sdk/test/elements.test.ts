@@ -354,6 +354,38 @@ describe('<overslash-provider>', () => {
     expect(card.shadowRoot?.textContent).toContain('Send an email');
   });
 
+  it('closes a stream it built when the global default is replaced', async () => {
+    // A leaked stream keeps its socket and reconnect timers alive forever, and
+    // the per-identity cap is four — so four refreshes exhaust it with no
+    // element on screen.
+    const { transport } = routed([]);
+    const first = configureOverslash({ auth: { transport } });
+    const closed: string[] = [];
+    const originalClose = first.events.close.bind(first.events);
+    first.events.close = () => {
+      closed.push('closed');
+      originalClose();
+    };
+
+    configureOverslash({ auth: { transport } });
+
+    expect(closed).toEqual(['closed']);
+  });
+
+  it('leaves a caller-supplied context alone — its owner may still be using it', async () => {
+    const { ctx } = context([]);
+    let closed = 0;
+    ctx.events.close = () => {
+      closed += 1;
+    };
+    configureOverslash(ctx);
+
+    configureOverslash(context([]).ctx);
+    resetOverslash();
+
+    expect(closed).toBe(0);
+  });
+
   it('falls back to the global default when there is no provider', async () => {
     const { ctx } = context([]);
     configureOverslash(ctx);

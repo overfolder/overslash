@@ -16,22 +16,40 @@ export interface OverslashContext {
 }
 
 let globalContext: OverslashContext | null = null;
+/**
+ * Whether we built the current context's stream, and so own closing it.
+ *
+ * A caller-supplied context belongs to the caller — they may still hold it and
+ * use it elsewhere — so replacing the global must not close it out from under
+ * them. One we built is unreachable once replaced, and closing it is the only
+ * thing that can.
+ */
+let ownsEvents = false;
 
 /**
  * Set the page-wide default.
  *
  * Also builds the shared `SseEvents`, which matters: one connection for the
  * page rather than one per element, against a per-identity cap of four.
+ *
+ * Calling this again — a credential refresh, a hot reload — replaces the
+ * previous context. Any stream this module built for it is closed first: a
+ * leaked one keeps its socket and its reconnect timers alive forever, and four
+ * such leaks exhaust the cap without a single element being on screen.
  */
 export function configureOverslash(
   options: OverslashClientOptions | OverslashContext,
 ): OverslashContext {
+  closeOwnedEvents();
+
   if ('client' in options && 'events' in options) {
     globalContext = options;
+    ownsEvents = false;
     return globalContext;
   }
   const client = new OverslashClient(options as OverslashClientOptions);
   globalContext = { client, events: new SseEvents(client) };
+  ownsEvents = true;
   return globalContext;
 }
 
@@ -39,10 +57,18 @@ export function getGlobalContext(): OverslashContext | null {
   return globalContext;
 }
 
-/** Tear down the global context's stream. Mostly for tests and hot reload. */
+/**
+ * Drop the page-wide default, closing the stream if it is ours. Used by tests
+ * and hot reload; a caller-supplied context is left for its owner to close.
+ */
 export function resetOverslash(): void {
-  globalContext?.events.close();
+  closeOwnedEvents();
   globalContext = null;
+}
+
+function closeOwnedEvents(): void {
+  if (ownsEvents) globalContext?.events.close();
+  ownsEvents = false;
 }
 
 /**
