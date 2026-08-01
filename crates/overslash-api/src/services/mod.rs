@@ -8,6 +8,7 @@ pub mod credential_template;
 pub mod disclosure;
 pub mod email;
 pub mod embedding_backfill;
+pub mod events;
 pub mod group_ceiling;
 pub mod http_caller;
 pub mod identity_path;

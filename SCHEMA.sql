@@ -37,6 +37,20 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
+-- Name: events_notify(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.events_notify() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    PERFORM pg_notify('overslash_events', NEW.id::text);
+    RETURN NULL;
+END;
+$$;
+
+
+--
 -- Name: api_keys; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -181,6 +195,69 @@ CREATE TABLE public.enabled_global_templates (
     enabled_by uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+
+
+--
+-- Name: events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.events (
+    id bigint NOT NULL,
+    event_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    type text NOT NULL,
+    topic text NOT NULL,
+    payload jsonb NOT NULL,
+    audience uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.events IS 'Durable event log for the SSE stream (GET /v1/events/stream). Also the fan-out substrate: inserts pg_notify the row id on the overslash_events channel and each replica fetches + forwards to its subscribers.';
+
+
+--
+-- Name: COLUMN events.id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.events.id IS 'Resume cursor. Sent to clients as the SSE id: field and returned by them as Last-Event-ID.';
+
+
+--
+-- Name: COLUMN events.event_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.events.event_id IS 'Stable uuid for the wire envelope, mirroring the webhook envelope id.';
+
+
+--
+-- Name: COLUMN events.audience; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.events.audience IS 'Identity ids permitted to receive this event, frozen at emit time. Org admins bypass this check. Empty means admins-only.';
+
+
+--
+-- Name: events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.events_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.events_id_seq OWNED BY public.events.id;
 
 
 --
@@ -809,6 +886,13 @@ CREATE TABLE public.webhook_subscriptions (
 
 
 --
+-- Name: events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.events ALTER COLUMN id SET DEFAULT nextval('public.events_id_seq'::regclass);
+
+
+--
 -- Name: api_keys api_keys_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -894,6 +978,14 @@ ALTER TABLE ONLY public.email_unsubscribe_tokens
 
 ALTER TABLE ONLY public.enabled_global_templates
     ADD CONSTRAINT enabled_global_templates_pkey PRIMARY KEY (org_id, template_key);
+
+
+--
+-- Name: events events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.events
+    ADD CONSTRAINT events_pkey PRIMARY KEY (id);
 
 
 --
@@ -1268,6 +1360,20 @@ CREATE INDEX billing_email_log_user_id ON public.billing_email_log USING btree (
 --
 
 CREATE INDEX email_unsubscribe_tokens_user_id ON public.email_unsubscribe_tokens USING btree (user_id);
+
+
+--
+-- Name: events_org_replay_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX events_org_replay_idx ON public.events USING btree (org_id, id);
+
+
+--
+-- Name: events_prune_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX events_prune_idx ON public.events USING btree (created_at);
 
 
 --
@@ -1859,6 +1965,13 @@ CREATE INDEX webhook_digest_runs_run_date ON public.webhook_digest_runs USING bt
 
 
 --
+-- Name: events events_notify_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER events_notify_trigger AFTER INSERT ON public.events FOR EACH ROW EXECUTE FUNCTION public.events_notify();
+
+
+--
 -- Name: api_keys api_keys_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2016,6 +2129,14 @@ ALTER TABLE ONLY public.enabled_global_templates
 
 ALTER TABLE ONLY public.enabled_global_templates
     ADD CONSTRAINT enabled_global_templates_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: events events_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.events
+    ADD CONSTRAINT events_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
 
 
 --

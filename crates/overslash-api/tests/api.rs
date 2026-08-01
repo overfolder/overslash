@@ -41,6 +41,7 @@ mod dev_e2e_seed;
 mod email_overfwd;
 mod email_smoke;
 mod eventbrite;
+mod events_stream;
 mod free_unlimited;
 mod github;
 mod gmail;

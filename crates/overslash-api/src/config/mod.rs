@@ -32,11 +32,21 @@ pub struct Config {
     /// pool surfaces fast instead of blocking a handler for half a minute.
     pub db_acquire_timeout_secs: u64,
     /// Max connections in the dedicated *background-jobs* pool (expiry sweeps,
-    /// webhook retry/digest, embedding backfill). Default 5. `DB_BACKGROUND_MAX_CONNECTIONS`.
+    /// webhook retry/digest, embedding backfill). Default 6. `DB_BACKGROUND_MAX_CONNECTIONS`.
     /// Isolating the loops onto their own small pool means a webhook/expiry
     /// burst can never starve request handling — the root cause of the
     /// overslash-dev pool-exhaustion incident.
+    ///
+    /// One connection is held permanently by the event-stream `LISTEN` task,
+    /// which is why the default is 6 rather than the 5 the loops alone needed.
     pub db_background_max_connections: u32,
+    /// How long a single `GET /v1/events/stream` connection lives before the
+    /// server closes it. Default 30s per SPEC.md §10: a short, fixed ceiling
+    /// keeps idle connections cheap, survives proxies that cap request
+    /// duration, and forces clients to exercise `Last-Event-ID` resume
+    /// continuously rather than discovering it broken during an outage.
+    /// Tests set it low to keep runtimes sane. `EVENTS_STREAM_MAX_CONNECTION_SECS`.
+    pub events_stream_max_connection_secs: u64,
     /// 64-char hex master key used to encrypt every secret value, OAuth
     /// token, BYOC client_id/secret, and IdP credential. Wrapped at runtime
     /// in a [`overslash_core::crypto::Keyring`] together with
@@ -667,6 +677,7 @@ mod tests {
             db_min_connections: 1,
             db_acquire_timeout_secs: 10,
             db_background_max_connections: 2,
+            events_stream_max_connection_secs: 30,
             secrets_encryption_key: "ab".repeat(32),
             secrets_encryption_key_previous: None,
             secrets_encryption_key_active_id: 1,

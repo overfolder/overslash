@@ -1,5 +1,6 @@
 import { session, type ApprovalResponse, type ResolveApprovalRequest } from '$lib/session';
 import { pickApiError } from '$lib/approvals/format';
+import { type ApprovalEventData, eventStream, onEvent } from '$lib/stores/events.svelte';
 
 /**
  * Shared resolution controller for approvals.
@@ -7,12 +8,12 @@ import { pickApiError } from '$lib/approvals/format';
  * Owns the async + lifecycle machinery so the surfaces that resolve a single
  * approval — the full-page `ApprovalDetail` and the `ApprovalRow` shared by the
  * queue and the agents tree — run the *same* proven implementation:
- * optimistic `override`, the 30s auto-call poll
- * (a `/resolve allow` returns immediately while the auto-call runs in a spawned
- * task, so we poll `/v1/approvals/{id}` to catch the execution reaching a
- * terminal state), and consistent error extraction.
+ * optimistic `override`, live refresh from the event stream with the 30s
+ * auto-call poll as fallback (a `/resolve allow` returns immediately while the
+ * auto-call runs in a spawned task, so the execution reaching a terminal state
+ * has to arrive out-of-band), and consistent error extraction.
  *
- * Must be called during component setup — it registers a `$effect` for polling.
+ * Must be called during component setup — it registers `$effect`s.
  */
 export function createResolution(
 	getApproval: () => ApprovalResponse,
@@ -36,6 +37,47 @@ export function createResolution(
 				execution.status === 'expired')
 	);
 
+	/**
+	 * Pull the authoritative approval and adopt it. Shared by the fallback poll
+	 * and the stream subscription so both carry the same guards: skip while a
+	 * user action is in flight, and drop the response if the caller moved to a
+	 * different approval while it was in the air.
+	 */
+	async function refetch(id: string) {
+		if (submitting) return;
+		try {
+			const fresh = await session.get<ApprovalResponse>(`/v1/approvals/${id}`);
+			if (id !== current.id) return;
+			override = fresh;
+		} catch {
+			// transient — don't stomp `error` (user-action only)
+		}
+	}
+
+	// Stream-driven updates. Events are notifications, so refetch rather than
+	// trust the payload — and this catches resolutions made in another tab or by
+	// another operator, which polling never did: it only ran while *this* tab was
+	// waiting on an execution it had itself just triggered.
+	$effect(() =>
+		onEvent<ApprovalEventData>(
+			[
+				'approval.resolved',
+				'approval.executed',
+				'approval.execution_failed',
+				'approval.execution_cancelled',
+				// A hand-up changes who may act, which is what the controls
+				// are bound to — so it needs a refetch as much as a verdict.
+				'approval.bubbled'
+			],
+			(event) => {
+				if (event.data?.approval_id !== current.id) return;
+				void refetch(current.id);
+			}
+		)
+	);
+
+	// Fallback poll, for when the stream is unavailable.
+	//
 	// `pollStartedAt` is anchored outside the reactive scope so the cap is a
 	// wall-clock window from when polling first became active, not from the
 	// latest poll response.
@@ -54,19 +96,15 @@ export function createResolution(
 		}
 		const startedAt = pollStartedAt!;
 		if (Date.now() - startedAt > 30_000) return;
-		const handle = setInterval(async () => {
-			if (submitting) return;
+		const handle = setInterval(() => {
+			// The stream already delivers these transitions; polling on top of it
+			// would just be duplicate requests.
+			if (eventStream.live) return;
 			if (Date.now() - startedAt > 30_000) {
 				clearInterval(handle);
 				return;
 			}
-			try {
-				const fresh = await session.get<ApprovalResponse>(`/v1/approvals/${id}`);
-				if (id !== current.id) return;
-				override = fresh;
-			} catch {
-				// transient — keep polling; don't stomp `error` (user-action only)
-			}
+			void refetch(id);
 		}, 1500);
 		return () => clearInterval(handle);
 	});
@@ -135,6 +173,15 @@ export function createResolution(
 		error = null;
 	}
 
+	/**
+	 * Adopt an approval the caller fetched itself — used for gap recovery after
+	 * the stream reconnects without a cursor. Ignores anything that isn't the
+	 * approval currently on screen.
+	 */
+	function applyServerUpdate(fresh: ApprovalResponse) {
+		if (fresh.id === current.id) override = fresh;
+	}
+
 	return {
 		get current() {
 			return current;
@@ -163,7 +210,8 @@ export function createResolution(
 		resolve,
 		triggerCall,
 		cancelExecution,
-		clearError
+		clearError,
+		applyServerUpdate
 	};
 }
 

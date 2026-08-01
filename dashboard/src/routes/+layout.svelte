@@ -14,6 +14,7 @@
 		stopNotificationPolling,
 		hydrateUserPreferences
 	} from '$lib/stores/shell';
+	import { startEventStream, stopEventStream } from '$lib/stores/events.svelte';
 	import { viewport } from '$lib/stores/viewport';
 	import Sidebar from '$lib/components/shell/Sidebar.svelte';
 	import TopBar from '$lib/components/shell/TopBar.svelte';
@@ -104,13 +105,21 @@
 			.catch(() => {});
 	});
 
+	// The stream shares notification polling's lifecycle: both want an
+	// authenticated session, and `standalone` already covers the surfaces that
+	// don't have one (/login, /secrets/provide, /oauth/consent).
 	$effect(() => {
 		if (standalone) {
 			stopNotificationPolling();
+			stopEventStream();
 		} else {
 			startNotificationPolling();
+			startEventStream();
 		}
-		return () => stopNotificationPolling();
+		return () => {
+			stopNotificationPolling();
+			stopEventStream();
+		};
 	});
 
 	// Close the drawer when the route changes (any in-drawer nav click) or

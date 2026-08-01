@@ -121,6 +121,12 @@ pub async fn start_api_shared(pool: PgPool) -> (SocketAddr, Client, ResourceGuar
             overslash_api::services::billing_tier::FreeUnlimitedCache::new(Duration::from_secs(30)),
         ),
         rate_limiter: Arc::new(overslash_api::services::rate_limit::InMemoryRateLimitStore::new()),
+        // Per-test bus: every test cloning the bootstrapped template shares an
+        // org id, so a shared bus would surface one test's events on another's
+        // stream. No listener is spawned here — the shared router deregisters
+        // its resources on guard drop, which a long-lived stream would outlive;
+        // event-stream tests use `start_api_with_event_stream` instead.
+        event_bus: overslash_api::services::events::EventBus::new(),
     };
     harness.registry.register(id, resources);
 
@@ -214,6 +220,7 @@ fn build_shared_router(state: AppState) -> axum::Router {
         .merge(routes::oauth_providers::router())
         .merge(routes::auth::router())
         .merge(routes::dev_e2e::router())
+        .merge(routes::events::router())
         .merge(routes::org_idp_configs::router())
         .merge(routes::org_invites::router())
         .merge(routes::org_oauth_credentials::router())
@@ -267,6 +274,7 @@ fn build_shared_state(registry: Arc<SharedRouterRegistry>, addr: SocketAddr) -> 
         embeddings_available: false,
         platform_registry: Arc::new(overslash_api::services::platform_registry::build_registry()),
         mailer: Arc::new(overslash_core::email::NoopMailer),
+        event_bus: overslash_api::services::events::EventBus::new(),
         test_resources: Some(registry),
     }
 }
@@ -279,6 +287,7 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
         db_max_connections: 5,
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,

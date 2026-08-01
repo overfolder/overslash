@@ -264,21 +264,36 @@ pub(super) async fn enforce_permission_chain(
                     "permission_keys": keys,
                     "can_be_handled_by": can_be_handled_by,
                 });
-                {
-                    let db = state.db_pool(ext);
-                    let client = state.http_client.clone();
-                    let org_id = auth.org_id;
-                    tokio::spawn(async move {
-                        crate::services::webhook_dispatcher::dispatch(
-                            &db,
-                            &client,
-                            org_id,
-                            "approval.created",
-                            webhook_payload,
+                let audience = crate::services::events::audience::for_approval_with_resolver_chain(
+                    scope,
+                    identity_id,
+                    resolver_chain.iter().map(|i| i.id),
+                )
+                .await;
+                // `created` states the fact; `pending` says who it is now
+                // waiting on. Emitted as one ordered unit so a subscriber
+                // never sees the derived signal before its cause.
+                crate::services::events::emit_all(
+                    state.db_pool(ext),
+                    state.http_client.clone(),
+                    vec![
+                        crate::services::events::EventDraft {
+                            org_id: auth.org_id,
+                            event_type: crate::services::events::EventType::ApprovalCreated,
+                            payload: webhook_payload,
+                            audience,
+                        },
+                        crate::services::events::approvals::pending(
+                            scope,
+                            approval.id,
+                            identity_id,
+                            initial_resolver_id,
+                            &summary,
+                            crate::services::events::approvals::PendingReason::Created,
                         )
-                        .await;
-                    });
-                }
+                        .await,
+                    ],
+                );
 
                 // Carry the approval's org in the deep-link so the dashboard can
                 // switch the recipient's session into that org before loading the

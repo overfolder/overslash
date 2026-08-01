@@ -48,6 +48,19 @@ variable "max_instances" {
   default = 3
 }
 
+variable "request_timeout_seconds" {
+  type    = number
+  default = 120
+  # `GET /v1/events/stream` holds a response open for
+  # EVENTS_STREAM_MAX_CONNECTION_SECS (default 30) and only then hangs up.
+  # Cloud Run counts that against the per-request timeout, so this must stay
+  # comfortably above the stream ceiling or the platform cuts the response
+  # first and the close stops being ours to schedule. Explicit rather than
+  # riding Cloud Run's 300s default, so raising the ceiling forces a look at
+  # this line.
+  description = "Per-request timeout. Must exceed EVENTS_STREAM_MAX_CONNECTION_SECS — SSE responses stay open for that long by design."
+}
+
 variable "cloud_sql_connection_name" {
   type = string
 }
@@ -453,6 +466,7 @@ resource "google_cloud_run_v2_service" "api" {
 
   template {
     service_account = var.service_account_email
+    timeout         = "${var.request_timeout_seconds}s"
 
     scaling {
       min_instance_count = var.min_instances
