@@ -192,12 +192,24 @@ Otherwise the semantics are the dashboard's, because they are correct:
 - Events are notifications, not state. Every controller refetches the resource
   an event names. Payload fields are for routing.
 
-`PollingEvents` implements the same `EventsTransport` interface with bounded
-1.5-second polls, and is selected when the stream is unavailable — an older
-server, a proxy that breaks SSE, a transport-mode host that does not forward
-streaming responses. Polling ticks are skipped while the stream is live, which
-is the same arrangement the dashboard settled on: an environment that breaks SSE
-degrades to exactly the behaviour that shipped before it existed.
+Falling back needs no separate probe or auto-detection step. Every controller
+already owns a `PollScheduler` whose ticks are *skipped while the stream is
+live*, so a stream that never opens — an older server answering 404, a 403 for a
+credential with no identity, a proxy that buffers the body away — simply leaves
+those ticks running. That is the same arrangement the dashboard settled on: an
+environment that breaks SSE degrades to exactly the behaviour that shipped
+before it existed, with no code path that exists only for the degraded case.
+
+`PollingEvents` is the explicit form of the same thing, for a host that knows in
+advance it has no stream: it delivers nothing and reports `live: false`, which
+is the entire contract. The polling itself belongs to the controllers, because
+they are what knows which resource to refetch.
+
+One hazard the stream shape creates and the dashboard never had to face: the
+30-second ceiling means "the connection closed cleanly" is the *normal* case, so
+reconnecting immediately is correct — and catastrophic if the server or a proxy
+is hanging up at once, where it becomes a tight loop. Connections that end
+sooner than a second are therefore treated as faults and take the backoff.
 
 ## Controllers
 

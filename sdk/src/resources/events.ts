@@ -19,11 +19,13 @@ export class EventsResource {
   constructor(private readonly client: OverslashClient) {}
 
   async open(topics: Topic[], opts: OpenStreamOptions = {}): Promise<TransportResponse> {
-    const params = new URLSearchParams();
-    if (topics.length) params.set('topics', topics.join(','));
-    const qs = params.toString();
+    // Built by hand rather than with URLSearchParams, which percent-encodes the
+    // separator (`topics=approvals%2Cconnections`). The server decodes that back
+    // before parsing, so both work — but the documented contract is a
+    // comma-separated list, and a request log should show one.
+    const qs = topics.length ? `?topics=${topics.map(encodeURIComponent).join(',')}` : '';
 
-    return this.client.send('GET', `/v1/events/stream${qs ? `?${qs}` : ''}`, undefined, {
+    return this.client.send('GET', `/v1/events/stream${qs}`, undefined, {
       stream: true,
       ...(opts.signal ? { signal: opts.signal } : {}),
       headers: {

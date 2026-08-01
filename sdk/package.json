@@ -18,6 +18,11 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
+    "./controllers": {
+      "types": "./dist/controllers/index.d.ts",
+      "import": "./dist/controllers/index.js",
+      "require": "./dist/controllers/index.cjs"
+    },
     "./format": {
       "types": "./dist/format/index.d.ts",
       "import": "./dist/format/index.js",
