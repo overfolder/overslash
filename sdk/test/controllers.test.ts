@@ -561,6 +561,46 @@ describe('waitForApproval', () => {
     await expect(pending).resolves.toMatchObject({ status: 'allowed' });
   });
 
+  it('honours a signal that was already aborted, without waiting out a tick', async () => {
+    // `addEventListener('abort')` never fires on a signal that already aborted,
+    // so the sleep ran its full interval before anyone noticed. A transport that
+    // ignores signals — a host proxy, a stub — is exactly where this shows up,
+    // since the first fetch does not reject on its own.
+    vi.useFakeTimers();
+    const { transport } = routed([['GET /v1/approvals/', { body: approvalFixture() }]]);
+    const client = new OverslashClient({ auth: { transport } });
+    const controller = new AbortController();
+    controller.abort();
+
+    const pending = waitForApproval(client, 'a1', {
+      signal: controller.signal,
+      pollIntervalMs: 60_000,
+    });
+    const assertion = expect(pending).rejects.toThrow(/aborted/);
+
+    // No timer advanced at all: the rejection must not depend on one.
+    await vi.advanceTimersByTimeAsync(0);
+    await assertion;
+  });
+
+  it('aborts mid-wait without waiting out the rest of the interval', async () => {
+    vi.useFakeTimers();
+    const { transport } = routed([['GET /v1/approvals/', { body: approvalFixture() }]]);
+    const client = new OverslashClient({ auth: { transport } });
+    const controller = new AbortController();
+
+    const pending = waitForApproval(client, 'a1', {
+      signal: controller.signal,
+      pollIntervalMs: 60_000,
+    });
+    const assertion = expect(pending).rejects.toThrow(/aborted/);
+
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(5);
+    await assertion;
+  });
+
   it('times out rather than hanging a tool call forever', async () => {
     vi.useFakeTimers();
     const { transport } = routed([['GET /v1/approvals/', { body: approvalFixture() }]]);

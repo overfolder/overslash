@@ -94,6 +94,14 @@ function sleep(
   signal?: AbortSignal,
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
+    // `addEventListener('abort')` never fires on a signal that has already
+    // aborted, so without this the sleep runs its full interval and the caller
+    // is cancelled a poll-tick late — or a whole tick after aborting mid-loop.
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+
     let done = false;
     const finish = () => {
       if (done) return;
@@ -106,12 +114,20 @@ function sleep(
       if (done) return;
       done = true;
       clearTimeout(timer);
-      reject(new Error('waitForApproval aborted'));
+      reject(abortError());
     };
     const timer = setTimeout(finish, ms);
     register(finish);
     signal?.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+function abortError(): Error {
+  const e = new Error('waitForApproval aborted');
+  // Matches what `fetch` rejects with, so a caller can branch on one name
+  // whether the abort landed on a request or between polls.
+  e.name = 'AbortError';
+  return e;
 }
 
 function wrapSignal(signal?: AbortSignal): { signal?: AbortSignal } {
