@@ -45,16 +45,45 @@ export function configureOverslash(
   if ('client' in options && 'events' in options) {
     globalContext = options;
     ownsEvents = false;
+    notifyContextChanged();
     return globalContext;
   }
   const client = new OverslashClient(options as OverslashClientOptions);
   globalContext = { client, events: new SseEvents(client) };
   ownsEvents = true;
+  notifyContextChanged();
   return globalContext;
 }
 
 export function getGlobalContext(): OverslashContext | null {
   return globalContext;
+}
+
+/**
+ * Elements that want to know when a context appears.
+ *
+ * An element resolves its context when it connects, but a host almost always
+ * assigns one *after* mount — a React `ref` effect, a Svelte `bind:this`, a
+ * `<script>` at the end of the body. Without this, everything that connected
+ * first is stuck on the "nothing configured" placeholder forever, which is
+ * exactly what a real page does.
+ */
+const contextListeners = new Set<() => void>();
+
+export function onContextChanged(listener: () => void): () => void {
+  contextListeners.add(listener);
+  return () => contextListeners.delete(listener);
+}
+
+/** Tell every live element to re-resolve. Called when a context is set. */
+export function notifyContextChanged(): void {
+  for (const listener of [...contextListeners]) {
+    try {
+      listener();
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.error) console.error('[overslash-sdk]', e);
+    }
+  }
 }
 
 /**

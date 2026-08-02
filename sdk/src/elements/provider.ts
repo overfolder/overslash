@@ -10,6 +10,7 @@ import { OverslashClient } from '../client.js';
 import { SseEvents, type StreamStatus } from '../controllers/events.js';
 import {
   CONTEXT_REQUEST,
+  notifyContextChanged,
   type ContextRequestDetail,
   type OverslashContext,
 } from './context.js';
@@ -44,6 +45,9 @@ export class OverslashProvider extends HTMLElement {
   set context(value: OverslashContext | null) {
     this.assigned = value;
     this.watchStatus();
+    // Descendants resolved their context when they connected, which for a host
+    // that assigns this property after mount is before it existed.
+    notifyContextChanged();
   }
 
   get context(): OverslashContext | null {
@@ -100,11 +104,7 @@ export class OverslashProvider extends HTMLElement {
     if (!client) return;
     this.built = { client, events: new SseEvents(client) };
     this.watchStatus();
-    // Descendants resolved a context at their own connect, which may have been
-    // before this one existed.
-    this.dispatchEvent(
-      new CustomEvent('overslash:context-changed', { bubbles: false, composed: true }),
-    );
+    notifyContextChanged();
   }
 
   private watchStatus(): void {

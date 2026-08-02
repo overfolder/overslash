@@ -50,6 +50,17 @@ const browser = await chromium.launch();
 try {
   const ctx = await browser.newContext({ viewport: { width: 900, height: 1400 } });
   const page = await ctx.newPage();
+
+  if (live) {
+    // Sign in *through the Vite proxy*, so the API's Set-Cookie lands on the
+    // demo's own origin. The demo talks to the gateway same-origin precisely so
+    // its session cookie is first-party — pointing the browser straight at the
+    // API would set the cookie on a host the page never calls.
+    await page.goto(`http://localhost:${PORT}/auth/dev/token?profile=admin`, {
+      waitUntil: 'domcontentloaded',
+    });
+  }
+
   await page.goto(`http://localhost:${PORT}/${live ? '?live=1' : ''}`, {
     waitUntil: 'domcontentloaded',
   });

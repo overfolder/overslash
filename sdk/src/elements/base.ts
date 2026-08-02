@@ -6,6 +6,7 @@
 import type { Store } from '../controllers/store.js';
 import { adoptStyles, BASE, TOKENS } from './styles.js';
 import {
+  onContextChanged,
   resolveContext,
   type OverslashContext,
 } from './context.js';
@@ -54,13 +55,24 @@ export abstract class OverslashElement extends HTMLElement {
     return this.resolved;
   }
 
+  private offContextChanged: (() => void) | null = null;
+
   connectedCallback(): void {
     this.connected = true;
+    // A host usually assigns the context *after* mount, so an element that
+    // resolved nothing here has to be told when one turns up.
+    this.offContextChanged = onContextChanged(() => {
+      if (!this.connected) return;
+      if (resolveContext(this, this.ownContext) === this.resolved) return;
+      this.restart();
+    });
     this.restart();
   }
 
   disconnectedCallback(): void {
     this.connected = false;
+    this.offContextChanged?.();
+    this.offContextChanged = null;
     this.teardown();
   }
 

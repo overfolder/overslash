@@ -386,6 +386,27 @@ describe('<overslash-provider>', () => {
     expect(closed).toBe(0);
   });
 
+  it('reaches descendants that connected before the context was assigned', async () => {
+    // The ordering every real host produces: elements mount, *then* a ref
+    // effect or an end-of-body script assigns the context. Without a signal
+    // they stay on the "nothing configured" placeholder forever — which is
+    // exactly how the live demo's queue rendered.
+    const { ctx } = context([['GET /v1/approvals', { body: [] }]]);
+    const provider = document.createElement('overslash-provider');
+    const list = document.createElement('overslash-approval-list');
+    provider.appendChild(list);
+    document.body.appendChild(provider);
+    await tick();
+
+    expect(list.shadowRoot?.textContent).toContain('No Overslash client configured');
+
+    (provider as unknown as { context: unknown }).context = ctx;
+    await tick();
+    await tick();
+
+    expect(list.shadowRoot?.textContent).not.toContain('No Overslash client configured');
+  });
+
   it('falls back to the global default when there is no provider', async () => {
     const { ctx } = context([]);
     configureOverslash(ctx);
