@@ -15,6 +15,9 @@ const COLUMNS: Array<{ key: string; get: (e: AuditEntry) => string }> = [
 	{ key: 'resource_id', get: (e) => e.resource_id ?? '' },
 	{ key: 'description', get: (e) => e.description ?? '' },
 	{ key: 'ip_address', get: (e) => e.ip_address ?? '' },
+	// Space-separated: tags never contain whitespace (the minter collapses it),
+	// so this stays one CSV cell that splits cleanly downstream.
+	{ key: 'tags', get: (e) => (e.tags ?? []).join(' ') },
 	{ key: 'detail', get: (e) => JSON.stringify(e.detail ?? {}) }
 ];
 

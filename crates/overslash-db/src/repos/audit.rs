@@ -18,6 +18,11 @@ pub struct AuditRow {
     /// Records the service-account identity that performed the impersonation;
     /// `identity_id` is the effective (impersonated) identity.
     pub impersonated_by_identity_id: Option<Uuid>,
+    /// System-derived metadata tags (`sql:write`, `table:wh/orders`,
+    /// `service:metabase`, `outcome:error`, …). Searchable via
+    /// `GET /v1/audit?tag=`. Empty for events outside the action/approval
+    /// path — see `log_tagged`.
+    pub tags: Vec<String>,
 }
 
 pub struct AuditEntry<'a> {
@@ -39,9 +44,25 @@ pub(crate) async fn log(
     entry: &AuditEntry<'_>,
     impersonated_by_identity_id: Option<Uuid>,
 ) -> Result<(), sqlx::Error> {
+    log_tagged(pool, entry, impersonated_by_identity_id, &[]).await
+}
+
+/// Insert an audit row carrying system-derived metadata tags.
+///
+/// Kept separate from [`log`] — and taking the tags as an argument rather than
+/// a field on [`AuditEntry`] — because tags are minted on exactly one code
+/// path (the gated action call and the approval lifecycle around it) while
+/// `AuditEntry` is constructed at over a hundred sites. A field would have
+/// meant `tags: vec![]` at every one of them to say nothing.
+pub(crate) async fn log_tagged(
+    pool: &PgPool,
+    entry: &AuditEntry<'_>,
+    impersonated_by_identity_id: Option<Uuid>,
+    tags: &[String],
+) -> Result<(), sqlx::Error> {
     sqlx::query!(
-        "INSERT INTO audit_log (org_id, identity_id, action, resource_type, resource_id, detail, description, ip_address, impersonated_by_identity_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        "INSERT INTO audit_log (org_id, identity_id, action, resource_type, resource_id, detail, description, ip_address, impersonated_by_identity_id, tags)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         entry.org_id,
         entry.identity_id,
         entry.action,
@@ -51,6 +72,7 @@ pub(crate) async fn log(
         entry.description,
         entry.ip_address,
         impersonated_by_identity_id,
+        tags,
     )
     .execute(pool)
     .await?;
@@ -111,6 +133,14 @@ pub struct AuditFilter {
     /// carry the flag and succeeded — rows without the flag (non-execution
     /// events, pre-flag history) match neither. Powers the `result =` key.
     pub is_error: Option<bool>,
+    /// Require **all** of these metadata tags on the row (`tags @> $n`).
+    /// AND rather than OR because tags narrow along independent axes — a
+    /// `service:metabase` + `sql:write` filter means "writes against
+    /// Metabase", which OR would turn into a far larger set. Powers `tag =`.
+    pub tags: Option<Vec<String>>,
+    /// Substring (case-insensitive) against any one tag. Powers `tag ~`, which
+    /// is how you find `table:warehouse/orders` without knowing the db label.
+    pub tag_contains: Option<String>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -144,9 +174,11 @@ pub(crate) async fn query_filtered(
         .as_deref()
         .map(|q| format!("%{q}%"));
     let kinds = filter.identity_kinds.as_deref();
+    let tags = filter.tags.as_deref();
+    let tag_like = filter.tag_contains.as_deref().map(|q| format!("%{q}%"));
     sqlx::query_as!(
         AuditRow,
-        "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at, a.impersonated_by_identity_id
+        "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at, a.impersonated_by_identity_id, a.tags
          FROM audit_log a
          LEFT JOIN identities i ON i.id = a.identity_id AND i.org_id = a.org_id
          LEFT JOIN identities owner ON owner.id = i.owner_id AND owner.org_id = a.org_id
@@ -186,6 +218,13 @@ pub(crate) async fn query_filtered(
            AND ($22::boolean IS NULL
                 OR ($22 AND a.detail->>'is_error' = 'true')
                 OR (NOT $22 AND a.detail->>'is_error' = 'false'))
+           -- Containment (not overlap): every requested tag must be present.
+           -- Uses idx_audit_log_tags.
+           AND ($23::text[] IS NULL OR a.tags @> $23)
+           -- No index for this one; it rides the org/created_at scan alongside
+           -- the other ILIKE filters.
+           AND ($24::text IS NULL
+                OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE t ILIKE $24))
          ORDER BY a.created_at DESC
          LIMIT $10 OFFSET $11",
         filter.org_id,
@@ -210,6 +249,8 @@ pub(crate) async fn query_filtered(
         filter.owner_user_id,
         owner_name_like,
         filter.is_error,
+        tags,
+        tag_like,
     )
     .fetch_all(pool)
     .await

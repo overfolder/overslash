@@ -103,7 +103,7 @@ try {
 			{
 				viewport: { width: 1400, height: 1100 },
 				waitFor: async (p) => {
-					await p.locator('text=Gateway URL').first().waitFor({ timeout: 15_000 });
+					await p.locator('text=Endpoint URL').first().waitFor({ timeout: 15_000 });
 					await p.waitForTimeout(400);
 				}
 			}

@@ -549,7 +549,13 @@ pub async fn start_api_with<F>(pool: PgPool, customize: F) -> (SocketAddr, Clien
 where
     F: FnOnce(&mut overslash_api::config::Config),
 {
-    start_api_internal(pool, Arc::new(overslash_core::email::NoopMailer), customize).await
+    start_api_internal(
+        pool,
+        Arc::new(overslash_core::email::NoopMailer),
+        false,
+        customize,
+    )
+    .await
 }
 
 /// Like [`start_api_with`] but with an injected `Mailer`. Used by tests that
@@ -564,17 +570,44 @@ pub async fn start_api_with_mailer<F>(
 where
     F: FnOnce(&mut overslash_api::config::Config),
 {
-    start_api_internal(pool, mailer, customize).await
+    start_api_internal(pool, mailer, false, customize).await
 }
 
 /// Start the Overslash API server in-process on a random port.
 pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
-    start_api_internal(pool, Arc::new(overslash_core::email::NoopMailer), |_| {}).await
+    start_api_internal(
+        pool,
+        Arc::new(overslash_core::email::NoopMailer),
+        false,
+        |_| {},
+    )
+    .await
+}
+
+/// [`start_api_with`] plus the Postgres `LISTEN` task that feeds the event
+/// bus, which `create_app` normally spawns and the other harnesses skip.
+///
+/// Opt-in rather than default because the listener holds one pool connection
+/// for the life of the process: paying that in all ~100 test servers would
+/// exhaust Postgres' connection ceiling, and only the event-stream tests
+/// need live fan-out at all (replay reads Postgres directly).
+pub async fn start_api_with_event_stream<F>(pool: PgPool, customize: F) -> (SocketAddr, Client)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
+    start_api_internal(
+        pool,
+        Arc::new(overslash_core::email::NoopMailer),
+        true,
+        customize,
+    )
+    .await
 }
 
 async fn start_api_internal<F>(
     pool: PgPool,
     mailer: Arc<dyn overslash_core::email::Mailer>,
+    spawn_event_listener: bool,
     customize: F,
 ) -> (SocketAddr, Client)
 where
@@ -602,6 +635,7 @@ where
         db_max_connections: 5,
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -657,6 +691,13 @@ where
     customize(&mut config);
 
     // Build the app with the test pool directly
+    let event_bus = overslash_api::services::events::EventBus::new();
+    if spawn_event_listener {
+        tokio::spawn(overslash_api::services::events::run_pg_listener(
+            pool.clone(),
+            event_bus.clone(),
+        ));
+    }
     let state = overslash_api::AppState {
         db: pool,
         config,
@@ -683,6 +724,7 @@ where
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer,
+        event_bus: event_bus.clone(),
         test_resources: None,
     };
 
@@ -708,6 +750,7 @@ where
         .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::dev_e2e::router())
+        .merge(overslash_api::routes::events::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
         .merge(overslash_api::routes::org_members::router())
@@ -789,6 +832,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         db_max_connections: 5,
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -868,6 +912,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        event_bus: overslash_api::services::events::EventBus::new(),
         test_resources: None,
     };
 
@@ -892,6 +937,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::dev_e2e::router())
+        .merge(overslash_api::routes::events::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
         .merge(overslash_api::routes::org_members::router())
@@ -929,6 +975,7 @@ pub async fn start_api_with_auth_providers(
         db_max_connections: 5,
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -1011,6 +1058,7 @@ pub async fn start_api_with_auth_providers(
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        event_bus: overslash_api::services::events::EventBus::new(),
         test_resources: None,
     };
 
@@ -1406,6 +1454,27 @@ pub async fn start_api_with_registry_customized<F>(
 where
     F: FnOnce(&mut overslash_api::config::Config),
 {
+    start_api_with_registry_vars(
+        pool,
+        host_override,
+        overslash_core::template_vars::Vars::for_tests(),
+        customize,
+    )
+    .await
+}
+
+/// Like [`start_api_with_registry_customized`] but boots the shipped registry
+/// against an explicit set of template variables (D44) instead of the standard
+/// test set — for the cases that assert on what `${VAR}` resolved to.
+pub async fn start_api_with_registry_vars<F>(
+    pool: PgPool,
+    host_override: Option<(&str, String)>,
+    vars: overslash_core::template_vars::Vars,
+    customize: F,
+) -> (String, Client)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
     let enc_key_hex = "ab".repeat(32);
     let ws_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1413,7 +1482,7 @@ where
         .parent()
         .unwrap();
     let mut registry =
-        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
+        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"), vars)
             .unwrap_or_default();
 
     if let Some((service_key, new_host)) = host_override {
@@ -1437,6 +1506,7 @@ where
         db_max_connections: 5,
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
         db_background_max_connections: 2,
         secrets_encryption_key: enc_key_hex,
         secrets_encryption_key_previous: None,
@@ -1517,6 +1587,7 @@ where
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        event_bus: overslash_api::services::events::EventBus::new(),
         test_resources: None,
     };
 
@@ -1572,9 +1643,11 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .unwrap()
         .parent()
         .unwrap();
-    let registry =
-        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
-            .unwrap_or_default();
+    let registry = overslash_core::registry::ServiceRegistry::load_from_dir(
+        &ws_root.join("services"),
+        overslash_core::template_vars::Vars::for_tests(),
+    )
+    .unwrap_or_default();
 
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
@@ -1583,6 +1656,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         db_max_connections: 5,
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -1662,6 +1736,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        event_bus: overslash_api::services::events::EventBus::new(),
         test_resources: None,
     };
 
@@ -1699,6 +1774,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         db_max_connections: 5,
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -1778,6 +1854,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        event_bus: overslash_api::services::events::EventBus::new(),
         test_resources: None,
     };
 

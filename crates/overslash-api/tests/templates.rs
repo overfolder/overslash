@@ -1262,3 +1262,181 @@ async fn template_allowance_is_one_directional() {
         "a sibling agent must not delete another agent's template"
     );
 }
+
+// ── Deployment template variables (D44) ────────────────────────────────────
+
+/// The variable reference panel's data source. Values are returned in the
+/// clear to any authenticated caller — deliberately, since a template author
+/// can recover them anyway (see the next test), which is precisely why nothing
+/// secret may be configured under `OVERSLASH_TEMPLATE_VAR_`.
+#[tokio::test]
+async fn template_vars_endpoint_lists_the_deployments_variables() {
+    let (pool, _fixtures) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api_with_registry_vars(
+        pool,
+        None,
+        overslash_core::template_vars::Vars::from_pairs([
+            ("MAILBOX_HOST", "mailbox.dev.overslash.com"),
+            ("METABASE_URL", "https://mb.example.com"),
+        ]),
+        |_| {},
+    )
+    .await;
+    let (_org_id, _ident_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let vars: Value = client
+        .get(format!("{base}/v1/templates/vars"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        vars,
+        json!([
+            { "name": "MAILBOX_HOST", "value": "mailbox.dev.overslash.com" },
+            { "name": "METABASE_URL", "value": "https://mb.example.com" },
+        ]),
+        "sorted by name, prefix stripped"
+    );
+
+    // The endpoint is deployment-scoped, not a window onto the environment:
+    // an unprefixed variable is not reachable through it.
+    assert!(
+        !vars.to_string().contains("DATABASE_URL"),
+        "only OVERSLASH_TEMPLATE_VAR_* is exposed"
+    );
+}
+
+/// An org-authored template resolves `${VAR}` the same way a shipped one does,
+/// and the DB row keeps the reference unexpanded — so the same row follows
+/// whichever deployment reads it instead of freezing the authoring one's host.
+#[tokio::test]
+async fn org_template_expands_vars_but_persists_the_reference() {
+    let (pool, _fixtures) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api_with_registry_vars(
+        pool,
+        None,
+        overslash_core::template_vars::Vars::from_pairs([("TENANT_HOST", "api.tenant.example")]),
+        |_| {},
+    )
+    .await;
+    let (_org_id, _ident_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let yaml = format!(
+        "openapi: 3.1.0
+info:
+  title: Varred
+  key: varred
+servers:
+  - url: https://${{{var}}}
+paths:
+  /items:
+    get:
+      operationId: list_items
+      summary: List items
+      risk: read
+",
+        var = "TENANT_HOST"
+    );
+
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "openapi": yaml }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "org template with a var should register: {:?}",
+        resp.text().await
+    );
+
+    let detail: Value = client
+        .get(format!("{base}/v1/templates/varred"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        detail["hosts"],
+        json!(["api.tenant.example"]),
+        "the resolved template reports the expanded host"
+    );
+    assert!(
+        detail["openapi"]
+            .as_str()
+            .expect("stored source returned")
+            .contains("${TENANT_HOST}"),
+        "the stored document must keep the reference, not the expansion: {}",
+        detail["openapi"]
+    );
+}
+
+/// A reference this deployment cannot resolve is a validation error, not a
+/// silently empty host — the failure mode D44 exists to remove is a template
+/// that quietly names the wrong place.
+#[tokio::test]
+async fn template_with_an_unset_var_is_rejected_at_validate() {
+    let (pool, _fixtures) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api_with_registry_vars(
+        pool,
+        None,
+        overslash_core::template_vars::Vars::empty(),
+        |_| {},
+    )
+    .await;
+    let (_org_id, _ident_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let yaml = format!(
+        "openapi: 3.1.0
+info:
+  title: Varred
+  key: varred
+servers:
+  - url: https://${{{var}}}
+paths:
+  /items:
+    get:
+      operationId: list_items
+      summary: List items
+      risk: read
+",
+        var = "NOT_SET_ANYWHERE"
+    );
+
+    let report: Value = client
+        .post(format!("{base}/v1/templates/validate"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .body(yaml)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(report["valid"], json!(false));
+    let errors = report["errors"].as_array().expect("errors array");
+    assert!(
+        errors.iter().any(|e| e["code"] == "template_var_unset"),
+        "expected template_var_unset, got {errors:?}"
+    );
+    // The message must name the env var an operator has to set, not just the
+    // reference — the reader is usually deploying, not authoring.
+    assert!(
+        errors.iter().any(|e| e["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("OVERSLASH_TEMPLATE_VAR_NOT_SET_ANYWHERE"))),
+        "message should name the env var: {errors:?}"
+    );
+}

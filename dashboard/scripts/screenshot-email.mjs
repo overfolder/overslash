@@ -43,9 +43,10 @@ try {
 		viewport: { width: 1200, height: 1100 },
 		fullPage: false,
 		waitFor: async (p) => {
-			// Catalog step: pick the Email (Mailbox Gateway) template card, then
-			// advance to the configure step via "Use this template".
-			await p.getByText('Email (Mailbox Gateway)', { exact: false }).first().click();
+			// Catalog step: pick the Email template card, then advance to the
+			// configure step via "Use this template". Exact match so the short
+			// "Email" title doesn't collide with substrings in other copy.
+			await p.getByText('Email', { exact: true }).first().click();
 			await p.getByRole('button', { name: 'Use this template' }).click();
 			// Configure step: every credential row must render.
 			await p.getByText('Overfwd API Token', { exact: false }).first().waitFor({ timeout: 15_000 });
@@ -59,11 +60,11 @@ try {
 
 	const id = instance?.id;
 	if (id) {
-		// 2. The bound instance's detail page (Gateway URL + both credential rows).
+		// 2. The bound instance's detail page (Endpoint URL + both credential rows).
 		const detail = await snap.navigateAndSnap('email-instance', `/services/${id}`, {
 			viewport: { width: 1200, height: 1100 },
 			waitFor: async (p) => {
-				await p.getByText('Gateway URL', { exact: false }).first().waitFor({ timeout: 15_000 });
+				await p.getByText('Endpoint URL', { exact: false }).first().waitFor({ timeout: 15_000 });
 				await p.getByText('Overfwd API Token', { exact: false }).first().waitFor({ timeout: 15_000 });
 				await p.waitForTimeout(300);
 			}

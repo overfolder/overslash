@@ -187,6 +187,15 @@ module "cloud_run" {
   platform_gateway_host          = var.enable_overfwd ? var.overfwd_domain : ""
   platform_gateway_key_secret_id = var.enable_overfwd ? module.secret_manager.overfwd_gateway_key_secret_id : ""
 
+  # `services/email.yaml` reads its `servers[0]` host from `${MAILBOX_HOST}`
+  # (D44). Derived from the SAME `overfwd_domain` that feeds
+  # `platform_gateway_host` above, so the two can no longer drift — that drift
+  # is exactly what made dev target the prod gateway and lose the platform key.
+  template_vars = merge(
+    var.enable_overfwd && var.overfwd_domain != "" ? { MAILBOX_HOST = var.overfwd_domain } : {},
+    var.template_vars,
+  )
+
   depends_on = [
     module.cloud_sql,
     module.secret_manager,
@@ -260,6 +269,7 @@ module "cloud_build" {
   project_id  = var.project_id
   region      = var.region
   base_prefix = local.base_prefix
+  env         = local.env
 
   repository_name = module.artifact_registry.repository_name
 

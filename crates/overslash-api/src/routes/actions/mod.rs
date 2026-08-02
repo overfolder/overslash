@@ -43,20 +43,35 @@ use crate::{
 };
 use overslash_core::{
     permissions::SuggestedTier,
-    types::{ActionResult, DisclosureField, McpAuth, ScopeParams, SecretRef, service::Risk},
+    types::{
+        ActionResult, DisclosureField, McpAuth, ScopeParams, SecretRef,
+        service::{DeclaredRisk, Risk},
+    },
 };
 
 mod approval_detail;
 mod auth;
+mod auth_envelopes;
+mod auth_resolve;
+mod auth_scopes;
 mod call;
+mod dto;
 mod errors;
 mod mcp_resolve;
+mod permission_gate;
 mod resolve;
+mod resolve_encode;
+mod resolve_metadata;
 mod service_resolve;
+mod tags;
 mod validate;
 
 use call::call_action_impl;
 use validate::validate_action_impl;
+
+// Shared DTOs live in `dto`; re-exported here so every sibling's
+// `use super::*;` keeps resolving them exactly as when they were inline.
+use dto::*;
 
 // Used by the approval-replay path to re-mint the OAuth credential that
 // replay payloads deliberately don't persist.
@@ -99,22 +114,6 @@ pub(crate) fn bounded_template_key(
         Some(_) => "_unknown".to_string(),
         None => "_invalid".to_string(),
     }
-}
-
-/// Query options for `POST /v1/actions/call`.
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct CallQuery {
-    /// Opt-in (dashboard "try it" surface): return the gateway's own auth
-    /// errors (`needs_authentication` / `reauth_required`) as a `200` envelope
-    /// with the status inside the body, instead of a real `401`. Browser
-    /// clients otherwise can't distinguish a target-service auth prompt from an
-    /// expired-session `401` and bounce the user to `/login`. The default
-    /// (unset) keeps the typed-`401` contract MCP/REST/white-label callers rely
-    /// on. Only the gateway's auth `401`s are wrapped — upstream statuses
-    /// already ride inside the `status: "called"` envelope, and other gateway
-    /// errors (400/403/5xx) pass through unchanged.
-    #[serde(default)]
-    wrap: Option<bool>,
 }
 
 /// When `?wrap=true`, turn the gateway's auth-`401` variants into a `200`
@@ -327,155 +326,6 @@ async fn validate_action(
     result.map(|(resp, _)| resp)
 }
 
-/// Unified call request — `service` is required and selects between the
-/// two SPEC §8 shapes: Service + defined action (when `action` is set) and
-/// Service + HTTP verb (when only `method` + `url`/`path` is set). Mode A
-/// raw HTTP rides on the verb shape against the synthetic `http`
-/// pseudo-service. See module docs for the field-presence selection rules.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CallRequest {
-    // Raw HTTP fields (also reused by service + HTTP verb)
-    method: Option<String>,
-    url: Option<String>,
-    #[serde(default)]
-    headers: HashMap<String, String>,
-    body: Option<String>,
-    #[serde(default)]
-    secrets: Vec<SecretRef>,
-
-    // Service + action / Service + HTTP verb fields
-    service: Option<String>,
-    /// Optional instance UUID. When present, the resolver looks the instance
-    /// up by id (org-scoped) instead of by caller-shadowed name — required for
-    /// an org admin to invoke an instance owned by another user, since
-    /// name-based lookup is intentionally caller-scoped.
-    service_id: Option<Uuid>,
-    action: Option<String>,
-    /// Service + HTTP verb (SPEC §8): path-only form (host comes from
-    /// `svc.hosts`). Mutually exclusive with `action`.
-    path: Option<String>,
-    #[serde(default)]
-    params: HashMap<String, serde_json::Value>,
-
-    // Large file handling
-    #[serde(default)]
-    prefer_stream: Option<bool>,
-
-    // Optional server-side filter applied to the upstream response body
-    // (e.g., jq). Output is attached to `result.filtered_body`; the
-    // original `body` is always preserved.
-    #[serde(default)]
-    filter: Option<ResponseFilter>,
-
-    // Caller-asserted risk class. Today only `read` is meaningful: when set
-    // to `read`, the resolved action's risk must be `Read` or the call is
-    // rejected with 400. `write` / `delete` are accepted by the parser but
-    // do not gate anything (no caller currently asks for them). Set by the
-    // MCP `overslash_read` tool to enforce its readOnlyHint.
-    #[serde(default)]
-    require_risk: Option<Risk>,
-
-    // Response shape selector. `Some(true)` → current full ActionResult
-    // (headers, raw stringified body, no crop). `Some(false)` → compact
-    // shape (headers dropped, body parsed as JSON when possible, output
-    // capped at ~8 KB). `None` defaults to `true` on the HTTP API to keep
-    // direct callers wire-compatible. The MCP layer forwards `false` by
-    // default and only flips to `true` when the caller passes `verbose: true`
-    // on the tool args.
-    #[serde(default)]
-    verbose: Option<bool>,
-
-    // Optional URL the OAuth callback redirects the user back to if this
-    // call triggers a reactive auth flow (reauth_required / missing_scopes /
-    // needs_authentication). Mirrors `return_url` on the connect endpoint
-    // (`routes/connections.rs::InitiateConnectionRequest`); validated by
-    // `parse_return_url` at the request boundary and gated at callback time
-    // by `OVERSLASH_CONNECTION_RETURN_URL_HOSTS` — when the host isn't on the
-    // allow-list the callback falls back to the historical JSON response.
-    #[serde(default)]
-    return_url: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "status")]
-enum CallResponse {
-    #[serde(rename = "called")]
-    Called {
-        /// Pre-rendered `ActionResult` view. Verbose mode encodes the full
-        /// struct (status_code, headers, raw body string, duration_ms,
-        /// optional filtered_body). Compact mode returns the shape from
-        /// `services::compact_response::compact` (headers dropped, body
-        /// parsed as JSON, ≤8 KB). The selector lives on `CallRequest.verbose`.
-        result: serde_json::Value,
-        action_description: Option<String>,
-        /// True when the upstream itself reported failure — an MCP envelope
-        /// with `is_error: true`, or an upstream HTTP status >= 400 — even
-        /// though the call executed. Mirrors `detail.is_error` on the
-        /// `action.executed` audit entry so callers (dashboard Try It, MCP
-        /// clients) can flag the result without parsing the body.
-        is_error: bool,
-    },
-    #[serde(rename = "pending_approval")]
-    PendingApproval {
-        approval_id: Uuid,
-        approval_url: String,
-        action_description: String,
-        expires_at: String,
-        /// Caller↔requester relationship as classified server-side. The agent
-        /// uses this to pick `overslash_approve_self` vs
-        /// `overslash_approve` on the first try instead of
-        /// trial-and-error against the typed-error envelope. Always `"self"`
-        /// when this payload comes from the same agent that triggered the
-        /// action; `"downstream"` when listed by an ancestor.
-        relationship: String,
-        /// Same broadening ladder GET /v1/approvals/{id} returns — included
-        /// here so callers can offer "remember at a broader scope" prompts
-        /// without a second round-trip. Deterministic on the approval's
-        /// `permission_keys`.
-        suggested_tiers: Vec<SuggestedTier>,
-        /// Mirrors the *requesting* agent's `identities.auto_call_on_approve`.
-        /// When `true` (default), an `allow` / `allow_remember` resolution
-        /// auto-replays the call in the background and the execution result
-        /// lands via webhook/audit — the MCP client does **not** need to
-        /// follow up with `POST /v1/approvals/{id}/call`. When `false`, the
-        /// agent is in deferred-execution mode and the caller must replay
-        /// explicitly (e.g. `overslash_call` with `approval_id`) after the
-        /// approval is granted. Surfaced so MCP clients can choose whether
-        /// to wait or to issue an explicit follow-up.
-        auto_call_on_approve: bool,
-        // ── Render-form fields ───────────────────────────────────────────
-        // White-label integrations (Telegram/WhatsApp/web bots) render an
-        // approval prompt straight off this envelope. The four fields below
-        // mirror the matching `ApprovalResponse` fields the dashboard's
-        // `ApprovalRow` / `ApprovalDetail` render from, so a caller can draw
-        // the same card without a second `GET /v1/approvals/{id}` round-trip.
-        /// Labeled, human-readable slice of the resolved request extracted via
-        /// the template's `x-overslash-disclose` filters. Omitted when the
-        /// template declared none. Same shape as
-        /// `ApprovalResponse.disclosed_fields`.
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        disclosed_fields: Vec<disclosure::DisclosedField>,
-        /// Risk class for the gated action: `"low" | "med" | "high"`. Drives
-        /// the approval card's severity styling. Mirrors `ApprovalResponse.risk`
-        /// (defaults to `"med"` for verb/http shapes with no declared risk).
-        risk: String,
-        /// Permission key(s) being requested — what the approver grants.
-        /// Mirrors `ApprovalResponse.permission_keys`.
-        permission_keys: Vec<String>,
-        /// Redacted, pretty-printed request payload (`x-overslash-redact`
-        /// applied), truncated at the same 100 KB UTF-8 boundary as the read
-        /// path. Omitted when no detail was stored. Mirrors
-        /// `ApprovalResponse.action_detail` + its truncation companions.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        action_detail: Option<String>,
-        action_detail_truncated: bool,
-        action_detail_size_bytes: usize,
-    },
-    #[serde(rename = "denied")]
-    Denied { reason: String },
-}
-
 /// Render `ActionResult` according to the caller's `verbose` selector.
 /// Defaults to verbose (`true`) when the caller didn't say — keeps the
 /// HTTP API wire-compatible for the dashboard and direct REST consumers.
@@ -487,124 +337,6 @@ fn render_action_result(result: &ActionResult, verbose: Option<bool>) -> serde_j
     } else {
         crate::services::compact_response::compact(result)
     }
-}
-
-/// Metadata from request resolution, used to derive the correct permission key type.
-struct ResolvedMeta {
-    description: Option<String>,
-    /// Present for service shapes (action / verb); carries info to derive
-    /// service permission keys.
-    service_scope: Option<ServiceScope>,
-    /// Risk level of the action (action shape only, from the action definition).
-    risk: Option<Risk>,
-    /// Disclosure declarations from the action template (action shape only;
-    /// empty for verb / `http`). Runs at approval-create and audit-write time.
-    disclose: Vec<DisclosureField>,
-    /// Redact paths from the action template (action shape only; empty for
-    /// verb / `http`). Applied to the request projection before it's
-    /// persisted as `approvals.action_detail`.
-    redact: Vec<String>,
-    /// Original resolved params (before url/body assembly), retained for the
-    /// disclosure `.params.*` projection. Empty for verb / `http` shapes.
-    params: HashMap<String, serde_json::Value>,
-    /// Display names from the template's `resolve` declarations (param name →
-    /// human-readable string), feeding both description interpolation and the
-    /// disclosure `.resolved.*` projection. Populated for the HTTP action
-    /// shape only — resolvers are HTTP-only today, so verb / MCP / platform
-    /// shapes carry an empty map. Resolution happens once, at resolve time,
-    /// and rides here across execution: audit-write disclosure for a delete
-    /// action still names the object even though it's gone upstream.
-    resolved: HashMap<String, String>,
-    /// When the resolved service has `runtime: Mcp`, dispatch skips the HTTP
-    /// executor and goes through `mcp_caller::invoke` with this payload.
-    mcp_target: Option<McpTarget>,
-    /// When the resolved service has `runtime: Platform`, dispatch calls the
-    /// in-process handler registry instead of making any outgoing call.
-    platform_target: Option<PlatformTarget>,
-    /// Resolved service-instance id (HTTP shapes only). Stored on approval
-    /// replay payloads so the replay path can re-resolve OAuth against the
-    /// same binding instead of persisting a live token.
-    instance_id: Option<uuid::Uuid>,
-}
-
-struct McpTarget {
-    /// Resolved MCP server URL (instance.url ?? template mcp.url).
-    url: String,
-    /// Resolved auth — for Bearer, secret_name is always Some at this point.
-    auth: McpAuth,
-    /// Live OAuth bearer for `McpAuth::OAuth`, resolved out-of-band from the
-    /// caller's connection (never persisted in the request). `None` for
-    /// `None`/`Bearer` auth. Merged into the outbound MCP headers at send time.
-    auth_header: Option<overslash_core::types::AuthHeader>,
-    tool: String,
-    arguments: serde_json::Value,
-}
-
-struct PlatformTarget {
-    action_key: String,
-    params: serde_json::Map<String, serde_json::Value>,
-}
-
-struct ServiceScope {
-    service_key: String,
-    /// Empty string for the Service + HTTP verb shape (then `http_verb` is `Some`).
-    action_key: String,
-    scope_param: ScopeParams,
-    /// Service + HTTP verb (SPEC §8) — when `Some`, permission keys derive as
-    /// `{service_key}:{METHOD}:{path}` instead of `{service_key}:{action_key}:{arg}`.
-    http_verb: Option<HttpVerb>,
-}
-
-#[derive(Clone)]
-struct HttpVerb {
-    method: String,
-    path: String,
-}
-
-/// Cheap, side-effect-free pre-resolution of a `CallRequest`.
-///
-/// Returns enough information for the top-level handler to:
-///   1. Validate caller-supplied args against the action's schema
-///      (action shape only; verb / `http` carry an empty schema).
-///   2. Derive permission keys.
-///   3. Run the caller-asserted risk gate.
-///
-/// Raw HTTP doesn't touch the DB. Service shapes load the template and
-/// (for the action shape) look up the action — no OAuth refresh, no
-/// `param_resolver` HTTP, no scope checks, no audit. Used by both
-/// `/v1/actions/call` (so `validate_args` can sit at the top of the
-/// handler, structurally before any approval-creation work) and
-/// `/v1/actions/validate` (which only runs the cheap path and never
-/// builds a real request).
-///
-/// For service shapes, the resolved template + instance ride along in
-/// the returned tuple so `resolve_request` can reuse them and avoid the
-/// duplicate DB lookup that a separate metadata pre-resolve would
-/// otherwise force on the call hot path.
-struct ActionMetadata {
-    /// Schema for `validate_args`. Empty for verb / `http` shapes.
-    validation_params: HashMap<String, overslash_core::types::ActionParam>,
-    /// Service info for permission-key derivation (service shapes only).
-    service_scope: Option<ServiceScope>,
-    /// Risk class — action shape reads it from the template; verb /
-    /// `http` shapes leave it `None` and the caller infers from method.
-    risk: Option<Risk>,
-    /// Caller-supplied raw HTTP fields used for `http`-pseudo-service
-    /// permission-key derivation. Service shapes use `service_scope`.
-    raw_method: String,
-    raw_url: String,
-    /// Whether this request needs Layer 2 (permission-chain) gating.
-    /// Service shapes are always gated (templates ship with auth or are
-    /// platform/MCP); raw HTTP is gated only when secrets are injected.
-    needs_gate: bool,
-}
-
-/// Pre-resolved service template + instance, threaded
-/// from `resolve_action_metadata` into `resolve_request` so the call
-/// path doesn't re-fetch them.
-struct ResolvedModeC {
-    svc: overslash_core::types::ServiceDefinition,
-    instance: Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
 }
 
 /// Overlay the pinned `config` onto a call's args — the instance's own pins
@@ -653,16 +385,203 @@ fn apply_instance_config(
     }
 }
 
-/// Classify an OAuth resolver error so the action handler can respond
-/// with the right HTTP status. The split mirrors RFC 7231 semantics:
-///   * `Reauth(reason)` → 401, the user can fix it by clicking a link.
-///   * `Internal` → 500, server-side problem the user can't fix
-///     (crypto, DB, parse, provider config missing from the DB).
-///   * `Upstream` → 502, the *provider* is the broken party (transport
-///     error, provider rejected the credentials with a non-refresh body).
-#[derive(Debug)]
-enum OAuthOutcome {
-    Reauth(&'static str),
-    Internal,
-    Upstream,
+/// Evaluate the D42 SQL content policy for one call: locate the
+/// `x-overslash-sql-field` param, resolve the target database's dialect +
+/// label (jq expression over the call params → `sql_databases` instance
+/// config), parse and classify the SQL, and derive the per-table /
+/// per-column permission keys.
+///
+/// Fail-closed at every step: an unresolvable database defaults to postgres
+/// with the raw key (or "unknown") as label; a non-postgres dialect, an
+/// unparseable statement, or a build without the `sql_policy` feature all
+/// classify Write with the all-tables sentinel key.
+async fn evaluate_sql_policy(
+    filter_timeout: std::time::Duration,
+    meta: &ActionMetadata,
+    resolved: Option<&ResolvedModeC>,
+    params: &std::collections::HashMap<String, serde_json::Value>,
+) -> Option<SqlPolicyOutcome> {
+    use overslash_core::permissions::PermissionKey;
+    use overslash_core::sql_policy::{self, SqlAnalysis, SqlClass, WriteReason};
+
+    let scope = meta.service_scope.as_ref()?;
+    let (sql_param_name, sql_param) = meta
+        .validation_params
+        .iter()
+        .find(|(_, p)| p.sql_field.is_some())?;
+    // Optional SQL param not supplied this call: nothing to classify. The
+    // caller still fails closed for `risk: dynamic` (no analysis → Write).
+    let supplied = params.contains_key(sql_param_name.as_str());
+    if !supplied {
+        return None;
+    }
+
+    // ── Resolve the database key via the template's jq expression. ──
+    let db_expr = meta
+        .validation_params
+        .values()
+        .find_map(|p| p.sql_database.clone());
+    let db_key: Option<String> = match db_expr {
+        Some(expr) => {
+            let body = serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
+            let join = tokio::task::spawn_blocking(move || {
+                crate::services::response_filter::run_jq_blocking(&expr, &body)
+            });
+            match tokio::time::timeout(filter_timeout, join).await {
+                Ok(Ok(Ok((outputs, _)))) => outputs.first().and_then(|v| match v {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                }),
+                // jq error / panic / timeout → unresolved (fail-closed
+                // default below), but the call itself proceeds.
+                _ => None,
+            }
+        }
+        None => None,
+    };
+
+    // ── Key into the instance's `sql_databases` config map. ──
+    let entry = db_key.as_deref().and_then(|key| {
+        let raw = resolved.and_then(|r| {
+            r.instance
+                .as_ref()
+                .and_then(|i| i.config.0.get(sql_policy::SQL_DATABASES_CONFIG_KEY))
+                .or_else(|| {
+                    r.svc
+                        .instance_defaults
+                        .as_ref()
+                        .and_then(|d| d.config.get(sql_policy::SQL_DATABASES_CONFIG_KEY))
+                })
+        })?;
+        match sql_policy::parse_sql_databases(raw) {
+            Ok(mut map) => map.remove(key),
+            Err(e) => {
+                tracing::warn!(
+                    service = %scope.service_key,
+                    "malformed sql_databases instance config ({e}); using defaults"
+                );
+                None
+            }
+        }
+    });
+    let dialect = entry
+        .as_ref()
+        .and_then(|e| e.dialect.clone())
+        .unwrap_or_else(|| "postgres".to_string());
+    let db_label = entry
+        .as_ref()
+        .and_then(|e| e.label.clone())
+        .or(db_key)
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // ── Locate and classify the SQL. ──
+    let sql_field = sql_param.sql_field.as_deref().unwrap_or_default();
+    let analysis = if !dialect.eq_ignore_ascii_case("postgres") {
+        // Parsing with the wrong grammar proves nothing — fail closed. A
+        // best-effort second backend (sqlparser-rs) can slot in here later.
+        SqlAnalysis {
+            class: SqlClass::Write,
+            write_reason: Some(WriteReason::UnsupportedDialect(dialect)),
+            read_tables: Vec::new(),
+            mut_tables: Vec::new(),
+            columns: Vec::new(),
+            tables_exhaustive: false,
+        }
+    } else {
+        match sql_policy::extract_sql(sql_param_name, sql_field, params) {
+            Some(sql) => sql_policy::analyze(sql),
+            // Present but not a string at the nominated path — validate_args
+            // should have rejected it; refuse to guess.
+            None => SqlAnalysis {
+                class: SqlClass::Write,
+                write_reason: Some(WriteReason::ParseError(
+                    "sql param value is not a string at the nominated path".to_string(),
+                )),
+                read_tables: Vec::new(),
+                mut_tables: Vec::new(),
+                columns: Vec::new(),
+                tables_exhaustive: false,
+            },
+        }
+    };
+
+    let table_keys = PermissionKey::from_sql_analysis(
+        &scope.service_key,
+        &scope.action_key,
+        &db_label,
+        &analysis,
+    );
+    let column_keys = PermissionKey::from_sql_columns(
+        &scope.service_key,
+        &scope.action_key,
+        &db_label,
+        &analysis,
+    );
+
+    Some(SqlPolicyOutcome {
+        floor: analysis.class.as_risk(),
+        table_keys,
+        column_keys,
+        db_label,
+        analysis,
+    })
+}
+
+/// Merge a call's declared risk, its SQL classification, and the HTTP-method
+/// fallback into the single effective risk both the `require_risk` gate and
+/// the group ceiling evaluate.
+///
+/// - static risk: the declared class, elevated by the SQL floor when a
+///   classified query is on board;
+/// - `dynamic`: starts at read and takes the classifier's verdict — with
+///   **no analysis** (SQL param not supplied, or any earlier bail) it is
+///   Write, because nothing proved the call read-only;
+/// - no declared risk (verb / `http` shapes): inferred from the method.
+fn effective_risk(
+    declared: Option<DeclaredRisk>,
+    sql_policy: Option<&SqlPolicyOutcome>,
+    method: &str,
+) -> Risk {
+    match declared {
+        Some(d) => {
+            let base = d.base_risk();
+            match sql_policy {
+                Some(sp) => base.max_severity(sp.floor),
+                None if d.is_dynamic() => Risk::Write,
+                None => base,
+            }
+        }
+        None => Risk::from_http_method(method),
+    }
+}
+
+/// Merge D42 table keys into the scope_param-derived key set.
+///
+/// Appended when real scoped keys exist (DB-scoping and table-scoping are
+/// separate operator decisions), but they **replace** the unscoped
+/// `{service}:{action}:*` fallback: the chain walk requires *every* key
+/// covered, and no table-shaped rule can cover `:*`, so keeping it would
+/// collapse the per-table tier into "grant the whole action".
+fn merge_sql_keys(
+    mut perm_keys: Vec<overslash_core::permissions::PermissionKey>,
+    scope: &ServiceScope,
+    sql_policy: Option<&SqlPolicyOutcome>,
+) -> Vec<overslash_core::permissions::PermissionKey> {
+    let Some(sp) = sql_policy else {
+        return perm_keys;
+    };
+    if sp.table_keys.is_empty() {
+        return perm_keys;
+    }
+    let fallback = format!("{}:{}:*", scope.service_key, scope.action_key);
+    if perm_keys.len() == 1 && perm_keys[0].0 == fallback {
+        perm_keys.clear();
+    }
+    for key in &sp.table_keys {
+        if !perm_keys.contains(key) {
+            perm_keys.push(key.clone());
+        }
+    }
+    perm_keys
 }

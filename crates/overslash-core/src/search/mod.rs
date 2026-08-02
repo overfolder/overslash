@@ -206,7 +206,7 @@ mod tests {
             path: "/x".into(),
             description: desc.into(),
             summary: None,
-            risk,
+            risk: risk.into(),
             response_type: None,
             params: HashMap::new(),
             scope_param: Default::default(),

@@ -15,6 +15,13 @@ yaml = ["dep:serde_yaml"]
 # consumers that only want keyword + fuzzy (or who provide their own
 # Embedder impl). The binary targets (overslash-api/-cli) keep this on.
 embeddings = ["dep:fastembed"]
+# D42 SQL content policy: Postgres-exact parse of SQL-bearing action params
+# via pg_query (Rust bindings over libpg_query, Postgres's own C parser).
+# Off by default — it adds a C-toolchain build dependency and binary weight
+# that the default build and CI must not pay. Compiled out, `sql_policy::
+# analyze` fails closed (everything classifies as a write on unknown tables);
+# release builds opt in (see the Makefile `release` target).
+sql_policy = ["dep:pg_query"]
 
 [dependencies]
 serde = { workspace = true }
@@ -24,7 +31,7 @@ time = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
 aes-gcm = "0.11"
-base64 = "0.22"
+base64 = "0.23"
 glob-match = "0.2"
 # Lexer + parser only: credential templates are analysed at compile time to
 # learn which secret slots they read. Evaluation (jaq-std/jaq-json) stays in
@@ -35,6 +42,9 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 strsim = "0.11"
 fastembed = { version = "5", optional = true }
+# Builds vendored libpg_query (C toolchain + libclang for bindgen). Kept
+# behind `sql_policy` so the default build never pays for it.
+pg_query = { version = "6", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

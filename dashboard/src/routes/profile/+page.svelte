@@ -6,6 +6,8 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ReplaceByocModal from '$lib/components/services/ReplaceByocModal.svelte';
 	import { deleteByocCredential } from '$lib/api/services';
+	import { updatePermissionExpiry } from '$lib/identityApi';
+	import ExpiryControl from '$lib/components/approval/ExpiryControl.svelte';
 	import type { ByocCredentialSummary, OAuthProviderInfo } from '$lib/types';
 
 	let { data } = $props<{
@@ -135,6 +137,22 @@
 			/* ignore */
 		}
 		await goto('/login');
+	}
+
+	// Reset a remembered rule's expiry from the inline dropdown. 'forever' clears
+	// it; any other option resets expiry to now + that duration. No confirm — it
+	// is a reversible tweak, unlike revoke.
+	async function updateRuleExpiry(id: string, optionValue: string) {
+		busy = `perm:${id}`;
+		error = null;
+		try {
+			await updatePermissionExpiry(id, optionValue === 'forever' ? null : optionValue);
+			await invalidateAll();
+		} catch (e) {
+			error = `Failed to update expiry: ${(e as Error).message}`;
+		} finally {
+			busy = null;
+		}
 	}
 
 	function revokePermission(id: string) {
@@ -298,17 +316,22 @@
 							{/if}
 							<div class="row-sub">
 								<span class="pill pill-{rule.effect}">{rule.effect}</span>
-								<span>TTL: {ttlRemaining(rule.expires_at)}</span>
 								<span>Created {formatTime(rule.created_at)}</span>
 							</div>
 						</div>
-						<button
-							class="btn btn-danger"
-							disabled={busy === `perm:${rule.id}`}
-							onclick={() => revokePermission(rule.id)}
-						>
-							Revoke
-						</button>
+						<div class="row-actions">
+							<ExpiryControl
+								displayLabel={ttlRemaining(rule.expires_at)}
+								onselect={(v) => updateRuleExpiry(rule.id, v)}
+							/>
+							<button
+								class="btn btn-danger"
+								disabled={busy === `perm:${rule.id}`}
+								onclick={() => revokePermission(rule.id)}
+							>
+								Revoke
+							</button>
+						</div>
 					</li>
 				{/each}
 			</ul>
@@ -508,7 +531,9 @@
 	}
 	.row-actions {
 		display: flex;
+		align-items: center;
 		gap: 0.5rem;
+		flex: none;
 	}
 
 	/* Read-only metadata tags (key=value) on a BYOC row. */

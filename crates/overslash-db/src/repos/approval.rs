@@ -27,6 +27,10 @@ pub struct ApprovalRow {
     pub token: String,
     pub expires_at: OffsetDateTime,
     pub created_at: OffsetDateTime,
+    /// System-derived metadata tags for the gated call (`sql:write`,
+    /// `table:wh/orders`, `service:metabase`, …). Minted once at approval
+    /// creation and copied onto the execution; see `overslash_core::tags`.
+    pub tags: Vec<String>,
 }
 
 pub struct CreateApproval<'a> {
@@ -40,6 +44,7 @@ pub struct CreateApproval<'a> {
     pub permission_keys: &'a [String],
     pub token: &'a str,
     pub expires_at: OffsetDateTime,
+    pub tags: &'a [String],
 }
 
 pub(crate) async fn create(
@@ -48,9 +53,9 @@ pub(crate) async fn create(
 ) -> Result<ApprovalRow, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "INSERT INTO approvals (org_id, identity_id, current_resolver_identity_id, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, token, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
+        "INSERT INTO approvals (org_id, identity_id, current_resolver_identity_id, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, token, expires_at, tags)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags",
         input.org_id,
         input.identity_id,
         input.current_resolver_identity_id,
@@ -61,6 +66,7 @@ pub(crate) async fn create(
         input.permission_keys,
         input.token,
         input.expires_at,
+        input.tags,
     )
     .fetch_one(pool)
     .await
@@ -75,7 +81,7 @@ pub(crate) async fn get_by_id(
 ) -> Result<Option<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags
          FROM approvals WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -93,7 +99,7 @@ pub(crate) async fn get_by_token(
 ) -> Result<Option<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags
          FROM approvals WHERE token = $1 AND org_id = $2",
         token,
         org_id,
@@ -119,7 +125,7 @@ pub(crate) async fn resolve(
         ApprovalRow,
         "UPDATE approvals SET status = $2, resolved_at = now(), resolved_by = $3, remember = $4
          WHERE id = $1 AND org_id = $6 AND status = 'pending' AND current_resolver_identity_id = $5
-         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
+         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags",
         id,
         status,
         resolved_by,
@@ -148,7 +154,7 @@ pub(crate) async fn update_resolver(
             SET current_resolver_identity_id = $2,
                 resolver_assigned_at = now()
           WHERE id = $1 AND org_id = $4 AND status = 'pending' AND current_resolver_identity_id = $3
-          RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
+          RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags",
         id,
         new_resolver,
         expected_resolver,
@@ -164,7 +170,7 @@ pub(crate) async fn list_pending_by_org(
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags
          FROM approvals WHERE org_id = $1 AND status = 'pending' ORDER BY created_at DESC",
         org_id,
     )
@@ -180,7 +186,7 @@ pub(crate) async fn list_mine(
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags
          FROM approvals
          WHERE org_id = $1 AND identity_id = $2 AND status = 'pending'
          ORDER BY created_at DESC",
@@ -201,7 +207,7 @@ pub(crate) async fn list_mine_by_status(
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags
          FROM approvals
          WHERE org_id = $1 AND identity_id = $2 AND status = $3
          ORDER BY created_at DESC",
@@ -223,7 +229,7 @@ pub(crate) async fn list_assigned_to_identity(
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags
          FROM approvals
          WHERE org_id = $1
            AND status = 'pending'
@@ -265,7 +271,7 @@ pub(crate) async fn list_actionable_for_identity(
                a.replay_payload,
                a.permission_keys as "permission_keys!", a.status as "status!",
                a.resolved_at, a.resolved_by, a.remember as "remember!",
-               a.token as "token!", a.expires_at as "expires_at!", a.created_at as "created_at!"
+               a.token as "token!", a.expires_at as "expires_at!", a.created_at as "created_at!", a.tags as "tags!"
         FROM approvals a
         WHERE a.org_id = $1
           AND a.status = 'pending'
@@ -308,7 +314,7 @@ pub(crate) async fn list_pending_for_descendants(
                a.replay_payload,
                a.permission_keys as "permission_keys!", a.status as "status!",
                a.resolved_at, a.resolved_by, a.remember as "remember!",
-               a.token as "token!", a.expires_at as "expires_at!", a.created_at as "created_at!"
+               a.token as "token!", a.expires_at as "expires_at!", a.created_at as "created_at!", a.tags as "tags!"
         FROM approvals a
         WHERE a.org_id = $1
           AND a.status = 'pending'
@@ -329,7 +335,7 @@ pub(crate) async fn list_pending_for_auto_bubble(
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT a.id, a.org_id, a.identity_id, a.current_resolver_identity_id, a.resolver_assigned_at, a.action_summary, a.action_detail, a.disclosed_fields, a.replay_payload, a.permission_keys, a.status, a.resolved_at, a.resolved_by, a.remember, a.token, a.expires_at, a.created_at
+        "SELECT a.id, a.org_id, a.identity_id, a.current_resolver_identity_id, a.resolver_assigned_at, a.action_summary, a.action_detail, a.disclosed_fields, a.replay_payload, a.permission_keys, a.status, a.resolved_at, a.resolved_by, a.remember, a.token, a.expires_at, a.created_at, a.tags
          FROM approvals a
          JOIN orgs o ON o.id = a.org_id
          WHERE a.status = 'pending'

@@ -155,6 +155,29 @@ pub async fn kernel_request_secret(
         })
         .await;
 
+    // Same payload as the REST mint path, and for the same reason it omits the
+    // provide URL: that URL is a bearer capability.
+    let audience =
+        crate::services::events::audience::for_secret_request(&scope, caller_identity, target)
+            .await;
+    crate::services::events::emit(
+        ctx.db.clone(),
+        ctx.http_client.clone(),
+        crate::services::events::EventDraft {
+            org_id: ctx.org_id,
+            event_type: crate::services::events::EventType::SecretRequestCreated,
+            payload: serde_json::json!({
+                "request_id": &req_id,
+                "secret_name": input.secret_name.trim(),
+                "identity_id": target,
+                "requested_by": caller_identity,
+                "expires_at": fmt_time(expires_at),
+                "via": "mcp",
+            }),
+            audience,
+        },
+    );
+
     Ok(serde_json::json!({
         "request_id": req_id,
         "provide_url": url,

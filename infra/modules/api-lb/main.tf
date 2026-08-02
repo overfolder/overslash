@@ -11,10 +11,12 @@
 # The single ACME CNAME is auto-published into Cloud DNS when
 # `dns_zone_name` is supplied.
 #
-# Why no path/host rules in the URL map: every request flows to one Cloud
-# Run backend; `subdomain_middleware` inside the API resolves the slug from
-# the (preserved) Host header. The LB is just a wildcard-cert terminator
-# and a pipe to Cloud Run's serverless NEG — keep it dumb on purpose.
+# The URL map whitelists the API's own hostnames (`<apex>` and `*.<apex>`,
+# plus `extra_hosts`): only those reach the Cloud Run backend. Everything
+# else — raw LB-IP scans, random vhosts — gets a 301 to the marketing site
+# at the edge, keeping scanner noise out of the service's request metrics.
+# Slug dispatch still happens in `subdomain_middleware` inside the API; the
+# LB does no per-path routing.
 
 variable "project_id" {
   type = string
@@ -33,6 +35,12 @@ variable "cloud_run_service" {
   description = "Name of the Cloud Run service to route traffic to (output of cloud-run module)."
 }
 
+variable "backend_timeout_seconds" {
+  type        = number
+  default     = 120
+  description = "Backend response timeout. Must exceed EVENTS_STREAM_MAX_CONNECTION_SECS (default 30) — the SSE stream holds a response open that long on purpose."
+}
+
 variable "api_apex" {
   type        = string
   description = "Apex hostname, e.g. `api.overslash.com`. Used for the managed cert SAN list (apex + `*.<apex>`)."
@@ -42,6 +50,18 @@ variable "dns_zone_name" {
   type        = string
   default     = ""
   description = "Cloud DNS managed-zone name that hosts `api_apex`. When set, the ACME challenge CNAME emitted by the DNS authorization is published into this zone automatically. Leave empty if DNS lives outside Terraform — the record values are exposed via the `acme_challenge_*` outputs and must be created manually before the cert can issue."
+}
+
+variable "extra_hosts" {
+  type        = list(string)
+  default     = []
+  description = "Additional hostnames routed to the API backend, beyond `api_apex` and `*.api_apex`. Extension point for per-org custom domains — pair each entry with a cert map entry against `cert_map_id`."
+}
+
+variable "unmatched_redirect_host" {
+  type        = string
+  default     = "www.overslash.com"
+  description = "Host that requests with a non-whitelisted Host header are 301'd to (path and query stripped)."
 }
 
 resource "google_compute_global_address" "api_lb_ip" {
@@ -124,6 +144,14 @@ resource "google_compute_backend_service" "api_backend" {
   # client-supplied header of the same name, so this cannot be spoofed.
   custom_request_headers = ["X-Client-Geo-Country:{client_region}"]
 
+  # `google_compute_backend_service` defaults this to 30s — exactly the SSE
+  # stream's own ceiling, so the two would race and the load balancer could cut
+  # a response mid-frame instead of us closing it cleanly. Serverless NEG
+  # backends are documented as deferring to Cloud Run's timeout rather than
+  # this field, but leaving a 30s value sitting here that *might* apply is not
+  # a bet worth taking on a streaming endpoint.
+  timeout_sec = var.backend_timeout_seconds
+
   backend {
     group = google_compute_region_network_endpoint_group.api_neg.id
   }
@@ -135,12 +163,32 @@ resource "google_compute_backend_service" "api_backend" {
 }
 
 resource "google_compute_url_map" "api" {
-  name            = "${var.base_prefix}-api-urlmap"
-  project         = var.project_id
-  default_service = google_compute_backend_service.api_backend.id
-  # No host_rule / path_matcher blocks: subdomain_middleware in the API
-  # crate dispatches per slug. Adding routing here would just duplicate
-  # state.
+  name    = "${var.base_prefix}-api-urlmap"
+  project = var.project_id
+
+  # Host whitelist: only the API's own hostnames reach Cloud Run. Requests
+  # for anything else (the raw LB IP, arbitrary vhosts probed by scanners)
+  # are redirected at the edge and never count against the service's
+  # request_count metrics. Per-slug dispatch stays in subdomain_middleware.
+  host_rule {
+    hosts        = concat([var.api_apex, "*.${var.api_apex}"], var.extra_hosts)
+    path_matcher = "api"
+  }
+
+  path_matcher {
+    name            = "api"
+    default_service = google_compute_backend_service.api_backend.id
+  }
+
+  # path_redirect + strip_query so scanner payloads are not echoed back in
+  # the Location header.
+  default_url_redirect {
+    host_redirect          = var.unmatched_redirect_host
+    path_redirect          = "/"
+    strip_query            = true
+    https_redirect         = true
+    redirect_response_code = "MOVED_PERMANENTLY_DEFAULT"
+  }
 }
 
 resource "google_compute_target_https_proxy" "api" {

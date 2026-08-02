@@ -48,6 +48,19 @@ variable "max_instances" {
   default = 3
 }
 
+variable "request_timeout_seconds" {
+  type    = number
+  default = 120
+  # `GET /v1/events/stream` holds a response open for
+  # EVENTS_STREAM_MAX_CONNECTION_SECS (default 30) and only then hangs up.
+  # Cloud Run counts that against the per-request timeout, so this must stay
+  # comfortably above the stream ceiling or the platform cuts the response
+  # first and the close stops being ours to schedule. Explicit rather than
+  # riding Cloud Run's 300s default, so raising the ceiling forces a look at
+  # this line.
+  description = "Per-request timeout. Must exceed EVENTS_STREAM_MAX_CONNECTION_SECS — SSE responses stay open for that long by design."
+}
+
 variable "cloud_sql_connection_name" {
   type = string
 }
@@ -305,6 +318,20 @@ variable "platform_gateway_key_secret_id" {
   description = "GSM secret ID holding the gateway key — the same secret the overfwd service reads as OVERFWD_API_KEY. Feeds OVERSLASH_PLATFORM_GATEWAY_KEY."
 }
 
+# Deployment-supplied service-template variables (D44). Each entry becomes
+# `OVERSLASH_TEMPLATE_VAR_<KEY>`, which a shipped or org-authored template
+# references as `${<KEY>}`. The prefix is the security boundary: a template can
+# only ever name a variable an operator put here, never DATABASE_URL or a key.
+#
+# These are readable by any tenant who can author a template (they need only
+# reference the variable and read the resolved definition back), so this map is
+# for non-secret deployment facts — hostnames, base URLs. Never a credential.
+variable "template_vars" {
+  type        = map(string)
+  default     = {}
+  description = "Service-template variables, keyed WITHOUT the OVERSLASH_TEMPLATE_VAR_ prefix (e.g. `MAILBOX_HOST`). Non-secret only — tenants can read these."
+}
+
 variable "metrics_sidecar_image" {
   type        = string
   default     = "otel/opentelemetry-collector-contrib:0.120.0"
@@ -365,6 +392,7 @@ locals {
       OVERSLASH_PLATFORM_GATEWAY_SECRET_NAME = var.platform_gateway_secret_name
       OVERSLASH_PLATFORM_GATEWAY_HOST        = var.platform_gateway_host
     } : {},
+    { for k, v in var.template_vars : "OVERSLASH_TEMPLATE_VAR_${k}" => v if v != "" },
   )
 
   env_secrets = merge(
@@ -438,6 +466,7 @@ resource "google_cloud_run_v2_service" "api" {
 
   template {
     service_account = var.service_account_email
+    timeout         = "${var.request_timeout_seconds}s"
 
     scaling {
       min_instance_count = var.min_instances

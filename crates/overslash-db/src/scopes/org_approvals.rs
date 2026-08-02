@@ -27,6 +27,7 @@ impl OrgScope {
         permission_keys: &'a [String],
         token: &'a str,
         expires_at: OffsetDateTime,
+        tags: &'a [String],
     ) -> Result<ApprovalRow, sqlx::Error> {
         let input = CreateApproval {
             org_id: self.org_id(),
@@ -39,6 +40,7 @@ impl OrgScope {
             permission_keys,
             token,
             expires_at,
+            tags,
         };
         crate::repos::approval::create(self.db(), &input).await
     }

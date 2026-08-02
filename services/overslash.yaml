@@ -216,6 +216,7 @@ platform_actions:
       scopes: { type: array, required: false }
       byoc_credential_id: { type: string, required: false }
       on_behalf_of: { type: string, required: false }
+      login_hint: { type: string, required: false }
 
   request_secret:
     description: >

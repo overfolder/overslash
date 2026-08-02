@@ -208,3 +208,47 @@ shape `disclose` already uses) so a template can say "the scope values are
 `.toRecipients[].emailAddress.address`". That is a bigger change than the
 label syntax: it puts a filter on the permission-derivation path, which today
 is pure string handling and runs before any approval exists.
+
+## SQL policy: Windows release binary ships without the parser
+
+`sql_policy` (D42/D43) builds vendored libpg_query — a C build verified on
+the Linux/macOS release runners but not on `windows-latest` (pg_query.rs uses
+bindgen, and libpg_query only gained MSVC support recently). The release
+matrix therefore enables the feature everywhere **except**
+`x86_64-pc-windows-msvc`, where the binary fails closed: every
+`risk: dynamic` action classifies write-on-unknown-tables and routes to
+approval. Correct but read-path-less. To close: try
+`features: embed-dashboard,sql_policy` on the Windows matrix row (LLVM is
+preinstalled on the runner), and delete this entry if the build passes.
+
+Two adjacent small items:
+
+- **Metabase `{{template_vars}}` don't parse** → classify write. If agents
+  want Metabase-variable queries approval-free, add a pre-parse substitution
+  step (bind `native_parameters` values before classification).
+- **`EXPLAIN` (without `ANALYZE`) classifies write** — a deliberate
+  fail-closed simplification (`EXPLAIN ANALYZE` executes DML, so
+  whitelisting bare EXPLAIN means recursing into the option list). Relax in
+  `sql_policy/analyze.rs` if the prompt-noise ever matters.
+
+## Approval expiry emits no event on any transport
+
+The expiry sweep (`SystemScope::expire_stale_approvals`, driven from the
+background loop in `lib.rs`) flips stale pending approvals in a single bulk
+cross-org `UPDATE` and records only a metric — no audit row, no webhook, and
+now no stream event. So a caller watching `GET /v1/events/stream` sees
+`approval.created` and then silence: the approval it was waiting on expires
+invisibly, and the only way to learn that is to poll the resource.
+
+The blocker is shape, not intent. Emitting per-approval events needs the rows
+themselves (to derive each one's `audience` from its requester/resolver chains,
+per D45) and an `OrgScope` per distinct org in the batch, whereas the sweep
+deliberately returns a count. To close: have `expire_stale_approvals` return the
+expired rows, group them by `org_id`, and emit `approval.resolved` with
+`status: "expired"` through `services::events::emit` — the same treatment
+`services/permission_chain.rs`'s cascade path already gets, which likewise has
+no `AuthContext` and derives its audience entirely from the approval row.
+
+Bubbling — both the user-initiated path and the auto-bubble sweep — is no
+longer silent: it emits `approval.bubbled` plus the derived `approval.pending`.
+Expiry is the one remaining transition a subscriber cannot observe.

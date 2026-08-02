@@ -514,6 +514,7 @@ async fn auto_bubble_advances_resolver() {
             &["http:GET:example.com/x".to_string()],
             &token,
             time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            &[],
         )
         .await
         .unwrap();
@@ -527,9 +528,12 @@ async fn auto_bubble_advances_resolver() {
     .unwrap();
 
     let system = overslash_db::scopes::SystemScope::new_internal(pool.clone());
-    let bubbled = overslash_api::services::permission_chain::process_auto_bubble(&system)
-        .await
-        .unwrap();
+    let bubbled = overslash_api::services::permission_chain::process_auto_bubble(
+        &system,
+        &reqwest::Client::new(),
+    )
+    .await
+    .unwrap();
     assert!(bubbled >= 1);
 
     let updated = test_scope.get_approval(approval.id).await.unwrap().unwrap();
@@ -901,6 +905,7 @@ async fn stale_expected_resolver_rejects_resolve_and_update() {
             &["http:GET:example.com/x".to_string()],
             &token,
             time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            &[],
         )
         .await
         .unwrap();
@@ -984,6 +989,7 @@ async fn requester_cannot_resolve_own_approval_orphan() {
             &["http:GET:example.com/x".to_string()],
             &token,
             time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            &[],
         )
         .await
         .unwrap();

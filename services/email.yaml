@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Email (Mailbox Gateway)
+  title: Email
   key: email
   category: Communication
   # Folded into the text every action is scored against
@@ -38,7 +38,16 @@ info:
   #
   # The overfwd deployment URL is set per instance (`service_instances.url`),
   # so each org points its catalog entry at its own gateway; `servers` below is
-  # only the fallback default (the shared Overslash Cloud gateway).
+  # only the fallback default (this deployment's shared gateway).
+  #
+  # That default is a deployment variable, not a literal: prod serves
+  # `mailbox.overslash.com`, dev serves `mailbox.dev.overslash.com`, and a
+  # self-hoster serves neither — so `OVERSLASH_TEMPLATE_VAR_MAILBOX_HOST` names
+  # it and there is deliberately NO default. A hardcoded fallback would be a
+  # wrong answer rather than a safe one: it points every dev instance at the
+  # prod gateway, and because the platform gateway key is only ever sent to
+  # `OVERSLASH_PLATFORM_GATEWAY_HOST` (D39), a host that doesn't match also
+  # silently loses the key. Unset ⇒ this template does not load. See D44.
   #
   # Because the mailbox credential is per-instance, every user creates their own
   # instance — so an org with a dedicated gateway sets it ONCE on an org layer
@@ -46,7 +55,7 @@ info:
   # rather than on each instance. An instance that sets its own value still
   # wins. See DECISIONS.md D35.
 servers:
-  - url: https://mailbox.overslash.com
+  - url: https://${MAILBOX_HOST}
 security:
   - gateway: []
     mailbox: []
@@ -66,10 +75,9 @@ components:
       required: true
       # This value is also *which mailbox* the instance speaks for, so
       # discovery surfaces it as the row's `account_email`. Without it every
-      # instance of this template renders the same "Email (Mailbox Gateway)"
-      # display name — the name belongs to the template, not the instance —
-      # and an agent holding three mailboxes has to call all three to find out
-      # which is which.
+      # instance of this template renders the same "Email" display name — the
+      # name belongs to the template, not the instance — and an agent holding
+      # three mailboxes has to call all three to find out which is which.
       identity: true
   # The secrets an operator binds for this service. Declared once here and
   # referenced by name from the securitySchemes' templates below, so one

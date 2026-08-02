@@ -33,6 +33,14 @@ pub fn generate_pkce() -> PkcePair {
 /// Pass a `code_challenge` when the provider requires PKCE — the caller is
 /// responsible for generating the PKCE pair via `generate_pkce()` and keeping
 /// the verifier for `exchange_code`.
+///
+/// `login_hint` pre-selects an account at the provider — the connection's
+/// `account_email` on a reconnect, or a caller-supplied value on a fresh
+/// flow. It is emitted under the provider's own parameter name
+/// (`login_hint_param`, seeded in migration 106) and silently dropped for
+/// providers that have none, so we never push an unknown parameter at a
+/// strict authorization server. Feed it through
+/// [`hint_from_account_email`] when the value came from `account_email`.
 pub fn build_auth_url(
     provider: &oauth_provider::OAuthProviderRow,
     client_id: &str,
@@ -40,9 +48,22 @@ pub fn build_auth_url(
     scopes: &[String],
     state: &str,
     code_challenge: Option<&str>,
+    login_hint: Option<&str>,
 ) -> String {
-    let extra: std::collections::HashMap<String, String> =
+    let mut extra: std::collections::HashMap<String, String> =
         serde_json::from_value(provider.extra_auth_params.clone()).unwrap_or_default();
+
+    // Resolve the hint to (param name, value), dropping it entirely when the
+    // provider takes no hint. A dynamic hint wins over a static
+    // `extra_auth_params` entry under the same key — pushing both would emit
+    // a duplicate query parameter, which providers resolve inconsistently.
+    let hint = login_hint
+        .filter(|v| !v.is_empty())
+        .zip(provider.login_hint_param.as_deref())
+        .map(|(value, key)| (key, value));
+    if let Some((key, _)) = hint {
+        extra.remove(key);
+    }
 
     let mut params = vec![
         ("client_id", client_id.to_string()),
@@ -66,6 +87,10 @@ pub fn build_auth_url(
     if let Some(challenge) = code_challenge {
         params.push(("code_challenge", challenge.to_string()));
         params.push(("code_challenge_method", "S256".to_string()));
+    }
+
+    if let Some((key, value)) = hint {
+        params.push((key, value.to_string()));
     }
 
     let query = params
@@ -468,6 +493,34 @@ fn extract_email(body: &serde_json::Value, provider_key: &str) -> Option<String>
         }
     }
     None
+}
+
+/// Turn a connection's stored `account_email` into a value the provider will
+/// accept as an account hint, or `None` when it can't be one.
+///
+/// Providers with no `login_hint_param` get `None` so callers don't have to
+/// check twice. The one value-level fixup is GitHub: [`extract_email`]
+/// synthesizes `{login}@users.noreply.github.com` when the user hides their
+/// address, and hinting GitHub with that address would name an account that
+/// doesn't exist — unwrap it back to the `{login}` it was built from. The
+/// knowledge of that synthetic shape lives here, beside the code that
+/// creates it.
+pub fn hint_from_account_email(
+    provider: &oauth_provider::OAuthProviderRow,
+    account_email: &str,
+) -> Option<String> {
+    provider.login_hint_param.as_ref()?;
+    // Scoped to GitHub rather than applied to any address ending in that
+    // domain: `@users.noreply.github.com` is GitHub's, and rewriting it for
+    // some other provider would invent a hint instead of repairing one.
+    let hint = match provider.key.as_str() {
+        "github" => account_email
+            .strip_suffix("@users.noreply.github.com")
+            .unwrap_or(account_email),
+        _ => account_email,
+    }
+    .trim();
+    (!hint.is_empty()).then(|| hint.to_string())
 }
 
 #[cfg(test)]

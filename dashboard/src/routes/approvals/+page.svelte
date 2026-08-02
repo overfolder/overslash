@@ -4,6 +4,7 @@
 	import { humanize, extractAgentName, scopeArgSummary } from '$lib/approvals/format';
 	import { collapse, motionDuration } from '$lib/utils/motion';
 	import { flip } from 'svelte/animate';
+	import { APPROVAL_EVENT_TYPES, eventStream, onEvent } from '$lib/stores/events.svelte';
 
 	let {
 		data
@@ -42,6 +43,43 @@
 	});
 	$effect(() => {
 		pendingExecutions = data.pendingExecutions.filter(isPendingCall);
+	});
+
+	// Live queue. The in-place mutations below stay the instant path for the
+	// operator's *own* actions; this reconciles everything else — an approval
+	// raised by an agent, or one resolved in another tab or by a colleague,
+	// neither of which this page could ever see before.
+	//
+	// Refetching both lists rather than patching from the payload keeps one
+	// source of truth for membership (`scope=assigned` / `scope=mine`), which
+	// cascades and auto-call make too subtle to reproduce client-side. Debounced
+	// because a single resolution can cascade into a burst of events.
+	let refetchTimer: ReturnType<typeof setTimeout> | null = null;
+	let refetchGeneration = 0;
+
+	function scheduleRefetch() {
+		if (refetchTimer !== null) return;
+		refetchTimer = setTimeout(async () => {
+			refetchTimer = null;
+			const generation = ++refetchGeneration;
+			try {
+				const [assigned, mine] = await Promise.all([
+					session.get<ApprovalResponse[]>('/v1/approvals?scope=assigned'),
+					session.get<ApprovalResponse[]>('/v1/approvals?scope=mine&status=allowed')
+				]);
+				// A later refetch already landed — its answer is the fresher one.
+				if (generation !== refetchGeneration) return;
+				approvals = assigned;
+				pendingExecutions = mine.filter(isPendingCall);
+			} catch {
+				// Transient — the next event or navigation refreshes.
+			}
+		}, 300);
+	}
+
+	$effect(() => onEvent([...APPROVAL_EVENT_TYPES, 'stream.resync'], scheduleRefetch));
+	$effect(() => () => {
+		if (refetchTimer !== null) clearTimeout(refetchTimer);
 	});
 
 	// Row exit: fast enough that the next card lands under a stationary cursor.
@@ -128,7 +166,11 @@
 					{:else}
 						Queue is clear ·
 					{/if}
-					<span class="aq-live"><span class="pulse"></span>live</span>
+					{#if eventStream.live}
+						<span class="aq-live"><span class="pulse"></span>live</span>
+					{:else}
+						<span class="aq-live is-fallback"><span class="dot"></span>auto-refresh</span>
+					{/if}
 				</div>
 			</div>
 		</div>
@@ -278,6 +320,17 @@
 		100% {
 			box-shadow: 0 0 0 0 rgba(33, 184, 107, 0);
 		}
+	}
+	/* Stream unavailable: the queue still refreshes, just on a timer. Muted and
+	   static so the difference from "live" is legible at a glance. */
+	.aq-live.is-fallback {
+		color: var(--color-text-muted);
+	}
+	.aq-live .dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: var(--color-text-muted);
 	}
 
 	.banner-error {

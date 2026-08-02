@@ -35,6 +35,14 @@ Environment overrides for `bootstrap.sh`:
 | Var | Default | Meaning |
 |-----|---------|---------|
 | `METABASE_URL` | `http://localhost:3033` | instance URL |
+
+> Note the name collision: this `METABASE_URL` is `bootstrap.sh`'s own
+> variable. The *template* variable is the prefixed
+> `OVERSLASH_TEMPLATE_VAR_METABASE_URL` (D44), and `services/metabase.yaml`
+> writes it as `${METABASE_URL?}` — so with it unset the template ships with no
+> host and each service instance is asked for its own URL (put
+> `http://localhost:3033` there to point at this harness). Setting the prefixed
+> variable on the API instead gives every instance that host as the default.
 | `MB_ADMIN_EMAIL` | `admin@overslash.local` | admin user |
 | `MB_ADMIN_PASSWORD` | `Overslash123!` | admin password |
 | `MB_KEY_NAME` | `overslash-mcp` | API key label |

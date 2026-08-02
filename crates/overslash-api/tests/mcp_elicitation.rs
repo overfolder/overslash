@@ -1153,6 +1153,7 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         db_max_connections: 5,
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -1228,6 +1229,7 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        event_bus: overslash_api::services::events::EventBus::new(),
         test_resources: None,
     }
 }

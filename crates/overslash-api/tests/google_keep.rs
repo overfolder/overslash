@@ -34,8 +34,11 @@ fn google_keep_yaml_parses() {
         .parent()
         .unwrap()
         .to_path_buf();
-    let reg = ServiceRegistry::load_from_dir(&ws_root.join("services"))
-        .expect("services/ should load cleanly");
+    let reg = ServiceRegistry::load_from_dir(
+        &ws_root.join("services"),
+        overslash_core::template_vars::Vars::for_tests(),
+    )
+    .expect("services/ should load cleanly");
     let svc = reg
         .get("google_keep")
         .expect("google_keep should be registered");

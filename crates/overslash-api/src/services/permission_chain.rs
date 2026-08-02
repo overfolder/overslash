@@ -17,7 +17,7 @@
 use uuid::Uuid;
 
 use overslash_core::permissions::{
-    AccessLevel, PermissionKey, PermissionResult, check_permissions,
+    AccessLevel, PermissionKey, PermissionResult, check_permissions, check_permissions_screened,
 };
 use overslash_core::types::{PermissionEffect, PermissionRule};
 use overslash_db::repos::audit::AuditEntry;
@@ -44,12 +44,17 @@ pub enum ChainWalkResult {
 /// Walk the requester's ancestor chain and decide whether to allow, deny,
 /// or open an approval.
 ///
+/// `deny_screen_keys` (D42 column keys) can trip a deny rule at any level
+/// but never require allow coverage and never appear in an approval's
+/// uncovered set -- see `check_permissions_screened`.
+///
 /// `force_user_resolver` short-circuits the resolver search and assigns the
 /// user directly -- used when the org has set `approval_auto_bubble_secs = 0`.
 pub async fn walk(
     scope: &OrgScope,
     requester_id: Uuid,
     perm_keys: &[PermissionKey],
+    deny_screen_keys: &[PermissionKey],
     force_user_resolver: bool,
 ) -> Result<ChainWalkResult, AppError> {
     // chain is depth ASC: chain[0] is the user (root), chain.last() is requester.
@@ -85,7 +90,7 @@ pub async fn walk(
             }
         } else {
             let rules = load_rules(scope, ident.id).await?;
-            match check_permissions(&rules, perm_keys) {
+            match check_permissions_screened(&rules, perm_keys, deny_screen_keys) {
                 PermissionResult::Allowed => {}
                 PermissionResult::Denied(reason) => {
                     return Ok(ChainWalkResult::Denied(reason));
@@ -125,7 +130,9 @@ pub async fn walk(
                 continue;
             }
             let rules = load_rules(scope, ident.id).await?;
-            if let PermissionResult::Denied(reason) = check_permissions(&rules, perm_keys) {
+            if let PermissionResult::Denied(reason) =
+                check_permissions_screened(&rules, perm_keys, deny_screen_keys)
+            {
                 return Ok(ChainWalkResult::Denied(reason));
             }
         }
@@ -145,6 +152,35 @@ pub async fn walk(
         initial_resolver_id,
         rule_placement_id,
     })
+}
+
+/// Deny-only sweep of the requester's chain: does any non-inheriting level
+/// (including the user root) carry a deny rule matching one of `keys`?
+///
+/// Exists for the D42 read-bypass interaction: `auto_approve_reads` skips
+/// the full [`walk`] for read-classified calls, but a deny rule is
+/// documented as overriding every allow mechanism — including that bypass —
+/// so SQL-classified calls run this sweep even when Layer 2 is skipped.
+/// All keys passed here are deny-screen only; no allow coverage is checked.
+pub async fn denied_anywhere(
+    scope: &OrgScope,
+    requester_id: Uuid,
+    keys: &[PermissionKey],
+) -> Result<Option<String>, AppError> {
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    let chain = scope.get_identity_ancestor_chain(requester_id).await?;
+    for ident in chain.iter().rev() {
+        if ident.inherit_permissions {
+            continue;
+        }
+        let rules = load_rules(scope, ident.id).await?;
+        if let PermissionResult::Denied(reason) = check_permissions_screened(&rules, &[], keys) {
+            return Ok(Some(reason));
+        }
+    }
+    Ok(None)
 }
 
 /// Find the next eligible resolver after `current_resolver_id` for an approval
@@ -278,7 +314,10 @@ pub async fn rule_placement_for(scope: &OrgScope, requester_id: Uuid) -> Result<
 ///
 /// Exposed as a standalone function so the background loop and tests can both
 /// call it.
-pub async fn process_auto_bubble(system: &SystemScope) -> Result<u64, AppError> {
+pub async fn process_auto_bubble(
+    system: &SystemScope,
+    http_client: &reqwest::Client,
+) -> Result<u64, AppError> {
     let stale = system.list_pending_approvals_for_auto_bubble().await?;
     let mut bubbled = 0u64;
     for approval in stale {
@@ -321,6 +360,35 @@ pub async fn process_auto_bubble(system: &SystemScope) -> Result<u64, AppError> 
                     ip_address: None,
                 })
                 .await;
+
+            // Same pair a human bubble emits — the sweep is invisible to the
+            // new resolver otherwise, and "it landed in my inbox while I was
+            // away" is exactly what this signal is for. Audience derives from
+            // the approval row, so the absence of a caller costs nothing.
+            crate::services::events::emit_all(
+                system.db().clone(),
+                http_client.clone(),
+                vec![
+                    crate::services::events::approvals::bubbled(
+                        &org_scope,
+                        approval.id,
+                        approval.identity_id,
+                        approval.current_resolver_identity_id,
+                        next,
+                        crate::services::events::approvals::BubbleVia::Auto,
+                    )
+                    .await,
+                    crate::services::events::approvals::pending(
+                        &org_scope,
+                        approval.id,
+                        approval.identity_id,
+                        next,
+                        &approval.action_summary,
+                        crate::services::events::approvals::PendingReason::Bubbled,
+                    )
+                    .await,
+                ],
+            );
             bubbled += 1;
         }
     }
@@ -383,7 +451,9 @@ pub async fn cascade_resolve(
             .map(|k| PermissionKey(k.clone()))
             .collect();
 
-        let walk_result = match walk(scope, approval.identity_id, &perm_keys, false).await {
+        // Stored approvals carry no column screen keys -- those were
+        // evaluated (and passed) when the approval was filed.
+        let walk_result = match walk(scope, approval.identity_id, &perm_keys, &[], false).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(
@@ -465,42 +535,46 @@ pub async fn cascade_resolve(
             })
             .await;
 
-        let db = state.db.clone();
-        let client = state.http_client.clone();
-        let org_id = scope.org_id();
-        let approval_id = approval.id;
-        let summary = approval.action_summary.clone();
-        let exec_for_webhook = execution.as_ref().map(|e| {
-            serde_json::json!({
-                "id": e.id,
-                "status": e.status,
-                "expires_at": e.expires_at
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default(),
-            })
+        let mut payload = serde_json::json!({
+            "approval_id": approval.id,
+            "status": "allowed",
+            "action_summary": approval.action_summary,
+            "resolved_by": "cascade",
         });
-        tokio::spawn(async move {
-            let mut payload = serde_json::json!({
-                "approval_id": approval_id,
-                "status": "allowed",
-                "action_summary": summary,
-                "resolved_by": "cascade",
-            });
-            if let Some(exec) = exec_for_webhook {
-                payload
-                    .as_object_mut()
-                    .expect("payload is a json object")
-                    .insert("execution".into(), exec);
-            }
-            crate::services::webhook_dispatcher::dispatch(
-                &db,
-                &client,
-                org_id,
-                "approval.resolved",
+        if let Some(exec) = execution.as_ref() {
+            payload
+                .as_object_mut()
+                .expect("payload is a json object")
+                .insert(
+                    "execution".into(),
+                    serde_json::json!({
+                        "id": exec.id,
+                        "status": exec.status,
+                        "expires_at": exec.expires_at
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .unwrap_or_default(),
+                    }),
+                );
+        }
+        // No human actor here — the audience derives entirely from the
+        // approval row, which is what makes this path work without an
+        // `AuthContext`.
+        let audience = crate::services::events::audience::for_approval(
+            scope,
+            approval.identity_id,
+            Some(approval.current_resolver_identity_id),
+        )
+        .await;
+        crate::services::events::emit(
+            state.db.clone(),
+            state.http_client.clone(),
+            crate::services::events::EventDraft {
+                org_id: scope.org_id(),
+                event_type: crate::services::events::EventType::ApprovalResolved,
                 payload,
-            )
-            .await;
-        });
+                audience,
+            },
+        );
 
         resolved.push(CascadeResolved {
             execution_id: execution.as_ref().map(|e| e.id),

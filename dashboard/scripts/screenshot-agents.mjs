@@ -88,6 +88,10 @@ const code = await ensureAgent('code-agent');
 const _githubWorker = await ensureAgent('github-worker', code);
 const _deployWorker = await ensureAgent('deploy-worker', code);
 const teammate = await ensureUser('teammate');
+// A Human's remembered rules now render in the Agents view too (same rows the
+// profile page lists) — seed a couple so the user-detail screenshot shows the
+// rule table with its editable expiry dropdown, not just the read-only stub.
+await ensureRules(teammate, ['github:*:*', 'email:send:recipient=*@acme.com']);
 // Pull a fresh listing so any pre-existing tree (re-runs against the same
 // stack) is fully reflected on the page. The screenshot just needs the
 // hierarchy rendered — we don't assert on row count.

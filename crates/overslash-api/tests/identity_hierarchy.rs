@@ -1225,6 +1225,11 @@ async fn test_permissions_list_carries_human_readable_descriptions() {
     .await;
     let agent_id = agent["id"].as_str().unwrap();
 
+    // This harness boots with a builtins-only registry (`http` pseudo-service
+    // only), so github/email don't resolve to a display name and keep the
+    // label-less wording; only `http` ("Raw HTTP") gets the service prefix. The
+    // full-registry prefixing is covered by
+    // `test_permissions_descriptions_lead_with_service_name` below.
     let cases = [
         ("github:*:*", "Any Github action"),
         (
@@ -1233,7 +1238,7 @@ async fn test_permissions_list_carries_human_readable_descriptions() {
         ),
         (
             "http:POST:api.stripe.com/v1/**",
-            "POST to anything under api.stripe.com/v1",
+            "Raw HTTP · POST to anything under api.stripe.com/v1",
         ),
     ];
 
@@ -1266,6 +1271,186 @@ async fn test_permissions_list_carries_human_readable_descriptions() {
             .unwrap_or_else(|| panic!("rule {pattern} missing from the list"));
         assert_eq!(rule["description"], expected, "on list of {pattern}");
     }
+}
+
+/// With the full `services/` registry loaded, a rule's description leads with
+/// the catalog display name — "GitHub · …", "Email · …" — not the humanized slug
+/// ("Any Github action") and not the bare predicate. A fresh owner holds no
+/// service instances, so no principal is shown: the label is the display name
+/// alone. (The shared harness above only registers the `http` pseudo-service,
+/// so it can't exercise this.)
+#[tokio::test]
+async fn test_permissions_descriptions_lead_with_service_name() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool, None).await;
+
+    let key = bootstrap_admin(&client, &base, "perm-desc-registry").await;
+    let owner = create_identity_helper(
+        &client,
+        &base,
+        &key,
+        json!({"name": "svc-desc-owner", "kind": "user"}),
+    )
+    .await;
+    let agent = create_identity_helper(
+        &client,
+        &base,
+        &key,
+        json!({"name": "svc-desc-agent", "kind": "agent", "parent_id": owner["id"]}),
+    )
+    .await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let cases = [
+        ("github:*:*", "GitHub · Any action"),
+        (
+            "email:send:recipient=*@acme.com",
+            "Email · Send on any recipient at acme.com",
+        ),
+    ];
+
+    for (pattern, expected) in cases {
+        let res = client
+            .post(format!("{base}/v1/permissions"))
+            .header("Authorization", format!("Bearer {key}"))
+            .json(&json!({"identity_id": agent_id, "action_pattern": pattern}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "creating {pattern}");
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(body["description"], expected, "on create of {pattern}");
+    }
+
+    let rules: Vec<serde_json::Value> = client
+        .get(format!("{base}/v1/permissions?identity_id={agent_id}"))
+        .header("Authorization", format!("Bearer {key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for (pattern, expected) in cases {
+        let rule = rules
+            .iter()
+            .find(|r| r["action_pattern"] == pattern)
+            .unwrap_or_else(|| panic!("rule {pattern} missing from the list"));
+        assert_eq!(rule["description"], expected, "on list of {pattern}");
+    }
+}
+
+/// The principal (the account a service instance speaks for) leads the label
+/// when it is unambiguous: the owner holds exactly one active `email` instance,
+/// so its `mailbox_user` shows as "Email (ops@acme.com) · …". Add a second
+/// mailbox and the account is no longer determined by the rule alone, so the
+/// principal drops back to the display name.
+#[tokio::test]
+async fn test_permissions_descriptions_show_principal_when_unambiguous() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool, None).await;
+
+    let admin = bootstrap_admin(&client, &base, "perm-desc-principal").await;
+    let owner = create_identity_helper(
+        &client,
+        &base,
+        &admin,
+        json!({"name": "prin-owner", "kind": "user"}),
+    )
+    .await;
+    let owner_id = owner["id"].as_str().unwrap();
+    let org_id = owner["org_id"].as_str().unwrap();
+    let agent = create_identity_helper(
+        &client,
+        &base,
+        &admin,
+        json!({"name": "prin-agent", "kind": "agent", "parent_id": owner_id}),
+    )
+    .await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    // An owner-scoped key so the email instance is owned at the user level —
+    // exactly where the agent's ceiling resolves and finds it.
+    let owner_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {admin}"))
+        .json(&json!({"org_id": org_id, "identity_id": owner_id, "name": "owner-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let owner_key = owner_key_resp["key"].as_str().unwrap();
+
+    let create_instance = |mailbox: &str, name: &str| {
+        let (base, owner_key) = (base.clone(), owner_key.to_string());
+        let (mailbox, name) = (mailbox.to_string(), name.to_string());
+        let client = client.clone();
+        async move {
+            client
+                .post(format!("{base}/v1/services"))
+                .header("Authorization", format!("Bearer {owner_key}"))
+                .json(&json!({
+                    "template_key": "email",
+                    "name": name,
+                    "user_level": true,
+                    "config": {"mailbox_user": mailbox},
+                }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let create_rule = |pattern: &str| {
+        let (base, admin) = (base.clone(), admin.clone());
+        let (pattern, agent_id) = (pattern.to_string(), agent_id.to_string());
+        let client = client.clone();
+        async move {
+            client
+                .post(format!("{base}/v1/permissions"))
+                .header("Authorization", format!("Bearer {admin}"))
+                .json(&json!({"identity_id": agent_id, "action_pattern": pattern}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // One active mailbox → the principal is determined.
+    let res = create_instance("ops@acme.com", "mbx-ops").await;
+    assert_eq!(
+        res.status(),
+        200,
+        "create email instance: {:?}",
+        res.text().await
+    );
+
+    let body: Value = create_rule("email:send:recipient=*@acme.com")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        body["description"], "Email (ops@acme.com) · Send on any recipient at acme.com",
+        "one mailbox → principal shown"
+    );
+
+    // A second mailbox makes the account ambiguous for a service-wide rule.
+    let res = create_instance("team@acme.com", "mbx-team").await;
+    assert_eq!(
+        res.status(),
+        200,
+        "create 2nd email instance: {:?}",
+        res.text().await
+    );
+
+    let body: Value = create_rule("email:*:*").await.json().await.unwrap();
+    assert_eq!(
+        body["description"], "Email · Any action",
+        "two mailboxes → principal suppressed, display name alone"
+    );
 }
 
 #[tokio::test]

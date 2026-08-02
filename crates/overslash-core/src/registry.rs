@@ -2,15 +2,30 @@ use std::collections::HashMap;
 #[cfg(feature = "yaml")]
 use std::path::Path;
 
+use crate::template_vars::{self, Vars};
 use crate::types::{Runtime, ServiceDefinition};
 
 /// In-memory service registry loaded from OpenAPI 3.1 YAML files with
 /// `x-overslash-*` vendor extensions. See `crates/overslash-core/src/openapi.rs`
 /// for the parse + normalize + compile pipeline.
+///
+/// Carries the deployment's [`Vars`] so the org/user-template resolve path can
+/// expand the same `${VAR}` references the shipped templates use without a
+/// second source of truth for them.
 #[derive(Debug, Clone, Default)]
 pub struct ServiceRegistry {
     services: HashMap<String, ServiceDefinition>,
+    vars: Vars,
 }
+
+/// Key of the synthetic raw-HTTP pseudo-service.
+///
+/// The one template for which `hosts: []` means "unbound — the caller names the
+/// target on every call". Every other host-less template is one whose endpoint
+/// simply isn't known yet (`servers: []`, or an unset `${VAR?}`), and must not
+/// be treated as an escape hatch. Named so the two places that care can't drift
+/// apart on a string literal.
+pub const HTTP_PSEUDO_SERVICE: &str = "http";
 
 /// The synthetic `http` pseudo-service template — Mode A's resolution path
 /// runs through the standard Service+HTTP-verb code as `service: "http"`.
@@ -19,7 +34,7 @@ pub struct ServiceRegistry {
 /// (only per-call `secrets[]`).
 fn http_pseudo_service() -> ServiceDefinition {
     ServiceDefinition {
-        key: "http".to_string(),
+        key: HTTP_PSEUDO_SERVICE.to_string(),
         display_name: "Raw HTTP".to_string(),
         description: Some(
             "Raw HTTP — caller supplies the full URL. Per-call secrets injection only.".to_string(),
@@ -41,19 +56,22 @@ impl ServiceRegistry {
     /// Load all .yaml/.yml files from a directory as OpenAPI 3.1 service
     /// templates.
     ///
-    /// Each file is parsed via `openapi::parse_yaml`, alias-normalized, and
-    /// compiled into a [`ServiceDefinition`]. The compiled definition is then
-    /// linted by
+    /// Each file is parsed via `openapi::parse_yaml`, alias-normalized,
+    /// variable-expanded against `vars`, and compiled into a
+    /// [`ServiceDefinition`]. The compiled definition is then linted by
     /// [`crate::template_validation::validate_service_definition`]. Files that
     /// fail at any stage are logged as `tracing::error!` and skipped so a
     /// single broken shipped template can't take down the whole process — CI
     /// catches the same cases via `shipped_services_load_clean` below.
+    ///
+    /// `vars` is normally [`Vars::from_env`]; tests pass an explicit set rather
+    /// than mutating the process environment, which races across the suite.
     #[cfg(feature = "yaml")]
-    pub fn load_from_dir(dir: &Path) -> Result<Self, RegistryError> {
+    pub fn load_from_dir(dir: &Path, vars: Vars) -> Result<Self, RegistryError> {
         let mut services = HashMap::new();
 
         if !dir.exists() {
-            return Ok(Self { services });
+            return Ok(Self { services, vars });
         }
 
         let entries = std::fs::read_dir(dir).map_err(|e| RegistryError::Io(e.to_string()))?;
@@ -92,6 +110,20 @@ impl ServiceRegistry {
                 continue;
             }
 
+            // Expand `${VAR}` before compile, so `servers[].url` is already the
+            // host this deployment actually talks to by the time `hosts` is
+            // derived from it — the platform-credential check compares against
+            // `hosts[0]`, so expanding any later would reintroduce the drift
+            // this mechanism exists to remove.
+            if let Err(issues) = template_vars::expand(&mut doc, &vars) {
+                tracing::error!(
+                    file = %path.display(),
+                    issues = ?issues,
+                    "template variable expansion failed; skipping"
+                );
+                continue;
+            }
+
             let def = match crate::openapi::compile_service(&doc) {
                 Ok((def, _warnings)) => def,
                 Err(errors) => {
@@ -122,10 +154,10 @@ impl ServiceRegistry {
         // path can flow through the same Service+HTTP-verb code as real
         // services. Only injected if no shipped YAML claimed the key.
         services
-            .entry("http".to_string())
+            .entry(HTTP_PSEUDO_SERVICE.to_string())
             .or_insert_with(http_pseudo_service);
 
-        Ok(Self { services })
+        Ok(Self { services, vars })
     }
 
     /// Build a registry that contains only the synthetic `http` pseudo-service.
@@ -134,7 +166,16 @@ impl ServiceRegistry {
         let mut services = HashMap::new();
         let def = http_pseudo_service();
         services.insert(def.key.clone(), def);
-        Self { services }
+        Self {
+            services,
+            vars: Vars::empty(),
+        }
+    }
+
+    /// The deployment's template variables, for the paths that expand
+    /// org/user-authored templates at resolve time.
+    pub fn vars(&self) -> &Vars {
+        &self.vars
     }
 
     /// Get a service definition by key.
@@ -209,6 +250,15 @@ mod tests {
         f.write_all(content.as_bytes()).unwrap();
     }
 
+    fn shipped_services_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services")
+    }
+
     #[test]
     fn load_from_dir_parses_openapi_yaml() {
         let dir = TempDir::new().unwrap();
@@ -241,7 +291,9 @@ paths:
 "#,
         );
 
-        let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(dir.path(), crate::template_vars::Vars::for_tests())
+                .unwrap();
         // 1 from YAML + 1 synthetic `http` pseudo-service.
         assert_eq!(reg.len(), 2);
         let gh = reg.get("github").unwrap();
@@ -256,7 +308,9 @@ paths:
         // the key, so the actions handler can resolve `service: "http"`
         // through the standard registry path.
         let dir = TempDir::new().unwrap();
-        let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(dir.path(), crate::template_vars::Vars::for_tests())
+                .unwrap();
         let http = reg
             .get("http")
             .expect("synthetic `http` pseudo-service missing");
@@ -289,7 +343,9 @@ servers:
 "#,
         );
 
-        let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(dir.path(), crate::template_vars::Vars::for_tests())
+                .unwrap();
         // The synthetic `http` pseudo-service has no hosts so it never
         // matches `find_by_host` — counts stay focused on real services.
         assert_eq!(reg.find_by_host("api.github.com").len(), 1);
@@ -330,7 +386,9 @@ paths:
 "#,
         );
 
-        let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(dir.path(), crate::template_vars::Vars::for_tests())
+                .unwrap();
         let gh = reg.get("github").unwrap();
         let create_pr = gh.actions.get("create_pull_request").unwrap();
         assert_eq!(create_pr.scope_param, "repo".into());
@@ -360,7 +418,9 @@ paths:
 "#,
         );
 
-        let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(dir.path(), crate::template_vars::Vars::for_tests())
+                .unwrap();
         assert_eq!(reg.search("stripe").len(), 1);
         assert_eq!(reg.search("charges").len(), 1);
         assert_eq!(reg.search("nonexistent").len(), 0);
@@ -405,7 +465,9 @@ paths:
 "#,
         );
 
-        let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(dir.path(), crate::template_vars::Vars::for_tests())
+                .unwrap();
         let svc = reg.get("test").unwrap();
         assert_eq!(svc.actions["no_risk"].risk, Risk::Read);
         assert_eq!(svc.actions["explicit_write"].risk, Risk::Write);
@@ -422,8 +484,73 @@ paths:
             .parent()
             .unwrap()
             .join("services");
-        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+                .unwrap();
         assert!(!reg.is_empty(), "no shipped templates loaded");
+    }
+
+    #[test]
+    fn shipped_email_host_comes_from_the_deployment_variable() {
+        // The whole point of D44: `hosts[0]` — which is what
+        // `Config::platform_credential_for` compares the outgoing URL against
+        // — must be the host THIS deployment configured, not a literal baked
+        // into the YAML. Before this, dev shipped `mailbox.overslash.com`
+        // while deploying `mailbox.dev.overslash.com`, so dev instances both
+        // hit the wrong gateway and were denied the platform key.
+        let reg = ServiceRegistry::load_from_dir(
+            &shipped_services_dir(),
+            Vars::from_pairs([("MAILBOX_HOST", "mailbox.dev.overslash.com")]),
+        )
+        .unwrap();
+        let email = reg.get("email").expect("email template registered");
+        assert_eq!(email.hosts, vec!["mailbox.dev.overslash.com".to_string()]);
+    }
+
+    #[test]
+    fn shipped_email_is_skipped_when_its_host_variable_is_unset() {
+        // Deliberately not a fallback to the prod host: a deployment that
+        // hasn't configured a gateway has no `email` service, rather than one
+        // silently pointed at somebody else's mailbox gateway.
+        let reg = ServiceRegistry::load_from_dir(&shipped_services_dir(), Vars::empty()).unwrap();
+        assert!(reg.get("email").is_none(), "email loaded without a host");
+        // Only `email` is affected — templates with literal hosts still load,
+        // so one unset variable can't empty the catalog.
+        assert!(reg.get("github").is_some());
+    }
+
+    #[test]
+    fn shipped_metabase_loads_host_less_when_its_url_variable_is_unset() {
+        // The `${VAR?}` half of D44, and the reason metabase does NOT use the
+        // no-fallback form email does: Metabase is self-hosted, so a deployment
+        // that sets nothing should still be able to OFFER the template and ask
+        // for the endpoint at instantiation — not lose it entirely.
+        let reg = ServiceRegistry::load_from_dir(&shipped_services_dir(), Vars::empty()).unwrap();
+        let metabase = reg.get("metabase").expect("metabase still registered");
+        assert!(
+            metabase.hosts.is_empty(),
+            "unset ${{METABASE_URL?}} should leave no host, got {:?}",
+            metabase.hosts
+        );
+        // Host-less but otherwise whole — the actions are still there to bind
+        // once an instance supplies a `url`.
+        assert!(!metabase.actions.is_empty());
+    }
+
+    #[test]
+    fn shipped_metabase_takes_its_host_from_the_deployment_variable() {
+        let reg = ServiceRegistry::load_from_dir(
+            &shipped_services_dir(),
+            Vars::from_pairs([
+                ("MAILBOX_HOST", "mailbox.overslash.com"),
+                ("METABASE_URL", "https://mb.example.com"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            reg.get("metabase").map(|m| m.hosts.clone()),
+            Some(vec!["mb.example.com".to_string()])
+        );
     }
 
     #[test]
@@ -441,7 +568,9 @@ paths:
             .parent()
             .unwrap()
             .join("services");
-        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+                .unwrap();
         let email = reg.get("email").expect("email template registered");
 
         // All three operations carry them — a pin that only reached `search`
@@ -485,7 +614,9 @@ paths:
             .parent()
             .unwrap()
             .join("services");
-        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+                .unwrap();
         let search = &reg.get("email").expect("email template").actions["search"];
 
         let criteria = search
@@ -528,7 +659,9 @@ paths:
             .parent()
             .unwrap()
             .join("services");
-        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+                .unwrap();
         let email = reg.get("email").expect("email template");
         assert_eq!(email.identity_config_key(), Some("mailbox_user"));
     }
@@ -543,7 +676,9 @@ paths:
             .parent()
             .unwrap()
             .join("services");
-        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+                .unwrap();
         let send = &reg.get("email").expect("email template").actions["send"];
 
         assert_eq!(
@@ -610,7 +745,9 @@ paths:
             .parent()
             .unwrap()
             .join("services");
-        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+                .unwrap();
         let tg = reg.get("telegram").expect("telegram template registered");
         let send = &tg.actions["send_message"];
         assert!(
@@ -639,7 +776,9 @@ paths:
             .parent()
             .unwrap()
             .join("services");
-        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+                .unwrap();
 
         for entry in std::fs::read_dir(&services_dir).unwrap() {
             let path = entry.unwrap().path();
@@ -651,7 +790,10 @@ paths:
                 continue;
             }
             let source = std::fs::read_to_string(&path).unwrap();
-            let report = crate::template_validation::validate_template_yaml(&source);
+            let report = crate::template_validation::validate_template_yaml(
+                &source,
+                &crate::template_vars::Vars::for_tests(),
+            );
             assert!(
                 report.valid,
                 "{} failed validation (would be silently skipped): {:#?}",
@@ -691,7 +833,9 @@ paths:
             .parent()
             .unwrap()
             .join("services");
-        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+                .unwrap();
 
         let mut missing: Vec<String> = Vec::new();
         for def in reg.all() {
@@ -705,7 +849,9 @@ paths:
             }
             for (key, action) in &def.actions {
                 let id = format!("{}:{}", def.key, key);
-                if action.risk.is_mutating()
+                // `dynamic` counts as mutating here: a per-call-classified
+                // action can write, so its approvals need disclose too.
+                if action.risk.display_risk().is_mutating()
                     && action.disclose.is_empty()
                     && !ALLOW_MISSING.contains(&id.as_str())
                 {
@@ -731,7 +877,9 @@ paths:
             .parent()
             .unwrap()
             .join("services");
-        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        let reg =
+            ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+                .unwrap();
 
         // `github` targets GitHub App user-to-server tokens: no OAuth scopes
         // (the app's permissions + installations govern access) plus an

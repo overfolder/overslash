@@ -69,6 +69,10 @@ pub struct AppState {
     /// callers (billing, onboarding, DLQ digest) just `state.mailer.send(...)`
     /// and stay oblivious to provider wiring.
     pub mailer: Arc<dyn Mailer>,
+    /// Process-local fan-out for `GET /v1/events/stream`. Fed exclusively by
+    /// the Postgres listener task (see `services::events::bus`), so every
+    /// replica sees every event regardless of which one produced it.
+    pub event_bus: services::events::EventBus,
     /// Per-request resource resolver. `None` in production: the field
     /// accessors below fall through to `self.db`, `self.rate_limit_cache`,
     /// etc. `Some(_)` only in test builds where multiple test pools share
@@ -93,6 +97,10 @@ pub struct TestResources {
     pub rate_limit_cache: Arc<services::rate_limit::RateLimitConfigCache>,
     pub free_unlimited_cache: Arc<services::billing_tier::FreeUnlimitedCache>,
     pub rate_limiter: Arc<dyn services::rate_limit::RateLimitStore>,
+    /// Per-test event bus. Without this, every test cloning the bootstrapped
+    /// template shares one org id, so one test's events would surface on
+    /// another's stream.
+    pub event_bus: services::events::EventBus,
 }
 
 /// Marker stamped into request `Extensions` by the test-pool middleware,
@@ -175,6 +183,13 @@ impl AppState {
         match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
             Some(res) => res.rate_limiter.as_ref(),
             None => self.rate_limiter.as_ref(),
+        }
+    }
+
+    pub fn event_bus<'a>(&'a self, ext: &'a Extensions) -> &'a services::events::EventBus {
+        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
+            Some(res) => &res.event_bus,
+            None => &self.event_bus,
         }
     }
 }
@@ -279,11 +294,18 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     // when shipped templates fail to load — without it, `service: "http"`
     // requests would 404 in the same boot where the migration created the
     // `http` service_instances row.
-    let registry = ServiceRegistry::load_from_dir(std::path::Path::new(&config.services_dir))
-        .unwrap_or_else(|e| {
-            tracing::warn!("Failed to load service registry: {e}");
-            ServiceRegistry::with_builtins()
-        });
+    let template_vars = overslash_core::template_vars::Vars::from_env();
+    tracing::info!(
+        vars = ?template_vars.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+        "Loaded {} template variables",
+        template_vars.len()
+    );
+    let registry =
+        ServiceRegistry::load_from_dir(std::path::Path::new(&config.services_dir), template_vars)
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to load service registry: {e}");
+                ServiceRegistry::with_builtins()
+            });
     tracing::info!("Loaded {} service definitions", registry.len());
 
     let (rate_limiter, in_memory_store) =
@@ -300,6 +322,8 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     let http_client = reqwest::Client::new();
     let mailer = services::email::build_mailer(&config, http_client.clone());
 
+    let event_bus = services::events::EventBus::new();
+
     let state = AppState {
         db,
         config,
@@ -314,8 +338,19 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         embeddings_available,
         platform_registry: std::sync::Arc::new(services::platform_registry::build_registry()),
         mailer,
+        event_bus: event_bus.clone(),
         test_resources: None,
     };
+
+    // Bridge Postgres NOTIFY onto the local bus, and keep the log trimmed.
+    // Both run on `background_db`; the listener holds one connection from it
+    // for the process lifetime, which `db_background_max_connections` accounts
+    // for.
+    tokio::spawn(services::events::run_pg_listener(
+        background_db.clone(),
+        event_bus,
+    ));
+    tokio::spawn(services::events::run_prune_loop(background_db.clone()));
 
     // Spawn background tasks. These run on `background_db` (a dedicated small
     // pool) rather than `state.db` (the request-handler pool) so a burst of
@@ -324,6 +359,9 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     {
         let db = background_db.clone();
         let system = overslash_db::scopes::SystemScope::new_internal(db.clone());
+        // The auto-bubble sweep emits the same events a human bubble does, so
+        // it needs a client for the webhook half of that.
+        let bg_http_client = state.http_client.clone();
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
@@ -359,7 +397,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                 .await;
                 instrumented_step(
                     "auto_bubble",
-                    services::permission_chain::process_auto_bubble(&system),
+                    services::permission_chain::process_auto_bubble(&system, &bg_http_client),
                     |n| tracing::info!("Auto-bubbled {n} approvals"),
                 )
                 .await;
@@ -497,6 +535,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::oauth_providers::router())
         .merge(routes::auth::router())
         .merge(routes::dev_e2e::router())
+        .merge(routes::events::router())
         .merge(routes::preferences::router())
         .merge(routes::oauth_mcp_clients::router())
         .merge(routes::org_idp_configs::router())

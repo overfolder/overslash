@@ -1,5 +1,6 @@
 import { writable, type Writable } from 'svelte/store';
 import { session, type UserPreferences } from '$lib/session';
+import { APPROVAL_EVENT_TYPES, eventStream, onEvent } from '$lib/stores/events.svelte';
 
 function persisted<T>(key: string, initial: T): Writable<T> {
 	let stored = initial;
@@ -98,6 +99,7 @@ interface ApprovalLite {
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let unsubscribeEvents: (() => void) | null = null;
 
 async function pollOnce() {
 	try {
@@ -121,7 +123,15 @@ async function pollOnce() {
 export function startNotificationPolling() {
 	if (pollTimer !== null) return;
 	pollOnce();
-	pollTimer = setInterval(pollOnce, 30_000);
+	// The interval stays armed as the fallback but skips its tick while the
+	// stream is live, where events drive the refresh instead — the count then
+	// tracks a resolution within a second or two rather than up to 30.
+	pollTimer = setInterval(() => {
+		if (!eventStream.live) void pollOnce();
+	}, 30_000);
+	unsubscribeEvents = onEvent([...APPROVAL_EVENT_TYPES, 'stream.resync'], () => {
+		void pollOnce();
+	});
 }
 
 export function stopNotificationPolling() {
@@ -129,4 +139,6 @@ export function stopNotificationPolling() {
 		clearInterval(pollTimer);
 		pollTimer = null;
 	}
+	unsubscribeEvents?.();
+	unsubscribeEvents = null;
 }

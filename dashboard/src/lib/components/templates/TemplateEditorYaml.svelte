@@ -18,8 +18,8 @@
 	import { yaml as yamlLang } from '@codemirror/lang-yaml';
 	import { oneDark } from '@codemirror/theme-one-dark';
 	import { parse as parseYaml } from 'yaml';
-	import { validateTemplate } from '$lib/api/services';
-	import type { ValidationResult } from '$lib/types';
+	import { listTemplateVars, validateTemplate } from '$lib/api/services';
+	import type { TemplateVar, ValidationResult } from '$lib/types';
 
 	let {
 		yamlValue = '',
@@ -38,6 +38,9 @@
 	let validationPending = $state(false);
 	let validationUnavailable = $state(false);
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+	// Deployment template variables (D44). Without this list an author has to
+	// guess names and only finds out via a `template_var_unset` error.
+	let templateVars = $state<TemplateVar[]>([]);
 
 	// Track whether the doc was changed externally (parent syncing from visual tab)
 	let suppressUpdate = false;
@@ -120,7 +123,30 @@
 
 		// Initial local validation
 		validateLocally(yamlValue);
+
+		// Best-effort: the reference panel is an aid, so an older API (or a
+		// deployment with none configured) just renders nothing.
+		listTemplateVars()
+			.then((vars) => {
+				templateVars = vars ?? [];
+			})
+			.catch(() => {
+				templateVars = [];
+			});
 	});
+
+	/** Insert `${NAME}` at the cursor — the reference panel doubles as a
+	 * palette, which is the whole reason to show names rather than just document
+	 * them elsewhere. */
+	function insertVar(name: string) {
+		if (!view || readOnly) return;
+		const { from, to } = view.state.selection.main;
+		view.dispatch({
+			changes: { from, to, insert: '${' + name + '}' },
+			selection: { anchor: from + name.length + 3 }
+		});
+		view.focus();
+	}
 
 	onDestroy(() => {
 		if (debounceTimer) clearTimeout(debounceTimer);
@@ -195,6 +221,35 @@
 			{/each}
 		{/if}
 	</div>
+
+	{#if templateVars.length > 0}
+		<details class="vars-panel">
+			<summary>
+				Deployment variables ({templateVars.length})
+			</summary>
+			<p class="vars-hint">
+				Write <code>&#36;&#123;NAME&#125;</code> to use one, or
+				<code>&#36;&#123;NAME:default&#125;</code> to supply a fallback. Only these
+				are available — a template cannot read any other environment variable.
+			</p>
+			<ul class="vars-list">
+				{#each templateVars as v (v.name)}
+					<li>
+						<button
+							type="button"
+							class="var-name"
+							disabled={readOnly}
+							title={readOnly ? v.name : `Insert \${${v.name}}`}
+							onclick={() => insertVar(v.name)}
+						>
+							{v.name}
+						</button>
+						<span class="var-value">{v.value}</span>
+					</li>
+				{/each}
+			</ul>
+		</details>
+	{/if}
 </div>
 
 <style>
@@ -273,5 +328,57 @@
 		font-size: 0.75rem;
 		margin-right: 0.3rem;
 		color: var(--color-text-muted);
+	}
+	.vars-panel {
+		margin-top: 0.6rem;
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		padding: 0.5rem 0.9rem;
+		background: var(--color-surface);
+		font-size: 0.82rem;
+	}
+	.vars-panel summary {
+		cursor: pointer;
+		font-weight: 500;
+	}
+	.vars-hint {
+		margin: 0.5rem 0 0.6rem;
+		color: var(--color-text-muted);
+		font-size: 0.78rem;
+	}
+	.vars-hint code {
+		font-family: var(--font-mono);
+	}
+	.vars-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: grid;
+		gap: 0.3rem;
+	}
+	.vars-list li {
+		display: flex;
+		align-items: baseline;
+		gap: 0.6rem;
+	}
+	.var-name {
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--color-accent, #2563eb);
+		cursor: pointer;
+		text-align: left;
+	}
+	.var-name:disabled {
+		color: var(--color-text);
+		cursor: default;
+	}
+	.var-value {
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
+		overflow-wrap: anywhere;
 	}
 </style>

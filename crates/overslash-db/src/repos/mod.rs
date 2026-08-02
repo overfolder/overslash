@@ -24,6 +24,7 @@ pub mod byoc_credential;
 pub mod connection;
 pub mod email_unsubscribe_token;
 pub mod enabled_global_template;
+pub mod event;
 pub mod execution;
 pub mod group;
 pub mod identity;

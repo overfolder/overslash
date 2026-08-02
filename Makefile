@@ -1,4 +1,4 @@
-.PHONY: local local-db local-down dev dev-api dev-dashboard down net test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
+.PHONY: local local-db local-down dev dev-api dev-dashboard down net test check line-count fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean \
        dashboard-static web-build web build install \
@@ -92,11 +92,11 @@ dashboard-static:
 # Build the self-hosted single-binary release with embedded dashboard and MCP.
 # Produces target/release/overslash. Run `overslash web` to start it.
 build: dashboard-static
-	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard
+	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard,sql_policy
 
 # Alias kept for backward compatibility.
 web-build: dashboard-static
-	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard
+	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard,sql_policy
 
 # Install overslash to $(PREFIX)/bin (default: ~/.local/bin).
 # Override: PREFIX=/usr/local make install
@@ -135,6 +135,24 @@ e2e:
 	  status=0; ( cd dashboard && set -a && . "$$STATE_DIR/dashboard.env" && set +a && npx playwright test ) || status=$$?; \
 	  bash scripts/e2e-down.sh; \
 	  exit $$status
+
+# Bring up the local Metabase stack (docker/metabase/, UI on :3033), mint an
+# API key, and seed + register the Pagila sample database. Idempotent.
+# Credentials + the Pagila database id land in docker/metabase/.env.metabase.
+metabase-up:
+	@bash docker/metabase/bootstrap.sh
+	@bash docker/metabase/seed-pagila.sh
+
+# Tear down the Metabase stack (volumes preserved; add -v manually to wipe).
+metabase-down:
+	@cd docker/metabase && (podman-compose -p overslash-metabase -f docker-compose.yml down 2>/dev/null || docker compose -p overslash-metabase -f docker-compose.yml down)
+
+# Run the gated real-Metabase e2e suite (ignored tests) against the local
+# stack — boots/seeds it first. Needs Postgres for the API under test too
+# (make local-db). The suite compiles with the sql_policy parser.
+metabase-e2e: metabase-up
+	@set -a && . docker/metabase/.env.metabase && set +a && \
+	  cargo test -p overslash-api --features sql_policy --test api metabase -- --ignored --test-threads=1
 
 # Start the oversla.sh shortener dev stack (valkey + shortener on :8081)
 shortener-dev:
@@ -227,11 +245,15 @@ worktree-clean:
 test:
 	cargo test --workspace
 
-# CI check: fmt + clippy + test
-check:
+# CI check: line counts + fmt + clippy + test
+check: line-count
 	cargo fmt --check
 	cargo clippy --workspace -- -D warnings
 	cargo test --workspace
+
+# Every .rs under crates/*/src must stay under 1000 lines (mirrors CI).
+line-count:
+	bash scripts/check-line-counts.sh
 
 # Format
 fmt:

@@ -428,6 +428,21 @@ export interface ValidationMessage {
   message: string;
 }
 
+/**
+ * A deployment-supplied template variable (D44): what `${NAME}` resolves to in
+ * a service template on this deployment.
+ *
+ * The value is not a secret and is not treated as one — only non-secret
+ * deployment facts (hostnames, base URLs) may be configured under
+ * `OVERSLASH_TEMPLATE_VAR_*`, precisely because any template author can read
+ * them back through a resolved definition.
+ */
+export interface TemplateVar {
+  /** The name a template references — the env var minus its prefix. */
+  name: string;
+  value: string;
+}
+
 // -- OpenAPI import / drafts --
 
 /** Request body for `POST /v1/templates/import`. */

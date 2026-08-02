@@ -110,12 +110,21 @@ pub(super) async fn validate_action_impl(
         return Err(invalid_action_args_error(&meta.validation_params, errors));
     }
 
+    // D42 SQL content policy — in lockstep with `/call`, so the dry-run
+    // reports the same effective risk and the same table/column keys the
+    // real call would derive.
+    let sql_policy = super::evaluate_sql_policy(
+        std::time::Duration::from_millis(state.config.filter_timeout_ms),
+        &meta,
+        resolved_mode_c.as_ref(),
+        &req.params,
+    )
+    .await;
+
     // Caller-asserted risk gate — mirrors `/call` (which runs it inside
     // `resolve_request` after `validate_args` has already gated bad args).
+    let effective = super::effective_risk(meta.risk, sql_policy.as_ref(), &meta.raw_method);
     if let Some(required) = req.require_risk {
-        let effective = meta
-            .risk
-            .unwrap_or_else(|| Risk::from_http_method(&meta.raw_method));
         if required == Risk::Read && effective.is_mutating() {
             let action_label = req
                 .action
@@ -146,14 +155,18 @@ pub(super) async fn validate_action_impl(
             &req.params,
         )
     };
+    let perm_keys = super::merge_sql_keys(perm_keys, svc, sql_policy.as_ref());
+    let deny_screen_keys: Vec<PermissionKey> = sql_policy
+        .as_ref()
+        .map(|sp| sp.column_keys.clone())
+        .unwrap_or_default();
 
     // Layer 1: group ceiling. Surfaced as a permission status, not a
     // 403 — validate always returns 200 on a well-formed call so the
     // caller has a single decode path.
     let ceiling_service = svc.service_key.clone();
-    let ceiling_risk = meta
-        .risk
-        .unwrap_or_else(|| Risk::from_http_method(&meta.raw_method));
+    // Same merged value as the risk gate above — lockstep with `/call`.
+    let ceiling_risk = effective;
     let ceiling = group_ceiling::load_ceiling(&scope, ceiling_user_id).await?;
     let mut skip_layer2 = false;
     if ceiling.has_groups {
@@ -180,6 +193,24 @@ pub(super) async fn validate_action_impl(
         }
     }
 
+    // D42 deny-only sweep — lockstep with `/call`: a deny rule overrides
+    // the read bypass and the user fast path, so the dry-run reports the
+    // same hard denial the real call would return.
+    let walk_will_run = identity.kind != "user" && meta.needs_gate && !skip_layer2;
+    if sql_policy.is_some() && !walk_will_run {
+        let mut screen: Vec<PermissionKey> = perm_keys.clone();
+        screen.extend(deny_screen_keys.iter().cloned());
+        if let Some(reason) =
+            crate::services::permission_chain::denied_anywhere(&scope, identity_id, &screen).await?
+        {
+            let body = serde_json::json!({
+                "ok": true,
+                "permission": { "status": "denied", "reason": reason },
+            });
+            return Ok(((StatusCode::OK, Json(body)).into_response(), "denied"));
+        }
+    }
+
     // Layer 2: permission chain. Users are gated by groups only, so
     // they get an immediate `allowed`. Agents walk the chain — first
     // gap reports `would_require_approval` without writing an approval
@@ -202,6 +233,7 @@ pub(super) async fn validate_action_impl(
         &scope,
         identity_id,
         &perm_keys,
+        &deny_screen_keys,
         force_user_resolver,
     )
     .await?;

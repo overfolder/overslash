@@ -1,0 +1,233 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE descendants AS (\n            SELECT id FROM identities WHERE id = $2 AND org_id = $1\n            UNION ALL\n            SELECT i.id FROM identities i\n            INNER JOIN descendants d ON i.parent_id = d.id\n            WHERE i.org_id = $1\n        )\n        SELECT a.id as \"id!\", a.org_id as \"org_id!\", a.identity_id as \"identity_id!\",\n               a.current_resolver_identity_id as \"current_resolver_identity_id!\",\n               a.resolver_assigned_at as \"resolver_assigned_at!\",\n               a.action_summary as \"action_summary!\", a.action_detail,\n               a.disclosed_fields,\n               a.replay_payload,\n               a.permission_keys as \"permission_keys!\", a.status as \"status!\",\n               a.resolved_at, a.resolved_by, a.remember as \"remember!\",\n               a.token as \"token!\", a.expires_at as \"expires_at!\", a.created_at as \"created_at!\", a.tags as \"tags!\"\n        FROM approvals a\n        WHERE a.org_id = $1\n          AND a.status = 'pending'\n          AND a.identity_id IN (SELECT id FROM descendants)\n        ORDER BY a.created_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "current_resolver_identity_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "current_resolver_identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "resolver_assigned_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "resolver_assigned_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "action_summary!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "action_summary"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "action_detail",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "action_detail"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "disclosed_fields",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "disclosed_fields"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "replay_payload",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "replay_payload"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "permission_keys!",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "permission_keys"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "status!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "resolved_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "resolved_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "resolved_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "resolved_by"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "remember!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "remember"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "token!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "token"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "expires_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "tags!",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "tags"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c577b3b9417810456efca34b36f8b794203293b02b9c34342e8b2924b3cdf819"
+}

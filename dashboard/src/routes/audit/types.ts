@@ -22,6 +22,10 @@ export interface AuditEntry {
 	/** SPIFFE-style path for the impersonator (when `X-Overslash-As` was used). */
 	impersonated_by_path: string | null;
 	impersonated_by_path_ids: string[];
+	/** System-derived metadata tags (`sql:write`, `table:wh/orders`,
+	 * `service:metabase`, `outcome:error`, …). Empty for events outside the
+	 * action/approval path. Rendered as clickable chips in the detail pane. */
+	tags: string[];
 }
 
 export interface AuditFilters {
@@ -56,6 +60,12 @@ export interface AuditFilters {
 	owner_user_id?: string;
 	/** Substring on the owning user's name. Powers `user ~`. */
 	owner_user_contains?: string;
+	/** Comma-separated metadata tags; a row must carry **all** of them. Powers
+	 * `tag =`. Same comma convention as `identity_kind`. */
+	tag?: string;
+	/** Substring against any one tag — finds `table:warehouse/orders` without
+	 * knowing the db label. Powers `tag ~`. */
+	tag_contains?: string;
 	/** Upstream result of execution events (`detail.is_error`). `true` →
 	 * executions whose upstream reported failure (MCP `is_error` envelope,
 	 * upstream HTTP >= 400); `false` → executions that succeeded. Powers
@@ -160,6 +170,8 @@ export function buildQuery(filters: AuditFilters, limit: number, offset: number)
 	if (filters.identity_kind) p.set('identity_kind', filters.identity_kind);
 	if (filters.owner_user_id) p.set('owner_user_id', filters.owner_user_id);
 	if (filters.owner_user_contains) p.set('owner_user_contains', filters.owner_user_contains);
+	if (filters.tag) p.set('tag', filters.tag);
+	if (filters.tag_contains) p.set('tag_contains', filters.tag_contains);
 	if (filters.is_error !== undefined) p.set('is_error', String(filters.is_error));
 	return p.toString();
 }
@@ -183,7 +195,9 @@ export function filtersFromSearchParams(params: URLSearchParams): AuditFilters {
 		'identity_name_contains',
 		'identity_kind',
 		'owner_user_id',
-		'owner_user_contains'
+		'owner_user_contains',
+		'tag',
+		'tag_contains'
 	] as const;
 	for (const k of keys) {
 		const v = params.get(k);

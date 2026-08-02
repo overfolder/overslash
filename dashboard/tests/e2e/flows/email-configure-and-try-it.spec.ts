@@ -78,10 +78,17 @@ test('user configures the email template against their own gateway and lists mai
 		// ── Configure the service through the wizard ────────────────────
 		await page.goto('/services/new');
 		// Pick step: choosing a card only previews it; a second click commits.
-		await page.getByRole('button', { name: /Email \(Mailbox Gateway\)/i }).click();
+		// Target the card by its exact display-name node — the button's full
+		// accessible name folds in the key and description, and other cards'
+		// descriptions mention "email", so a loose name match is ambiguous.
+		await page
+			.getByRole('button')
+			.filter({ has: page.getByText('Email', { exact: true }) })
+			.first()
+			.click();
 		await page.getByRole('button', { name: 'Use this template' }).click();
 
-		const gatewayUrl = page.getByLabel('Gateway URL');
+		const gatewayUrl = page.getByLabel('Endpoint URL');
 		await expect(gatewayUrl).toBeVisible();
 		await gatewayUrl.fill(env.overfwdUrl!);
 

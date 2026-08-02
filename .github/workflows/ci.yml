@@ -32,8 +32,9 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       infra: ${{ steps.filter.outputs.infra }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
+      sdk: ${{ steps.filter.outputs.sdk }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         id: filter
         with:
@@ -52,6 +53,9 @@ jobs:
               - '.github/workflows/ci.yml'
             dashboard:
               - 'dashboard/**'
+              - '.github/workflows/ci.yml'
+            sdk:
+              - 'sdk/**'
               - '.github/workflows/ci.yml'
 
   # Lint and the sqlx offline-cache check share one job: both are short
@@ -95,7 +99,13 @@ jobs:
           ALTER SYSTEM SET work_mem = '32MB';
           SELECT pg_reload_conf();
           SQL
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Before the toolchain, so an oversized file fails in seconds rather
+      # than after ~1.5 min of setup. Needs nothing but git and awk.
+      - name: Line-count gate (crates/*/src)
+        run: bash scripts/check-line-counts.sh
+
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           components: rustfmt, clippy
@@ -113,7 +123,7 @@ jobs:
       - uses: ./.github/actions/seed-ort-cache
       # Pin sqlx-cli to 0.9 so the CLI's offline-cache format matches the
       # workspace sqlx 0.9 (the .sqlx/ files it verifies).
-      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
         with:
           tool: sqlx-cli@0.9
 
@@ -222,7 +232,7 @@ jobs:
           # Fail the step if Postgres never comes back (timeout exits 124)
           # instead of letting the test step run against a dead database.
           timeout 60 bash -c 'until pg_isready -h localhost -U overslash; do sleep 1; done'
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           components: llvm-tools-preview
@@ -238,7 +248,7 @@ jobs:
       # artifacts stay valid). Linking ~99 instrumented test binaries is
       # the bulk of a warm-cache "compile" phase; mold cuts it sharply.
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1 (mutable tag)
-      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
@@ -263,6 +273,57 @@ jobs:
           # CLI binary). Tests themselves still gate the merge.
           fail_ci_if_error: false
 
+  # D42/D43: the SQL-policy classifier is behind the default-off `sql_policy`
+  # feature (it builds vendored libpg_query — a C dep the default jobs must
+  # not pay for), so nothing above compiles it. This job is the feature's
+  # only CI surface: clippy + the classifier matrix + the feature-gated
+  # Metabase integration tier (mock upstream; the real-Metabase suite stays
+  # local behind `make metabase-e2e`).
+  sql-policy:
+    name: SQL Policy (feature)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: overslash
+          POSTGRES_PASSWORD: overslash
+          POSTGRES_DB: overslash
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
+      SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: sql-policy-deps
+      - uses: ./.github/actions/seed-ort-cache
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1 (mutable tag)
+      # bindgen (pg_query's build) needs libclang; make it deterministic
+      # rather than relying on the runner image's LLVM layout.
+      - name: Install libclang
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
+      - name: Clippy (feature on)
+        run: cargo clippy -p overslash-core -p overslash-api --all-targets --features sql_policy -- -D warnings
+      - name: Classifier matrix (overslash-core)
+        run: cargo test -p overslash-core --features sql_policy sql_policy
+      - name: Feature-gated integration tier (overslash-api)
+        run: cargo test -p overslash-api --features sql_policy --test api metabase
+        env:
+          RUST_LOG: warn
+
   infra:
     name: Infrastructure
     needs: changes
@@ -273,7 +334,7 @@ jobs:
         working-directory: infra
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install OpenTofu
         uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
@@ -299,7 +360,7 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
@@ -313,6 +374,30 @@ jobs:
         run: npm run build:strict
       - name: Build Storybook (component workbench → components.overslash.com)
         run: npm run build-storybook
+
+  sdk:
+    name: SDK (@overslash/sdk)
+    needs: changes
+    if: needs.changes.outputs.sdk == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: sdk/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check
+        run: npm run check
+      - name: Unit tests
+        run: npm test
+      - name: Build
+        run: npm run build
 
   e2e:
     name: E2E (Playwright)
@@ -339,6 +424,10 @@ jobs:
     steps:
       - name: Set WORKTREE_STATE_DIR to a per-job temp dir
         run: echo "WORKTREE_STATE_DIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      # e2e-up builds the API with sql_policy (matching the release build);
+      # bindgen for the vendored libpg_query needs libclang.
+      - name: Install libclang
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
       - name: Tune Postgres for CI (durability off; data is throwaway)
         run: |
           PGPASSWORD=overslash psql -h localhost -U overslash -d overslash <<'SQL'
@@ -351,7 +440,7 @@ jobs:
           ALTER SYSTEM SET work_mem = '32MB';
           SELECT pg_reload_conf();
           SQL
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
       # See the lint job for why the key carries a -deps-opt1 suffix (and
       # must be rotated again on the next [profile.*] change).
@@ -362,7 +451,7 @@ jobs:
       # its cache from a release asset so cold-cache builds don't touch it.
       - uses: ./.github/actions/seed-ort-cache
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1 (mutable tag)
-      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
         with:
           tool: sqlx-cli@0.9
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -399,7 +488,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, coverage, infra, dashboard, e2e]
+    needs: [changes, lint, coverage, sql-policy, infra, dashboard, sdk, e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs passed or were skipped

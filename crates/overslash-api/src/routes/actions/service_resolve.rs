@@ -207,12 +207,29 @@ pub(super) fn effective_base(
 /// returned `path` is `host[:port]/path?query` (no leading `/`) so the
 /// derived permission key matches the legacy `http:{METHOD}:{host}{path}`
 /// shape from before the Mode-A collapse.
+///
+/// **`hosts: []` alone does not mean unbound.** It used to be equivalent,
+/// because `http` was the only host-less HTTP template; since D44 a real
+/// template can also compile host-less (`${VAR?}` left unset — `metabase`).
+/// Letting that fall into the branch below would silently turn a named service
+/// into a raw-HTTP escape hatch reachable at *any* host, which is precisely the
+/// host-binding gap D14 closed by removing Mode B. So the unbound branch is
+/// keyed on the pseudo-service itself, and every other host-less template is
+/// told to use the action shape (whose endpoint comes from the instance's own
+/// `url` via [`effective_base`]).
 pub(super) fn resolve_verb_host_and_path(
     svc: &overslash_core::types::ServiceDefinition,
     service_key: &str,
     url: &Option<String>,
     path: &Option<String>,
 ) -> Result<(String, String), AppError> {
+    if svc.hosts.is_empty() && service_key != overslash_core::registry::HTTP_PSEUDO_SERVICE {
+        return Err(AppError::BadRequest(format!(
+            "service '{service_key}' declares no host, so it cannot be called with the \
+             HTTP-verb shape — that shape checks the target against the template's hosts. \
+             Call one of its actions instead, or give the template a host."
+        )));
+    }
     if svc.hosts.is_empty() {
         // `http` pseudo-service: no host binding. Caller MUST supply `url`;
         // a path-only request has no base to prefix.

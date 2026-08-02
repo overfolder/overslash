@@ -28,6 +28,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         db_max_connections: 5,
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -108,6 +109,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        event_bus: overslash_api::services::events::EventBus::new(),
         test_resources: None,
     };
 
@@ -1759,6 +1761,7 @@ async fn test_service_registry_api() {
         db_max_connections: 5,
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -1818,9 +1821,11 @@ async fn test_service_registry_api() {
         .unwrap()
         .parent()
         .unwrap();
-    let registry =
-        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
-            .unwrap_or_default();
+    let registry = overslash_core::registry::ServiceRegistry::load_from_dir(
+        &ws_root.join("services"),
+        overslash_core::template_vars::Vars::for_tests(),
+    )
+    .unwrap_or_default();
 
     let state = overslash_api::AppState {
         db: pool,
@@ -1848,6 +1853,7 @@ async fn test_service_registry_api() {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        event_bus: overslash_api::services::events::EventBus::new(),
         test_resources: None,
     };
 
@@ -2767,9 +2773,11 @@ async fn start_api_with_registry(
         .unwrap()
         .parent()
         .unwrap();
-    let mut registry =
-        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
-            .unwrap_or_default();
+    let mut registry = overslash_core::registry::ServiceRegistry::load_from_dir(
+        &ws_root.join("services"),
+        overslash_core::template_vars::Vars::for_tests(),
+    )
+    .unwrap_or_default();
 
     if let Some((service_key, new_host)) = host_override {
         if let Some(svc) = registry.get(service_key) {
@@ -2786,6 +2794,7 @@ async fn start_api_with_registry(
         db_max_connections: 5,
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
         db_background_max_connections: 2,
         secrets_encryption_key: enc_key_hex,
         secrets_encryption_key_previous: None,
@@ -2865,6 +2874,7 @@ async fn start_api_with_registry(
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        event_bus: overslash_api::services::events::EventBus::new(),
         test_resources: None,
     };
 

@@ -39,8 +39,11 @@ fn google_drive_yaml_parses() {
         .unwrap()
         .parent()
         .unwrap();
-    let reg = overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
-        .expect("services/ directory should parse without errors");
+    let reg = overslash_core::registry::ServiceRegistry::load_from_dir(
+        &ws_root.join("services"),
+        overslash_core::template_vars::Vars::for_tests(),
+    )
+    .expect("services/ directory should parse without errors");
     let svc = reg
         .get("google_drive")
         .expect("google_drive service template should be registered");

@@ -28,6 +28,16 @@ pub struct OAuthProviderRow {
     /// in migration 076; surfaced on `GET /v1/oauth-providers` so the
     /// dashboard renders the chips before consent.
     pub default_identity_scopes: Vec<String>,
+    /// Name of the authorize-URL parameter that pre-selects an account, or
+    /// `None` when the provider takes no such hint. `login_hint` for OIDC
+    /// providers (Google, Microsoft, anything from `create_custom`'s
+    /// discovery path), `login` for GitHub, nothing for Slack/Notion/
+    /// HubSpot/X/Spotify/Eventbrite. The kernel fills the *value* from the
+    /// caller's `login_hint` or, on a reconnect, from the connection's
+    /// `account_email`; a `None` here means the value is dropped rather than
+    /// sent, so we never push an unknown parameter at a strict authorization
+    /// server. Seeded in migration 106.
+    pub login_hint_param: Option<String>,
     pub created_at: OffsetDateTime,
 }
 
@@ -37,7 +47,7 @@ pub async fn get_by_key(pool: &PgPool, key: &str) -> Result<Option<OAuthProvider
         "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,
                 userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
                 extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
-                default_identity_scopes, created_at
+                default_identity_scopes, login_hint_param, created_at
          FROM oauth_providers WHERE key = $1",
         key,
     )
@@ -51,7 +61,7 @@ pub async fn list_all(pool: &PgPool) -> Result<Vec<OAuthProviderRow>, sqlx::Erro
         "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,
                 userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
                 extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
-                default_identity_scopes, created_at
+                default_identity_scopes, login_hint_param, created_at
          FROM oauth_providers ORDER BY display_name",
     )
     .fetch_all(pool)
@@ -78,8 +88,9 @@ pub async fn create_custom(
         OAuthProviderRow,
         "INSERT INTO oauth_providers (key, display_name, authorization_endpoint, token_endpoint,
                 revocation_endpoint, userinfo_endpoint, issuer_url, jwks_uri,
-                supports_pkce, supports_refresh, token_auth_method, is_builtin, extra_auth_params)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, '{}'::jsonb)
+                supports_pkce, supports_refresh, token_auth_method, is_builtin, extra_auth_params,
+                login_hint_param)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, '{}'::jsonb, 'login_hint')
          ON CONFLICT (key) DO UPDATE SET
             display_name = EXCLUDED.display_name,
             authorization_endpoint = EXCLUDED.authorization_endpoint,
@@ -94,7 +105,7 @@ pub async fn create_custom(
          RETURNING key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,
                    userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
                    extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
-                   default_identity_scopes, created_at",
+                   default_identity_scopes, login_hint_param, created_at",
         key,
         display_name,
         authorization_endpoint,

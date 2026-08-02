@@ -43,6 +43,22 @@ Precedence, most specific first: `instance.credentials["gateway"]` → the org
 vault's `overfwd_gateway_key` → the platform key. So an org can always override,
 and nothing changes for a self-hosted or keyless gateway.
 
+## The gateway host
+
+`services/email.yaml` does not hardcode a host. Its `servers[0]` is
+`https://${MAILBOX_HOST}`, resolved from **`OVERSLASH_TEMPLATE_VAR_MAILBOX_HOST`**
+(D44), and Terraform derives that from the same `overfwd_domain` that feeds
+`OVERSLASH_PLATFORM_GATEWAY_HOST`. That shared source is the point: when the
+two were maintained separately, dev shipped the prod host in the YAML and
+deployed the dev host in the infra, so dev instances sent mail to the prod
+gateway *and* silently lost the platform key (which only ever goes to
+`OVERSLASH_PLATFORM_GATEWAY_HOST`).
+
+There is deliberately **no default**. Unset ⇒ the `email` template does not load
+at all, which is the right answer for a deployment with no Mailbox Gateway; the
+alternative would point it at somebody else's. If `GET /v1/templates` is missing
+`email`, check the API's boot log for `template variable expansion failed`.
+
 ### Rotation
 
 ```bash
@@ -123,7 +139,8 @@ stored no `overfwd_gateway_key`, a 200 proves the platform rung.
 
 | Symptom | Cause |
 |---|---|
-| Every `email` call returns upstream 401 | The platform rung is off. Check the API service has all three of `OVERSLASH_PLATFORM_GATEWAY_SECRET_NAME` / `_HOST` / `_KEY` — a partial config disables the rung by design. Check `_HOST` matches `servers[0]` in `services/email.yaml` **exactly**. |
+| `email` is missing from `GET /v1/templates` | `OVERSLASH_TEMPLATE_VAR_MAILBOX_HOST` is unset, so the template's `${MAILBOX_HOST}` never resolved and the whole file was skipped at load. The boot log says `template variable expansion failed`. |
+| Every `email` call returns upstream 401 | The platform rung is off. Check the API service has all three of `OVERSLASH_PLATFORM_GATEWAY_SECRET_NAME` / `_HOST` / `_KEY` — a partial config disables the rung by design. `_HOST` and `OVERSLASH_TEMPLATE_VAR_MAILBOX_HOST` must agree; Terraform derives both from `overfwd_domain` so they only diverge if set by hand. |
 | 401 only for one org | That org stored its own `overfwd_gateway_key`, or bound `credentials["gateway"]`, and the value is wrong. The org's own binding always wins. |
 | `needs_authentication` instead of a call | The mailbox slots are unbound. The gateway key is never injected alone (a half-authenticated request would just fail downstream). |
 | `host_unreachable` from the gateway | The mailbox domain publishes no autoconfig and no endpoint is pinned. Set `X-Mailbox-Imap` / `X-Mailbox-Smtp` on the instance (D33) or org-wide on a layer (D36) — overfwd wants **both or neither**. |

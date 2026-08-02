@@ -25,7 +25,7 @@ jobs:
     name: Build dashboard
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Enforce -test suffix on dispatch
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -58,20 +58,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `features`: sql_policy (D42) builds vendored libpg_query — enabled
+          # where the C build is known-good. Windows stays without it for now
+          # (libpg_query gained MSVC support but the pg_query.rs bindgen build
+          # is unverified on the runner; without the feature the binary fails
+          # closed — SQL-annotated actions always route to approval). See
+          # TECH_DEBT.md.
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-24.04
             archive_ext: tar.gz
+            features: embed-dashboard,sql_policy
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
             archive_ext: tar.gz
+            features: embed-dashboard,sql_policy
           - target: aarch64-apple-darwin
             runner: macos-latest
             archive_ext: tar.gz
+            features: embed-dashboard,sql_policy
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             archive_ext: zip
+            features: embed-dashboard
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -89,7 +99,7 @@ jobs:
         # GET /v1/version; actions/checkout leaves a repo behind so build.rs
         # could find it itself, but the tag build should name the *released*
         # commit explicitly rather than whatever HEAD happens to be.
-        run: OVERSLASH_VERSION="${VERSION#v}" OVERSLASH_GIT_SHA="$GITHUB_SHA" cargo build --release --package overslash-cli --features embed-dashboard --locked
+        run: OVERSLASH_VERSION="${VERSION#v}" OVERSLASH_GIT_SHA="$GITHUB_SHA" cargo build --release --package overslash-cli --features "${{ matrix.features }}" --locked
       - name: Strip binary
         if: runner.os != 'Windows'
         run: strip target/release/overslash
