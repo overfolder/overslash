@@ -1,3 +1,10 @@
+// @vitest-environment node
+//
+// Deliberately not the suite-wide `happy-dom`. This file signs in with a
+// session cookie, and a DOM environment enforces the browser rule that `Cookie`
+// is a forbidden header — it strips it silently and every request arrives
+// unauthenticated. The flows here are server-side anyway.
+
 /**
  * The SDK against a real gateway.
  *
