@@ -561,6 +561,10 @@ pub async fn kernel_create_service(
             return_url: input.connect_return_url.clone(),
             service_instance_id: Some(row_id),
             pin_service_ids: vec![],
+            // Fresh connect as part of service setup — no account context to
+            // hint with. `CreateServiceInput` can grow a pass-through later
+            // if callers turn out to know the account up front.
+            login_hint: None,
         };
         match crate::services::platform_connections::kernel_create_connection(
             connect_ctx,

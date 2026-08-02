@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,\n                default_identity_scopes, created_at\n         FROM oauth_providers ORDER BY display_name",
+  "query": "INSERT INTO oauth_providers (key, display_name, authorization_endpoint, token_endpoint,\n                revocation_endpoint, userinfo_endpoint, issuer_url, jwks_uri,\n                supports_pkce, supports_refresh, token_auth_method, is_builtin, extra_auth_params,\n                login_hint_param)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, '{}'::jsonb, 'login_hint')\n         ON CONFLICT (key) DO UPDATE SET\n            display_name = EXCLUDED.display_name,\n            authorization_endpoint = EXCLUDED.authorization_endpoint,\n            token_endpoint = EXCLUDED.token_endpoint,\n            revocation_endpoint = EXCLUDED.revocation_endpoint,\n            userinfo_endpoint = EXCLUDED.userinfo_endpoint,\n            issuer_url = EXCLUDED.issuer_url,\n            jwks_uri = EXCLUDED.jwks_uri,\n            supports_pkce = EXCLUDED.supports_pkce,\n            supports_refresh = EXCLUDED.supports_refresh,\n            token_auth_method = EXCLUDED.token_auth_method\n         RETURNING key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                   userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                   extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,\n                   default_identity_scopes, login_hint_param, created_at",
   "describe": {
     "columns": [
       {
@@ -170,6 +170,17 @@
       },
       {
         "ordinal": 15,
+        "name": "login_hint_param",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "login_hint_param"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -181,7 +192,19 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool",
+        "Text"
+      ]
     },
     "nullable": [
       false,
@@ -199,8 +222,9 @@
       true,
       true,
       false,
+      true,
       false
     ]
   },
-  "hash": "c851f66e1a66b3f30e8819c1cb17e922ad4ba10dc956784673d9b70e79b24180"
+  "hash": "0ede0e45938929027745a1165b43508bcccd6812b8a293282cb7e649d26f43c1"
 }

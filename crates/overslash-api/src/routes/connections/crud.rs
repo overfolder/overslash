@@ -333,6 +333,12 @@ pub(super) struct UpgradeScopesRequest {
     /// Additional scopes to request on top of the connection's current set.
     /// May overlap the current set — duplicates are deduped.
     scopes: Vec<String>,
+    /// Override the account pre-selected at the provider. Defaults to the
+    /// connection's own `account_email`, which is what makes a reconnect
+    /// return to the account the connection already belongs to. Set this
+    /// only to deliberately move a connection to a different account.
+    #[serde(default)]
+    login_hint: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -446,6 +452,9 @@ pub(super) async fn upgrade_connection_scopes(
             return_url: None,
             service_instance_id: None,
             pin_service_ids: vec![],
+            // `None` lets the kernel derive the hint from the connection's
+            // `account_email`; an explicit value here overrides it.
+            login_hint: req.login_hint,
         },
         RequestMeta {
             ip: ip.0.as_deref(),

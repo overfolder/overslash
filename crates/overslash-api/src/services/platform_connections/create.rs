@@ -53,6 +53,19 @@ pub struct CreateConnectionInput {
     /// no multi-pin.
     #[serde(default)]
     pub pin_service_ids: Vec<Uuid>,
+    /// Account to pre-select at the provider — typically the email of the
+    /// account the user is expected to authorize. Emitted under the
+    /// provider's own parameter name (`oauth_providers.login_hint_param`)
+    /// and dropped entirely for providers that take no hint.
+    ///
+    /// Callers rarely need to set this on an upgrade: when
+    /// `upgrade_connection_id` is set and this is `None`, the kernel derives
+    /// the hint from the connection's `account_email`, so a reconnect
+    /// returns to the account the connection already belongs to instead of
+    /// whichever session the browser happens to be on. An explicit value
+    /// still wins.
+    #[serde(default)]
+    pub login_hint: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -173,6 +186,25 @@ pub(crate) async fn kernel_create_connection_for_identity(
     // action-handler's `needs_authentication` minter.
     let scopes = merge_scopes(&input.scopes, &provider.default_identity_scopes);
 
+    // Resolve the account hint once, here, rather than at each of the half
+    // dozen call sites that mint an upgrade flow (the REST upgrade endpoint
+    // and all three branches of `mint_upgrade_auth_url`). An explicit hint
+    // wins; otherwise a reconnect inherits the connection's own
+    // `account_email` so the user lands back on the account the row already
+    // belongs to. Costs one PK lookup on the upgrade path, which buys the
+    // guarantee that no reconnect path can silently forget the hint.
+    let login_hint = match parse_login_hint(input.login_hint.as_deref())? {
+        Some(explicit) => Some(explicit),
+        None => match input.upgrade_connection_id {
+            Some(conn_id) => OrgScope::new(ctx.org_id, ctx.db.clone())
+                .get_connection(conn_id)
+                .await?
+                .and_then(|c| c.account_email),
+            None => None,
+        },
+    };
+    let login_hint = login_hint.and_then(|v| oauth::hint_from_account_email(&provider, &v));
+
     // The OAuth `state` parameter is the opaque base62 flow id. The
     // callback resolves it back to this row and reads every other field
     // (org, identity, provider, byoc, PKCE verifier, actor, upgrade
@@ -187,6 +219,7 @@ pub(crate) async fn kernel_create_connection_for_identity(
         &scopes,
         &oauth_state,
         pkce.as_ref().map(|p| p.challenge.as_str()),
+        login_hint.as_deref(),
     );
 
     // Persist the gate-flow row. `flow_id` is the OAuth `state` parameter
