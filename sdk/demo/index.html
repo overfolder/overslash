@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@overslash/sdk — elements</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 32px;
+        background: #fafafa;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: #17191c;
+      }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      p.lede { color: #737580; margin: 0 0 32px; font-size: 14px; }
+      section { margin-bottom: 40px; max-width: 720px; }
+      h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: #737580; }
+      .note { font-size: 13px; color: #737580; margin: 0 0 12px; }
+
+      /*
+       * Theme two: the same elements, rebranded entirely through the documented
+       * custom properties. No shadow piercing, no !important, no forked markup.
+       */
+      .branded {
+        --overslash-accent: #042503;
+        --overslash-accent-fg: #6ce869;
+        --overslash-bg: #fffdf9;
+        --overslash-bg-subtle: #faf4f0;
+        --overslash-fg: #2c2a26;
+        --overslash-fg-heading: #042503;
+        --overslash-border: #e6ded6;
+        --overslash-radius: 14px;
+        --overslash-muted: #8a827a;
+        --overslash-font-family: 'DM Sans', system-ui, sans-serif;
+      }
+
+      /* Theme three: what ::part reaches that the tokens deliberately do not. */
+      .parted overslash-approval-card::part(card) {
+        border-width: 2px;
+        border-style: dashed;
+        box-shadow: none;
+      }
+      .parted overslash-approval-card::part(risk-bar) { height: 8px; }
+      .parted overslash-approval-card::part(button-allow) { border-radius: 999px; }
+      .parted overslash-approval-card::part(key) { text-transform: uppercase; }
+
+      .dark {
+        --overslash-bg: #1c1d21;
+        --overslash-bg-subtle: #26282e;
+        --overslash-fg: #d1d4d9;
+        --overslash-fg-heading: #fafafa;
+        --overslash-border: #383a42;
+        --overslash-muted: #a3a6b0;
+        --overslash-accent: #8b83ff;
+        background: #131418;
+        padding: 20px;
+        border-radius: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>@overslash/sdk</h1>
+    <p class="lede">
+      The same four elements, four ways. Nothing below forks markup — only custom
+      properties and <code>::part</code>.
+    </p>
+
+    <overslash-provider id="provider">
+      <section id="s-default">
+        <h2>Default</h2>
+        <overslash-approval-card id="card-default"></overslash-approval-card>
+      </section>
+
+      <section id="s-branded" class="branded">
+        <h2>Branded — custom properties only</h2>
+        <overslash-approval-card id="card-branded"></overslash-approval-card>
+      </section>
+
+      <section id="s-parted" class="parted">
+        <h2>::part overrides</h2>
+        <overslash-approval-card id="card-parted"></overslash-approval-card>
+      </section>
+
+      <section id="s-dark" class="dark">
+        <h2 style="color: #a3a6b0">Dark</h2>
+        <overslash-approval-card id="card-dark"></overslash-approval-card>
+      </section>
+
+      <section id="s-list">
+        <h2>Queue</h2>
+        <p class="note">
+          Live over the event stream when one is available; falls back to polling
+          otherwise. The chip says which.
+        </p>
+        <overslash-approval-list id="list" scope="actionable"></overslash-approval-list>
+      </section>
+
+      <section id="s-secret">
+        <h2>Secret request</h2>
+        <overslash-secret-prompt id="secret"></overslash-secret-prompt>
+      </section>
+
+      <section id="s-connect">
+        <h2>Connect</h2>
+        <overslash-connect-button id="connect" provider="google"></overslash-connect-button>
+      </section>
+    </overslash-provider>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,41 @@
+import type { OverslashClient, RequestOptions } from '../client.js';
+import type { Topic } from '../types/events.js';
+import type { TransportResponse } from '../transport.js';
+
+export interface OpenStreamOptions extends RequestOptions {
+  /** Resume cursor. Sent as `Last-Event-ID`, exactly as `EventSource` would. */
+  lastEventId?: string | number;
+}
+
+/**
+ * The raw stream primitive: opens `GET /v1/events/stream` and hands back the
+ * undrained response.
+ *
+ * Deliberately low-level — parsing, reconnection and cursor tracking live in
+ * `@overslash/sdk/controllers` (`SseEvents`), so a caller that wants to drive
+ * the stream itself is not forced through a state machine.
+ */
+export class EventsResource {
+  constructor(private readonly client: OverslashClient) {}
+
+  async open(topics: Topic[], opts: OpenStreamOptions = {}): Promise<TransportResponse> {
+    // Built by hand rather than with URLSearchParams, which percent-encodes the
+    // separator (`topics=approvals%2Cconnections`). The server decodes that back
+    // before parsing, so both work — but the documented contract is a
+    // comma-separated list, and a request log should show one.
+    const qs = topics.length ? `?topics=${topics.map(encodeURIComponent).join(',')}` : '';
+
+    return this.client.send('GET', `/v1/events/stream${qs}`, undefined, {
+      stream: true,
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      headers: {
+        accept: 'text/event-stream',
+        // Not sent by us on a first connect, so the server starts the client at
+        // the org's high-water mark rather than replaying all of history.
+        ...(opts.lastEventId === undefined
+          ? {}
+          : { 'last-event-id': String(opts.lastEventId) }),
+      },
+    });
+  }
+}
