@@ -549,7 +549,8 @@ CREATE TABLE public.oauth_providers (
     token_auth_method text DEFAULT 'client_secret_post'::text NOT NULL,
     issuer_url text,
     jwks_uri text,
-    default_identity_scopes text[] DEFAULT '{}'::text[] NOT NULL
+    default_identity_scopes text[] DEFAULT '{}'::text[] NOT NULL,
+    login_hint_param text
 );
 
 

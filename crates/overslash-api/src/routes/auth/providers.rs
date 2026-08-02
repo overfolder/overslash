@@ -157,6 +157,9 @@ pub(super) async fn provider_login(
         &scopes,
         &state_param,
         pkce.as_ref().map(|p| p.challenge.as_str()),
+        // Dashboard sign-in, not a connection: whoever is hitting `/auth/login`
+        // has not identified themselves yet, so there is no account to hint at.
+        None,
     );
 
     let mut headers = HeaderMap::new();

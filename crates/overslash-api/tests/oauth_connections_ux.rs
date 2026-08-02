@@ -748,3 +748,293 @@ async fn services_list_connection_filter_narrows() {
     assert_eq!(filtered[0]["name"], "service-a");
     assert_eq!(filtered[0]["connection_id"], conn_a.to_string());
 }
+
+// ── login_hint: pre-select the account at the provider ──────────────────────
+//
+// Reconnecting a connection labelled `aaa@example.com` used to hand the user
+// an account-agnostic authorize URL, so a browser holding several provider
+// sessions could land on the wrong one and graft its tokens onto the existing
+// row (the callback's `COALESCE` keeps the stale label). The kernel now
+// derives the hint from the connection's `account_email`, and API callers can
+// pass one explicitly on a fresh flow.
+//
+// The hint lands on the flow row's `upstream_authorize_url` — the raw provider
+// URL the gate redirects to — so that is what these tests read back.
+
+/// Seed the env-var credential cascade for a provider so the kernel can mint a
+/// flow without a BYOC row. Mirrors what the upgrade-scopes test above does.
+fn seed_env_creds(provider_upper: &str) {
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var(format!("OAUTH_{provider_upper}_CLIENT_ID"), "c_id");
+        std::env::set_var(format!("OAUTH_{provider_upper}_CLIENT_SECRET"), "c_secret");
+    }
+}
+
+/// Read the raw provider authorize URL the gate would redirect to, given the
+/// `state` an initiate/upgrade response returned.
+async fn authorize_url_for(pool: &PgPool, state: &str) -> String {
+    overslash_db::repos::oauth_connection_flow::get_by_id(pool, state)
+        .await
+        .unwrap()
+        .expect("flow row should exist")
+        .upstream_authorize_url
+}
+
+#[tokio::test]
+async fn upgrade_scopes_hints_the_connections_own_account() {
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, _ident_id, api_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    seed_env_creds("GOOGLE");
+
+    let conn_id = seed_connection(
+        &pool,
+        org_id,
+        owner_id,
+        "google",
+        &["openid", "email"],
+        Some("aaa@google.com"),
+    )
+    .await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/connections/{conn_id}/upgrade_scopes"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "scopes": [] }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let authorize = authorize_url_for(&pool, resp["state"].as_str().unwrap()).await;
+    assert!(
+        authorize.contains("login_hint=aaa%40google.com"),
+        "reconnect should return the user to the account the row already \
+         belongs to: {authorize}"
+    );
+    // Google's `extra_auth_params` carries `prompt=consent`; the hint must be
+    // additive, not a replacement.
+    assert!(authorize.contains("prompt=consent"), "{authorize}");
+    assert_eq!(
+        authorize.matches("login_hint=").count(),
+        1,
+        "exactly one login_hint parameter: {authorize}"
+    );
+}
+
+#[tokio::test]
+async fn initiate_accepts_an_explicit_login_hint() {
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, _ident_id, api_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+    seed_env_creds("GOOGLE");
+
+    let resp: Value = client
+        .post(format!("{base}/v1/connections"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "provider": "google", "login_hint": "  bbb@google.com  " }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let authorize = authorize_url_for(&pool, resp["state"].as_str().unwrap()).await;
+    assert!(
+        authorize.contains("login_hint=bbb%40google.com"),
+        "explicit hint should be trimmed and forwarded: {authorize}"
+    );
+}
+
+#[tokio::test]
+async fn explicit_login_hint_overrides_the_derived_one() {
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, _ident_id, api_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    seed_env_creds("GOOGLE");
+
+    let conn_id = seed_connection(
+        &pool,
+        org_id,
+        owner_id,
+        "google",
+        &["openid"],
+        Some("aaa@google.com"),
+    )
+    .await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/connections/{conn_id}/upgrade_scopes"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "scopes": [], "login_hint": "moved@google.com" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let authorize = authorize_url_for(&pool, resp["state"].as_str().unwrap()).await;
+    assert!(
+        authorize.contains("login_hint=moved%40google.com"),
+        "{authorize}"
+    );
+    assert!(
+        !authorize.contains("aaa%40google.com"),
+        "explicit hint should replace, not accompany, the derived one: {authorize}"
+    );
+}
+
+#[tokio::test]
+async fn login_hint_is_dropped_for_providers_that_take_none() {
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, _ident_id, api_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    seed_env_creds("SLACK");
+
+    // Slack has no per-user account hint (only a workspace `team` id), so its
+    // `login_hint_param` is NULL and the value must never reach the URL —
+    // pushing an unknown parameter at a strict authorization server is the
+    // failure mode this guards.
+    let conn_id = seed_connection(
+        &pool,
+        org_id,
+        owner_id,
+        "slack",
+        &["users:read"],
+        Some("aaa@slack.example"),
+    )
+    .await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/connections/{conn_id}/upgrade_scopes"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "scopes": [], "login_hint": "explicit@slack.example" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let authorize = authorize_url_for(&pool, resp["state"].as_str().unwrap()).await;
+    assert!(!authorize.contains("login_hint"), "{authorize}");
+    assert!(!authorize.contains("slack.example"), "{authorize}");
+}
+
+#[tokio::test]
+async fn github_hint_unwraps_the_synthetic_noreply_address() {
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, _ident_id, api_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    seed_env_creds("GITHUB");
+
+    // GitHub's hint parameter is `login` and it names an account, not an
+    // address. When the user hides their email we label the connection with
+    // the synthesized `{login}@users.noreply.github.com`; hinting GitHub with
+    // that would name an account that doesn't exist.
+    let conn_id = seed_connection(
+        &pool,
+        org_id,
+        owner_id,
+        "github",
+        &["read:user"],
+        Some("octocat@users.noreply.github.com"),
+    )
+    .await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/connections/{conn_id}/upgrade_scopes"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "scopes": [] }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let authorize = authorize_url_for(&pool, resp["state"].as_str().unwrap()).await;
+    assert!(authorize.contains("login=octocat"), "{authorize}");
+    assert!(
+        !authorize.contains("noreply"),
+        "synthetic address must not reach GitHub: {authorize}"
+    );
+    assert!(!authorize.contains("login_hint"), "{authorize}");
+}
+
+#[tokio::test]
+async fn upgrade_without_account_email_sends_no_hint() {
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, _ident_id, api_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    seed_env_creds("GOOGLE");
+
+    // An unlabelled connection (userinfo failed at callback time) still has to
+    // be reconnectable — there is simply nothing to hint with.
+    let conn_id = seed_connection(&pool, org_id, owner_id, "google", &["openid"], None).await;
+
+    let resp = client
+        .post(format!("{base}/v1/connections/{conn_id}/upgrade_scopes"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "scopes": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+
+    let authorize = authorize_url_for(&pool, body["state"].as_str().unwrap()).await;
+    assert!(!authorize.contains("login_hint"), "{authorize}");
+}
+
+#[tokio::test]
+async fn malformed_login_hint_is_rejected() {
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, _ident_id, api_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+    seed_env_creds("GOOGLE");
+
+    // A CRLF in the hint is a caller bug worth surfacing, not a value worth
+    // percent-encoding and forwarding.
+    let resp = client
+        .post(format!("{base}/v1/connections"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "provider": "google", "login_hint": "a@b.com\r\nX-Evil: 1" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "{:?}", resp.text().await);
+
+    let resp = client
+        .post(format!("{base}/v1/connections"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "provider": "google", "login_hint": "a".repeat(321) }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "{:?}", resp.text().await);
+}

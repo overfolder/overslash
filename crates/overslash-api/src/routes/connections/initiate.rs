@@ -29,6 +29,11 @@ pub(super) struct InitiateConnectionRequest {
     /// Singular back-compat alias for `pin_service_ids`, merged into the list.
     #[serde(default)]
     service_instance_id: Option<Uuid>,
+    /// Account to pre-select at the provider (typically an email). Only sent
+    /// to providers that accept an account hint. See
+    /// [`CreateConnectionInput::login_hint`].
+    #[serde(default)]
+    login_hint: Option<String>,
 }
 
 /// Wire shape for `POST /v1/connections`.
@@ -91,6 +96,7 @@ pub(super) async fn initiate_connection(
         return_url: req.return_url,
         service_instance_id: None,
         pin_service_ids,
+        login_hint: req.login_hint,
     };
     let kernel_response: CreateConnectionResponse = kernel_create_connection(
         ctx,

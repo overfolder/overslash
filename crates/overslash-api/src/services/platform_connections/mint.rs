@@ -62,6 +62,10 @@ pub async fn mint_initial_auth_url(
             return_url: return_url.map(str::to_string),
             service_instance_id: None,
             pin_service_ids: vec![],
+            // First connect — there is no prior connection to inherit an
+            // account from, and the action handler has no account context of
+            // its own to offer.
+            login_hint: None,
         },
         RequestMeta::default(),
     )
@@ -139,6 +143,9 @@ pub async fn mint_upgrade_auth_url(
                 return_url: return_url.map(str::to_string),
                 service_instance_id: None,
                 pin_service_ids: vec![],
+                // Derived by the kernel from the connection's
+                // `account_email` — see `CreateConnectionInput::login_hint`.
+                login_hint: None,
             },
             RequestMeta::default(),
         )
@@ -170,6 +177,9 @@ pub async fn mint_upgrade_auth_url(
                 return_url: return_url.map(str::to_string),
                 service_instance_id: None,
                 pin_service_ids: vec![],
+                // Derived by the kernel from the connection's
+                // `account_email` — see `CreateConnectionInput::login_hint`.
+                login_hint: None,
             },
             RequestMeta::default(),
         )
@@ -197,6 +207,8 @@ pub async fn mint_upgrade_auth_url(
             return_url: return_url.map(str::to_string),
             service_instance_id: None,
             pin_service_ids: vec![],
+            // Derived by the kernel from the connection's `account_email`.
+            login_hint: None,
         },
         RequestMeta::default(),
     )

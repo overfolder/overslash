@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO oauth_providers (key, display_name, authorization_endpoint, token_endpoint,\n                revocation_endpoint, userinfo_endpoint, issuer_url, jwks_uri,\n                supports_pkce, supports_refresh, token_auth_method, is_builtin, extra_auth_params)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, '{}'::jsonb)\n         ON CONFLICT (key) DO UPDATE SET\n            display_name = EXCLUDED.display_name,\n            authorization_endpoint = EXCLUDED.authorization_endpoint,\n            token_endpoint = EXCLUDED.token_endpoint,\n            revocation_endpoint = EXCLUDED.revocation_endpoint,\n            userinfo_endpoint = EXCLUDED.userinfo_endpoint,\n            issuer_url = EXCLUDED.issuer_url,\n            jwks_uri = EXCLUDED.jwks_uri,\n            supports_pkce = EXCLUDED.supports_pkce,\n            supports_refresh = EXCLUDED.supports_refresh,\n            token_auth_method = EXCLUDED.token_auth_method\n         RETURNING key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                   userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                   extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,\n                   default_identity_scopes, created_at",
+  "query": "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,\n                default_identity_scopes, login_hint_param, created_at\n         FROM oauth_providers ORDER BY display_name",
   "describe": {
     "columns": [
       {
@@ -170,6 +170,17 @@
       },
       {
         "ordinal": 15,
+        "name": "login_hint_param",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "login_hint_param"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -181,19 +192,7 @@
       }
     ],
     "parameters": {
-      "Left": [
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Bool",
-        "Bool",
-        "Text"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -211,8 +210,9 @@
       true,
       true,
       false,
+      true,
       false
     ]
   },
-  "hash": "2833a308029394358a12f3d21fc1239f2c4e6e55f48bc9fcc855813b8c67b1c2"
+  "hash": "de3f156ba064b689f6929fcc0a3fc45ea8b47ec620f5727b992dd368ae702148"
 }

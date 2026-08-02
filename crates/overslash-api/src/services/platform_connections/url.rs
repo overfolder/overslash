@@ -61,6 +61,35 @@ pub(crate) fn parse_return_url(raw: Option<&str>) -> Result<Option<String>, AppE
     Ok(Some(parsed.into()))
 }
 
+/// Maximum length for a caller-supplied `login_hint`. 320 is the RFC 5321
+/// ceiling for an email address (64-char local part + `@` + 255-char domain);
+/// providers that take a bare username want far less.
+const LOGIN_HINT_MAX_LEN: usize = 320;
+
+/// Parse a caller-supplied `login_hint`. Blank is `None`, not an error — the
+/// hint is an optimisation, and a caller passing `""` means "no preference".
+///
+/// Control characters are rejected rather than escaped: the value lands in an
+/// authorize-URL query string, and while `urlencoding::encode` would percent-
+/// encode a CR/LF, a hint carrying one is a caller bug worth surfacing rather
+/// than a value worth forwarding to the provider.
+pub(crate) fn parse_login_hint(raw: Option<&str>) -> Result<Option<String>, AppError> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if raw.chars().count() > LOGIN_HINT_MAX_LEN {
+        return Err(AppError::BadRequest(format!(
+            "login_hint exceeds {LOGIN_HINT_MAX_LEN}-character limit"
+        )));
+    }
+    if raw.chars().any(char::is_control) {
+        return Err(AppError::BadRequest(
+            "login_hint must not contain control characters".into(),
+        ));
+    }
+    Ok(Some(raw.to_string()))
+}
+
 /// The provider `redirect_uri`: `{public_url}/v1/oauth/callback`. Every
 /// orchestrated OAuth flow uses this single default at both authorize build
 /// and token exchange — white-label partners no longer orchestrate through
@@ -130,6 +159,37 @@ mod tests {
         assert!(parse_return_url(Some("javascript:alert(1)")).is_err());
         assert!(parse_return_url(Some("mailto:foo@example.com")).is_err());
     }
+    #[test]
+    fn parse_login_hint_trims_and_passes_through() {
+        assert_eq!(
+            parse_login_hint(Some("  aaa@google.com ")).unwrap(),
+            Some("aaa@google.com".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_login_hint_none_and_blank_pass_through_as_none() {
+        assert!(parse_login_hint(None).unwrap().is_none());
+        assert!(parse_login_hint(Some("")).unwrap().is_none());
+        assert!(parse_login_hint(Some("   ")).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_login_hint_rejects_control_chars() {
+        assert!(parse_login_hint(Some("aaa@google.com\r\nX-Evil: 1")).is_err());
+        assert!(parse_login_hint(Some("aaa\u{0}b@google.com")).is_err());
+    }
+
+    #[test]
+    fn parse_login_hint_rejects_overlong() {
+        let long = "a".repeat(LOGIN_HINT_MAX_LEN + 1);
+        assert!(parse_login_hint(Some(&long)).is_err());
+        // Counted in characters, not bytes — a multi-byte hint at the limit
+        // is still accepted.
+        let multibyte = "é".repeat(LOGIN_HINT_MAX_LEN);
+        assert!(parse_login_hint(Some(&multibyte)).unwrap().is_some());
+    }
+
     #[test]
     fn default_callback_redirect_uri_trims_trailing_slash() {
         assert_eq!(

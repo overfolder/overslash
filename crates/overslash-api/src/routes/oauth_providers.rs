@@ -160,6 +160,13 @@ struct ProviderDetail {
     /// Identity scopes the partner must union into every authorize request so
     /// the imported token can resolve `account_email` via `userinfo_endpoint`.
     default_identity_scopes: Vec<String>,
+    /// Name of the authorize-URL parameter that pre-selects an account
+    /// (`login_hint` for OIDC providers, `login` for GitHub), or absent when
+    /// the provider takes none. A partner running its own dance can set this
+    /// to the `account_email` of the connection it is re-importing so the
+    /// user lands back on the same account.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    login_hint_param: Option<String>,
 }
 
 /// `GET /v1/oauth-providers/{key}` — full OAuth metadata for one provider.
@@ -184,5 +191,6 @@ async fn get_provider(
         token_auth_method: p.token_auth_method,
         extra_auth_params: p.extra_auth_params,
         default_identity_scopes: p.default_identity_scopes,
+        login_hint_param: p.login_hint_param,
     }))
 }
