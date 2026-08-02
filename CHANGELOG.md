@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.7.0](https://github.com/overfolder/overslash/compare/v0.6.0...v0.7.0) (2026-08-02)
+
+
+### Features
+
+* **dashboard:** per-env dev favicon + "{env} environment" top ribbon ([#495](https://github.com/overfolder/overslash/issues/495)) ([c3e9ad0](https://github.com/overfolder/overslash/commit/c3e9ad0a77a13061b4375f72e8ba8d565a04b6e3))
+* **events:** real-time SSE event stream (GET /v1/events/stream) ([#504](https://github.com/overfolder/overslash/issues/504)) ([a175ce6](https://github.com/overfolder/overslash/commit/a175ce636cdd3473163000e2bd25a063c77d7e54))
+* **oauth:** pre-select the account on reconnect via login_hint ([#509](https://github.com/overfolder/overslash/issues/509)) ([8e0b52b](https://github.com/overfolder/overslash/commit/8e0b52b95b1a8156ff535eba3805b0458e5c298f))
+* **perms:** editable rule expiry dropdown + show Human rules in Agents view ([#493](https://github.com/overfolder/overslash/issues/493)) ([743b418](https://github.com/overfolder/overslash/commit/743b4184751194d14afa98087cd601532a8d48ed))
+* **perms:** lead rule descriptions with the service (and principal) ([#494](https://github.com/overfolder/overslash/issues/494)) ([f9d2396](https://github.com/overfolder/overslash/commit/f9d239638661e4d338c4b4e99a784b146314a17a))
+* **sdk:** @overslash/sdk — embed approvals, secret requests and connects in your own product ([#508](https://github.com/overfolder/overslash/issues/508)) ([93ab687](https://github.com/overfolder/overslash/commit/93ab68749670cb48bc02c97e5f41b046a60f2bf4))
+* **sql-policy:** Metabase template + D42 SQL content policy (classifier, dynamic risk, per-table keys, column deny-screen) ([#496](https://github.com/overfolder/overslash/issues/496)) ([774340e](https://github.com/overfolder/overslash/commit/774340e50c4cbe09f23874f97deee4dbad05dfbc))
+* **tags:** system-derived metadata tags on approvals, executions and audit logs ([#501](https://github.com/overfolder/overslash/issues/501)) ([f75d3c1](https://github.com/overfolder/overslash/commit/f75d3c1d079600da03d8f3b6ec75c877d45f01bf))
+* **templates:** resolve deployment-specific values from ${VAR} (D44) ([#503](https://github.com/overfolder/overslash/issues/503)) ([ccf3ec2](https://github.com/overfolder/overslash/commit/ccf3ec24e632d7fb994226f232adc3d8dd169143))
+
+
+### Bug Fixes
+
+* **version:** report clean version in prod instead of &lt;version&gt;-dev ([#491](https://github.com/overfolder/overslash/issues/491)) ([c33a229](https://github.com/overfolder/overslash/commit/c33a2298cad678e9706c6a2e8057be94216a9769))
+
 ## [0.6.0](https://github.com/overfolder/overslash/compare/v0.5.0...v0.6.0) (2026-07-24)
 
 
