@@ -38,6 +38,7 @@ mod cross_tenant_isolation;
 mod cross_user_group_reauth;
 mod dashboard_only_endpoints;
 mod dev_e2e_seed;
+mod downloads;
 mod email_overfwd;
 mod email_smoke;
 mod eventbrite;

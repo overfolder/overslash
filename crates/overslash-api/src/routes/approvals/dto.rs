@@ -133,6 +133,7 @@ mod risk_tests {
                 output_schema: None,
                 disabled: false,
                 request_body: None,
+                download: None,
             },
         );
         let mut registry = ServiceRegistry::default();

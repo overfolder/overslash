@@ -419,6 +419,7 @@ mod tests {
                 output_schema: Some(serde_json::json!({ "type": "object" })),
                 disabled: false,
                 request_body: None,
+                download: None,
             },
         );
         let svc = ServiceDefinition {
@@ -481,6 +482,7 @@ mod tests {
             output_schema: None,
             disabled: false,
             request_body: None,
+            download: None,
         };
         let j = serde_json::to_value(&a).unwrap();
         assert!(j.get("disabled").is_none());

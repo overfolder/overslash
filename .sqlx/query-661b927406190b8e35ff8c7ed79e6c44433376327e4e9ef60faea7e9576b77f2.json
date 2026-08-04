@@ -1,0 +1,208 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE download_tokens\n         SET use_count = use_count + 1, last_used_at = now()\n         WHERE token_hash = $1 AND expires_at > now()\n         RETURNING id, token_hash, org_id, identity_id, service_instance_id,\n                   service_key, action_key, request, credential_ref,\n                   mime, size_bytes, filename, created_at, expires_at,\n                   last_used_at, use_count",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "token_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "service_instance_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "service_instance_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "service_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "service_key"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "action_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "action_key"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "request",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "request"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "credential_ref",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "credential_ref"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "mime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "mime"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "filename"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "last_used_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "last_used_at"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "use_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "use_count"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "661b927406190b8e35ff8c7ed79e6c44433376327e4e9ef60faea7e9576b77f2"
+}

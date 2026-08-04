@@ -195,6 +195,7 @@ mod tests {
             risk: None,
             disclose: Vec::new(),
             redact: Vec::new(),
+            download: None,
             params: HashMap::new(),
             resolved: HashMap::new(),
             mcp_target: None,

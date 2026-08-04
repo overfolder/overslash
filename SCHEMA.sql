@@ -171,6 +171,37 @@ CREATE TABLE public.connections (
 
 
 --
+-- Name: download_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.download_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    token_hash bytea NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    service_instance_id uuid,
+    service_key text,
+    action_key text,
+    request jsonb NOT NULL,
+    credential_ref jsonb DEFAULT '{}'::jsonb NOT NULL,
+    mime text,
+    size_bytes bigint,
+    filename text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    last_used_at timestamp with time zone,
+    use_count integer DEFAULT 0 NOT NULL
+);
+
+
+--
+-- Name: TABLE download_tokens; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.download_tokens IS 'Capability tokens for deferred (out-of-band) byte delivery. Minted by POST /v1/actions/call with deliver:"url", redeemed by GET /v1/downloads/{token}.';
+
+
+--
 -- Name: email_unsubscribe_tokens; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -966,6 +997,22 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: download_tokens download_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: download_tokens download_tokens_token_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_token_hash_key UNIQUE (token_hash);
+
+
+--
 -- Name: email_unsubscribe_tokens email_unsubscribe_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1361,6 +1408,13 @@ CREATE INDEX billing_email_log_user_id ON public.billing_email_log USING btree (
 --
 
 CREATE INDEX email_unsubscribe_tokens_user_id ON public.email_unsubscribe_tokens USING btree (user_id);
+
+
+--
+-- Name: download_tokens_expiry_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX download_tokens_expiry_idx ON public.download_tokens USING btree (expires_at);
 
 
 --
@@ -2098,6 +2152,30 @@ ALTER TABLE ONLY public.connections
 
 ALTER TABLE ONLY public.connections
     ADD CONSTRAINT connections_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
+
+
+--
+-- Name: download_tokens download_tokens_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: download_tokens download_tokens_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: download_tokens download_tokens_service_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_service_instance_id_fkey FOREIGN KEY (service_instance_id) REFERENCES public.service_instances(id) ON DELETE CASCADE;
 
 
 --

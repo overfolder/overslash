@@ -656,6 +656,7 @@ where
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
@@ -738,6 +739,7 @@ where
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::audit::router())
@@ -853,6 +855,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
@@ -926,6 +929,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::audit::router())
@@ -996,6 +1000,7 @@ pub async fn start_api_with_auth_providers(
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
@@ -1072,6 +1077,7 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::audit::router())
@@ -1527,6 +1533,7 @@ where
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
@@ -1601,6 +1608,7 @@ where
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::audit::router())
@@ -1677,6 +1685,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
@@ -1753,6 +1762,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::search::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::auth::router())
@@ -1767,6 +1777,11 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
 
 /// Start API with a custom max response body size (for testing size limits).
 pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (SocketAddr, Client) {
+    // Bind first so `public_url` is the address the server actually answers on.
+    // Deferred downloads mint absolute URLs off `public_url`; a placeholder here
+    // produces a descriptor pointing at a port nothing is listening to.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
@@ -1789,12 +1804,13 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
+        public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         magic_link_enabled: true,
         max_response_body_bytes: max_bytes,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
@@ -1868,6 +1884,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::audit::router())
@@ -1893,8 +1910,6 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     (addr, Client::new())

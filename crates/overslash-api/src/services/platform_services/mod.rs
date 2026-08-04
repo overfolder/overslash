@@ -177,6 +177,7 @@ mod test_fixtures {
                     output_schema: None,
                     disabled: false,
                     request_body: None,
+                    download: None,
                 },
             );
         }

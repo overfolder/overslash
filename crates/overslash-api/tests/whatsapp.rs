@@ -493,3 +493,248 @@ async fn long_message_body_is_truncated_in_description() {
         "full body must be carried verbatim on disclose: {msg:?}"
     );
 }
+
+// ── Media download ──────────────────────────────────────────────────────
+//
+// `download_media` is the one WhatsApp tool whose payload can't ride in a
+// tool result. The container downloads from WhatsApp's CDN, stores the file
+// content-addressed, and returns a *descriptor* pointing at its own
+// `/media/{sha256}` route; `x-overslash-download` tells Overslash which field
+// of that descriptor is the object, and Overslash swaps it for a capability
+// URL of its own. The stub below plays both halves — the MCP tool and the
+// byte route behind the same bearer.
+
+const MEDIA_SHA: &str = "9f3a1c2b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8";
+const MEDIA_BYTES: &[u8] = b"fake-mp4-payload-not-valid-utf8-\xff\xfe\x00\x01";
+
+async fn media_handler(
+    axum::extract::Path(sha): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // Same bearer that guards /mcp. The point of the test is that Overslash
+    // re-resolves it from the vault at fetch time, on a request the original
+    // caller never authenticated.
+    let ok = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v == "Bearer stub-token");
+    if !ok {
+        return (axum::http::StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    if sha != MEDIA_SHA {
+        return (axum::http::StatusCode::NOT_FOUND, "no such object").into_response();
+    }
+    (
+        [
+            ("content-type", "video/mp4"),
+            ("content-disposition", "attachment; filename=\"clip.mp4\""),
+        ],
+        MEDIA_BYTES,
+    )
+        .into_response()
+}
+
+async fn media_stub_handler(_headers: HeaderMap, Json(req): Json<Value>) -> Json<Value> {
+    let id = req.get("id").cloned().unwrap_or(Value::Null);
+    let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+    let result = match method {
+        "initialize" => json!({
+            "protocolVersion": "2025-06-18",
+            "serverInfo": { "name": "stub-whatsapp-media", "version": "0" },
+            "capabilities": {}
+        }),
+        "tools/call" => json!({
+            "content": [{ "type": "text", "text": "downloaded" }],
+            "structuredContent": {
+                "media_path": format!("/media/{MEDIA_SHA}"),
+                "mime": "video/mp4",
+                "size": MEDIA_BYTES.len(),
+                "filename": "clip.mp4",
+                "sha256": MEDIA_SHA,
+            },
+            "isError": false
+        }),
+        _ => json!({}),
+    };
+    Json(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+}
+
+async fn start_media_stub() -> SocketAddr {
+    common::allow_loopback_ssrf();
+    let app = Router::new()
+        .route("/mcp", post(media_stub_handler))
+        .route("/media/{sha}", axum::routing::get(media_handler));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
+/// Mirrors the shipped `services/whatsapp.yaml` `download_media` entry,
+/// including its `download:` block.
+fn media_template_yaml(key: &str, url: &str, secret_name: &str) -> String {
+    format!(
+        r#"openapi: "3.1.0"
+info:
+  title: WhatsApp Media Stub
+  x-overslash-key: {key}
+x-overslash-runtime: mcp
+paths: {{}}
+x-overslash-mcp:
+  url: {url}
+  auth: {{ kind: bearer, secret_name: {secret_name} }}
+  autodiscover: false
+  tools:
+    - name: download_media
+      risk: read
+      scope_param: chat_jid
+      description: 'Download media from {{chat_jid}}'
+      download:
+        url: .structured.media_path
+        mime: .structured.mime
+        size: .structured.size
+        filename: .structured.filename
+        auth: inherit
+      input_schema:
+        type: object
+        properties:
+          chat_jid: {{ type: string }}
+          message_id: {{ type: string }}
+        required: [chat_jid, message_id]
+"#
+    )
+}
+
+async fn setup_media(pool: sqlx::PgPool) -> (String, Client, String, SocketAddr) {
+    let stub_addr = start_media_stub().await;
+    let stub_url = format!("http://{stub_addr}/mcp");
+
+    let (api_addr, client) = common::start_api(pool).await;
+    let base = format!("http://{api_addr}");
+    let (_org, agent_ident, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let yaml = media_template_yaml("whatsapp_media", &stub_url, "whatsapp_token");
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "openapi": yaml, "user_level": false }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "template: {:?}", resp.text().await);
+
+    client
+        .put(format!("{base}/v1/secrets/whatsapp_token"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "value": "stub-token" }))
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "identity_id": agent_ident,
+            "action_pattern": "whatsapp_media:**",
+            "effect": "allow",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({ "name": "whatsapp_media", "template_key": "whatsapp_media" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "service: {:?}", resp.text().await);
+
+    (base, client, agent_key, stub_addr)
+}
+
+#[tokio::test]
+async fn download_media_swaps_media_path_for_a_capability_url() {
+    let pool = common::test_pool().await;
+    let (base, client, agent_key, _stub) = setup_media(pool).await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "whatsapp_media",
+            "action": "download_media",
+            "params": { "chat_jid": "34600@s.whatsapp.net", "message_id": "ABC123" },
+            "deliver": "url",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    let result: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+
+    // The container's own `/media/...` path must not reach the caller — it
+    // isn't fetchable without the instance's bearer, which the caller doesn't
+    // have and must never be given.
+    assert!(
+        result.get("media_path").is_none(),
+        "raw media_path should be replaced, got {result}"
+    );
+    let url = result["download_url"].as_str().expect("download_url");
+    assert!(url.starts_with(&base));
+    assert_eq!(result["mime"], "video/mp4");
+    assert_eq!(result["size_bytes"], MEDIA_BYTES.len());
+    assert_eq!(result["filename"], "clip.mp4");
+
+    // Redeem. Overslash re-resolves the vault bearer and attaches it upstream;
+    // the fetching client sends nothing.
+    let file = client.get(url).send().await.unwrap();
+    assert_eq!(file.status(), 200);
+    assert_eq!(file.headers().get("content-type").unwrap(), "video/mp4");
+    assert_eq!(
+        file.headers().get("content-disposition").unwrap(),
+        "attachment; filename=\"clip.mp4\""
+    );
+
+    // Byte-exact, including the non-UTF-8 bytes the buffered path would have
+    // replaced with U+FFFD.
+    let bytes = file.bytes().await.unwrap();
+    assert_eq!(bytes.as_ref(), MEDIA_BYTES);
+}
+
+#[tokio::test]
+async fn download_media_without_deliver_url_returns_the_raw_descriptor() {
+    let pool = common::test_pool().await;
+    let (base, client, agent_key, _stub) = setup_media(pool).await;
+
+    // Deferred delivery is opt-in. Without it the tool result comes back
+    // as-is — no token minted, no URL, no behavior change for existing callers.
+    let body: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "whatsapp_media",
+            "action": "download_media",
+            "params": { "chat_jid": "34600@s.whatsapp.net", "message_id": "ABC123" },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let envelope: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        envelope["structured"]["media_path"],
+        format!("/media/{MEDIA_SHA}")
+    );
+    assert!(envelope.get("download_url").is_none());
+}

@@ -95,6 +95,64 @@ pub struct ServiceAction {
     /// before it ever looks at the body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_body: Option<RequestBodySpec>,
+    /// `x-overslash-download`: this action's *result* points at a downloadable
+    /// object rather than carrying it. Only meaningful for MCP actions — an
+    /// HTTP action that returns bytes already *is* its own download, so
+    /// `deliver: "url"` mints a token straight from the resolved request and
+    /// needs no declaration.
+    ///
+    /// MCP has no such request to replay: the tool returns a descriptor
+    /// (`{media_path, mime, size, …}`) and the bytes live behind a second,
+    /// undeclared endpoint. These jq filters are how a template says *which*
+    /// field of that descriptor is the object and what it looks like.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download: Option<DownloadSpec>,
+}
+
+/// How to turn an MCP tool result into a downloadable object.
+///
+/// Every field is a jq expression over the same `{runtime, tool, structured,
+/// content, is_error}` envelope `mcp_caller` builds, so filters address
+/// `.structured.*` the way `disclose` filters address `.arguments.*`.
+///
+/// Only [`url`](Self::url) is required; the rest are metadata the caller sees
+/// on the minted descriptor and never affect what bytes come back.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadSpec {
+    /// jq expression yielding the object's location. A relative result (`/media/abc`)
+    /// resolves against the resolved MCP instance URL's origin — the bytes live on
+    /// the same host that served the tool call. An absolute `http(s)://` result is
+    /// used verbatim.
+    pub url: String,
+    /// jq expression yielding the MIME type, surfaced on the descriptor and sent
+    /// as a fallback `Content-Type` when the upstream omits one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    /// jq expression yielding the byte length. Advisory only — it tells the
+    /// caller how big the fetch will be before committing to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    /// jq expression yielding a suggested filename.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    /// Which credential the deferred fetch presents. See [`DownloadAuth`].
+    #[serde(default)]
+    pub auth: DownloadAuth,
+}
+
+/// Which credential a deferred download presents to the upstream host.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DownloadAuth {
+    /// Re-resolve the service instance's credential at fetch time and send it.
+    /// The default, and the only correct choice when the byte route sits behind
+    /// the same auth as the MCP endpoint.
+    #[default]
+    Inherit,
+    /// Send nothing — the URL is already self-authorizing (a pre-signed CDN
+    /// link). Declaring this on a route that *does* need credentials produces a
+    /// 401 at fetch time, not a leak.
+    None,
 }
 
 impl ServiceAction {

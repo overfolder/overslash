@@ -57,6 +57,10 @@ pub(super) struct CallRequest {
     #[serde(default)]
     pub(super) prefer_stream: Option<bool>,
 
+    /// Where the response body should go. See [`Delivery`].
+    #[serde(default)]
+    pub(super) deliver: Option<Delivery>,
+
     // Optional server-side filter applied to the upstream response body
     // (e.g., jq). Output is attached to `result.filtered_body`; the
     // original `body` is always preserved.
@@ -90,6 +94,33 @@ pub(super) struct CallRequest {
     // allow-list the callback falls back to the historical JSON response.
     #[serde(default)]
     pub(super) return_url: Option<String>,
+}
+
+/// Where a call's response body should be delivered.
+///
+/// Defaults to [`Inline`](Self::Inline) — minting a URL creates a live
+/// capability plus a row, and changes the response shape, so it has to be
+/// asked for. `response_type: "binary"` on an action does *not* silently flip
+/// this; it only sharpens the hint the caller sees when the buffered path
+/// refuses an oversized body.
+///
+/// Unlike `prefer_stream`, this is reachable from every surface — including
+/// MCP, where a URL is the only representation of a file that fits in a tool
+/// result at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum Delivery {
+    /// Body rides back in the `Called` envelope. The historical behavior.
+    Inline,
+    /// Mint a short-lived capability URL and return a descriptor instead. The
+    /// bytes are fetched later, out of band, by `GET /v1/downloads/{token}`.
+    Url,
+}
+
+impl Delivery {
+    pub(super) fn is_url(self) -> bool {
+        matches!(self, Delivery::Url)
+    }
 }
 
 #[derive(Serialize)]
@@ -187,6 +218,10 @@ pub(super) struct ResolvedMeta {
     /// verb / `http`). Applied to the request projection before it's
     /// persisted as `approvals.action_detail`.
     pub(super) redact: Vec<String>,
+    /// `x-overslash-download` from the action template. MCP actions only —
+    /// it's how a tool result says "the bytes are over there". HTTP actions
+    /// are their own download and leave this `None`.
+    pub(super) download: Option<overslash_core::types::DownloadSpec>,
     /// Original resolved params (before url/body assembly), retained for the
     /// disclosure `.params.*` projection. Empty for verb / `http` shapes.
     pub(super) params: HashMap<String, serde_json::Value>,

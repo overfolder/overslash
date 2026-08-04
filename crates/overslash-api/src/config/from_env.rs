@@ -92,6 +92,11 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(2000),
+            download_token_ttl_secs: env::var("DOWNLOAD_TOKEN_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(900), // 15 min
             dashboard_url: env::var("DASHBOARD_URL").unwrap_or_else(|_| "/".into()),
             // "*localhost*" matches any http://localhost:<port> / http://127.0.0.1:<port>
             // origin so that worktrees with dynamic dashboard ports work out of the box.

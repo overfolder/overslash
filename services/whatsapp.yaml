@@ -248,6 +248,53 @@ x-overslash-mcp:
             description: "ISO-8601 timestamp; only messages strictly after this are returned."
         required: [contact]
 
+    # ── media ─────────────────────────────────────────────────────────
+    # The one tool whose payload can't ride in a tool result. `download`
+    # (x-overslash-download) declares that the result *points at* the bytes
+    # rather than carrying them: the container downloads from WhatsApp's CDN,
+    # stores the file content-addressed, and returns `{media_path, mime,
+    # size, filename, sha256}`. Overslash swaps `media_path` for a short-lived
+    # `download_url` of its own, fetched later with the instance's bearer.
+    #
+    # `media_path` is relative (`/media/<sha256>`), so it resolves against this
+    # instance's own URL — Overslash rejects anything that would resolve
+    # off-origin rather than sending this service's credential elsewhere.
+    - name: download_media
+      risk: read
+      scope_param: chat_jid
+      description: >-
+        download_media(chat_jid, message_id): fetch the bytes of a media message
+        (image, video, audio, document, sticker) found via get_conversation or
+        list_messages. Returns a short-lived download URL, NOT the file — the
+        bytes never enter your context. Pipe it straight to disk, e.g.
+        `curl -sSfL -o <path> "<download_url>"`. Call with `deliver: "url"`.
+        Media metadata is captured at ingest, so a message that predates the
+        container's media support may need a `cache_sync` re-ingest first.
+      download:
+        url: .structured.media_path
+        mime: .structured.mime
+        size: .structured.size
+        filename: .structured.filename
+        auth: inherit
+      disclose:
+        - label: Chat
+          filter: .arguments.chat_jid
+        - label: Message
+          primary: true
+          filter: .arguments.message_id
+      input_schema:
+        type: object
+        properties:
+          chat_jid:
+            type: string
+            minLength: 1
+            description: "Full chat JID (…@s.whatsapp.net, …@lid or …@g.us) the message belongs to."
+          message_id:
+            type: string
+            minLength: 1
+            description: "Stanza id of the media message, as returned by get_conversation / list_messages."
+        required: [chat_jid, message_id]
+
     # ── chats (read-side, cache-backed) — [RAW] power-user fallbacks ──
     - name: list_chats
       risk: read

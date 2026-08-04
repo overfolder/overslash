@@ -54,6 +54,10 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
         alias: "redact",
         canonical: "x-overslash-redact",
     },
+    Alias {
+        alias: "download",
+        canonical: "x-overslash-download",
+    },
 ];
 
 pub(super) const INFO_ALIASES: &[Alias] = &[

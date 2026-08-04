@@ -140,6 +140,7 @@ pub(super) async fn dispatch_read(
     // `verbose` flag when supplied; otherwise stamp `false` so the inner
     // handler picks compact.
     body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
+    insert_deliver(&mut body, args);
     forward(
         state,
         bearer,
@@ -148,6 +149,20 @@ pub(super) async fn dispatch_read(
         Some(Value::Object(body)),
     )
     .await
+}
+
+/// Forward the caller's `deliver` tool argument when they set one.
+///
+/// Omitted rather than defaulted: the action handler already treats an absent
+/// `deliver` as inline, and stamping an explicit value here would mean any
+/// future default lived in two places. Unknown strings are passed through so
+/// the handler's own deserializer produces the error, rather than this layer
+/// silently swallowing a typo into inline delivery — which would put a video
+/// in the model's context, the exact outcome the flag exists to prevent.
+fn insert_deliver(body: &mut serde_json::Map<String, Value>, args: &Value) {
+    if let Some(d) = args.get("deliver").filter(|v| !v.is_null()) {
+        body.insert("deliver".into(), d.clone());
+    }
 }
 
 /// Read the caller-supplied `verbose: bool` tool argument, defaulting to
@@ -204,6 +219,7 @@ pub(super) async fn dispatch_call(
     // Same rationale as `dispatch_read`: MCP forwards `verbose: false` by
     // default so the LLM consumer gets the compact shape.
     body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
+    insert_deliver(&mut body, args);
     forward(
         state,
         bearer,
