@@ -418,6 +418,15 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     |n| tracing::info!("Expired {n} mcp_upstream_flows"),
                 )
                 .await;
+                // Same reasoning, one row per `deliver: "url"` call. Expired
+                // tokens are already unredeemable — `claim` matches on
+                // `expires_at > now()` — so this only reclaims space.
+                instrumented_step(
+                    "download_token_expiry",
+                    async { overslash_db::repos::download_token::prune_expired(&db).await },
+                    |n| tracing::info!("Expired {n} download_tokens"),
+                )
+                .await;
             }
         });
 
@@ -621,6 +630,12 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         // layers because email clients and recipients clicking from inboxes
         // have no session cookie. The token in the URL is the sole authority.
         .merge(routes::unsubscribe::router())
+        // Deferred-download redemption. Outside auth for the same reason: the
+        // fetcher (curl in a sandbox, a browser) is deliberately not the
+        // caller and holds none of its credentials. Outside the rate-limit
+        // layer because that layer keys on an API-key prefix these requests
+        // don't have — the handler throttles per-IP itself.
+        .merge(routes::downloads::router())
         .merge(stripe_webhook_routes)
         .merge(validate_routes)
         .merge(rate_limited_routes)

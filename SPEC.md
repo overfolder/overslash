@@ -578,6 +578,7 @@ Approval and action execution are decoupled into two stages. `POST /v1/approvals
 - **At-most-once.** `executions.approval_id` is uniquely indexed and the `pending → executing` transition is an atomic SQL UPDATE guarded by `status='pending' AND expires_at > now()`. User and agent can race `/execute`; exactly one wins, the other receives 409. Any terminal state (executed / failed / cancelled / expired) is sticky.
 - **Identity & audit.** Replay always uses the **requester's** identity for audit and rate limiting, regardless of whether the agent or the resolver pressed the button. The `audit_logs` row for `action.executed` carries `detail.replayed_from_approval` and `detail.execution_id`; a separate `approval.executed` entry records the button press.
 - **Streaming.** Originally-streaming requests are replayed as buffered requests (bounded by `MAX_RESPONSE_BODY_BYTES`) — there is no agent connection to stream to. The stored result flags `streamed_originally: true` so callers can tell.
+- **Deferred delivery.** `deliver: "url"` (D51) is *not* carried onto the approval payload, and the permission gate runs before the mint — so a gated deferred call returns `pending_approval` without minting a token, and its replay executes buffered like any other. In practice this is rare: the actions that want deferred delivery are `risk: read` downloads. A gated one that returns a large binary will hit the buffered cap on replay; the fix, when something needs it, is for replay to re-mint a token rather than buffer.
 - **Timeouts & orphans.** The `/call` handler bounds the upstream call with `EXECUTION_REPLAY_TIMEOUT_SECS` (default 30). If the API crashes while `status='executing'`, a sweeper transitions the row to `failed` with `error='orphaned'` after the timeout plus a minute of slack.
 - **Ceilings.** The group-ceiling check is not re-run at `/call` — the resolver's allow is authoritative, and the ceiling was enforced at approval creation.
 
@@ -1424,6 +1425,37 @@ paths:
 ```
 
 Unprefixed `disclose:` / `redact:` aliases normalize to `x-overslash-disclose` / `x-overslash-redact` like the other operation-level extensions. jq syntax is validated at template register / promote time; a malformed filter rejects the template with a `disclose_invalid_jq` issue.
+
+## Deferred downloads (`deliver: "url"`, `x-overslash-download`)
+
+`POST /v1/actions/call` takes `deliver: "inline" | "url"`, default `inline`, also exposed on the `overslash_call` / `overslash_read` MCP tools. With `deliver: "url"` the response body is replaced by a descriptor and the bytes move out of band:
+
+```json
+{ "download_url": "https://api.overslash.com/v1/downloads/<token>",
+  "expires_at": "2026-08-04T12:15:00Z",
+  "mime": "video/mp4", "size_bytes": 41943040, "filename": "clip.mp4" }
+```
+
+`GET /v1/downloads/{token}` is unauthenticated — the token *is* the capability, the way a presigned URL is. It is 256 bits of randomness stored only as a SHA-256 hash, expires after `DOWNLOAD_TOKEN_TTL_SECS` (default 900), and stays redeemable until then so a resumed or retried transfer works. Redemption re-resolves the upstream credential from the vault and re-checks the identity, then streams the bytes through with `content-type` / `content-length` / `content-disposition` / `etag` / `last-modified` / `cache-control` forwarded. `MAX_RESPONSE_BODY_BYTES` does not apply, exactly as with `prefer_stream`. Unknown and expired tokens both return a bare `404`.
+
+Combining `deliver: "url"` with `filter` or `prefer_stream` is a `400`, as is passing a credential in an inline `headers` entry on a raw-HTTP call — name it via `secrets` instead, and it is resolved at fetch time. Mint writes an `action.deferred` audit row (HTTP runtime only; MCP already wrote `action.executed`); redemption writes `action.downloaded`.
+
+An HTTP action needs no declaration — it *is* its own download, so the token captures the resolved request. An MCP tool returns a *descriptor pointing at* the bytes, so it declares where:
+
+```yaml
+    - name: download_media
+      risk: read
+      download:
+        url: .structured.media_path      # required
+        mime: .structured.mime           # optional metadata
+        size: .structured.size
+        filename: .structured.filename
+        auth: inherit                    # or `none` for a pre-signed URL
+```
+
+Filters are jq over the same `{runtime, tool, structured, content, is_error}` envelope the `disclose` filters see. The resolved location **must be same-origin with the MCP server's own URL** — a relative path is joined against it, an absolute URL elsewhere is refused. The deferred fetch attaches that instance's credential, so without this a compromised MCP server could name any host and be handed the bearer. OAuth-authenticated services are not supported yet: their credential is minted live and deliberately not persistable. The gate reads `oauth_injected` rather than the presence of an `Authorization` header, since a query-param token injection resolves OAuth with no header to check.
+
+See D51.
 
 ### Wire shape of a disclosed field
 

@@ -40,35 +40,6 @@ use super::{approval_detail::*, resolve::*, service_resolve::*, validate::*};
 #[derive(Clone, Copy)]
 pub(crate) struct UpstreamErrored;
 
-/// The `sql` audit block for one evaluated policy outcome: the DB label, the
-/// classification, which fail-closed rule fired (for writes), and the relations
-/// and columns the statement referenced. The raw query itself travels via the
-/// template's `disclose` filters.
-///
-/// This is the *record*; the metadata tags minted alongside it are the search
-/// index. The two differ on purpose — `reason_detail` carries the unbounded
-/// payload (a parse error's message, the parse-node name) that `write_reason`'s
-/// short tag flattens away and that a tag has no business holding.
-pub(super) fn sql_audit_block(sp: &SqlPolicyOutcome) -> serde_json::Value {
-    use overslash_core::sql_policy::WriteReason;
-    let a = &sp.analysis;
-    serde_json::json!({
-        "db": sp.db_label,
-        "classified": sp.floor.to_string(),
-        "write_reason": a.write_reason.as_ref().map(|r| r.tag()),
-        "reason_detail": a.write_reason.as_ref().and_then(|r| match r {
-            WriteReason::UnsupportedDialect(s) | WriteReason::ParseError(s)
-            | WriteReason::Statement(s) => Some(s.clone()),
-            WriteReason::MultiStatement(n) => Some(n.to_string()),
-            _ => None,
-        }),
-        "read_tables": a.read_tables,
-        "mut_tables": a.mut_tables,
-        "columns": a.columns,
-        "tables_exhaustive": a.tables_exhaustive,
-    })
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn call_action_impl(
     State(state): State<AppState>,
@@ -86,6 +57,8 @@ pub(super) async fn call_action_impl(
             "filter cannot be combined with prefer_stream".into(),
         ));
     }
+
+    let deliver_url = deferred::validate_flags(&req)?;
 
     // Validate filter syntax before any upstream call so a malformed
     // expression is a clean 400 — not a wasted upstream quota burn.
@@ -402,7 +375,7 @@ pub(super) async fn call_action_impl(
     // secret injection into headers, no streaming path. The executor owns
     // header resolution through mcp_auth::resolve_headers.
     if let Some(mcp_target) = meta.mcp_target.as_ref() {
-        let result = match mcp_caller::invoke(
+        let mut result = match mcp_caller::invoke(
             &state,
             &scope,
             &mcp_target.url,
@@ -523,6 +496,22 @@ pub(super) async fn call_action_impl(
             )
             .await;
 
+        // Deferred delivery. See `deferred::swap_in_mcp_download` for why a
+        // failed tool result is never minted from.
+        if deliver_url && !is_error {
+            deferred::swap_in_mcp_download(
+                &state,
+                &ext,
+                &mut result,
+                auth.org_id,
+                identity_id,
+                mcp_target,
+                &meta,
+                &req,
+            )
+            .await?;
+        }
+
         let mut resp = (
             StatusCode::OK,
             Json(CallResponse::Called {
@@ -601,6 +590,22 @@ pub(super) async fn call_action_impl(
             .into_response());
     }
 
+    // ── Deferred delivery (HTTP runtime) ─────────────────────────────
+    //
+
+    // Deferred delivery (HTTP runtime). See `deferred::mint_http_download`.
+    if deliver_url {
+        let d = deferred::HttpDeferred {
+            auth: &auth,
+            req: &req,
+            meta: &meta,
+            identity_id,
+            ip: ip.0.as_deref(),
+            tags: &call_tags,
+        };
+        return deferred::mint_http_download(&state, &ext, &scope, &action_req, d).await;
+    }
+
     // Resolve secrets and inject
     let secret_values = crate::services::action_caller::resolve_credential_values(
         &state,
@@ -658,7 +663,6 @@ pub(super) async fn call_action_impl(
             "http",
             overslash_metrics::actions::status_class(upstream_status.as_u16()),
         );
-        let upstream_headers = upstream.headers().clone();
         let content_length = upstream
             .headers()
             .get("content-length")
@@ -724,28 +728,10 @@ pub(super) async fn call_action_impl(
             )
             .await;
 
-        // Build streaming response — pipe upstream bytes through to caller
-        let stream = upstream.bytes_stream();
-        let body = axum::body::Body::from_stream(stream);
-
-        let mut response = Response::builder().status(upstream_status.as_u16());
-        // Forward safe upstream headers (content-type, content-length, content-disposition)
-        for (name, value) in upstream_headers.iter() {
-            let name_str = name.as_str();
-            match name_str {
-                "content-type"
-                | "content-length"
-                | "content-disposition"
-                | "etag"
-                | "last-modified"
-                | "cache-control" => {
-                    response = response.header(name, value);
-                }
-                _ => {}
-            }
-        }
-
-        let mut response = response.body(body).unwrap();
+        // Build streaming response — pipe upstream bytes through to caller.
+        // Shared with `GET /v1/downloads/{token}` so the forwarded-header
+        // allowlist can't drift between the inline and deferred paths.
+        let mut response = crate::services::deferred_download::stream_through(upstream);
         // Streamed 5xx passes the upstream status straight through, where
         // the metrics wrapper would otherwise classify it as Overslash's
         // own "failed". The marker keeps it attributed to the upstream.
@@ -828,7 +814,7 @@ pub(super) async fn call_action_impl(
         audit_detail
             .as_object_mut()
             .expect("audit_detail is a json object")
-            .insert("sql".into(), sql_audit_block(sp));
+            .insert("sql".into(), tags::sql_audit_block(sp));
     }
     // Org-gated response capture (off / errors_only / all), truncated at
     // AUDIT_RESPONSE_BODY_MAX_BYTES.

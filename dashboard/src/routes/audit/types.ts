@@ -73,8 +73,11 @@ export interface AuditFilters {
 	is_error?: boolean;
 }
 
-/** Execution events that carry the normalized `detail.is_error` flag. */
-const EXECUTION_ACTIONS = ['action.executed', 'action.streamed'];
+/** Execution events that carry the normalized `detail.is_error` flag.
+ * `action.downloaded` is a deferred-download redemption: the bytes left the
+ * gateway on that request, so it's an execution for filtering purposes even
+ * though the originating call happened earlier (`action.deferred`). */
+const EXECUTION_ACTIONS = ['action.executed', 'action.streamed', 'action.downloaded'];
 
 /** Upstream-error presence for execution events. Reads the normalized
  * `detail.is_error` flag; falls back to `detail.status_code` for rows

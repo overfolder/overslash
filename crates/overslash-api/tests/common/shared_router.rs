@@ -308,6 +308,7 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),

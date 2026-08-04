@@ -127,6 +127,7 @@ mod tests {
                         output_schema: None,
                         disabled: false,
                         request_body: None,
+                        download: None,
                     },
                 );
                 m
@@ -218,6 +219,7 @@ mod tests {
                 output_schema: None,
                 disabled: false,
                 request_body: None,
+                download: None,
             },
         );
         ServiceDefinition {

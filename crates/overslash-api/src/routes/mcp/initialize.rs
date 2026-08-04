@@ -170,6 +170,12 @@ pub(super) async fn tools_list_response(
                         "type": "boolean",
                         "default": false,
                         "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every read. Pass true only when you need a specific header or the response was cropped."
+                    },
+                    "deliver": {
+                        "type": "string",
+                        "enum": ["inline", "url"],
+                        "default": "inline",
+                        "description": "Where the response body goes. `inline` (default) returns it in the result. `url` returns a short-lived download URL instead and does NOT put the bytes in your context — use it for files (images, video, PDFs, any binary or large payload), then pipe the URL to disk with something like `curl -o <path> \"<download_url>\"`. The URL needs no credentials and expires, so fetch it promptly."
                     }
                 },
                 "required": ["service", "action"],
@@ -202,6 +208,12 @@ pub(super) async fn tools_list_response(
                         "type": "boolean",
                         "default": false,
                         "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every call. Pass true only when you need a specific header or the response was cropped. Only takes effect on fresh calls (service + action); ignored when `approval_id` is set, since approval replays return an ApprovalResponse with its own shape."
+                    },
+                    "deliver": {
+                        "type": "string",
+                        "enum": ["inline", "url"],
+                        "default": "inline",
+                        "description": "Where the response body goes. `inline` (default) returns it in the result. `url` returns a short-lived download URL instead and does NOT put the bytes in your context — use it for files (images, video, PDFs, any binary or large payload), then pipe the URL to disk with something like `curl -o <path> \"<download_url>\"`. The URL needs no credentials and expires, so fetch it promptly. Only takes effect on fresh calls (service + action)."
                     }
                 },
                 "additionalProperties": false

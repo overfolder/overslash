@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO connections (org_id, identity_id, provider_key,\n         encrypted_access_token, token_expires_at, scopes, account_email)\n         VALUES ($1, $2, 'google', $3, now() + interval '1 hour', $4, 'mock@example.com')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6f22589be029e78c758f8edf1b85f3f41498f1217ef93ed61dce78fbb4876801"
+}

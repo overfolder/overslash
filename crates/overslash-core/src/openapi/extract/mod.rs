@@ -17,7 +17,7 @@
 use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
-use crate::types::{DisclosureField, ScopeParams};
+use crate::types::{DisclosureField, DownloadAuth, DownloadSpec, ScopeParams};
 
 mod actions;
 mod auth;
@@ -158,6 +158,68 @@ fn parse_disclose(
         });
     }
     out
+}
+
+/// Parse `x-overslash-download` — the declaration that an MCP tool's result
+/// *references* a downloadable object instead of carrying it.
+///
+/// `url` is mandatory; a block without it is malformed rather than
+/// partially-honored, because a download with no location is not a weaker
+/// download, it's nothing at all. The optional metadata filters are dropped
+/// individually when blank so one typo doesn't take the whole block down.
+fn parse_download(
+    v: Option<&Value>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<DownloadSpec> {
+    let v = v?;
+    let p = format!("{base}.x-overslash-download");
+    let Some(obj) = v.as_object() else {
+        issues.push(ValidationIssue::new(
+            "download_malformed",
+            "x-overslash-download must be an object with `url` and optional {mime, size, filename, auth}",
+            p,
+        ));
+        return None;
+    };
+    let url = match obj.get("url").and_then(Value::as_str) {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => {
+            issues.push(ValidationIssue::new(
+                "download_malformed",
+                "`url` must be a non-empty jq expression string",
+                format!("{p}.url"),
+            ));
+            return None;
+        }
+    };
+    // Blank/non-string metadata filters are simply absent — the descriptor
+    // just carries one less field.
+    let pick = |key: &str| {
+        obj.get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+    };
+    let auth = match obj.get("auth").and_then(Value::as_str) {
+        None | Some("inherit") => DownloadAuth::Inherit,
+        Some("none") => DownloadAuth::None,
+        Some(other) => {
+            issues.push(ValidationIssue::new(
+                "download_malformed",
+                format!("`auth` must be `inherit` or `none` (got {other:?})"),
+                format!("{p}.auth"),
+            ));
+            return None;
+        }
+    };
+    Some(DownloadSpec {
+        url,
+        mime: pick("mime"),
+        size: pick("size"),
+        filename: pick("filename"),
+        auth,
+    })
 }
 
 fn parse_redact(v: Option<&Value>, base: &str, issues: &mut Vec<ValidationIssue>) -> Vec<String> {

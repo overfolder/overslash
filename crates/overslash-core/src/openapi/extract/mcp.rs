@@ -10,8 +10,8 @@ use crate::types::{
 };
 
 use super::{
-    parse_aliases, parse_disclose, parse_instance_config, parse_redact, parse_scope_params,
-    parse_sql_policy,
+    parse_aliases, parse_disclose, parse_download, parse_instance_config, parse_redact,
+    parse_scope_params, parse_sql_policy,
 };
 
 // ── x-overslash-mcp → McpSpec + ServiceActions ───────────────────────
@@ -316,6 +316,7 @@ fn lower_mcp_tool(
 
     let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, errors);
     let redact = parse_redact(obj.get("x-overslash-redact"), &base, errors);
+    let download = parse_download(obj.get("x-overslash-download"), &base, errors);
 
     // The upstream MCP tool name defaults to the action key, but may be
     // overridden with `mcp_tool` when the server's tool name isn't a valid
@@ -348,6 +349,7 @@ fn lower_mcp_tool(
         // MCP tool calls are framed by the MCP client (which sets its own
         // JSON-RPC content type), never routed through `resolve`.
         request_body: None,
+        download,
     })
 }
 
@@ -466,5 +468,87 @@ mod tests {
         aliases.sort();
         assert_eq!(aliases, vec!["dest".to_string(), "to".to_string()]);
         assert!(params["text"].aliases.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn lower(tool: serde_json::Value) -> (Option<ServiceAction>, Vec<ValidationIssue>) {
+        let mut errors = Vec::new();
+        let action = lower_mcp_tool(
+            "download_media",
+            tool.as_object().unwrap(),
+            true,
+            &mut errors,
+        );
+        (action, errors)
+    }
+
+    #[test]
+    fn download_block_lowers_onto_the_action() {
+        let (action, errors) = lower(json!({
+            "name": "download_media",
+            "x-overslash-download": {
+                "url": ".structured.media_path",
+                "mime": ".structured.mime",
+                "size": ".structured.size",
+                "filename": ".structured.filename",
+                "auth": "inherit"
+            }
+        }));
+        assert!(errors.is_empty(), "{errors:?}");
+        let d = action.unwrap().download.expect("download spec");
+        assert_eq!(d.url, ".structured.media_path");
+        assert_eq!(d.mime.as_deref(), Some(".structured.mime"));
+        assert_eq!(d.auth, crate::types::DownloadAuth::Inherit);
+    }
+
+    #[test]
+    fn auth_defaults_to_inherit_and_metadata_filters_are_optional() {
+        let (action, errors) = lower(json!({
+            "name": "download_media",
+            "x-overslash-download": { "url": ".structured.href" }
+        }));
+        assert!(errors.is_empty(), "{errors:?}");
+        let d = action.unwrap().download.expect("download spec");
+        assert_eq!(d.auth, crate::types::DownloadAuth::Inherit);
+        assert!(d.mime.is_none() && d.size.is_none() && d.filename.is_none());
+    }
+
+    #[test]
+    fn a_block_without_url_is_an_error_not_a_partial_spec() {
+        // A download with no location isn't a weaker download, it's nothing —
+        // and silently dropping it would make `deliver: "url"` fail later with
+        // a confusing "action declares no download" instead of here.
+        let (_, errors) = lower(json!({
+            "name": "download_media",
+            "x-overslash-download": { "mime": ".structured.mime" }
+        }));
+        assert!(
+            errors.iter().any(|e| e.code == "download_malformed"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_auth_mode_is_rejected() {
+        let (_, errors) = lower(json!({
+            "name": "download_media",
+            "x-overslash-download": { "url": ".x", "auth": "basic" }
+        }));
+        assert!(
+            errors.iter().any(|e| e.code == "download_malformed"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn absent_block_leaves_download_none() {
+        let (action, errors) = lower(json!({ "name": "download_media" }));
+        assert!(errors.is_empty());
+        assert!(action.unwrap().download.is_none());
     }
 }

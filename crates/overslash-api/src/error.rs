@@ -394,7 +394,16 @@ impl IntoResponse for AppError {
                         "content_length": content_length,
                         "content_type": content_type,
                         "limit_bytes": limit_bytes,
-                        "hint": "retry with prefer_stream: true to stream large responses"
+                        // Two options because the two callers can't use the
+                        // same one. `prefer_stream` streams bytes back on this
+                        // response — fine for a REST client writing to a file,
+                        // useless (and unrequestable) over MCP. `deliver: "url"`
+                        // works from every surface and is the only sane answer
+                        // for an agent, which wants the file on disk rather
+                        // than in its context.
+                        "hint": "retry with deliver: \"url\" to get a download URL \
+                                 instead of the body, or prefer_stream: true to \
+                                 stream the bytes back on this response"
                     })),
                 )
                     .into_response();

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM secrets WHERE name = 'ephemeral_token'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "4960783b89656f3f39be6ee10fdfed46d74f1fa8ca960f90e9be854b8e7c6db8"
+}

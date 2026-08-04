@@ -99,6 +99,14 @@ pub struct Config {
     /// already-decoded body string, not the wire size.
     pub audit_response_body_max_bytes: usize,
     pub filter_timeout_ms: u64,
+    /// Lifetime of a deferred-download capability token (`deliver: "url"`).
+    ///
+    /// The token travels in an action result — which for an agent means it
+    /// lands in a context window and possibly a transcript — so the window in
+    /// which a leaked URL is useful is exactly this. Kept short by default;
+    /// long enough that an agent can hand the URL to a shell and let a large
+    /// file finish transferring, including a retry or two.
+    pub download_token_ttl_secs: i64,
     pub dashboard_url: String,
     pub dashboard_origin: String,
     /// Additional CORS origins allowed *only* on MCP transport
@@ -697,6 +705,7 @@ mod tests {
             max_response_body_bytes: 0,
             audit_response_body_max_bytes: 0,
             filter_timeout_ms: 0,
+            download_token_ttl_secs: 900,
             dashboard_url: "/".into(),
             dashboard_origin: "*".into(),
             mcp_extra_origins: String::new(),

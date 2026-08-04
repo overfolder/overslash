@@ -154,6 +154,11 @@ pub(crate) fn extract_http_action(
             output_schema: None,
             disabled: false,
             request_body,
+            // An HTTP action that returns bytes already *is* its own download:
+            // `deliver: "url"` mints a token from the resolved request. Only
+            // MCP, whose result merely points at the object, needs the
+            // declaration.
+            download: None,
         },
     );
 
@@ -222,6 +227,7 @@ pub(crate) fn extract_platform_action(
         disabled: false,
         // Platform actions are dispatched in-process, never over HTTP.
         request_body: None,
+        download: None,
     })
 }
 

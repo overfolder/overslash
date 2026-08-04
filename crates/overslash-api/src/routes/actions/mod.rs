@@ -55,6 +55,7 @@ mod auth_envelopes;
 mod auth_resolve;
 mod auth_scopes;
 mod call;
+mod deferred;
 mod dto;
 mod errors;
 mod mcp_resolve;

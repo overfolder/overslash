@@ -23,7 +23,7 @@ use overslash_core::{
 };
 
 use super::*;
-use super::{approval_detail::*, call::sql_audit_block};
+use super::{approval_detail::*, tags::sql_audit_block};
 
 /// Walk the ancestor chain and, at the first gap, file an approval.
 ///

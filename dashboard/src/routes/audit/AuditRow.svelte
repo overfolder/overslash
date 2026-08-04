@@ -1,6 +1,7 @@
 <script lang="ts">
 	import IdentityPath from '$lib/components/IdentityPath.svelte';
 	import { identityUnits, formatIdentityPath } from '$lib/identityPath';
+	import { formatBytes } from '$lib/approvals/format';
 	import {
 		responseCapture,
 		transportError,
@@ -154,6 +155,24 @@
 	// enabled capture / the upstream never answered.
 	const response = $derived(responseCapture(entry));
 	const transportErr = $derived(transportError(entry));
+
+	// Deferred-download rows describe a file, not a payload. There is no body
+	// to preview (the bytes stream straight through), so the useful thing to
+	// show is what left and how often the capability was redeemed — a
+	// use_count well past 1 is the signal that a download URL leaked.
+	const download = $derived(downloadSummary(entry));
+
+	function downloadSummary(e: AuditEntry) {
+		if (e.action !== 'action.downloaded') return null;
+		const d = (e.detail ?? {}) as Record<string, unknown>;
+		return {
+			filename: typeof d.filename === 'string' ? d.filename : null,
+			mime: typeof d.mime === 'string' ? d.mime : null,
+			size: typeof d.size_bytes === 'number' ? d.size_bytes : null,
+			uses: typeof d.use_count === 'number' ? d.use_count : null
+		};
+	}
+
 
 	// Pretty-print the captured body when it parses as JSON; truncated
 	// captures usually don't, and fall back to the raw text.
@@ -360,7 +379,25 @@
 						{/each}
 					</dl>
 				{/if}
-				{#if response}
+				{#if download}
+					<dl class="disclosed">
+						<dt>File</dt>
+						<dd class="mono">{download.filename ?? '—'}</dd>
+						{#if download.mime}
+							<dt>Type</dt>
+							<dd class="mono">{download.mime}</dd>
+						{/if}
+						{#if download.size !== null}
+							<dt>Size</dt>
+							<dd>{formatBytes(download.size)}</dd>
+						{/if}
+						{#if download.uses !== null}
+							<dt>Redemptions</dt>
+							<dd>{download.uses}</dd>
+						{/if}
+					</dl>
+				{/if}
+				{#if response && !download}
 					<div class="json-block">
 						<div class="json-label">
 							response body
