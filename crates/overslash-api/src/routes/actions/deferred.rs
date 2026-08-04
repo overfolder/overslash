@@ -270,11 +270,15 @@ pub(super) async fn mint_http_download(
     ext: &axum::http::Extensions,
     scope: &OrgScope,
     action_req: &ActionRequest,
-    has_oauth: bool,
     d: HttpDeferred<'_>,
 ) -> Result<Response, AppError> {
-    if has_oauth {
-        // OAuth bearers are minted live per call and `AuthHeader` has no
+    // `oauth_injected`, not `auth_header.is_some()`: a template declaring a
+    // query-param token injection resolves OAuth successfully but builds no
+    // header, so the header check reads as "no credential" and would mint a
+    // token the fetch cannot authenticate — a URL that 401s later instead of
+    // an error now.
+    if d.meta.oauth_injected {
+        // OAuth credentials are minted live per call and `AuthHeader` has no
         // `Serialize` precisely so they can't be persisted. Re-minting at
         // fetch time is real work nothing shipped needs yet.
         return Err(AppError::BadRequest(

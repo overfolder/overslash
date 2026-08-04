@@ -603,15 +603,7 @@ pub(super) async fn call_action_impl(
             ip: ip.0.as_deref(),
             tags: &call_tags,
         };
-        return deferred::mint_http_download(
-            &state,
-            &ext,
-            &scope,
-            &action_req,
-            auth_header.is_some(),
-            d,
-        )
-        .await;
+        return deferred::mint_http_download(&state, &ext, &scope, &action_req, d).await;
     }
 
     // Resolve secrets and inject

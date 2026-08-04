@@ -1453,7 +1453,7 @@ An HTTP action needs no declaration — it *is* its own download, so the token c
         auth: inherit                    # or `none` for a pre-signed URL
 ```
 
-Filters are jq over the same `{runtime, tool, structured, content, is_error}` envelope the `disclose` filters see. The resolved location **must be same-origin with the MCP server's own URL** — a relative path is joined against it, an absolute URL elsewhere is refused. The deferred fetch attaches that instance's credential, so without this a compromised MCP server could name any host and be handed the bearer. OAuth-authenticated services are not supported yet: their bearer is minted live and deliberately not persistable.
+Filters are jq over the same `{runtime, tool, structured, content, is_error}` envelope the `disclose` filters see. The resolved location **must be same-origin with the MCP server's own URL** — a relative path is joined against it, an absolute URL elsewhere is refused. The deferred fetch attaches that instance's credential, so without this a compromised MCP server could name any host and be handed the bearer. OAuth-authenticated services are not supported yet: their credential is minted live and deliberately not persistable. The gate reads `oauth_injected` rather than the presence of an `Authorization` header, since a query-param token injection resolves OAuth with no header to check.
 
 See D51.
 

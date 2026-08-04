@@ -222,6 +222,15 @@ pub(super) struct ResolvedMeta {
     /// it's how a tool result says "the bytes are over there". HTTP actions
     /// are their own download and leave this `None`.
     pub(super) download: Option<overslash_core::types::DownloadSpec>,
+    /// Whether this call authenticates via OAuth, mirroring
+    /// `ResolvedAuth::oauth_injected`.
+    ///
+    /// Deliberately *not* `auth_header.is_some()`: a template declaring a
+    /// query-param token injection resolves OAuth successfully but builds no
+    /// header, so the header check reads as "no credential" and would let a
+    /// deferred download mint a token the fetch cannot authenticate — a URL
+    /// that 401s later instead of an error now.
+    pub(super) oauth_injected: bool,
     /// Original resolved params (before url/body assembly), retained for the
     /// disclosure `.params.*` projection. Empty for verb / `http` shapes.
     pub(super) params: HashMap<String, serde_json::Value>,

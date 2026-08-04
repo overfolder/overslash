@@ -403,6 +403,166 @@ async fn inline_credential_headers_are_rejected_rather_than_persisted() {
     assert_eq!(ok.status(), 200);
 }
 
+/// An OAuth-backed service must refuse deferral even when it builds no
+/// `Authorization` header.
+///
+/// A template declaring `x-overslash-token_injection: {as: query}` resolves
+/// OAuth successfully but produces `auth_header: None` — `auth_resolve.rs:133`
+/// maps over `token_injection.header_name`, which is absent for query
+/// injection, while `oauth_injected` stays `true`. Gating on
+/// `auth_header.is_some()` therefore reads as "no credential needed" and mints
+/// a token whose deferred fetch carries nothing: a URL that 401s minutes later
+/// instead of an error now. The gate reads `oauth_injected` instead.
+///
+/// The connection has to be seeded for this to bite — without one, resolution
+/// short-circuits to `needs_authentication` long before the deferred branch,
+/// and the test would pass against the broken guard too.
+#[tokio::test]
+async fn oauth_with_query_token_injection_is_refused_not_silently_minted() {
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "openapi": "openapi: 3.1.0\n\
+                info:\n  title: Query OAuth Svc\n  key: queryoauth\n\
+                servers:\n  - url: https://queryoauth.example.com\n\
+                components:\n  securitySchemes:\n    oauth:\n      type: oauth2\n      provider: google\n      x-overslash-token_injection:\n        as: query\n        query_param: access_token\n      flows:\n        authorizationCode:\n          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth\n          tokenUrl: https://oauth2.googleapis.com/token\n          scopes:\n            openid: \"\"\n\
+                security:\n  - oauth: []\n\
+                paths:\n  /file:\n    get:\n      operationId: get_file\n      summary: Get file\n      risk: read\n",
+            "user_level": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "template: {:?}", resp.text().await);
+
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "identity_id": ident_id,
+            "action_pattern": "queryoauth:**",
+            "effect": "allow",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // The group ceiling gates services independently of permission rules, and
+    // the owner user is what it attaches to (not the calling agent).
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    let groups: serde_json::Value = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins = groups
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["name"] == "Admins")
+        .expect("Admins group")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client
+        .post(format!("{base}/v1/groups/{admins}/members"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "identity_id": owner_id }))
+        .send()
+        .await
+        .unwrap();
+
+    // The ceiling grants per service *instance*, so the template needs one.
+    let inst: serde_json::Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "name": "queryoauth", "template_key": "queryoauth" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let inst_id = inst["id"].as_str().expect("instance id").to_string();
+    client
+        .post(format!("{base}/v1/groups/{admins}/grants"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "service_instance_id": inst_id, "access_level": "write" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Org-level client credentials, or OAuth resolution refuses before the
+    // deferred branch with "no OAuth client credentials configured".
+    let put = client
+        .put(format!("{base}/v1/org-oauth-credentials/google"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "client_id": "test_id.apps.googleusercontent.com",
+            "client_secret": "GOCSPX-test_secret",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status(), 200, "org oauth creds: {:?}", put.text().await);
+
+    // Live, non-expired token so OAuth resolution *succeeds* and execution
+    // reaches the deferred branch. Connections resolve at the owner identity
+    // (D22), not the calling agent.
+    let enc_key = overslash_core::crypto::Keyring::test();
+    let access = overslash_core::crypto::encrypt(&enc_key, b"live_access_token").unwrap();
+    sqlx::query!(
+        "INSERT INTO connections (org_id, identity_id, provider_key,
+         encrypted_access_token, token_expires_at, scopes, account_email)
+         VALUES ($1, $2, 'google', $3, now() + interval '1 hour', $4, 'mock@example.com')",
+        org_id,
+        owner_id,
+        &access,
+        &vec!["openid".to_string()][..],
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "service": "queryoauth",
+            "action": "get_file",
+            "deliver": "url",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap();
+    assert_eq!(status, 400, "OAuth deferral must be refused: {body}");
+    assert!(
+        !body.contains("download_url"),
+        "must not mint a credential-less capability: {body}"
+    );
+
+    let rows = sqlx::query_scalar!("SELECT count(*) FROM download_tokens")
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .unwrap_or(0);
+    assert_eq!(rows, 0, "no token should exist for an OAuth-backed service");
+}
+
 #[tokio::test]
 async fn redemption_is_audited() {
     let pool = common::test_pool().await;

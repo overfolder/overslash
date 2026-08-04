@@ -117,6 +117,9 @@ pub(super) async fn resolve_request(
 
         let description = format!("{} {} ({})", raw_method, path, svc.display_name);
 
+        // Read before `resolved_auth` is consumed field-by-field below.
+        let oauth_injected = resolved_auth.oauth_injected;
+
         return Ok((
             ResolvedActionRequest {
                 request: ActionRequest {
@@ -129,6 +132,7 @@ pub(super) async fn resolve_request(
                 auth_header: resolved_auth.auth_header,
             },
             ResolvedMeta {
+                oauth_injected,
                 description: Some(description),
                 service_scope: Some(ServiceScope {
                     service_key: service_key.clone(),
@@ -292,6 +296,9 @@ pub(super) async fn resolve_request(
                     auth_header: None,
                 },
                 ResolvedMeta {
+                    // MCP carries its own auth on `McpTarget`; this flag is the
+                    // HTTP executor's.
+                    oauth_injected: false,
                     description: Some(description),
                     service_scope: Some(ServiceScope {
                         service_key: service_key.clone(),
@@ -359,6 +366,8 @@ pub(super) async fn resolve_request(
                     risk: Some(action.risk),
                     disclose: Vec::new(),
                     redact: Vec::new(),
+                    // Platform actions dispatch in-process; nothing is dialed.
+                    oauth_injected: false,
                     download: None,
                     params: HashMap::new(),
                     resolved: HashMap::new(),
@@ -620,6 +629,8 @@ pub(super) async fn resolve_request(
         let description = format!("{interpolated} ({})", svc.display_name);
 
         let action_risk = action.risk;
+        // Read before `resolved_auth` is consumed field-by-field below.
+        let oauth_injected = resolved_auth.oauth_injected;
 
         return Ok((
             ResolvedActionRequest {
@@ -633,6 +644,7 @@ pub(super) async fn resolve_request(
                 auth_header: resolved_auth.auth_header,
             },
             ResolvedMeta {
+                oauth_injected,
                 description: Some(description),
                 service_scope: Some(ServiceScope {
                     service_key: service_key.clone(),
