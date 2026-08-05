@@ -95,7 +95,10 @@ try {
 				}
 			}
 		);
-		const node = page.locator('button.tree-label', { hasText: henry.name });
+		// `.tree-label` is a <span>, not a <button> — the old `button.tree-label`
+		// selector matched nothing and the count guard below silently skipped
+		// this shot.
+		const node = page.locator('.tree-label', { hasText: henry.name });
 		if ((await node.count()) > 0) {
 			await node.first().click();
 			await page.waitForTimeout(700);

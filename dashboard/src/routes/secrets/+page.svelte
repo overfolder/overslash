@@ -22,6 +22,9 @@
 	import { formatTime } from '$lib/utils/time';
 
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	// Owner labels use the email; the layout supplies the org's allowed domains
+	// so a single one can be stripped off. See `$lib/identityDisplay`.
+	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
 
 	let secrets = $state<SecretSummary[]>([]);
 	let identities = $state<Identity[]>([]);
@@ -179,6 +182,7 @@
 									ownerId={s.owner_identity_id}
 									{identityById}
 									{currentUserId}
+									{allowedDomains}
 								/>
 							</td>
 							<td class="ver">
@@ -233,6 +237,7 @@
 											ownerId={b.identity_id}
 											{identityById}
 											{currentUserId}
+											{allowedDomains}
 										/>
 									</td>
 									<td>

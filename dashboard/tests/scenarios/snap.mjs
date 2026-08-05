@@ -88,8 +88,14 @@ export async function makeSnapper(session, outDir = resolve('screenshots')) {
 	async function navigateAndSnap(name, path, opts = {}) {
 		const { ctx, page } = await newPage({ viewport: opts.viewport, theme: opts.theme });
 		const url = path.startsWith('http') ? path : `${session.dashboardUrl}${path}`;
-		await page.goto(url, { waitUntil: 'networkidle' });
+		// NOT `networkidle`: every authenticated page holds an open SSE
+		// connection to /v1/events/stream (added in #504), so the network is
+		// never idle and `goto` times out after 30s. Callers pass `waitFor` to
+		// pin the element that actually matters; the settle below covers the
+		// handful that don't.
+		await page.goto(url, { waitUntil: 'domcontentloaded' });
 		if (opts.waitFor) await opts.waitFor(page);
+		else await page.waitForLoadState('load');
 		const out = await snap(page, name, { fullPage: opts.fullPage });
 		return { ctx, page, out };
 	}

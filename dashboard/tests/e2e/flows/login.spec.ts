@@ -8,10 +8,14 @@ test.describe('dev login', () => {
 		await loginAs(page, request, 'admin');
 		await page.goto('/agents');
 		// /agents renders the identity hierarchy tree. The signed-in user is
-		// the immutable root node; assert it shows up by display name. The
-		// header user-menu link also renders "Dev User", so scope to the tree
-		// to avoid a strict-mode multiple-match violation.
-		await expect(page.getByRole('treeitem').getByText('Dev User')).toBeVisible();
+		// the immutable root node, labelled by email rather than the IdP
+		// display name (see $lib/identityDisplay). The header user-menu link
+		// renders the same address, so scope to the tree to avoid a
+		// strict-mode multiple-match violation. The dev org sets no allowed
+		// domain, so nothing is stripped and the full address shows.
+		await expect(
+			page.getByRole('treeitem').getByText('dev@overslash.local')
+		).toBeVisible();
 	});
 
 	test('member profile gets a different identity than admin', async ({
