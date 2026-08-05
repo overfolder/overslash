@@ -92,6 +92,23 @@ test.describe('formatIdentity', () => {
 		const d = formatIdentity({ name: '   ', email: 'ada@acme.com', kind: 'user' }, ACME);
 		expect(d.secondary).toBeNull();
 	});
+
+	test('title always carries the full address, whatever the label shows', () => {
+		// Stripping is lossy and `title` is the only way back to the domain, so
+		// every surface renders it on hover. Hold that contract here.
+		const cases = [
+			{ name: 'Ada Lovelace', email: 'ada@acme.com', kind: 'user' },
+			{ name: 'ada@acme.com', email: 'ada@acme.com', kind: 'user' },
+			{ name: 'ada', email: 'ada@acme.com', kind: 'user' },
+			{ name: '', email: 'ada@acme.com', kind: 'user' }
+		];
+		for (const i of cases) {
+			for (const domains of [[], ACME, ['acme.com', 'acme.io']]) {
+				const d = formatIdentity(i, domains);
+				expect(d.title).toContain('ada@acme.com');
+			}
+		}
+	});
 });
 
 test.describe('identityInitials', () => {

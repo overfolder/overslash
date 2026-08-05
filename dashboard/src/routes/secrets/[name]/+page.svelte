@@ -57,13 +57,16 @@
 		return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 	}
 
-	function fmtCreatedBy(id: string | null): string {
-		if (!id) return 'system';
+	/** Version author, plus a hover title. The label may have the org's single
+	 *  allowed domain stripped off; `title` always carries the full address. */
+	function fmtCreatedBy(id: string | null): { text: string; title: string | undefined } {
+		if (!id) return { text: 'system', title: undefined };
 		const ident = identityById.get(id);
-		if (!ident) return id.slice(0, 8);
+		if (!ident) return { text: id.slice(0, 8), title: id };
 		const prefix =
 			ident.kind === 'user' ? 'user:' : ident.kind === 'sub_agent' ? 'sub_agent:' : 'agent:';
-		return `${prefix}${formatIdentity(ident, allowedDomains).primary}`;
+		const d = formatIdentity(ident, allowedDomains);
+		return { text: `${prefix}${d.primary}`, title: `${prefix}${d.title}` };
 	}
 </script>
 
@@ -139,6 +142,7 @@
 			<div class="version-list">
 				{#each detail.versions as v, i (v.version)}
 					{@const isCurrent = v.version === detail.current_version}
+					{@const author = fmtCreatedBy(v.created_by)}
 					<div class="version-row">
 						<div class="rail">
 							<div class="dot" class:current={isCurrent}></div>
@@ -154,7 +158,7 @@
 								{/if}
 							</div>
 							<div class="version-meta">
-								<span class="created-by">{fmtCreatedBy(v.created_by)}</span>
+								<span class="created-by" title={author.title}>{author.text}</span>
 								<span>{fmtTimestamp(v.created_at)}</span>
 							</div>
 						</div>

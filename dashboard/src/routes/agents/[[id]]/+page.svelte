@@ -810,9 +810,10 @@
 					{@render rulesSection()}
 				{:else}
 					<!-- Agent detail fields -->
+					{@const parent = parentIdentity ? fmt.format(parentIdentity) : null}
 					<div class="field-row">
 						<span class="field-label">Parent</span>
-						<span class="field-value">{parentIdentity ? fmt.format(parentIdentity).primary : '—'}{parentIdentity?.id === meIdentityId ? ' (you)' : ''}</span>
+						<span class="field-value" title={parent?.title}>{parent?.primary ?? '—'}{parentIdentity?.id === meIdentityId ? ' (you)' : ''}</span>
 					</div>
 					<div class="field-row">
 						<span class="field-label">Inherits Permissions</span>
@@ -1076,7 +1077,8 @@
 					<select name="parent_id" required value={createParentId ?? ''}>
 						<option value="" disabled>Choose a parent…</option>
 						{#each createEligibleParents as p (p.id)}
-							<option value={p.id}>{fmt.format(p).primary}{p.id === meIdentityId ? ' (you)' : ''}</option>
+							{@const d = fmt.format(p)}
+							<option value={p.id} title={d.title}>{d.primary}{p.id === meIdentityId ? ' (you)' : ''}</option>
 						{/each}
 					</select>
 				</label>
@@ -1104,7 +1106,7 @@
 		open={detail.deleteModalOpen}
 		title={isUser ? 'Remove user from org?' : 'Delete agent?'}
 		message={isUser
-			? `Remove ${fmt.format(selected).primary} from this org? This archives ${totalDescendants > 0 ? `their ${totalDescendants} agent${totalDescendants === 1 ? '' : 's'} and ` : ''}revokes all their API keys, and removes their access to the org.`
+			? `Remove ${selected.email ?? selected.name} from this org? This archives ${totalDescendants > 0 ? `their ${totalDescendants} agent${totalDescendants === 1 ? '' : 's'} and ` : ''}revokes all their API keys, and removes their access to the org.`
 			: totalDescendants > 0
 				? `Delete agent:${selected.name}? This will also delete ${totalDescendants} sub-agent${totalDescendants === 1 ? '' : 's'} and revoke all their API keys.`
 				: `Delete agent:${selected.name}? This cannot be undone.`}

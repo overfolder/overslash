@@ -256,7 +256,7 @@
 					<div class="avatar avatar-fallback lg">{fmt.initials(selected)}</div>
 				{/if}
 				<div>
-					<h2>{sel.primary}</h2>
+					<h2 title={sel.title}>{sel.primary}</h2>
 					<p class="muted">{sel.secondary ?? selected.email ?? 'no email on file'}</p>
 				</div>
 			</div>

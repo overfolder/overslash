@@ -111,12 +111,19 @@
 			: orgServices
 	);
 
-	function selfGroupLabel(g: typeof group): string {
-		if (!g) return '';
-		if (g.system_kind !== 'self') return g.name;
+	/** Label plus a hover title. The label may have the org's single allowed
+	 *  domain stripped off; `title` always carries the full address. */
+	function selfGroupLabel(g: typeof group): { text: string; title: string | undefined } {
+		if (!g) return { text: '', title: undefined };
+		if (g.system_kind !== 'self') return { text: g.name, title: undefined };
 		const ident = g.owner_identity_id ? identityById.get(g.owner_identity_id) : undefined;
-		const email = ident?.email ? shortEmail(ident.email, allowedDomains) : ident?.name;
-		return email ? `Myself (${email})` : 'Myself';
+		if (!ident?.email) {
+			return { text: ident?.name ? `Myself (${ident.name})` : 'Myself', title: undefined };
+		}
+		return {
+			text: `Myself (${shortEmail(ident.email, allowedDomains)})`,
+			title: `Myself (${ident.email})`
+		};
 	}
 
 	onMount(load);
@@ -301,8 +308,9 @@
 	{:else if error && !group}
 		<div class="state error">{error}</div>
 	{:else if group}
+		{@const heading = selfGroupLabel(group)}
 		<header class="header">
-			<h1>{selfGroupLabel(group)}</h1>
+			<h1 title={heading.title}>{heading.text}</h1>
 			{#if !group.is_system}
 				<button class="link-danger" onclick={() => (deleteOpen = true)}>Delete group</button>
 			{/if}

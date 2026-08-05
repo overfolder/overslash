@@ -75,7 +75,7 @@
 		</div>
 
 		<div class="card">
-			<h2>Agents owned by {display?.primary}</h2>
+			<h2>Agents owned by <span title={display?.title}>{display?.primary}</span></h2>
 			{#if agents.length === 0}
 				<p class="muted">No agents yet.</p>
 			{:else}
