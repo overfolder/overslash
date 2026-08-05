@@ -13,6 +13,7 @@
 
 mod common;
 
+mod account_invitations;
 mod actions_reauth;
 mod actions_reauth_return_url;
 mod actions_validate;

@@ -1,3 +1,4 @@
+pub mod account_invitations;
 pub mod actions;
 pub mod api_keys;
 pub mod approvals;

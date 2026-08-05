@@ -126,6 +126,14 @@ pub(super) async fn me_identity(
         }
     });
 
+    // Pending invitations from *other* orgs. Embedded here rather than fetched
+    // separately because this endpoint is the shell's universal auth call —
+    // the sidebar gets the list on the same round trip as `memberships`, and
+    // `invalidateAll()` after accept/decline refreshes both at once.
+    let invitations =
+        crate::routes::account_invitations::list_pending_invitations(&state, &ext, &session)
+            .await?;
+
     Ok(axum::Json(json!({
         "identity_id": ident.id,
         "org_id": ident.org_id,
@@ -141,6 +149,7 @@ pub(super) async fn me_identity(
         "user_id": user_id,
         "personal_org_id": personal_org_id,
         "memberships": memberships,
+        "invitations": invitations,
         "trial": trial,
     })))
 }

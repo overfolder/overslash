@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { session, type MembershipSummary, type MeIdentity } from '$lib/session';
+	import { switchOrg } from '$lib/api/account';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	interface EmailPreferences {
@@ -103,14 +104,7 @@
 
 	async function switchTo(orgId: string) {
 		try {
-			const res = await session.post<{ redirect_to?: string }>('/auth/switch-org', {
-				org_id: orgId
-			});
-			if (res?.redirect_to) {
-				window.location.href = res.redirect_to;
-			} else {
-				window.location.reload();
-			}
+			await switchOrg(orgId);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to switch org';
 		}
