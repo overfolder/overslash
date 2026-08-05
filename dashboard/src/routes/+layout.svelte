@@ -162,6 +162,7 @@
 				{isAdmin}
 				{isInstanceAdmin}
 				memberships={data?.user?.memberships ?? []}
+				invitations={data?.user?.invitations ?? []}
 				currentOrgId={data?.user?.org_id ?? ''}
 				mobileOpen={mobileDrawerOpen}
 				onCloseMobile={() => (mobileDrawerOpen = false)}

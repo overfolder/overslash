@@ -391,76 +391,21 @@ async fn provision_org_subdomain(
 
         // A never-signed-in invite still needs its user link + membership +
         // groups. An already-linked member skips all of this (idempotent
-        // anyway, but we avoid a redundant membership insert).
+        // anyway, but we avoid a redundant membership insert). The work is
+        // shared with the in-app accept path — see `services::invite_adoption`.
         if existing.user_id.is_none() {
-            overslash_db::repos::identity::set_user_id(
-                state.db(ext),
-                target_org.id,
-                existing.id,
-                Some(user_id),
-            )
-            .await?;
-            overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
-                state.db(ext),
-                target_org.id,
-                existing.id,
-            )
-            .await?;
-            // The invite's role lives on the identity: admin invites carry
-            // `is_org_admin = true` (set at invite creation / by migration
-            // 103). Keep the membership row consistent with it.
-            let role = if existing.is_org_admin {
-                membership::ROLE_ADMIN
-            } else {
-                membership::ROLE_MEMBER
-            };
-            match membership::create(state.db(ext), user_id, target_org.id, role).await {
-                Ok(_) => {}
-                Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
-                Err(e) => return Err(e.into()),
-            }
-            let dashboard_url = build_org_redirect(state, &target_org);
-            crate::services::welcome_email::send_if_due(
+            crate::services::invite_adoption::adopt_pending_identity(
                 state,
+                ext,
+                &target_org,
+                &existing,
                 user_id,
-                target_org.id,
-                dashboard_url,
+                &userinfo.email,
+                crate::services::invite_adoption::AdoptionVia::Sso {
+                    provider: &userinfo.provider_key,
+                },
             )
-            .await;
-
-            // Record the adoption. This is the moment a pre-created identity
-            // becomes a human-usable login, so it is the security-relevant
-            // event an admin wants to see — especially when the identity was
-            // provisioned as a side effect of name-based impersonation rather
-            // than an explicit invite. (Provisioning via an admin-minted
-            // `impersonate` key IS an admission decision, so this is not a
-            // `require_invite_admission` bypass; it is made auditable so the
-            // org can tell the two admission paths apart after the fact.)
-            let provisioned_by = existing
-                .metadata
-                .get("provisioned_by")
-                .and_then(|v| v.as_str())
-                .unwrap_or("invite");
-            let _ = scope
-                .log_audit(AuditEntry {
-                    org_id: target_org.id,
-                    identity_id: Some(existing.id),
-                    action: "identity.adopted",
-                    resource_type: Some("identity"),
-                    resource_id: Some(existing.id),
-                    detail: serde_json::json!({
-                        "email": &userinfo.email,
-                        "provider": &userinfo.provider_key,
-                        "provisioned_by": provisioned_by,
-                        "role": if existing.is_org_admin { membership::ROLE_ADMIN } else { membership::ROLE_MEMBER },
-                    }),
-                    description: Some(&format!(
-                        "{} signed in for the first time and adopted their pre-created identity ({provisioned_by})",
-                        &userinfo.email
-                    )),
-                    ip_address: None,
-                })
-                .await;
+            .await?;
         }
 
         return Ok((target_org.id, existing.id, user_id, userinfo.email.clone()));

@@ -317,6 +317,7 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - Logo ("Overs/ash") at top (bold 18px)
 - Nav items with 18px icon placeholder + label. Active item: primary-50 background, primary text, semi-bold. Inactive: neutral-600 text, medium weight.
 - "ADMIN" section label (11px semi-bold, neutral-400, letter-spaced) separates admin-only items.
+- **Pending invitations** (sidebar footer, directly above the org switcher): rendered only when the signed-in user has invitations from orgs they haven't joined, sourced from `/auth/me/identity.invitations[]` (same list as `GET /v1/account/invitations`). An "INVITATIONS" section label followed by one card per org — org name, "invited as admin/member", and **Accept** / **Decline**. Accept posts to `/v1/account/invitations/{id}/accept`, then switches to that org and hard-reloads onto its subdomain. Decline asks for confirmation, then archives the invitation. When the inviting org signs its members in through its own IdP (`allow_overslash_managed_signin = false`) the buttons are replaced by a "Sign in to accept →" link to that org's subdomain — accepting has to happen there.
 - **Org switcher** (sidebar footer, above the Settings link): shows the current org's name. When the user belongs to more than one org, clicking it opens a dropdown grouped by **Personal** / **Orgs** with the current entry highlighted. Selecting an entry posts to `/auth/switch-org { org_id }` and the browser hard-reloads onto the returned URL (root apex for personal orgs, `<slug>.app.overslash.com` for corp orgs). The current org's role (admin / member) is implicit — no per-row badges; every row is just an org name.
 - Collapse button (chevron «) at the bottom or top-right of the sidebar.
 - **Build stamp** (last line of the sidebar footer): `v<version> · <short sha>` in muted 11px text, read from `GET /v1/version`. Hovering shows the full SHA; clicking copies it and the line reads "Copied" for ~1.5s. Absent until the request resolves, and if it fails.
@@ -325,6 +326,7 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - Logo collapses to "/" (the slash character, bold 18px) — the iconic part of "Overs/ash".
 - Nav items show icons only (18px, centered), no labels. Active item still has primary-50 rounded background. Tooltip on hover shows the label.
 - "ADMIN" label hidden. Admin nav items still show as icon-only.
+- Pending invitations collapse to a single bordered cell — envelope glyph + count badge — with the count in the hover tooltip; clicking expands the sidebar rather than opening a popover, since the org names are the whole point and 64px can't carry them.
 - Org switcher collapses to the first letter of the current org's slug in a single cell; clicking still opens the dropdown (which anchors to the right of the sidebar so it's readable).
 - Build stamp drops the short SHA and shows the version alone — the SHA stays available in the hover tooltip, and clicking still copies it.
 - Expand button (chevron ») to restore.

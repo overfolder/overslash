@@ -6,7 +6,9 @@
 	import Logo from './Logo.svelte';
 	import NavItem from './NavItem.svelte';
 	import OrgSwitcher from './OrgSwitcher.svelte';
+	import PendingInvites from './PendingInvites.svelte';
 	import CreateOrgModal from '$lib/components/CreateOrgModal.svelte';
+	import type { PendingInvitation } from '$lib/api/account';
 	import type { MembershipSummary } from '$lib/session';
 	import type { BuildInfo } from '$lib/types';
 	import { buildLabel, buildTitle, hasCommit } from '$lib/api/version';
@@ -15,6 +17,7 @@
 		isAdmin = false,
 		isInstanceAdmin = false,
 		memberships = [],
+		invitations = [],
 		currentOrgId = '',
 		mobileOpen = false,
 		onCloseMobile = () => {},
@@ -23,6 +26,8 @@
 		isAdmin?: boolean;
 		isInstanceAdmin?: boolean;
 		memberships?: MembershipSummary[];
+		/** Orgs that invited this user but which they haven't joined yet. */
+		invitations?: PendingInvitation[];
 		currentOrgId?: string;
 		mobileOpen?: boolean;
 		onCloseMobile?: () => void;
@@ -131,6 +136,7 @@
 	</nav>
 
 	<div class="footer">
+		<PendingInvites {invitations} {collapsed} />
 		{#if memberships.length > 0 && currentOrgId}
 			<OrgSwitcher {memberships} {currentOrgId} {collapsed} />
 		{/if}

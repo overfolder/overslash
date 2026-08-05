@@ -6,6 +6,10 @@
  * Auth relies on the `oss_session` HttpOnly cookie set by the backend.
  */
 
+// Type-only, so the `$lib/api/account` → `$lib/session` import cycle is erased
+// at build time rather than becoming a runtime one.
+import type { PendingInvitation } from '$lib/api/account';
+
 export class ApiError extends Error {
 	constructor(
 		public status: number,
@@ -184,6 +188,11 @@ export interface MeIdentity {
 	user_id?: string | null;
 	personal_org_id?: string | null;
 	memberships?: MembershipSummary[];
+	/** Pending invitations from orgs the caller has *not* joined yet, keyed
+	 *  on their IdP-verified email. Embedded here so the sidebar needs no
+	 *  extra round trip; also served on its own by
+	 *  `GET /v1/account/invitations`. */
+	invitations?: PendingInvitation[];
 	/** Instance-admin-managed trial summary for the org-wide banner. `null`
 	 *  for non-trial orgs. Enforcement is banner-only — informational. */
 	trial?: TrialSummary | null;

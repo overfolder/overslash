@@ -88,8 +88,9 @@ pub(super) struct IdentityResponse {
     /// explicitly. Meaningless for `user`-kind rows.
     auto_call_on_approve: bool,
     /// `true` for a `user` identity that was pre-created (invited or
-    /// impersonation-provisioned) but has never completed a sign-in
-    /// (`external_id IS NULL`). Drives the Members-page "pending" badge.
+    /// impersonation-provisioned) and never claimed by a human — neither by
+    /// an SSO sign-in (`external_id`) nor by accepting the invitation from
+    /// the dashboard (`user_id`). Drives the Members-page "pending" badge.
     pending: bool,
     /// How this identity came to exist, when it was auto-provisioned — e.g.
     /// `"impersonation"`. Projected from `metadata.provisioned_by`; `None`
@@ -121,7 +122,7 @@ impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
             .get("provisioned_by")
             .and_then(|v| v.as_str())
             .map(str::to_owned);
-        let pending = r.kind == "user" && r.external_id.is_none();
+        let pending = r.kind == "user" && r.external_id.is_none() && r.user_id.is_none();
         Self {
             id: r.id,
             org_id: r.org_id,

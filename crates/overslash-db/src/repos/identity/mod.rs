@@ -33,7 +33,9 @@ pub use lifecycle::{
 // `archive_identity_tx` is deliberately not re-exported: its only callers are
 // `archive_identity` and `remove_user_from_org`, both inside `lifecycle`.
 pub(crate) use lifecycle::{archive_identity, remove_user_from_org, restore, touch_last_active};
-pub(crate) use lookup::{count_by_org, find_user_by_email_global, list_by_org};
+pub(crate) use lookup::{
+    count_by_org, find_user_by_email_global, list_by_org, list_pending_invites_by_email,
+};
 pub use lookup::{
     find_by_org_and_user, find_child_by_name, find_user_by_email_in_org,
     find_user_by_external_id_in_org, get_ancestor_chain, get_by_id, list_children,
