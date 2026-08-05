@@ -14,6 +14,7 @@
 	} from '$lib/api/groups';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import IdentityPickerModal from '$lib/components/groups/IdentityPickerModal.svelte';
+	import { makeIdentityFormatter, shortEmail } from '$lib/identityDisplay';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	const groupId = $derived($page.params.id as string);
@@ -56,6 +57,8 @@
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
+	const fmt = $derived(makeIdentityFormatter(allowedDomains));
 	const isSelfGroup = $derived(group?.system_kind === 'self');
 	const isAdminsGroup = $derived(group?.system_kind === 'admins');
 	const isEveryoneGroup = $derived(group?.system_kind === 'everyone');
@@ -112,7 +115,7 @@
 		if (!g) return '';
 		if (g.system_kind !== 'self') return g.name;
 		const ident = g.owner_identity_id ? identityById.get(g.owner_identity_id) : undefined;
-		const email = ident?.email ?? ident?.name;
+		const email = ident?.email ? shortEmail(ident.email, allowedDomains) : ident?.name;
 		return email ? `Myself (${email})` : 'Myself';
 	}
 
@@ -451,10 +454,11 @@
 				<ul class="members">
 					{#each memberIds as id (id)}
 						{@const ident = identityById.get(id)}
+						{@const d = ident ? fmt.format(ident) : null}
 						<li>
-							<span class="name">{ident?.name ?? id}</span>
-							{#if ident?.external_id}
-								<span class="ext">{ident.external_id}</span>
+							<span class="name" title={d?.title}>{d?.primary ?? id}</span>
+							{#if d?.secondary}
+								<span class="ext">{d.secondary}</span>
 							{/if}
 							{#if !isSelfGroup}
 								<button class="link-danger" onclick={() => removeMember(id)}>Remove</button>
@@ -470,6 +474,7 @@
 <IdentityPickerModal
 	open={pickerOpen}
 	{identities}
+	{allowedDomains}
 	excludeIds={memberIds}
 	onPick={pickMember}
 	onCancel={() => (pickerOpen = false)}

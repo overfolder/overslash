@@ -23,6 +23,7 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import { absoluteTime } from '$lib/utils/time';
+	import { invalidateAllowedDomains } from '$lib/orgDomains';
 
 	let { data }: { data: OrgPageData } = $props();
 
@@ -608,6 +609,11 @@
 			managedSigninSettings = updated;
 			domainsInput = updated.managed_signin_allowed_domains.join('\n');
 			domainsDirty = false;
+			// Identity labels across the app strip the domain when exactly one is
+			// allowed. This page patches state in place instead of invalidating
+			// the layout load, so drop the memo explicitly or every other page
+			// keeps the old labels until a full reload.
+			invalidateAllowedDomains();
 			// Managed-provider rows in /v1/org-idp-configs are gated on the
 			// flag — refetch so they appear/disappear immediately.
 			await refetchIdp();

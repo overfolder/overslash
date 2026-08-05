@@ -4,6 +4,7 @@
 	import { page } from '$app/stores';
 	import { ApiError } from '$lib/session';
 	import { groupsApi, identitiesApi, type Group, type Identity } from '$lib/api/groups';
+	import { shortEmail } from '$lib/identityDisplay';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	type Row = Group & { memberCount: number; grantCount: number };
@@ -23,6 +24,7 @@
 	let deleteBusy = $state(false);
 
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 	// Self rows that share an email (rare — same user re-added under different
 	// identities, or two users with the same external email per migration 043).
@@ -46,10 +48,13 @@
 		const ident = g.owner_identity_id ? identityById.get(g.owner_identity_id) : undefined;
 		const email = ident?.email ?? ident?.name;
 		if (!email) return 'Myself';
+		// Collision detection keys on the *raw* email — stripping the domain
+		// first would invent collisions between `ada@acme.com` and `ada@other.com`.
+		const shown = ident?.email ? shortEmail(ident.email, allowedDomains) : email;
 		if (collidingSelfEmails.has(email) && g.owner_identity_id) {
-			return `Myself (${email}, ${g.owner_identity_id.slice(0, 8)})`;
+			return `Myself (${shown}, ${g.owner_identity_id.slice(0, 8)})`;
 		}
-		return `Myself (${email})`;
+		return `Myself (${shown})`;
 	}
 
 	onMount(load);

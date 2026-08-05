@@ -129,9 +129,11 @@ try {
 
 		// Read-only user node detail (light only — same shape in dark).
 		// The logged-in user keeps the "read-only" copy and no Remove action.
+		// User nodes are labelled by email; the domain is only stripped when
+		// the org pins exactly one allowed domain, so match either form.
 		if (theme === 'light') {
 			const userNode = page.locator('.tree-label', {
-				hasText: 'Dev User'
+				hasText: /^dev(@overslash\.local)?$/
 			});
 			if ((await userNode.count()) > 0) {
 				await userNode.first().click();

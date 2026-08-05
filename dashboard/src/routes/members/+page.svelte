@@ -2,6 +2,7 @@
 	import { ApiError, session } from '$lib/session';
 	import { invalidateAll } from '$app/navigation';
 	import type { Identity, ApiKeySummary } from './types';
+	import { makeIdentityFormatter, providerLabel } from '$lib/identityDisplay';
 
 	let {
 		data
@@ -11,8 +12,13 @@
 			apiKeys: ApiKeySummary[];
 			viewerIsAdmin: boolean;
 			viewerIdentityId: string | null;
+			allowedDomains: string[];
 		};
 	} = $props();
+
+	// Members are labelled by email; the IdP display name is the secondary line
+	// and the drawer carries both losslessly. See `$lib/identityDisplay`.
+	const fmt = $derived(makeIdentityFormatter(data.allowedDomains));
 
 	let query = $state('');
 	let selectedId: string | null = $state(null);
@@ -96,25 +102,6 @@
 
 	const selected = $derived(filtered.find((u) => u.id === selectedId) ?? null);
 
-	function initials(name: string): string {
-		return name
-			.split(/\s+/)
-			.filter(Boolean)
-			.slice(0, 2)
-			.map((p) => p[0]?.toUpperCase() ?? '')
-			.join('');
-	}
-
-	function providerLabel(p: string | null): string {
-		if (!p) return '—';
-		const map: Record<string, string> = {
-			google: 'Google',
-			github: 'GitHub',
-			oidc: 'OIDC'
-		};
-		return map[p.toLowerCase()] ?? p;
-	}
-
 	function providerClass(p: string | null): string {
 		if (!p) return 'badge badge-neutral';
 		const k = p.toLowerCase();
@@ -182,8 +169,7 @@
 			<table class="members-table">
 				<thead>
 					<tr>
-						<th class="col-user">User</th>
-						<th>Email</th>
+						<th class="col-user">Member</th>
 						<th>Role</th>
 						<th>IdP</th>
 						<th class="num">Agents</th>
@@ -194,6 +180,7 @@
 				</thead>
 				<tbody>
 					{#each filtered as u (u.id)}
+						{@const d = fmt.format(u)}
 						<tr
 							class:selected={selectedId === u.id}
 							onclick={() => selectMember(u.id)}
@@ -203,9 +190,12 @@
 									{#if u.picture}
 										<img class="avatar" src={u.picture} alt="" referrerpolicy="no-referrer" />
 									{:else}
-										<div class="avatar avatar-fallback">{initials(u.name)}</div>
+										<div class="avatar avatar-fallback">{fmt.initials(u)}</div>
 									{/if}
-									<span class="name">{u.name}</span>
+									<span class="id-labels" title={d.title}>
+										<span class="name">{d.primary}</span>
+										{#if d.secondary}<span class="display-name">{d.secondary}</span>{/if}
+									</span>
 									{#if u.pending}
 										<span
 											class="pending-badge"
@@ -216,7 +206,6 @@
 									{/if}
 								</div>
 							</td>
-							<td class="email">{u.email ?? '—'}</td>
 							<td>
 								{#if u.is_org_admin}
 									<span class="badge badge-admin">Admin</span>
@@ -252,6 +241,7 @@
 </section>
 
 {#if selected}
+	{@const sel = fmt.format(selected)}
 	<div
 		class="drawer-backdrop"
 		role="presentation"
@@ -263,11 +253,11 @@
 				{#if selected.picture}
 					<img class="avatar lg" src={selected.picture} alt="" referrerpolicy="no-referrer" />
 				{:else}
-					<div class="avatar avatar-fallback lg">{initials(selected.name)}</div>
+					<div class="avatar avatar-fallback lg">{fmt.initials(selected)}</div>
 				{/if}
 				<div>
-					<h2>{selected.name}</h2>
-					<p class="muted">{selected.email ?? 'no email on file'}</p>
+					<h2>{sel.primary}</h2>
+					<p class="muted">{sel.secondary ?? selected.email ?? 'no email on file'}</p>
 				</div>
 			</div>
 			<button class="close" onclick={() => selectMember(null)} aria-label="Close">×</button>
@@ -282,6 +272,15 @@
 					<span class="role-member">Member</span>
 				{/if}
 			</dd>
+
+			<!-- The table labels members by email, possibly with the org's single
+			     allowed domain stripped. This pane is the lossless view: full
+			     address, plus the raw IdP display name. -->
+			<dt>Email</dt>
+			<dd>{selected.email ?? '—'}</dd>
+
+			<dt>Display name</dt>
+			<dd>{selected.name}</dd>
 
 			<dt>IdP source</dt>
 			<dd><span class={providerClass(selected.provider)}>{providerLabel(selected.provider)}</span></dd>
@@ -449,18 +448,31 @@
 		outline: 2px solid var(--color-primary);
 		outline-offset: 2px;
 	}
-	.email {
-		color: var(--color-text);
-	}
-
 	.user-cell {
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
 	}
+	/* Email leads, IdP display name sits under it — same stack as the top-bar
+	   ProfileAvatar so the two surfaces read alike. */
+	.id-labels {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
 	.name {
 		font: var(--text-body-medium);
 		color: var(--color-text-heading);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.display-name {
+		font: var(--text-body-sm);
+		color: var(--color-text-muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.avatar {

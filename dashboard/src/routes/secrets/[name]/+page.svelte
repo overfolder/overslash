@@ -6,6 +6,7 @@
 	import { getSecret } from '$lib/api/secrets';
 	import type { Identity, SecretDetail, SecretVersionView } from '$lib/types';
 	import OwnerCell from '$lib/components/secrets/OwnerCell.svelte';
+	import { formatIdentity } from '$lib/identityDisplay';
 	import RevealModal from '$lib/components/secrets/RevealModal.svelte';
 	import UpdateValueModal from '$lib/components/secrets/UpdateValueModal.svelte';
 	import RestoreVersionModal from '$lib/components/secrets/RestoreVersionModal.svelte';
@@ -13,6 +14,7 @@
 
 	const name = $derived($page.params.name ?? '');
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
 
 	let detail = $state<SecretDetail | null>(null);
 	let identities = $state<Identity[]>([]);
@@ -61,7 +63,7 @@
 		if (!ident) return id.slice(0, 8);
 		const prefix =
 			ident.kind === 'user' ? 'user:' : ident.kind === 'sub_agent' ? 'sub_agent:' : 'agent:';
-		return `${prefix}${ident.name}`;
+		return `${prefix}${formatIdentity(ident, allowedDomains).primary}`;
 	}
 </script>
 
@@ -100,6 +102,7 @@
 							ownerId={detail.owner_identity_id}
 							{identityById}
 							{currentUserId}
+							{allowedDomains}
 						/>
 					</div>
 					<div class="meta-item">
