@@ -115,12 +115,29 @@ pub async fn list_org_signin_providers(
     ext: &axum::http::Extensions,
     org_id: Uuid,
 ) -> Result<Vec<OrgSigninProvider>, AppError> {
+    Ok(resolve_availability(state, ext, org_id).await?.0)
+}
+
+/// The availability list plus the keys a *disabled* row claims. Kept together
+/// because both fall out of the same `org_idp_configs` read: a caller that
+/// needs to tell "switched off" from "never configured" would otherwise have
+/// to query the table a second time.
+async fn resolve_availability(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: Uuid,
+) -> Result<(Vec<OrgSigninProvider>, HashSet<String>), AppError> {
     // All rows, not just enabled ones: a disabled row still claims its key,
     // so turning a dedicated Google IdP off turns Google off for the org
     // rather than handing sign-in to Overslash's OAuth app behind the
     // admin's back.
     let rows = overslash_db::repos::org_idp_config::list_by_org(state.db(ext), org_id).await?;
     let claimed: HashSet<String> = rows.iter().map(|r| r.provider_key.clone()).collect();
+    let disabled: HashSet<String> = rows
+        .iter()
+        .filter(|r| !r.enabled)
+        .map(|r| r.provider_key.clone())
+        .collect();
 
     let mut providers: Vec<OrgSigninProvider> = rows
         .into_iter()
@@ -140,16 +157,27 @@ pub async fn list_org_signin_providers(
         });
     }
 
-    Ok(providers)
+    Ok((providers, disabled))
+}
+
+/// Outcome of asking for a provider's credentials. The two unavailable cases
+/// are distinct because they point an admin at different fixes — add an IdP
+/// versus flip a toggle — and the caller owns the wording, since it knows the
+/// request context (slug, subdomain).
+pub enum CredentialLookup {
+    Found(String, String),
+    /// A row claims this provider key but is switched off.
+    Disabled,
+    /// No row claims it, and managed sign-in doesn't cover it either.
+    NotConfigured,
 }
 
 /// Resolve the OAuth client credentials to drive `provider_key`'s login for
 /// `org_id`, following the availability rule above.
 ///
-/// `Ok(None)` means the org simply cannot sign in with this provider — the
-/// caller knows the request context (slug, subdomain) and writes the better
-/// message. An `Err` means the provider *is* available but misconfigured,
-/// which is an operator-facing problem in its own right.
+/// An `Err` means the provider *is* available but misconfigured, which is an
+/// operator-facing problem in its own right — distinct from the unavailable
+/// cases carried by [`CredentialLookup`].
 ///
 /// Precedence within a dedicated row: the row's own encrypted credentials,
 /// else the org's OAuth App Credentials (`OAUTH_{PROVIDER}_CLIENT_ID/SECRET`
@@ -160,10 +188,14 @@ pub async fn resolve_org_signin_credentials(
     ext: &axum::http::Extensions,
     org_id: Uuid,
     provider_key: &str,
-) -> Result<Option<(String, String)>, AppError> {
-    let providers = list_org_signin_providers(state, ext, org_id).await?;
+) -> Result<CredentialLookup, AppError> {
+    let (providers, disabled) = resolve_availability(state, ext, org_id).await?;
     let Some(provider) = providers.iter().find(|p| p.provider_key == provider_key) else {
-        return Ok(None);
+        return Ok(if disabled.contains(provider_key) {
+            CredentialLookup::Disabled
+        } else {
+            CredentialLookup::NotConfigured
+        });
     };
 
     let scope = OrgScope::new(org_id, state.db_pool(ext));
@@ -188,7 +220,7 @@ pub async fn resolve_org_signin_credentials(
                     .map_err(|e| AppError::Internal(format!("decrypt client_secret: {e}")))?,
             )
             .map_err(|_| AppError::Internal("invalid client_secret utf-8".into()))?;
-            return Ok(Some((client_id, client_secret)));
+            return Ok(CredentialLookup::Found(client_id, client_secret));
         }
 
         // The row defers to org-level OAuth App Credentials (SPEC §3). Their
@@ -208,7 +240,10 @@ pub async fn resolve_org_signin_credentials(
                      the IdP with dedicated credentials."
             ))
         })?;
-        return Ok(Some((creds.client_id, creds.client_secret)));
+        return Ok(CredentialLookup::Found(
+            creds.client_id,
+            creds.client_secret,
+        ));
     }
 
     // Managed: org OAuth App Credentials win over the operator-shared env pair.
@@ -219,11 +254,17 @@ pub async fn resolve_org_signin_credentials(
     )
     .await?
     {
-        return Ok(Some((creds.client_id, creds.client_secret)));
+        return Ok(CredentialLookup::Found(
+            creds.client_id,
+            creds.client_secret,
+        ));
     }
-    // `list_org_signin_providers` only offers a managed provider when the env
-    // pair is present, so this is belt-and-braces against a config swap.
-    Ok(state.config.env_auth_credentials(provider_key))
+    // The availability list only offers a managed provider when the env pair
+    // is present, so this is belt-and-braces against a config swap.
+    Ok(match state.config.env_auth_credentials(provider_key) {
+        Some((id, secret)) => CredentialLookup::Found(id, secret),
+        None => CredentialLookup::NotConfigured,
+    })
 }
 
 async fn managed_signin_enabled(

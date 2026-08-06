@@ -41,27 +41,26 @@ pub(super) async fn resolve_auth_credentials(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("org not found: {slug}")))?;
 
-        if let Some(creds) =
-            org_signin::resolve_org_signin_credentials(state, ext, org_row.id, provider_key).await?
-        {
-            return Ok(creds);
-        }
-
-        // Unavailable. Distinguish "never configured" from "the admin switched
-        // it off", which is the difference between adding an IdP and flipping
-        // a toggle.
-        let disabled = overslash_db::repos::org_idp_config::get_by_org_and_provider(
-            state.db(ext),
+        // The two unavailable cases point an admin at different fixes: add an
+        // IdP, or re-enable the one that's there.
+        return match org_signin::resolve_org_signin_credentials(
+            state,
+            ext,
             org_row.id,
             provider_key,
         )
         .await?
-        .is_some_and(|row| !row.enabled);
-        return Err(AppError::NotFound(if disabled {
-            format!("provider {provider_key} is disabled for org {slug}")
-        } else {
-            format!("provider {provider_key} not configured for org {slug}")
-        }));
+        {
+            org_signin::CredentialLookup::Found(client_id, client_secret) => {
+                Ok((client_id, client_secret))
+            }
+            org_signin::CredentialLookup::Disabled => Err(AppError::NotFound(format!(
+                "provider {provider_key} is disabled for org {slug}"
+            ))),
+            org_signin::CredentialLookup::NotConfigured => Err(AppError::NotFound(format!(
+                "provider {provider_key} not configured for org {slug}"
+            ))),
+        };
     }
 
     Err(AppError::NotFound(format!(
