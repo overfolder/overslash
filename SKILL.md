@@ -52,6 +52,21 @@ Configure the client to use the stdio shim — it auto-refreshes tokens:
 { "command": "overslash", "args": ["mcp"] }
 ```
 
+## Organizations with their own subdomain
+
+If your organization has a slug (`acme`), point the client at its subdomain
+instead — every agent enrolled through it is guaranteed to land in that org,
+signed in through that org's IdP:
+
+```json
+{ "url": "https://acme.app.overslash.com/mcp" }
+```
+
+Discovery, sign-in, and tool calls all stay on that host. `https://acme.api.overslash.com/mcp`
+is an equivalent endpoint that reaches the API directly, bypassing the edge
+proxy; prefer the `app` host unless you have a reason not to, since it is the
+one the browser sign-in flow is built around.
+
 ## After enrollment
 
 You have four MCP tools:

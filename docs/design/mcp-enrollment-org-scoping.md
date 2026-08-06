@@ -13,7 +13,7 @@
 The corporate story this unlocks: IT ships an MDM-managed MCP client config —
 
 ```json
-{ "mcpServers": { "overslash": { "type": "http", "url": "https://acme.api.overslash.com/mcp" } } }
+{ "mcpServers": { "overslash": { "type": "http", "url": "https://acme.app.overslash.com/mcp" } } }
 ```
 
 — and can trust that any agent enrolled through it is an **Acme** agent, signed in through **Acme's** Okta, bounded by **Acme's** group ceiling and [layered templates](layered-service-templates.md). An employee's personal Overslash account must be unreachable from that client, by construction.
@@ -22,7 +22,7 @@ The corporate story this unlocks: IT ships an MDM-managed MCP client config —
 
 ## What already holds
 
-- **Per-subdomain discovery.** `oauth_as::issuer_for` returns a per-subdomain issuer, so `.well-known/oauth-authorization-server`, `.well-known/oauth-protected-resource`, and the `WWW-Authenticate` challenge on `/mcp` all name `acme.api.overslash.com`. RFC 8414 discovery is correctly org-scoped.
+- **Per-subdomain discovery.** `oauth_as::issuer_for` returns a per-subdomain issuer, so `.well-known/oauth-authorization-server`, `.well-known/oauth-protected-resource`, and the `WWW-Authenticate` challenge on `/mcp` all name the host the client connected to — `acme.app.overslash.com` or `acme.api.overslash.com`. RFC 8414 discovery is correctly org-scoped on either surface, and the RFC 9728 `resource` matches the configured server URL exactly. (`app.*` reaches the API through a Vercel proxy that forwards `X-Forwarded-Host`; `api.*` reaches Cloud Run directly.)
 - **Unauthenticated authorize bounces through the org IdP.** On `RequestOrgContext::Org`, `/oauth/authorize` with no session redirects through the org's default IdP (or the picker), per D12. A cold client is forced into the org's trust domain.
 - **Trust-domain isolation (D12).** `resolve_auth_credentials` does not fall through to env-var creds when an org is in scope — only that org's `org_idp_configs` grant admission.
 
@@ -30,7 +30,7 @@ The corporate story this unlocks: IT ships an MDM-managed MCP client config —
 
 Read `authorize()` in `crates/overslash-api/src/routes/oauth.rs`:
 
-1. **Enrollment org is taken from the *session*, not the subdomain.** The parked authorize request is built with `org_id: session_claims.org` (the `oss_session` cookie's org), and the subdomain `ctx` is consulted **only** for the unauthenticated IdP bounce. When a session is already present, `ctx` is never compared to `session_claims.org`. So an employee who happens to hold a **personal-org** session and hits `acme.api.overslash.com/oauth/authorize` while authenticated parks `pending.org_id = <personal org>` — and the agent is created in their personal org, even though the client connected via Acme's subdomain. The subdomain governed discovery but not the final binding.
+1. **Enrollment org is taken from the *session*, not the subdomain.** The parked authorize request is built with `org_id: session_claims.org` (the `oss_session` cookie's org), and the subdomain `ctx` is consulted **only** for the unauthenticated IdP bounce. When a session is already present, `ctx` is never compared to `session_claims.org`. So an employee who happens to hold a **personal-org** session and hits `acme.app.overslash.com/oauth/authorize` while authenticated parks `pending.org_id = <personal org>` — and the agent is created in their personal org, even though the client connected via Acme's subdomain. The subdomain governed discovery but not the final binding.
 
 2. **DCR clients are org-global.** `oauth_mcp_clients` has no `org_id` column. A `client_id` minted once is usable against any subdomain's authorize endpoint; the only org binding is downstream, at `mcp_client_agent_bindings` (which *does* carry `org_id`) and at `pending.org_id`.
 
@@ -71,7 +71,7 @@ This change is therefore **additive on the subdomain path only**. Two rules keep
 - **Enrollment org follows the *resolved* org**, defined as: the subdomain org on `Org` ctx, the **session org** on `Root` ctx. So the org-derivation and the fast-path binding scoping (item 3) are keyed on that resolved org — on root they degrade to today's session-org behavior, not to any subdomain constraint.
 - **The re-auth-on-mismatch (item 2) fires only on `Org` ctx.** At root there is no subdomain to mismatch against, so a valid session — corp or personal — is never bounced.
 
-Net: the corporate subdomain is a *lock you opt into by pointing a client at it*; root is the *unlocked multi-org hub*. A user who wants the multi-org experience uses root; a corporation that wants its Claude pinned points it at `acme.api.overslash.com`. The two coexist without one restricting the other.
+Net: the corporate subdomain is a *lock you opt into by pointing a client at it*; root is the *unlocked multi-org hub*. A user who wants the multi-org experience uses root; a corporation that wants its Claude pinned points it at `acme.app.overslash.com`. The two coexist without one restricting the other.
 
 ### Hardening: org-scope the DCR client (recommended)
 
@@ -93,7 +93,7 @@ Org-scoping answers *"which org does an agent land in"*. It does **not** by itse
 
 - **No cross-org leak via a stale session.** A personal (or other-org) session on a corp subdomain forces a re-auth into the corp org; it can never divert the agent.
 - **No cross-org replay of a client.** A `client_id` stamped for one subdomain org can't authorize on another org's subdomain.
-- **The corporate guarantee is structural.** Point a client at `acme.api.overslash.com/mcp` and every path — discovery, cold login, warm re-auth, fast-path rebind — resolves to the Acme org, Acme's IdP, Acme's ceiling. That is the "force Overslash and their cloud org" outcome the feedback asks for.
+- **The corporate guarantee is structural.** Point a client at `acme.app.overslash.com/mcp` (or `acme.api.overslash.com/mcp`) and every path — discovery, cold login, warm re-auth, fast-path rebind — resolves to the Acme org, Acme's IdP, Acme's ceiling. That is the "force Overslash and their cloud org" outcome the feedback asks for.
 - **Root multi-org access is preserved (the clarification).** A member with a valid `<org>` session sees and uses `<org>` from `app.overslash.com` — dashboard *and* enrollment into their session org — exactly as today. The subdomain lock is an opt-in corporate control (you get it by pointing a client at the subdomain), not a restriction on the root hub.
 
 Root behavior (personal orgs, org creation, **and corp-org access/enrollment via the session**) is untouched.
@@ -112,5 +112,5 @@ Root behavior (personal orgs, org creation, **and corp-org access/enrollment via
 
 ## Open questions
 
-- **`org_mismatch` UX for MCP clients.** Dashboard users get `/auth/switch-org`; an MCP browser handoff should transparently re-auth through the org IdP. Confirm the bounce preserves `next=` cleanly through the IdP round-trip on the corp subdomain (the return-host preservation machinery from the subdomain work should cover this — verify).
+- ~~**`org_mismatch` UX for MCP clients.**~~ **Resolved** — but only on the `app.*` surface, and only once `<org>.app.overslash.com/mcp` became a Vercel *proxy* rather than a 307 to `<org>.api.*`. The bounce is a relative `Redirect::to("/auth/login/…?next=…")`, so it stays on the host that served `/oauth/authorize`; the `oss_auth_*` cookies carry `Domain=.app.overslash.com` and the callback's `absolute_redirect_for_org` reads `oss_auth_org` + `app_host_suffix` to return to the subdomain. On an `api.*` host that chain cannot complete: the browser rejects a `Domain=.app.overslash.com` cookie under RFC 6265 §5.3.6, so the nonce never lands. Corporate MDM configs should point at `<org>.app.overslash.com/mcp`; `<org>.api.overslash.com/mcp` stays correct for token-bearing (non-browser-enrolling) clients.
 - **Back-compat for NULL-`org_id` clients** registered before the migration — treat NULL as "any subdomain" (today's behavior) and let them re-register per subdomain over time, or backfill from existing bindings.

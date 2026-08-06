@@ -33,6 +33,25 @@ pub enum ElicitOutcome {
 }
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// How long a human has to answer an elicitation before we give up and mark
+/// the row cancelled.
+///
+/// Caveat on the cloud deployment: `/mcp` is served through a Vercel external
+/// rewrite, and Vercel caps a proxied request at **120s** — so a stream held
+/// open past that is severed at the edge before this deadline fires, and the
+/// client sees a network error instead of the `cancelled` JSON-RPC error.
+/// Self-hosted deployments (and clients that hit `<org>.api.*` directly,
+/// bypassing the edge) get the full window. Kept at 300s deliberately: it is
+/// the humane window for an approval prompt, and shortening it to fit the
+/// proxy would degrade every deployment to work around one of them.
+///
+/// Related, and still open: `routes/mcp/elicitation.rs` sets the SSE
+/// keep-alive to 15s, which is exactly the interval Vercel may cancel an idle
+/// connection at — a race worth closing by dropping it to ~10s. Left alone
+/// here because `sse_elicitation_response` has no test coverage today (see the
+/// module doc on `tests/mcp_elicitation.rs`, which drives this service
+/// directly rather than parsing an SSE body), so the change belongs with the
+/// test that would prove it.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Insert a fresh `pending_mcp_elicitations` row. Called by the originator

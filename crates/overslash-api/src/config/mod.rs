@@ -161,9 +161,18 @@ pub struct Config {
     /// for this surface. Leave unset in local dev; tests set this explicitly.
     pub app_host_suffix: Option<String>,
     /// Optional apex for the programmatic surface (MCP, OAuth AS metadata,
-    /// REST). e.g. `api.overslash.com`. Both suffixes are accepted by the
-    /// subdomain middleware; `.well-known` issuers built on a corp subdomain
-    /// prefer this one because programmatic clients hit Cloud Run directly.
+    /// REST). e.g. `api.overslash.com`. Lets clients reach Cloud Run directly,
+    /// bypassing the Vercel edge that fronts the `app` surface.
+    ///
+    /// This is a *co-equal* resolution surface, not a preferred one: the
+    /// subdomain middleware treats both suffixes identically, and `issuer_for`
+    /// always names the host the client actually hit. Anything else would
+    /// break RFC 8414's issuer-identifier invariant (and RFC 9728's `resource`
+    /// match) for whichever surface didn't win. It also can't work in a
+    /// browser on this surface — the auth cookies carry
+    /// `Domain=<session_cookie_domain>`, which is derived from
+    /// `app_host_suffix`, so an `api.` host would have its `Set-Cookie`
+    /// rejected outright. See `routes/oauth_as.rs::issuer_for`.
     pub api_host_suffix: Option<String>,
     /// Optional Domain attribute for the session cookie, typically a leading
     /// dot + `app_host_suffix` so cookies are shared across subdomains
