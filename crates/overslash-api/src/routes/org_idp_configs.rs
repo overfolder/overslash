@@ -17,7 +17,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{ClientIp, ReqExt, UserOrKeyAuth},
-    services::{client_credentials, oidc_discovery},
+    services::{client_credentials, oidc_discovery, org_signin},
 };
 use overslash_core::crypto;
 
@@ -307,46 +307,17 @@ async fn list_idp_configs(
 ) -> Result<Json<Vec<serde_json::Value>>> {
     let mut results: Vec<serde_json::Value> = Vec::new();
 
-    // Overslash-managed env-var providers. Surfaced only when the org has
-    // opted in via `allow_overslash_managed_signin` — pre-migration-066 we
-    // showed them regardless, but they were unusable on corp subdomains
-    // (D12 blocked env-var fallthrough), so the list entries were
-    // misleading. Now they're real: a user matching a pending invite can
-    // sign in through them.
-    let managed_signin_on = overslash_db::repos::org::get_allow_overslash_managed_signin(
-        state.db(&ext),
-        scope.org_id(),
-    )
-    .await?
-    .unwrap_or(false);
-    if managed_signin_on {
-        for (key, display) in [("google", "Google"), ("github", "GitHub")] {
-            if state.config.env_auth_credentials(key).is_some() {
-                results.push(json!({
-                    "provider_key": key,
-                    "display_name": display,
-                    "source": "env",
-                    "managed": true,
-                    "enabled": true,
-                }));
-            }
-        }
-    }
+    // Every DB-configured IdP, **including disabled ones** — this is the
+    // admin management surface, and an admin has to be able to see a config
+    // in order to re-enable or delete it. That's why this can't just be
+    // `org_signin::list_org_signin_providers`, which answers the narrower
+    // "what can this org sign in with right now".
+    let configs = scope.list_org_idp_configs().await?;
+    let claimed: std::collections::HashSet<String> =
+        configs.iter().map(|c| c.provider_key.clone()).collect();
 
-    // DB-configured IdPs for this org
-    let db_configs = scope.list_org_idp_configs().await?;
-    for config in db_configs {
-        // Skip if already shown from env vars
-        if results
-            .iter()
-            .any(|r| r["provider_key"] == config.provider_key)
-        {
-            continue;
-        }
-        let display_name = oauth_provider::get_by_key(state.db(&ext), &config.provider_key)
-            .await?
-            .map(|p| p.display_name)
-            .unwrap_or_else(|| config.provider_key.clone());
+    for config in configs {
+        let display_name = org_signin::display_name_for(&state, &ext, &config.provider_key).await?;
 
         results.push(json!({
             "id": config.id,
@@ -361,6 +332,23 @@ async fn list_idp_configs(
             "is_default": config.is_default,
             "created_at": fmt_time(config.created_at),
             "updated_at": fmt_time(config.updated_at),
+        }));
+    }
+
+    // Overslash-managed providers for the keys the org has no config of its
+    // own for, from the same resolver the login page and the
+    // `/oauth/authorize` bounce use — so this list can't claim a provider is
+    // available when sign-in would disagree. `claimed` keeps a provider from
+    // appearing twice: an org that configured Google manages it through its
+    // own row above, enabled or not.
+    for key in org_signin::managed_provider_keys(&state, &ext, scope.org_id(), &claimed).await? {
+        let display_name = org_signin::display_name_for(&state, &ext, &key).await?;
+        results.push(json!({
+            "provider_key": key,
+            "display_name": display_name,
+            "source": "env",
+            "managed": true,
+            "enabled": true,
         }));
     }
 

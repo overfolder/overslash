@@ -597,14 +597,15 @@ pub(super) async fn list_auth_providers(
     let ctx = ctx
         .map(|axum::extract::Extension(c)| c)
         .unwrap_or(crate::middleware::subdomain::RequestOrgContext::Root);
-    // Trust-domain rule (docs/design/multi_org_auth.md §Flow 2):
-    //   - On a corp-org subdomain, list ONLY that org's IdPs — Overslash-
-    //     level IdPs cannot grant membership to a corp org, so offering them
-    //     would be misleading.
-    //   - On the root apex, list ONLY env-configured Overslash-level IdPs.
+    // Which list to render (docs/design/multi_org_auth.md §Flow 2):
+    //   - On a corp-org subdomain, whatever `services::org_signin` says that
+    //     org can sign in with — its own IdPs, plus the Overslash-managed
+    //     providers if it opted into them.
+    //   - On the root apex, the Overslash-level providers only. A corp org's
+    //     IdP is its own trust domain and has nothing to offer here.
     //   - Back-compat: if the caller passed `?org=<slug>` on the root apex
     //     (pre-multi-org dashboards still do), honor it and list that org's
-    //     IdPs — equivalent to hitting the subdomain.
+    //     providers — equivalent to hitting the subdomain.
     let mut providers = Vec::new();
 
     let resolved_org_id = match &ctx {
@@ -619,48 +620,21 @@ pub(super) async fn list_auth_providers(
     };
 
     if let Some(org_id) = resolved_org_id {
-        let bootstrap_scope = overslash_db::OrgScope::new(org_id, state.db_pool(&ext));
-        let configs = bootstrap_scope.list_enabled_org_idp_configs().await?;
-        let dedicated_keys: std::collections::HashSet<String> =
-            configs.iter().map(|c| c.provider_key.clone()).collect();
-        for config in configs {
-            let display_name = oauth_provider::get_by_key(state.db(&ext), &config.provider_key)
-                .await?
-                .map(|p| p.display_name)
-                .unwrap_or_else(|| config.provider_key.clone());
+        // Listing the managed providers here doesn't weaken D12: admission is
+        // a separate gate in `provision_org_subdomain` (a pending invite
+        // identity, or the org's `managed_signin_allowed_domains`), so an
+        // uninvited stranger authenticates and then fails with `not_invited`.
+        for provider in org_signin::list_org_signin_providers(&state, &ext, org_id).await? {
+            let display_name =
+                org_signin::display_name_for(&state, &ext, &provider.provider_key).await?;
+            let managed = provider.is_managed();
             providers.push(json!({
-                "key": config.provider_key,
+                "key": provider.provider_key,
                 "display_name": display_name,
-                "source": "db",
-                "is_default": config.is_default,
+                "source": if managed { "env" } else { "db" },
+                "managed": managed,
+                "is_default": provider.is_default,
             }));
-        }
-
-        // Overslash-managed sign-in (migration 066): when the org has opted
-        // in via `allow_overslash_managed_signin`, surface env-var providers
-        // alongside any dedicated configs. Admission is still gated by
-        // `org_invites` in `provision_org_subdomain`, so listing them here
-        // doesn't weaken D12 — without an invite, the IdP authenticates but
-        // membership creation fails with `not_invited`. Dedup against
-        // dedicated configs since those win at credential resolution.
-        let managed_on =
-            overslash_db::repos::org::get_allow_overslash_managed_signin(state.db(&ext), org_id)
-                .await?
-                .unwrap_or(false);
-        if managed_on {
-            for (key, display) in [("google", "Google"), ("github", "GitHub")] {
-                if dedicated_keys.contains(key) {
-                    continue;
-                }
-                if state.config.env_auth_credentials(key).is_some() {
-                    providers.push(json!({
-                        "key": key,
-                        "display_name": display,
-                        "source": "env",
-                        "managed": true,
-                    }));
-                }
-            }
         }
 
         // `scope = "org"` tells the dashboard to render the corp-org empty
@@ -672,22 +646,15 @@ pub(super) async fn list_auth_providers(
         })));
     }
 
-    // Root apex — Overslash-level providers only.
-    if state.config.google_auth_client_id.is_some()
-        && state.config.google_auth_client_secret.is_some()
-    {
+    // Root apex — Overslash-level providers only, from the same key list the
+    // managed org path uses so a new provider is added in one place.
+    for key in org_signin::MANAGED_PROVIDER_KEYS {
+        if state.config.env_auth_credentials(key).is_none() {
+            continue;
+        }
         providers.push(json!({
-            "key": "google",
-            "display_name": "Google",
-            "source": "env",
-        }));
-    }
-    if state.config.github_auth_client_id.is_some()
-        && state.config.github_auth_client_secret.is_some()
-    {
-        providers.push(json!({
-            "key": "github",
-            "display_name": "GitHub",
+            "key": key,
+            "display_name": org_signin::display_name_for(&state, &ext, key).await?,
             "source": "env",
         }));
     }

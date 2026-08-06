@@ -47,34 +47,12 @@ impl OrgScope {
         crate::repos::org_idp_config::get_by_id(self.db(), id, self.org_id()).await
     }
 
-    /// Look up an IdP config by provider key in this org.
-    pub async fn get_org_idp_config_by_provider(
-        &self,
-        provider_key: &str,
-    ) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
-        crate::repos::org_idp_config::get_by_org_and_provider(
-            self.db(),
-            self.org_id(),
-            provider_key,
-        )
-        .await
-    }
-
-    /// List all IdP configs in this org.
+    /// List all IdP configs in this org, enabled or not — the admin
+    /// management surface. Callers asking "what can this org sign in with"
+    /// want `overslash_api::services::org_signin` instead: it also accounts
+    /// for Overslash-managed sign-in, which has no row here.
     pub async fn list_org_idp_configs(&self) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
         crate::repos::org_idp_config::list_by_org(self.db(), self.org_id()).await
-    }
-
-    /// List enabled IdP configs in this org. Used by the login picker.
-    pub async fn list_enabled_org_idp_configs(&self) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
-        crate::repos::org_idp_config::list_enabled_by_org(self.db(), self.org_id()).await
-    }
-
-    /// Fetch the org's designated default IdP, if any is set and enabled.
-    /// `/oauth/authorize` on a corp subdomain reads this to bounce
-    /// unauthenticated callers straight through the configured IdP.
-    pub async fn get_default_org_idp_config(&self) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
-        crate::repos::org_idp_config::get_default_by_org(self.db(), self.org_id()).await
     }
 
     /// Mark `id` as the org's default IdP, atomically clearing the prior

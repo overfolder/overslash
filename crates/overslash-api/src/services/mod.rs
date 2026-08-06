@@ -27,6 +27,7 @@ pub mod oauth;
 pub mod oauth_as;
 pub mod oauth_upstream;
 pub mod oidc_discovery;
+pub mod org_signin;
 pub mod param_resolver;
 pub mod permission_chain;
 pub mod platform_caller;

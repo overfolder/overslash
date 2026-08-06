@@ -17,10 +17,9 @@ use crate::{
     AppState,
     error::AppError,
     extractors::{ClientIp, ReqExt},
-    services::{jwt, oauth},
+    services::{jwt, oauth, org_signin},
 };
 use base64::Engine as _;
-use overslash_core::crypto;
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::{magic_link_token, membership, oauth_provider, org, user as user_repo};
 use overslash_db::{OrgScope, SystemScope};
@@ -104,21 +103,24 @@ struct NormalizedUserInfo {
     picture: Option<String>,
 }
 
-/// If login originated on a corp subdomain, build an absolute redirect to
-/// `<scheme>://<slug>.<app-apex><path>` so the user lands back where they
-/// started. Returns `path` unchanged when there's no subdomain context.
+/// Absolute URL for `path` on a corp org's dashboard host,
+/// `<scheme>://<slug>.<app-apex><path>`. `None` when the deployment has no
+/// `APP_HOST_SUFFIX` (self-hosted single-host), which is the caller's cue to
+/// keep whatever host-relative path it already had.
+///
+/// The **app** apex specifically, not the API one: the auth-state cookies
+/// (`oss_auth_*`) and the session cookie carry `Domain=SESSION_COOKIE_DOMAIN`
+/// (typically `.app.<apex>`), so a login kicked off from `<slug>.api.<apex>`
+/// has its `Set-Cookie`s rejected outright by the browser and dies at the
+/// callback with "missing auth nonce cookie". Anything that starts a login
+/// must therefore send the user to the app host first.
 ///
 /// Mirrors `public_url`'s port suffix when present so the e2e harness
 /// (which boots the API on a random loopback port) lands on the right
 /// listener. In prod `public_url` has no port (default 443/80) so this is
 /// a no-op.
-fn absolute_redirect_for_org(state: &AppState, headers: &HeaderMap, path: &str) -> String {
-    let Some(slug) = extract_cookie(headers, "oss_auth_org").filter(|s| s != "none") else {
-        return path.to_string();
-    };
-    let Some(apex) = state.config.app_host_suffix.as_deref() else {
-        return path.to_string();
-    };
+pub(crate) fn org_app_url(state: &AppState, slug: &str, path: &str) -> Option<String> {
+    let apex = state.config.app_host_suffix.as_deref()?;
     let scheme = if state.config.public_url.starts_with("https://") {
         "https"
     } else {
@@ -138,7 +140,17 @@ fn absolute_redirect_for_org(state: &AppState, headers: &HeaderMap, path: &str) 
     } else {
         format!("/{path}")
     };
-    format!("{scheme}://{slug}.{apex}{port_suffix}{path}")
+    Some(format!("{scheme}://{slug}.{apex}{port_suffix}{path}"))
+}
+
+/// If login originated on a corp subdomain, build an absolute redirect to
+/// the org's app host so the user lands back where they started. Returns
+/// `path` unchanged when there's no subdomain context.
+fn absolute_redirect_for_org(state: &AppState, headers: &HeaderMap, path: &str) -> String {
+    let Some(slug) = extract_cookie(headers, "oss_auth_org").filter(|s| s != "none") else {
+        return path.to_string();
+    };
+    org_app_url(state, &slug, path).unwrap_or_else(|| path.to_string())
 }
 
 /// Build the absolute URL the dashboard should hard-reload to after a
