@@ -32,11 +32,10 @@ use crate::{
     error::AppError,
     extractors::ReqExt,
     middleware::subdomain::RequestOrgContext,
-    services::{jwt, oauth_as, session},
+    services::{jwt, oauth_as, org_signin, session},
 };
 use overslash_db::repos::{
     identity, mcp_client_agent_binding, mcp_refresh_token, membership, oauth_mcp_client, org,
-    org_idp_config,
 };
 use overslash_db::scopes::OrgScope;
 

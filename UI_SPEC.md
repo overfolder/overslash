@@ -34,7 +34,7 @@ UNauth users go here, and on auth, they go back to the page they were trying to 
 The same `/login` page renders differently depending on the host the browser hit. The backend's `/auth/providers` response carries a `scope` field that drives the UI.
 
 - **Root apex (`app.overslash.com`)** — `scope: "root"`. Lists only Overslash-level IdPs (env-var Google / GitHub / Dev Login). A user who signs in here gets their personal org on first login.
-- **Corp subdomain (`<slug>.app.overslash.com`)** — `scope: "org"`. Lists only that org's IdPs from `org_idp_configs`. Env-level IdPs are NOT shown — a corp-subdomain login must go through the corp's IdP. This is the trust-domain boundary.
+- **Corp subdomain (`<slug>.app.overslash.com`)** — `scope: "org"`. Lists that org's own IdPs from `org_idp_configs` (enabled ones only), plus the Overslash-managed providers if the org enabled **Allow Overslash-managed sign-in** — those carry `managed: true` and a `source: "env"` badge. A provider the org has its own row for is never also offered as managed, whether or not that row is enabled. Nothing else appears: another org's IdP is its own trust domain.
 - **Corp subdomain with no IdP configured yet** — `scope: "org"` with an empty providers list. The page shows an explanatory empty state: "This organization has no sign-in configured yet. Ask the org admin to add an Identity Provider on their Org Settings page." The admin (= org creator) reaches the org via `/auth/switch-org` from the root dashboard, not via this login page.
 
 ### Org creator = regular admin, no "breakglass" framing
@@ -731,7 +731,7 @@ Dev Login         Debug       ● Active    —         env (read-only)
 - **Custom OIDC**: issuer URL (auto-discovers via `.well-known/openid-configuration`) + client ID + client secret
 - **Dev Login**: toggle on/off. Warning badge when enabled in production.
 
-Providers configured via environment variables are shown with an "env" badge and are read-only — they cannot be edited or disabled from the dashboard. Env vars take precedence over in-database settings.
+Overslash-managed providers are shown with an "env" badge and are read-only — they cannot be edited or disabled from the dashboard, and they appear only when **Allow Overslash-managed sign-in** is on. The org's own configs take precedence: a provider the org has an `org_idp_configs` row for is listed as that row (editable, with its real Enabled state) and not also as a managed entry.
 
 Per-provider settings:
 - **Auto-create users**: create user identity on first login (matched by email domain)

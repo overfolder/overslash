@@ -55,6 +55,7 @@ fn pkce() -> (String, String) {
 
 struct OrgSeed {
     org_id: Uuid,
+    slug: String,
     host: String,
     ident_id: Uuid,
     user_id: Uuid,
@@ -108,6 +109,7 @@ async fn seed_corp_org(pool: &PgPool, name: &str) -> OrgSeed {
     OrgSeed {
         org_id,
         host: format!("{slug}.{SUFFIX}"),
+        slug,
         ident_id: ident.id,
         user_id: u.id,
         email,
@@ -141,6 +143,7 @@ async fn add_user_to_corp_org(pool: &PgPool, user_id: Uuid, email: &str, name: &
     OrgSeed {
         org_id,
         host: format!("{slug}.{SUFFIX}"),
+        slug,
         ident_id: ident.id,
         user_id,
         email: email.to_string(),
@@ -157,6 +160,24 @@ async fn add_default_idp(pool: &PgPool, org_id: Uuid) {
     .execute(pool)
     .await
     .unwrap();
+}
+
+/// Opt the org into Overslash-managed sign-in — the "Allow Overslash-managed
+/// sign-in" toggle in Org Settings. `seed_corp_org` INSERTs the org directly,
+/// so it starts at the column default (`false`) rather than the `true` that
+/// `POST /v1/orgs` flips on.
+async fn enable_managed_signin(pool: &PgPool, org_id: Uuid) {
+    sqlx::query("UPDATE orgs SET allow_overslash_managed_signin = true WHERE id = $1")
+        .bind(org_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// The app-host origin `org_app_url` builds for a corp org: the dashboard
+/// apex, port mirrored from `public_url` (the harness binds a random one).
+fn app_origin(slug: &str, addr: &std::net::SocketAddr) -> String {
+    format!("http://{slug}.app.test:{}", addr.port())
 }
 
 /// DCR register. `host = Some(..)` stamps the client to that subdomain's org;
@@ -595,5 +616,214 @@ async fn stamped_client_cannot_bind_in_switched_org() {
         fin.status(),
         StatusCode::FORBIDDEN,
         "an Acme-stamped client must not bind an agent in Beta"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Overslash-managed sign-in on a corp subdomain.
+//
+// An org can enable "Allow Overslash-managed sign-in" instead of configuring
+// its own IdP (D12's 2026-05 amendment, migration 066 / 092: authentication
+// goes through Overslash's OAuth apps, membership is gated separately by
+// invites or the domain allowlist). `/oauth/authorize` used to read only
+// `org_idp_configs` and answered 503 `login_required` for those orgs, even
+// though the same org's `/auth/providers` listed working Google/GitHub
+// buttons. `services::org_signin` is now the single source of truth for both.
+// ---------------------------------------------------------------------------
+
+/// Both managed providers available and no designated default → the dashboard
+/// login picker, absolute on the org's **app** host. Host-relative would land
+/// on `<slug>.api.<apex>/login`, which is not a route.
+#[tokio::test]
+async fn managed_signin_with_no_idp_rows_bounces_to_picker() {
+    let pool = common::test_pool().await;
+    let (addr, _c) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.api_host_suffix = Some(SUFFIX.to_string());
+        cfg.app_host_suffix = Some("app.test".to_string());
+        cfg.google_auth_client_id = Some("google-id".into());
+        cfg.google_auth_client_secret = Some("google-secret".into());
+        cfg.github_auth_client_id = Some("github-id".into());
+        cfg.github_auth_client_secret = Some("github-secret".into());
+    })
+    .await;
+    let base = format!("http://{addr}");
+
+    let acme = seed_corp_org(&pool, "Acme").await;
+    enable_managed_signin(&pool, acme.org_id).await;
+
+    let client_id = register_client(&base, REDIRECT, None).await;
+    let (_v, challenge) = pkce();
+
+    // Cold: no session cookie at all.
+    let resp = authorize(
+        &base,
+        &client_id,
+        REDIRECT,
+        &challenge,
+        None,
+        Some(&acme.host),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let loc = location(&resp);
+    assert!(
+        loc.starts_with(&format!("{}/login?", app_origin(&acme.slug, &addr))),
+        "managed sign-in must bounce to the org's app-host login picker, got: {loc}"
+    );
+    assert!(
+        loc.contains("next=%2Foauth%2Fauthorize"),
+        "bounce preserves the authorize request as next=, got: {loc}"
+    );
+}
+
+/// One managed provider configured on the deployment → skip the one-button
+/// picker and go straight to it, matching the root-apex behavior.
+#[tokio::test]
+async fn managed_signin_with_single_provider_bounces_straight_to_it() {
+    let pool = common::test_pool().await;
+    let (addr, _c) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.api_host_suffix = Some(SUFFIX.to_string());
+        cfg.app_host_suffix = Some("app.test".to_string());
+        cfg.github_auth_client_id = Some("github-id".into());
+        cfg.github_auth_client_secret = Some("github-secret".into());
+    })
+    .await;
+    let base = format!("http://{addr}");
+
+    let acme = seed_corp_org(&pool, "Acme").await;
+    enable_managed_signin(&pool, acme.org_id).await;
+
+    let client_id = register_client(&base, REDIRECT, None).await;
+    let (_v, challenge) = pkce();
+
+    let resp = authorize(
+        &base,
+        &client_id,
+        REDIRECT,
+        &challenge,
+        None,
+        Some(&acme.host),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let loc = location(&resp);
+    assert!(
+        loc.starts_with(&format!(
+            "{}/auth/login/github?",
+            app_origin(&acme.slug, &addr)
+        )),
+        "a lone managed provider skips the picker, got: {loc}"
+    );
+}
+
+/// The D12 boundary still holds: without the opt-in, env-var credentials do
+/// not leak into a corp subdomain's sign-in.
+#[tokio::test]
+async fn managed_signin_off_and_no_idp_rows_still_503s() {
+    let pool = common::test_pool().await;
+    let (addr, _c) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.api_host_suffix = Some(SUFFIX.to_string());
+        cfg.app_host_suffix = Some("app.test".to_string());
+        cfg.google_auth_client_id = Some("google-id".into());
+        cfg.google_auth_client_secret = Some("google-secret".into());
+    })
+    .await;
+    let base = format!("http://{addr}");
+
+    // No `enable_managed_signin` — the org opted into nothing.
+    let acme = seed_corp_org(&pool, "Acme").await;
+
+    let client_id = register_client(&base, REDIRECT, None).await;
+    let (_v, challenge) = pkce();
+
+    let resp = authorize(
+        &base,
+        &client_id,
+        REDIRECT,
+        &challenge,
+        None,
+        Some(&acme.host),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "login_required");
+}
+
+/// A designated default `org_idp_configs` row outranks managed sign-in — the
+/// admin picked that IdP on purpose.
+#[tokio::test]
+async fn dedicated_default_idp_wins_over_managed_signin() {
+    let pool = common::test_pool().await;
+    let (addr, _c) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.api_host_suffix = Some(SUFFIX.to_string());
+        cfg.app_host_suffix = Some("app.test".to_string());
+        cfg.github_auth_client_id = Some("github-id".into());
+        cfg.github_auth_client_secret = Some("github-secret".into());
+    })
+    .await;
+    let base = format!("http://{addr}");
+
+    let acme = seed_corp_org(&pool, "Acme").await;
+    enable_managed_signin(&pool, acme.org_id).await;
+    add_default_idp(&pool, acme.org_id).await; // google, is_default
+
+    let client_id = register_client(&base, REDIRECT, None).await;
+    let (_v, challenge) = pkce();
+
+    let resp = authorize(
+        &base,
+        &client_id,
+        REDIRECT,
+        &challenge,
+        None,
+        Some(&acme.host),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let loc = location(&resp);
+    assert!(
+        loc.starts_with(&format!(
+            "{}/auth/login/google?",
+            app_origin(&acme.slug, &addr)
+        )),
+        "the org's designated default must win, got: {loc}"
+    );
+}
+
+/// Self-hosted single-host deployments have no separate app apex to name, so
+/// the bounce stays host-relative there.
+#[tokio::test]
+async fn bounce_stays_relative_without_app_host_suffix() {
+    let pool = common::test_pool().await;
+    let (addr, _c) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.api_host_suffix = Some(SUFFIX.to_string());
+        cfg.app_host_suffix = None;
+        cfg.github_auth_client_id = Some("github-id".into());
+        cfg.github_auth_client_secret = Some("github-secret".into());
+    })
+    .await;
+    let base = format!("http://{addr}");
+
+    let acme = seed_corp_org(&pool, "Acme").await;
+    enable_managed_signin(&pool, acme.org_id).await;
+
+    let client_id = register_client(&base, REDIRECT, None).await;
+    let (_v, challenge) = pkce();
+
+    let resp = authorize(
+        &base,
+        &client_id,
+        REDIRECT,
+        &challenge,
+        None,
+        Some(&acme.host),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let loc = location(&resp);
+    assert!(
+        loc.starts_with("/auth/login/github?"),
+        "no app apex configured → keep the relative path, got: {loc}"
     );
 }
