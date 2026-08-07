@@ -1289,6 +1289,40 @@ pub fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
 }
 
+/// Test helper: the org's Everyone group id. Every user identity in the org is
+/// a member of it (see `bootstrap_org`), which makes it the obvious group to
+/// satisfy the create-time grant requirement on an org-level service.
+pub async fn everyone_group_id(base: &str, client: &Client, key: &str) -> Uuid {
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {key}"))
+        .send()
+        .await
+        .expect("list groups")
+        .json()
+        .await
+        .expect("groups json");
+    groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .and_then(|g| g["id"].as_str())
+        .expect("Everyone group must exist after bootstrap")
+        .parse()
+        .expect("group id is a uuid")
+}
+
+/// The `groups` payload for an org-level `POST /v1/services`: admin access via
+/// Everyone. An org-level instance must name at least one group the caller
+/// belongs to, so every org-level create in the suite carries this.
+pub async fn everyone_grant(base: &str, client: &Client, key: &str) -> Value {
+    let group_id = everyone_group_id(base, client, key).await;
+    json!([{
+        "group_id": group_id.to_string(),
+        "access_level": "admin",
+        "auto_approve_reads": true,
+    }])
+}
+
 /// Test helper: ensure an org-level instance for `template_key` exists, then
 /// grant Everyone admin access on it so any user-identity in the org clears
 /// Layer 1 for that service. Idempotent — safe to call repeatedly. Returns
@@ -1309,6 +1343,9 @@ pub async fn grant_service_to_everyone(
             "template_key": template_key,
             "name": template_key,
             "user_level": false,
+            // Org-level instances must name a group the caller belongs to.
+            // The explicit grant below is then a 409 no-op on this path.
+            "groups": everyone_grant(base, client, admin_key).await,
             "status": "active",
         }))
         .send()

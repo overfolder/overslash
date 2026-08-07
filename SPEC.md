@@ -954,6 +954,7 @@ Service: "client-calendar"          (OAuth token for alice@bigclient.org — use
 - Services have an optional `owner_identity_id` used purely as a namespace and provenance marker. `NULL` means the service lives in the org namespace (e.g., `github`); a non-null value puts the service in that user's private namespace (e.g., alice's `my-scraper`).
 - Permission and visibility flow through `group_grants` uniformly regardless of `owner_identity_id`. An owner-created service is auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_reads = true`, which is what makes it reachable. Org admins can additionally grant any service — owner-namespaced or not — to other groups for sharing.
 - Agents that create services with the default `user_level: true` create them under their owner-user's namespace (matching the SPEC rule that agents create resources at owner-user level so all sibling agents share them). Pass `user_level: false` to create an org-namespaced service or `on_behalf_of: <user>` to target a specific owner.
+- **An org-level create must name its groups.** `user_level: false` produces a service with no owner and therefore no Myself group — a grant is the only path to it, so `POST /v1/services` requires a non-empty `groups: [{ group_id, access_level, auto_approve_reads }]` and rejects the request otherwise. At least one named group must be one the creator belongs to (resolved through their ceiling user), so an admin can't strand a service outside their own reach. Myself groups are rejected here: they are auto-managed and only ever grant their owner's own services.
 
 **Naming and resolution:**
 
@@ -1030,7 +1031,7 @@ The dashboard flow above has an exact REST counterpart: agents can instantiate t
 
 Authority rules:
 - An **agent** can create services on behalf of its owner-user via `on_behalf_of` (§6 *Scoping*) — the resulting service is owned by the user, shared across all agents in that subtree.
-- An agent **cannot** create org-level services. Only org-admins (acting as users) can.
+- An agent **cannot** create org-level services. Only org-admins (acting as users) can, and only by naming at least one group they belong to (see *Service ownership* above).
 - The calling identity must have the template visible to it (§9 *Tier visibility*).
 
 The creation call returns one of:

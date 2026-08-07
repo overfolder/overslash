@@ -91,6 +91,7 @@ async fn setup_x_service(base: &str, client: &reqwest::Client, ident_id: Uuid, a
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(base, client, admin_key).await,
             "status": "active",
         }))
         .send()

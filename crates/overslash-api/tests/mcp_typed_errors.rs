@@ -115,6 +115,7 @@ async fn mcp_call_no_connection_returns_typed_needs_authentication() {
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()
@@ -221,6 +222,7 @@ async fn mcp_call_expired_no_refresh_returns_typed_reauth_required() {
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()

@@ -29,6 +29,7 @@ use super::platform_caller::PlatformCallContext;
 use crate::error::AppError;
 use crate::routes::util::fmt_time;
 
+mod group_grants;
 mod kernels;
 mod reconcile;
 mod rows;
@@ -46,8 +47,8 @@ pub use status::{
 };
 pub use templates::{resolve_template_definition, resolve_template_source};
 pub use types::{
-    ConnectBundle, CreateServiceInput, CredentialsStatus, GetServiceInput, ServiceGroupRef,
-    ServiceInstanceDetail, ServiceInstanceSummary, UpdateServiceInput,
+    ConnectBundle, CreateServiceGroupGrant, CreateServiceInput, CredentialsStatus, GetServiceInput,
+    ServiceGroupRef, ServiceInstanceDetail, ServiceInstanceSummary, UpdateServiceInput,
 };
 
 pub(crate) use status::resolve_effective_scopes;

@@ -16,7 +16,8 @@
 		deleteService,
 		upgradeConnectionScopes
 	} from '$lib/api/services';
-	import { groupsApi, type Group } from '$lib/api/groups';
+	import { groupsApi, type Group, type GroupGrantPick } from '$lib/api/groups';
+	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
 	import type {
 		ActionSummary,
 		ConnectionSummary,
@@ -130,9 +131,6 @@
 	let activeTab = $state<'overview' | 'credentials' | 'actions'>('overview');
 
 	// Group-assignment form state
-	let newGroupId = $state('');
-	let newAccessLevel = $state<'read' | 'write' | 'admin'>('read');
-	let newAutoApprove = $state(false);
 	let savingGroup = $state(false);
 
 	const oauthAuth = $derived(
@@ -574,24 +572,21 @@
 		}
 	}
 
-	async function addGroupGrant() {
-		if (!svc || !newGroupId) return;
+	async function addGroupGrant(pick: GroupGrantPick) {
+		if (!svc) return;
 		const ctrl = new AbortController();
 		savingGroup = true;
 		error = null;
 		try {
-			await groupsApi.addGrant(newGroupId, {
+			await groupsApi.addGrant(pick.group_id, {
 				service_instance_id: svc.id,
-				access_level: newAccessLevel,
-				auto_approve_reads: newAutoApprove
+				access_level: pick.access_level,
+				auto_approve_reads: pick.auto_approve_reads
 			});
 			if (destroyed) return;
 			const fresh = await listServiceGroups(svc.id, ctrl.signal);
 			if (destroyed || ctrl.signal.aborted) return;
 			serviceGroups = fresh;
-			newGroupId = '';
-			newAccessLevel = 'read';
-			newAutoApprove = false;
 		} catch (e) {
 			if (destroyed || ctrl.signal.aborted) return;
 			error = e instanceof ApiError ? `Failed to add group (${e.status})` : 'Failed to add group';
@@ -946,37 +941,12 @@
 				{/if}
 				{#if isAdmin && !isSystem}
 					{#if unassignedGroups.length > 0}
-						<div class="add-group">
-							<label class="field">
-								<span class="label">Group</span>
-								<select bind:value={newGroupId}>
-									<option value="">— Select a group —</option>
-									{#each unassignedGroups as g (g.id)}
-										<option value={g.id}>{g.name}</option>
-									{/each}
-								</select>
-							</label>
-							<label class="field">
-								<span class="label">Access</span>
-								<select bind:value={newAccessLevel}>
-									<option value="read">Read</option>
-									<option value="write">Write</option>
-									<option value="admin">Admin</option>
-								</select>
-							</label>
-							<label class="inline-field">
-								<input type="checkbox" bind:checked={newAutoApprove} />
-								<span>Auto-approve reads</span>
-							</label>
-							<button
-								type="button"
-								class="btn primary"
-								onclick={addGroupGrant}
-								disabled={!newGroupId || savingGroup}
-							>
-								{savingGroup ? 'Adding…' : 'Add group'}
-							</button>
-						</div>
+						<GroupGrantPicker
+							groups={allGroups}
+							excludeIds={[...assignedGroupIds]}
+							busy={savingGroup}
+							onadd={addGroupGrant}
+						/>
 					{:else if allGroups.length === 0}
 						<p class="muted small">No groups exist yet. Create one in <a href="/org/groups" class="link">Org → Groups</a>.</p>
 					{:else}
@@ -1462,17 +1432,6 @@
 		text-align: right;
 		white-space: nowrap;
 	}
-	.add-group {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: flex-end;
-		gap: 0.75rem;
-		padding-top: 0.5rem;
-		border-top: 1px dashed var(--color-border);
-	}
-	.add-group .field {
-		min-width: 180px;
-	}
 	.restore-self {
 		display: flex;
 		flex-wrap: wrap;
@@ -1485,12 +1444,6 @@
 	.restore-self p {
 		margin: 0;
 		flex: 1 1 240px;
-	}
-	.inline-field {
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
-		font-size: 0.85rem;
 	}
 	.scope-row {
 		align-items: flex-start;

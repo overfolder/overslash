@@ -4,6 +4,10 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// Create an org-level template + service instance. Returns the service instance ID.
+///
+/// The instance is granted to **Admins**, not Everyone: an org-level instance
+/// must name a group its creator belongs to, and the visibility tests below
+/// depend on the plain test user (Everyone-only) *not* reaching it.
 async fn create_org_service(base: &str, client: &reqwest::Client, key: &str, name: &str) -> Uuid {
     let openapi = common::minimal_openapi(name);
     client
@@ -25,12 +29,36 @@ async fn create_org_service(base: &str, client: &reqwest::Client, key: &str, nam
             "template_key": name,
             "name": name,
             "user_level": false,
+            "groups": [{
+                "group_id": admins_group_id(base, client, key).await.to_string(),
+                "access_level": "admin",
+            }],
         }))
         .send()
         .await
         .unwrap();
     let svc: Value = resp.json().await.unwrap();
     svc["id"].as_str().unwrap().parse().unwrap()
+}
+
+/// The org's Admins group id.
+async fn admins_group_id(base: &str, client: &reqwest::Client, key: &str) -> Uuid {
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("admins"))
+        .and_then(|g| g["id"].as_str())
+        .expect("Admins group must exist after bootstrap")
+        .parse()
+        .unwrap()
 }
 
 /// Bootstrap: org + user identity + user-bound API key.
@@ -660,21 +688,24 @@ async fn patch_grant_rejects_access_level_on_admins() {
         .unwrap()
         .to_string();
 
+    // `create_org_service` already attaches the Admins grant — an org-level
+    // instance can't be created without naming a group.
     let svc_id = create_org_service(&base, &client, &org_key, "svc-admins-lvl").await;
-    let grant: Value = client
-        .post(format!("{base}/v1/groups/{admins_id}/grants"))
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
         .header("Authorization", format!("Bearer {org_key}"))
-        .json(&json!({
-            "service_instance_id": svc_id.to_string(),
-            "access_level": "read",
-        }))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let grant_id = grant["id"].as_str().unwrap();
+    let grant_id = grants
+        .iter()
+        .find(|g| g["service_instance_id"].as_str() == Some(&svc_id.to_string()))
+        .expect("create-time Admins grant")["id"]
+        .as_str()
+        .unwrap();
 
     let resp = client
         .patch(format!("{base}/v1/groups/{admins_id}/grants/{grant_id}"))
@@ -1848,4 +1879,42 @@ async fn group_granted_instance_is_callable_by_name() {
         neg_status == 404 || neg_status == 403,
         "agent without a group grant should be denied (got status={neg_status} body={neg_body})"
     );
+}
+
+#[tokio::test]
+async fn group_list_reports_caller_membership() {
+    let (base, org_key, _user_id, user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    // A group nobody has been assigned to.
+    client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({ "name": "Nobody", "description": "empty" }))
+        .send()
+        .await
+        .unwrap();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // Every user lands in Everyone at creation; nothing puts them in "Nobody".
+    let everyone = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .expect("Everyone group");
+    assert_eq!(everyone["is_member"], true);
+
+    let nobody = groups
+        .iter()
+        .find(|g| g["name"] == "Nobody")
+        .expect("Nobody group");
+    assert_eq!(nobody["is_member"], false);
 }

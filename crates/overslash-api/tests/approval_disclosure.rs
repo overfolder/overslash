@@ -88,6 +88,9 @@ async fn approval_carries_disclosed_fields_and_redacts_action_detail() {
     // always enforced, so reaching Layer 2 (the gap → approval path this test
     // is actually about) requires an explicit grant — we don't fall through a
     // permissive default anymore.
+    // Write, *without* auto-approve-reads: the read-bypass would otherwise
+    // skip Layer 2, and Layer 2 is what this test is about.
+    let everyone_id = common::everyone_group_id(&base, &client, &admin_key).await;
     let svc_instance: Value = client
         .post(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -95,6 +98,11 @@ async fn approval_carries_disclosed_fields_and_redacts_action_detail() {
             "template_key": "discloser",
             "name": "discloser",
             "user_level": false,
+            "groups": [{
+                "group_id": everyone_id.to_string(),
+                "access_level": "write",
+                "auto_approve_reads": false,
+            }],
             "status": "active",
         }))
         .send()
@@ -103,34 +111,7 @@ async fn approval_carries_disclosed_fields_and_redacts_action_detail() {
         .json()
         .await
         .unwrap();
-    let svc_id = svc_instance["id"].as_str().expect("service create failed");
-
-    let groups: Vec<Value> = client
-        .get(format!("{base}/v1/groups"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let everyone_id = groups
-        .iter()
-        .find(|g| g["system_kind"].as_str() == Some("everyone"))
-        .and_then(|g| g["id"].as_str())
-        .expect("Everyone group not found");
-
-    let grant_resp = client
-        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({
-            "service_instance_id": svc_id,
-            "access_level": "write",
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(grant_resp.status(), 200);
+    let _svc_id = svc_instance["id"].as_str().expect("service create failed");
 
     // Execute Mode C as the agent. No permission rule exists + explicit
     // `secrets` forces `needs_gate=true` → chain walk finds a gap at the

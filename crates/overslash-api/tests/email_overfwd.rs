@@ -232,6 +232,14 @@ where
         );
     }
 
+    // Org-level instances must name a group the caller belongs to at create
+    // time. Callers hand us a body built before the API is up, so fill it in
+    // here rather than making every one of them resolve Everyone first.
+    let mut body = body;
+    if body.get("user_level") == Some(&Value::Bool(false)) && body.get("groups").is_none() {
+        body["groups"] = common::everyone_grant(&base, &client, &admin_key).await;
+    }
+
     let instance: Value = client
         .post(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -454,6 +462,7 @@ paths:
             "name": "optbody",
             "url": gateway_url,
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()
@@ -887,6 +896,7 @@ async fn email_create_rejects_unknown_credential_slot() {
             "template_key": "email",
             "name": "email",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "credentials": { "gatway": "typo_key" },
         }))
         .send()
@@ -921,6 +931,7 @@ async fn email_scalar_secret_name_folds_into_the_sole_mailbox_slot() {
             "template_key": "email",
             "name": "email",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "secret_name": "mailbox_credential",
         }))
         .send()
@@ -955,6 +966,7 @@ async fn email_rejects_binding_the_username_as_a_credential() {
             "template_key": "email",
             "name": "email",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "credentials": { "mailbox_user": "mailbox_user", "mailbox_pass": "mailbox_pass" },
         }))
         .send()
