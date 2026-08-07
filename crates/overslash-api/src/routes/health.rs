@@ -87,8 +87,6 @@ fn truncate(s: &str) -> String {
     }
     // Walk down to a char boundary at or below the byte cap — slicing
     // mid-codepoint would panic on a multi-byte error message.
-    // (`str::floor_char_boundary` does exactly this but is stable only since
-    // 1.91, above this workspace's 1.85 MSRV.)
     let mut end = MAX_ERROR_LEN;
     while !s.is_char_boundary(end) {
         end -= 1;

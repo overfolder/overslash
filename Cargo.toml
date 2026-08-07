@@ -4,7 +4,7 @@ members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.97"
 license = "Apache-2.0"
 
 [workspace.dependencies]
