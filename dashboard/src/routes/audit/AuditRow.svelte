@@ -1,6 +1,11 @@
 <script lang="ts">
 	import IdentityPath from '$lib/components/IdentityPath.svelte';
 	import { identityUnits, formatIdentityPath } from '$lib/identityPath';
+	import {
+		makeIdentityFormatter,
+		type IdentityFormatter,
+		type IdentityLike
+	} from '$lib/identityDisplay';
 	import { formatBytes } from '$lib/approvals/format';
 	import {
 		responseCapture,
@@ -15,6 +20,8 @@
 		expanded,
 		ontoggle,
 		currentUserId,
+		identityById = new Map(),
+		fmt = makeIdentityFormatter([]),
 		ontagclick
 	}: {
 		entry: AuditEntry;
@@ -22,6 +29,12 @@
 		ontoggle: () => void;
 		/** Identity id of the logged-in user, so their own rows show a "Me" pill. */
 		currentUserId?: string | null;
+		/** Org identities keyed by id, so a path unit can be labelled by email
+		 *  rather than by the display name frozen into the SPIFFE path. */
+		identityById?: Map<string, IdentityLike & { id: string }>;
+		/** Identity label formatter pre-bound to the org's allowed domains.
+		 *  Defaults to none so the row renders standalone. */
+		fmt?: IdentityFormatter;
 		/** Narrow the search to a tag. Clicking a chip is the discovery path —
 		 *  nobody types `table:warehouse/public.orders` from memory. */
 		ontagclick?: (tag: string) => void;
@@ -34,6 +47,26 @@
 	// Match on identity id, not name: similarly-named users across the org are
 	// exactly the ambiguity this column split exists to resolve.
 	const isMe = $derived(!!currentUserId && units.user?.id === currentUserId);
+
+	// Users are labelled by (domain-stripped) email everywhere in the dashboard;
+	// the audit table is no exception. The path only carries the IdP display
+	// name, so resolve the unit's id against the org's identities and fall back
+	// to the path name when it doesn't resolve (identity outside the fetched
+	// set, or a legacy row with no aligned ids).
+	const userDisplay = $derived.by(() => {
+		const i = units.user?.id ? identityById.get(units.user.id) : null;
+		return i ? fmt.format(i) : null;
+	});
+	// Same rule applied per unit of the chain, for the Agent column's hover:
+	// `ada / henry / researcher`. Agents keep their names — `formatIdentity`
+	// short-circuits on non-user kinds.
+	const labelUnit = (id: string | null, name: string) => {
+		const i = id ? identityById.get(id) : null;
+		return i ? fmt.format(i).primary : name;
+	};
+	const chainTitle = $derived(
+		formatIdentityPath(entry.identity_path, entry.identity_path_ids, labelUnit)
+	);
 
 	function relativeTime(iso: string): string {
 		const then = new Date(iso).getTime();
@@ -197,15 +230,16 @@
 			<a
 				class="me-pill"
 				href={units.user.href}
-				title={units.user.name}
+				title={userDisplay?.title ?? units.user.name}
 				onclick={(e) => e.stopPropagation()}
 			>Me</a>
 		{:else if units.user}
 			<a
 				class="identity-link"
 				href={units.user.href}
+				title={userDisplay?.title}
 				onclick={(e) => e.stopPropagation()}
-			>{units.user.name}</a>
+			>{userDisplay?.primary ?? units.user.name}</a>
 		{:else}
 			<span class="muted">—</span>
 		{/if}
@@ -215,7 +249,7 @@
 			<a
 				class="identity-link"
 				href={units.leaf.href}
-				title={formatIdentityPath(entry.identity_path)}
+				title={chainTitle}
 				onclick={(e) => e.stopPropagation()}
 			>{units.leaf.name}</a>
 		{:else if !entry.identity_path && entry.identity_id && entry.identity_name}

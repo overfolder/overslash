@@ -11,10 +11,15 @@ import {
 export const ssr = false;
 export const prerender = false;
 
+/** The slice of `/v1/identities` this page uses. `email` + `kind` make it a
+ *  structural `IdentityLike` ($lib/identityDisplay), so rows can be labelled
+ *  by email like every other identity surface. */
 interface IdentitySummary {
 	id: string;
 	name: string;
 	kind: string;
+	email?: string | null;
+	archived_at?: string;
 }
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -29,10 +34,14 @@ export const load: PageLoad = async ({ url }) => {
 	const eventId = rawEvent && UUID_RE.test(rawEvent) ? rawEvent : null;
 
 	// Identities are scoped to the caller's org by the API; we use them for
-	// search bar value autocomplete and to translate `identity = name` chips
-	// into the precise `identity_id` filter.
+	// search bar value autocomplete, to translate `identity = name` chips into
+	// the precise `identity_id` filter, and to label each row's actor by email.
+	//
+	// `include_archived` because the audit log is historical: an actor who has
+	// since been removed is exactly the one whose email a reader needs. The
+	// search bar keeps using the live subset (see +page.svelte).
 	const identitiesPromise = session
-		.get<IdentitySummary[]>('/v1/identities')
+		.get<IdentitySummary[]>('/v1/identities?include_archived=true')
 		.catch(() => [] as IdentitySummary[]);
 	const anchorPromise: Promise<AuditEntry | null> = eventId
 		? session
