@@ -41,7 +41,7 @@ Each story names: the **actors**, the **happy path**, the **Overslash surfaces**
    }
    ```
    The agent now knows: there is no live calendar service for Alice, but there is a global template it can instantiate. No human-driven dashboard tour needed.
-6. **Agent-led service creation.** OpenClaw calls `overslash_call(service="overslash", action="create_service", params={template_key: "google-calendar", name: "google-calendar", on_behalf_of: "alice"})`. The platform `create_service` kernel auto-grants the new instance to Alice's Myself group (admin + auto_approve_reads) and returns the row with `credentials_status: "needs_authentication"` because no connection is bound yet. OpenClaw then calls `overslash_call(service="overslash", action="create_connection", params={service_id, provider: "google"})` to mint an OAuth start URL bound to Overslash's system Google client (§7). OpenClaw prints the URL in chat: *"To connect your Google Calendar I need you to authorize this link."*
+6. **Agent-led service creation.** OpenClaw calls `overslash_call(service="overslash", action="create_service", params={template_key: "google-calendar", name: "google-calendar", on_behalf_of: "alice"})`. The platform `create_service` kernel auto-grants the new instance to Alice's Myself group (admin access, read-level auto-approval) and returns the row with `credentials_status: "needs_authentication"` because no connection is bound yet. OpenClaw then calls `overslash_call(service="overslash", action="create_connection", params={service_id, provider: "google"})` to mint an OAuth start URL bound to Overslash's system Google client (§7). OpenClaw prints the URL in chat: *"To connect your Google Calendar I need you to authorize this link."*
 7. **OAuth consent.** Alice clicks, signs into Google, grants the calendar scope, and lands on Overslash's OAuth callback. The token is encrypted and bound to Alice's new `google-calendar` service instance (§6, §9). Overslash flips the service to `active`. OpenClaw, polling `overslash_auth(action="status", service="google-calendar")` (or via webhook), sees the transition.
 8. **Re-discovery and execute.** OpenClaw re-runs `overslash_search(query="calendar")` — now `services` contains the live instance with full action schemas, and OpenClaw calls `overslash_call(service="google-calendar", action="list_events")`.
 9. **Approval.** No matching permission key exists for `openclaw-laptop`. Overslash returns `{ status: "pending_approval", approval_id: "apr_..." }` with `suggested_tiers` (§5 *Specificity Tiers*). Because there is no platform mediating, OpenClaw surfaces the Overslash-hosted approval URL (`https://personal.overslash.dev/approvals/apr_...`) directly to Alice.
@@ -231,7 +231,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
 1. **Org provisioning.** Erin signs up at `acme.overslash.com`. Overslash creates the `acme` org and makes Erin the first org-admin. She sees an empty dashboard with onboarding hints.
 2. **IdP configuration.** Erin opens **Settings → Identity Providers → Add IdP → Okta**. She pastes ACME's Okta issuer URL (`https://acme.okta.com`). Overslash hits `.well-known/openid-configuration`, autodiscovers all endpoints (§4 *OIDC Discovery*). Erin pastes the client ID + secret she generated in Okta, saves. She tests with her own login by signing out and signing back in via Okta — round-trip works.
 3. **Group creation.** Erin opens **Settings → Groups** and creates three groups:
-   - **Engineering**: grants `github (write, auto_approve_reads=true)`, `slack (write)`, `jira (write)`. The `auto_approve_reads` flag (§5) means agents in this group auto-approve any non-mutating GitHub/Slack/Jira actions without prompting users — large UX win for read-heavy agent workflows.
+   - **Engineering**: grants `github (write, auto_approve_level=read)`, `slack (write)`, `jira (write)`. `auto_approve_level: read` (§5) means agents in this group auto-approve any non-mutating GitHub/Slack/Jira actions without prompting users — large UX win for read-heavy agent workflows. Raising a grant to `write` extends that to mutations on that one service, still capped by its access level.
    - **Admin**: grants `github (admin)`, `slack (admin)`, `jira (admin)`, plus `http (admin)` (raw HTTP — see SPEC §5 / DECISIONS D15). Reserved for Erin and a couple of senior engineers.
    - **Read-only**: grants `github (read)`, `slack (read)`, `jira (read)`. For the security team and contractors.
 4. **Org GitHub service via BYOC.** Erin doesn't want to wait for CASA on Overslash's system Google credentials, and for GitHub specifically, she wants ACME's *own* GitHub OAuth app so PRs and audit trails attribute to ACME's brand. She:
@@ -261,7 +261,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
 - Standalone page: enrollment snippet handed to Claude Code.
 
 ### Spec coverage
-§4 (OIDC discovery, IdP config via dashboard, user auto-provisioning, user-initiated enrollment), §5 (groups with `auto_approve_reads`, `allow_raw_http`, no Layer 2 for users), §7 (service-level OAuth credentials a.k.a. BYOC, the path that sidesteps CASA for Workspace), §9 (org-tier templates, OpenAPI import + endpoint selection + risk tagging + scope_param, hiding global templates, `allow_user_templates`, service shadowing user-over-org, secret-token service with verify probe), §11 (org-admin Settings/Groups/Templates/Services views, API Explorer, hierarchy tree).
+§4 (OIDC discovery, IdP config via dashboard, user auto-provisioning, user-initiated enrollment), §5 (groups with `auto_approve_level`, `allow_raw_http`, no Layer 2 for users), §7 (service-level OAuth credentials a.k.a. BYOC, the path that sidesteps CASA for Workspace), §9 (org-tier templates, OpenAPI import + endpoint selection + risk tagging + scope_param, hiding global templates, `allow_user_templates`, service shadowing user-over-org, secret-token service with verify probe), §11 (org-admin Settings/Groups/Templates/Services views, API Explorer, hierarchy tree).
 
 ### Notes / open questions
 - **SPEC gap.** §4 mentions Okta group → Overslash group sync only implicitly. Step 9 assumes pre-mapping; in reality Erin would need to manually assign Frank to a group on first login unless we build an Okta-claims → Overslash-group mapping in §4. Worth deciding whether this is in scope or a "manual assignment for v1."
@@ -497,7 +497,7 @@ Beyond the matrix above, this is which SPEC concepts each story exercises (✅ =
 | OIDC IdP login (corporate) |  | ✅ |  |  | ✅ |  |  |  |
 | Layer 1 group ceiling |  | ✅ |  |  | ✅ | ✅ |  | ✅ |
 | Layer 2 permission keys | ✅ |  | ✅ | ✅ |  | ✅ | ◐ | ✅ |
-| `auto_approve_reads` |  |  |  |  | ✅ |  |  |  |
+| `auto_approve_level` |  |  |  |  | ✅ |  |  |  |
 | `allow_raw_http` |  |  |  |  | ◐ | ✅ |  |  |
 | Approval bubbling to gap |  |  |  | ✅ |  |  |  |  |
 | Ancestor-resolves-for-descendant |  |  |  | ✅ |  |  |  |  |

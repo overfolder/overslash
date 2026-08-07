@@ -171,7 +171,7 @@ platform_actions:
   create_service:
     description: >
       Create a service instance from a template. The instance is auto-granted to
-      the owner's Myself group with admin access and auto_approve_reads. For
+      the owner's Myself group with admin access and read-level auto-approval. For
       OAuth-backed templates the new row carries credentials_status =
       "needs_authentication" — start the OAuth flow before calling actions.
       An org-level instance (user_level: false) has no Myself group, so `groups`

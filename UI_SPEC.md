@@ -682,7 +682,7 @@ A section/tab within the Org Dashboard for managing user groups. Groups define t
 
 - *Groups list (`/org/groups`).* Calls `GET /v1/groups` (default), so each user sees their own Myself row alongside Everyone, Admins, and any custom groups they belong to. The row renders as **"Myself"** — never the raw storage form `Myself: <email> (<id8>)`. Admins surveying other users' Myself rows pass `?include_self=true`; those rows render as **"Myself (email)"**, falling back to **"Myself (email, id8)"** only on email collision.
 - *Delete button.* Hidden on every system row (Everyone, Admins, all Myself). The backend rejects deletes on system groups, so the action is suppressed at the UI layer rather than surfaced as a broken button.
-- *Group detail (`/org/groups/<self-id>`).* For a Myself group, the page hides the rename form, delete button, and add-member affordance (system metadata is immutable; membership is fixed to the owner). Grant management — Add grant, Remove, and the auto-approve toggle — is shown only when the caller *is* the Myself owner; non-owner viewers (admins via `?include_self=true`) see a read-only audit view, since the backend cross-owner guard rejects their writes anyway. When the owner is viewing, the "Add grant" service picker is filtered to services owned by the group's `owner_identity_id` — matching the same guard.
+- *Group detail (`/org/groups/<self-id>`).* For a Myself group, the page hides the rename form, delete button, and add-member affordance (system metadata is immutable; membership is fixed to the owner). Grant management — Add grant, Remove, and the auto-approve level select — is shown only when the caller *is* the Myself owner; non-owner viewers (admins via `?include_self=true`) see a read-only audit view, since the backend cross-owner guard rejects their writes anyway. When the owner is viewing, the "Add grant" service picker is filtered to services owned by the group's `owner_identity_id` — matching the same guard.
 - *Services list groups column (`/services`).* Group pills for self grants render as **"Myself"**, derived from `system_kind === 'self'` on the per-grant `ServiceGroupRef`.
 - *Service detail Groups table (`/services/<name>`).* Owner's self grants render as **"Myself"** (same rule). The "Restore Myself grant" inline affordance remains for owners who removed their own grant.
 
@@ -691,15 +691,21 @@ Group: Engineering
 
 Service Grants
 ──────────────────────────────────────────────────────────────────
-github:ANY:*             Full GitHub API access             Auto-approve reads: ✓
-slack:*:*                Slack — any action                 Auto-approve reads: ✓
-stripe:*:*               Stripe — any action                Auto-approve reads: ✗
-google-calendar:ANY:*    Google Calendar API access         Auto-approve reads: ✓
+Service            Access level      Auto-approve
+github             admin             read
+slack              write             write     ⚠ writes run with no prompt
+stripe             read              none
+google-calendar    write             read
 ```
 
 Grants use the `{service}:{action}:{arg}` format, where the arg is a value or a labelled `{label}={value}` pair (SPEC §5). A value-only grant matches whichever label carries that value, so an operator never has to know the label to write a working rule. Org-admins pick from known services and choose the access tier (`*` for all actions, `ANY` for raw HTTP verbs, specific verbs, or specific actions). The UI presents this as dropdowns — not as raw key strings to type.
 
-**Auto-approve reads** toggle per service grant: when enabled, agents' non-mutating requests automatically create permission keys without user approval. Disabled by default for sensitive services (financial, PII).
+**Auto-approve** select per service grant (`none | read | write | admin`, SPEC §5 / D53). It rides the same ladder as **Access level** and is bounded by it, so the two render as adjacent dropdowns:
+
+- Rungs above the row's `access_level` render **disabled** rather than hidden — the ladder stays legible, and it's obvious that reaching `admin` means raising Access first.
+- Choosing `write` or `admin` shows an inline caution line under the select (*"Agents in this group run writes on this service with no approval prompt."*). No confirm modal — the warning is the guardrail.
+- Lowering **Access level** clamps **Auto-approve** down server-side, so both cells are refreshed from the PATCH response rather than patched locally.
+- Defaults to `none` on a new grant; `read` on the auto-created Myself grant.
 
 - **"Everyone"** group is always present, cannot be deleted, all users are implicit members
 

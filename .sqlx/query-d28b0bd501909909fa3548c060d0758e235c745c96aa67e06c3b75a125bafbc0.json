@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT gg.id AS grant_id,\n                gg.service_instance_id,\n                gg.group_id,\n                g.name AS group_name,\n                g.system_kind,\n                gg.access_level,\n                gg.auto_approve_reads\n         FROM group_grants gg\n         JOIN groups g ON g.id = gg.group_id\n         JOIN service_instances si ON si.id = gg.service_instance_id\n         WHERE gg.service_instance_id = ANY($1)\n           AND g.org_id = $2\n           AND si.org_id = $2\n         ORDER BY g.name",
+  "query": "SELECT gg.id AS grant_id,\n                gg.service_instance_id,\n                gg.group_id,\n                g.name AS group_name,\n                g.system_kind,\n                gg.access_level,\n                gg.auto_approve_reads,\n                gg.auto_approve_level\n         FROM group_grants gg\n         JOIN groups g ON g.id = gg.group_id\n         JOIN service_instances si ON si.id = gg.service_instance_id\n         WHERE gg.service_instance_id = ANY($1)\n           AND g.org_id = $2\n           AND si.org_id = $2\n         ORDER BY g.name",
   "describe": {
     "columns": [
       {
@@ -79,6 +79,17 @@
             "name": "auto_approve_reads"
           }
         }
+      },
+      {
+        "ordinal": 7,
+        "name": "auto_approve_level",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_grants",
+            "name": "auto_approve_level"
+          }
+        }
       }
     ],
     "parameters": {
@@ -94,8 +105,9 @@
       false,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "8ba3351bb4ca34f5061938c51621e997d7c7c542fb2eaf67d5317c1e9f5006d1"
+  "hash": "d28b0bd501909909fa3548c060d0758e235c745c96aa67e06c3b75a125bafbc0"
 }

@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT gg.id AS grant_id,\n                gg.service_instance_id,\n                gg.group_id,\n                g.name AS group_name,\n                g.system_kind,\n                gg.access_level,\n                gg.auto_approve_reads\n         FROM group_grants gg\n         JOIN groups g ON g.id = gg.group_id\n         JOIN service_instances si ON si.id = gg.service_instance_id\n         WHERE gg.service_instance_id = $1\n           AND g.org_id = $2\n           AND si.org_id = $2\n         ORDER BY g.name",
+  "query": "UPDATE group_grants\n            SET access_level       = COALESCE($4, access_level),\n                auto_approve_level = COALESCE($5, auto_approve_level),\n                auto_approve_reads = COALESCE($5::text, auto_approve_level) <> 'none'\n          WHERE id = $1 AND group_id = $2\n            AND EXISTS (SELECT 1 FROM groups WHERE id = $2 AND org_id = $3)\n        RETURNING id, group_id, service_instance_id, access_level,\n                  auto_approve_reads, auto_approve_level, created_at",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "grant_id",
+        "name": "id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -16,17 +16,6 @@
       },
       {
         "ordinal": 1,
-        "name": "service_instance_id",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "group_grants",
-            "name": "service_instance_id"
-          }
-        }
-      },
-      {
-        "ordinal": 2,
         "name": "group_id",
         "type_info": "Uuid",
         "origin": {
@@ -37,29 +26,18 @@
         }
       },
       {
+        "ordinal": 2,
+        "name": "service_instance_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_grants",
+            "name": "service_instance_id"
+          }
+        }
+      },
+      {
         "ordinal": 3,
-        "name": "group_name",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "groups",
-            "name": "name"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
-        "name": "system_kind",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "groups",
-            "name": "system_kind"
-          }
-        }
-      },
-      {
-        "ordinal": 5,
         "name": "access_level",
         "type_info": "Text",
         "origin": {
@@ -70,7 +48,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 4,
         "name": "auto_approve_reads",
         "type_info": "Bool",
         "origin": {
@@ -79,12 +57,37 @@
             "name": "auto_approve_reads"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "auto_approve_level",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_grants",
+            "name": "auto_approve_level"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "group_grants",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
@@ -92,10 +95,10 @@
       false,
       false,
       false,
-      true,
+      false,
       false,
       false
     ]
   },
-  "hash": "2cc91b95f52c2c0ebb9d15cf618d9839cb9c962ac75d098ffff135958e142626"
+  "hash": "b5bc72af877da0f09d13658a63694cd05feeebe4b27148b9f5417cf72f774c1a"
 }

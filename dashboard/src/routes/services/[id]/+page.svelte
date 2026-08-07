@@ -38,6 +38,7 @@
 	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
 	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import AutoApproveSelect from '$lib/components/AutoApproveSelect.svelte';
 
 
 	const id = $derived($page.params.id ?? '');
@@ -235,7 +236,7 @@
 			await groupsApi.addGrant(ownerSelfGroup.id, {
 				service_instance_id: svc.id,
 				access_level: 'admin',
-				auto_approve_reads: true
+				auto_approve_level: 'read'
 			});
 			const fresh = await listServiceGroups(svc.id, ctrl.signal);
 			if (ctrl.signal.aborted || destroyed) return;
@@ -581,7 +582,7 @@
 			await groupsApi.addGrant(pick.group_id, {
 				service_instance_id: svc.id,
 				access_level: pick.access_level,
-				auto_approve_reads: pick.auto_approve_reads
+				auto_approve_level: pick.auto_approve_level
 			});
 			if (destroyed) return;
 			const fresh = await listServiceGroups(svc.id, ctrl.signal);
@@ -605,13 +606,14 @@
 		}
 	}
 
-	async function toggleGrantAutoApprove(ref: ServiceGroupRef) {
+	async function changeGrantAutoApproveLevel(ref: ServiceGroupRef, auto_approve_level: string) {
+		if (auto_approve_level === ref.auto_approve_level) return;
 		try {
-			const fresh = await groupsApi.patchGrant(ref.group_id, ref.grant_id, {
-				auto_approve_reads: !ref.auto_approve_reads
-			});
+			const fresh = await groupsApi.patchGrant(ref.group_id, ref.grant_id, { auto_approve_level });
 			serviceGroups = serviceGroups.map((g) =>
-				g.grant_id === ref.grant_id ? { ...g, auto_approve_reads: fresh.auto_approve_reads } : g
+				g.grant_id === ref.grant_id
+					? { ...g, auto_approve_level: fresh.auto_approve_level }
+					: g
 			);
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to update grant (${e.status})` : 'Failed to update grant';
@@ -625,8 +627,16 @@
 		if (access_level === ref.access_level) return;
 		try {
 			const fresh = await groupsApi.patchGrant(ref.group_id, ref.grant_id, { access_level });
+			// Lowering the ceiling clamps `auto_approve_level` server-side, so
+			// fold both fields back — not just the one we asked to change.
 			serviceGroups = serviceGroups.map((g) =>
-				g.grant_id === ref.grant_id ? { ...g, access_level: fresh.access_level } : g
+				g.grant_id === ref.grant_id
+					? {
+							...g,
+							access_level: fresh.access_level,
+							auto_approve_level: fresh.auto_approve_level
+						}
+					: g
 			);
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to update grant (${e.status})` : 'Failed to update grant';
@@ -862,7 +872,7 @@
 							<tr>
 								<th>Group</th>
 								<th>Access</th>
-								<th>Auto-approve reads</th>
+								<th>Auto-approve</th>
 								{#if !isSystem}<th class="actions-col"></th>{/if}
 							</tr>
 						</thead>
@@ -895,13 +905,13 @@
 									</td>
 									<td>
 										{#if canRemoveGrant(g)}
-											<ToggleSwitch
-												checked={g.auto_approve_reads}
-												onchange={() => toggleGrantAutoApprove(g)}
-												label="Auto-approve reads"
+											<AutoApproveSelect
+												value={g.auto_approve_level}
+												accessLevel={g.access_level}
+												onchange={(level) => changeGrantAutoApproveLevel(g, level)}
 											/>
 										{:else}
-											{g.auto_approve_reads ? 'Yes' : 'No'}
+											{g.auto_approve_level}
 										{/if}
 									</td>
 									{#if !isSystem}

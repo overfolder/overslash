@@ -32,8 +32,8 @@
 			<span>Inherit permissions — {on ? 'on' : 'off'}</span>
 		</label>
 		<label style="display:flex; align-items:center; gap:10px;">
-			<ToggleSwitch checked={off} onchange={(v) => (off = v)} size="sm" label="Auto-approve reads" />
-			<span>Auto-approve reads — {off ? 'on' : 'off'}</span>
+			<ToggleSwitch checked={off} onchange={(v) => (off = v)} size="sm" label="Notify on approval" />
+			<span>Notify on approval — {off ? 'on' : 'off'}</span>
 		</label>
 	</div>
 </Story>

@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT gg.id, gg.group_id, gg.service_instance_id,\n                si.name AS service_name,\n                gg.access_level, gg.auto_approve_reads, gg.created_at\n         FROM group_grants gg\n         JOIN service_instances si ON si.id = gg.service_instance_id\n         JOIN groups g ON g.id = gg.group_id\n         WHERE gg.group_id = $1 AND g.org_id = $2\n         ORDER BY si.name",
+  "query": "SELECT gg.id AS grant_id,\n                gg.service_instance_id,\n                gg.group_id,\n                g.name AS group_name,\n                g.system_kind,\n                gg.access_level,\n                gg.auto_approve_reads,\n                gg.auto_approve_level\n         FROM group_grants gg\n         JOIN groups g ON g.id = gg.group_id\n         JOIN service_instances si ON si.id = gg.service_instance_id\n         WHERE gg.service_instance_id = $1\n           AND g.org_id = $2\n           AND si.org_id = $2\n         ORDER BY g.name",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "grant_id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -16,17 +16,6 @@
       },
       {
         "ordinal": 1,
-        "name": "group_id",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "group_grants",
-            "name": "group_id"
-          }
-        }
-      },
-      {
-        "ordinal": 2,
         "name": "service_instance_id",
         "type_info": "Uuid",
         "origin": {
@@ -37,18 +26,40 @@
         }
       },
       {
+        "ordinal": 2,
+        "name": "group_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_grants",
+            "name": "group_id"
+          }
+        }
+      },
+      {
         "ordinal": 3,
-        "name": "service_name",
+        "name": "group_name",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "service_instances",
+            "table": "groups",
             "name": "name"
           }
         }
       },
       {
         "ordinal": 4,
+        "name": "system_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "system_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "access_level",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "auto_approve_reads",
         "type_info": "Bool",
         "origin": {
@@ -70,13 +81,13 @@
         }
       },
       {
-        "ordinal": 6,
-        "name": "created_at",
-        "type_info": "Timestamptz",
+        "ordinal": 7,
+        "name": "auto_approve_level",
+        "type_info": "Text",
         "origin": {
           "Table": {
             "table": "group_grants",
-            "name": "created_at"
+            "name": "auto_approve_level"
           }
         }
       }
@@ -92,10 +103,11 @@
       false,
       false,
       false,
+      true,
       false,
       false,
       false
     ]
   },
-  "hash": "817e7ee2a3ced91496aef825ff80f24a834636aa24feefc1927e3df4e7e3be8a"
+  "hash": "9680fd709fb55a54c8a431796433c7a43e850e7028ce1dbe66d63c2a5813cc08"
 }

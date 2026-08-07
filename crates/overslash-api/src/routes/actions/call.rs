@@ -267,19 +267,20 @@ pub(super) async fn call_action_impl(
     // ── Layer 1: Group ceiling check ─────────────────────────────────
     //
     // Owner access to a service flows through the user's auto-managed Myself
-    // group grant (admin + auto_approve_reads = true by default), so every
-    // call runs through this same ceiling — including ones targeting a
+    // group grant (admin access, read-level auto-approval by default), so
+    // every call runs through this same ceiling — including ones targeting a
     // service owned by the caller's ceiling user.
     let ceiling_service = scope_meta.service_key.clone();
     // Same merged value as the `require_risk` gate: a write-classified SQL
-    // statement exceeds a read-only ceiling and forfeits `read_bypass`.
+    // statement is measured against the write rung of both ladders, so it
+    // can exceed a read-only ceiling and forfeit a read-only auto-approval.
     let ceiling_risk = effective;
 
     let ceiling = group_ceiling::load_ceiling(&scope, ceiling_user_id).await?;
 
-    // `read_bypass = true` means the matching grant has `auto_approve_reads`
-    // and the action is non-mutating — Layer 2 is skipped entirely (no
-    // permission rule is written, no approval is filed).
+    // `auto_approved = true` means a matching grant's `auto_approve_level`
+    // covers this action's risk — Layer 2 is skipped entirely (no permission
+    // rule is written, no approval is filed).
     let mut skip_layer2 = false;
 
     if ceiling.has_groups {
@@ -289,8 +290,8 @@ pub(super) async fn call_action_impl(
                     (StatusCode::FORBIDDEN, Json(CallResponse::Denied { reason })).into_response(),
                 );
             }
-            GroupCeilingResult::WithinCeiling { read_bypass } => {
-                if read_bypass && identity.kind != "user" {
+            GroupCeilingResult::WithinCeiling { auto_approved } => {
+                if auto_approved && identity.kind != "user" {
                     skip_layer2 = true;
                 }
             }
@@ -299,14 +300,25 @@ pub(super) async fn call_action_impl(
     }
     // has_groups == false → NoGroups → permissive (no ceiling enforced)
 
-    // D42: a deny rule overrides every allow mechanism — including the
-    // `auto_approve_reads` read bypass and the users-are-their-own-approvers
+    // D42/D53: a deny rule overrides every allow mechanism — including the
+    // `auto_approve_level` bypass and the users-are-their-own-approvers
     // rule, both of which skip the chain walk below. A SQL-classified call
     // therefore runs a deny-only sweep whenever the full walk won't: a
     // `column=…/ssn` or `column_star=…` deny (or a table deny) is a hard 403
     // no matter which fast path the call took.
+    //
+    // D53 widens the sweep to *any* mutating call that took the auto-approve
+    // bypass, SQL-classified or not. Before write-level auto-approval existed
+    // the bypass could only ever free reads, so the blast radius of skipping
+    // deny rules along with the rest of Layer 2 was small enough to live with
+    // outside the SQL tier. A grant that auto-approves writes changes that: a
+    // deny is often the *only* thing standing between an agent and a mutation
+    // an admin explicitly carved out. Reads keep the old zero-query fast path
+    // — that behaviour is unchanged and a read bypass was never intended to
+    // consult the chain.
     let walk_will_run = identity.kind != "user" && pre_meta.needs_gate && !skip_layer2;
-    if sql_policy.is_some() && !walk_will_run {
+    let auto_approved_mutation = skip_layer2 && ceiling_risk.is_mutating();
+    if (sql_policy.is_some() || auto_approved_mutation) && !walk_will_run {
         let mut screen: Vec<PermissionKey> = perm_keys.clone();
         screen.extend(deny_screen_keys.iter().cloned());
         if let Some(reason) =

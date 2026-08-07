@@ -15,7 +15,7 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import IdentityPickerModal from '$lib/components/groups/IdentityPickerModal.svelte';
 	import { makeIdentityFormatter, shortEmail } from '$lib/identityDisplay';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import AutoApproveSelect from '$lib/components/AutoApproveSelect.svelte';
 
 	const groupId = $derived($page.params.id as string);
 
@@ -36,7 +36,7 @@
 	// Add grant form
 	let newServiceId = $state('');
 	let newAccessLevel = $state('read');
-	let newAutoApprove = $state(false);
+	let newAutoApproveLevel = $state('none');
 	let addingGrant = $state(false);
 	let grantError = $state<string | null>(null);
 
@@ -194,12 +194,12 @@
 			const g = await groupsApi.addGrant(groupId, {
 				service_instance_id: newServiceId,
 				access_level: newAccessLevel,
-				auto_approve_reads: newAutoApprove
+				auto_approve_level: newAutoApproveLevel
 			});
 			grants = [...grants, g];
 			newServiceId = '';
 			newAccessLevel = 'read';
-			newAutoApprove = false;
+			newAutoApproveLevel = 'none';
 		} catch (e) {
 			grantError = apiErrText(e);
 		} finally {
@@ -240,11 +240,18 @@
 		}
 	}
 
-	async function toggleAutoApprove(grant: GroupGrant) {
+	/** Mirror the server's clamp in the add-grant form: lowering the ceiling
+	 *  drags an out-of-range auto-approve level down with it, so submitting
+	 *  can't produce a 400 the user didn't ask for. */
+	function clampNewAutoApprove() {
+		const rank: Record<string, number> = { none: 0, read: 1, write: 2, admin: 3 };
+		if (rank[newAutoApproveLevel] > rank[newAccessLevel]) newAutoApproveLevel = newAccessLevel;
+	}
+
+	async function changeAutoApproveLevel(grant: GroupGrant, auto_approve_level: string) {
+		if (auto_approve_level === grant.auto_approve_level) return;
 		try {
-			const fresh = await groupsApi.patchGrant(groupId, grant.id, {
-				auto_approve_reads: !grant.auto_approve_reads
-			});
+			const fresh = await groupsApi.patchGrant(groupId, grant.id, { auto_approve_level });
 			grants = grants.map((g) => (g.id === grant.id ? fresh : g));
 		} catch (e) {
 			grantError = apiErrText(e);
@@ -257,6 +264,8 @@
 	async function changeAccessLevel(grant: GroupGrant, access_level: string) {
 		if (access_level === grant.access_level) return;
 		try {
+			// Lowering the ceiling clamps `auto_approve_level` server-side, so
+			// the row has to come from the response — not a local patch.
 			const fresh = await groupsApi.patchGrant(groupId, grant.id, { access_level });
 			grants = grants.map((g) => (g.id === grant.id ? fresh : g));
 		} catch (e) {
@@ -363,7 +372,7 @@
 						<tr>
 							<th>Service</th>
 							<th>Access level</th>
-							<th>Auto-approve reads</th>
+							<th>Auto-approve</th>
 							{#if canManageGrantRow}<th></th>{/if}
 						</tr>
 					</thead>
@@ -392,13 +401,13 @@
 								</td>
 								<td>
 									{#if !isSelfGroup || isSelfOwner}
-										<ToggleSwitch
-											checked={g.auto_approve_reads}
-											onchange={() => toggleAutoApprove(g)}
-											label="Auto-approve reads"
+										<AutoApproveSelect
+											value={g.auto_approve_level}
+											accessLevel={g.access_level}
+											onchange={(level) => changeAutoApproveLevel(g, level)}
 										/>
 									{:else}
-										{g.auto_approve_reads ? 'Yes' : 'No'}
+										{g.auto_approve_level}
 									{/if}
 								</td>
 								{#if canManageGrantRow}
@@ -420,18 +429,18 @@
 							<option value={s.id}>{s.name}</option>
 						{/each}
 					</select>
-					<select bind:value={newAccessLevel}>
+					<select bind:value={newAccessLevel} onchange={clampNewAutoApprove}>
 						<option value="read">read</option>
 						<option value="write">write</option>
 						<option value="admin">admin</option>
 					</select>
 					<span class="inline">
-						<ToggleSwitch
-							checked={newAutoApprove}
-							onchange={(v) => (newAutoApprove = v)}
-							labelledby="new-auto-approve-label"
+						<span id="new-auto-approve-label">Auto-approve</span>
+						<AutoApproveSelect
+							value={newAutoApproveLevel}
+							accessLevel={newAccessLevel}
+							onchange={(level) => (newAutoApproveLevel = level)}
 						/>
-						<span id="new-auto-approve-label">Auto-approve reads</span>
 					</span>
 					<button type="submit" class="btn btn-primary" disabled={addingGrant}>
 						{addingGrant ? 'Adding…' : 'Add grant'}

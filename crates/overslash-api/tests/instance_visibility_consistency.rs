@@ -120,7 +120,7 @@ async fn make_instance(scope: &OrgScope, name: &str, owner: Option<Uuid>) -> Ser
                 .unwrap()
                 .expect("bootstrap_org should have created Everyone");
             scope
-                .add_group_grant(everyone.id, row.id, "write", false)
+                .add_group_grant(everyone.id, row.id, "write", "none")
                 .await
                 .unwrap();
         }
@@ -167,7 +167,7 @@ async fn list_and_resolve_agree_on_visibility_across_ownership_matrix() {
         .await
         .unwrap();
     scope
-        .add_group_grant(group_ab.id, inst_b_grouped.id, "write", false)
+        .add_group_grant(group_ab.id, inst_b_grouped.id, "write", "none")
         .await
         .unwrap();
 

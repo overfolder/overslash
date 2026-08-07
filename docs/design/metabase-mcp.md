@@ -158,6 +158,6 @@ see **D43** for the deltas discovered during implementation:
   mutation targets mint `table_mut={label}/{relation}` (+ mutation-shaped
   sentinel), so a remembered read grant never authorizes writes and
   asymmetric policies are expressible; `column=`/`column_star=` deny screen,
-  ladder `**` rungs, deny-sweep under the `auto_approve_reads` bypass.
+  ladder `**` rungs, deny-sweep under the `auto_approve_level` bypass.
 - Verified against a live Metabase + Pagila (views, partitioned `payment`,
   CSV export): `make metabase-up` / `make metabase-e2e`.

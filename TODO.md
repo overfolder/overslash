@@ -114,7 +114,7 @@ Through 2026-05. Highlights below; full detail in [STATUS.md](STATUS.md).
 - **OAuth + Service Registry**: native OAuth engine with three-tier BYOC, 9 OpenAPI 3.1 templates, three-tier template registry, template validation endpoint, per-service scopes, `on_behalf_of`.
 - **Mode A/B collapse** (SPEC §8): single Service + HTTP verb execution surface; typed `reauth_required` envelopes; dry-run `/v1/actions/validate`; stable webhook envelope.
 - **Identity hierarchy**: parent/child + `inherit_permissions` live pointer; approval bubbling; sub-agent idle archive + retention (backend).
-- **Groups (Layer 1 ceiling)**: read/write/admin grants, `auto_approve_reads`, raw HTTP as the `http` singleton.
+- **Groups (Layer 1 ceiling)**: read/write/admin grants, `auto_approve_level` (a second ceiling on the same ladder), raw HTTP as the `http` singleton.
 - **Rate limiting**: two-tier (User bucket + identity caps), Redis/Valkey or in-memory, standard headers + 429.
 - **Multi-provider OIDC** + per-org IdP configs + GitHub social login + email-domain provisioning.
 - **Multi-org auth**: subdomain routing on `*.app|api.overslash.com`, switch-org, account memberships, corp-org creation with creator-admin.

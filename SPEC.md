@@ -354,7 +354,7 @@ Access levels map to the `Risk` enum:
 
 Raw HTTP access goes through the system-managed `http` service instance (one per org, created at bootstrap). Group access is granted via the standard `group_grants` mechanism, with the same access-level → risk mapping as any other service: `read` covers GET/HEAD/OPTIONS, `write` adds POST/PUT/PATCH, `admin` adds DELETE. There is no `allow_raw_http` boolean — raw HTTP is just another service from the ceiling's point of view, and most orgs leave it un-granted on `Everyone`.
 
-**Myself groups.** Every user identity has an automatically-managed "Myself" group (`system_kind = 'self'`, exactly one member: the user). When a user creates a service — or an agent creates one `on_behalf_of` its owner-user, which is the default for any identity-bound service create — the service is owned by the user and auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_reads = true`. The owner can downgrade these grants (cap at `read`, disable auto-approve) or fully remove them; ownership lives on `service_instances.owner_identity_id` independently of the grant, so a removed grant can be re-added by the owner from the dashboard at any time.
+**Myself groups.** Every user identity has an automatically-managed "Myself" group (`system_kind = 'self'`, exactly one member: the user). When a user creates a service — or an agent creates one `on_behalf_of` its owner-user, which is the default for any identity-bound service create — the service is owned by the user and auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_level = 'read'`. The owner can downgrade these grants (cap at `read`, drop auto-approval to `none`), raise auto-approval up to the ceiling, or fully remove them; ownership lives on `service_instances.owner_identity_id` independently of the grant, so a removed grant can be re-added by the owner from the dashboard at any time.
 
 **Myself group constraints.** Myself groups carry tighter invariants than user-created groups, enforced at the API:
 - *Membership is fixed.* The owner-user is the only member; backend rejects add/remove on `system_kind = 'self'`.
@@ -367,7 +367,16 @@ There is no separate "user-level service" tier in the permission model. `owner_i
 
 There is no permissive default. After the Myself migration, every bootstrapped user identity belongs to at least the Everyone and Myself system groups, and Everyone always carries the `overslash:write` grant from org bootstrap, so `ceiling.grants` is never empty in practice and the ceiling is always enforced. The `NoGroups` permissive branch survives only as a safety net for org-level keys with no identity at all.
 
-**Auto-approve reads:** Each service grant can enable `auto_approve_reads`. When the matching grant has the flag set and the action is non-mutating (`risk: read`, or GET/HEAD/OPTIONS for raw HTTP), **Layer 2 is bypassed entirely**: the agent's call runs immediately, no permission rule is created, no approval is filed. Mutating requests (`risk: write` or `delete`) always go through normal approval flow. The Myself grant defaults to `auto_approve_reads = true`, so an agent reading from one of its owner-user's own services skips approval without polluting the agent's permission-rule list. Org admins can also enable the flag on shared org grants for services where reads are safe (listing PRs, checking calendar events).
+**Auto-approve level (D53):** Each service grant carries a second ceiling, `auto_approve_level` ∈ `none | read | write | admin`, on the *same* ladder as `access_level` and bounded by it. Where `access_level` answers "may this run at all?", `auto_approve_level` answers "may it run without a human?". When a matching grant's level permits the action's risk, **Layer 2 is bypassed entirely**: the call runs immediately, no permission rule is created, no approval is filed. Anything above the level goes through the normal approval flow.
+
+- `none` — every call files an approval (the default for a new grant).
+- `read` — non-mutating calls (`risk: read`, or GET/HEAD/OPTIONS for raw HTTP) run unattended. This is what the retired `auto_approve_reads = true` boolean meant, and the default on the Myself grant, so an agent reading from one of its owner-user's own services skips approval without polluting the agent's permission-rule list.
+- `write` — adds POST/PUT/PATCH-class actions. For read-heavy *and* write-heavy agent loops on a service where mutations are cheap and reversible (a scratch project, an internal channel).
+- `admin` — adds `risk: delete`.
+
+Auto-approval can never exceed `access_level`: raising it past the ceiling is a `400`, and lowering the ceiling clamps it down. It is permission to skip the *human*, never permission to exceed the grant. **A deny rule still overrides it** — every auto-approved mutating call runs the deny-only chain sweep before dispatch, so a carve-out an admin made on purpose survives a `write`-level grant.
+
+`auto_approve_reads` remains accepted on the API for one release as a deprecated alias (`true` ⇒ `"read"`) and is returned derived as `auto_approve_level != "none"`.
 
 **Layer 2: Permission keys (fine-grained, user-managed, agent-specific)**
 
@@ -392,7 +401,7 @@ Where grants come from for a given caller:
                   │           │  │   _http    │    │   groups        │
                   └─────┬─────┘  └─────┬──────┘    └────────┬────────┘
                         │              │                     │
-                        │  group_grants (access_level + auto_approve_reads)
+                        │  group_grants (access_level + auto_approve_level)
                         ▼              ▼                     ▼
                        ┌───────────────────────────────────────┐
                        │  Union: CeilingGrant per service      │
@@ -426,8 +435,8 @@ How a single action call is authorized end-to-end:
        yes               no (agent)
         │                │
         ▼                ▼
-    [CALL now]     read_bypass ?
-                   (auto_approve_reads=true AND non-mutating risk)
+    [CALL now]     auto_approved ?
+                   (auto_approve_level permits this risk)
                         │
                 ┌───────┴────────┐
                 │                │
@@ -447,7 +456,7 @@ How a single action call is authorized end-to-end:
                                         with the keys, else the user)
 ```
 
-The win this delivers compared to the previous "user-owned service bypass": an agent reading from one of its owner-user's services no longer has to wait for a human approval on the first call. The Myself grant's `auto_approve_reads = true` short-circuits Layer 2 for reads — no popup, no permission-rule clutter — while writes still flow through approval.
+The win this delivers compared to the previous "user-owned service bypass": an agent reading from one of its owner-user's services no longer has to wait for a human approval on the first call. The Myself grant's `auto_approve_level = 'read'` short-circuits Layer 2 for reads — no popup, no permission-rule clutter — while writes still flow through approval until the owner raises the level.
 
 ### Resolution Flow
 
@@ -455,7 +464,7 @@ The flow above expanded as discrete steps:
 
 1. Agent makes a request → system derives permission keys from the request
 2. **Group check (Layer 1)**: is the service + access level within the owner-user's group grants? If not → **deny** (not approvable)
-3. **Read bypass**: if the matching grant has `auto_approve_reads = true` and the action is non-mutating, skip Layer 2 and call immediately
+3. **Auto-approve bypass**: if the matching grant's `auto_approve_level` permits this action's risk, skip Layer 2 and call immediately (a deny rule still applies to mutating calls)
 4. **Permission key check (Layer 2)**: are all derived keys covered by existing rules for this identity? If yes → **auto-approve**
 5. If not → **create approval request** → user decides → "Allow & Remember" stores keys with optional TTL
 
@@ -877,7 +886,7 @@ paths:
 ```
 
 **Key gateway-specific fields:**
-- **`x-overslash-risk` / `risk:`** — enum: `read`, `write`, `delete`, `dynamic`. Defaults to a value inferred from the HTTP method (GET/HEAD/OPTIONS → read, DELETE → delete, else write). Influences auto-approve-reads behavior. **`dynamic`** (D42/D43) means "classified per call from the SQL the caller supplies": valid only on an action with an `x-overslash-sql-field` param, presented as `write` in static contexts (write until proven read), and resolved at call time to the parser's verdict — a build without the `sql_policy` feature, an unsupported dialect, or an unparseable statement all fail closed to write.
+- **`x-overslash-risk` / `risk:`** — enum: `read`, `write`, `delete`, `dynamic`. Defaults to a value inferred from the HTTP method (GET/HEAD/OPTIONS → read, DELETE → delete, else write). Decides which rung of a grant's `auto_approve_level` the action falls under. **`dynamic`** (D42/D43) means "classified per call from the SQL the caller supplies": valid only on an action with an `x-overslash-sql-field` param, presented as `write` in static contexts (write until proven read), and resolved at call time to the parser's verdict — a build without the `sql_policy` feature, an unsupported dialect, or an unparseable statement all fail closed to write.
 - **`x-overslash-scope_param` / `scope_param:`** — which parameter(s) provide the `{arg}` segment in permission keys. Without it, the arg is `*`. Accepts a param name (`scope_param: repo`), a `param:label` pair, or a list of either (`scope_param: [to:recipient, cc:recipient, bcc:recipient]`). Each value mints one `{service}:{action}:{label}={value}` key — an array-valued param fans out per element — and the label defaults to the param name. Keys are deduped, so params sharing a label collapse a value that appears in more than one of them into a single key (and a single approval). See §5 for how rules match labelled keys.
 - **`x-overslash-sql-field` / `sql-field:`** — on a parameter, a dotted body path that both nominates this param as the raw-SQL field (D42/D43 content policy: parse → read/write risk floor; per-table permission keys split by context — read-context relations mint `{service}:{action}:table={label}/{relation}`, mutation targets mint `table_mut={label}/{relation}`, plus the mutation-shaped all-tables sentinel `table_mut={label}/*` when relations can't be enumerated; the label-less value-only form covers both classes; `column=`/`column_star=` deny screening) and names where the SQL string sits in the assembled JSON body. On a **string** param the value is *placed* at the path (`native.query` keeps the caller surface flat while nesting the outgoing body); on an **object** param the path is *descended into* (it must anchor at the param's own name). One per action, enforced at template compile.
 - **`x-overslash-sql-database` / `sql-database:`** — a jq expression over the call params (e.g. `.database | tostring`) whose result keys into the instance's `sql_databases` config map (`{"<db-key>": {"dialect": "...", "label": "..."}}`) to resolve the parse dialect and the human DB label used in audit rows and permission keys. Unresolved falls back to postgres with the raw key as label (fail-closed).
@@ -952,7 +961,7 @@ Service: "client-calendar"          (OAuth token for alice@bigclient.org — use
 
 **Service ownership:**
 - Services have an optional `owner_identity_id` used purely as a namespace and provenance marker. `NULL` means the service lives in the org namespace (e.g., `github`); a non-null value puts the service in that user's private namespace (e.g., alice's `my-scraper`).
-- Permission and visibility flow through `group_grants` uniformly regardless of `owner_identity_id`. An owner-created service is auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_reads = true`, which is what makes it reachable. Org admins can additionally grant any service — owner-namespaced or not — to other groups for sharing.
+- Permission and visibility flow through `group_grants` uniformly regardless of `owner_identity_id`. An owner-created service is auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_level = 'read'`, which is what makes it reachable. Org admins can additionally grant any service — owner-namespaced or not — to other groups for sharing.
 - Agents that create services with the default `user_level: true` create them under their owner-user's namespace (matching the SPEC rule that agents create resources at owner-user level so all sibling agents share them). Pass `user_level: false` to create an org-namespaced service or `on_behalf_of: <user>` to target a specific owner.
 - **An org-level create must name its groups.** `user_level: false` produces a service with no owner and therefore no Myself group — a grant is the only path to it, so `POST /v1/services` requires a non-empty `groups: [{ group_id, access_level, auto_approve_reads }]` and rejects the request otherwise. At least one named group must be one the creator belongs to (resolved through their ceiling user), so an admin can't strand a service outside their own reach. Myself groups are rejected here: they are auto-managed and only ever grant their owner's own services.
 

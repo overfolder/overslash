@@ -185,8 +185,8 @@ pub(super) async fn validate_action_impl(
                     "exceeds_ceiling",
                 ));
             }
-            GroupCeilingResult::WithinCeiling { read_bypass } => {
-                if read_bypass && identity.kind != "user" {
+            GroupCeilingResult::WithinCeiling { auto_approved } => {
+                if auto_approved && identity.kind != "user" {
                     skip_layer2 = true;
                 }
             }
@@ -194,11 +194,12 @@ pub(super) async fn validate_action_impl(
         }
     }
 
-    // D42 deny-only sweep — lockstep with `/call`: a deny rule overrides
-    // the read bypass and the user fast path, so the dry-run reports the
-    // same hard denial the real call would return.
+    // D42/D53 deny-only sweep — lockstep with `/call`: a deny rule overrides
+    // the auto-approve bypass and the user fast path, so the dry-run reports
+    // the same hard denial the real call would return.
     let walk_will_run = identity.kind != "user" && meta.needs_gate && !skip_layer2;
-    if sql_policy.is_some() && !walk_will_run {
+    let auto_approved_mutation = skip_layer2 && ceiling_risk.is_mutating();
+    if (sql_policy.is_some() || auto_approved_mutation) && !walk_will_run {
         let mut screen: Vec<PermissionKey> = perm_keys.clone();
         screen.extend(deny_screen_keys.iter().cloned());
         if let Some(reason) =

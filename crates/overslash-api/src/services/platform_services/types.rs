@@ -69,8 +69,15 @@ pub struct CreateServiceGroupGrant {
     /// shared group silently.
     #[serde(default = "default_grant_access_level")]
     pub access_level: String,
+    /// `none` | `read` | `write` | `admin`, bounded by `access_level` (D53).
+    /// Defaults to `none`: a shared group gets no unattended calls unless the
+    /// creator asks for them by name.
     #[serde(default)]
-    pub auto_approve_reads: bool,
+    pub auto_approve_level: Option<String>,
+    /// DEPRECATED alias for `auto_approve_level`: `true` => `"read"`.
+    /// Ignored when `auto_approve_level` is present.
+    #[serde(default)]
+    pub auto_approve_reads: Option<bool>,
 }
 
 fn default_status() -> String {
@@ -157,6 +164,10 @@ pub struct ServiceGroupRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_kind: Option<String>,
     pub access_level: String,
+    /// `"none" | "read" | "write" | "admin"` — how far up the ladder actions
+    /// on this service skip Layer 2 for members of this group.
+    pub auto_approve_level: String,
+    /// DEPRECATED — `auto_approve_level != "none"`.
     pub auto_approve_reads: bool,
 }
 
@@ -168,6 +179,7 @@ impl From<ServiceGroupRow> for ServiceGroupRef {
             group_name: r.group_name,
             system_kind: r.system_kind,
             access_level: r.access_level,
+            auto_approve_level: r.auto_approve_level,
             auto_approve_reads: r.auto_approve_reads,
         }
     }

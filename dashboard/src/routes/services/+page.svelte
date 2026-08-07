@@ -427,13 +427,13 @@
 										<span class="group-pills">
 											<StatusBadge variant="user" label="User-level" />
 											{#each s.groups ?? [] as g (g.grant_id)}
-												<span class="group-pill" title={`${g.access_level}${g.auto_approve_reads ? ' · auto-approve reads' : ''}`}>{g.system_kind === 'self' ? 'Myself' : g.group_name}</span>
+												<span class="group-pill" title={`${g.access_level}${g.auto_approve_level !== 'none' ? ` · auto-approve ${g.auto_approve_level}` : ''}`}>{g.system_kind === 'self' ? 'Myself' : g.group_name}</span>
 											{/each}
 										</span>
 									{:else if s.groups && s.groups.length > 0}
 										<span class="group-pills">
 											{#each s.groups as g (g.grant_id)}
-												<span class="group-pill" title={`${g.access_level}${g.auto_approve_reads ? ' · auto-approve reads' : ''}`}>{g.system_kind === 'self' ? 'Myself' : g.group_name}</span>
+												<span class="group-pill" title={`${g.access_level}${g.auto_approve_level !== 'none' ? ` · auto-approve ${g.auto_approve_level}` : ''}`}>{g.system_kind === 'self' ? 'Myself' : g.group_name}</span>
 											{/each}
 										</span>
 									{:else}

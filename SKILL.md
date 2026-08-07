@@ -90,7 +90,7 @@ overslash_call {
 ```
 
 The platform kernel auto-grants the new instance to your owner-user's
-Myself group (admin + `auto_approve_reads`), so siblings of yours under the
+Myself group (admin access, read-level auto-approval), so siblings of yours under the
 same user pick it up immediately. The response carries
 `credentials_status`:
 

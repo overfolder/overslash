@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO group_grants\n             (group_id, service_instance_id, access_level, auto_approve_reads, auto_approve_level)\n         VALUES ($1, $2, 'admin', true, 'read')\n         ON CONFLICT (group_id, service_instance_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "15bc4f812260ec5b536ce793ad5d6302a0037fc9c7b2733308de4c9056083498"
+}

@@ -483,7 +483,8 @@ pub async fn kernel_create_service(
             AppError::Database(e)
         })?;
 
-    // Auto-grant to the owner's Myself group with admin + auto_approve_reads.
+    // Auto-grant to the owner's Myself group with admin access and
+    // read-level auto-approval.
     // This is what makes the service reachable by the owner under the unified
     // group-ceiling model. The Myself group is created on-demand if missing.
     if let Some(owner_id) = row.owner_identity_id {
@@ -506,7 +507,9 @@ pub async fn kernel_create_service(
                 grant.group_id,
                 row.id,
                 &grant.access_level,
-                grant.auto_approve_reads,
+                // `validate_create_group_grants` normalizes and bounds this,
+                // so it is always Some here; fail closed if that ever changes.
+                grant.auto_approve_level.as_deref().unwrap_or("none"),
             )
             .await
             .map_err(AppError::Database)

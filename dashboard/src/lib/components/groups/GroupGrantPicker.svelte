@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Group, GroupGrantPick } from '$lib/api/groups';
+	import AutoApproveSelect from '$lib/components/AutoApproveSelect.svelte';
 
 	let {
 		groups,
@@ -18,7 +19,15 @@
 
 	let groupId = $state('');
 	let accessLevel = $state<'read' | 'write' | 'admin'>('read');
-	let autoApprove = $state(false);
+	let autoApprove = $state<'none' | 'read' | 'write' | 'admin'>('none');
+
+	const RANK: Record<string, number> = { none: 0, read: 1, write: 2, admin: 3 };
+
+	/** Mirror the server's clamp so lowering Access can't leave a pick the
+	 *  API would reject with a 400 the user never asked for. */
+	function clampAutoApprove() {
+		if (RANK[autoApprove] > RANK[accessLevel]) autoApprove = accessLevel;
+	}
 
 	// Myself groups are auto-managed and only ever grant their owner's own
 	// services — the API rejects anything else, so never offer them here.
@@ -32,10 +41,10 @@
 
 	function add() {
 		if (!groupId) return;
-		onadd({ group_id: groupId, access_level: accessLevel, auto_approve_reads: autoApprove });
+		onadd({ group_id: groupId, access_level: accessLevel, auto_approve_level: autoApprove });
 		groupId = '';
 		accessLevel = 'read';
-		autoApprove = false;
+		autoApprove = 'none';
 	}
 </script>
 
@@ -51,16 +60,20 @@
 	</label>
 	<label class="field">
 		<span class="label">Access</span>
-		<select bind:value={accessLevel}>
+		<select bind:value={accessLevel} onchange={clampAutoApprove}>
 			<option value="read">Read</option>
 			<option value="write">Write</option>
 			<option value="admin">Admin</option>
 		</select>
 	</label>
-	<label class="inline-field">
-		<input type="checkbox" bind:checked={autoApprove} />
-		<span>Auto-approve reads</span>
-	</label>
+	<div class="field">
+		<span class="label">Auto-approve</span>
+		<AutoApproveSelect
+			value={autoApprove}
+			accessLevel={accessLevel}
+			onchange={(level) => (autoApprove = level as 'none' | 'read' | 'write' | 'admin')}
+		/>
+	</div>
 	<button type="button" class="btn primary" onclick={add} disabled={!groupId || busy}>
 		{busy ? 'Adding…' : addLabel}
 	</button>
@@ -95,12 +108,6 @@
 		color: var(--color-text-muted);
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-	}
-	.inline-field {
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
-		font-size: 0.85rem;
 	}
 	.btn {
 		padding: 0.5rem 1rem;

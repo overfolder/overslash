@@ -69,7 +69,7 @@ overslash_call(
 
 Returns a service detail row whose derived `credentials_status` is `needs_authentication` (no `connection_id`, OAuth required by template). This is **the "needs_authentication" state** the question asks about — it is not a stored enum value but a derived field computed at read time from the bound connection's state (`crates/overslash-api/src/routes/services.rs:573-577`).
 
-The auto-add-to-Myself behavior at `services.rs:558-568` runs here: the service is granted to Mira's *Myself* group with `admin` access and `auto_approve_reads = true`, on-demand creating the group if missing. **Step 4 in the question is therefore satisfied as a side effect of Step 2 — there is no separate call.**
+The auto-add-to-Myself behavior at `services.rs:558-568` runs here: the service is granted to Mira's *Myself* group with `admin` access and `auto_approve_level = 'read'`, on-demand creating the group if missing. **Step 4 in the question is therefore satisfied as a side effect of Step 2 — there is no separate call.**
 
 ### Step 3 — Start OAuth and hand the URL to Mira
 
@@ -132,7 +132,7 @@ overslash_call(
 )
 ```
 
-The first call may return `{ "status": "pending_approval", "approval_id": "..." }` if no permission key matches yet — Mira clicks the approval URL, picks **Allow & Remember** at her preferred specificity tier, and subsequent reads auto-approve under the Myself-group `auto_approve_reads` flag (set in step 2).
+The first call may return `{ "status": "pending_approval", "approval_id": "..." }` if no permission key matches yet — Mira clicks the approval URL, picks **Allow & Remember** at her preferred specificity tier, and subsequent reads auto-approve under the Myself-group `auto_approve_level` (set to `read` in step 2).
 
 ---
 

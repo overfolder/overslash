@@ -82,7 +82,7 @@ impl OrgScope {
     }
 
     /// Auto-grant a service instance to its owner's Myself group with admin
-    /// access and `auto_approve_reads = true`. Idempotent.
+    /// access and `auto_approve_level = 'read'`. Idempotent.
     pub async fn grant_service_to_self_group(
         &self,
         owner_identity_id: Uuid,
@@ -108,7 +108,7 @@ impl OrgScope {
         group_id: Uuid,
         service_instance_id: Uuid,
         access_level: &str,
-        auto_approve_reads: bool,
+        auto_approve_level: &str,
     ) -> Result<Option<GroupGrantRow>, sqlx::Error> {
         group::add_grant(
             self.db(),
@@ -116,9 +116,19 @@ impl OrgScope {
             group_id,
             service_instance_id,
             access_level,
-            auto_approve_reads,
+            auto_approve_level,
         )
         .await
+    }
+
+    /// Fetch one grant by id, scoped to this org. Returns `None` when the
+    /// grant doesn't belong to a group in this org.
+    pub async fn get_group_grant(
+        &self,
+        grant_id: Uuid,
+        group_id: Uuid,
+    ) -> Result<Option<GroupGrantRow>, sqlx::Error> {
+        group::get_grant(self.db(), self.org_id(), grant_id, group_id).await
     }
 
     /// List grants attached to a group, scoped to this org.
@@ -146,7 +156,7 @@ impl OrgScope {
         grant_id: Uuid,
         group_id: Uuid,
         access_level: Option<&str>,
-        auto_approve_reads: Option<bool>,
+        auto_approve_level: Option<&str>,
     ) -> Result<Option<GroupGrantRow>, sqlx::Error> {
         group::update_grant(
             self.db(),
@@ -154,7 +164,7 @@ impl OrgScope {
             grant_id,
             group_id,
             access_level,
-            auto_approve_reads,
+            auto_approve_level,
         )
         .await
     }

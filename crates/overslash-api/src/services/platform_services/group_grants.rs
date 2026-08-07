@@ -50,6 +50,7 @@ pub(super) async fn validate_create_group_grants(
     }
 
     let mut seen: HashSet<Uuid> = HashSet::new();
+    let mut normalized: Vec<CreateServiceGroupGrant> = Vec::with_capacity(requested.len());
     for grant in requested {
         if !seen.insert(grant.group_id) {
             return Err(AppError::BadRequest(format!(
@@ -58,12 +59,28 @@ pub(super) async fn validate_create_group_grants(
             )));
         }
 
-        if !matches!(grant.access_level.as_str(), "read" | "write" | "admin") {
-            return Err(AppError::BadRequest(format!(
+        let grant_access = AccessLevel::parse(&grant.access_level).ok_or_else(|| {
+            AppError::BadRequest(format!(
                 "invalid access_level '{}': must be read, write, or admin",
                 grant.access_level
-            )));
-        }
+            ))
+        })?;
+
+        // Same ceiling rule as `POST /v1/groups/{id}/grants` (D53). Every
+        // overshoot here is something the caller typed, so it's a 400 rather
+        // than a silent clamp — there is no prior level to be dragged down.
+        let requested_auto = group_ceiling::resolve_auto_approve(
+            grant.auto_approve_level.as_deref(),
+            grant.auto_approve_reads,
+        )?
+        .flatten();
+        let auto_level = group_ceiling::bound_auto_approve(grant_access, requested_auto, true)?;
+        normalized.push(CreateServiceGroupGrant {
+            group_id: grant.group_id,
+            access_level: grant.access_level.clone(),
+            auto_approve_level: Some(AccessLevel::render_auto(auto_level).to_string()),
+            auto_approve_reads: None,
+        });
 
         let group = scope
             .get_group(grant.group_id)
@@ -101,5 +118,5 @@ pub(super) async fn validate_create_group_grants(
         }
     }
 
-    Ok(requested.to_vec())
+    Ok(normalized)
 }
