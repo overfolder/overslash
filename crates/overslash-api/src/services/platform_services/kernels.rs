@@ -431,12 +431,14 @@ pub async fn kernel_create_service(
         }
     }
 
-    if let Some(url) = input.url.as_deref() {
-        if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(AppError::BadRequest(
-                "`url` must start with http:// or https://".into(),
-            ));
-        }
+    if let Some(url) = input.url.as_deref()
+        && !url.is_empty()
+        && !url.starts_with("http://")
+        && !url.starts_with("https://")
+    {
+        return Err(AppError::BadRequest(
+            "`url` must start with http:// or https://".into(),
+        ));
     }
 
     let create_input = CreateServiceInstance {
@@ -459,10 +461,10 @@ pub async fn kernel_create_service(
         .create_service_instance(create_input)
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.constraint().is_some() {
-                    return AppError::Conflict(format!("service '{name}' already exists"));
-                }
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.constraint().is_some()
+            {
+                return AppError::Conflict(format!("service '{name}' already exists"));
             }
             AppError::Database(e)
         })?;
@@ -681,10 +683,11 @@ pub async fn kernel_update_service(
             Some(explicit) => explicit.clone(),
             None => existing.credentials.0.clone(),
         };
-        if input.credentials.is_none() && input.secret_name.is_some() {
-            if let [sole] = instance_slots.as_slice() {
-                base.remove(sole);
-            }
+        if input.credentials.is_none()
+            && input.secret_name.is_some()
+            && let [sole] = instance_slots.as_slice()
+        {
+            base.remove(sole);
         }
         let legacy = input.secret_name.as_ref().and_then(|o| o.as_deref());
         let (map, mut scalar) = reconcile_credentials(template_def, Some(&base), legacy)?;
@@ -698,12 +701,14 @@ pub async fn kernel_update_service(
         (None, None)
     };
 
-    if let Some(Some(ref url)) = input.url {
-        if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(AppError::BadRequest(
-                "`url` must start with http:// or https://".into(),
-            ));
-        }
+    if let Some(Some(ref url)) = input.url
+        && !url.is_empty()
+        && !url.starts_with("http://")
+        && !url.starts_with("https://")
+    {
+        return Err(AppError::BadRequest(
+            "`url` must start with http:// or https://".into(),
+        ));
     }
 
     // An explicit `config` is a whole-map replace (an empty map clears every

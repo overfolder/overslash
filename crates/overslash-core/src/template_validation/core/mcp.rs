@@ -35,14 +35,15 @@ pub(super) fn check_mcp(def: &ServiceDefinition, issues: &mut Issues) {
             // url is optional — absent means the service instance must supply one.
             // When present, validate scheme (format already checked in extract.rs;
             // this guard catches templates loaded from DB that may have bypassed it).
-            if let Some(url) = &mcp.url {
-                if !url.starts_with("https://") && !url.starts_with("http://") {
-                    issues.err(
-                        "mcp_invalid",
-                        "mcp.url must begin with http:// or https://",
-                        "mcp.url",
-                    );
-                }
+            if let Some(url) = &mcp.url
+                && !url.starts_with("https://")
+                && !url.starts_with("http://")
+            {
+                issues.err(
+                    "mcp_invalid",
+                    "mcp.url must begin with http:// or https://",
+                    "mcp.url",
+                );
             }
             // secret_name is optional — absent means the service instance must supply one.
             match &mcp.auth {

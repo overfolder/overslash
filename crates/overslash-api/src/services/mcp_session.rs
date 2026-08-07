@@ -166,10 +166,10 @@ pub async fn complete_from_elicitation(
                     body["remember_keys"] = json!(cleaned);
                 }
             }
-            if let Some(ttl) = content.get("ttl").and_then(Value::as_str) {
-                if ttl != "forever" {
-                    body["ttl"] = json!(ttl);
-                }
+            if let Some(ttl) = content.get("ttl").and_then(Value::as_str)
+                && ttl != "forever"
+            {
+                body["ttl"] = json!(ttl);
             }
             body
         }

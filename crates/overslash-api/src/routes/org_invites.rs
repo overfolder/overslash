@@ -313,27 +313,25 @@ async fn delete_invite(
         None => false,
     };
 
-    if deleted {
-        if let Some(row) = existing {
-            let email = row.email.unwrap_or_default();
-            let role = if row.is_org_admin {
-                membership::ROLE_ADMIN
-            } else {
-                membership::ROLE_MEMBER
-            };
-            let _ = scope
-                .log_audit(AuditEntry {
-                    org_id: scope.org_id(),
-                    identity_id: acl.identity_id,
-                    action: "org_invite.revoked",
-                    resource_type: Some("identity"),
-                    resource_id: Some(id),
-                    detail: json!({ "email": email, "role": role }),
-                    description: Some(&format!("Revoked invite for {email}")),
-                    ip_address: ip.0.as_deref(),
-                })
-                .await;
-        }
+    if deleted && let Some(row) = existing {
+        let email = row.email.unwrap_or_default();
+        let role = if row.is_org_admin {
+            membership::ROLE_ADMIN
+        } else {
+            membership::ROLE_MEMBER
+        };
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: scope.org_id(),
+                identity_id: acl.identity_id,
+                action: "org_invite.revoked",
+                resource_type: Some("identity"),
+                resource_id: Some(id),
+                detail: json!({ "email": email, "role": role }),
+                description: Some(&format!("Revoked invite for {email}")),
+                ip_address: ip.0.as_deref(),
+            })
+            .await;
     }
 
     Ok(Json(json!({ "deleted": deleted })))

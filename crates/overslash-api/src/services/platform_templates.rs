@@ -118,12 +118,12 @@ pub async fn kernel_get_template(ctx: PlatformCallContext, key: String) -> Resul
     // Org-level callers (no identity binding) can only see org/global tier;
     // skip the user-tier lookup when there is no caller identity to look up
     // *for*.
-    if user_templates_allowed && let Some(identity_id) = ctx.identity_id {
-        if let Some(t) =
+    if user_templates_allowed
+        && let Some(identity_id) = ctx.identity_id
+        && let Some(t) =
             service_template::get_by_key(&ctx.db, ctx.org_id, Some(identity_id), &key).await?
-        {
-            return template_row_to_value(&ctx, t, "user").await;
-        }
+    {
+        return template_row_to_value(&ctx, t, "user").await;
     }
 
     if let Some(t) = service_template::get_by_key(&ctx.db, ctx.org_id, None, &key).await? {
@@ -206,13 +206,10 @@ pub async fn kernel_create_template(
     let row = service_template::create(&ctx.db, &input)
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.constraint().is_some() {
-                    return AppError::Conflict(format!(
-                        "template key '{}' already exists",
-                        def.key
-                    ));
-                }
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.constraint().is_some()
+            {
+                return AppError::Conflict(format!("template key '{}' already exists", def.key));
             }
             AppError::Database(e)
         })?;

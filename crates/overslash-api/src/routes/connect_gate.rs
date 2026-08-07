@@ -113,12 +113,11 @@ async fn resolve_same_human_in_org(
     target_org: Uuid,
 ) -> Result<Option<identity::IdentityRow>, AppError> {
     // 1. Same user-id — at most one user-kind identity per `(org, user)`.
-    if let Some(user_id) = session.user_id {
-        if let Some(row) =
+    if let Some(user_id) = session.user_id
+        && let Some(row) =
             identity::find_by_org_and_user(state.db(ext), target_org, user_id).await?
-        {
-            return Ok(Some(row));
-        }
+    {
+        return Ok(Some(row));
     }
     // 2. Same IdP — match the session identity's `(provider, subject)` against
     //    a user-kind identity in the target org. Both the subject
@@ -253,23 +252,21 @@ pub async fn evaluate_connect_gate(
     // later removed must NOT authorize (there is no DB constraint tying the two,
     // so we enforce it here rather than trust the invariant).
     let mut admin_in_org = false;
-    if let Some(user_id) = acting.user_id {
-        if membership::find(state.db(ext), user_id, flow.org_id)
+    if let Some(user_id) = acting.user_id
+        && membership::find(state.db(ext), user_id, flow.org_id)
             .await?
             .is_some()
-        {
-            // Tier 2 — the acting identity is the flow's owner or an ancestor.
-            let owner_or_ancestor = acting.id == flow.identity_id || {
-                let chain =
-                    identity::get_ancestor_chain(state.db(ext), flow.org_id, flow.identity_id)
-                        .await?;
-                chain.iter().any(|row| row.id == acting.id)
-            };
-            if owner_or_ancestor {
-                return Ok(ConnectGateOutcome::Allow { set_cookie });
-            }
-            admin_in_org = acting.is_org_admin;
+    {
+        // Tier 2 — the acting identity is the flow's owner or an ancestor.
+        let owner_or_ancestor = acting.id == flow.identity_id || {
+            let chain =
+                identity::get_ancestor_chain(state.db(ext), flow.org_id, flow.identity_id).await?;
+            chain.iter().any(|row| row.id == acting.id)
+        };
+        if owner_or_ancestor {
+            return Ok(ConnectGateOutcome::Allow { set_cookie });
         }
+        admin_in_org = acting.is_org_admin;
     }
 
     // Tier 3 — override behind a loud consent page; the confirm POST re-runs

@@ -68,10 +68,10 @@ pub async fn resolve_template_source(
     identity_id: Option<Uuid>,
     key: &str,
 ) -> Result<(String, Option<Uuid>), AppError> {
-    if let Some(identity_id) = identity_id {
-        if let Some(t) = service_template::get_by_key(db, org_id, Some(identity_id), key).await? {
-            return Ok(("user".into(), Some(t.id)));
-        }
+    if let Some(identity_id) = identity_id
+        && let Some(t) = service_template::get_by_key(db, org_id, Some(identity_id), key).await?
+    {
+        return Ok(("user".into(), Some(t.id)));
     }
     if let Some(t) = service_template::get_by_key(db, org_id, None, key).await? {
         return Ok(("org".into(), Some(t.id)));

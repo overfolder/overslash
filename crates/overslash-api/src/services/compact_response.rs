@@ -51,14 +51,14 @@ pub fn compact(result: &ActionResult) -> Value {
     // Reserve room for the truncation marker upfront so its bytes can't
     // push the final output back over `COMPACT_BUDGET_BYTES`.
     let working_budget = COMPACT_BUDGET_BYTES.saturating_sub(MARKER_RESERVE_BYTES);
-    if shrink_to_budget(&mut value, working_budget) {
-        if let Some(obj) = value.as_object_mut() {
-            obj.insert("_truncated".into(), Value::Bool(true));
-            obj.insert(
-                "_hint".into(),
-                Value::String("pass verbose=true to see the full response".into()),
-            );
-        }
+    if shrink_to_budget(&mut value, working_budget)
+        && let Some(obj) = value.as_object_mut()
+    {
+        obj.insert("_truncated".into(), Value::Bool(true));
+        obj.insert(
+            "_hint".into(),
+            Value::String("pass verbose=true to see the full response".into()),
+        );
     }
     value
 }

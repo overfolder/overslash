@@ -434,22 +434,21 @@ pub(crate) async fn resolve_instance_auth(
                             token_injection,
                             ..
                         } = service_auth
+                            && *provider == conn.provider_key
                         {
-                            if *provider == conn.provider_key {
-                                let value = match &token_injection.prefix {
-                                    Some(p) => format!("{p}{access_token}"),
-                                    None => access_token,
-                                };
-                                let auth_header =
-                                    token_injection.header_name.as_ref().map(|header_name| {
-                                        AuthHeader {
-                                            name: header_name.clone(),
-                                            value,
-                                        }
-                                    });
-                                return Ok(ResolvedAuth::oauth(auth_header)
-                                    .with_principal(conn.account_email.clone()));
-                            }
+                            let value = match &token_injection.prefix {
+                                Some(p) => format!("{p}{access_token}"),
+                                None => access_token,
+                            };
+                            let auth_header =
+                                token_injection.header_name.as_ref().map(|header_name| {
+                                    AuthHeader {
+                                        name: header_name.clone(),
+                                        value,
+                                    }
+                                });
+                            return Ok(ResolvedAuth::oauth(auth_header)
+                                .with_principal(conn.account_email.clone()));
                         }
                     }
                     // No matching auth config found, carry as Bearer by default

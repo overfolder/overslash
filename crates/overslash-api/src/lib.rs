@@ -248,45 +248,45 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     // billing deploy fails fast (not at first checkout). Skip when billing is
     // disabled or the secret key isn't set — the validation in `from_env`
     // already enforces that pairing.
-    if config.cloud_billing {
-        if let Some(secret_key) = config.stripe_secret_key.as_deref() {
-            let http = reqwest::Client::new();
-            config.stripe_eur_price_id = Some(
-                routes::billing::resolve_stripe_price_by_lookup_key(
-                    &http,
-                    secret_key,
-                    &config.stripe_eur_lookup_key,
-                    &config.stripe_api_base,
+    if config.cloud_billing
+        && let Some(secret_key) = config.stripe_secret_key.as_deref()
+    {
+        let http = reqwest::Client::new();
+        config.stripe_eur_price_id = Some(
+            routes::billing::resolve_stripe_price_by_lookup_key(
+                &http,
+                secret_key,
+                &config.stripe_eur_lookup_key,
+                &config.stripe_api_base,
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to resolve EUR Stripe price (lookup_key={}): {e}",
+                    config.stripe_eur_lookup_key
                 )
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to resolve EUR Stripe price (lookup_key={}): {e}",
-                        config.stripe_eur_lookup_key
-                    )
-                })?,
-            );
-            config.stripe_usd_price_id = Some(
-                routes::billing::resolve_stripe_price_by_lookup_key(
-                    &http,
-                    secret_key,
-                    &config.stripe_usd_lookup_key,
-                    &config.stripe_api_base,
+            })?,
+        );
+        config.stripe_usd_price_id = Some(
+            routes::billing::resolve_stripe_price_by_lookup_key(
+                &http,
+                secret_key,
+                &config.stripe_usd_lookup_key,
+                &config.stripe_api_base,
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to resolve USD Stripe price (lookup_key={}): {e}",
+                    config.stripe_usd_lookup_key
                 )
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to resolve USD Stripe price (lookup_key={}): {e}",
-                        config.stripe_usd_lookup_key
-                    )
-                })?,
-            );
-            tracing::info!(
-                eur_lookup = %config.stripe_eur_lookup_key,
-                usd_lookup = %config.stripe_usd_lookup_key,
-                "Resolved Stripe price IDs from lookup keys"
-            );
-        }
+            })?,
+        );
+        tracing::info!(
+            eur_lookup = %config.stripe_eur_lookup_key,
+            usd_lookup = %config.stripe_usd_lookup_key,
+            "Resolved Stripe price IDs from lookup keys"
+        );
     }
 
     // Load service registry. Falling back to `with_builtins()` (rather

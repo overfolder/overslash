@@ -124,17 +124,17 @@ pub(crate) fn extract_auth(
             optional,
             ..
         } = auth
+            && read.iter().any(|s| s == scheme)
+            && !slots.iter().any(|s| &s.key == scheme)
         {
-            if read.iter().any(|s| s == scheme) && !slots.iter().any(|s| &s.key == scheme) {
-                slots.push(SecretSlot {
-                    key: scheme.clone(),
-                    label: label.clone(),
-                    description: description.clone(),
-                    default_secret_name: default_secret_name.clone(),
-                    source: *secret_source,
-                    optional: *optional,
-                });
-            }
+            slots.push(SecretSlot {
+                key: scheme.clone(),
+                label: label.clone(),
+                description: description.clone(),
+                default_secret_name: default_secret_name.clone(),
+                source: *secret_source,
+                optional: *optional,
+            });
         }
     }
 

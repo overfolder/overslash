@@ -180,13 +180,12 @@ pub(super) async fn get_template(
             org_repo::get_allow_user_templates(state.db(&ext), auth.org_id)
                 .await?
                 .unwrap_or(false);
-        if user_templates_allowed {
-            if let Some(t) =
+        if user_templates_allowed
+            && let Some(t) =
                 service_template::get_by_key(state.db(&ext), auth.org_id, Some(identity_id), &key)
                     .await?
-            {
-                return Ok(Json(db_row_to_detail(&state, &ext, t, "user").await?));
-            }
+        {
+            return Ok(Json(db_row_to_detail(&state, &ext, t, "user").await?));
         }
     }
 

@@ -98,16 +98,15 @@ pub(super) async fn authorize(
     // `client_id`. A NULL (root/multi-org) client is accepted; the
     // org-derivation below forces the agent into ctx.org regardless of the
     // client. See docs/design/mcp-enrollment-org-scoping.md.
-    if let RequestOrgContext::Org { org_id, .. } = &ctx {
-        if let Some(client_org) = client.org_id {
-            if client_org != *org_id {
-                return oauth_error(
-                    StatusCode::UNAUTHORIZED,
-                    "invalid_client",
-                    "client is registered to a different org",
-                );
-            }
-        }
+    if let RequestOrgContext::Org { org_id, .. } = &ctx
+        && let Some(client_org) = client.org_id
+        && client_org != *org_id
+    {
+        return oauth_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "client is registered to a different org",
+        );
     }
 
     // Bounce through IdP login if not signed in.
@@ -122,10 +121,10 @@ pub(super) async fn authorize(
     // ctx.org, never in the stale session's org. Root has no subdomain to
     // mismatch against, so a valid session (corp or personal) is untouched.
     // See docs/design/mcp-enrollment-org-scoping.md.
-    if let RequestOrgContext::Org { org_id, .. } = &ctx {
-        if session_claims.org != *org_id {
-            return idp_bounce(&state, &ext, &ctx, &params).await;
-        }
+    if let RequestOrgContext::Org { org_id, .. } = &ctx
+        && session_claims.org != *org_id
+    {
+        return idp_bounce(&state, &ext, &ctx, &params).await;
     }
 
     // The org the enrolled agent lands in: the subdomain org on a corp
@@ -147,28 +146,26 @@ pub(super) async fn authorize(
         resolved_org,
     )
     .await
-    {
-        if let Ok(Some(agent)) =
+        && let Ok(Some(agent)) =
             identity::get_by_id(state.db(&ext), resolved_org, binding.agent_identity_id).await
-        {
-            if agent.archived_at.is_none() && agent.kind == "agent" {
-                let email = agent.email.as_deref().unwrap_or(&session_claims.email);
-                return issue_authorization_code(
-                    &state,
-                    &ext,
-                    &client.client_id,
-                    agent.id,
-                    resolved_org,
-                    email,
-                    &params.redirect_uri,
-                    &params.code_challenge,
-                    params.state.as_deref(),
-                );
-            }
-        }
-        // Binding points at an archived / missing / wrong-kind agent —
-        // stale row. Fall through to consent so the user re-enrolls.
+        && agent.archived_at.is_none()
+        && agent.kind == "agent"
+    {
+        let email = agent.email.as_deref().unwrap_or(&session_claims.email);
+        return issue_authorization_code(
+            &state,
+            &ext,
+            &client.client_id,
+            agent.id,
+            resolved_org,
+            email,
+            &params.redirect_uri,
+            &params.code_challenge,
+            params.state.as_deref(),
+        );
     }
+    // Binding points at an archived / missing / wrong-kind agent —
+    // stale row. Fall through to consent so the user re-enrolls.
 
     // No binding (or stale): park the authorize request and redirect to the
     // consent screen. The `request_id` lives only in memory (60s TTL) so a

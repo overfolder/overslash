@@ -51,14 +51,14 @@ pub(super) async fn register(
             );
         }
     }
-    if let Some(method) = req.token_endpoint_auth_method.as_deref() {
-        if method != "none" {
-            return oauth_error(
-                StatusCode::BAD_REQUEST,
-                "invalid_client_metadata",
-                "only public clients are supported (token_endpoint_auth_method=none)",
-            );
-        }
+    if let Some(method) = req.token_endpoint_auth_method.as_deref()
+        && method != "none"
+    {
+        return oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+            "only public clients are supported (token_endpoint_auth_method=none)",
+        );
     }
 
     let client_id = oauth_as::generate_client_id();

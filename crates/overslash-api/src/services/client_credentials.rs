@@ -63,20 +63,19 @@ pub async fn resolve(
     // 1a. Connection's stored BYOC — a soft preference. If the row still
     //     exists, use it; if it's been deleted, fall through to the cascade
     //     so the next refresh recovers instead of breaking the connection.
-    if let Some(byoc_id) = connection.and_then(|c| c.byoc_credential_id) {
-        if let Some(row) = scope.get_byoc_credential(byoc_id).await? {
-            return decrypt_byoc(&row, enc_key);
-        }
+    if let Some(byoc_id) = connection.and_then(|c| c.byoc_credential_id)
+        && let Some(row) = scope.get_byoc_credential(byoc_id).await?
+    {
+        return decrypt_byoc(&row, enc_key);
     }
 
     // 2. Identity-level BYOC. BYOC requires an identity-bound caller.
-    if let Some(identity_id) = identity_id {
-        if let Some(row) = scope
+    if let Some(identity_id) = identity_id
+        && let Some(row) = scope
             .resolve_byoc_credential(identity_id, provider_key)
             .await?
-        {
-            return decrypt_byoc(&row, enc_key);
-        }
+    {
+        return decrypt_byoc(&row, enc_key);
     }
 
     // 3. Org-level OAuth App Credentials.
@@ -212,22 +211,21 @@ pub async fn describe_source(
     // Tier 1a: connection's stored BYOC pin. The FK auto-nulls the column
     // when the BYOC row is deleted, so an `Option::None` lookup here would
     // be a cross-org filter mismatch; either way we just fall through.
-    if let Some(byoc_id) = connection_byoc_id {
-        if scope.get_byoc_credential(byoc_id).await?.is_some() {
-            return Ok(CredentialSource::Byoc);
-        }
+    if let Some(byoc_id) = connection_byoc_id
+        && scope.get_byoc_credential(byoc_id).await?.is_some()
+    {
+        return Ok(CredentialSource::Byoc);
     }
 
     // Tier 2: any identity-level BYOC for this provider — what `resolve()`
     // would pick next.
-    if let Some(identity_id) = identity_id {
-        if scope
+    if let Some(identity_id) = identity_id
+        && scope
             .resolve_byoc_credential(identity_id, provider_key)
             .await?
             .is_some()
-        {
-            return Ok(CredentialSource::Byoc);
-        }
+    {
+        return Ok(CredentialSource::Byoc);
     }
 
     let (id_name, secret_name) = oauth_secret_names(provider_key);

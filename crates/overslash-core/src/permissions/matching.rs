@@ -120,12 +120,11 @@ pub(crate) fn broadening_ladder(dk: &DerivedKey) -> Vec<String> {
                 //   → table=prod/* (whole DB) → {service}:{action}:**
                 //   → {service}:**
                 ladder.push(format!("{}:{}:{}", dk.service, dk.action, dk.value));
-                if let Some((db, rest)) = dk.value.split_once('/') {
-                    if rest != "*"
-                        && let Some(label) = &dk.label
-                    {
-                        ladder.push(format!("{}:{}:{label}={db}/*", dk.service, dk.action));
-                    }
+                if let Some((db, rest)) = dk.value.split_once('/')
+                    && rest != "*"
+                    && let Some(label) = &dk.label
+                {
+                    ladder.push(format!("{}:{}:{label}={db}/*", dk.service, dk.action));
                 }
                 ladder.push(format!("{}:{}:**", dk.service, dk.action));
                 ladder.push(format!("{}:**", dk.service));

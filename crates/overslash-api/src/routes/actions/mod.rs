@@ -264,12 +264,11 @@ async fn call_action(
 
     // Opt-in error wrapping for the dashboard "try it" surface. Done *after*
     // metrics so the auth 401 still counts as `rejected`, not a fake `called`.
-    if q.wrap.unwrap_or(false) {
-        if let Err(err) = &result {
-            if let Some(resp) = wrap_auth_error_as_ok(err) {
-                return Ok(resp);
-            }
-        }
+    if q.wrap.unwrap_or(false)
+        && let Err(err) = &result
+        && let Some(resp) = wrap_auth_error_as_ok(err)
+    {
+        return Ok(resp);
     }
     result
 }

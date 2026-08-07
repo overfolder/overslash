@@ -1494,12 +1494,12 @@ where
         overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"), vars)
             .unwrap_or_default();
 
-    if let Some((service_key, new_host)) = host_override {
-        if let Some(svc) = registry.get(service_key) {
-            let mut svc = svc.clone();
-            svc.hosts = vec![new_host];
-            registry.insert(svc);
-        }
+    if let Some((service_key, new_host)) = host_override
+        && let Some(svc) = registry.get(service_key)
+    {
+        let mut svc = svc.clone();
+        svc.hosts = vec![new_host];
+        registry.insert(svc);
     }
 
     // Bind first so `public_url` matches the real bound address — the MCP

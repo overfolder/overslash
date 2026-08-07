@@ -254,13 +254,13 @@ impl RateLimitConfigCache {
         user_id: Uuid,
     ) -> RateLimitConfig {
         // Check cache
-        if let Some(entry) = self.user_budget.get(&(org_id, user_id)) {
-            if entry.fetched_at.elapsed() < self.ttl {
-                return entry.config.unwrap_or(RateLimitConfig {
-                    max_requests: config.default_rate_limit,
-                    window_seconds: config.default_rate_window_secs,
-                });
-            }
+        if let Some(entry) = self.user_budget.get(&(org_id, user_id))
+            && entry.fetched_at.elapsed() < self.ttl
+        {
+            return entry.config.unwrap_or(RateLimitConfig {
+                max_requests: config.default_rate_limit,
+                window_seconds: config.default_rate_window_secs,
+            });
         }
 
         // Resolve from DB
@@ -294,10 +294,10 @@ impl RateLimitConfigCache {
         };
 
         // Check cache
-        if let Some(entry) = self.org_budget.get(&org_id) {
-            if entry.fetched_at.elapsed() < self.ttl {
-                return entry.config.unwrap_or(fallback);
-            }
+        if let Some(entry) = self.org_budget.get(&org_id)
+            && entry.fetched_at.elapsed() < self.ttl
+        {
+            return entry.config.unwrap_or(fallback);
         }
 
         // Resolve from DB
@@ -331,10 +331,10 @@ impl RateLimitConfigCache {
         identity_id: Uuid,
     ) -> Option<RateLimitConfig> {
         // Check cache
-        if let Some(entry) = self.identity_cap.get(&(org_id, identity_id)) {
-            if entry.fetched_at.elapsed() < self.ttl {
-                return entry.config;
-            }
+        if let Some(entry) = self.identity_cap.get(&(org_id, identity_id))
+            && entry.fetched_at.elapsed() < self.ttl
+        {
+            return entry.config;
         }
 
         // Resolve from DB
@@ -378,15 +378,15 @@ async fn resolve_user_budget_from_db(
     }
 
     // 2. Group default (most permissive)
-    if let Ok(groups) = scope.list_groups_for_identity(user_id).await {
-        if !groups.is_empty() {
-            let group_ids: Vec<Uuid> = groups.iter().map(|g| g.id).collect();
-            if let Ok(Some(row)) = scope.most_permissive_group_rate_limit(&group_ids).await {
-                return Some(RateLimitConfig {
-                    max_requests: row.max_requests as u32,
-                    window_seconds: row.window_seconds as u32,
-                });
-            }
+    if let Ok(groups) = scope.list_groups_for_identity(user_id).await
+        && !groups.is_empty()
+    {
+        let group_ids: Vec<Uuid> = groups.iter().map(|g| g.id).collect();
+        if let Ok(Some(row)) = scope.most_permissive_group_rate_limit(&group_ids).await {
+            return Some(RateLimitConfig {
+                max_requests: row.max_requests as u32,
+                window_seconds: row.window_seconds as u32,
+            });
         }
     }
 

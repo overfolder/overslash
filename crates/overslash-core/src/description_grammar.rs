@@ -42,17 +42,17 @@ impl<'a> Iterator for PlaceholderIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let bytes = self.s.as_bytes();
         while self.i < bytes.len() {
-            if bytes[self.i] == b'{' {
-                if let Some(close_off) = self.s[self.i + 1..].find('}') {
-                    let start = self.i;
-                    let end = self.i + 1 + close_off + 1;
-                    let key = &self.s[self.i + 1..self.i + 1 + close_off];
-                    self.i = end;
-                    if !key.is_empty() {
-                        return Some((start..end, key));
-                    }
-                    continue;
+            if bytes[self.i] == b'{'
+                && let Some(close_off) = self.s[self.i + 1..].find('}')
+            {
+                let start = self.i;
+                let end = self.i + 1 + close_off + 1;
+                let key = &self.s[self.i + 1..self.i + 1 + close_off];
+                self.i = end;
+                if !key.is_empty() {
+                    return Some((start..end, key));
                 }
+                continue;
             }
             self.i += 1;
         }

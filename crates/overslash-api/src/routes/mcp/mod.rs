@@ -203,66 +203,62 @@ async fn post_mcp(
 
     // Bare-response delivery (server-initiated elicitation answer). Schema:
     //   { jsonrpc: "2.0", id: "elicit_<uuid>", result|error: ... }
-    if let Ok(resp) = serde_json::from_str::<Value>(&body) {
-        if let Some(id) = resp.get("id").and_then(Value::as_str) {
-            if id.starts_with("elicit_") {
-                // Tenant-isolation guard: the elicit_id behaves like a
-                // capability and can leak through logs / SSE payloads.
-                // Only the agent that owns the elicitation row may answer
-                // it — otherwise a caller in another tenant who learns the
-                // id could drive the victim's resolve+call as the victim.
-                let owner_ok =
-                    match overslash_db::repos::mcp_elicitation::get(state.db(&ext), id).await {
-                        Ok(Some(row)) => Some(row.agent_identity_id) == auth.identity_id,
-                        Ok(None) => false,
-                        Err(e) => {
-                            tracing::error!("lookup elicitation failed: {e}");
-                            false
-                        }
-                    };
-                if !owner_ok {
-                    return rpc_error_response(
-                        Value::String(id.to_string()),
-                        INVALID_REQUEST,
-                        "elicitation not found or not addressable by this caller",
+    if let Ok(resp) = serde_json::from_str::<Value>(&body)
+        && let Some(id) = resp.get("id").and_then(Value::as_str)
+        && id.starts_with("elicit_")
+    {
+        // Tenant-isolation guard: the elicit_id behaves like a
+        // capability and can leak through logs / SSE payloads.
+        // Only the agent that owns the elicitation row may answer
+        // it — otherwise a caller in another tenant who learns the
+        // id could drive the victim's resolve+call as the victim.
+        let owner_ok = match overslash_db::repos::mcp_elicitation::get(state.db(&ext), id).await {
+            Ok(Some(row)) => Some(row.agent_identity_id) == auth.identity_id,
+            Ok(None) => false,
+            Err(e) => {
+                tracing::error!("lookup elicitation failed: {e}");
+                false
+            }
+        };
+        if !owner_ok {
+            return rpc_error_response(
+                Value::String(id.to_string()),
+                INVALID_REQUEST,
+                "elicitation not found or not addressable by this caller",
+            );
+        }
+
+        let result = resp.get("result").cloned().unwrap_or_else(
+            || json!({ "action": "cancel", "content": resp.get("error").cloned() }),
+        );
+        let st = state.clone();
+        let ext_c = ext.clone();
+        let db = state.db_pool(&ext);
+        let id_owned = id.to_string();
+        // Bound the background task: two loopback HTTP calls
+        // (resolve + call) shouldn't take more than a minute even
+        // under load. Without this an unresponsive upstream could
+        // pin a tokio task slot indefinitely.
+        tokio::spawn(async move {
+            let work = mcp_session::complete_from_elicitation(&st, &ext_c, &id_owned, &result);
+            match tokio::time::timeout(Duration::from_secs(60), work).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::error!(
+                        elicit_id = %id_owned,
+                        "complete elicitation failed: {e}"
                     );
                 }
-
-                let result = resp.get("result").cloned().unwrap_or_else(
-                    || json!({ "action": "cancel", "content": resp.get("error").cloned() }),
-                );
-                let st = state.clone();
-                let ext_c = ext.clone();
-                let db = state.db_pool(&ext);
-                let id_owned = id.to_string();
-                // Bound the background task: two loopback HTTP calls
-                // (resolve + call) shouldn't take more than a minute even
-                // under load. Without this an unresponsive upstream could
-                // pin a tokio task slot indefinitely.
-                tokio::spawn(async move {
-                    let work =
-                        mcp_session::complete_from_elicitation(&st, &ext_c, &id_owned, &result);
-                    match tokio::time::timeout(Duration::from_secs(60), work).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => {
-                            tracing::error!(
-                                elicit_id = %id_owned,
-                                "complete elicitation failed: {e}"
-                            );
-                        }
-                        Err(_) => {
-                            tracing::error!(
-                                elicit_id = %id_owned,
-                                "complete elicitation timed out after 60s; cancelling row"
-                            );
-                            let _ =
-                                overslash_db::repos::mcp_elicitation::cancel(&db, &id_owned).await;
-                        }
-                    }
-                });
-                return (StatusCode::ACCEPTED, "").into_response();
+                Err(_) => {
+                    tracing::error!(
+                        elicit_id = %id_owned,
+                        "complete elicitation timed out after 60s; cancelling row"
+                    );
+                    let _ = overslash_db::repos::mcp_elicitation::cancel(&db, &id_owned).await;
+                }
             }
-        }
+        });
+        return (StatusCode::ACCEPTED, "").into_response();
     }
 
     rpc_error_response(
@@ -387,12 +383,11 @@ async fn forward(
         // URL (white-label partners import tokens instead of wrapping an
         // Overslash-built authorize URL), so there is nothing to strip before
         // relaying to a chat consumer.
-        if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
-            if let Some(code) = parsed.get("error").and_then(Value::as_str) {
-                if TYPED_ERROR_CODES.contains(&code) {
-                    return Ok(ForwardOutcome::TypedError(parsed));
-                }
-            }
+        if let Ok(parsed) = serde_json::from_str::<Value>(&text)
+            && let Some(code) = parsed.get("error").and_then(Value::as_str)
+            && TYPED_ERROR_CODES.contains(&code)
+        {
+            return Ok(ForwardOutcome::TypedError(parsed));
         }
         return Err(format!("API {status}: {text}"));
     }

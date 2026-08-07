@@ -2781,12 +2781,12 @@ async fn start_api_with_registry(
     )
     .unwrap_or_default();
 
-    if let Some((service_key, new_host)) = host_override {
-        if let Some(svc) = registry.get(service_key) {
-            let mut svc = svc.clone();
-            svc.hosts = vec![new_host];
-            registry.insert(svc);
-        }
+    if let Some((service_key, new_host)) = host_override
+        && let Some(svc) = registry.get(service_key)
+    {
+        let mut svc = svc.clone();
+        svc.hosts = vec![new_host];
+        registry.insert(svc);
     }
 
     let config = overslash_api::config::Config {

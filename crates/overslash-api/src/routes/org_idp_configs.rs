@@ -245,12 +245,12 @@ async fn create_idp_config(
         )
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.is_unique_violation() {
-                    return AppError::Conflict(format!(
-                        "IdP config already exists for provider '{provider_key}'"
-                    ));
-                }
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.is_unique_violation()
+            {
+                return AppError::Conflict(format!(
+                    "IdP config already exists for provider '{provider_key}'"
+                ));
             }
             AppError::Database(e)
         })?;
@@ -258,10 +258,10 @@ async fn create_idp_config(
     // Apply the default flag in a follow-up so the prior default in the
     // same org is cleared atomically. Skip when it would be a no-op so we
     // don't trample an unrelated existing default.
-    if req.is_default {
-        if let Some(updated) = scope.set_default_org_idp_config(row.id).await? {
-            row = updated;
-        }
+    if req.is_default
+        && let Some(updated) = scope.set_default_org_idp_config(row.id).await?
+    {
+        row = updated;
     }
 
     let display_name = oauth_provider::get_by_key(state.db(&ext), &provider_key)

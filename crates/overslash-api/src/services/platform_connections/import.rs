@@ -241,19 +241,19 @@ pub async fn kernel_import_connection(
         // that actually backs the wider grant.
         let import_has_fresh_refresh = encrypted_refresh.is_some();
         let existing_has_refresh = existing.encrypted_refresh_token.is_some();
-        if !import_has_fresh_refresh && existing_has_refresh {
-            if let Some(broadened) =
+        if !import_has_fresh_refresh
+            && existing_has_refresh
+            && let Some(broadened) =
                 scopes_broadened(existing.scopes.as_deref(), input.scopes.as_deref())
-            {
-                return Err(AppError::BadRequest(format!(
-                    "re-import broadens granted scopes ({broadened}) but carries no fresh \
+        {
+            return Err(AppError::BadRequest(format!(
+                "re-import broadens granted scopes ({broadened}) but carries no fresh \
                          refresh_token: the preserved refresh token was minted for the narrower \
                          grant and cannot self-refresh the wider scopes (it would silently \
                          downgrade the connection to metadata-only). Re-run the OAuth consent \
                          with prompt=consent so the provider issues a fresh refresh token for the \
                          wider grant, then re-import with it."
-                )));
-            }
+            )));
         }
 
         let updated = scope

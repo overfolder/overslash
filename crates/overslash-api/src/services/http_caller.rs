@@ -74,14 +74,14 @@ pub async fn call(
     let content_length = response.content_length();
     let content_type = resp_headers.get("content-type").cloned();
 
-    if let Some(len) = content_length {
-        if len > max_body_bytes as u64 {
-            return Err(CallError::ResponseTooLarge {
-                content_length: Some(len),
-                content_type,
-                limit_bytes: max_body_bytes,
-            });
-        }
+    if let Some(len) = content_length
+        && len > max_body_bytes as u64
+    {
+        return Err(CallError::ResponseTooLarge {
+            content_length: Some(len),
+            content_type,
+            limit_bytes: max_body_bytes,
+        });
     }
 
     // Read body with size limit (handles chunked responses without Content-Length)
