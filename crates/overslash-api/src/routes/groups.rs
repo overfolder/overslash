@@ -23,7 +23,9 @@ use crate::{
 };
 use overslash_core::permissions::AccessLevel;
 
-use crate::services::group_ceiling::{bound_auto_approve, map_grant_constraint, resolve_auto_approve};
+use crate::services::group_ceiling::{
+    bound_auto_approve, map_grant_constraint, resolve_auto_approve,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()

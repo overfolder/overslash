@@ -60,6 +60,9 @@
 	.auto-approve {
 		display: flex;
 		flex-direction: column;
+		/* flex-start so the select sizes to its content and lines up with the
+		   access-level select beside it, instead of stretching to fill the cell. */
+		align-items: flex-start;
 		gap: var(--space-1);
 	}
 	.level-select {
