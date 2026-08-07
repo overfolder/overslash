@@ -308,6 +308,29 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             });
     tracing::info!("Loaded {} service definitions", registry.len());
 
+    // D42: `sql_policy` is a default-off Cargo feature, so a build can load
+    // SQL-annotated templates while carrying no parser. That mode is correct
+    // but degraded — every such call classifies write on unknown tables and
+    // routes to approval without the statement ever being read — and it is
+    // otherwise indistinguishable from a genuinely write-shaped query. Say so
+    // once at boot rather than leaving it to be inferred from a Dockerfile.
+    // `GET /v1/version` reports the same bit for anyone asking after the fact.
+    if !overslash_core::sql_policy::available() {
+        let annotated = registry
+            .all()
+            .into_iter()
+            .flat_map(|svc| svc.actions.values())
+            .filter(|action| action.params.values().any(|p| p.sql_field.is_some()))
+            .count();
+        if annotated > 0 {
+            tracing::warn!(
+                "{annotated} SQL-annotated action(s) loaded but this build has no SQL parser: \
+                 every SQL call classifies write on unknown tables and routes to approval. \
+                 Rebuild with --features sql_policy to classify for real."
+            );
+        }
+    }
+
     let (rate_limiter, in_memory_store) =
         services::rate_limit::create_store_with_eviction(&config).await;
     let rate_limit_cache = Arc::new(services::rate_limit::RateLimitConfigCache::new(

@@ -9,6 +9,10 @@ export interface BuildInfo {
   version: string;
   commit: string;
   commit_short: string;
+  /** Whether the build carries the D42 SQL parser (`sql_policy` Cargo
+   *  feature). `false` means SQL-annotated actions never get parsed — they
+   *  fail closed to write-on-unknown-tables and always route to approval. */
+  sql_policy: boolean;
 }
 
 export interface OrgInfo {
