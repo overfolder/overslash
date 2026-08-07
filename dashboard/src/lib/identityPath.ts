@@ -76,12 +76,27 @@ export function identityUnits(
 	};
 }
 
+/** How a caller wants one path unit rendered. Receives the unit's identity id
+ *  (null when the caller supplied no aligned `ids`), the name as it appears in
+ *  the path, and its kind. Returning `name` reproduces the default.
+ *
+ *  This is the seam that keeps this module free of identity/email knowledge:
+ *  the audit row passes a resolver that labels `user` units by email (see
+ *  `$lib/identityDisplay`); with no resolver the path's own names are used. */
+export type UnitLabel = (id: string | null, name: string, kind: string) => string;
+
 /** Human-readable chain (`alice / henry / researcher`) for a hover title —
- *  drops the scheme, org slug, and `kind` tokens. */
-export function formatIdentityPath(path: string | null): string {
+ *  drops the scheme, org slug, and `kind` tokens. With `label` supplied, each
+ *  unit is rendered through it (`ada / henry / researcher`); without one the
+ *  output is the path's own names. */
+export function formatIdentityPath(
+	path: string | null,
+	ids: string[] = [],
+	label?: UnitLabel
+): string {
 	if (!path) return '';
-	return parseIdentityPath(path)
+	return parseIdentityPath(path, ids)
 		.filter((s) => s.type === 'unit')
-		.map((s) => s.name)
+		.map((s, i) => (label ? label(ids[i] ?? null, s.name, s.kind) : s.name))
 		.join(' / ');
 }

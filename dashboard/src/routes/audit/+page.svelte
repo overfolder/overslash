@@ -6,6 +6,7 @@
 	import AuditRow from './AuditRow.svelte';
 	import { downloadCsv } from './exportCsv';
 	import { buildAuditSearchKeys, filtersToSearch, searchToFilters } from './searchMapping';
+	import { makeIdentityFormatter } from '$lib/identityDisplay';
 	import {
 		buildQuery,
 		filtersToSearchString,
@@ -21,7 +22,14 @@
 	// svelte-ignore state_referenced_locally
 	let filters = $state<AuditFilters>(data.filters);
 	// svelte-ignore state_referenced_locally
-	const identities = data.identities;
+	const allIdentities = data.identities;
+	// The search bar offers live identities only — archived ones are fetched
+	// solely so historical rows can still resolve an actor's email.
+	const identities = allIdentities.filter((i) => !i.archived_at);
+	// Row actors are resolved by id, not by the name embedded in the SPIFFE
+	// path, so a rename or a duplicate display name can't mislabel a row.
+	const identityById = new Map(allIdentities.map((i) => [i.id, i]));
+	const fmt = $derived(makeIdentityFormatter(data.allowedDomains));
 	// The logged-in user, so `user = me` resolves to their identity (and reverses
 	// back to `me` when hydrating filters from the URL).
 	// svelte-ignore state_referenced_locally
@@ -218,6 +226,8 @@
 							expanded={expandedId === anchor.id}
 							ontoggle={() => toggleExpand(anchor!.id)}
 							currentUserId={data.user?.identity_id}
+							{identityById}
+							{fmt}
 							ontagclick={onTagClick}
 						/>
 					</tbody>
@@ -255,6 +265,8 @@
 								expanded={expandedId === entry.id}
 								ontoggle={() => toggleExpand(entry.id)}
 								currentUserId={data.user?.identity_id}
+								{identityById}
+								{fmt}
 								ontagclick={onTagClick}
 							/>
 							{#snippet failed(error)}
