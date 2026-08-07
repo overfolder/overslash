@@ -89,10 +89,10 @@ pub(super) async fn replay_http(
             );
             let mut result_json = serde_json::to_value(&result)
                 .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
-            if stored.prefer_stream {
-                if let Some(obj) = result_json.as_object_mut() {
-                    obj.insert("streamed_originally".into(), serde_json::Value::Bool(true));
-                }
+            if stored.prefer_stream
+                && let Some(obj) = result_json.as_object_mut()
+            {
+                obj.insert("streamed_originally".into(), serde_json::Value::Bool(true));
             }
             let summary = serde_json::json!({
                 "status_code": result.status_code,

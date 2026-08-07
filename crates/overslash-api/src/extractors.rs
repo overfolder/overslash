@@ -46,24 +46,23 @@ impl FromRequestParts<AppState> for ClientIp {
         _state: &AppState,
     ) -> std::result::Result<Self, Self::Rejection> {
         // X-Forwarded-For: first IP in the chain
-        if let Some(forwarded) = parts.headers.get("x-forwarded-for") {
-            if let Ok(value) = forwarded.to_str() {
-                if let Some(first) = value.split(',').next() {
-                    let ip = first.trim();
-                    if !ip.is_empty() {
-                        return Ok(ClientIp(Some(ip.to_string())));
-                    }
-                }
+        if let Some(forwarded) = parts.headers.get("x-forwarded-for")
+            && let Ok(value) = forwarded.to_str()
+            && let Some(first) = value.split(',').next()
+        {
+            let ip = first.trim();
+            if !ip.is_empty() {
+                return Ok(ClientIp(Some(ip.to_string())));
             }
         }
 
         // X-Real-IP
-        if let Some(real_ip) = parts.headers.get("x-real-ip") {
-            if let Ok(value) = real_ip.to_str() {
-                let ip = value.trim();
-                if !ip.is_empty() {
-                    return Ok(ClientIp(Some(ip.to_string())));
-                }
+        if let Some(real_ip) = parts.headers.get("x-real-ip")
+            && let Ok(value) = real_ip.to_str()
+        {
+            let ip = value.trim();
+            if !ip.is_empty() {
+                return Ok(ClientIp(Some(ip.to_string())));
             }
         }
 
@@ -109,10 +108,9 @@ pub struct AuthContext {
 fn check_subdomain_matches_jwt(parts: &Parts, jwt_org: Uuid) -> Result<(), AppError> {
     use crate::middleware::subdomain::RequestOrgContext;
     if let Some(RequestOrgContext::Org { org_id, .. }) = parts.extensions.get::<RequestOrgContext>()
+        && *org_id != jwt_org
     {
-        if *org_id != jwt_org {
-            return Err(AppError::Unauthorized("org_mismatch".into()));
-        }
+        return Err(AppError::Unauthorized("org_mismatch".into()));
     }
     Ok(())
 }
@@ -287,10 +285,10 @@ impl FromRequestParts<AppState> for AuthContext {
         }
 
         // Per-key absolute expiry (independent of identity activity).
-        if let Some(expires_at) = key_row.expires_at {
-            if expires_at < time::OffsetDateTime::now_utc() {
-                return Err(AppError::Unauthorized("api key expired".into()));
-            }
+        if let Some(expires_at) = key_row.expires_at
+            && expires_at < time::OffsetDateTime::now_utc()
+        {
+            return Err(AppError::Unauthorized("api key expired".into()));
         }
 
         // Touch api_key last_used (fire and forget). Bounded to the key's
@@ -470,10 +468,9 @@ async fn resolve_identity_access(
         .get_identity(identity_id)
         .await
         .map_err(|e| AppError::Internal(format!("db error: {e}")))?
+        && ident.is_org_admin
     {
-        if ident.is_org_admin {
-            return Ok(AccessLevel::Admin);
-        }
+        return Ok(AccessLevel::Admin);
     }
     let ceiling_user_id =
         crate::services::group_ceiling::resolve_ceiling_user_id(scope, identity_id)
@@ -520,14 +517,14 @@ impl FromRequestParts<AppState> for OrgAcl {
         // group lookup. Agents and non-admin users still go through the
         // overslash service group-grant path below.
         let scope_for_admin = OrgScope::new(auth.org_id, state.db_pool(&parts.extensions));
-        if let Some(ident) = scope_for_admin.get_identity(identity_id).await? {
-            if ident.is_org_admin {
-                return Ok(OrgAcl {
-                    org_id: auth.org_id,
-                    identity_id: Some(identity_id),
-                    access_level: AccessLevel::Admin,
-                });
-            }
+        if let Some(ident) = scope_for_admin.get_identity(identity_id).await?
+            && ident.is_org_admin
+        {
+            return Ok(OrgAcl {
+                org_id: auth.org_id,
+                identity_id: Some(identity_id),
+                access_level: AccessLevel::Admin,
+            });
         }
 
         // Construct an OrgScope inline (extractors are the official scope

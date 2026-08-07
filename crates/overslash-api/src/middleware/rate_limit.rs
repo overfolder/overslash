@@ -101,30 +101,29 @@ pub async fn rate_limit_middleware(
     };
 
     // Counter 2: Identity cap (optional, tighter ceiling for specific agents)
-    if let Some(identity_id) = identity_id {
-        if let Some(cap) = state
+    if let Some(identity_id) = identity_id
+        && let Some(cap) = state
             .rate_limit_cache(request.extensions())
             .resolve_identity_cap(state.db(request.extensions()), org_id, identity_id)
             .await
-        {
-            let key = format!("rl:{org_id}:id:{identity_id}");
-            let result = state
-                .rate_limiter(request.extensions())
-                .check_and_increment(&key, cap.max_requests, cap.window_seconds)
-                .await;
-            if !result.allowed {
-                overslash_metrics::rate_limit::record_decision("identity_cap", "deny");
-                let now = now_unix();
-                let retry_after = result.reset_at.saturating_sub(now);
-                return AppError::RateLimited {
-                    limit: result.limit,
-                    reset_at: result.reset_at,
-                    retry_after,
-                }
-                .into_response();
+    {
+        let key = format!("rl:{org_id}:id:{identity_id}");
+        let result = state
+            .rate_limiter(request.extensions())
+            .check_and_increment(&key, cap.max_requests, cap.window_seconds)
+            .await;
+        if !result.allowed {
+            overslash_metrics::rate_limit::record_decision("identity_cap", "deny");
+            let now = now_unix();
+            let retry_after = result.reset_at.saturating_sub(now);
+            return AppError::RateLimited {
+                limit: result.limit,
+                reset_at: result.reset_at,
+                retry_after,
             }
-            overslash_metrics::rate_limit::record_decision("identity_cap", "allow");
+            .into_response();
         }
+        overslash_metrics::rate_limit::record_decision("identity_cap", "allow");
     }
 
     // Execute the actual handler
@@ -181,10 +180,10 @@ pub async fn resolve_identity(
         .flatten()?;
 
     // Skip expired keys to avoid consuming rate limit budget for invalid requests
-    if let Some(expires_at) = key_row.expires_at {
-        if expires_at < OffsetDateTime::now_utc() {
-            return None;
-        }
+    if let Some(expires_at) = key_row.expires_at
+        && expires_at < OffsetDateTime::now_utc()
+    {
+        return None;
     }
 
     // Resolve owner_user_id from the identity, bounded to the key's org.

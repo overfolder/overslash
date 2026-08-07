@@ -83,10 +83,10 @@ pub(super) async fn oauth_callback(
     // Merge the singular `service_instance_id` (legacy / in-flight flows) with
     // the plural `pin_service_instance_ids`, preserving order and de-duping.
     let mut pin_ids = flow.pin_service_instance_ids.clone();
-    if let Some(sid) = flow.service_instance_id {
-        if !pin_ids.contains(&sid) {
-            pin_ids.insert(0, sid);
-        }
+    if let Some(sid) = flow.service_instance_id
+        && !pin_ids.contains(&sid)
+    {
+        pin_ids.insert(0, sid);
     }
 
     let outcome = oauth_callback_inner(

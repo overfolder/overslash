@@ -91,15 +91,15 @@ pub fn validate_delta(
             );
         }
     }
-    if !delta.extensions.actions.is_empty() {
-        if let Err(errs) = compile_extension_actions(base, &delta.extensions) {
-            for e in errs {
-                issues.err(
-                    "extension_invalid",
-                    format!("extension actions failed to compile: {}", e.message),
-                    "extensions.actions",
-                );
-            }
+    if !delta.extensions.actions.is_empty()
+        && let Err(errs) = compile_extension_actions(base, &delta.extensions)
+    {
+        for e in errs {
+            issues.err(
+                "extension_invalid",
+                format!("extension actions failed to compile: {}", e.message),
+                "extensions.actions",
+            );
         }
     }
 

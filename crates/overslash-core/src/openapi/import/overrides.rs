@@ -63,10 +63,10 @@ fn slugify(s: &str) -> String {
         out.pop();
     }
     // Key must start with [a-z]; if it starts with a digit, prefix with `x-`.
-    if let Some(first) = out.chars().next() {
-        if !first.is_ascii_lowercase() {
-            out.insert_str(0, "x-");
-        }
+    if let Some(first) = out.chars().next()
+        && !first.is_ascii_lowercase()
+    {
+        out.insert_str(0, "x-");
     }
     out
 }

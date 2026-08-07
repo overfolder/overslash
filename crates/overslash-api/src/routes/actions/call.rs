@@ -210,17 +210,18 @@ pub(super) async fn call_action_impl(
     // SELECT-only query passes as read here; a write-classified (or
     // unclassifiable) one is rejected. Same value as the ceiling check below.
     let effective = effective_risk(meta.risk, sql_policy.as_ref(), &action_req.method);
-    if let Some(required) = req.require_risk {
-        if required == Risk::Read && effective.is_mutating() {
-            let action_label = req
-                .action
-                .as_deref()
-                .or(req.service.as_deref())
-                .unwrap_or(&action_req.url);
-            return Err(AppError::BadRequest(format!(
-                "action '{action_label}' is risk={effective}; this entry point only permits risk=read actions. Use overslash_call instead."
-            )));
-        }
+    if let Some(required) = req.require_risk
+        && required == Risk::Read
+        && effective.is_mutating()
+    {
+        let action_label = req
+            .action
+            .as_deref()
+            .or(req.service.as_deref())
+            .unwrap_or(&action_req.url);
+        return Err(AppError::BadRequest(format!(
+            "action '{action_label}' is risk={effective}; this entry point only permits risk=read actions. Use overslash_call instead."
+        )));
     }
 
     // System-derived metadata tags for this call. Minted from the *resolved*
@@ -877,20 +878,18 @@ pub(super) async fn call_action_impl(
     // makes the partner's agent loop forever — the recorded scopes pass the
     // scope-gate so it keeps retrying. Surface a typed `reauth_required`
     // instead so the loop breaks and the partner re-consents.
-    if super::auth::is_metadata_scope_denial(result.status_code, &result.body) {
-        if let Some(service_key) = req.service.as_deref() {
-            if let Some(err) = super::auth::metadata_scope_reauth_envelope(
-                &state,
-                &ext,
-                &scope,
-                ceiling_user_id,
-                service_key,
-            )
-            .await
-            {
-                return Err(err);
-            }
-        }
+    if super::auth::is_metadata_scope_denial(result.status_code, &result.body)
+        && let Some(service_key) = req.service.as_deref()
+        && let Some(err) = super::auth::metadata_scope_reauth_envelope(
+            &state,
+            &ext,
+            &scope,
+            ceiling_user_id,
+            service_key,
+        )
+        .await
+    {
+        return Err(err);
     }
 
     let mut resp = (

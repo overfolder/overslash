@@ -87,17 +87,15 @@ pub(super) async fn tools_list_response(
     // §2 + §4.
     let mut self_approve_visible = false;
     if let (Some(identity_id), Some(client_id)) = (auth.identity_id, auth.mcp_client_id.as_deref())
-    {
-        if let Ok(Some(binding)) =
+        && let Ok(Some(binding)) =
             overslash_db::repos::mcp_client_agent_binding::get_for_agent_and_client(
                 state.db(ext),
                 identity_id,
                 client_id,
             )
             .await
-        {
-            self_approve_visible = binding.self_approve_enabled;
-        }
+    {
+        self_approve_visible = binding.self_approve_enabled;
     }
 
     let approve_input_schema = json!({

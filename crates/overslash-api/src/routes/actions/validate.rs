@@ -124,17 +124,18 @@ pub(super) async fn validate_action_impl(
     // Caller-asserted risk gate — mirrors `/call` (which runs it inside
     // `resolve_request` after `validate_args` has already gated bad args).
     let effective = super::effective_risk(meta.risk, sql_policy.as_ref(), &meta.raw_method);
-    if let Some(required) = req.require_risk {
-        if required == Risk::Read && effective.is_mutating() {
-            let action_label = req
-                .action
-                .as_deref()
-                .or(req.service.as_deref())
-                .unwrap_or(&meta.raw_url);
-            return Err(AppError::BadRequest(format!(
-                "action '{action_label}' is risk={effective}; this entry point only permits risk=read actions. Use overslash_call instead."
-            )));
-        }
+    if let Some(required) = req.require_risk
+        && required == Risk::Read
+        && effective.is_mutating()
+    {
+        let action_label = req
+            .action
+            .as_deref()
+            .or(req.service.as_deref())
+            .unwrap_or(&meta.raw_url);
+        return Err(AppError::BadRequest(format!(
+            "action '{action_label}' is risk={effective}; this entry point only permits risk=read actions. Use overslash_call instead."
+        )));
     }
 
     // Permission key derivation — same logic as `/call` runs after

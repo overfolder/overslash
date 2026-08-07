@@ -259,18 +259,18 @@ async fn query_audit(
                 // name/kind/path let the dashboard render the approver
                 // distinctly from the subject. No-op for other events.
                 let mut detail = r.detail;
-                if let Some(rid) = resolved_by(&detail) {
-                    if let Some(obj) = detail.as_object_mut() {
-                        if let Some(n) = name_map.get(&rid) {
-                            obj.insert("resolved_by_name".into(), serde_json::json!(n));
-                        }
-                        if let Some(k) = kind_map.get(&rid) {
-                            obj.insert("resolved_by_kind".into(), serde_json::json!(k));
-                        }
-                        if let Some((p, ids)) = path_map.get(&rid) {
-                            obj.insert("resolved_by_path".into(), serde_json::json!(p));
-                            obj.insert("resolved_by_path_ids".into(), serde_json::json!(ids));
-                        }
+                if let Some(rid) = resolved_by(&detail)
+                    && let Some(obj) = detail.as_object_mut()
+                {
+                    if let Some(n) = name_map.get(&rid) {
+                        obj.insert("resolved_by_name".into(), serde_json::json!(n));
+                    }
+                    if let Some(k) = kind_map.get(&rid) {
+                        obj.insert("resolved_by_kind".into(), serde_json::json!(k));
+                    }
+                    if let Some((p, ids)) = path_map.get(&rid) {
+                        obj.insert("resolved_by_path".into(), serde_json::json!(p));
+                        obj.insert("resolved_by_path_ids".into(), serde_json::json!(ids));
                     }
                 }
                 AuditEntry {

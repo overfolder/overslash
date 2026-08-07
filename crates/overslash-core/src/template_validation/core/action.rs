@@ -105,14 +105,14 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
     }
 
     // response_type must be json or binary if set.
-    if let Some(ref rt) = action.response_type {
-        if !VALID_RESPONSE_TYPES.contains(&rt.as_str()) {
-            issues.err(
-                "invalid_response_type",
-                format!("response_type {rt:?} must be \"json\" or \"binary\""),
-                format!("{action_path}.response_type"),
-            );
-        }
+    if let Some(ref rt) = action.response_type
+        && !VALID_RESPONSE_TYPES.contains(&rt.as_str())
+    {
+        issues.err(
+            "invalid_response_type",
+            format!("response_type {rt:?} must be \"json\" or \"binary\""),
+            format!("{action_path}.response_type"),
+        );
     }
 
     check_sql_policy(action, &action_path, issues);
@@ -152,14 +152,14 @@ pub(super) fn check_platform_action(key: &str, action: &ServiceAction, issues: &
         );
     }
 
-    if let Some(ref perm) = action.permission {
-        if !is_valid_action_key(perm) {
-            issues.err(
-                "invalid_permission_key",
-                format!("permission {perm:?} must match ^[a-z][a-z0-9_]*$"),
-                format!("{action_path}.permission"),
-            );
-        }
+    if let Some(ref perm) = action.permission
+        && !is_valid_action_key(perm)
+    {
+        issues.err(
+            "invalid_permission_key",
+            format!("permission {perm:?} must match ^[a-z][a-z0-9_]*$"),
+            format!("{action_path}.permission"),
+        );
     }
 
     for (name, param) in &action.params {
@@ -364,16 +364,15 @@ fn check_param(
                 format!("{base}.enum"),
             );
         }
-        if let Some(ref default) = param.default {
-            if let Some(default_str) = default.as_str() {
-                if !values.iter().any(|v| v == default_str) {
-                    issues.err(
-                        "invalid_enum_values",
-                        format!("default value {default_str:?} is not a member of the enum"),
-                        format!("{base}.default"),
-                    );
-                }
-            }
+        if let Some(ref default) = param.default
+            && let Some(default_str) = default.as_str()
+            && !values.iter().any(|v| v == default_str)
+        {
+            issues.err(
+                "invalid_enum_values",
+                format!("default value {default_str:?} is not a member of the enum"),
+                format!("{base}.default"),
+            );
         }
     }
 

@@ -162,14 +162,13 @@ fn substitute_with(
         if bytes[i] == b'{' {
             if let Some(close) = text[i + 1..].find('}') {
                 let key = &text[i + 1..i + 1 + close];
-                if !key.is_empty() {
-                    if let Some(value) = params.get(key) {
-                        if !value.is_null() {
-                            result.push_str(&fmt(value));
-                            i = i + 1 + close + 1;
-                            continue;
-                        }
-                    }
+                if !key.is_empty()
+                    && let Some(value) = params.get(key)
+                    && !value.is_null()
+                {
+                    result.push_str(&fmt(value));
+                    i = i + 1 + close + 1;
+                    continue;
                 }
                 // No match — keep literal
                 result.push('{');

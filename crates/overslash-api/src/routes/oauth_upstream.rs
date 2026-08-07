@@ -239,21 +239,19 @@ async fn initiate(
     if let Some(conn) =
         mcp_upstream_connection::get(state.db(&ext), target_identity_id, &req.upstream_resource)
             .await?
+        && conn.status == mcp_upstream_connection::STATUS_READY
+        && let Some(token) = mcp_upstream_token::get_current(state.db(&ext), conn.id).await?
     {
-        if conn.status == mcp_upstream_connection::STATUS_READY {
-            if let Some(token) = mcp_upstream_token::get_current(state.db(&ext), conn.id).await? {
-                let still_valid = token
-                    .access_token_expires_at
-                    .map(|exp| exp > OffsetDateTime::now_utc() + Duration::seconds(60))
-                    .unwrap_or(true);
-                if still_valid {
-                    return Ok(Json(InitiateResponse::Ready {
-                        connection_id: conn.id,
-                        upstream_resource: req.upstream_resource,
-                        access_token_expires_at: token.access_token_expires_at,
-                    }));
-                }
-            }
+        let still_valid = token
+            .access_token_expires_at
+            .map(|exp| exp > OffsetDateTime::now_utc() + Duration::seconds(60))
+            .unwrap_or(true);
+        if still_valid {
+            return Ok(Json(InitiateResponse::Ready {
+                connection_id: conn.id,
+                upstream_resource: req.upstream_resource,
+                access_token_expires_at: token.access_token_expires_at,
+            }));
         }
     }
 
@@ -463,18 +461,17 @@ async fn gated_authorize(
     // Multi-org: same human, different org. Offer switch only if the user
     // actually has membership in the flow's org — never leak the existence
     // of the flow's org otherwise.
-    if let Some(user_id) = session.user_id {
-        if session.org_id != flow.org_id
-            && membership::find(state.db(&ext), user_id, flow.org_id)
-                .await?
-                .is_some()
-        {
-            return Ok(switch_org_html(
-                &state.config.public_url,
-                &flow.id,
-                flow.org_id,
-            ));
-        }
+    if let Some(user_id) = session.user_id
+        && session.org_id != flow.org_id
+        && membership::find(state.db(&ext), user_id, flow.org_id)
+            .await?
+            .is_some()
+    {
+        return Ok(switch_org_html(
+            &state.config.public_url,
+            &flow.id,
+            flow.org_id,
+        ));
     }
 
     Ok(mismatch_html())

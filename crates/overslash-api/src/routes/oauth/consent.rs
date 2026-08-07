@@ -487,12 +487,12 @@ pub(super) async fn consent_finish(
     // otherwise let a stamped client land a binding in a foreign org. NULL
     // (root/multi-org) clients bind in whatever org the flow resolved to. See
     // docs/design/mcp-enrollment-org-scoping.md.
-    if let Some(client_org) = client.org_id {
-        if client_org != pending.org_id {
-            return Err(AppError::Forbidden(
-                "client is registered to a different org".into(),
-            ));
-        }
+    if let Some(client_org) = client.org_id
+        && client_org != pending.org_id
+    {
+        return Err(AppError::Forbidden(
+            "client is registered to a different org".into(),
+        ));
     }
 
     let agent_identity_id = match body.mode.as_str() {

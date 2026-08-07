@@ -79,10 +79,10 @@ pub(super) async fn initiate_connection(
     };
     // Merge the singular alias into the plural list (dedup preserves order).
     let mut pin_service_ids = req.pin_service_ids;
-    if let Some(sid) = req.service_instance_id {
-        if !pin_service_ids.contains(&sid) {
-            pin_service_ids.push(sid);
-        }
+    if let Some(sid) = req.service_instance_id
+        && !pin_service_ids.contains(&sid)
+    {
+        pin_service_ids.push(sid);
     }
     let input = CreateConnectionInput {
         provider: req.provider,
@@ -192,10 +192,10 @@ pub(super) async fn import_connection(
     };
     // Merge the singular alias into the plural list (dedup preserves order).
     let mut pin_service_ids = req.pin_service_ids;
-    if let Some(sid) = req.service_instance_id {
-        if !pin_service_ids.contains(&sid) {
-            pin_service_ids.push(sid);
-        }
+    if let Some(sid) = req.service_instance_id
+        && !pin_service_ids.contains(&sid)
+    {
+        pin_service_ids.push(sid);
     }
     let input = crate::services::platform_connections::ImportConnectionInput {
         provider: req.provider,

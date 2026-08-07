@@ -83,6 +83,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
+        with:
+          # Pinned explicitly rather than left to the action's `stable` default:
+          # keep in sync with rust-toolchain.toml, or the action installs one
+          # toolchain and cargo silently downloads another on the first build.
+          toolchain: "1.97"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: ${{ matrix.target }}

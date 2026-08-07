@@ -466,10 +466,10 @@ fn extract_email(body: &serde_json::Value, provider_key: &str) -> Option<String>
         "userPrincipalName",
         "preferred_username",
     ] {
-        if let Some(s) = body.get(field).and_then(|v| v.as_str()) {
-            if !s.is_empty() {
-                return Some(s.to_string());
-            }
+        if let Some(s) = body.get(field).and_then(|v| v.as_str())
+            && !s.is_empty()
+        {
+            return Some(s.to_string());
         }
     }
     // Slack's users.identity nests it.
@@ -477,20 +477,18 @@ fn extract_email(body: &serde_json::Value, provider_key: &str) -> Option<String>
         .get("user")
         .and_then(|u| u.get("email"))
         .and_then(|v| v.as_str())
+        && !s.is_empty()
     {
-        if !s.is_empty() {
-            return Some(s.to_string());
-        }
+        return Some(s.to_string());
     }
     // GitHub returns `email: null` when the user has hidden it; fall back to
     // a synthesized noreply address so the UI still shows something
     // meaningful rather than a UUID.
-    if provider_key == "github" {
-        if let Some(login) = body.get("login").and_then(|v| v.as_str()) {
-            if !login.is_empty() {
-                return Some(format!("{login}@users.noreply.github.com"));
-            }
-        }
+    if provider_key == "github"
+        && let Some(login) = body.get("login").and_then(|v| v.as_str())
+        && !login.is_empty()
+    {
+        return Some(format!("{login}@users.noreply.github.com"));
     }
     None
 }

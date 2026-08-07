@@ -101,15 +101,15 @@ async fn list_credentials(
         }
 
         // Env-var fallback (tier 3) — surface so the UI can display read-only.
-        if env_fallback_enabled {
-            if let (Ok(client_id), Ok(_)) = (std::env::var(&id_name), std::env::var(&secret_name)) {
-                rows.push(CredentialRow {
-                    provider_key: provider.key.clone(),
-                    display_name: provider.display_name.clone(),
-                    source: "env",
-                    client_id_preview: preview(&client_id),
-                });
-            }
+        if env_fallback_enabled
+            && let (Ok(client_id), Ok(_)) = (std::env::var(&id_name), std::env::var(&secret_name))
+        {
+            rows.push(CredentialRow {
+                provider_key: provider.key.clone(),
+                display_name: provider.display_name.clone(),
+                source: "env",
+                client_id_preview: preview(&client_id),
+            });
         }
     }
 

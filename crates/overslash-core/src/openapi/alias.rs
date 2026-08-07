@@ -239,24 +239,23 @@ pub fn normalize_aliases(v: &mut Value) -> Vec<ValidationIssue> {
         }
     }
 
-    if let Some(comps) = root.get_mut("components").and_then(Value::as_object_mut) {
-        if let Some(schemes) = comps
+    if let Some(comps) = root.get_mut("components").and_then(Value::as_object_mut)
+        && let Some(schemes) = comps
             .get_mut("securitySchemes")
             .and_then(Value::as_object_mut)
-        {
-            for (name, scheme) in schemes.iter_mut() {
-                let Value::Object(obj) = scheme else {
-                    continue;
-                };
-                let base = format!("components.securitySchemes.{name}");
-                let ty = obj.get("type").and_then(Value::as_str).unwrap_or("");
-                match ty {
-                    "oauth2" => rewrite_aliases(obj, OAUTH2_SEC_ALIASES, &base, &mut issues),
-                    "apiKey" | "http" => {
-                        rewrite_aliases(obj, APIKEY_HTTP_SEC_ALIASES, &base, &mut issues)
-                    }
-                    _ => {}
+    {
+        for (name, scheme) in schemes.iter_mut() {
+            let Value::Object(obj) = scheme else {
+                continue;
+            };
+            let base = format!("components.securitySchemes.{name}");
+            let ty = obj.get("type").and_then(Value::as_str).unwrap_or("");
+            match ty {
+                "oauth2" => rewrite_aliases(obj, OAUTH2_SEC_ALIASES, &base, &mut issues),
+                "apiKey" | "http" => {
+                    rewrite_aliases(obj, APIKEY_HTTP_SEC_ALIASES, &base, &mut issues)
                 }
+                _ => {}
             }
         }
     }

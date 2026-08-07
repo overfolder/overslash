@@ -23,12 +23,12 @@ pub(super) fn extract_oauth2(
     let mut scopes: Vec<String> = Vec::new();
     if let Some(flows) = obj.get("flows").and_then(Value::as_object) {
         for flow in flows.values() {
-            if let Some(f) = flow.as_object() {
-                if let Some(s) = f.get("scopes").and_then(Value::as_object) {
-                    for k in s.keys() {
-                        if !scopes.contains(k) {
-                            scopes.push(k.clone());
-                        }
+            if let Some(f) = flow.as_object()
+                && let Some(s) = f.get("scopes").and_then(Value::as_object)
+            {
+                for k in s.keys() {
+                    if !scopes.contains(k) {
+                        scopes.push(k.clone());
                     }
                 }
             }

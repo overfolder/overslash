@@ -498,10 +498,10 @@ pub(super) async fn resolve_request(
         // and only with the body — never on a bodyless GET, and never without
         // one. Template-chosen headers travel their own channel (`in: header`
         // params and `securitySchemes`), so the two never contend.
-        if body.is_some() {
-            if let Some(rb) = &action.request_body {
-                headers.insert("Content-Type".to_string(), rb.content_type.clone());
-            }
+        if body.is_some()
+            && let Some(rb) = &action.request_body
+        {
+            headers.insert("Content-Type".to_string(), rb.content_type.clone());
         }
         // Template-declared header params (`in: header`) are sent verbatim as
         // request headers. `apply_defaults` has already filled any that carry a
@@ -576,8 +576,9 @@ pub(super) async fn resolve_request(
         // already give the operator a "set this secret" path. MCP-bearer
         // templates take a different fork (the runtime check above) and
         // never reach this branch.
-        if !resolved_auth.oauth_injected && resolved_auth.secrets.is_empty() {
-            if let Some(err) = needs_authentication_for_service(
+        if !resolved_auth.oauth_injected
+            && resolved_auth.secrets.is_empty()
+            && let Some(err) = needs_authentication_for_service(
                 state,
                 ext,
                 scope.org_id(),
@@ -589,9 +590,8 @@ pub(super) async fn resolve_request(
                 return_url_hint,
             )
             .await?
-            {
-                return Err(err);
-            }
+        {
+            return Err(err);
         }
 
         // Reuse the same base the action URL resolved to (instance override or
