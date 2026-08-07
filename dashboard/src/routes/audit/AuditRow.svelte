@@ -225,7 +225,7 @@
 	onclick={ontoggle}
 >
 	<td class="ts" title={fullTime(entry.created_at)}>{relativeTime(entry.created_at)}</td>
-	<td class="identity">
+	<td class="identity user">
 		{#if units.user && isMe}
 			<a
 				class="me-pill"
@@ -504,6 +504,16 @@
 	}
 	.muted {
 		color: var(--color-text-muted);
+	}
+	/* Emails are longer than the display names this column used to hold, and
+	   `member+tag@example.com` wraps mid-token when left alone. Clip to one
+	   line — the `title` carries the full address. Only the User cell: the
+	   Agent cell trails badges (approver, `imp`) that must stay visible. */
+	.identity.user {
+		max-width: 220px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.identity-link {
 		color: var(--color-text);
