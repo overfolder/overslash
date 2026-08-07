@@ -494,17 +494,38 @@ pub async fn kernel_create_service(
     }
 
     // Explicit group grants. Everything here was validated above, so a failure
-    // is a genuine database fault rather than a bad request.
+    // means the world moved underneath us — most plausibly a concurrent group
+    // delete between validation and here. There is no transaction spanning the
+    // instance row and its grants (the repos take a pool, not a `Transaction`),
+    // so compensate by hand: drop the instance rather than leave the exact
+    // thing this rule exists to prevent — an org-level service with no grant,
+    // reachable by nobody.
     for grant in &group_grants {
-        let grant_row = scope
+        let attached = scope
             .add_group_grant(
                 grant.group_id,
                 row.id,
                 &grant.access_level,
                 grant.auto_approve_reads,
             )
-            .await?
-            .ok_or_else(|| AppError::NotFound("group not found".into()))?;
+            .await
+            .map_err(AppError::Database)
+            .and_then(|opt| {
+                opt.ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "group '{}' disappeared while creating the service; nothing was created",
+                        grant.group_id
+                    ))
+                })
+            });
+        let grant_row = match attached {
+            Ok(r) => r,
+            Err(e) => {
+                // Cascades the grants written so far (FK ON DELETE CASCADE).
+                let _ = scope.delete_service_instance(row.id).await;
+                return Err(e);
+            }
+        };
         let _ = scope
             .log_audit(overslash_db::repos::audit::AuditEntry {
                 org_id: ctx.org_id,

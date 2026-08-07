@@ -1112,3 +1112,67 @@ async fn non_admin_cannot_grant_groups_at_creation() {
 
     assert_eq!(resp.status(), 403);
 }
+
+#[tokio::test]
+async fn org_level_create_rolls_back_when_a_group_disappears() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, _api_key, admin_key) = setup(pool.clone()).await;
+    seed_org_template(&base, &client, &admin_key, "racy-svc").await;
+    let everyone_id = common::everyone_group_id(&base, &client, &admin_key).await;
+
+    // A second group the admin belongs to, deleted straight out from under the
+    // create. Validation passed on it; the grant insert can't find it. There is
+    // no transaction spanning the instance row and its grants, so the kernel
+    // compensates by dropping the instance — the alternative is the orphaned,
+    // unreachable org-level service this whole rule exists to prevent.
+    let doomed: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "name": "Doomed", "description": "" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let doomed_id: Uuid = doomed["id"].as_str().unwrap().parse().unwrap();
+
+    sqlx::query!("DELETE FROM groups WHERE id = $1", doomed_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "racy-svc",
+            "name": "racy-svc",
+            "user_level": false,
+            "groups": [
+                { "group_id": everyone_id.to_string(), "access_level": "admin" },
+                { "group_id": doomed_id.to_string(), "access_level": "read" },
+            ],
+        }))
+        .send()
+        .await
+        .unwrap();
+    // 404 from the pre-insert lookup, or 409 if the delete lands between
+    // validation and the grant write. Either way nothing is left behind.
+    assert!(
+        resp.status() == 404 || resp.status() == 409,
+        "unexpected status: {}",
+        resp.status()
+    );
+
+    let left_behind =
+        sqlx::query_scalar!("SELECT count(*) FROM service_instances WHERE name = 'racy-svc'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        left_behind,
+        Some(0),
+        "the rejected create left a row behind"
+    );
+}
