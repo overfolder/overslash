@@ -904,6 +904,9 @@ async fn org_level_create_attaches_the_requested_grants() {
         .find(|g| g["group_id"].as_str() == Some(&everyone_id.to_string()))
         .expect("Everyone grant should exist");
     assert_eq!(grant["access_level"], "read");
+    // The deprecated boolean still lands on exactly the `read` rung — it must
+    // not silently promote to the grant's ceiling.
+    assert_eq!(grant["auto_approve_level"], "read");
     assert_eq!(grant["auto_approve_reads"], true);
 }
 
@@ -969,6 +972,54 @@ async fn org_level_create_rejects_invalid_grant_shapes() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
+
+    // Auto-approval above the grant's own ceiling (D53). This path writes
+    // `group_grants` without going through `POST /v1/groups/{id}/grants`, so
+    // it has to enforce the same bound or it becomes a side door around it.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "picky-svc",
+            "name": "picky-svc",
+            "user_level": false,
+            "groups": [{
+                "group_id": everyone_id.to_string(),
+                "access_level": "read",
+                "auto_approve_level": "admin",
+            }],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exceeds access_level"),
+        "unexpected error body: {body:?}"
+    );
+
+    // An unknown rung is a 400 too, not a silent "none".
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "picky-svc",
+            "name": "picky-svc",
+            "user_level": false,
+            "groups": [{
+                "group_id": everyone_id.to_string(),
+                "access_level": "admin",
+                "auto_approve_level": "root",
+            }],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
 }
 
 #[tokio::test]

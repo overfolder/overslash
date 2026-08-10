@@ -586,6 +586,11 @@ export interface ServiceGroupRef {
    *  rather than parsing the storage-form `group_name`. */
   system_kind?: 'everyone' | 'admins' | 'self';
   access_level: string;
+  /** "none" | "read" | "write" | "admin" — how far up the ladder actions on
+   *  this service skip approval for members of this group. Never above
+   *  `access_level`. */
+  auto_approve_level: string;
+  /** @deprecated derived from `auto_approve_level !== 'none'`. */
   auto_approve_reads: boolean;
 }
 

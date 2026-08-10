@@ -235,12 +235,15 @@ export async function seedGroup(session, input) {
 }
 
 /**
+ * `autoApproveLevel` must not exceed `accessLevel` — the API rejects the pair
+ * with a 400 rather than clamping an explicit request (D53).
+ *
  * @param {import('./auth.mjs').Session} session
  * @param {string} groupId
  * @param {{
  *   serviceInstanceId: string,
  *   accessLevel: 'read' | 'write' | 'admin',
- *   autoApproveReads?: boolean,
+ *   autoApproveLevel?: 'none' | 'read' | 'write' | 'admin',
  * }} input
  */
 export async function seedGroupGrant(session, groupId, input) {
@@ -249,7 +252,7 @@ export async function seedGroupGrant(session, groupId, input) {
 		body: {
 			service_instance_id: input.serviceInstanceId,
 			access_level: input.accessLevel,
-			auto_approve_reads: input.autoApproveReads ?? false
+			auto_approve_level: input.autoApproveLevel ?? 'none'
 		},
 		expect: [200, 201]
 	});

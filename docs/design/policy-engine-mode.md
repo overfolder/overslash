@@ -301,7 +301,7 @@ The naming/shadowing model from §9 (*Services (Instances)*) carries over unchan
 
 LLM agents calling these via `overslash_call` (the MCP tool that wraps `actions/call`) see `status: "decided"` exactly like any caller of `actions/call`. The MCP tool description for `overslash_call` documents the `decided` variant alongside `executed` and `pending_approval` — it's not a failure mode, it's the natural answer for actions whose execution is external.
 
-Group ceilings apply unchanged — an external service still requires a group grant on the owner-user, the same way a gateway service does. `auto_approve_reads` works on `risk: read` external actions identically.
+Group ceilings apply unchanged — an external service still requires a group grant on the owner-user, the same way a gateway service does. `auto_approve_level` works on external actions identically, rung for rung.
 
 ### Validation rules — explicit list
 

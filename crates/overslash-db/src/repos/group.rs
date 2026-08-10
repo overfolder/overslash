@@ -29,7 +29,12 @@ pub struct GroupGrantRow {
     pub group_id: Uuid,
     pub service_instance_id: Uuid,
     pub access_level: String,
+    /// DEPRECATED — mirror of `auto_approve_level != "none"`, kept only to
+    /// feed the API's compat alias. Never branch on it.
     pub auto_approve_reads: bool,
+    /// `"none" | "read" | "write" | "admin"` — how far up the ladder actions
+    /// skip Layer 2. Bounded by `access_level` (DB `CHECK`).
+    pub auto_approve_level: String,
     pub created_at: OffsetDateTime,
 }
 
@@ -40,7 +45,12 @@ pub struct GroupGrantDetailRow {
     pub service_instance_id: Uuid,
     pub service_name: String,
     pub access_level: String,
+    /// DEPRECATED — mirror of `auto_approve_level != "none"`, kept only to
+    /// feed the API's compat alias. Never branch on it.
     pub auto_approve_reads: bool,
+    /// `"none" | "read" | "write" | "admin"` — how far up the ladder actions
+    /// skip Layer 2. Bounded by `access_level` (DB `CHECK`).
+    pub auto_approve_level: String,
     pub created_at: OffsetDateTime,
 }
 
@@ -56,7 +66,12 @@ pub struct ServiceGroupRow {
     /// leaking the storage-form name `Myself: <email> (<id8>)`.
     pub system_kind: Option<String>,
     pub access_level: String,
+    /// DEPRECATED — mirror of `auto_approve_level != "none"`, kept only to
+    /// feed the API's compat alias. Never branch on it.
     pub auto_approve_reads: bool,
+    /// `"none" | "read" | "write" | "admin"` — how far up the ladder actions
+    /// skip Layer 2. Bounded by `access_level` (DB `CHECK`).
+    pub auto_approve_level: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -73,7 +88,12 @@ pub struct UserCeilingGrantRow {
     pub service_name: String,
     pub template_key: String,
     pub access_level: String,
+    /// DEPRECATED — mirror of `auto_approve_level != "none"`, kept only to
+    /// feed the API's compat alias. Never branch on it.
     pub auto_approve_reads: bool,
+    /// `"none" | "read" | "write" | "admin"` — how far up the ladder actions
+    /// skip Layer 2. Bounded by `access_level` (DB `CHECK`).
+    pub auto_approve_level: String,
 }
 
 /// Aggregated ceiling data for a user.
@@ -169,19 +189,23 @@ pub(crate) async fn add_grant(
     group_id: Uuid,
     service_instance_id: Uuid,
     access_level: &str,
-    auto_approve_reads: bool,
+    auto_approve_level: &str,
 ) -> Result<Option<GroupGrantRow>, sqlx::Error> {
+    // `auto_approve_reads` is written from the level so the deprecated column
+    // stays coherent for anything still reading it; the level is the truth.
     sqlx::query_as!(
         GroupGrantRow,
-        "INSERT INTO group_grants (group_id, service_instance_id, access_level, auto_approve_reads)
-         SELECT $1, $2, $3, $4
+        "INSERT INTO group_grants
+             (group_id, service_instance_id, access_level, auto_approve_reads, auto_approve_level)
+         SELECT $1, $2, $3, $4::text <> 'none', $4
          WHERE EXISTS (SELECT 1 FROM groups WHERE id = $1 AND org_id = $5)
            AND EXISTS (SELECT 1 FROM service_instances WHERE id = $2 AND org_id = $5)
-         RETURNING id, group_id, service_instance_id, access_level, auto_approve_reads, created_at",
+         RETURNING id, group_id, service_instance_id, access_level,
+                   auto_approve_reads, auto_approve_level, created_at",
         group_id,
         service_instance_id,
         access_level,
-        auto_approve_reads,
+        auto_approve_level,
         org_id,
     )
     .fetch_optional(pool)
@@ -197,7 +221,8 @@ pub(crate) async fn list_grants(
         GroupGrantDetailRow,
         "SELECT gg.id, gg.group_id, gg.service_instance_id,
                 si.name AS service_name,
-                gg.access_level, gg.auto_approve_reads, gg.created_at
+                gg.access_level, gg.auto_approve_reads, gg.auto_approve_level,
+                gg.created_at
          FROM group_grants gg
          JOIN service_instances si ON si.id = gg.service_instance_id
          JOIN groups g ON g.id = gg.group_id
@@ -226,7 +251,8 @@ pub(crate) async fn list_groups_for_service(
                 g.name AS group_name,
                 g.system_kind,
                 gg.access_level,
-                gg.auto_approve_reads
+                gg.auto_approve_reads,
+                gg.auto_approve_level
          FROM group_grants gg
          JOIN groups g ON g.id = gg.group_id
          JOIN service_instances si ON si.id = gg.service_instance_id
@@ -260,7 +286,8 @@ pub(crate) async fn list_groups_for_services(
                 g.name AS group_name,
                 g.system_kind,
                 gg.access_level,
-                gg.auto_approve_reads
+                gg.auto_approve_reads,
+                gg.auto_approve_level
          FROM group_grants gg
          JOIN groups g ON g.id = gg.group_id
          JOIN service_instances si ON si.id = gg.service_instance_id
@@ -294,6 +321,31 @@ pub(crate) async fn remove_grant(
     Ok(result.rows_affected() > 0)
 }
 
+/// Fetch a single grant by id, scoped to its group and org. The PATCH path
+/// needs the *current* pair to decide whether a partial update would leave
+/// `auto_approve_level` above `access_level`, which a COALESCE-only UPDATE
+/// can't see.
+pub(crate) async fn get_grant(
+    pool: &PgPool,
+    org_id: Uuid,
+    grant_id: Uuid,
+    group_id: Uuid,
+) -> Result<Option<GroupGrantRow>, sqlx::Error> {
+    sqlx::query_as!(
+        GroupGrantRow,
+        "SELECT gg.id, gg.group_id, gg.service_instance_id, gg.access_level,
+                gg.auto_approve_reads, gg.auto_approve_level, gg.created_at
+         FROM group_grants gg
+         JOIN groups g ON g.id = gg.group_id
+         WHERE gg.id = $1 AND gg.group_id = $2 AND g.org_id = $3",
+        grant_id,
+        group_id,
+        org_id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// Partial-update a grant. Each field is optional; `None` leaves that column
 /// untouched (`COALESCE`). Returns `None` when the grant id doesn't belong to
 /// a group in this org — same scoping shape as `add_grant` / `remove_grant`.
@@ -303,21 +355,23 @@ pub(crate) async fn update_grant(
     grant_id: Uuid,
     group_id: Uuid,
     access_level: Option<&str>,
-    auto_approve_reads: Option<bool>,
+    auto_approve_level: Option<&str>,
 ) -> Result<Option<GroupGrantRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupGrantRow,
         "UPDATE group_grants
             SET access_level       = COALESCE($4, access_level),
-                auto_approve_reads = COALESCE($5, auto_approve_reads)
+                auto_approve_level = COALESCE($5, auto_approve_level),
+                auto_approve_reads = COALESCE($5::text, auto_approve_level) <> 'none'
           WHERE id = $1 AND group_id = $2
             AND EXISTS (SELECT 1 FROM groups WHERE id = $2 AND org_id = $3)
-        RETURNING id, group_id, service_instance_id, access_level, auto_approve_reads, created_at",
+        RETURNING id, group_id, service_instance_id, access_level,
+                  auto_approve_reads, auto_approve_level, created_at",
         grant_id,
         group_id,
         org_id,
         access_level,
-        auto_approve_reads,
+        auto_approve_level,
     )
     .fetch_optional(pool)
     .await
@@ -545,7 +599,10 @@ pub(crate) async fn ensure_self_group(
 }
 
 /// Insert a `group_grants` row pointing the given user's Myself group at the
-/// given service instance. Defaults: `access_level='admin'`, `auto_approve_reads=true`.
+/// given service instance. Defaults: `access_level='admin'`,
+/// `auto_approve_level='read'` — reads run unattended, writes and deletes on
+/// the user's own services still file an approval. Raising the default would
+/// silently hand every agent unattended deletes on everything its owner owns.
 /// Idempotent on the `(group_id, service_instance_id)` unique key.
 ///
 /// Caller is responsible for ensuring `service_instance_id` belongs to the same
@@ -559,8 +616,9 @@ pub(crate) async fn grant_to_self_group(
 ) -> Result<(), sqlx::Error> {
     let group_id = ensure_self_group(pool, org_id, identity_id, label).await?;
     sqlx::query!(
-        "INSERT INTO group_grants (group_id, service_instance_id, access_level, auto_approve_reads)
-         VALUES ($1, $2, 'admin', true)
+        "INSERT INTO group_grants
+             (group_id, service_instance_id, access_level, auto_approve_reads, auto_approve_level)
+         VALUES ($1, $2, 'admin', true, 'read')
          ON CONFLICT (group_id, service_instance_id) DO NOTHING",
         group_id,
         service_instance_id,
@@ -591,7 +649,8 @@ pub(crate) async fn get_ceiling_for_user(
     let grants = sqlx::query_as!(
         UserCeilingGrantRow,
         "SELECT gg.service_instance_id, si.name AS service_name,
-                si.template_key, gg.access_level, gg.auto_approve_reads
+                si.template_key, gg.access_level, gg.auto_approve_reads,
+                gg.auto_approve_level
          FROM group_grants gg
          JOIN identity_groups ig ON ig.group_id = gg.group_id
          JOIN identities i ON i.id = ig.identity_id

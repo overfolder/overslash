@@ -145,8 +145,10 @@ pub async fn load_ceiling(
         .iter()
         .map(|g| CeilingGrant {
             service_name: g.service_name.clone(),
+            // Both columns fail closed on an unparseable value: the ceiling
+            // narrows to `read`, and auto-approval switches off entirely.
             access_level: AccessLevel::parse(&g.access_level).unwrap_or(AccessLevel::Read),
-            auto_approve_reads: g.auto_approve_reads,
+            auto_approve_level: AccessLevel::parse_auto(&g.auto_approve_level).flatten(),
         })
         .collect();
 
@@ -164,4 +166,71 @@ pub fn check_ceiling(
         return GroupCeilingResult::NoGroups;
     }
     check_group_ceiling(service_name, risk, &ceiling.grants, true)
+}
+
+// ── Auto-approve level (D53) ─────────────────────────────────────────
+//
+// Shared by `POST/PATCH /v1/groups/{id}/grants` and by the create-time
+// `groups[]` on the `create_service` kernel, so the two paths can't drift on
+// what "bounded by the ceiling" means.
+
+/// Resolve the requested auto-approve level from the new field or the
+/// deprecated `auto_approve_reads` alias, in that order of precedence.
+///
+/// `Ok(None)` means the caller said nothing about auto-approval: a create
+/// defaults to no auto-approval, a patch leaves the column untouched.
+pub fn resolve_auto_approve(
+    level: Option<&str>,
+    reads_alias: Option<bool>,
+) -> Result<Option<Option<AccessLevel>>, crate::error::AppError> {
+    if let Some(raw) = level {
+        return AccessLevel::parse_auto(raw).map(Some).ok_or_else(|| {
+            crate::error::AppError::BadRequest(format!(
+                "invalid auto_approve_level '{raw}': must be none, read, write, or admin"
+            ))
+        });
+    }
+    Ok(reads_alias.map(|on| on.then_some(AccessLevel::Read)))
+}
+
+/// Bound the auto-approve level by the access ceiling.
+///
+/// An *explicit* request to auto-approve above the ceiling is a 400 — the
+/// caller asked for something incoherent and should hear about it. An
+/// overshoot that only appears because the ceiling was lowered underneath an
+/// existing level is clamped down silently: that direction only ever reduces
+/// privilege, and failing the patch would strand admins who wanted to
+/// downgrade a grant in one call.
+pub fn bound_auto_approve(
+    access: AccessLevel,
+    requested: Option<AccessLevel>,
+    explicit: bool,
+) -> Result<Option<AccessLevel>, crate::error::AppError> {
+    match requested {
+        Some(level) if !access.permits_level(level) => {
+            if explicit {
+                Err(crate::error::AppError::BadRequest(format!(
+                    "auto_approve_level '{level}' exceeds access_level '{access}'"
+                )))
+            } else {
+                Ok(Some(access))
+            }
+        }
+        other => Ok(other),
+    }
+}
+
+/// Map the DB's ceiling `CHECK` to a 400. Callers clamp before writing, so
+/// this only fires if that logic ever drifts — defense in depth, not the
+/// primary path.
+pub fn map_grant_constraint(e: sqlx::Error) -> crate::error::AppError {
+    match &e {
+        sqlx::Error::Database(db_err)
+            if db_err.constraint() == Some("group_grants_auto_approve_within_ceiling")
+                || db_err.constraint() == Some("group_grants_auto_approve_level_valid") =>
+        {
+            crate::error::AppError::BadRequest("auto_approve_level exceeds access_level".into())
+        }
+        _ => crate::error::AppError::Database(e),
+    }
 }

@@ -646,8 +646,8 @@
 								<li>
 									<span class="grant-name">{groupName(g.group_id)}</span>
 									<span class="grant-meta">{g.access_level}</span>
-									{#if g.auto_approve_reads}
-										<span class="grant-meta">auto-approve reads</span>
+									{#if g.auto_approve_level !== 'none'}
+										<span class="grant-meta">auto-approve {g.auto_approve_level}</span>
 									{/if}
 									{#if groupById.get(g.group_id)?.is_member === false}
 										<span class="grant-warn">you're not a member</span>

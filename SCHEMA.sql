@@ -327,8 +327,25 @@ CREATE TABLE public.group_grants (
     access_level text NOT NULL,
     auto_approve_reads boolean DEFAULT false NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT group_grants_access_level_check CHECK ((access_level = ANY (ARRAY['read'::text, 'write'::text, 'admin'::text])))
+    auto_approve_level text DEFAULT 'none'::text NOT NULL,
+    CONSTRAINT group_grants_access_level_check CHECK ((access_level = ANY (ARRAY['read'::text, 'write'::text, 'admin'::text]))),
+    CONSTRAINT group_grants_auto_approve_level_valid CHECK ((auto_approve_level = ANY (ARRAY['none'::text, 'read'::text, 'write'::text, 'admin'::text]))),
+    CONSTRAINT group_grants_auto_approve_within_ceiling CHECK (((auto_approve_level = 'none'::text) OR (access_level = 'admin'::text) OR ((access_level = 'write'::text) AND (auto_approve_level = ANY (ARRAY['read'::text, 'write'::text]))) OR ((access_level = 'read'::text) AND (auto_approve_level = 'read'::text))))
 );
+
+
+--
+-- Name: COLUMN group_grants.auto_approve_reads; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.group_grants.auto_approve_reads IS 'DEPRECATED - derived mirror of (auto_approve_level <> ''none''). Read auto_approve_level instead; this column is dropped once the API alias is removed.';
+
+
+--
+-- Name: COLUMN group_grants.auto_approve_level; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.group_grants.auto_approve_level IS 'How far up the read<write<admin ladder actions skip Layer 2 (no permission rule, no approval). ''none'' = always require approval. Bounded by access_level.';
 
 
 --
