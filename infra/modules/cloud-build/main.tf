@@ -88,6 +88,15 @@ resource "google_cloudbuild_trigger" "deploy" {
         # inference fragile, so we point every build at one stable repo.
         "--cache-repo=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api/cache",
         "--cache-ttl=168h",
+        # Kaniko holds a compressed copy of every layer it snapshots in memory
+        # (its own help: "Decreases build time, but increases memory usage").
+        # The dependency-cache layer here is the whole Rust `target/release`
+        # tree — several GB — so on a cache miss the post-RUN
+        # "Taking snapshot of full filesystem" step OOM-killed the executor
+        # (exit 137) before it could push the layer. That is self-sustaining:
+        # the layer never lands in the cache, so the next build misses too.
+        # Trading a little cache-push time for the memory is the fix.
+        "--compressed-caching=false",
         ], var.env == "prod" ? [
         "--build-arg=OVERSLASH_RELEASE=1",
       ] : [])
@@ -104,8 +113,14 @@ resource "google_cloudbuild_trigger" "deploy" {
     }
 
     options {
-      logging      = "CLOUD_LOGGING_ONLY"
-      machine_type = "E2_HIGHCPU_8"
+      logging = "CLOUD_LOGGING_ONLY"
+      # E2_HIGHCPU_32 (32 vCPU / 32 GB) rather than the _8 (8 vCPU / 8 GB) the
+      # sibling build modules use. Two reasons, both about the cold path:
+      # snapshotting the multi-GB `target/release` dependency layer needs far
+      # more than 8 GB of headroom even with --compressed-caching=false, and
+      # 32 cores cut the cold Rust compile from ~5.5 min to roughly a third of
+      # that, which largely offsets the higher per-minute rate.
+      machine_type = "E2_HIGHCPU_32"
     }
 
     # Headroom for a cold build. The image compiles the `sql_policy` feature
