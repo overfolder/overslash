@@ -114,13 +114,17 @@ resource "google_cloudbuild_trigger" "deploy" {
 
     options {
       logging = "CLOUD_LOGGING_ONLY"
-      # E2_HIGHCPU_32 (32 vCPU / 32 GB) rather than the _8 (8 vCPU / 8 GB) the
-      # sibling build modules use. Two reasons, both about the cold path:
-      # snapshotting the multi-GB `target/release` dependency layer needs far
-      # more than 8 GB of headroom even with --compressed-caching=false, and
-      # 32 cores cut the cold Rust compile from ~5.5 min to roughly a third of
-      # that, which largely offsets the higher per-minute rate.
-      machine_type = "E2_HIGHCPU_32"
+      # Stays E2_HIGHCPU_8. E2_HIGHCPU_32 would give the snapshot step more
+      # headroom, but the default pool caps concurrent E2 CPUs per region
+      # ("Default pool E2 CPU", 5-100 depending on region) and Google
+      # documents that quota as *not* increasable — asking for it just
+      # returns "due to quota restrictions, Cloud Build cannot run builds of
+      # this machine type in this region". The documented way past it is a
+      # private worker pool, which is a much larger change than this fix
+      # warrants. --compressed-caching=false above is the actual fix; if a
+      # cold build ever OOMs again at 8 GB, a private pool is the next step,
+      # not a bigger default-pool machine.
+      machine_type = "E2_HIGHCPU_8"
     }
 
     # Headroom for a cold build. The image compiles the `sql_policy` feature
