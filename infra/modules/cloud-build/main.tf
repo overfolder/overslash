@@ -108,7 +108,12 @@ resource "google_cloudbuild_trigger" "deploy" {
       machine_type = "E2_HIGHCPU_8"
     }
 
-    timeout = "1200s"
+    # Headroom for a cold build. The image compiles the `sql_policy` feature
+    # (D42), whose vendored libpg_query C build lands on top of the ~6 min of
+    # Rust dependencies — enough to crowd 1200s whenever Kaniko's dependency
+    # layer misses (feature change, Cargo.lock bump, cache TTL expiry). Warm
+    # builds still finish in a few minutes.
+    timeout = "2400s"
   }
 }
 

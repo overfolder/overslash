@@ -19,8 +19,9 @@ embeddings = ["dep:fastembed"]
 # via pg_query (Rust bindings over libpg_query, Postgres's own C parser).
 # Off by default — it adds a C-toolchain build dependency and binary weight
 # that the default build and CI must not pay. Compiled out, `sql_policy::
-# analyze` fails closed (everything classifies as a write on unknown tables);
-# release builds opt in (see the Makefile `release` target).
+# analyze` fails closed (everything classifies as a write on unknown tables).
+# Every shipping build opts in — see the feature comment in
+# crates/overslash-cli/Cargo.toml for the full list of places that must.
 sql_policy = ["dep:pg_query"]
 
 [dependencies]

@@ -221,6 +221,18 @@ approval. Correct but read-path-less. To close: try
 `features: embed-dashboard,sql_policy` on the Windows matrix row (LLVM is
 preinstalled on the runner), and delete this entry if the build passes.
 
+Windows is now the *only* build without the parser. The Cloud Run image
+(`crates/overslash-api/Dockerfile`, which serves both dev and prod via
+`infra/modules/cloud-build`) shipped without it for the whole 0.7 line — its
+`cargo build` carried no `--features`, so every SQL call on the hosted
+deployments classified `sql_reason:unavailable` and bubbled to approval with
+no table analysis at all, while the release-binary matrix above made it look
+handled. Both `cargo build` lines in that Dockerfile now pass
+`--features sql_policy`, and `GET /v1/version` / `/health` report a
+`sql_policy` boolean so the question is answerable without reading a build
+recipe. Keep the two Dockerfile invocations identical — the first exists only
+to warm Kaniko's dependency layer, and a feature mismatch silently wastes it.
+
 Two adjacent small items:
 
 - **Metabase `{{template_vars}}` don't parse** → classify write. If agents

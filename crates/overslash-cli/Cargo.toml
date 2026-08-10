@@ -15,8 +15,12 @@ default = []
 # can serve it same-origin. Requires `dashboard/build/` to exist (run
 # `make dashboard-static` first).
 embed-dashboard = ["dep:rust-embed", "dep:mime_guess"]
-# D42 SQL content policy (pg_query parser). Off by default; the release
-# build enables it so prod classifies SQL instead of failing closed.
+# D42 SQL content policy (pg_query parser). Off by default. Every shipping
+# build must opt in or SQL fails closed unparsed: the release binaries
+# (.github/workflows/release.yml, except Windows — see TECH_DEBT.md), the
+# `make release` target, `scripts/e2e-up.sh`, and — the one that was missed
+# for the whole 0.7 line — the Cloud Run image in
+# crates/overslash-api/Dockerfile.
 sql_policy = ["overslash-api/sql_policy", "overslash-core/sql_policy"]
 
 [dependencies]

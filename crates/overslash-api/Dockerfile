@@ -2,6 +2,16 @@ FROM rust:1.97-trixie AS builder
 
 WORKDIR /app
 
+# pg_query (the `sql_policy` feature, D42) generates its bindings with bindgen,
+# which needs libclang at compile time. Builder stage only: pg_query's build.rs
+# emits `cargo:rustc-link-lib=static=pg_query` and compiles the vendored
+# libpg_query C sources into a static archive, so nothing from clang reaches the
+# runtime stage. CI's sql-policy job installs the same package
+# (.github/workflows/ci.yml). Placed above the dependency-cache layer below so a
+# source change never re-runs apt.
+RUN apt-get update && apt-get install -y --no-install-recommends libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy workspace manifests first for dependency caching
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/overslash-core/Cargo.toml crates/overslash-core/Cargo.toml
@@ -44,7 +54,7 @@ RUN mkdir -p crates/overslash-core/src \
     && echo "fn main() {}" > tests/mock-target/src/main.rs
 
 # Build dependencies only (cached layer)
-RUN cargo build --release --package overslash-cli
+RUN cargo build --release --package overslash-cli --features sql_policy
 
 # Copy actual source code
 COPY crates/ crates/
@@ -80,7 +90,7 @@ ENV OVERSLASH_RELEASE=${OVERSLASH_RELEASE}
 
 # sqlx offline mode: use cached query metadata from .sqlx/ instead of a live DB
 ENV SQLX_OFFLINE=true
-RUN cargo build --release --package overslash-cli
+RUN cargo build --release --package overslash-cli --features sql_policy
 
 # --- Runtime stage ---
 FROM debian:trixie-slim AS runtime
