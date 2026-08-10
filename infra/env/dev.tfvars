@@ -19,6 +19,7 @@ enable_api_lb = false
 extra_api_domain_mappings = [
   "overfolder.api.dev.overslash.com",
   "overfolder-dev.api.dev.overslash.com",
+  "reveni-dev.api.dev.overslash.com",
 ]
 
 # Lets a locally-run MCP Inspector (default port 6274) complete the OAuth
