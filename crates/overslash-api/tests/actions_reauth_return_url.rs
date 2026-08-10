@@ -89,6 +89,7 @@ async fn seed_x_service(base: &str, client: &reqwest::Client, admin_key: &str, i
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(base, client, admin_key).await,
             "status": "active",
         }))
         .send()

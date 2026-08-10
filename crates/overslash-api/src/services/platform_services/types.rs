@@ -25,6 +25,13 @@ pub struct CreateServiceInput {
     #[serde(default = "default_status")]
     pub status: String,
     pub user_level: Option<bool>,
+    /// Group grants to attach at creation time. Required (non-empty) when the
+    /// instance is org-level (`user_level: false`): an org-level instance with
+    /// no grant is unreachable by anyone, since the group ceiling is the only
+    /// path to a service nobody owns. On the user-level path these are
+    /// optional extras — the Myself auto-grant already covers the owner.
+    #[serde(default)]
+    pub groups: Vec<CreateServiceGroupGrant>,
     #[serde(default)]
     pub on_behalf_of: Option<Uuid>,
     /// Suppress the default auto-connect behavior for OAuth-backed
@@ -52,8 +59,26 @@ pub struct CreateServiceInput {
     pub connect_return_url: Option<String>,
 }
 
+/// One `groups[]` entry on [`CreateServiceInput`] — the create-time twin of
+/// `AddGrantRequest` on `POST /v1/groups/{id}/grants`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct CreateServiceGroupGrant {
+    pub group_id: Uuid,
+    /// `read` | `write` | `admin`. Defaults to `write`: `admin` is what the
+    /// Myself auto-grant hands a single owner, and is too broad to hand a
+    /// shared group silently.
+    #[serde(default = "default_grant_access_level")]
+    pub access_level: String,
+    #[serde(default)]
+    pub auto_approve_reads: bool,
+}
+
 fn default_status() -> String {
     "active".into()
+}
+
+fn default_grant_access_level() -> String {
+    "write".into()
 }
 
 #[derive(Debug, Deserialize, Default)]

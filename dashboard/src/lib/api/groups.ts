@@ -14,8 +14,21 @@ export interface Group {
 	system_kind?: 'everyone' | 'admins' | 'self';
 	/** Set iff system_kind === 'self' — the user-identity this Myself group is for. */
 	owner_identity_id?: string;
+	/**
+	 * Whether the calling identity belongs to this group (resolved through
+	 * their ceiling user). Only present on the list endpoint. Creating an
+	 * org-level service requires a group where this is `true`.
+	 */
+	is_member?: boolean;
 	created_at: string;
 	updated_at: string;
+}
+
+/** One group grant as picked in the UI, before it is persisted. */
+export interface GroupGrantPick {
+	group_id: string;
+	access_level: 'read' | 'write' | 'admin';
+	auto_approve_reads: boolean;
 }
 
 export interface CreateGroupRequest {

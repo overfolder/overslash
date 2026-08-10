@@ -116,7 +116,8 @@
 - Group grants reference org-level service instances with structured access levels (`read`/`write`/`admin`)
 - Raw HTTP is the synthetic `http` service instance (one system-managed singleton per org) — group access uses the standard grant mechanism with read/write/admin levels mapping to verb risk
 - `auto_approve_reads` per-grant — auto-creates permission keys for non-mutating agent requests
-- Full CRUD API: `POST/GET/PUT/DELETE /v1/groups`, grants, and member management
+- Full CRUD API: `POST/GET/PUT/DELETE /v1/groups`, grants, and member management. `GET /v1/groups` reports `is_member` for the calling identity (resolved through their ceiling user)
+- Org-level service creation (`user_level: false`) requires a non-empty `groups` array on `POST /v1/services`, and at least one named group must be one the creator belongs to — an org-level instance has no Myself group, so without a grant nothing can reach it. The dashboard's `/services/new` form surfaces the picker and blocks submit until it's satisfied
 - Group ceiling check in action execution (Layer 1, before permission key check)
 - Users gated by groups only — they are their own approvers (skip Layer 2)
 - User-owned service instances bypass ceiling for the creator

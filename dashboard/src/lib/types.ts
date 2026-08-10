@@ -640,8 +640,22 @@ export interface CreateServiceRequest {
   url?: string;
   status?: ServiceStatus;
   user_level?: boolean;
+  /**
+   * Group grants to attach at creation. Required (non-empty) when
+   * `user_level` is `false`: an org-level instance has no Myself group, so
+   * without a grant nothing can reach it. At least one must be a group the
+   * caller belongs to.
+   */
+  groups?: ServiceGroupGrantInput[];
   /** When `false`, this instance won't fall back to the default connection for its provider. Defaults to `true` server-side. */
   use_default_connection?: boolean;
+}
+
+export interface ServiceGroupGrantInput {
+  group_id: string;
+  /** read | write | admin. Defaults to `write` server-side. */
+  access_level?: 'read' | 'write' | 'admin';
+  auto_approve_reads?: boolean;
 }
 
 export interface UpdateServiceRequest {

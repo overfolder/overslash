@@ -1,5 +1,6 @@
 //! The service-instance kernels: list, get, create, update.
 
+use super::group_grants::validate_create_group_grants;
 use super::reconcile::*;
 use super::rows::*;
 use super::status::*;
@@ -283,6 +284,19 @@ pub async fn kernel_create_service(
         )));
     }
 
+    // Validate the requested group grants *before* the insert. There is no
+    // transaction spanning the row and its grants, so a late failure would
+    // leave exactly the thing this rule exists to prevent: an org-level
+    // instance with no grant, reachable by nobody.
+    let group_grants = validate_create_group_grants(
+        &scope,
+        auth_identity,
+        ctx.access_level,
+        owner_identity_id,
+        &input.groups,
+    )
+    .await?;
+
     // Resolve once for downstream validation + credential classification.
     let template_def = resolve_template_definition(
         &ctx.db,
@@ -477,6 +491,59 @@ pub async fn kernel_create_service(
         scope
             .grant_service_to_self_group(owner_id, row.id, &label)
             .await?;
+    }
+
+    // Explicit group grants. Everything here was validated above, so a failure
+    // means the world moved underneath us — most plausibly a concurrent group
+    // delete between validation and here. There is no transaction spanning the
+    // instance row and its grants (the repos take a pool, not a `Transaction`),
+    // so compensate by hand: drop the instance rather than leave the exact
+    // thing this rule exists to prevent — an org-level service with no grant,
+    // reachable by nobody.
+    for grant in &group_grants {
+        let attached = scope
+            .add_group_grant(
+                grant.group_id,
+                row.id,
+                &grant.access_level,
+                grant.auto_approve_reads,
+            )
+            .await
+            .map_err(AppError::Database)
+            .and_then(|opt| {
+                opt.ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "group '{}' disappeared while creating the service; nothing was created",
+                        grant.group_id
+                    ))
+                })
+            });
+        let grant_row = match attached {
+            Ok(r) => r,
+            Err(e) => {
+                // Cascades the grants written so far (FK ON DELETE CASCADE).
+                let _ = scope.delete_service_instance(row.id).await;
+                return Err(e);
+            }
+        };
+        let _ = scope
+            .log_audit(overslash_db::repos::audit::AuditEntry {
+                org_id: ctx.org_id,
+                identity_id: Some(auth_identity),
+                action: "group_grant.created",
+                resource_type: Some("group_grant"),
+                resource_id: Some(grant_row.id),
+                detail: serde_json::json!({
+                    "group_id": grant.group_id,
+                    "service_instance_id": row.id,
+                    "service_name": &row.name,
+                    "access_level": &grant.access_level,
+                    "auto_approve_reads": grant.auto_approve_reads,
+                }),
+                description: None,
+                ip_address: None,
+            })
+            .await;
     }
 
     let credentials_status = derive_credentials_status(

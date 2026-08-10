@@ -753,6 +753,7 @@ async fn org_level_service_does_not_auto_connect() {
             "template_key": "gcal-orglvl",
             "name": "orglvl-svc",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
         }))
         .send()
         .await

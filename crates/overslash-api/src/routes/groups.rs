@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -7,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::util::fmt_time;
+
+use crate::services::group_ceiling;
 
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::group::GroupRow;
@@ -93,6 +97,12 @@ struct GroupResponse {
     /// Set iff `system_kind == 'self'` — the user-identity this Myself group is for.
     #[serde(skip_serializing_if = "Option::is_none")]
     owner_identity_id: Option<Uuid>,
+    /// Whether the calling identity belongs to this group. Resolved through
+    /// the caller's ceiling user, since agents inherit membership from their
+    /// owner rather than joining groups themselves. Only computed on the list
+    /// endpoint — omitted elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_member: Option<bool>,
     created_at: String,
     updated_at: String,
 }
@@ -107,6 +117,7 @@ impl From<GroupRow> for GroupResponse {
             is_system: r.is_system,
             system_kind: r.system_kind,
             owner_identity_id: r.owner_identity_id,
+            is_member: None,
             created_at: fmt_time(r.created_at),
             updated_at: fmt_time(r.updated_at),
         }
@@ -191,6 +202,23 @@ async fn list_groups(
     Query(q): Query<ListGroupsQuery>,
 ) -> Result<Json<Vec<GroupResponse>>> {
     let rows = scope.list_groups().await?;
+
+    // Membership is what gates create-time group selection on an org-level
+    // service (see `validate_create_group_grants`), so the listing carries it
+    // and the dashboard can flag an invalid pick without a round trip.
+    let member_of: HashSet<Uuid> = match caller_identity {
+        Some(id) => {
+            let ceiling_user = group_ceiling::resolve_ceiling_user_id(&scope, id).await?;
+            scope
+                .list_groups_for_identity(ceiling_user)
+                .await?
+                .into_iter()
+                .map(|g| g.id)
+                .collect()
+        }
+        None => HashSet::new(),
+    };
+
     let filtered: Vec<_> = rows
         .into_iter()
         .filter(|r| {
@@ -201,7 +229,12 @@ async fn list_groups(
                 || q.include_self
                 || (caller_identity.is_some() && r.owner_identity_id == caller_identity)
         })
-        .map(GroupResponse::from)
+        .map(|r| {
+            let is_member = member_of.contains(&r.id);
+            let mut resp = GroupResponse::from(r);
+            resp.is_member = Some(is_member);
+            resp
+        })
         .collect();
     Ok(Json(filtered))
 }

@@ -131,11 +131,19 @@ async fn setup_against(
         .unwrap();
     assert!(put.status().is_success(), "secret put: {}", put.status());
 
+    // The instance carries the caller-chosen Everyone grant from the start —
+    // an org-level instance can't be created without naming a group.
+    let everyone_id = common::everyone_group_id(&base, &client, &admin_key).await;
     let mut body = json!({
         "template_key": "metabase",
         "name": "metabase",
         "url": upstream_url,
         "user_level": false,
+        "groups": [{
+            "group_id": everyone_id.to_string(),
+            "access_level": access_level,
+            "auto_approve_reads": auto_approve_reads,
+        }],
         "status": "active",
         "credentials": { "token": "metabase_api_key" },
     });
@@ -152,37 +160,7 @@ async fn setup_against(
         .json()
         .await
         .unwrap();
-    let svc_id = svc["id"]
-        .as_str()
-        .expect("service create failed")
-        .to_string();
-
-    let groups: Vec<Value> = client
-        .get(format!("{base}/v1/groups"))
-        .header(auth(&admin_key).0, auth(&admin_key).1)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let everyone_id = groups
-        .iter()
-        .find(|g| g["system_kind"].as_str() == Some("everyone"))
-        .and_then(|g| g["id"].as_str())
-        .expect("Everyone group exists");
-    let grant = client
-        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
-        .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({
-            "service_instance_id": svc_id,
-            "access_level": access_level,
-            "auto_approve_reads": auto_approve_reads,
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert!(grant.status().is_success(), "grant: {}", grant.status());
+    svc["id"].as_str().expect("service create failed");
 
     (base, client, agent_key, admin_key, ident_id.to_string())
 }
@@ -1208,6 +1186,7 @@ async fn metabase_without_a_url_variable_requires_one_per_instance() {
             "template_key": "metabase",
             "name": "mb-no-url",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
             "credentials": { "token": "metabase_api_key" },
         }))
@@ -1230,6 +1209,7 @@ async fn metabase_without_a_url_variable_requires_one_per_instance() {
             "name": "mb-with-url",
             "url": "https://mb.example.com",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
             "credentials": { "token": "metabase_api_key" },
         }))
@@ -1280,6 +1260,7 @@ async fn metabase_with_a_url_variable_needs_no_per_instance_url() {
             "template_key": "metabase",
             "name": "mb-default",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
             "credentials": { "token": "metabase_api_key" },
         }))
@@ -1326,6 +1307,7 @@ async fn host_less_metabase_is_not_a_raw_http_escape_hatch() {
             "name": "metabase",
             "url": "https://mb.example.com",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
             "credentials": { "token": "metabase_api_key" },
         }))

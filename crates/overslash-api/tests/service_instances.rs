@@ -751,3 +751,428 @@ async fn test_service_lookup_by_uuid_path() {
         .unwrap();
     assert_eq!(after.status(), 404);
 }
+
+// -- Org-level create: group requirement --
+
+/// Create an org-level template so the tests below have something to
+/// instantiate. Returns nothing — the template key is the caller's to reuse.
+async fn seed_org_template(base: &str, client: &Client, admin_key: &str, key: &str) {
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "openapi": common::minimal_openapi(key),
+            "user_level": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "template create failed: {}",
+        resp.text().await.unwrap_or_default()
+    );
+}
+
+#[tokio::test]
+async fn org_level_create_requires_at_least_one_group() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, _api_key, admin_key) = setup(pool).await;
+    seed_org_template(&base, &client, &admin_key, "orphan-svc").await;
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "orphan-svc",
+            "name": "orphan-svc",
+            "user_level": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("at least one group"),
+        "unexpected error body: {body:?}"
+    );
+
+    // Nothing was inserted: the same name is still free. A 409 here would mean
+    // the rejected request left a row behind.
+    let retry = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "orphan-svc",
+            "name": "orphan-svc",
+            "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retry.status(), 200, "no row should have been created");
+}
+
+#[tokio::test]
+async fn org_level_create_rejects_group_the_creator_is_not_in() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, _api_key, admin_key) = setup(pool).await;
+    seed_org_template(&base, &client, &admin_key, "outsider-svc").await;
+
+    // A fresh group with no members — the creator is definitionally not in it.
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "name": "Nobody", "description": "empty" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "outsider-svc",
+            "name": "outsider-svc",
+            "user_level": false,
+            "groups": [{ "group_id": group["id"], "access_level": "read" }],
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("member of at least one"),
+        "unexpected error body: {body:?}"
+    );
+}
+
+#[tokio::test]
+async fn org_level_create_attaches_the_requested_grants() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, _api_key, admin_key) = setup(pool).await;
+    seed_org_template(&base, &client, &admin_key, "shared-svc").await;
+
+    let everyone_id = common::everyone_group_id(&base, &client, &admin_key).await;
+    let created: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "shared-svc",
+            "name": "shared-svc",
+            "user_level": false,
+            "groups": [{
+                "group_id": everyone_id.to_string(),
+                "access_level": "read",
+                "auto_approve_reads": true,
+            }],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let svc_id = created["id"].as_str().expect("created service id");
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/services/{svc_id}/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let grant = groups
+        .iter()
+        .find(|g| g["group_id"].as_str() == Some(&everyone_id.to_string()))
+        .expect("Everyone grant should exist");
+    assert_eq!(grant["access_level"], "read");
+    assert_eq!(grant["auto_approve_reads"], true);
+}
+
+#[tokio::test]
+async fn org_level_create_rejects_invalid_grant_shapes() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, _api_key, admin_key) = setup(pool).await;
+    seed_org_template(&base, &client, &admin_key, "picky-svc").await;
+    let everyone_id = common::everyone_group_id(&base, &client, &admin_key).await;
+
+    // Bad access level.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "picky-svc",
+            "name": "picky-svc",
+            "user_level": false,
+            "groups": [{ "group_id": everyone_id.to_string(), "access_level": "owner" }],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // Same group twice — would trip the grants unique index after the insert.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "picky-svc",
+            "name": "picky-svc",
+            "user_level": false,
+            "groups": [
+                { "group_id": everyone_id.to_string(), "access_level": "read" },
+                { "group_id": everyone_id.to_string(), "access_level": "admin" },
+            ],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("duplicate group"),
+        "unexpected error body: {body:?}"
+    );
+
+    // Unknown group.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "picky-svc",
+            "name": "picky-svc",
+            "user_level": false,
+            "groups": [{ "group_id": Uuid::new_v4().to_string(), "access_level": "read" }],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn org_level_create_rejects_a_myself_group() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, _api_key, admin_key) = setup(pool).await;
+    seed_org_template(&base, &client, &admin_key, "selfish-svc").await;
+
+    // A user-level create materializes the caller's Myself group on demand.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "template_key": "selfish-svc", "name": "mine" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let self_group = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("self"))
+        .expect("caller's Myself group should be listed");
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "selfish-svc",
+            "name": "selfish-svc",
+            "user_level": false,
+            "groups": [{ "group_id": self_group["id"], "access_level": "admin" }],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Myself groups"),
+        "unexpected error body: {body:?}"
+    );
+}
+
+#[tokio::test]
+async fn user_level_create_still_needs_no_group() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
+    seed_org_template(&base, &client, &admin_key, "personal-svc").await;
+
+    let created: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "template_key": "personal-svc", "name": "personal-svc" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let svc_id = created["id"].as_str().expect("created service id");
+
+    // The Myself auto-grant is still the only grant it needs.
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/services/{svc_id}/groups"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        groups
+            .iter()
+            .any(|g| g["system_kind"].as_str() == Some("self")),
+        "user-level instance should carry its Myself grant: {groups:?}"
+    );
+}
+
+#[tokio::test]
+async fn non_admin_cannot_grant_groups_at_creation() {
+    let pool = common::test_pool().await;
+    let (base, client, org_id, _ident_id, _api_key, admin_key) = setup(pool).await;
+    seed_org_template(&base, &client, &admin_key, "sneaky-svc").await;
+    let everyone_id = common::everyone_group_id(&base, &client, &admin_key).await;
+
+    // A plain user — `setup`'s own user sits in Admins, so its agent inherits
+    // admin through the ceiling and wouldn't exercise the gate.
+    let plain: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "name": "plain-user", "kind": "user" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "org_id": org_id,
+            "identity_id": plain["id"],
+            "name": "plain-key",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let plain_key = key_resp["key"].as_str().expect("plain user key");
+
+    // Attaching a group is the sharing half of service management and stays
+    // admin-only — otherwise the create path would be a side door around
+    // `POST /v1/groups/{id}/grants`.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {plain_key}"))
+        .json(&json!({
+            "template_key": "sneaky-svc",
+            "name": "sneaky-svc",
+            "groups": [{ "group_id": everyone_id.to_string(), "access_level": "admin" }],
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test]
+async fn org_level_create_rolls_back_when_a_group_disappears() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, _api_key, admin_key) = setup(pool.clone()).await;
+    seed_org_template(&base, &client, &admin_key, "racy-svc").await;
+    let everyone_id = common::everyone_group_id(&base, &client, &admin_key).await;
+
+    // A second group the admin belongs to, deleted straight out from under the
+    // create. Validation passed on it; the grant insert can't find it. There is
+    // no transaction spanning the instance row and its grants, so the kernel
+    // compensates by dropping the instance — the alternative is the orphaned,
+    // unreachable org-level service this whole rule exists to prevent.
+    let doomed: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "name": "Doomed", "description": "" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let doomed_id: Uuid = doomed["id"].as_str().unwrap().parse().unwrap();
+
+    sqlx::query!("DELETE FROM groups WHERE id = $1", doomed_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "racy-svc",
+            "name": "racy-svc",
+            "user_level": false,
+            "groups": [
+                { "group_id": everyone_id.to_string(), "access_level": "admin" },
+                { "group_id": doomed_id.to_string(), "access_level": "read" },
+            ],
+        }))
+        .send()
+        .await
+        .unwrap();
+    // 404 from the pre-insert lookup, or 409 if the delete lands between
+    // validation and the grant write. Either way nothing is left behind.
+    assert!(
+        resp.status() == 404 || resp.status() == 409,
+        "unexpected status: {}",
+        resp.status()
+    );
+
+    let left_behind =
+        sqlx::query_scalar!("SELECT count(*) FROM service_instances WHERE name = 'racy-svc'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        left_behind,
+        Some(0),
+        "the rejected create left a row behind"
+    );
+}

@@ -31,9 +31,11 @@
 	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
 	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
+	import type { Group, GroupGrantPick } from '$lib/api/groups';
 
 
-	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean } } = $props();
+	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean; groups: Group[] } } = $props();
 
 	let templates = $state<TemplateSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
@@ -62,6 +64,9 @@
 	let configInput = $state<Record<string, string>>({});
 	let urlInput = $state('');
 	let userLevel = $state(true);
+	// Org-level instances have no Myself group to fall back on, so the API
+	// requires at least one group grant — and one the creator belongs to.
+	let groupGrants = $state<GroupGrantPick[]>([]);
 	let useDefaultConnection = $state(true);
 	let submitting = $state(false);
 	let connectingOAuth = $state(false);
@@ -101,6 +106,35 @@
 	// IMAP/SMTP endpoint). Declared by the template via
 	// `x-overslash-instance-config`; empty for templates that declare none.
 	const instanceConfigParams = $derived(selectedDetail?.instance_config_params ?? []);
+
+	// Group-grant bookkeeping for the org-level path.
+	const availableGroups = $derived(data.groups ?? []);
+	const groupById = $derived(new Map(availableGroups.map((g) => [g.id, g])));
+	const pickedGroupIds = $derived(groupGrants.map((g) => g.group_id));
+	// The server rejects an org-level create whose groups the caller isn't in,
+	// so say so here rather than posting and bouncing off a 400.
+	const groupsSatisfied = $derived(
+		userLevel ||
+			(groupGrants.length > 0 &&
+				groupGrants.some((g) => groupById.get(g.group_id)?.is_member !== false))
+	);
+	const groupHint = $derived.by(() => {
+		if (userLevel) return null;
+		if (groupGrants.length === 0)
+			return 'An org-level service must be shared with at least one group you belong to — nothing can reach it otherwise.';
+		if (!groupsSatisfied) return 'You must be a member of at least one of the selected groups.';
+		return null;
+	});
+
+	function addGroupGrant(pick: GroupGrantPick) {
+		groupGrants = [...groupGrants, pick];
+	}
+	function removeGroupGrant(groupId: string) {
+		groupGrants = groupGrants.filter((g) => g.group_id !== groupId);
+	}
+	function groupName(groupId: string): string {
+		return groupById.get(groupId)?.name ?? groupId;
+	}
 
 	const searchKeys = $derived<SearchKey[]>([
 		{
@@ -476,6 +510,7 @@
 				url: urlInput.trim() || undefined,
 				status: 'active',
 				user_level: userLevel,
+				groups: userLevel ? undefined : groupGrants,
 				use_default_connection: useDefaultConnection
 			});
 			await goto(`/services/${created.id}`);
@@ -601,6 +636,48 @@
 				/>
 				<span id="user-level-label">Create as user-level (only visible to your identity)</span>
 			</div>
+
+			{#if !userLevel}
+				<div class="field groups-field">
+					<span class="label">Groups <span class="req">required</span></span>
+					{#if groupGrants.length > 0}
+						<ul class="grant-list">
+							{#each groupGrants as g (g.group_id)}
+								<li>
+									<span class="grant-name">{groupName(g.group_id)}</span>
+									<span class="grant-meta">{g.access_level}</span>
+									{#if g.auto_approve_reads}
+										<span class="grant-meta">auto-approve reads</span>
+									{/if}
+									{#if groupById.get(g.group_id)?.is_member === false}
+										<span class="grant-warn">you're not a member</span>
+									{/if}
+									<button
+										type="button"
+										class="link-btn"
+										onclick={() => removeGroupGrant(g.group_id)}>Remove</button
+									>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+					{#if availableGroups.length === 0}
+						<p class="muted no-groups">
+							No groups exist yet. Create one in <a href="/org/groups" class="link">Org → Groups</a
+							>, or keep this service user-level.
+						</p>
+					{:else}
+						<GroupGrantPicker
+							groups={availableGroups}
+							excludeIds={pickedGroupIds}
+							onadd={addGroupGrant}
+						/>
+					{/if}
+					{#if groupHint}
+						<small class="hint">{groupHint}</small>
+					{/if}
+				</div>
+			{/if}
 
 			{#if usesOAuth}
 				<div class="field">
@@ -807,7 +884,7 @@
 					type="button"
 					class="btn primary"
 					onclick={submit}
-					disabled={submitting || connectingOAuth}
+					disabled={submitting || connectingOAuth || !groupsSatisfied}
 				>
 					{#if connectingOAuth}
 						Waiting for authorization…
@@ -966,6 +1043,63 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.4rem;
+	}
+	.groups-field {
+		gap: 0.6rem;
+	}
+	.groups-field .req {
+		margin-left: 0.4rem;
+		color: var(--color-danger, #b91c1c);
+		letter-spacing: normal;
+		text-transform: none;
+	}
+	.groups-field .hint {
+		margin: 0;
+	}
+	.no-groups {
+		margin: 0;
+		font-size: 0.8rem;
+	}
+	.no-groups .link {
+		color: var(--color-primary, #6366f1);
+	}
+	.grant-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+	.grant-list li {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 0.85rem;
+	}
+	.grant-name {
+		font-weight: 500;
+	}
+	.grant-meta {
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--color-text-muted);
+	}
+	.grant-warn {
+		font-size: 0.72rem;
+		color: var(--color-danger, #b91c1c);
+	}
+	.link-btn {
+		background: none;
+		border: none;
+		padding: 0;
+		margin-left: auto;
+		color: var(--color-text-muted);
+		font: inherit;
+		font-size: 0.78rem;
+		text-decoration: underline;
+		cursor: pointer;
 	}
 	.field.toggle-field {
 		flex-direction: row;
