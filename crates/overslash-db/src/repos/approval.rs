@@ -33,6 +33,27 @@ pub struct ApprovalRow {
     pub tags: Vec<String>,
 }
 
+/// One approval the expiry sweep just flipped.
+///
+/// Deliberately *not* an [`ApprovalRow`]: the sweep is cross-org and bulk, so
+/// the batch it returns must stay small. This carries only what the emitter
+/// needs — the audience pair (`identity_id`, `current_resolver_identity_id`),
+/// the summary the event payload restates, and the tags the audit row is
+/// filed under — and none of the jsonb columns (`action_detail`,
+/// `disclosed_fields`, `replay_payload`), any one of which can be as large as
+/// the request body that was gated.
+#[derive(Debug, Clone)]
+pub struct ExpiredApproval {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    /// The requester — the identity whose action was gated.
+    pub identity_id: Uuid,
+    /// Whoever was holding the decision when it ran out of time.
+    pub current_resolver_identity_id: Uuid,
+    pub action_summary: String,
+    pub tags: Vec<String>,
+}
+
 pub struct CreateApproval<'a> {
     pub org_id: Uuid,
     pub identity_id: Uuid,
@@ -346,14 +367,48 @@ pub(crate) async fn list_pending_for_auto_bubble(
     .await
 }
 
-/// Cross-org maintenance: expire any pending approval whose `expires_at`
-/// has passed. Exposed via `SystemScope` only.
-pub(crate) async fn expire_stale(pool: &PgPool) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query!(
-        "UPDATE approvals SET status = 'expired', resolved_at = now(), resolved_by = 'system'
-         WHERE status = 'pending' AND expires_at < now()",
+/// Cross-org maintenance: expire at most `limit` pending approvals whose
+/// `expires_at` has passed, returning what was flipped. Exposed via
+/// `SystemScope` only.
+///
+/// `limit` is what keeps the sweep bounded in *rows*; [`ExpiredApproval`] is
+/// what keeps it bounded in *bytes*. `ORDER BY expires_at` drives the selection
+/// through `idx_approvals_expires`, the partial index this predicate was
+/// written for, and drains the oldest backlog first. `FOR UPDATE SKIP LOCKED`
+/// lets two replicas' ticks overlap without either blocking on the other or
+/// expiring the same approval twice.
+///
+/// The `MATERIALIZED` CTE is load-bearing, not style. Written the obvious way —
+/// `WHERE id IN (SELECT ... LIMIT $1 FOR UPDATE SKIP LOCKED)` — the limit is
+/// only as good as the plan: given any additional qual on the outer table the
+/// planner is free to choose a nested-loop semi-join with the subquery on the
+/// inner side, rescanning (and re-locking, and re-`LIMIT`ing) it once per outer
+/// row. That silently updates and returns *more* rows than `limit`, which here
+/// means emitting more events than the tick is bounded to. A `MATERIALIZED` CTE
+/// is an explicit optimization fence: it is evaluated exactly once, so the bound
+/// is a property of the statement rather than of the planner's mood.
+pub(crate) async fn expire_stale(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ExpiredApproval>, sqlx::Error> {
+    sqlx::query_as!(
+        ExpiredApproval,
+        "WITH stale AS MATERIALIZED (
+             SELECT id FROM approvals
+             WHERE status = 'pending' AND expires_at < now()
+             ORDER BY expires_at
+             LIMIT $1
+             FOR UPDATE SKIP LOCKED
+         )
+         UPDATE approvals
+            SET status = 'expired', resolved_at = now(), resolved_by = 'system'
+           FROM stale
+          WHERE approvals.id = stale.id
+      RETURNING approvals.id, approvals.org_id, approvals.identity_id,
+                approvals.current_resolver_identity_id, approvals.action_summary,
+                approvals.tags",
+        limit,
     )
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected())
+    .fetch_all(pool)
+    .await
 }

@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH stale AS MATERIALIZED (\n             SELECT id FROM approvals\n             WHERE status = 'pending' AND expires_at < now()\n             ORDER BY expires_at\n             LIMIT $1\n             FOR UPDATE SKIP LOCKED\n         )\n         UPDATE approvals\n            SET status = 'expired', resolved_at = now(), resolved_by = 'system'\n           FROM stale\n          WHERE approvals.id = stale.id\n      RETURNING approvals.id, approvals.org_id, approvals.identity_id,\n                approvals.current_resolver_identity_id, approvals.action_summary,\n                approvals.tags",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "current_resolver_identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "current_resolver_identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "action_summary",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "action_summary"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "tags",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "tags"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "08d719c18cfd3d31c4a28ce85123792217e41bc812c94d0d7558f0a263d7eb3f"
+}

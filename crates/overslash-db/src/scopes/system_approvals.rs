@@ -2,9 +2,10 @@
 //!
 //! These methods are intentionally cross-org and are exposed only on
 //! `SystemScope`. They back the background jobs in
-//! `overslash-api::lib::run` and `overslash-api::services::permission_chain`.
+//! `overslash-api::lib::run`, `overslash-api::services::permission_chain` and
+//! `overslash-api::services::approval_expiry`.
 
-use crate::repos::approval::ApprovalRow;
+use crate::repos::approval::{ApprovalRow, ExpiredApproval};
 use crate::scopes::SystemScope;
 
 impl SystemScope {
@@ -17,9 +18,19 @@ impl SystemScope {
         crate::repos::approval::list_pending_for_auto_bubble(self.db()).await
     }
 
-    /// Mark every pending approval whose `expires_at` has passed as expired.
-    /// Returns the number of rows affected. Used by the expiry background loop.
-    pub async fn expire_stale_approvals(&self) -> Result<u64, sqlx::Error> {
-        crate::repos::approval::expire_stale(self.db()).await
+    /// Mark up to `limit` pending approvals whose `expires_at` has passed as
+    /// expired, returning the rows that were flipped. Used by the expiry
+    /// background loop, which emits `approval.resolved` for each of them.
+    ///
+    /// Returns rows rather than a count because the emitter needs the audience
+    /// pair off each one, and takes a `limit` because it is the only thing
+    /// standing between a cross-org sweep and an unbounded result set. A caller
+    /// draining a backlog calls this repeatedly; see
+    /// `overslash-api::services::approval_expiry`.
+    pub async fn expire_stale_approvals(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<ExpiredApproval>, sqlx::Error> {
+        crate::repos::approval::expire_stale(self.db(), limit).await
     }
 }

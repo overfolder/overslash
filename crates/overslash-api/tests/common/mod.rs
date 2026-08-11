@@ -4,6 +4,7 @@
 #![allow(clippy::disallowed_methods)]
 
 pub mod shared_router;
+pub mod sse;
 pub use shared_router::{ResourceGuard, start_api_shared};
 
 use std::collections::HashMap;

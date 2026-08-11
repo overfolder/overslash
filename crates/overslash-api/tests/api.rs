@@ -19,6 +19,7 @@ mod actions_reauth_return_url;
 mod actions_validate;
 mod admin_cross_user_call;
 mod approval_disclosure;
+mod approval_expiry_events;
 mod approval_token_leak;
 mod approvals_cascade;
 mod approvals_remember_keys;

@@ -382,8 +382,9 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     {
         let db = background_db.clone();
         let system = overslash_db::scopes::SystemScope::new_internal(db.clone());
-        // The auto-bubble sweep emits the same events a human bubble does, so
-        // it needs a client for the webhook half of that.
+        // The auto-bubble and expiry sweeps emit the same events their
+        // human-driven counterparts do, so they need a client for the webhook
+        // half of that.
         let bg_http_client = state.http_client.clone();
         // Hoisted out of the task: it is constant for the process lifetime, and
         // reading it inside the `async move` would drag the whole `Config` in.
@@ -392,12 +393,16 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                instrumented_step("approval_expiry", system.expire_stale_approvals(), |n| {
-                    tracing::info!("Expired {n} stale approvals");
-                    for _ in 0..n {
-                        overslash_metrics::approvals::record_event("expired", "system");
-                    }
-                })
+                instrumented_step(
+                    "approval_expiry",
+                    services::approval_expiry::process_expiry(&system, &bg_http_client),
+                    |n| {
+                        tracing::info!("Expired {n} stale approvals");
+                        for _ in 0..n {
+                            overslash_metrics::approvals::record_event("expired", "system");
+                        }
+                    },
+                )
                 .await;
                 instrumented_step("execution_expiry", system.expire_stale_executions(), |n| {
                     tracing::info!("Expired {n} pending executions")
