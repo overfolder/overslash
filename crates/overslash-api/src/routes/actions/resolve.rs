@@ -598,14 +598,69 @@ pub(super) async fn resolve_request(
         // template host) so display-param GETs hit the same deployment.
         let resolver_base = base.clone();
         // Display-param resolution makes authenticated GETs against the
-        // provider — merge the live auth header into a throwaway map for
-        // those calls only; it never lands on the ActionRequest itself.
-        let resolver_headers = {
+        // provider. Build the credential into a throwaway header map for
+        // those calls only; it never lands on the ActionRequest itself,
+        // which is persisted for approval replay.
+        //
+        // Both credential shapes have to be covered. OAuth arrives here
+        // already materialized as `auth_header`; a secret-backed template
+        // (apiKey schemes — Metabase's `x-api-key`) arrives as `SecretRef`s
+        // that only become a header at send time, so the same decrypt +
+        // inject the executor runs has to happen here too. Without it a
+        // secret-backed resolver GET goes out unauthenticated, the provider
+        // 401s, and resolution "fails" silently back to the raw id — the
+        // exact thing the resolver exists to avoid.
+        //
+        // Gated on the action actually declaring a resolver so the common
+        // case pays for no extra decrypt.
+        let resolver_headers = if action.params.values().any(|p| p.resolve.is_some()) {
             let mut h = headers.clone();
             if let Some(ah) = &resolved_auth.auth_header {
                 h.insert(ah.name.clone(), ah.value.clone());
             }
+            if !resolved_auth.secrets.is_empty() {
+                // A probe request carrying just the credential refs and the
+                // headers so far. `inject_secrets` also does query-param
+                // injection, but against this probe's empty URL — a
+                // `in: query` credential therefore still does not reach
+                // resolver GETs. No shipped template pairs one with a
+                // resolver; when one does, the resolver URL has to be built
+                // before injection rather than inside `resolve_display_params`.
+                let probe = ActionRequest {
+                    method: "GET".to_string(),
+                    url: String::new(),
+                    headers: h.clone(),
+                    body: None,
+                    secrets: resolved_auth.secrets.clone(),
+                };
+                match crate::services::action_caller::resolve_credential_values(
+                    state,
+                    scope,
+                    Some(service_key),
+                    &probe,
+                )
+                .await
+                .and_then(|values| {
+                    overslash_core::secret_injection::inject_secrets(&probe, &values)
+                        .map_err(|e| AppError::BadRequest(e.to_string()))
+                }) {
+                    Ok((_url, injected)) => h = injected,
+                    // Best-effort, like resolution itself: the send path is
+                    // about to resolve the same credential and will report
+                    // the failure properly. Don't fail the call from the
+                    // display path.
+                    Err(e) => {
+                        tracing::warn!(
+                            service = %service_key,
+                            "display-resolver credential build failed ({e}); \
+                             resolver GETs will be unauthenticated"
+                        );
+                    }
+                }
+            }
             h
+        } else {
+            headers.clone()
         };
         let resolved = crate::services::param_resolver::resolve_display_params(
             &state.http_client,

@@ -10,6 +10,34 @@ Since 2026-07-03, `cdn.pyke.io` answers HTTP 403 (Cloudflare bot challenge) to n
 
 ---
 
+## Display-param resolver GETs: query-param credentials and the SSRF guard
+
+`services::param_resolver::resolve_display_params` fires an authenticated GET
+per `x-overslash-resolve` declaration so approvals can name an object instead
+of its id. Two gaps remain in how those GETs are made
+(`routes/actions/resolve.rs`, at the `resolver_headers` construction):
+
+1. **`in: query` credentials do not reach them.** Header-injected credentials
+   now do: OAuth arrives pre-materialized as `auth_header`, and secret-backed
+   apiKey schemes (Metabase's `x-api-key`) go through the same
+   `resolve_credential_values` + `inject_secrets` the executor runs. But
+   `inject_secrets` appends query-param credentials to the request URL, and
+   the resolver builds its own URL *inside* `resolve_display_params` — so the
+   injection lands on a throwaway URL and is discarded. No shipped template
+   pairs a query-param credential with a resolver; the day one does, the
+   resolver URL has to be built before injection rather than inside the
+   resolver. Symptom if it happens: the provider 401s, resolution silently
+   fails, and the disclosure shows the raw id — never an error.
+
+2. **They bypass the SSRF guard.** Resolver GETs go out on
+   `state.http_client` directly, while the executor's own call goes through
+   `services::ssrf_guard`. Same host either way (the resolver reuses the
+   action's resolved base), so this is not a new reachable target — but it is
+   an un-guarded egress on an operator-supplied URL, and it predates any
+   particular template.
+
+---
+
 ## Domain admission does not verify Google's `hd` claim, and two domain lists coexist
 
 Migration 092 added org-wide domain admission for managed sign-in
