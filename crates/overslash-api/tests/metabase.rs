@@ -304,14 +304,17 @@ async fn metabase_template_ships() {
         .resolve
         .as_ref()
         .expect("run_query.database declares a display resolver");
-    assert_eq!(db_resolve.get, "/api/database/{database}");
-    assert_eq!(db_resolve.pick, "name");
+    assert_eq!(db_resolve.get.as_deref(), Some("/api/database/{database}"));
+    assert_eq!(db_resolve.pick.as_deref(), Some("name"));
     let export_resolve = export_q
         .resolve
         .as_ref()
         .expect("export_query.query declares a display resolver");
-    assert_eq!(export_resolve.get, "/api/database/{query.database}");
-    assert_eq!(export_resolve.pick, "name");
+    assert_eq!(
+        export_resolve.get.as_deref(),
+        Some("/api/database/{query.database}")
+    );
+    assert_eq!(export_resolve.pick.as_deref(), Some("name"));
 }
 
 /// Pull one labelled entry out of a `disclosed` array.
