@@ -39,7 +39,7 @@ use crate::{
     AppState,
     error::AppError,
     extractors::{AuthContext, CallerTransport, ClientIp, ReqExt},
-    services::{disclosure, response_filter::ResponseFilter},
+    services::{disclosure, events::EventType, response_filter::ResponseFilter},
 };
 use overslash_core::{
     permissions::SuggestedTier,
@@ -200,6 +200,54 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
     }
 }
 
+/// Everything the `action.*` pair needs, resolved once before the call so the
+/// two events agree on identity, target and `call_id`.
+///
+/// The pair is deliberately *not* ordered. It brackets the upstream call, so
+/// `emit_all` — which exists precisely to keep a derived event behind its
+/// cause — cannot cover it: each `emit` spawns its own task and the inserts
+/// race. A consumer must tolerate `action.completed` arriving first, which is
+/// why `call_id` is minted here rather than inferred from arrival order.
+struct CallActivity {
+    call_id: Uuid,
+    actor: Uuid,
+    org_id: Uuid,
+    service: Option<String>,
+    action: Option<String>,
+    pool: sqlx::PgPool,
+    http_client: reqwest::Client,
+    audience: Vec<Uuid>,
+}
+
+impl CallActivity {
+    /// `extra` is merged over the shared identity fields. Only the two call
+    /// sites below pass it, and neither reuses a shared key.
+    fn emit(&self, event_type: EventType, extra: serde_json::Value) {
+        let mut payload = serde_json::json!({
+            "call_id": self.call_id,
+            "actor_identity_id": self.actor,
+            "service": self.service,
+            "action": self.action,
+        });
+        let obj = payload.as_object_mut().expect("payload is a json object");
+        if let Some(extra) = extra.as_object() {
+            for (k, v) in extra {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        crate::services::events::emit(
+            self.pool.clone(),
+            self.http_client.clone(),
+            crate::services::events::EventDraft {
+                org_id: self.org_id,
+                event_type,
+                payload,
+                audience: self.audience.clone(),
+            },
+        );
+    }
+}
+
 /// Top-level handler that times the request and emits the
 /// `overslash_action_executions_total` / `_duration_seconds` metrics.
 /// Granular outcomes (approval_required vs called vs filtered) are encoded in
@@ -231,6 +279,35 @@ async fn call_action(
         _ => "_invalid",
     };
     let template_key = bounded_template_key(&state.registry, req.service.as_deref());
+
+    // Live Map feed. Both events are emitted here rather than at the four
+    // terminal sites inside `call_action_impl` (MCP ok / MCP transport error /
+    // HTTP ok / HTTP transport error) because this wrapper is already the one
+    // place that brackets the call and classifies its outcome — see
+    // `status_label` below. Duplicating those rules four times to gain a
+    // slightly earlier `service` resolution would be a bad trade.
+    //
+    // Gated: each call costs one durable `events` row, on the hottest path in
+    // the system. `live_map_enabled` is set on dev, never in production.
+    let activity = match (state.config.live_map_enabled, auth.identity_id) {
+        (true, Some(actor)) => Some(CallActivity {
+            call_id: Uuid::new_v4(),
+            actor,
+            org_id: auth.org_id,
+            service: req.service.clone(),
+            action: req.action.clone(),
+            pool: state.db_pool(&ext),
+            http_client: state.http_client.clone(),
+            // Resolved once, here, and reused by both events. The chain walk
+            // is a query, so doing it per-event would double the cost of a
+            // feature that is already the most expensive observer we have.
+            audience: crate::services::events::audience::for_action(&scope, actor).await,
+        }),
+        _ => None,
+    };
+    if let Some(a) = activity.as_ref() {
+        a.emit(EventType::ActionCalled, serde_json::json!({}));
+    }
 
     let result = call_action_impl(
         State(state),
@@ -269,12 +346,18 @@ async fn call_action(
     } else {
         "called"
     };
-    overslash_metrics::actions::record_execution(
-        &template_key,
-        mode,
-        status_label,
-        start.elapsed(),
-    );
+    let elapsed = start.elapsed();
+    overslash_metrics::actions::record_execution(&template_key, mode, status_label, elapsed);
+
+    if let Some(a) = activity.as_ref() {
+        a.emit(
+            EventType::ActionCompleted,
+            serde_json::json!({
+                "outcome": status_label,
+                "duration_ms": elapsed.as_millis() as u64,
+            }),
+        );
+    }
 
     // Opt-in error wrapping for the dashboard "try it" surface. Done *after*
     // metrics so the auth 401 still counts as `rejected`, not a fake `called`.

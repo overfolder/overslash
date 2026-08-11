@@ -18,6 +18,13 @@ export const ADMIN_NAV_ITEMS: NavItemDef[] = [
 	{ href: '/org/groups', label: 'Groups', icon: '◈' }
 ];
 
+/**
+ * Live Map — shown only when the API reports `live_map` on `/v1/version`.
+ * Not in `NAV_ITEMS` because that list is unconditional; this one depends on a
+ * build flag that arrives asynchronously.
+ */
+export const LIVE_MAP_NAV_ITEM: NavItemDef = { href: '/map', label: 'Live Map', icon: '◎' };
+
 /** Settings item shown at the bottom of the sidebar (admin only). */
 export const SETTINGS_NAV_ITEM: NavItemDef = { href: '/org', label: 'Settings', icon: '⚙' };
 
@@ -40,7 +47,7 @@ export function pickActiveHref(pathname: string, items: { href: string }[]): str
 }
 
 export function pageTitleFromPath(pathname: string): string {
-	for (const item of [...NAV_ITEMS, ...ADMIN_NAV_ITEMS, SETTINGS_NAV_ITEM]) {
+	for (const item of [...NAV_ITEMS, ...ADMIN_NAV_ITEMS, LIVE_MAP_NAV_ITEM, SETTINGS_NAV_ITEM]) {
 		if (isActive(pathname, item.href)) return item.label;
 	}
 	if (pathname.startsWith('/profile')) return 'Profile';

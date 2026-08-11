@@ -75,6 +75,12 @@ variable "enable_dev_auth" {
   default     = false
 }
 
+variable "enable_live_map" {
+  description = "Enable the Live Map (/map) and the per-call `action.*` events it animates (OVERSLASH_LIVE_MAP). Dev only — one durable events row per action call. See D57."
+  type        = bool
+  default     = false
+}
+
 variable "enable_magic_link" {
   description = "Enable passwordless email magic-link login (MAGIC_LINK_ENABLED). Default-on: it's the working login on an env with no external IdP configured."
   type        = bool

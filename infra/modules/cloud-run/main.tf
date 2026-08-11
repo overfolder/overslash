@@ -170,6 +170,12 @@ variable "enable_dev_auth" {
   default = false
 }
 
+variable "enable_live_map" {
+  type        = bool
+  default     = false
+  description = "Enable the Live Map (/map) and the per-call `action.*` events it animates (OVERSLASH_LIVE_MAP). Dev only — one durable events row per action call. See D57."
+}
+
 variable "enable_magic_link" {
   type        = bool
   default     = true
@@ -377,6 +383,7 @@ locals {
     },
     var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},
     var.enable_dev_auth ? { DEV_AUTH = "1" } : {},
+    var.enable_live_map ? { OVERSLASH_LIVE_MAP = "1" } : {},
     var.redis_host != "" ? { REDIS_URL = "redis://${var.redis_host}:${var.redis_port}" } : {},
     var.cloud_billing ? {
       CLOUD_BILLING         = "true"

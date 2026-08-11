@@ -17,16 +17,29 @@ pub enum Topic {
     Approvals,
     Connections,
     Secrets,
+    /// Per-call traffic — one pair of events per action call, and the only
+    /// topic whose volume scales with the gateway's hot path rather than with
+    /// operator activity. Emission is gated on `live_map_enabled`; the topic
+    /// itself stays permanently subscribable so a client that asks for it on a
+    /// deployment with the flag off gets silence rather than a 400 that varies
+    /// by environment.
+    Activity,
 }
 
 impl Topic {
-    pub const ALL: [Topic; 3] = [Topic::Approvals, Topic::Connections, Topic::Secrets];
+    pub const ALL: [Topic; 4] = [
+        Topic::Approvals,
+        Topic::Connections,
+        Topic::Secrets,
+        Topic::Activity,
+    ];
 
     pub fn as_str(&self) -> &'static str {
         match self {
             Topic::Approvals => "approvals",
             Topic::Connections => "connections",
             Topic::Secrets => "secrets",
+            Topic::Activity => "activity",
         }
     }
 }
@@ -45,6 +58,7 @@ impl FromStr for Topic {
             "approvals" => Ok(Topic::Approvals),
             "connections" => Ok(Topic::Connections),
             "secrets" => Ok(Topic::Secrets),
+            "activity" => Ok(Topic::Activity),
             _ => Err(()),
         }
     }
@@ -76,6 +90,23 @@ pub enum EventType {
     ConnectionDeleted,
     SecretRequestCreated,
     SecretRequestFulfilled,
+    /// An action call has started. Paired with [`EventType::ActionCompleted`]
+    /// by a `call_id` minted in the request wrapper.
+    ///
+    /// Unlike every other variant here, these two fire on the gateway's
+    /// hottest path — one durable `events` row each, per call. That is why
+    /// both are emitted only when `live_map_enabled` is set, and why the
+    /// dashboard's Live Map is a dev-gated view rather than a default one.
+    ///
+    /// The pair is *not* ordered: they bracket the upstream call, so
+    /// [`emit_all`](super::emit_all) cannot cover them and each `emit` spawns
+    /// its own task. A consumer must tolerate `completed` arriving first.
+    ActionCalled,
+    /// An action call finished, however it finished. `outcome` carries the
+    /// same classification the metrics wrapper uses (`called`, `denied`,
+    /// `rejected`, `failed`, `upstream_error`), so a 403 and an upstream 500
+    /// stay distinguishable.
+    ActionCompleted,
 }
 
 impl EventType {
@@ -94,6 +125,8 @@ impl EventType {
             EventType::ConnectionDeleted => "connection.deleted",
             EventType::SecretRequestCreated => "secret_request.created",
             EventType::SecretRequestFulfilled => "secret_request.fulfilled",
+            EventType::ActionCalled => "action.called",
+            EventType::ActionCompleted => "action.completed",
         }
     }
 
@@ -111,6 +144,7 @@ impl EventType {
             | EventType::ConnectionScopesUpgraded
             | EventType::ConnectionDeleted => Topic::Connections,
             EventType::SecretRequestCreated | EventType::SecretRequestFulfilled => Topic::Secrets,
+            EventType::ActionCalled | EventType::ActionCompleted => Topic::Activity,
         }
     }
 }
@@ -164,6 +198,8 @@ mod tests {
             (EventType::ApprovalExecutionCancelled, Topic::Approvals),
             (EventType::ConnectionDeleted, Topic::Connections),
             (EventType::SecretRequestFulfilled, Topic::Secrets),
+            (EventType::ActionCalled, Topic::Activity),
+            (EventType::ActionCompleted, Topic::Activity),
         ] {
             assert_eq!(event.topic(), expected, "{event}");
         }
@@ -187,5 +223,17 @@ mod tests {
             vec![Topic::Approvals]
         );
         assert_eq!(parse_topics(Some("approvals,bogus")), Err("bogus".into()));
+    }
+
+    /// `activity` parses whether or not `live_map_enabled` is set. Emission is
+    /// what the flag gates; a subscription that 400s on one deployment and
+    /// succeeds on another would be a worse contract than one that is quiet.
+    #[test]
+    fn activity_is_a_valid_topic_independent_of_the_live_map_flag() {
+        assert_eq!(
+            parse_topics(Some("approvals,activity")).unwrap(),
+            vec![Topic::Approvals, Topic::Activity]
+        );
+        assert!(Topic::ALL.contains(&Topic::Activity));
     }
 }

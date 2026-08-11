@@ -119,6 +119,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,

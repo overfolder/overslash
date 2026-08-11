@@ -1,4 +1,4 @@
-use axum::{Json, Router, routing::get};
+use axum::{Json, Router, extract::State, routing::get};
 use overslash_core::build_info::build_info;
 use serde::Serialize;
 
@@ -32,14 +32,20 @@ struct VersionResponse {
     /// genuinely write-shaped query, so it is reported here rather than left
     /// to be inferred from a Dockerfile.
     sql_policy: bool,
+    /// Whether this deployment runs the Live Map (`OVERSLASH_LIVE_MAP`). The
+    /// dashboard reads it to decide whether to offer `/map` at all: the page
+    /// would render an empty, permanently still graph against a build that
+    /// emits no `action.*` events, which is worse than not offering it.
+    live_map: bool,
 }
 
-async fn version() -> Json<VersionResponse> {
+async fn version(State(state): State<AppState>) -> Json<VersionResponse> {
     let info = build_info();
     Json(VersionResponse {
         version: info.version,
         commit: info.commit,
         commit_short: info.commit_short(),
         sql_policy: overslash_core::sql_policy::available(),
+        live_map: state.config.live_map_enabled,
     })
 }

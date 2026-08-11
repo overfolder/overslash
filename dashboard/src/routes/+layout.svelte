@@ -93,6 +93,11 @@
 		}
 	});
 
+	// The Live Map wants the whole pane: `.content`'s padding would frame a
+	// full-bleed canvas, and its `overflow-y: auto` would let the graph push
+	// the page taller instead of being clipped to it.
+	const fullBleed = $derived($page.url.pathname.startsWith('/map'));
+
 	// Build identity of the API, shown in the sidebar footer. Fetched once per
 	// session rather than per navigation — it cannot change without a reload of
 	// the whole page anyway. A failure leaves the footer line unrendered; an
@@ -157,7 +162,7 @@
 			{@render children()}
 		</div>
 	{:else}
-		<div class="app" style:--sidebar-width={sidebarWidth}>
+		<div class="app" class:full-bleed={fullBleed} style:--sidebar-width={sidebarWidth}>
 			<Sidebar
 				{isAdmin}
 				{isInstanceAdmin}
@@ -177,7 +182,7 @@
 				{#if data?.user?.trial}
 					<TrialBanner trial={data.user.trial} {isAdmin} />
 				{/if}
-				<main class="content">
+				<main class="content" class:full-bleed={fullBleed}>
 					{@render children()}
 				</main>
 			</div>
@@ -210,6 +215,26 @@
 		flex: 1;
 		padding: 1.5rem 2rem;
 		overflow-y: auto;
+	}
+	/* A full-bleed page is clipped to the viewport rather than growing past it.
+	   `min-height: 100vh` on both .app and .main-col means the shell is
+	   normally 100vh *plus* the env ribbon's padding — fine when the page
+	   scrolls, but it pushes a fixed-height canvas's bottom overlays off
+	   screen. Pin the height instead and let the flex column divide it; the
+	   global `box-sizing: border-box` keeps the ribbon inside the 100vh. */
+	.app.full-bleed {
+		height: 100vh;
+		min-height: 0;
+	}
+	.app.full-bleed .main-col {
+		height: 100%;
+		min-height: 0;
+	}
+	.content.full-bleed {
+		display: flex;
+		padding: 0;
+		min-height: 0;
+		overflow: hidden;
 	}
 	@media (max-width: 1024px) {
 		.content {

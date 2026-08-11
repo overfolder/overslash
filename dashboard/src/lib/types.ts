@@ -13,6 +13,10 @@ export interface BuildInfo {
    *  feature). `false` means SQL-annotated actions never get parsed — they
    *  fail closed to write-on-unknown-tables and always route to approval. */
   sql_policy: boolean;
+  /** Whether this deployment runs the Live Map — `OVERSLASH_LIVE_MAP` on the
+   *  API. Gates the `/map` nav item and the page itself: without it no
+   *  `action.*` events are emitted and the graph would never move. */
+  live_map: boolean;
 }
 
 export interface OrgInfo {

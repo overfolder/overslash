@@ -30,6 +30,8 @@ mcp_extra_origins = "http://localhost:6274"
 dashboard_origin = "https://app.dev.overslash.com,https://*.app.dev.overslash.com"
 dashboard_url    = "https://app.dev.overslash.com"
 enable_dev_auth  = false
+# The Live Map and its per-call `action.*` events. Dev only (D57).
+enable_live_map = true
 # Passwordless email magic-link login — on (email is configured below).
 enable_magic_link = true
 # Sign-in with Google (default) + Sign-in with GitHub. Populate the OAuth
