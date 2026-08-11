@@ -33,15 +33,35 @@ pub(super) use super::auth_scopes::is_metadata_scope_denial;
 /// default → platform credential, plus the D38 config-var pass) is intricate
 /// enough that a second implementation would drift, and the drift would be
 /// invisible — a wrong field name in an error message, not a failing call.
+///
+/// Both halves are deduped on insert, which is why the fields are private:
+/// the resolver walks the template's auth entries one scheme at a time, and
+/// two schemes may legitimately read the same slot or config key (which is
+/// why [`ServiceDefinition::all_slots`] dedupes for the same reason). Without
+/// it a shared unresolved key would be reported once per scheme, and this
+/// list is read by a human as a to-do — naming a field twice reads as a bug
+/// in the gateway, in the one message whose whole job is to be clear.
+///
+/// [`ServiceDefinition::all_slots`]: overslash_core::types::ServiceDefinition::all_slots
 #[derive(Default)]
 pub(crate) struct MissingCredentials {
     /// Credential slot keys with no vault secret bound (`mailbox_pass`).
-    pub slots: Vec<String>,
+    slots: Vec<String>,
     /// `required` config vars with no value (`mailbox_user`).
-    pub config: Vec<String>,
+    config: Vec<String>,
 }
 
 impl MissingCredentials {
+    /// Record a credential slot the instance never bound.
+    pub(super) fn add_slot(&mut self, key: &str) {
+        push_unique(&mut self.slots, key);
+    }
+
+    /// Record a `required` config var with no value.
+    pub(super) fn add_config(&mut self, key: &str) {
+        push_unique(&mut self.config, key);
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.slots.is_empty() && self.config.is_empty()
     }
@@ -55,6 +75,12 @@ impl MissingCredentials {
             .chain(self.slots.iter())
             .cloned()
             .collect()
+    }
+}
+
+fn push_unique(v: &mut Vec<String>, key: &str) {
+    if !v.iter().any(|k| k == key) {
+        v.push(key.to_string());
     }
 }
 
@@ -160,6 +186,30 @@ pub(super) async fn org_is_headless(db: &sqlx::PgPool, org_id: Uuid) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two auth schemes reading the same unresolved slot (or config var) is a
+    /// legal template shape, and the resolver visits schemes one at a time.
+    /// The caller must still be told the field once.
+    #[test]
+    fn missing_credentials_reports_a_shared_key_once() {
+        let mut m = MissingCredentials::default();
+        m.add_slot("mailbox_pass");
+        m.add_slot("mailbox_pass");
+        m.add_config("mailbox_user");
+        m.add_config("mailbox_user");
+        assert_eq!(m.keys(), vec!["mailbox_user", "mailbox_pass"]);
+    }
+
+    /// Config before slots: the username reads better ahead of its password.
+    #[test]
+    fn missing_credentials_orders_config_before_slots() {
+        let mut m = MissingCredentials::default();
+        assert!(m.is_empty());
+        m.add_slot("token");
+        m.add_config("host");
+        assert!(!m.is_empty());
+        assert_eq!(m.keys(), vec!["host", "token"]);
+    }
 
     #[test]
     fn classify_oauth_reauth_signals() {

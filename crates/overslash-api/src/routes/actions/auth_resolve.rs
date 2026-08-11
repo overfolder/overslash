@@ -578,7 +578,7 @@ pub(crate) async fn resolve_instance_auth(
                             // the caller to bind the credential.
                             None => {
                                 if !slot.optional {
-                                    missing.slots.push(slot.key.clone());
+                                    missing.add_slot(&slot.key);
                                 }
                                 scheme_unresolved = true;
                                 break;
@@ -594,7 +594,7 @@ pub(crate) async fn resolve_instance_auth(
             // partially-authenticated request downstream.
             if name.is_empty() {
                 if !slot.optional {
-                    missing.slots.push(slot.key.clone());
+                    missing.add_slot(&slot.key);
                 }
                 scheme_unresolved = true;
                 break;
@@ -628,7 +628,7 @@ pub(crate) async fn resolve_instance_auth(
                 // that reads downstream as a wrong password rather than as
                 // missing configuration.
                 None if var.required => {
-                    missing.config.push(var.key.clone());
+                    missing.add_config(&var.key);
                     scheme_unresolved = true;
                     break;
                 }
