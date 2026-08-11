@@ -68,6 +68,20 @@
 		formatIdentityPath(entry.identity_path, entry.identity_path_ids, labelUnit)
 	);
 
+	// The row records the actor's name as of write time; the SPIFFE path carries
+	// their current one. The table shows what was recorded — an operator who
+	// searches for a name they can see has to find the row — and the live chain
+	// stays one hover (or one expand) away. See D59.
+	const recordedName = $derived(entry.identity_name);
+	const liveLeafName = $derived(units.leaf?.name ?? null);
+	const renamedSince = $derived(
+		!!recordedName && !!liveLeafName && recordedName !== liveLeafName
+	);
+	const leafLabel = $derived(recordedName ?? liveLeafName);
+	const leafTitle = $derived(
+		renamedSince ? `now ${liveLeafName} — ${chainTitle}` : chainTitle
+	);
+
 	function relativeTime(iso: string): string {
 		const then = new Date(iso).getTime();
 		if (!Number.isFinite(then)) return iso || '—';
@@ -240,6 +254,10 @@
 				title={userDisplay?.title}
 				onclick={(e) => e.stopPropagation()}
 			>{userDisplay?.primary ?? units.user.name}</a>
+		{:else if entry.owner_user_name}
+			<!-- No live chain (deleted identity): the recorded name is all the
+			     log has left, and it is exactly what it was written down for. -->
+			<span class="mono" title="name recorded at the time">{entry.owner_user_name}</span>
 		{:else}
 			<span class="muted">—</span>
 		{/if}
@@ -248,10 +266,11 @@
 		{#if units.leaf}
 			<a
 				class="identity-link"
+				class:renamed={renamedSince}
 				href={units.leaf.href}
-				title={chainTitle}
+				title={leafTitle}
 				onclick={(e) => e.stopPropagation()}
-			>{units.leaf.name}</a>
+			>{leafLabel}</a>
 		{:else if !entry.identity_path && entry.identity_id && entry.identity_name}
 			<!-- Chain unresolved: fall back to the bare leaf identity. -->
 			<a
@@ -339,6 +358,12 @@
 								href={`/agents/${entry.identity_id}`}
 								onclick={(e) => e.stopPropagation()}
 							>{entry.identity_name ?? entry.identity_id}</a>
+						</dd>
+					{/if}
+					{#if renamedSince}
+						<dt>Recorded as</dt>
+						<dd title="the name this identity had when the event was written">
+							{recordedName}
 						</dd>
 					{/if}
 					{#if entry.impersonated_by_path}
@@ -522,6 +547,14 @@
 		font-size: 0.85rem;
 		border-radius: 3px;
 		padding: 0 0.1rem;
+	}
+
+	/* The identity has been renamed since this row was written. Marked, not
+	   corrected: the recorded name is the one the log stands behind, and the
+	   current one is in the hover title and the expanded pane. */
+	.identity-link.renamed {
+		text-decoration: underline dotted;
+		text-underline-offset: 3px;
 	}
 	.identity-link:hover {
 		color: var(--color-primary);

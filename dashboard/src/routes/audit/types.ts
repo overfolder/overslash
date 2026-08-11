@@ -2,7 +2,13 @@
 export interface AuditEntry {
 	id: string;
 	identity_id: string | null;
+	/** The actor's name **as recorded on the row** — the name they had when they
+	 * acted, not their current one (D59). Survives the identity's deletion. */
 	identity_name: string | null;
+	/** Recorded name of the root user of the actor's chain, same historical
+	 * semantics. Fallback label for the User column when the live identity can
+	 * no longer be resolved. */
+	owner_user_name: string | null;
 	/** SPIFFE-style hierarchical path of the actor identity, e.g.
 	 * `spiffe://acme/user/alice/agent/henry`. Null when the chain could not be
 	 * resolved (deleted identity / missing org). Render with IdentityPath. */
@@ -149,10 +155,34 @@ export function upstreamResultLabel(entry: AuditEntry): string | null {
 
 export const PAGE_LIMIT = 50;
 
-export function buildQuery(filters: AuditFilters, limit: number, offset: number): string {
+/** Position of the last row already loaded, in `(created_at DESC, id DESC)`
+ *  order. `id` is not decoration: rows written in one transaction share a
+ *  timestamp, and a cursor without a tiebreaker skips or repeats them. */
+export interface AuditCursor {
+	before: string;
+	before_id: string;
+}
+
+/** Cursor for the page *after* these entries, or null when there are none. */
+export function cursorFrom(entries: AuditEntry[]): AuditCursor | null {
+	const last = entries[entries.length - 1];
+	return last ? { before: last.created_at, before_id: last.id } : null;
+}
+
+/** Keyset paging, not `OFFSET`: the backend still accepts an offset, but it
+ *  walks `offset + limit` index entries, so infinite scroll would cost
+ *  O(pages²) over a session. Passing no cursor asks for the first page. */
+export function buildQuery(
+	filters: AuditFilters,
+	limit: number,
+	cursor?: AuditCursor | null
+): string {
 	const p = new URLSearchParams();
 	p.set('limit', String(limit));
-	p.set('offset', String(offset));
+	if (cursor) {
+		p.set('before', cursor.before);
+		p.set('before_id', cursor.before_id);
+	}
 	if (filters.identity_id) p.set('identity_id', filters.identity_id);
 	if (filters.action) p.set('action', filters.action);
 	if (filters.resource_type) p.set('resource_type', filters.resource_type);

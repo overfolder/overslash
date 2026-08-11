@@ -51,7 +51,7 @@ export const load: PageLoad = async ({ url }) => {
 		: Promise.resolve(null);
 	try {
 		const [entries, identities, anchor] = await Promise.all([
-			session.get<AuditEntry[]>(`/v1/audit?${buildQuery(filters, PAGE_LIMIT, 0)}`),
+			session.get<AuditEntry[]>(`/v1/audit?${buildQuery(filters, PAGE_LIMIT)}`),
 			identitiesPromise,
 			anchorPromise
 		]);
