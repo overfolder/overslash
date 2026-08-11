@@ -35,12 +35,6 @@ variable "cloud_run_service" {
   description = "Name of the Cloud Run service to route traffic to (output of cloud-run module)."
 }
 
-variable "backend_timeout_seconds" {
-  type        = number
-  default     = 120
-  description = "Backend response timeout. Must exceed EVENTS_STREAM_MAX_CONNECTION_SECS (default 30) — the SSE stream holds a response open that long on purpose."
-}
-
 variable "api_apex" {
   type        = string
   description = "Apex hostname, e.g. `api.overslash.com`. Used for the managed cert SAN list (apex + `*.<apex>`)."
@@ -144,13 +138,20 @@ resource "google_compute_backend_service" "api_backend" {
   # client-supplied header of the same name, so this cannot be spoofed.
   custom_request_headers = ["X-Client-Geo-Country:{client_region}"]
 
-  # `google_compute_backend_service` defaults this to 30s — exactly the SSE
-  # stream's own ceiling, so the two would race and the load balancer could cut
-  # a response mid-frame instead of us closing it cleanly. Serverless NEG
-  # backends are documented as deferring to Cloud Run's timeout rather than
-  # this field, but leaving a 30s value sitting here that *might* apply is not
-  # a bet worth taking on a streaming endpoint.
-  timeout_sec = var.backend_timeout_seconds
+  # No `timeout_sec` here. The SSE stream on GET /v1/events/stream holds a
+  # response open for EVENTS_STREAM_MAX_CONNECTION_SECS (default 30) on
+  # purpose, so it does need a ceiling above that — but this is not the
+  # resource that can carry one. A backend service fronting a SERVERLESS NEG
+  # rejects the field outright:
+  #
+  #   Error 400: Invalid value for field 'resource.timeoutSec': '120'.
+  #   Timeout sec is not supported for a backend service with Serverless
+  #   network endpoint groups.
+  #
+  # The real ceiling is Cloud Run's own per-request timeout — see
+  # `request_timeout_seconds` in modules/cloud-run (120s, likewise justified
+  # against the stream ceiling). That is the only layer that enforces one for
+  # a serverless backend, so raise it there, not here.
 
   backend {
     group = google_compute_region_network_endpoint_group.api_neg.id
