@@ -13,7 +13,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::AppError,
-    extractors::{AuthContext, ClientIp, ReqExt},
+    extractors::{AuthContext, CallerTransport, ClientIp, ReqExt},
     services::{
         audit_capture::{self, AuditResponseBodyMode},
         call_timeout, group_ceiling, http_caller, mcp_caller,
@@ -48,6 +48,7 @@ pub(super) async fn call_action_impl(
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
+    transport: CallerTransport,
     Json(mut req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
     // Reject filter + streaming up front — silently dropping the filter
@@ -698,7 +699,11 @@ pub(super) async fn call_action_impl(
                     &tags::with_outcome(call_tags.clone(), true),
                 )
                 .await;
-                return Err(map_call_error(e, call_timeout));
+                return Err(map_call_error(
+                    e,
+                    call_timeout,
+                    transport.offers_prefer_stream(),
+                ));
             }
         };
 
@@ -821,7 +826,11 @@ pub(super) async fn call_action_impl(
                 &tags::with_outcome(call_tags.clone(), true),
             )
             .await;
-            return Err(map_call_error(e, call_timeout));
+            return Err(map_call_error(
+                e,
+                call_timeout,
+                transport.offers_prefer_stream(),
+            ));
         }
     };
     // Transport failures / oversized bodies bail above (with an error audit

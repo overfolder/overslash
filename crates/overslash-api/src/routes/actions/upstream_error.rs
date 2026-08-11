@@ -16,7 +16,11 @@ use crate::services::{call_timeout::CallTimeout, http_caller};
 /// Map a transport-level `CallError` to the client-facing `AppError`.
 /// Shared by the streamed and buffered forks so the error contract stays
 /// what it was before transport failures gained audit rows.
-pub(super) fn map_call_error(e: http_caller::CallError, timeout: CallTimeout) -> AppError {
+pub(super) fn map_call_error(
+    e: http_caller::CallError,
+    timeout: CallTimeout,
+    offer_prefer_stream: bool,
+) -> AppError {
     match e {
         http_caller::CallError::ResponseTooLarge {
             content_length,
@@ -26,6 +30,7 @@ pub(super) fn map_call_error(e: http_caller::CallError, timeout: CallTimeout) ->
             content_length,
             content_type,
             limit_bytes,
+            offer_prefer_stream,
         },
         // `timeout_ms` comes from the transport (what was actually applied),
         // the rest from the resolver (who set it, and what the caller would
