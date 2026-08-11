@@ -201,11 +201,27 @@ async fn cancel_execution(
         return Err(execution_access::forbidden());
     }
 
+    // A synchronous execution is cancelled through its approval, not here.
+    // `request_execution_cancel` filters on `request IS NOT NULL`, so without
+    // this check a sync row would fall through to the conflict below and be
+    // told it was no longer cancellable — which is not why it failed, and
+    // points the caller at the wrong problem.
+    if !row.has_request {
+        return Err(AppError::BadRequest(format!(
+            "execution {id} is not an async call; cancel it through its approval \
+             with POST /v1/approvals/{{approval_id}}/cancel"
+        )));
+    }
+
     let cancelled = scope.request_execution_cancel(id).await?.ok_or_else(|| {
-        AppError::Conflict(format!(
-            "execution is '{}' and can no longer be cancelled",
-            row.status
-        ))
+        // Deliberately does not quote a status. `row` was read before the
+        // update, so a job that finished in between would be reported with the
+        // state it *was* in rather than the one that refused the cancel.
+        AppError::Conflict(
+            "execution is no longer in a cancellable state — it may have completed, \
+             failed, or expired since it was read"
+                .into(),
+        )
     })?;
     Ok(Json(ExecutionDetail::from_row(cancelled)))
 }

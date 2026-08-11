@@ -248,3 +248,53 @@ async fn the_standalone_execution_endpoint_applies_the_same_rule() {
     assert_eq!(status, 200);
     assert_eq!(body["origin"], "approval");
 }
+
+/// Cancelling an approval-backed execution here is refused with a pointer, not
+/// a conflict.
+///
+/// `request_execution_cancel` filters on `request IS NOT NULL`, so a sync row
+/// returns `None` from it. Reporting that as "no longer cancellable" would
+/// blame the row's state for what is really the wrong endpoint — the caller
+/// wants `POST /v1/approvals/{id}/cancel`.
+#[tokio::test]
+async fn cancelling_a_sync_execution_points_at_the_approval_endpoint() {
+    let pool = common::test_pool().await;
+    let f = fixture(pool).await;
+
+    let (_, approval) = get(
+        &f,
+        &format!("/v1/approvals/{}", f.approval_id),
+        &f.requester_key,
+    )
+    .await;
+    let exec_id = approval["execution"]["id"].as_str().unwrap();
+
+    let resp = f
+        .client
+        .post(format!("{}/v1/executions/{exec_id}/cancel", f.base))
+        .header(
+            common::auth(&f.requester_key).0,
+            common::auth(&f.requester_key).1,
+        )
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    let body: Value = resp.json().await.unwrap_or(Value::Null);
+
+    assert_eq!(status, 400, "expected a pointer, not a conflict: {body}");
+    let text = body.to_string();
+    assert!(
+        text.contains("not an async call"),
+        "error should say why this endpoint refused: {text}"
+    );
+    assert!(
+        text.contains("/v1/approvals/"),
+        "error should name the endpoint that does work: {text}"
+    );
+    // The row's own status must not be blamed for what is an endpoint mismatch.
+    assert!(
+        !text.contains("no longer in a cancellable state"),
+        "a sync row must not be reported as uncancellable: {text}"
+    );
+}
