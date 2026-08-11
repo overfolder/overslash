@@ -178,6 +178,10 @@ pub(super) async fn tools_list_response(
                     "timeout_ms": {
                         "type": "integer",
                         "description": "How long to wait on the upstream, in milliseconds. Omit it and the action's own template default applies, which is usually right. Raise it for known-slow work like a large analytics query. Asking for more than this org's maximum is rejected rather than silently reduced, and the error names the ceiling."
+                    },
+                    "filter": {
+                        "type": "string",
+                        "description": "A jq expression applied to the response body server-side, so only what it selects enters your context. Use it to project the fields you need out of a list endpoint (e.g. `[.data[] | {id, name}]`) instead of pulling every field of every row. Note it narrows what you *receive*, not what the upstream *sends*: a response that exceeds the gateway's size cap fails before the filter runs, so pair it with the action's own paging/limit parameters. Cannot be combined with `deliver: \"url\"` (there is no body to filter — the bytes never pass through the gateway at call time)."
                     }
                 },
                 "required": ["service", "action"],
@@ -220,6 +224,10 @@ pub(super) async fn tools_list_response(
                     "timeout_ms": {
                         "type": "integer",
                         "description": "How long to wait on the upstream, in milliseconds. Omit it and the action's own template default applies, which is usually right. Raise it for known-slow work like a large analytics query. Asking for more than this org's maximum is rejected rather than silently reduced, and the error names the ceiling. Only takes effect on fresh calls (service + action); an approval replay reuses the timeout resolved when the call was first made."
+                    },
+                    "filter": {
+                        "type": "string",
+                        "description": "A jq expression applied to the response body server-side, so only what it selects enters your context. Use it to project the fields you need out of a list endpoint (e.g. `[.data[] | {id, name}]`) instead of pulling every field of every row. Note it narrows what you *receive*, not what the upstream *sends*: a response that exceeds the gateway's size cap fails before the filter runs, so pair it with the action's own paging/limit parameters. Cannot be combined with `deliver: \"url\"`. Only takes effect on fresh calls (service + action)."
                     }
                 },
                 "additionalProperties": false

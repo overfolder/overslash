@@ -540,6 +540,14 @@ fn map_call_error(e: http_caller::CallError, timeout: CallTimeout) -> AppError {
             content_type,
             limit_bytes,
             offer_prefer_stream,
+            // The replay path has no minted URL to offer either. Minting needs
+            // the resolved `HttpDeferred` context the inline handler builds,
+            // and a gated `deliver: "url"` already hits the buffered cap here
+            // for the same reason (SPEC "Deferred downloads"). Tracked, not
+            // fixed. Like `offer_prefer_stream`, nothing reads this: replay
+            // renders through `Display`, never `IntoResponse`.
+            download_url: None,
+            expires_at: None,
         },
         // `timeout_ms` comes from the transport (what was actually applied),
         // the rest from the resolver (who set it, and what the caller would

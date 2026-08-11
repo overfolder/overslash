@@ -10,7 +10,11 @@ Overslash buffers all HTTP responses in memory as `String`. This breaks for file
 
 ## Key Constraint
 
-**Secrets never leave the vault.** An earlier design considered returning authenticated URLs + tokens to callers ("prefer_url"). This was rejected — it would leak OAuth tokens and API keys to the caller, undermining Overslash's core security model. Instead, all auth stays server-side: Overslash injects credentials, calls the upstream request, and streams the response bytes through.
+**Secrets never leave the vault.** An earlier design considered returning authenticated URLs + tokens to callers ("prefer_url"). That *shape* was rejected — handing the caller a URL plus the credential to use it would leak OAuth tokens and API keys, undermining the core security model.
+
+> **Updated (D51).** Capability URLs came back, in a form that keeps the constraint. `deliver: "url"` mints an Overslash-owned, **credential-free** token: the row stores the request, not a credential, and Overslash resolves the secret from the vault at fetch time. Nothing authenticating leaves the vault, so the objection above does not apply. See D51 for the descriptor shape and TTL, and D57 for the token now being minted automatically on an oversized response.
+
+Either way, all auth stays server-side: Overslash injects credentials, calls the upstream request, and streams or serves the response bytes through.
 
 ## Problem
 
@@ -37,24 +41,45 @@ Current behavior with a safety net. Configurable via `MAX_RESPONSE_BODY_BYTES` (
   "content_length": 2147483648,
   "content_type": "application/octet-stream",
   "limit_bytes": 5242880,
-  "hint": "retry with deliver: \"url\" to get a download URL instead of the body, or prefer_stream: true to stream the bytes back on this response"
+  "download_url": "https://…/v1/downloads/AbC…",
+  "expires_at": "2026-08-11T12:15:00Z",
+  "hint": "the response exceeded the cap; fetch the full body at download_url, or narrow the call with the action's own paging parameters or a filter. The URL returns the unfiltered body."
 }
 ```
 
-The `hint` is **transport-aware**. `deliver: "url"` (D51) leads and is always
-offered — it works from every surface. `prefer_stream` is appended only for
-callers who can act on it, which today means direct REST callers; MCP callers
-get the `deliver`-only wording, because `prefer_stream` is absent from the
-`overslash_read` / `overslash_call` input schemas (which are
-`additionalProperties: false`). `routes::mcp::forward` stamps
-`X-Overslash-Transport` on its loopback request and
-`extractors::CallerTransport` reads it back.
+`download_url` / `expires_at` are D57: since `deliver: "url"` never needs the
+body on this runtime, the token for the same request is minted at the point of
+failure so the retry is already in hand. It is best-effort — OAuth-injected
+services and raw HTTP carrying inline credential headers are refused, as are
+any other mint failures. The status stays 502 either way.
+
+The `hint` therefore has **three** forms, and the rule behind them is the same
+one throughout: never name a recovery the caller cannot use.
+
+| Case | Wording |
+|---|---|
+| Minted | Fetch `download_url`, or narrow the call. Neither flag is named — there is nothing left to retry. |
+| Not minted, REST caller | `deliver: "url"` **and** `prefer_stream: true`. |
+| Not minted, MCP caller | `deliver: "url"` only. |
+
+`deliver: "url"` (D51) leads whenever a flag is named at all — it works from
+every surface. `prefer_stream` is appended only for callers who can act on it,
+which today means direct REST callers; it is absent from the `overslash_read`
+/ `overslash_call` input schemas (which are `additionalProperties: false`).
+`routes::mcp::forward` stamps `X-Overslash-Transport` on its loopback request
+and `extractors::CallerTransport` reads it back.
 
 The approval-replay path renders no hint at all: it surfaces the error through
 `AppError`'s `Display` impl (`"response too large"`) rather than
 `IntoResponse`, so the JSON body — `hint` included — is never built. Neither
 recovery is reachable there anyway; replay forces `prefer_stream: false` and
-`POST /v1/approvals/{id}/call` takes no request body to carry `deliver`.
+`POST /v1/approvals/{id}/call` takes no request body to carry `deliver`, and
+for the same reason it mints no `download_url`.
+
+Note what does **not** help here: a jq `filter` runs on an already-buffered
+body, so an oversized response fails before it ever executes. The remedies are
+the action's own paging parameters (now visible on `/v1/search` action rows),
+the download URL, or `prefer_stream`.
 
 ### Strategy C: Streaming Proxy (`prefer_stream: true`)
 

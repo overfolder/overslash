@@ -113,6 +113,17 @@ pub enum AppError {
         /// reads it: that path renders the error through `Display`, never
         /// `IntoResponse`. See `services::action_caller::map_call_error`.
         offer_prefer_stream: bool,
+        /// A capability URL for the same request, minted at the point of
+        /// failure so the caller's retry is already in hand rather than
+        /// something it has to construct from the hint.
+        ///
+        /// `None` whenever minting was refused or failed — OAuth-injected
+        /// services cannot re-mint a bearer at fetch time, raw HTTP with
+        /// inline credential headers must not be persisted, and a mint that
+        /// errors must never mask the error the caller actually hit. The
+        /// hint adapts, so a `None` reads exactly like the pre-D57 502.
+        download_url: Option<String>,
+        expires_at: Option<String>,
     },
 
     /// The upstream did not answer within the timeout resolved for this call.
@@ -441,14 +452,31 @@ impl IntoResponse for AppError {
                 content_type,
                 limit_bytes,
                 offer_prefer_stream,
+                download_url,
+                expires_at,
             } => {
-                // `deliver: "url"` leads and is never omitted: it works from
-                // every surface and is the answer an agent wants anyway, since
-                // it puts the bytes on disk rather than in a context window.
-                // `prefer_stream` is appended only where it is reachable —
-                // naming an option the caller cannot send turns one wasted
-                // round trip into two.
-                let hint = if *offer_prefer_stream {
+                // Three states, not two. Never name a recovery the caller
+                // cannot use — that is what turns one wasted round trip into
+                // two, and it is the reason both halves of this exist.
+                //
+                // Minted: there is nothing left to retry. The URL is already
+                // in hand, so the words go to the *other* lever — narrowing
+                // the call so the next one fits inline. Neither flag appears,
+                // `prefer_stream` included: it is moot once the bytes have a
+                // home outside the response.
+                //
+                // Not minted: a second round trip really is the only way
+                // through, so name the flags. `deliver: "url"` leads and is
+                // never omitted — it works from every surface and puts bytes
+                // on disk rather than in a context window. `prefer_stream` is
+                // appended only where it is reachable; it is absent from the
+                // MCP tool schemas, which are `additionalProperties: false`.
+                let hint = if download_url.is_some() {
+                    "the response exceeded the cap; fetch the full body at \
+                     download_url, or narrow the call with the action's own \
+                     paging parameters or a filter. The URL returns the \
+                     unfiltered body."
+                } else if *offer_prefer_stream {
                     "retry with deliver: \"url\" to get a download URL instead \
                      of the body, or prefer_stream: true to stream the bytes \
                      back on this response"
@@ -463,6 +491,8 @@ impl IntoResponse for AppError {
                         "content_length": content_length,
                         "content_type": content_type,
                         "limit_bytes": limit_bytes,
+                        "download_url": download_url,
+                        "expires_at": expires_at,
                         "hint": hint,
                     })),
                 )
@@ -700,6 +730,55 @@ mod tests {
         let bytes = to_bytes(body, usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         (parts.status, value)
+    }
+
+    /// Build a `response_too_large` in each of the three states its hint
+    /// distinguishes.
+    fn too_large(offer_prefer_stream: bool, minted: bool) -> AppError {
+        AppError::ResponseTooLarge {
+            content_length: Some(31_457_280),
+            content_type: Some("application/json".into()),
+            limit_bytes: 5_242_880,
+            offer_prefer_stream,
+            download_url: minted.then(|| "https://api.example/v1/downloads/tok".to_string()),
+            expires_at: minted.then(|| "2026-08-11T12:15:00Z".to_string()),
+        }
+    }
+
+    /// The one rule behind all three hint forms: never name a recovery the
+    /// caller cannot use. Unit-tested here because the wording is a pure
+    /// function of the variant — reaching all three end-to-end would need an
+    /// OAuth service just to make a mint refuse.
+    #[tokio::test]
+    async fn response_too_large_names_only_reachable_recoveries() {
+        // 1. Minted — the retry is already done, so neither flag is named.
+        let (status, body) = body_json(too_large(true, true).into_response()).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"], "response_too_large");
+        assert_eq!(body["download_url"], "https://api.example/v1/downloads/tok");
+        assert_eq!(body["expires_at"], "2026-08-11T12:15:00Z");
+        let hint = body["hint"].as_str().unwrap();
+        assert!(hint.contains("download_url"), "{hint}");
+        assert!(
+            !hint.contains("deliver") && !hint.contains("prefer_stream"),
+            "a minted URL supersedes both flags — naming either is the wasted \
+             round trip this hint exists to prevent: {hint}"
+        );
+
+        // 2. Not minted, REST — both flags, `deliver` leading.
+        let (_, body) = body_json(too_large(true, false).into_response()).await;
+        assert!(body["download_url"].is_null());
+        let hint = body["hint"].as_str().unwrap();
+        let deliver_at = hint.find("deliver").expect("names deliver");
+        let stream_at = hint.find("prefer_stream").expect("names prefer_stream");
+        assert!(deliver_at < stream_at, "deliver should lead: {hint}");
+
+        // 3. Not minted, MCP — `deliver` only. `prefer_stream` is absent from
+        //    the tool schemas, so naming it sends the agent down a dead end.
+        let (_, body) = body_json(too_large(false, false).into_response()).await;
+        let hint = body["hint"].as_str().unwrap();
+        assert!(hint.contains("deliver"), "{hint}");
+        assert!(!hint.contains("prefer_stream"), "{hint}");
     }
 
     #[tokio::test]

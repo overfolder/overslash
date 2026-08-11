@@ -148,7 +148,7 @@ async fn mcp_call(
 }
 
 #[tokio::test]
-async fn rest_caller_is_offered_both_recoveries() {
+async fn a_minted_download_supersedes_both_recoveries() {
     let pool = common::test_pool().await;
     let (base, agent_key, client) = setup(pool).await;
 
@@ -170,15 +170,35 @@ async fn rest_caller_is_offered_both_recoveries() {
     let body: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(body["error"], "response_too_large", "{text}");
     assert_eq!(body["limit_bytes"], 1024);
+
+    // D57: this service can be minted from (no OAuth, no inline credential),
+    // so the retry the hint used to *name* has already been performed. Both
+    // flags drop out — telling a caller to retry with `deliver: "url"` when
+    // its URL is already in the body is the wasted round trip this hint
+    // exists to prevent, in the same way naming `prefer_stream` over MCP was.
+    let url = body["download_url"]
+        .as_str()
+        .expect("a mintable service mints");
     let hint = body["hint"].as_str().expect("hint present");
-    assert!(hint.contains("prefer_stream"), "{hint}");
-    // `deliver` leads regardless of surface: it is the option that works
-    // everywhere, and an agent wants the bytes on disk rather than streamed
-    // into its context.
-    let deliver_at = hint.find("deliver").expect("hint names deliver");
-    let stream_at = hint.find("prefer_stream").unwrap();
-    assert!(deliver_at < stream_at, "deliver should lead: {hint}");
+    assert!(
+        !hint.contains("prefer_stream") && !hint.contains("deliver"),
+        "a minted URL supersedes both recoveries: {hint}"
+    );
+    assert!(hint.contains("download_url"), "{hint}");
+
+    // And the URL has to work, or this trades one dead end for another.
+    let fetched = client.get(url).send().await.unwrap();
+    assert_eq!(fetched.status(), 200, "the minted URL must redeem");
+    assert_eq!(fetched.bytes().await.unwrap().len(), 10240);
 }
+
+/// The REST/MCP wording split still applies whenever a mint is *not*
+/// available. Both fallbacks are unit-tested in `error.rs`
+/// (`response_too_large_names_only_reachable_recoveries`), because reaching
+/// them end-to-end needs a service minting refuses — an OAuth-injected one,
+/// whose whole setup is orthogonal to what the hint says. What this file
+/// still owns is the half a unit test cannot fake: that
+/// `X-Overslash-Transport` is really stamped and really read back.
 
 #[tokio::test]
 async fn mcp_caller_is_not_offered_prefer_stream() {
@@ -206,14 +226,21 @@ async fn mcp_caller_is_not_offered_prefer_stream() {
         rendered.contains("response_too_large"),
         "expected the cap to trip over MCP: {rendered}"
     );
-    assert!(
-        rendered.contains("deliver"),
-        "MCP callers still need the deliver recovery: {rendered}"
-    );
+    // Whatever else the envelope says, `prefer_stream` must never appear: it
+    // is absent from the MCP tool schemas, which are
+    // `additionalProperties: false`. This holds in all three hint states, so
+    // it is the assertion that keeps pinning the transport stamp now that
+    // this service mints and the wording moved on.
     assert!(
         !rendered.contains("prefer_stream"),
         "prefer_stream is not in the MCP tool schemas — naming it sends the \
          agent down a dead end: {rendered}"
+    );
+    // The recovery the MCP caller gets is the minted URL itself (D57), not an
+    // instruction to go and ask for one.
+    assert!(
+        rendered.contains("download_url"),
+        "an MCP caller should receive the minted URL, not a retry: {rendered}"
     );
 }
 

@@ -58,6 +58,7 @@ mod call;
 mod deferred;
 mod dto;
 mod errors;
+mod filter_apply;
 mod mcp_resolve;
 mod permission_gate;
 mod resolve;
