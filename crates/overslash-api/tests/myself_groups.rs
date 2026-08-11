@@ -540,6 +540,12 @@ async fn agent_read_on_owners_service_skips_layer_2() {
 /// Register a template with both a read and a write action, then create a
 /// user-level instance from it. `minimal_openapi` only carries a read op, and
 /// the auto-approve ladder is only interesting above that rung.
+///
+/// The instance binds a real vault secret. That is scaffolding, not the
+/// subject: an instance whose required slot is unbound is now refused at
+/// resolution with `needs_authentication` (D60) before the permission gate
+/// runs, so leaving it unbound would make these tests assert on the credential
+/// gate rather than on the auto-approve ladder they exist for.
 async fn create_user_service_with_write(
     base: &str,
     admin_key: &str,
@@ -593,6 +599,21 @@ paths:
         resp.text().await
     );
 
+    // Seed the secret the scheme names, so the only way this instance can fail
+    // is the dead upstream host — which is what these tests already tolerate.
+    let resp = client
+        .put(format!("{base}/v1/secrets/svc_token"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({ "value": "svc-token-value" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "seeding svc_token failed: {:?}",
+        resp.text().await
+    );
+
     let resp = client
         .post(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {user_key}"))
@@ -601,6 +622,7 @@ paths:
             "name": name,
             "user_level": true,
             "status": "active",
+            "secret_name": "svc_token",
         }))
         .send()
         .await

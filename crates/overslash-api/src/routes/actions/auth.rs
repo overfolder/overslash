@@ -25,6 +25,39 @@ pub(crate) use super::auth_resolve::{resolve_mcp_oauth_bearer, resolve_replay_au
 pub(super) use super::auth_envelopes::metadata_scope_reauth_envelope;
 pub(super) use super::auth_scopes::is_metadata_scope_denial;
 
+/// The template-declared fields an instance failed to supply, when credential
+/// resolution came up empty.
+///
+/// Carried out of the resolver rather than recomputed by the caller: the
+/// resolution chain (per-slot binding → legacy scalar `secret_name` → org
+/// default → platform credential, plus the D38 config-var pass) is intricate
+/// enough that a second implementation would drift, and the drift would be
+/// invisible — a wrong field name in an error message, not a failing call.
+#[derive(Default)]
+pub(crate) struct MissingCredentials {
+    /// Credential slot keys with no vault secret bound (`mailbox_pass`).
+    pub slots: Vec<String>,
+    /// `required` config vars with no value (`mailbox_user`).
+    pub config: Vec<String>,
+}
+
+impl MissingCredentials {
+    pub(super) fn is_empty(&self) -> bool {
+        self.slots.is_empty() && self.config.is_empty()
+    }
+
+    /// Every missing key, config before slots. The config half is the
+    /// human-recognisable one (a username before its password), so it reads
+    /// better first in the envelope the agent relays to the user.
+    pub(super) fn keys(&self) -> Vec<String> {
+        self.config
+            .iter()
+            .chain(self.slots.iter())
+            .cloned()
+            .collect()
+    }
+}
+
 /// Outcome of service/instance auth resolution.
 ///
 /// The live OAuth credential rides in `auth_header` — a non-`Serialize`
@@ -46,6 +79,12 @@ pub(crate) struct ResolvedAuth {
     /// instances fall back to the template's identity config var (see
     /// [`crate::services::principals`]).
     pub principal: Option<String>,
+    /// Why resolution came up empty, when it did: the credential slots and
+    /// `required` config vars the instance never supplied. `None` whenever
+    /// resolution succeeded, and whenever it failed for a reason that isn't
+    /// missing instance configuration (an OAuth template with no connection
+    /// yet — that path recovers through `auth_url`).
+    pub missing: Option<MissingCredentials>,
 }
 
 impl ResolvedAuth {
@@ -55,6 +94,7 @@ impl ResolvedAuth {
             auth_header: None,
             oauth_injected: false,
             principal: None,
+            missing: None,
         }
     }
 
@@ -64,6 +104,7 @@ impl ResolvedAuth {
             auth_header,
             oauth_injected: true,
             principal: None,
+            missing: None,
         }
     }
 
@@ -76,6 +117,13 @@ impl ResolvedAuth {
     /// principal costs no extra query.
     pub(super) fn with_principal(mut self, principal: Option<String>) -> Self {
         self.principal = principal;
+        self
+    }
+
+    /// Record why resolution came up empty. Only meaningful on an otherwise
+    /// empty result — the gate reads it exclusively when nothing was injected.
+    pub(super) fn with_missing(mut self, missing: MissingCredentials) -> Self {
+        self.missing = Some(missing);
         self
     }
 }

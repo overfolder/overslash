@@ -21,6 +21,41 @@ use super::{
 
 pub(super) use super::resolve_metadata::resolve_action_metadata;
 
+/// Post-resolution gate for secret-backed templates.
+///
+/// When nothing at all was injected — no OAuth header, no secret — and the
+/// template needs a credential the instance never got, bail with a
+/// `needs_authentication` naming the fields instead of dialling upstream with
+/// an empty credential set and handing the caller the provider's opaque 401.
+///
+/// Runs in *both* call shapes. Its OAuth twin
+/// (`needs_authentication_for_service`) runs only in the action shape, because
+/// it needs a `ServiceAction` to read `required_scopes` from — a separate,
+/// pre-existing gap in the verb shape, not something this gate introduces.
+async fn gate_missing_credentials(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: Uuid,
+    svc: &overslash_core::types::ServiceDefinition,
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+    service_key: &str,
+    resolved_auth: &super::auth::ResolvedAuth,
+) -> Option<AppError> {
+    if resolved_auth.oauth_injected || !resolved_auth.secrets.is_empty() {
+        return None;
+    }
+    needs_credentials_for_service(
+        state,
+        ext,
+        org_id,
+        svc,
+        instance,
+        service_key,
+        resolved_auth.missing.as_ref(),
+    )
+    .await
+}
+
 /// Resolve a CallRequest into a concrete ActionRequest + metadata.
 /// Handles both SPEC §8 shapes (Service + action, Service + HTTP verb).
 /// Mode A raw HTTP rides on the verb shape against the synthetic `http`
@@ -114,6 +149,20 @@ pub(super) async fn resolve_request(
             )
             .await?
         };
+
+        if let Some(err) = gate_missing_credentials(
+            state,
+            ext,
+            scope.org_id(),
+            &svc,
+            instance.as_ref(),
+            service_key,
+            &resolved_auth,
+        )
+        .await
+        {
+            return Err(err);
+        }
 
         let description = format!("{} {} ({})", raw_method, path, svc.display_name);
 
@@ -598,9 +647,9 @@ pub(super) async fn resolve_request(
         // forward to the user. Same envelope shape as the RefreshFailed
         // path so MCP clients only need one branch.
         //
-        // ApiKey-only templates aren't covered: there's no OAuth provider
-        // to mint a URL for, and the existing secret-not-found errors
-        // already give the operator a "set this secret" path. MCP-bearer
+        // ApiKey-only templates take the `gate_missing_credentials` fork
+        // right below: there's no OAuth provider to mint a URL for, so they
+        // get a dashboard hint naming the unset fields instead. MCP-bearer
         // templates take a different fork (the runtime check above) and
         // never reach this branch.
         if !resolved_auth.oauth_injected
@@ -617,6 +666,22 @@ pub(super) async fn resolve_request(
                 return_url_hint,
             )
             .await?
+        {
+            return Err(err);
+        }
+
+        // Secret-backed templates: no OAuth provider to mint a URL for, so the
+        // gate above declined. Name the unconfigured fields instead.
+        if let Some(err) = gate_missing_credentials(
+            state,
+            ext,
+            scope.org_id(),
+            &svc,
+            instance.as_ref(),
+            service_key,
+            &resolved_auth,
+        )
+        .await
         {
             return Err(err);
         }

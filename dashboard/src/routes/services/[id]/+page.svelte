@@ -129,7 +129,29 @@
 	// When the service is bound to a connection, offer to preserve it. Default
 	// off → the backend cleans up the connection if nothing else uses it.
 	let keepConnection = $state(false);
-	let activeTab = $state<'overview' | 'credentials' | 'actions'>('overview');
+	type Tab = 'overview' | 'credentials' | 'actions';
+	const TABS: Tab[] = ['overview', 'credentials', 'actions'];
+
+	// `?tab=` deep-link. The API's `needs_authentication` envelope hands agents a
+	// `hint_url` pointing straight at the credentials form of the instance that
+	// isn't configured, so the tab has to be addressable — landing on Overview
+	// and making the user hunt for it would defeat the hint.
+	function tabFromUrl(): Tab {
+		const t = $page.url.searchParams.get('tab');
+		return TABS.includes(t as Tab) ? (t as Tab) : 'overview';
+	}
+
+	let activeTab = $state<Tab>(tabFromUrl());
+
+	function selectTab(t: Tab) {
+		activeTab = t;
+		// Keep the URL in step so the tab survives a reload and stays shareable.
+		// replaceState: a tab switch isn't a navigation worth a back-button entry.
+		const url = new URL($page.url);
+		if (t === 'overview') url.searchParams.delete('tab');
+		else url.searchParams.set('tab', t);
+		goto(url, { replaceState: true, noScroll: true, keepFocus: true });
+	}
 
 	// Group-assignment form state
 	let savingGroup = $state(false);
@@ -317,7 +339,9 @@
 		reconnectAbort?.abort();
 		reconnectAbort = null;
 		connecting = false;
-		activeTab = 'overview';
+		// Not an unconditional 'overview': this also runs on first load, and a
+		// `?tab=credentials` deep-link has to survive it.
+		activeTab = tabFromUrl();
 		loading = true;
 		error = null;
 		try {
@@ -681,7 +705,11 @@
 
 	$effect(() => {
 		// System services don't expose a credentials tab — snap back to overview
-		// if state somehow landed on credentials (e.g. rapid nav between instances).
+		// if state somehow landed on credentials (e.g. rapid nav between
+		// instances, or a ?tab=credentials deep-link at a system service).
+		// Assign directly rather than via selectTab: routing the URL rewrite
+		// through here would make `$page` a dependency of an effect that also
+		// writes the state it reads.
 		if (isSystem && activeTab === 'credentials') {
 			activeTab = 'overview';
 		}
@@ -757,12 +785,12 @@
 		{/if}
 
 		<nav class="tabs">
-			{#each (isSystem ? ['overview', 'actions'] : ['overview', 'credentials', 'actions']) as t}
+			{#each (isSystem ? TABS.filter((t) => t !== 'credentials') : TABS) as t}
 				<button
 					type="button"
 					class="tab"
 					class:active={activeTab === t}
-					onclick={() => (activeTab = t as typeof activeTab)}
+					onclick={() => selectTab(t)}
 				>
 					{t}
 				</button>

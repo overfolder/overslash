@@ -198,18 +198,37 @@ pub enum AppError {
     /// user-facing URL is minted (`auth_url`/`short` omitted, no flow row).
     /// `headless: true` plus `provider`/`required_scopes` tell the integration
     /// to run its own OAuth dance and re-import.
+    ///
+    /// **Secret-backed shape**: the same code also covers a template that
+    /// authenticates with vault secrets rather than OAuth (`email`, `stripe`,
+    /// any org template declaring an apiKey scheme) whose instance was never
+    /// configured. There is no consent page to send anyone to, so that shape
+    /// carries no `auth_url`/`short`/`provider` — it names the fields to fill
+    /// in `missing_credentials` and points at the form in `hint_url`. Agents
+    /// branching on the code should treat `auth_url` as optional and fall back
+    /// to `hint_url`.
     #[error("needs_authentication: {service:?}")]
     NeedsAuthentication {
         service: Option<String>,
         service_instance_id: Option<uuid::Uuid>,
         connection_id: Option<uuid::Uuid>,
-        /// `None` only for headless orgs (no gated URL minted).
+        /// `None` for headless orgs (no gated URL minted) and for the
+        /// secret-backed shape (nothing to consent to).
         auth_url: Option<String>,
         short: Option<String>,
         provider: Option<String>,
         required_scopes: Vec<String>,
         account_email: Option<String>,
         headless: bool,
+        /// Template-declared credential keys the caller must supply — secret
+        /// slot keys and `required` config vars that resolved to nothing.
+        /// Empty on the OAuth-shaped paths, which recover via `auth_url`.
+        missing_credentials: Vec<String>,
+        /// Dashboard deep-link to the surface that fixes it: the instance's
+        /// credentials form, or the create-instance wizard when no instance
+        /// exists. `None` for headless orgs, which have no Overslash
+        /// dashboard. Same role `hint_url` plays on [`Self::CredentialMissing`].
+        hint_url: Option<String>,
     },
 
     /// An existing connection's access token can no longer be refreshed
@@ -556,6 +575,8 @@ impl IntoResponse for AppError {
                 required_scopes,
                 account_email,
                 headless,
+                missing_credentials,
+                hint_url,
             } => {
                 let mut body = json!({
                     "error": "needs_authentication",
@@ -591,6 +612,15 @@ impl IntoResponse for AppError {
                     if let Some(s) = short {
                         body["short"] = json!(s);
                     }
+                }
+                // The secret-backed shape, emitted in *either* branch: a
+                // headless org still needs to know which fields to collect,
+                // it just has no dashboard to be pointed at.
+                if !missing_credentials.is_empty() {
+                    body["missing_credentials"] = json!(missing_credentials);
+                }
+                if let Some(url) = hint_url {
+                    body["hint_url"] = json!(url);
                 }
                 return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
             }
@@ -910,6 +940,94 @@ mod tests {
             body["reason"],
             "identity is not an ancestor or descendant of caller"
         );
+    }
+
+    /// The secret-backed `needs_authentication` shape: no consent link, but a
+    /// named field list and a dashboard deep-link in its place.
+    #[tokio::test]
+    async fn needs_authentication_secret_shape_renders_hint_and_missing() {
+        let instance = Uuid::new_v4();
+        let err = AppError::NeedsAuthentication {
+            service: Some("email".into()),
+            service_instance_id: Some(instance),
+            connection_id: None,
+            auth_url: None,
+            short: None,
+            provider: None,
+            required_scopes: Vec::new(),
+            account_email: None,
+            headless: false,
+            missing_credentials: vec!["mailbox_user".into(), "mailbox_pass".into()],
+            hint_url: Some(format!(
+                "https://dash.example/services/{instance}?tab=credentials"
+            )),
+        };
+        let (status, body) = body_json(err.into_response()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "needs_authentication");
+        assert_eq!(body["service"], "email");
+        assert_eq!(
+            body["missing_credentials"],
+            json!(["mailbox_user", "mailbox_pass"])
+        );
+        assert_eq!(
+            body["hint_url"],
+            json!(format!(
+                "https://dash.example/services/{instance}?tab=credentials"
+            ))
+        );
+        // Absent, not null — consumers branch on key presence.
+        assert!(body.get("auth_url").is_none(), "{body}");
+        assert!(body.get("provider").is_none(), "{body}");
+    }
+
+    /// A headless org has no dashboard to be pointed at, but still needs to
+    /// know which fields to collect — so the list ships and the link does not.
+    #[tokio::test]
+    async fn needs_authentication_headless_keeps_missing_without_hint() {
+        let err = AppError::NeedsAuthentication {
+            service: Some("email".into()),
+            service_instance_id: None,
+            connection_id: None,
+            auth_url: None,
+            short: None,
+            provider: None,
+            required_scopes: Vec::new(),
+            account_email: None,
+            headless: true,
+            missing_credentials: vec!["mailbox_pass".into()],
+            hint_url: None,
+        };
+        let (_status, body) = body_json(err.into_response()).await;
+        assert_eq!(body["headless"], json!(true));
+        assert_eq!(body["missing_credentials"], json!(["mailbox_pass"]));
+        assert!(body.get("hint_url").is_none(), "{body}");
+    }
+
+    /// The OAuth shape is unchanged: neither new key appears when empty, so
+    /// existing consumers see exactly the body they saw before.
+    #[tokio::test]
+    async fn needs_authentication_oauth_shape_elides_new_fields() {
+        let err = AppError::NeedsAuthentication {
+            service: Some("x".into()),
+            service_instance_id: None,
+            connection_id: None,
+            auth_url: Some("https://api.example/connect-authorize?id=abc".into()),
+            short: None,
+            provider: Some("x".into()),
+            required_scopes: vec!["tweet.read".into()],
+            account_email: None,
+            headless: false,
+            missing_credentials: Vec::new(),
+            hint_url: None,
+        };
+        let (_status, body) = body_json(err.into_response()).await;
+        assert_eq!(
+            body["auth_url"],
+            "https://api.example/connect-authorize?id=abc"
+        );
+        assert!(body.get("missing_credentials").is_none(), "{body}");
+        assert!(body.get("hint_url").is_none(), "{body}");
     }
 
     #[test]

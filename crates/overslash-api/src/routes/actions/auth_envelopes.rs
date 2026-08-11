@@ -13,7 +13,7 @@ use crate::{
     services::{oauth::OAuthError, platform_connections},
 };
 
-use super::auth::{classify_oauth, org_is_headless};
+use super::auth::{MissingCredentials, classify_oauth, org_is_headless};
 use super::*;
 
 /// Map an `OAuthError` to the right `AppError` response shape, given a
@@ -214,11 +214,9 @@ pub(super) async fn needs_authentication_for_service(
         _ => None,
     });
 
-    // Templates that don't declare OAuth: nothing to mint a URL for. The
-    // template might require an API key, but we don't have a click-to-fix
-    // recovery shape for that today — the existing
-    // `secret-not-found`-style errors handle it. Future: emit a different
-    // typed envelope with a "go to dashboard / set this secret" hint.
+    // Templates that don't declare OAuth: nothing to mint a URL for. Their
+    // recovery shape is [`needs_credentials_for_service`] below, which the
+    // caller runs straight after this one.
     let Some(provider) = provider else {
         return Ok(None);
     };
@@ -237,6 +235,8 @@ pub(super) async fn needs_authentication_for_service(
             required_scopes: action.required_scopes.clone(),
             account_email: None,
             headless: true,
+            missing_credentials: Vec::new(),
+            hint_url: None,
         }));
     }
 
@@ -302,7 +302,173 @@ pub(super) async fn needs_authentication_for_service(
         required_scopes: action.required_scopes.clone(),
         account_email: None,
         headless: false,
+        missing_credentials: Vec::new(),
+        hint_url: None,
     }))
+}
+
+/// Mode B/C: the secret-backed twin of [`needs_authentication_for_service`].
+///
+/// A template that authenticates with vault secrets has no OAuth provider, so
+/// there is no consent page to mint a URL for and the OAuth builder above
+/// declines. Historically that meant resolution simply ended with no
+/// credentials and the request went upstream unauthenticated — the caller got
+/// the provider's opaque 401 instead of "go set this field". This builds the
+/// envelope that says which field.
+///
+/// Reuses the `needs_authentication` code rather than minting a new one: the
+/// MCP relay whitelist, `?wrap=true`, and every agent already branch on it.
+/// The recovery affordance differs (`hint_url` + `missing_credentials` instead
+/// of `auth_url`), which the variant's doc comment spells out.
+///
+/// Returns `None` — meaning "let the call proceed unauthenticated, as before" —
+/// when the template declares OAuth (the other builder owns that case), or when
+/// it requires no credential the instance is missing. That second case is what
+/// keeps genuinely credential-free templates (`deepwiki`, the `platform`
+/// runtime) and optional-only credentials (an `email` instance that needs no
+/// gateway key) working exactly as they did.
+pub(super) async fn needs_credentials_for_service(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: Uuid,
+    svc: &overslash_core::types::ServiceDefinition,
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+    service_key: &str,
+    missing: Option<&MissingCredentials>,
+) -> Option<AppError> {
+    // An OAuth template's empty resolution is a missing *connection*, not
+    // missing configuration; `needs_authentication_for_service` mints the
+    // consent link for it. Callers run that one first, so this is belt and
+    // braces — but cheap, and it keeps the two builders' domains disjoint no
+    // matter the call order.
+    if svc
+        .auth
+        .iter()
+        .any(|a| matches!(a, overslash_core::types::ServiceAuth::OAuth { .. }))
+    {
+        return None;
+    }
+
+    // Prefer the resolver's own diagnosis: it walked the full chain (per-slot
+    // binding → legacy scalar → org default → platform credential, plus the
+    // D38 config pass) and knows exactly which rung came up empty. Fall back to
+    // deriving it from the template when there is none — the no-instance path,
+    // where a global template is called by key and `resolve_service_auth` ran
+    // alone.
+    let keys = match missing.filter(|m| !m.is_empty()) {
+        Some(m) => m.keys(),
+        None => derive_missing_keys(svc, instance),
+    };
+    if keys.is_empty() {
+        return None;
+    }
+
+    // Headless (white-label) org: no Overslash dashboard to point at, so no
+    // `hint_url` — but the field list still ships, since the integration is the
+    // one that has to collect those values. Mirrors the OAuth builder's split.
+    let headless = org_is_headless(state.db(ext), org_id).await;
+    let hint_url = (!headless).then(|| {
+        state.config.dashboard_url_for(&match instance {
+            // The instance exists but isn't configured: land on its
+            // credentials form.
+            Some(i) => format!("/services/{}?tab=credentials", i.id),
+            // No instance at all: the fix is to create one from the template.
+            None => format!(
+                "/services/new?template={}",
+                urlencoding::encode(service_key)
+            ),
+        })
+    });
+
+    Some(AppError::NeedsAuthentication {
+        service: Some(service_key.to_string()),
+        service_instance_id: instance.map(|i| i.id),
+        connection_id: None,
+        // No consent page exists for a secret-backed template.
+        auth_url: None,
+        short: None,
+        provider: None,
+        required_scopes: Vec::new(),
+        account_email: None,
+        headless,
+        missing_credentials: keys,
+        hint_url,
+    })
+}
+
+/// Which template-declared fields an instance has not supplied, derived from
+/// the template + stored instance rather than from a resolution attempt.
+///
+/// Only used when the resolver handed back no diagnosis — chiefly the
+/// no-instance path, where every required field is by definition missing.
+/// Mirrors the resolution chain in `resolve_instance_auth` and the classifier
+/// behind the dashboard's credentials badge
+/// (`platform_services::status::derive_credentials_status`); whether the named
+/// secret actually exists in the vault is a send-time concern, reported
+/// separately as `credential_missing`.
+fn derive_missing_keys(
+    svc: &overslash_core::types::ServiceDefinition,
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+) -> Vec<String> {
+    use overslash_core::types::SecretSource;
+
+    let mut keys: Vec<String> = Vec::new();
+
+    // Config first: the human-recognisable half (a username before its
+    // password). Only vars wired to a secret scheme count — the same set
+    // `resolve_instance_auth` checks.
+    for auth in &svc.auth {
+        for var in svc.config_for(auth) {
+            if !var.required || keys.contains(&var.key) {
+                continue;
+            }
+            let present = instance
+                .and_then(|i| i.config.0.get(&var.key))
+                .or_else(|| {
+                    svc.instance_defaults
+                        .as_ref()
+                        .and_then(|d| d.config.get(&var.key))
+                })
+                .is_some();
+            if !present {
+                keys.push(var.key.clone());
+            }
+        }
+    }
+
+    // The legacy scalar `secret_name` only ever stood for a single credential,
+    // so it cannot vouch for one half of a composed one.
+    let single_instance_slot = svc
+        .all_slots()
+        .iter()
+        .filter(|s| s.source == SecretSource::Instance)
+        .count()
+        <= 1;
+    for slot in svc.all_slots() {
+        if slot.optional || keys.contains(&slot.key) {
+            continue;
+        }
+        let bound = instance
+            .and_then(|i| i.credentials.get(&slot.key))
+            .is_some_and(|n| !n.is_empty());
+        if bound {
+            continue;
+        }
+        let resolvable = match slot.source {
+            SecretSource::Instance => {
+                single_instance_slot
+                    && instance
+                        .and_then(|i| i.secret_name.as_deref())
+                        .is_some_and(|n| !n.is_empty())
+            }
+            SecretSource::Org => !slot.default_secret_name.is_empty(),
+        };
+        if !resolvable {
+            keys.push(slot.key.clone());
+        }
+    }
+
+    keys
 }
 
 /// Surface a metadata-scope denial (see [`is_metadata_scope_denial`]) as a
