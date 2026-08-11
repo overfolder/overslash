@@ -25,33 +25,11 @@ use crate::{AppState, error::AppError};
 use super::render_action_result;
 use super::*;
 
-/// Validate the request-level delivery flags, returning whether this call
-/// defers.
-///
-/// Both rejections exist for the same reason the `filter` + `prefer_stream`
-/// guard does: silently dropping one of a pair of contradictory instructions
-/// is how a caller ends up with a multi-MB body it thought it had narrowed.
-/// With `deliver: "url"` the body never passes through the gateway at call
-/// time at all, so a filter has nothing to read; and `prefer_stream` says
-/// "stream the bytes on this response" while `deliver` says "defer them to a
-/// second request".
-pub(super) fn validate_flags(req: &CallRequest) -> Result<bool, AppError> {
-    let deliver_url = req.deliver.is_some_and(Delivery::is_url);
-    if deliver_url && req.filter.is_some() {
-        return Err(AppError::BadRequest(
-            "filter cannot be combined with deliver: \"url\"".into(),
-        ));
-    }
-    if deliver_url && req.prefer_stream.unwrap_or(false) {
-        return Err(AppError::BadRequest(
-            "prefer_stream cannot be combined with deliver: \"url\" — \
-             prefer_stream streams the bytes inline on this response, \
-             deliver: \"url\" defers them to a second request"
-                .into(),
-        ));
-    }
-    Ok(deliver_url)
-}
+// `validate_flags` moved to `super::flags`, which now owns every
+// flag-combination rejection — including the `filter` + `prefer_stream` guard
+// that used to be inlined in `call`, and the async ones. One home means
+// `/v1/actions/validate` and `/v1/actions/call` can share it, closing the
+// divergence where the dry-run green-lit shapes the real call refused.
 
 /// Replace a tool result's body with a download descriptor, in place.
 ///

@@ -192,7 +192,7 @@ pub(super) async fn resolve_approval(
         );
 
         return Ok(Json(
-            build_response(&scope, &state.registry, updated, auth.identity_id).await?,
+            build_response(&scope, &state.registry, updated, &auth).await?,
         ));
     }
 

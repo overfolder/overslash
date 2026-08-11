@@ -141,3 +141,24 @@ impl OrgScope {
         crate::repos::execution::find_by_id(self.db(), self.org_id(), id).await
     }
 }
+
+impl OrgScope {
+    /// List executions for `identity_id`, or for its whole subtree.
+    pub async fn list_executions_for_identity(
+        &self,
+        identity_id: Uuid,
+        subtree: bool,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ExecutionRow>, sqlx::Error> {
+        crate::repos::execution::list_for_identity(
+            self.db(),
+            self.org_id(),
+            identity_id,
+            subtree,
+            status,
+            limit,
+        )
+        .await
+    }
+}

@@ -54,13 +54,10 @@ pub(super) async fn call_action_impl(
     // Reject filter + streaming up front — silently dropping the filter
     // could let an agent think it's getting a small slice and instead
     // pipe a multi-MB stream into its context window.
-    if req.prefer_stream.unwrap_or(false) && req.filter.is_some() {
-        return Err(AppError::BadRequest(
-            "filter cannot be combined with prefer_stream".into(),
-        ));
-    }
-
-    let deliver_url = deferred::validate_flags(&req)?;
+    let super::flags::RequestFlags {
+        deliver_url,
+        is_async,
+    } = super::flags::validate_request(&req)?;
 
     // Validate filter syntax before any upstream call so a malformed
     // expression is a clean 400 — not a wasted upstream quota burn.
@@ -98,6 +95,12 @@ pub(super) async fn call_action_impl(
     // the template / instance from the DB.
     let (pre_meta, pre_resolved_mode_c) =
         resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
+    // Rejections that only become visible once the template is known — a
+    // platform action has nothing to defer, and a binary body would be
+    // corrupted on its way into the row. Above argument coercion for the same
+    // reason the argument gate sits above the permission walk: the cheapest
+    // structurally-impossible answer first.
+    super::flags::validate_resolved(&req, pre_resolved_mode_c.as_ref())?;
     // Rewrite template-declared parameter aliases (e.g. `to` → `recipient`) to
     // their canonical names first, so defaults, coercion, validation, the
     // approval replay payload, and resolution all see canonical keys only.
@@ -415,6 +418,31 @@ pub(super) async fn call_action_impl(
     // shared by the MCP and HTTP dispatch forks below. Same bounding the
     // metrics wrapper in `mod.rs` applies to `record_execution`.
     let upstream_tpl = super::bounded_template_key(&state.registry, req.service.as_deref());
+
+    // ── Async fork ───────────────────────────────────────────────────
+    // Everything above is validation, resolution, and authorisation; the forks
+    // below are the only code that dials anything. Sitting exactly between them
+    // is what makes "async runs the same call, just not on this connection"
+    // structurally true — and why this is a field on CallRequest, not a second
+    // endpoint. See `async_accept` and DECISIONS D57.
+    if is_async {
+        return super::async_accept::accept(
+            &state,
+            &ext,
+            &scope,
+            &auth,
+            identity_id,
+            &req,
+            &meta,
+            &action_req,
+            auth_header.is_some(),
+            call_timeout,
+            &call_tags,
+            ip.0.as_deref(),
+            &upstream_tpl,
+        )
+        .await;
+    }
 
     // ── MCP dispatch fork ────────────────────────────────────────────
     // Mcp-runtime services skip the HTTP executor: no URL templating, no

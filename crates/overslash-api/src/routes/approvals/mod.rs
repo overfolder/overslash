@@ -73,7 +73,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[derive(Serialize)]
-struct ExecutionSummary {
+pub(crate) struct ExecutionSummary {
     id: Uuid,
     /// One of: `pending`, `executing`, `executed`, `failed`, `cancelled`, `expired`.
     /// Passed through verbatim from the `executions.status` column.
@@ -106,10 +106,24 @@ struct ExecutionSummary {
     /// `result_viewed_at`). Drives the "called but output unread"
     /// pending-calls surface.
     output_read: bool,
+    /// True when policy hid the body: the viewer is not the requester, not in
+    /// their chain, and not an org admin. `result` and `error` are omitted.
+    /// Rendered as "hidden", never as empty — an empty panel reads as a bug
+    /// rather than as policy.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) result_redacted: bool,
 }
 
 impl ExecutionSummary {
-    fn from_row(r: ExecutionRow) -> Self {
+    /// Drop the body for a viewer who may see that the execution exists but
+    /// not what it returned.
+    pub(crate) fn redact_result(&mut self) {
+        self.result = None;
+        self.error = None;
+        self.result_redacted = true;
+    }
+
+    pub(crate) fn from_row(r: ExecutionRow) -> Self {
         let runtime = r.result.as_ref().and_then(extract_runtime);
         let http_status_code = if matches!(runtime.as_deref(), Some("http")) {
             r.result.as_ref().and_then(extract_http_status_code)
@@ -131,6 +145,8 @@ impl ExecutionSummary {
             runtime,
             http_status_code,
             output_read,
+            // Callers decide visibility; `from_row` never hides on its own.
+            result_redacted: false,
         }
     }
 }
@@ -277,8 +293,10 @@ async fn build_response(
     scope: &OrgScope,
     registry: &ServiceRegistry,
     row: overslash_db::repos::approval::ApprovalRow,
-    viewer: Option<Uuid>,
+    acl: &OrgAcl,
 ) -> Result<ApprovalResponse> {
+    let requester_id = row.identity_id;
+    let resolver_id = row.current_resolver_identity_id;
     let (identity_path, identity_path_ids) =
         crate::services::identity_path::build_for_identity(scope, row.identity_id)
             .await
@@ -291,7 +309,10 @@ async fn build_response(
     let execution = scope.get_execution_by_approval(row.id).await?;
     let mut resp =
         ApprovalResponse::from_row(row, identity_path, identity_path_ids, execution, registry);
-    resp.decorate_relationship(scope, viewer).await?;
+    resp.decorate_relationship(scope, acl.identity_id).await?;
+    // Same gate the standalone `/execution` endpoint applies — an embedded
+    // summary carries the identical body.
+    read::redact_execution_if_needed(scope, acl, requester_id, resolver_id, &mut resp).await?;
     Ok(resp)
 }
 

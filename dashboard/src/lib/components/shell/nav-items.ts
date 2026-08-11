@@ -10,6 +10,7 @@ export const NAV_ITEMS: NavItemDef[] = [
 	{ href: '/secrets', label: 'Secrets', icon: '⚷' },
 	{ href: '/connections', label: 'Connections', icon: '⇄' },
 	{ href: '/approvals', label: 'Approvals', icon: '✓' },
+	{ href: '/executions', label: 'Executions', icon: '⟳' },
 	{ href: '/audit', label: 'Audit Log', icon: '☰' }
 ];
 

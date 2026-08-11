@@ -60,6 +60,13 @@ pub(super) struct CallRequest {
     /// Where the response body should go. See [`Delivery`].
     #[serde(default)]
     pub(super) deliver: Option<Delivery>,
+    /// Whether this call runs on the caller's connection. See [`ExecutionMode`].
+    ///
+    /// Load-bearing that this exists at all: `CallRequest` is
+    /// `deny_unknown_fields`, so without it the flag would be a 400 at
+    /// deserialization rather than a feature.
+    #[serde(default)]
+    pub(super) execution: Option<ExecutionMode>,
 
     /// How long this call may wait on the upstream, in milliseconds.
     ///
@@ -134,6 +141,29 @@ pub(super) enum Delivery {
 impl Delivery {
     pub(super) fn is_url(self) -> bool {
         matches!(self, Delivery::Url)
+    }
+}
+
+/// Whether the caller waits on this connection for the upstream.
+///
+/// Named `execution` rather than `async` because `async` is a Rust keyword and
+/// a reserved word in JS/TS, so the field would be unnameable in generated
+/// clients and awkward in every mirror type.
+///
+/// `Sync` is the historical behaviour: the response carries the upstream body,
+/// bounded by the deployment's request cap. `Async` accepts the call, persists
+/// it, and hands back an execution id to poll — the only way a call can outlive
+/// the caller's connection. See DECISIONS D57.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum ExecutionMode {
+    Sync,
+    Async,
+}
+
+impl ExecutionMode {
+    pub(super) fn is_async(self) -> bool {
+        matches!(self, ExecutionMode::Async)
     }
 }
 
@@ -214,6 +244,30 @@ pub(super) enum CallResponse {
     },
     #[serde(rename = "denied")]
     Denied { reason: String },
+    /// Async call accepted. The upstream has not been dialled yet — poll
+    /// `GET /v1/executions/{execution_id}` for the outcome, or subscribe to
+    /// the `executions` event topic.
+    ///
+    /// Note this shares its HTTP status (202) with `PendingApproval`. That is
+    /// deliberate — 202 is exact for both ("accepted, not completed") and
+    /// `status` is the documented discriminator everywhere else in this API —
+    /// but it means a client must branch on `status`, never on the code alone.
+    #[serde(rename = "accepted")]
+    Accepted {
+        execution_id: Uuid,
+        /// Absolute poll URL, built the same way `approval_url` is.
+        execution_url: String,
+        action_description: Option<String>,
+        /// RFC 3339. After this the row is swept to `expired` and the call
+        /// will never run.
+        expires_at: String,
+        /// The D56-resolved budget the worker will run under. Echoed so a
+        /// caller knows how long to keep polling rather than guessing from a
+        /// deployment default it cannot see.
+        timeout_ms: u64,
+        /// Server-suggested delay before the first poll, in milliseconds.
+        poll_after_ms: u64,
+    },
 }
 
 /// Metadata from request resolution, used to derive the correct permission key type.

@@ -733,3 +733,41 @@ pub(crate) async fn find_by_id(
     .fetch_optional(pool)
     .await
 }
+
+/// List executions for one identity, or for that identity's whole subtree.
+///
+/// Ordered newest-first and capped by `limit`. The subtree variant leans on the
+/// same recursive descendant walk the approvals list uses, so "what did my
+/// agents do" means the same thing on both surfaces.
+pub(crate) async fn list_for_identity(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    subtree: bool,
+    status: Option<&str>,
+    limit: i64,
+) -> Result<Vec<ExecutionRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ExecutionRow,
+        "WITH RECURSIVE subtree AS (
+             SELECT id FROM identities WHERE id = $2 AND org_id = $1
+             UNION
+             SELECT i.id FROM identities i JOIN subtree s ON i.parent_id = s.id
+         )
+         SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags, identity_id, (request IS NOT NULL) AS \"has_request!\", service_key, service_instance_id, lease_expires_at, worker_id, attempts, cancel_requested
+           FROM executions
+          WHERE org_id = $1
+            AND ($3 OR identity_id = $2)
+            AND (NOT $3 OR identity_id IN (SELECT id FROM subtree))
+            AND ($4::text IS NULL OR status = $4)
+          ORDER BY created_at DESC
+          LIMIT $5",
+        org_id,
+        identity_id,
+        subtree,
+        status,
+        limit,
+    )
+    .fetch_all(pool)
+    .await
+}

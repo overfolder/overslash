@@ -50,6 +50,7 @@ use overslash_core::{
 };
 
 mod approval_detail;
+mod async_accept;
 mod auth;
 mod auth_envelopes;
 mod auth_resolve;
@@ -59,8 +60,10 @@ mod deferred;
 mod dto;
 mod errors;
 mod filter_apply;
+mod flags;
 mod mcp_resolve;
 mod permission_gate;
+mod replay_payload;
 mod resolve;
 mod resolve_encode;
 mod resolve_metadata;
