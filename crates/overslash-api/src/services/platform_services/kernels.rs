@@ -541,7 +541,7 @@ pub async fn kernel_create_service(
                     "service_instance_id": row.id,
                     "service_name": &row.name,
                     "access_level": &grant.access_level,
-                    "auto_approve_reads": grant.auto_approve_reads,
+                    "auto_approve_level": &grant_row.auto_approve_level,
                 }),
                 description: None,
                 ip_address: None,

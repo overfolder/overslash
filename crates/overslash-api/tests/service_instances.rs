@@ -908,6 +908,25 @@ async fn org_level_create_attaches_the_requested_grants() {
     // not silently promote to the grant's ceiling.
     assert_eq!(grant["auto_approve_level"], "read");
     assert_eq!(grant["auto_approve_reads"], true);
+
+    // The audit trail records the level that was written, not the deprecated
+    // alias — the alias is dropped during normalization and would always log
+    // as null. Same key the manual `POST /v1/groups/{id}/grants` path uses.
+    let entries: Vec<Value> = client
+        .get(format!("{base}/v1/audit?action=group_grant.created"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let entry = entries
+        .iter()
+        .find(|e| e["detail"]["service_instance_id"].as_str() == Some(svc_id))
+        .expect("group_grant.created audit entry for the new service");
+    assert_eq!(entry["detail"]["auto_approve_level"], "read");
+    assert_eq!(entry["detail"]["access_level"], "read");
 }
 
 #[tokio::test]
