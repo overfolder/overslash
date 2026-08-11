@@ -88,14 +88,7 @@ resource "google_cloudbuild_trigger" "deploy" {
         # inference fragile, so we point every build at one stable repo.
         "--cache-repo=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api/cache",
         "--cache-ttl=168h",
-        # Kaniko holds a compressed copy of every layer it snapshots in memory
-        # (its own help: "Decreases build time, but increases memory usage").
-        # The dependency-cache layer here is the whole Rust `target/release`
-        # tree — several GB — so on a cache miss the post-RUN
-        # "Taking snapshot of full filesystem" step OOM-killed the executor
-        # (exit 137) before it could push the layer. That is self-sustaining:
-        # the layer never lands in the cache, so the next build misses too.
-        # Trading a little cache-push time for the memory is the fix.
+        # Kaniko caches layers in memory; the multi-GB target/release layer OOMs it (exit 137).
         "--compressed-caching=false",
         ], var.env == "prod" ? [
         "--build-arg=OVERSLASH_RELEASE=1",
@@ -114,16 +107,7 @@ resource "google_cloudbuild_trigger" "deploy" {
 
     options {
       logging = "CLOUD_LOGGING_ONLY"
-      # Stays E2_HIGHCPU_8. E2_HIGHCPU_32 would give the snapshot step more
-      # headroom, but the default pool caps concurrent E2 CPUs per region
-      # ("Default pool E2 CPU", 5-100 depending on region) and Google
-      # documents that quota as *not* increasable — asking for it just
-      # returns "due to quota restrictions, Cloud Build cannot run builds of
-      # this machine type in this region". The documented way past it is a
-      # private worker pool, which is a much larger change than this fix
-      # warrants. --compressed-caching=false above is the actual fix; if a
-      # cold build ever OOMs again at 8 GB, a private pool is the next step,
-      # not a bigger default-pool machine.
+      # E2_HIGHCPU_32 is blocked by the "Default pool E2 CPU" quota, which Google won't raise.
       machine_type = "E2_HIGHCPU_8"
     }
 

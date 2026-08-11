@@ -92,10 +92,7 @@ resource "google_cloudbuild_trigger" "deploy" {
         # Pin the cache repo explicitly (see cloud-build module for rationale).
         "--cache-repo=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter/cache",
         "--cache-ttl=168h",
-        # Keep Kaniko from holding a compressed copy of each snapshotted layer
-        # in memory. The API build OOM-killed its executor that way on a cold
-        # dependency layer; this image is smaller but shares the pattern.
-        # See the cloud-build (API) module for the full story.
+        # Kaniko caches layers in memory; see the cloud-build (API) module.
         "--compressed-caching=false",
       ]
     }

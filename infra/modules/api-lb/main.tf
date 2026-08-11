@@ -138,20 +138,8 @@ resource "google_compute_backend_service" "api_backend" {
   # client-supplied header of the same name, so this cannot be spoofed.
   custom_request_headers = ["X-Client-Geo-Country:{client_region}"]
 
-  # No `timeout_sec` here. The SSE stream on GET /v1/events/stream holds a
-  # response open for EVENTS_STREAM_MAX_CONNECTION_SECS (default 30) on
-  # purpose, so it does need a ceiling above that — but this is not the
-  # resource that can carry one. A backend service fronting a SERVERLESS NEG
-  # rejects the field outright:
-  #
-  #   Error 400: Invalid value for field 'resource.timeoutSec': '120'.
-  #   Timeout sec is not supported for a backend service with Serverless
-  #   network endpoint groups.
-  #
-  # The real ceiling is Cloud Run's own per-request timeout — see
-  # `request_timeout_seconds` in modules/cloud-run (120s, likewise justified
-  # against the stream ceiling). That is the only layer that enforces one for
-  # a serverless backend, so raise it there, not here.
+  # No timeout_sec: serverless-NEG backends reject it. The SSE ceiling lives in
+  # modules/cloud-run's request_timeout_seconds.
 
   backend {
     group = google_compute_region_network_endpoint_group.api_neg.id
