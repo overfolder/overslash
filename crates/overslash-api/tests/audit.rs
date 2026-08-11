@@ -2393,3 +2393,82 @@ async fn test_audit_api_keyset_params() {
         "the second page must not repeat the first"
     );
 }
+
+#[tokio::test]
+async fn test_audit_before_without_before_id_is_a_strict_bound() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+
+    // `/v1/audit` is public and its two cursor params are independently
+    // optional, so a caller may well send `before` alone. That has to page,
+    // not repeat: the first conjunct of the cursor is inclusive so the
+    // tiebreaker can resolve ties, which means without a tiebreaker the
+    // boundary row would be admitted and never removed.
+    let ts = time::OffsetDateTime::now_utc();
+    for i in 0..4 {
+        sqlx::query(
+            "INSERT INTO audit_log (org_id, action, detail, created_at) VALUES ($1, $2, '{}', $3)",
+        )
+        .bind(org_id)
+        .bind(format!("distinct_{i}"))
+        .bind(ts - time::Duration::seconds(i))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let mut f = filter(org_id);
+    f.limit = 2;
+    let page1 = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f.clone())
+        .await
+        .unwrap();
+
+    let mut f2 = f.clone();
+    f2.before = Some(page1.last().unwrap().created_at);
+    f2.before_id = None;
+    let page2 = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f2)
+        .await
+        .unwrap();
+
+    let ids1: Vec<Uuid> = page1.iter().map(|r| r.id).collect();
+    assert!(
+        page2.iter().all(|r| !ids1.contains(&r.id)),
+        "`before` without `before_id` repeated the previous page's boundary row"
+    );
+
+    // The degenerate case the inclusive bound used to loop on forever: enough
+    // rows sharing one timestamp to fill a page.
+    let tied_org = insert_org(&pool).await;
+    let tied_at = time::OffsetDateTime::now_utc();
+    for i in 0..4 {
+        sqlx::query(
+            "INSERT INTO audit_log (org_id, action, detail, created_at) VALUES ($1, $2, '{}', $3)",
+        )
+        .bind(tied_org)
+        .bind(format!("tied_{i}"))
+        .bind(tied_at)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let mut tf = filter(tied_org);
+    tf.limit = 2;
+    let tied_page1 = overslash_db::OrgScope::new(tied_org, pool.clone())
+        .query_audit_log(tf.clone())
+        .await
+        .unwrap();
+    let mut tf2 = tf;
+    tf2.before = Some(tied_page1.last().unwrap().created_at);
+    tf2.before_id = None;
+    let tied_page2 = overslash_db::OrgScope::new(tied_org, pool.clone())
+        .query_audit_log(tf2)
+        .await
+        .unwrap();
+    assert!(
+        tied_page2.is_empty(),
+        "a timestamp-only cursor must exclude the whole boundary instant, not re-serve it"
+    );
+}

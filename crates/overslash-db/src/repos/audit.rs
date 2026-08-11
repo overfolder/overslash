@@ -336,9 +336,19 @@ pub(crate) async fn query_filtered(
            -- point; a row-comparison `(created_at, id) < ($26, $27)` is not
            -- reliably extracted as an index qual. The second drops the rows
            -- already seen at the boundary timestamp.
+           --
+           -- The `IS NOT NULL` on $27 is load-bearing rather than defensive.
+           -- The first conjunct is deliberately inclusive (`<=`) so the second
+           -- can resolve the tie, which means a `before` supplied *without* a
+           -- `before_id` must fall back to a strict bound here — otherwise the
+           -- boundary row is admitted by the first conjunct and never removed,
+           -- and every page repeats the previous page's last row. When enough
+           -- rows share that timestamp to fill a page, it never advances at
+           -- all. `until` is the inclusive filter; `before` is a cursor.
            AND ($26::timestamptz IS NULL OR a.created_at <= $26)
-           AND ($26::timestamptz IS NULL OR $27::uuid IS NULL
-                OR a.created_at < $26 OR a.id < $27)
+           AND ($26::timestamptz IS NULL
+                OR a.created_at < $26
+                OR ($27::uuid IS NOT NULL AND a.id < $27))
          ORDER BY a.created_at DESC, a.id DESC
          LIMIT $10 OFFSET $11",
         filter.org_id,
