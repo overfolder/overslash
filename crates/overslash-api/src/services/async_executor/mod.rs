@@ -25,7 +25,7 @@
 //! `webhook_dispatcher::spawn_retry_loop`, which has no claim at all and has
 //! every replica retrying the same rows; that is the wrong precedent to copy.
 
-mod job;
+pub mod job;
 
 use std::sync::Arc;
 
@@ -58,7 +58,11 @@ const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Identifies this process in `executions.worker_id`. Only has to be unique
 /// among live replicas, which a per-process UUID trivially is.
-fn worker_id() -> &'static str {
+/// This process's worker id.
+///
+/// Public so a test can claim a row as the same worker `job::execute` will
+/// later try to release it as — `release_async_execution` matches on it.
+pub fn worker_id() -> &'static str {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
 }

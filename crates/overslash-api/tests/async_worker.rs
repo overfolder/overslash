@@ -355,3 +355,48 @@ async fn wall_clock_backstop_fails_a_wedged_job() {
     );
     assert_eq!(status_of(&pool, id).await, "failed");
 }
+
+/// A job in flight when SIGTERM arrives must hand its lease back, not ride to
+/// SIGKILL.
+///
+/// This is a regression test for a real bug: the worker stopped *claiming* on
+/// shutdown but `execute` had no shutdown arm, so in-flight jobs kept running,
+/// their leases expired ~60s later, and the reclaim sweep charged each one an
+/// attempt — which at the default `max_attempts = 1` fails the job outright
+/// rather than requeueing it. The module doc claimed the opposite.
+///
+/// `execute` takes the shutdown receiver as a parameter so this can drive the
+/// path with a local channel instead of tripping the process-global that every
+/// other test in the binary would then observe.
+#[tokio::test]
+async fn a_job_releases_its_lease_when_shutdown_is_already_signalled() {
+    let pool = common::test_pool().await;
+    let (org_id, identity_id) = seed_identity(&pool).await;
+    let system = SystemScope::new_internal(pool.clone());
+
+    let id = queue_async(&pool, org_id, identity_id).await;
+    let claims = system
+        .claim_async_executions(overslash_api::services::async_executor::worker_id(), 60, 10)
+        .await
+        .unwrap();
+    assert_eq!(claims.len(), 1);
+    assert_eq!(status_of(&pool, id).await, "executing");
+
+    let (tx, rx) = tokio::sync::watch::channel(true); // already shutting down
+
+    let state = common::make_app_state(pool.clone()).await;
+    overslash_api::services::async_executor::job::execute(
+        state,
+        pool.clone(),
+        claims.into_iter().next().unwrap(),
+        rx,
+    )
+    .await
+    .unwrap();
+    drop(tx);
+
+    // Back in the queue, and crucially *not* charged an attempt: a clean
+    // hand-back is what keeps a redeploy from burning a job's only retry.
+    assert_eq!(status_of(&pool, id).await, "pending");
+    assert_eq!(attempts_of(&pool, id).await, 0);
+}

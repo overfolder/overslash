@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use sqlx::PgPool;
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{OwnedSemaphorePermit, watch};
 
 use overslash_db::repos::execution::{AsyncClaim, AsyncOutcome};
 use overslash_db::scopes::SystemScope;
@@ -27,13 +27,22 @@ pub(super) async fn run_claim(
     _permit: OwnedSemaphorePermit,
 ) {
     let id = claim.id;
-    if let Err(e) = execute(state, db, claim).await {
+    if let Err(e) = execute(state, db, claim, crate::services::shutdown::subscribe()).await {
         tracing::error!("async execution {id} failed unexpectedly: {e}");
     }
 }
 
 /// Run one claimed row to a terminal state.
-pub async fn execute(state: AppState, db: PgPool, claim: AsyncClaim) -> anyhow::Result<()> {
+///
+/// `shutdown` is taken as a parameter rather than read from the process-global
+/// so a test can drive the release path with its own channel instead of
+/// tripping a `OnceLock` that every other test in the binary would then see.
+pub async fn execute(
+    state: AppState,
+    db: PgPool,
+    claim: AsyncClaim,
+    mut shutdown: watch::Receiver<bool>,
+) -> anyhow::Result<()> {
     let ext = axum::http::Extensions::default();
     let system = SystemScope::new_internal(db.clone());
     let scope = system.scope_for_org(claim.org_id);
@@ -104,12 +113,34 @@ pub async fn execute(state: AppState, db: PgPool, claim: AsyncClaim) -> anyhow::
         metrics_tpl: claim.template_key.as_deref().unwrap_or("unknown"),
     };
 
-    // Three arms, and the middle one is the point: the heartbeat renews the
-    // lease AND polls for cancellation in a single statement, so "I still own
-    // this row" and "I should stop" can never be observed inconsistently.
+    // Three arms. The middle one is the point: the heartbeat renews the lease
+    // AND polls for cancellation in a single statement, so "I still own this
+    // row" and "I should stop" can never be observed inconsistently.
+    //
+    // The third is what makes the shutdown story true rather than aspirational.
+    // Without it the worker stops *claiming* on SIGTERM but in-flight jobs run
+    // on until SIGKILL, their leases are never handed back, and the reclaim
+    // sweep charges each one an attempt ~60s later — which, at the default
+    // `max_attempts = 1`, fails the job outright instead of requeueing it.
+    // A job claimed in the same tick the signal arrived would never observe a
+    // *change*, only an already-true value — so check before selecting.
+    // `borrow_and_update` also marks the current value seen, which is what
+    // makes the `changed()` arm below fire only on a genuine transition.
+    if *shutdown.borrow_and_update() {
+        release_at_shutdown(&state, &system, &claim, worker_id).await;
+        return Ok(());
+    }
+
     let heartbeat_every = state.config.async_heartbeat_interval();
     let outcome = tokio::select! {
         outcome = stored_call::run_stored(ctx, payload) => Some(outcome),
+        // `changed()` only fires on a *transition*, so the already-shutting-down
+        // case is handled by the pre-check above.
+        _ = shutdown.changed() => {
+            // Dropping the upstream future cancels the in-flight request.
+            release_at_shutdown(&state, &system, &claim, worker_id).await;
+            return Ok(());
+        }
         stop = heartbeat_until_stop(&system, claim.id, worker_id, state.config.async_execution.lease_ttl_secs as i64, heartbeat_every) => {
             match stop {
                 // Cancel observed: drop the in-flight future, which cancels the
@@ -144,6 +175,45 @@ pub async fn execute(state: AppState, db: PgPool, claim: AsyncClaim) -> anyhow::
     };
     finish(&state, &system, &scope, &claim, worker_id, terminal).await;
     Ok(())
+}
+
+/// Hand a claimed row back to the queue at shutdown, without charging an
+/// attempt.
+///
+/// `attempts` counts leases *lost*, not claims, precisely so this is free: a
+/// row released here is picked up by another replica within a tick, whereas
+/// letting the lease expire would cost ~60s and — at the default
+/// `max_attempts = 1` — fail the job outright instead of retrying it.
+///
+/// `expires_at` is pushed out at the same time so `expire_stale` cannot sweep
+/// the row before anyone can take it.
+async fn release_at_shutdown(
+    state: &AppState,
+    system: &SystemScope,
+    claim: &AsyncClaim,
+    worker_id: &str,
+) {
+    match system
+        .release_async_execution(
+            claim.id,
+            worker_id,
+            state.config.execution_pending_ttl_secs as i64,
+        )
+        .await
+    {
+        Ok(true) => tracing::info!(
+            execution_id = %claim.id,
+            "released async execution lease at shutdown; another worker will pick it up"
+        ),
+        Ok(false) => tracing::warn!(
+            execution_id = %claim.id,
+            "async execution lease was already gone at shutdown"
+        ),
+        Err(e) => tracing::error!(
+            execution_id = %claim.id,
+            "failed to release async execution lease at shutdown: {e}"
+        ),
+    }
 }
 
 enum Stop {
