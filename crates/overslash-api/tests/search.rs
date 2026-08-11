@@ -1926,3 +1926,51 @@ async fn browse_mode_rows_omit_params() {
         );
     }
 }
+
+/// An MCP-runtime action carries the same `params` shape as an HTTP one.
+///
+/// Nothing special was written to make this work: the loader lowers an MCP
+/// tool's `input_schema` into the same `HashMap<String, ActionParam>` an
+/// OpenAPI operation's `parameters:` lowers into
+/// (`openapi::extract::mcp::lower_input_schema`), so one projection covers
+/// both runtimes. This test exists to keep it that way — an MCP-runtime row
+/// that silently stopped carrying its contract would reintroduce exactly the
+/// blindness this feature removed, on the templates (slack, hubspot,
+/// whatsapp) that page the most.
+#[tokio::test]
+async fn mcp_runtime_rows_carry_params_too() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+    let body: Value = client
+        .get(format!(
+            "{base}/v1/search?q={}&include_catalog=true",
+            urlencoding::encode("read slack channel history")
+        ))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+    let row = results
+        .iter()
+        .find(|r| r["template"] == "slack" && r["action"] == "read_channel_history")
+        .unwrap_or_else(|| panic!("slack read_channel_history missing from {results:?}"));
+
+    let params = row["params"]
+        .as_array()
+        .expect("params on an MCP action row");
+    let by_name = |n: &str| {
+        params
+            .iter()
+            .find(|p| p["name"] == n)
+            .unwrap_or_else(|| panic!("param {n} missing from {params:?}"))
+    };
+    assert_eq!(params[0]["name"], "channel", "required params sort first");
+    assert_eq!(by_name("channel")["required"], true);
+    assert_eq!(by_name("limit")["default"], 50);
+    // `cursor` is how this action pages at all, and naming it is the whole
+    // point — an agent that cannot see it cannot ask for the second page.
+    assert_eq!(by_name("cursor")["type"], "string");
+}
