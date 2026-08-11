@@ -6,7 +6,11 @@ use super::risk::DeclaredRisk;
 use super::scope::ScopeParams;
 
 /// An action within a service (maps to an HTTP request template).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Default` is derived so construction sites can spread `..Default::default()`
+/// rather than restating every field. Without it, adding one optional field
+/// means touching every fixture in the workspace.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServiceAction {
     #[serde(default)]
     pub method: String,
@@ -39,6 +43,17 @@ pub struct ServiceAction {
     /// When "binary", callers should use `prefer_stream: true` to avoid buffering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_type: Option<String>,
+    /// `x-overslash-timeout_ms`: how long this specific action is expected to
+    /// need upstream, in milliseconds. A *default*, not a cap — it says
+    /// "Metabase aggregations are slow", and the org and deployment maxima
+    /// still clamp it. `None` falls through to the service default, then the
+    /// org default, then the deployment default.
+    ///
+    /// Always the most specific default that survives the layer fold: an org
+    /// `ActionPatch` overwrites this value in place, so by the time a caller
+    /// reads it there is no separate "org per-action" layer left to consult.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub params: HashMap<String, ActionParam>,
     /// Which params provide the `{arg}` segment in permission keys, and under

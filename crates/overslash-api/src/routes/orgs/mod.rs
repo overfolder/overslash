@@ -87,6 +87,14 @@ pub fn router() -> Router<AppState> {
 const MIN_IDLE_TIMEOUT_SECS: i32 = 4 * 60 * 60; // 14_400
 const MAX_IDLE_TIMEOUT_SECS: i32 = 60 * 24 * 60 * 60; // 5_184_000
 const MIN_RETENTION_DAYS: i32 = 1;
+/// Structural bounds on the per-org call timeouts (D56). Not policy — the
+/// operative ceiling is `CALL_TIMEOUT_MAX_MS`, enforced in the resolver and
+/// itself pinned below the deployment's own request cap. These only keep a
+/// unit mix-up (`60` meaning minutes) out of the column, and they mirror the
+/// CHECK constraint in migration 109 so the DB is never the thing that
+/// rejects bad input.
+const MIN_CALL_TIMEOUT_MS: i32 = 1_000;
+const MAX_CALL_TIMEOUT_MS: i32 = 600_000;
 const MAX_RETENTION_DAYS: i32 = 60;
 
 #[derive(Serialize)]

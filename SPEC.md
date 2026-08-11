@@ -777,6 +777,30 @@ All action execution goes through a single endpoint. The caller specifies a serv
 
 These are a spectrum of abstraction over the same execution pipeline and permission key format (`{service}:{action}:{arg}`).
 
+#### Call timeouts (`timeout_ms`)
+
+How long a call may wait on its upstream is resolved from five layers, most specific first. The first one with an opinion wins:
+
+| # | layer | where it lives |
+|---|-------|----------------|
+| 1 | this call | `timeout_ms` on the request body (and on the `overslash_call` / `overslash_read` MCP tools) |
+| 2 | this action | `x-overslash-timeout_ms` on the operation, after any org layer is folded in |
+| 3 | this service | `info.x-overslash-default_timeout_ms` |
+| 4 | this org | `orgs.call_timeout_ms`, via `PATCH /v1/orgs/{id}/execution-settings` |
+| 5 | this deployment | `CALL_TIMEOUT_MS` (default 30000) |
+
+The result is then clamped by `orgs.max_call_timeout_ms` and `CALL_TIMEOUT_MAX_MS` (default 110000). Caps combine by *tightest wins*, not by specificity — an org cannot raise itself above what the deployment allows.
+
+A caller-supplied `timeout_ms` above the effective maximum is a **400** naming the ceiling; a *template or org default* above it is silently clamped. The asymmetry is deliberate: the caller is present and can act on the error, while a misconfigured template value that 400s every call in the org is a strictly worse failure than one that quietly runs at the ceiling.
+
+Exceeding the budget returns **504** with `{error: "upstream_timeout", timeout_ms, timeout_source, max_timeout_ms, hint}`. `timeout_source` names the layer that set it (`per_call`, `action_template`, `service_template`, `org_default`, `global_default`, `stored`) — which is what turns "why is this timing out" into a one-line fix. An `action.executed` audit row is written either way, carrying `detail.error.kind = "timeout"`.
+
+`CALL_TIMEOUT_MAX_MS` is the **synchronous** ceiling and is sized to sit under the deployment's own request cap (Cloud Run and the load balancer both cut at 120s). Work that legitimately runs longer is not served by raising it.
+
+**Streaming is bounded differently.** For `prefer_stream: true` the resolved timeout bounds **time to first byte** only; the transfer itself is bounded by a per-chunk idle timeout (`CALL_STREAM_IDLE_TIMEOUT_MS`, default 30000). A total deadline over a streamed body would mean "your 900MB export fails at exactly 90s", and would fire *after* the audit row recorded a 200 and the response headers were flushed — handing the client a silently truncated body.
+
+**Replays** reuse the timeout resolved when the call was first made (stored on the approval), re-clamped against the org's *current* maximum — so tightening the ceiling binds retroactively rather than being outranked by a stale approval. Approvals created before this shipped carry no budget and replay at the deployment default.
+
 Direct `connection: <uuid>` requests (a previously-shipped implementation deviation that paired a stored OAuth connection with an arbitrary URL) are **not supported**. Free-form authed calls go through "Service + HTTP verb" — naming the service instance is what bounds where the bearer can land via the template's `hosts[]`. See DECISIONS.md D14.
 
 ### Gating
@@ -908,6 +932,8 @@ paths:
 - **`x-overslash-aliases` / `aliases:`** — on a parameter, a list of alternate caller-facing names (e.g. `[to, dest]` on a `recipient` param). A call that supplies an alias key instead of the canonical name has it rewritten to the canonical name before validation, so a well-known synonym is accepted rather than rejected as an unknown argument. A declared field always wins over an alias that collides with it, and an alias claimed by two params is ambiguous and ignored (the caller gets the normal unknown-argument error, with a Levenshtein "did you mean" suggestion). The unprefixed `aliases:` form is normalized on `parameters[]` entries; body-schema properties use the canonical `x-overslash-aliases` key (same as `resolve`).
 - **`x-overslash-provider` / `provider:`** — on an `oauth2` security scheme, the symbolic OAuth provider name (`google`, `slack`, `github`, ...). Decoupled from OAuth URLs so the gateway can resolve credentials independently.
 - **`x-overslash-default_secret_name` / `default_secret_name:`** — on an `apiKey` or `http` security scheme, the canonical secret name for auto-wiring. Templates are expected to declare **either** an OAuth scheme **or** an apiKey/http scheme with this field — OAuth templates don't fall back to a secret.
+- **`x-overslash-timeout_ms` / `timeout_ms:`** — on an operation (or MCP tool), how long that action is expected to need upstream, in milliseconds. A **default, not a cap**: it encodes knowledge about the upstream ("Metabase aggregations are slow"), and the org and deployment maxima still clamp it. Omitted, the action inherits the service default, then the org default, then the deployment default. A value that is present but not a positive integer is a template *error*, not a silent fallback. See §8 for the full cascade.
+- **`x-overslash-default_timeout_ms` / `default_timeout_ms:`** — under `info`, the same thing one rung less specific: the timeout every action of this service inherits unless it declares its own. The one-line answer to "this whole upstream is slow".
 - **Platform-namespace actions** — `x-overslash-platform_actions` (alias `platform_actions:`) at the top level declares permission anchors with no HTTP binding (e.g. the `overslash` meta service's admin actions).
 
 ### OAuth Scopes

@@ -84,6 +84,10 @@ pub fn parse_template_parts(
         // OpenAPI doc is recompiled.
         config: Vec::new(),
         actions,
+        // Parts-based CRUD has no timeout input either; like `hidden`, the
+        // value lives in the stored OpenAPI doc and is honored wherever that
+        // doc is compiled.
+        default_timeout_ms: None,
         runtime: Runtime::Http,
         mcp: None,
         instance_defaults: None,

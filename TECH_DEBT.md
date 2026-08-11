@@ -293,3 +293,39 @@ no `AuthContext` and derives its audience entirely from the approval row.
 Bubbling — both the user-initiated path and the auto-bubble sweep — is no
 longer silent: it emits `approval.bubbled` plus the derived `approval.pending`.
 Expiry is the one remaining transition a subscriber cannot observe.
+
+## Deferred downloads don't carry the D56 timeout cascade
+
+`GET /v1/downloads/{token}` re-dials the upstream at fetch time
+(`services/deferred_download.rs`), and that request is bounded by the bare
+deployment default (`CALL_TIMEOUT_MS`) rather than by the layered timeout the
+original call resolved. There is no caller-supplied `timeout_ms` on a token
+redemption and no action key to read the template rungs from — the request was
+resolved when the token was minted, possibly under different org policy — so
+the cascade has nowhere to come from without persisting the resolved budget
+alongside the stored request.
+
+Bounding the header phase at the default is already a strict improvement on
+the unbounded wait it replaced, so this is a fidelity gap rather than a hole.
+The fix is to store the resolved timeout on the `download_tokens` row at mint
+and re-clamp it at redemption, exactly as replay does with
+`StoredCallRequest::timeout_ms`.
+
+Related: the proxied fetch is itself a request through the same 120s cap the
+synchronous ceiling is sized against, so a genuinely multi-minute export is not
+deliverable through this path regardless of what timeout it carries.
+
+## `Config` has no `Default`, so every new field touches ~17 test literals
+
+`crates/overslash-api/src/config/mod.rs` defines `Config` with no `Default`
+impl, and every construction site — one in-crate (`empty_test_config`) plus
+sixteen across `tests/` — is an exhaustive struct literal with no
+`..Default::default()` spread. Adding a single field is therefore a
+seventeen-file mechanical diff before any of it can compile.
+
+`ServiceAction` had the same problem and D56 fixed it there by deriving
+`Default` and spreading at the two real construction sites. `Config` wants the
+same treatment, but it is a bigger decision than it looks: the tests are a
+separate binary, so a `#[cfg(test)]` helper cannot reach them, and a public
+`Config::for_tests()` is a surface worth agreeing on rather than adding in
+passing.

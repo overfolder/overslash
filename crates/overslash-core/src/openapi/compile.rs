@@ -15,7 +15,7 @@ use super::alias::HTTP_METHODS;
 use super::extract;
 use super::extract::{
     extract_auth, extract_hosts, extract_http_action, extract_mcp_actions, extract_mcp_spec,
-    extract_platform_action,
+    extract_platform_action, parse_timeout_ms,
 };
 
 /// Lower a normalized OpenAPI document into a [`ServiceDefinition`].
@@ -78,6 +78,16 @@ pub fn compile_service(
             false
         }
     };
+
+    // Service-wide upstream timeout default. Warnings, not errors: an
+    // unparseable value here would otherwise refuse to load a whole template
+    // over one slow-upstream hint.
+    let default_timeout_ms = parse_timeout_ms(
+        info.and_then(|i| i.get("x-overslash-default_timeout_ms")),
+        "x-overslash-default_timeout_ms",
+        "info",
+        &mut warnings,
+    );
 
     let hosts = extract_hosts(root.get("servers"));
 
@@ -224,6 +234,7 @@ pub fn compile_service(
             secrets,
             config,
             actions,
+            default_timeout_ms,
             runtime,
             mcp,
             // Only the fold sets these; a shipped template expresses its
@@ -680,5 +691,56 @@ mod tests {
         let m = &svc.actions["manage_members"];
         assert!(m.method.is_empty());
         assert_eq!(m.risk, Risk::Delete);
+    }
+
+    /// The unprefixed authoring spellings must reach the compiled struct —
+    /// a template author writes `timeout_ms:`, never the canonical form, so
+    /// an alias that silently no-ops would leave them staring at timeouts
+    /// they believed they had already raised.
+    #[test]
+    fn compile_timeout_defaults_through_the_unprefixed_aliases() {
+        let mut doc = json!({
+            "openapi": "3.1.0",
+            "info": {
+                "title": "Slow", "key": "slow", "default_timeout_ms": 60000
+            },
+            "servers": [{"url": "https://slow.example"}],
+            "paths": {
+                "/fast": {"get": {"operationId": "fast", "description": "quick"}},
+                "/slow": {"get": {
+                    "operationId": "slow", "description": "aggregation",
+                    "timeout_ms": 90000
+                }}
+            }
+        });
+        crate::openapi::normalize_aliases(&mut doc);
+        let (svc, warnings) = compile_service(&doc).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(svc.default_timeout_ms, Some(60_000));
+        assert_eq!(svc.actions["slow"].timeout_ms, Some(90_000));
+        // Absent, not defaulted to the service value: the cascade is resolved
+        // at call time, so the action rung must stay empty here or it would
+        // shadow a per-call override.
+        assert_eq!(svc.actions["fast"].timeout_ms, None);
+    }
+
+    #[test]
+    fn a_non_positive_timeout_is_an_authoring_error_not_a_silent_fallback() {
+        let doc = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://t.example"}],
+            "paths": {"/x": {"get": {
+                "operationId": "x", "description": "d",
+                "x-overslash-timeout_ms": "30s"
+            }}}
+        });
+        let err = compile_service(&doc).expect_err("string timeout rejected");
+        assert!(
+            err.iter()
+                .any(|e| e.code == "invalid_timeout"
+                    && e.path == "paths./x.get.x-overslash-timeout_ms"),
+            "{err:?}"
+        );
     }
 }

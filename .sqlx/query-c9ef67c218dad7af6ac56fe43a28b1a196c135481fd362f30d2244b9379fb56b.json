@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT default_deferred_execution, call_timeout_ms, max_call_timeout_ms\n           FROM orgs WHERE id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "default_deferred_execution",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "default_deferred_execution"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "call_timeout_ms",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "call_timeout_ms"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "max_call_timeout_ms",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "max_call_timeout_ms"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "c9ef67c218dad7af6ac56fe43a28b1a196c135481fd362f30d2244b9379fb56b"
+}

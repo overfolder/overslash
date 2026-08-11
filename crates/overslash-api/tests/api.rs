@@ -29,6 +29,7 @@ mod auth_magic_link;
 mod auto_call_on_approve;
 mod billing;
 mod byoc_self_service;
+mod call_timeouts;
 mod compact_response;
 mod connection_credential_source;
 mod connection_import;

@@ -35,6 +35,7 @@ export {
 	seedApprovalResolution,
 	seedExecution,
 	setAuditResponseBodyMode,
+	setCallTimeouts,
 	setManagedSignin,
 	setTemplateSettings,
 	enableGlobalTemplate,

@@ -362,6 +362,145 @@ pub async fn set_default_deferred_execution(
     Ok(result.rows_affected() > 0)
 }
 
+/// The org-level inputs the action-call pipeline needs, in one round trip.
+///
+/// Both paths that execute an action (inline `/v1/actions/call` and the
+/// approval replay) already read exactly one org column each; folding them
+/// into a single struct means the D56 timeout columns ride along for free
+/// rather than adding a second query on the hot path.
+pub struct CallSettings {
+    /// `'off' | 'errors_only' | 'all'` — see [`get_audit_response_body_mode`].
+    pub audit_response_body_mode: String,
+    /// Org default upstream timeout in ms. `None` inherits the deployment
+    /// default.
+    pub call_timeout_ms: Option<i32>,
+    /// Org ceiling on any resolved timeout in ms. `None` inherits the
+    /// deployment maximum.
+    pub max_call_timeout_ms: Option<i32>,
+}
+
+/// Read every org setting the call pipeline consults, in one query.
+/// Returns `None` if the org doesn't exist.
+pub async fn get_call_settings(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<CallSettings>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT audit_response_body_mode, call_timeout_ms, max_call_timeout_ms
+           FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| CallSettings {
+        audit_response_body_mode: r.audit_response_body_mode,
+        call_timeout_ms: r.call_timeout_ms,
+        max_call_timeout_ms: r.max_call_timeout_ms,
+    }))
+}
+
+/// Outcome of [`update_execution_settings`].
+///
+/// A distinct variant for the bounds failure rather than a bare `bool`, so the
+/// caller can answer with a 400 that names the offending pair instead of
+/// letting the DB `CHECK` surface as a 500.
+pub enum ExecutionSettingsUpdate {
+    NotFound,
+    /// The *resulting* row would have `call_timeout_ms > max_call_timeout_ms`.
+    /// Carries what the row would have become, not what the patch asked for —
+    /// one of the two values may be pre-existing.
+    WouldViolateBounds {
+        call_timeout_ms: Option<i32>,
+        max_call_timeout_ms: Option<i32>,
+    },
+    Applied {
+        default_deferred_execution: bool,
+        call_timeout_ms: Option<i32>,
+        max_call_timeout_ms: Option<i32>,
+    },
+}
+
+/// Partial-patch the org's execution settings.
+///
+/// Each field is three-valued — absent, explicit `null`, or a value — which is
+/// why the two timeout columns take a paired `set_*` flag rather than riding a
+/// `COALESCE`: `COALESCE` cannot distinguish "leave it alone" from "clear it
+/// back to the deployment default", and clearing is the only way back off an
+/// org-specific timeout.
+///
+/// Reads, validates and writes inside one transaction with the org row locked.
+/// The cross-field rule (`call_timeout_ms <= max_call_timeout_ms`) spans a
+/// value the patch may not mention, so validating against a row read outside
+/// the write would let two concurrent patches — one lowering the maximum, one
+/// raising the default — each pass on stale state and leave the second to trip
+/// the DB `CHECK` as a 500.
+pub async fn update_execution_settings(
+    pool: &PgPool,
+    id: Uuid,
+    default_deferred_execution: Option<bool>,
+    set_call_timeout: bool,
+    call_timeout_ms: Option<i32>,
+    set_max_call_timeout: bool,
+    max_call_timeout_ms: Option<i32>,
+) -> Result<ExecutionSettingsUpdate, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let Some(current) = sqlx::query!(
+        "SELECT default_deferred_execution, call_timeout_ms, max_call_timeout_ms
+           FROM orgs WHERE id = $1 FOR UPDATE",
+        id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Ok(ExecutionSettingsUpdate::NotFound);
+    };
+
+    let next_call = if set_call_timeout {
+        call_timeout_ms
+    } else {
+        current.call_timeout_ms
+    };
+    let next_max = if set_max_call_timeout {
+        max_call_timeout_ms
+    } else {
+        current.max_call_timeout_ms
+    };
+    let next_deferred = default_deferred_execution.unwrap_or(current.default_deferred_execution);
+
+    if let (Some(call), Some(max)) = (next_call, next_max)
+        && call > max
+    {
+        // Dropping the transaction rolls back the lock; nothing was written.
+        return Ok(ExecutionSettingsUpdate::WouldViolateBounds {
+            call_timeout_ms: next_call,
+            max_call_timeout_ms: next_max,
+        });
+    }
+
+    sqlx::query!(
+        "UPDATE orgs
+            SET default_deferred_execution = $2,
+                call_timeout_ms = $3,
+                max_call_timeout_ms = $4,
+                updated_at = now()
+          WHERE id = $1",
+        id,
+        next_deferred,
+        next_call,
+        next_max,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(ExecutionSettingsUpdate::Applied {
+        default_deferred_execution: next_deferred,
+        call_timeout_ms: next_call,
+        max_call_timeout_ms: next_max,
+    })
+}
+
 /// Read the `audit_response_body_mode` setting for an org
 /// (`'off' | 'errors_only' | 'all'`, enforced by a CHECK constraint).
 /// Governs whether `action.executed` audit rows persist the upstream

@@ -16,7 +16,7 @@ use crate::{
     extractors::{AuthContext, ClientIp, ReqExt},
     services::{
         audit_capture::{self, AuditResponseBodyMode},
-        group_ceiling, http_caller, mcp_caller,
+        call_timeout, group_ceiling, http_caller, mcp_caller,
         response_filter::{self},
     },
 };
@@ -26,6 +26,7 @@ use overslash_core::{
     types::{ResolvedActionRequest, service::Risk},
 };
 
+use super::upstream_error::{log_transport_error_audit, map_call_error};
 use super::*;
 use super::{approval_detail::*, resolve::*, service_resolve::*, validate::*};
 
@@ -330,6 +331,57 @@ pub(super) async fn call_action_impl(
         }
     }
 
+    // Org-level call settings: audit capture mode plus the D56 timeout rungs.
+    // One PK lookup on the hot path — the org row isn't otherwise fetched
+    // here, and folding both consumers into one query keeps it at one.
+    //
+    // Both halves degrade rather than fail, for different reasons. Capture is
+    // best-effort observability (the audit write is itself fire-and-forget),
+    // so it falls back to Off. The timeouts fall back to *no org opinion*,
+    // which lands on the deployment default — never on "unbounded", which is
+    // the one outcome a failed read must not be able to produce.
+    let org_call_settings = match overslash_db::repos::org::get_call_settings(
+        state.db(&ext),
+        auth.org_id,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "org call settings read failed; using deployment defaults");
+            None
+        }
+    };
+    let audit_body_mode = org_call_settings
+        .as_ref()
+        .map(|s| AuditResponseBodyMode::parse_or_off(&s.audit_response_body_mode))
+        .unwrap_or(AuditResponseBodyMode::Off);
+
+    // Resolved once, here, before the MCP / HTTP / deferred forks — so every
+    // runtime gets the same number and the cascade lives in exactly one place.
+    let call_timeout = call_timeout::resolve(
+        call_timeout::TimeoutLayers {
+            per_call_ms: req.timeout_ms,
+            action_ms: meta.action_timeout_ms,
+            service_ms: meta.service_timeout_ms,
+            org_default_ms: org_call_settings
+                .as_ref()
+                .and_then(|s| s.call_timeout_ms)
+                .map(|v| v as u64),
+            org_max_ms: org_call_settings
+                .as_ref()
+                .and_then(|s| s.max_call_timeout_ms)
+                .map(|v| v as u64),
+        },
+        state.config.call_timeout_ms,
+        state.config.call_timeout_max_ms,
+    )
+    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    // Resolved *before* the gate on purpose: a call that gets gated stores
+    // this budget on the approval, so the eventual replay honours what the
+    // caller asked for instead of falling back to a deployment default.
+
     // Layer 2 (agents/sub-agents only): walk the ancestor chain and file an
     // approval at the first gap. `permission_gate` documents why the gate
     // keys off the pre-resolution estimate.
@@ -351,6 +403,7 @@ pub(super) async fn call_action_impl(
         effective,
         pre_meta.needs_gate,
         skip_layer2,
+        call_timeout,
     )
     .await?
     {
@@ -361,27 +414,6 @@ pub(super) async fn call_action_impl(
     // shared by the MCP and HTTP dispatch forks below. Same bounding the
     // metrics wrapper in `mod.rs` applies to `record_execution`.
     let upstream_tpl = super::bounded_template_key(&state.registry, req.service.as_deref());
-
-    // Org-level response-body capture mode for audit rows. One extra PK
-    // lookup on the hot path — the org row isn't otherwise fetched here.
-    // Capture is best-effort observability (the audit write itself is
-    // fire-and-forget), so any failure to resolve the mode — missing org
-    // (can't happen post-auth) or a transient DB error — degrades to Off
-    // rather than failing the caller's action.
-    let audit_body_mode = match overslash_db::repos::org::get_audit_response_body_mode(
-        state.db(&ext),
-        auth.org_id,
-    )
-    .await
-    {
-        Ok(mode) => mode
-            .map(|m| AuditResponseBodyMode::parse_or_off(&m))
-            .unwrap_or(AuditResponseBodyMode::Off),
-        Err(e) => {
-            tracing::warn!(error = %e, "audit_response_body_mode read failed; response capture disabled for this call");
-            AuditResponseBodyMode::Off
-        }
-    };
 
     // ── MCP dispatch fork ────────────────────────────────────────────
     // Mcp-runtime services skip the HTTP executor: no URL templating, no
@@ -639,18 +671,20 @@ pub(super) async fn call_action_impl(
 
     // Streaming proxy path
     if req.prefer_stream.unwrap_or(false) {
+        // Header phase only — see `http_caller`'s module docs on why a total
+        // deadline must not reach a streamed body.
         let upstream = match http_caller::call_streaming(
             &state.http_client,
             &action_req.method,
             &resolved_url,
             &resolved_headers,
             action_req.body.as_deref(),
+            call_timeout.duration(),
         )
         .await
         {
             Ok(upstream) => upstream,
             Err(e) => {
-                let e = http_caller::CallError::Request(e);
                 log_transport_error_audit(
                     &scope,
                     auth.org_id,
@@ -664,7 +698,7 @@ pub(super) async fn call_action_impl(
                     &tags::with_outcome(call_tags.clone(), true),
                 )
                 .await;
-                return Err(map_call_error(e));
+                return Err(map_call_error(e, call_timeout));
             }
         };
 
@@ -744,7 +778,10 @@ pub(super) async fn call_action_impl(
         // Build streaming response — pipe upstream bytes through to caller.
         // Shared with `GET /v1/downloads/{token}` so the forwarded-header
         // allowlist can't drift between the inline and deferred paths.
-        let mut response = crate::services::deferred_download::stream_through(upstream);
+        let mut response = crate::services::deferred_download::stream_through(
+            upstream,
+            std::time::Duration::from_millis(state.config.call_stream_idle_timeout_ms),
+        );
         // Streamed 5xx passes the upstream status straight through, where
         // the metrics wrapper would otherwise classify it as Overslash's
         // own "failed". The marker keeps it attributed to the upstream.
@@ -762,6 +799,7 @@ pub(super) async fn call_action_impl(
         &resolved_headers,
         action_req.body.as_deref(),
         state.config.max_response_body_bytes,
+        call_timeout.duration(),
     )
     .await
     {
@@ -783,7 +821,7 @@ pub(super) async fn call_action_impl(
                 &tags::with_outcome(call_tags.clone(), true),
             )
             .await;
-            return Err(map_call_error(e));
+            return Err(map_call_error(e, call_timeout));
         }
     };
     // Transport failures / oversized bodies bail above (with an error audit
@@ -921,66 +959,4 @@ pub(super) async fn call_action_impl(
         resp.extensions_mut().insert(UpstreamErrored);
     }
     Ok(resp)
-}
-
-/// Map a transport-level `CallError` to the client-facing `AppError`.
-/// Shared by the streamed and buffered forks so the error contract stays
-/// what it was before transport failures gained audit rows.
-fn map_call_error(e: http_caller::CallError) -> AppError {
-    match e {
-        http_caller::CallError::ResponseTooLarge {
-            content_length,
-            content_type,
-            limit_bytes,
-        } => AppError::ResponseTooLarge {
-            content_length,
-            content_type,
-            limit_bytes,
-        },
-        http_caller::CallError::Request(e) => AppError::Request(e),
-    }
-}
-
-/// Write the `action.executed` audit row for an HTTP call whose upstream
-/// never produced a response (DNS/connect/timeout, or a body over the
-/// buffering limit). No `status_code` — nothing arrived. `error_detail`
-/// comes from `audit_capture::scrub_transport_error`, so it never carries
-/// the resolved URL or injected secrets; `action_req.url` is the same
-/// secret-free template URL the success rows store.
-#[allow(clippy::too_many_arguments)]
-async fn log_transport_error_audit(
-    scope: &OrgScope,
-    org_id: Uuid,
-    identity_id: Uuid,
-    action_req: &overslash_core::types::ActionRequest,
-    service: Option<&str>,
-    action: Option<&str>,
-    error_detail: serde_json::Value,
-    description: Option<&str>,
-    ip: Option<&str>,
-    tags: &[String],
-) {
-    let _ = scope
-        .clone()
-        .log_audit_tagged(
-            AuditEntry {
-                org_id,
-                identity_id: Some(identity_id),
-                action: "action.executed",
-                resource_type: service,
-                resource_id: None,
-                detail: serde_json::json!({
-                    "method": action_req.method,
-                    "url": action_req.url,
-                    "is_error": true,
-                    "error": error_detail,
-                    "service": service,
-                    "action": action,
-                }),
-                description,
-                ip_address: ip,
-            },
-            tags,
-        )
-        .await;
 }

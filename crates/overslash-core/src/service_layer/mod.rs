@@ -120,6 +120,7 @@ pub(crate) mod fixtures {
 
     pub(crate) fn action(risk: Risk) -> ServiceAction {
         ServiceAction {
+            timeout_ms: None,
             method: "GET".into(),
             path: "/x".into(),
             description: "x".into(),
@@ -146,6 +147,7 @@ pub(crate) mod fixtures {
             actions.insert((*k).to_string(), action(*r));
         }
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "github".into(),

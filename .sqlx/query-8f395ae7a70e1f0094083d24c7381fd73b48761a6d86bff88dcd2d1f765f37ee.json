@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT audit_response_body_mode, call_timeout_ms, max_call_timeout_ms\n           FROM orgs WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "audit_response_body_mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "audit_response_body_mode"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "call_timeout_ms",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "call_timeout_ms"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "max_call_timeout_ms",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "max_call_timeout_ms"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "8f395ae7a70e1f0094083d24c7381fd73b48761a6d86bff88dcd2d1f765f37ee"
+}

@@ -58,6 +58,10 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
         alias: "download",
         canonical: "x-overslash-download",
     },
+    Alias {
+        alias: "timeout_ms",
+        canonical: "x-overslash-timeout_ms",
+    },
 ];
 
 pub(super) const INFO_ALIASES: &[Alias] = &[
@@ -72,6 +76,10 @@ pub(super) const INFO_ALIASES: &[Alias] = &[
     Alias {
         alias: "hidden",
         canonical: "x-overslash-hidden",
+    },
+    Alias {
+        alias: "default_timeout_ms",
+        canonical: "x-overslash-default_timeout_ms",
     },
 ];
 
@@ -91,6 +99,10 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
     Alias {
         alias: "redact",
         canonical: "x-overslash-redact",
+    },
+    Alias {
+        alias: "timeout_ms",
+        canonical: "x-overslash-timeout_ms",
     },
 ];
 

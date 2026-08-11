@@ -10,7 +10,7 @@ use crate::types::{ActionParam, DeclaredRisk, ParamLocation, Risk, ServiceAction
 use super::params::{collect_body_parameters, collect_parameters, parse_request_body};
 use super::{
     parse_aliases, parse_disclose, parse_instance_config, parse_redact, parse_scope_params,
-    parse_sql_policy,
+    parse_sql_policy, parse_timeout_ms,
 };
 
 // ── paths.*.* → ServiceAction ────────────────────────────────────────
@@ -131,6 +131,12 @@ pub(crate) fn extract_http_action(
     let mut disclose_errors = Vec::new();
     let disclose = parse_disclose(op.get("x-overslash-disclose"), &base, &mut disclose_errors);
     let redact = parse_redact(op.get("x-overslash-redact"), &base, &mut disclose_errors);
+    let timeout_ms = parse_timeout_ms(
+        op.get("x-overslash-timeout_ms"),
+        "x-overslash-timeout_ms",
+        &base,
+        &mut disclose_errors,
+    );
     if !disclose_errors.is_empty() {
         return Err(disclose_errors);
     }
@@ -144,21 +150,18 @@ pub(crate) fn extract_http_action(
             summary,
             risk,
             response_type,
+            timeout_ms,
             params,
             scope_param,
             required_scopes,
-            permission: None,
             disclose,
             redact,
-            mcp_tool: None,
-            output_schema: None,
-            disabled: false,
             request_body,
-            // An HTTP action that returns bytes already *is* its own download:
-            // `deliver: "url"` mints a token from the resolved request. Only
-            // MCP, whose result merely points at the object, needs the
-            // declaration.
-            download: None,
+            // Everything else defaults. Notably `download`: an HTTP action that
+            // returns bytes already *is* its own download, since `deliver:
+            // "url"` mints a token from the resolved request. Only MCP, whose
+            // result merely points at the object, needs the declaration.
+            ..Default::default()
         },
     );
 
@@ -208,26 +211,17 @@ pub(crate) fn extract_platform_action(
         parse_scope_params(op.get("x-overslash-scope_param"), &base).map_err(|e| vec![e])?;
 
     Ok(ServiceAction {
-        method: String::new(),
-        path: String::new(),
         description,
-        summary: None,
         risk,
-        response_type: None,
         params,
         scope_param,
-        required_scopes: Vec::new(),
         permission,
-        // Platform actions don't have outbound HTTP payloads — disclosure
-        // and redaction are no-ops for them.
-        disclose: Vec::new(),
-        redact: Vec::new(),
-        mcp_tool: None,
-        output_schema: None,
-        disabled: false,
-        // Platform actions are dispatched in-process, never over HTTP.
-        request_body: None,
-        download: None,
+        // Everything else defaults. Platform actions are dispatched in-process
+        // and never over HTTP, so there is no outbound payload to disclose or
+        // redact, no request body, no download — and no upstream to time out,
+        // which is why `timeout_ms` stays `None` here rather than being
+        // readable from the template.
+        ..Default::default()
     })
 }
 

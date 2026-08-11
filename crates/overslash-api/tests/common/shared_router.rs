@@ -281,6 +281,9 @@ fn build_shared_state(registry: Arc<SharedRouterRegistry>, addr: SocketAddr) -> 
 
 fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
     overslash_api::config::Config {
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),

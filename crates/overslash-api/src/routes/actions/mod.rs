@@ -65,6 +65,7 @@ mod resolve_encode;
 mod resolve_metadata;
 mod service_resolve;
 mod tags;
+mod upstream_error;
 mod validate;
 
 use call::call_action_impl;

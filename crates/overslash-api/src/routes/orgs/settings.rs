@@ -294,11 +294,43 @@ pub(super) struct ExecutionSettingsResponse {
     /// approval. Existing agents are not touched when this flag flips;
     /// per-agent overrides win for them. Default: `false` (auto-call on).
     default_deferred_execution: bool,
+    /// Default upstream timeout for action calls in this org, in ms.
+    /// `null` inherits the deployment default (`CALL_TIMEOUT_MS`).
+    /// A template action or an individual call still overrides it.
+    call_timeout_ms: Option<i32>,
+    /// Ceiling on any resolved call timeout in this org, in ms. `null`
+    /// inherits `CALL_TIMEOUT_MAX_MS`. A caller asking for more is
+    /// rejected; a template or org *default* above it is clamped.
+    max_call_timeout_ms: Option<i32>,
 }
 
+/// Partial patch: an absent key leaves the setting alone.
+///
+/// The two timeouts are `Option<Option<i32>>` because they are genuinely
+/// three-valued — absent, explicit `null` (clear it, back to the deployment
+/// default), or a number. A plain `Option` would make "clear it" unexpressible,
+/// leaving an org permanently pinned to whatever it once set.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct PatchExecutionSettingsRequest {
-    default_deferred_execution: bool,
+    #[serde(default)]
+    default_deferred_execution: Option<bool>,
+    #[serde(default, deserialize_with = "double_option")]
+    call_timeout_ms: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "double_option")]
+    max_call_timeout_ms: Option<Option<i32>>,
+}
+
+/// Distinguish an absent key from an explicit `null`.
+///
+/// `#[serde(default)]` alone collapses both to `None`; this makes a present
+/// `null` deserialize to `Some(None)`.
+fn double_option<'de, D, T>(de: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
 }
 
 pub(super) async fn get_execution_settings(
@@ -313,8 +345,13 @@ pub(super) async fn get_execution_settings(
     let value = overslash_db::repos::org::get_default_deferred_execution(state.db(&ext), id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    let timeouts = overslash_db::repos::org::get_call_settings(state.db(&ext), id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
     Ok(Json(ExecutionSettingsResponse {
         default_deferred_execution: value,
+        call_timeout_ms: timeouts.call_timeout_ms,
+        max_call_timeout_ms: timeouts.max_call_timeout_ms,
     }))
 }
 
@@ -332,15 +369,62 @@ pub(super) async fn patch_execution_settings(
         ));
     }
 
-    let updated = overslash_db::repos::org::set_default_deferred_execution(
+    // Validate at the boundary, so the DB CHECK is never the thing that
+    // rejects bad input.
+    for (label, value) in [
+        ("call_timeout_ms", req.call_timeout_ms),
+        ("max_call_timeout_ms", req.max_call_timeout_ms),
+    ] {
+        if let Some(Some(ms)) = value
+            && !(MIN_CALL_TIMEOUT_MS..=MAX_CALL_TIMEOUT_MS).contains(&ms)
+        {
+            return Err(AppError::BadRequest(format!(
+                "{label} must be between {MIN_CALL_TIMEOUT_MS} and {MAX_CALL_TIMEOUT_MS} ms"
+            )));
+        }
+    }
+
+    // The cross-field rule spans a value this patch may not mention, so the
+    // read, the check and the write happen together under a row lock inside
+    // the repo — validating here against a separate read would let two
+    // concurrent patches each pass on stale state and leave the second to
+    // trip the DB CHECK as a 500.
+    let outcome = overslash_db::repos::org::update_execution_settings(
         state.db(&ext),
         id,
         req.default_deferred_execution,
+        req.call_timeout_ms.is_some(),
+        req.call_timeout_ms.flatten(),
+        req.max_call_timeout_ms.is_some(),
+        req.max_call_timeout_ms.flatten(),
     )
     .await?;
-    if !updated {
-        return Err(AppError::NotFound("org not found".into()));
-    }
+
+    use overslash_db::repos::org::ExecutionSettingsUpdate;
+    let (next_deferred, next_call, next_max) = match outcome {
+        ExecutionSettingsUpdate::NotFound => {
+            return Err(AppError::NotFound("org not found".into()));
+        }
+        ExecutionSettingsUpdate::WouldViolateBounds {
+            call_timeout_ms,
+            max_call_timeout_ms,
+        } => {
+            return Err(AppError::BadRequest(format!(
+                "call_timeout_ms ({}) cannot exceed max_call_timeout_ms ({})",
+                call_timeout_ms.unwrap_or_default(),
+                max_call_timeout_ms.unwrap_or_default()
+            )));
+        }
+        ExecutionSettingsUpdate::Applied {
+            default_deferred_execution,
+            call_timeout_ms,
+            max_call_timeout_ms,
+        } => (
+            default_deferred_execution,
+            call_timeout_ms,
+            max_call_timeout_ms,
+        ),
+    };
 
     let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
@@ -350,7 +434,9 @@ pub(super) async fn patch_execution_settings(
             resource_type: Some("org"),
             resource_id: Some(id),
             detail: serde_json::json!({
-                "default_deferred_execution": req.default_deferred_execution,
+                "default_deferred_execution": next_deferred,
+                "call_timeout_ms": next_call,
+                "max_call_timeout_ms": next_max,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -358,7 +444,9 @@ pub(super) async fn patch_execution_settings(
         .await;
 
     Ok(Json(ExecutionSettingsResponse {
-        default_deferred_execution: req.default_deferred_execution,
+        default_deferred_execution: next_deferred,
+        call_timeout_ms: next_call,
+        max_call_timeout_ms: next_max,
     }))
 }
 

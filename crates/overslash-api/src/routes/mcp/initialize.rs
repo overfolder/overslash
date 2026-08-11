@@ -174,6 +174,10 @@ pub(super) async fn tools_list_response(
                         "enum": ["inline", "url"],
                         "default": "inline",
                         "description": "Where the response body goes. `inline` (default) returns it in the result. `url` returns a short-lived download URL instead and does NOT put the bytes in your context — use it for files (images, video, PDFs, any binary or large payload), then pipe the URL to disk with something like `curl -o <path> \"<download_url>\"`. The URL needs no credentials and expires, so fetch it promptly."
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "How long to wait on the upstream, in milliseconds. Omit it and the action's own template default applies, which is usually right. Raise it for known-slow work like a large analytics query. Asking for more than this org's maximum is rejected rather than silently reduced, and the error names the ceiling."
                     }
                 },
                 "required": ["service", "action"],
@@ -212,6 +216,10 @@ pub(super) async fn tools_list_response(
                         "enum": ["inline", "url"],
                         "default": "inline",
                         "description": "Where the response body goes. `inline` (default) returns it in the result. `url` returns a short-lived download URL instead and does NOT put the bytes in your context — use it for files (images, video, PDFs, any binary or large payload), then pipe the URL to disk with something like `curl -o <path> \"<download_url>\"`. The URL needs no credentials and expires, so fetch it promptly. Only takes effect on fresh calls (service + action)."
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "How long to wait on the upstream, in milliseconds. Omit it and the action's own template default applies, which is usually right. Raise it for known-slow work like a large analytics query. Asking for more than this org's maximum is rejected rather than silently reduced, and the error names the ceiling. Only takes effect on fresh calls (service + action); an approval replay reuses the timeout resolved when the call was first made."
                     }
                 },
                 "additionalProperties": false

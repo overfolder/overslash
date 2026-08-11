@@ -334,6 +334,9 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
     // Resolve user budget — should fall back to org default
     let cache = RateLimitConfigCache::new(Duration::from_secs(30));
     let config = overslash_api::config::Config {
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -596,6 +599,9 @@ async fn test_resolve_user_budget_per_user_override_wins() {
 
     let cache = RateLimitConfigCache::new(Duration::from_secs(30));
     let config = overslash_api::config::Config {
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -676,6 +682,9 @@ async fn test_resolve_user_budget_per_user_override_wins() {
 /// Build a test AppState with an in-memory rate limiter.
 async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
     let config = overslash_api::config::Config {
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -1078,6 +1087,9 @@ async fn test_cache_invalidation_user_budget() {
 
     let cache = RateLimitConfigCache::new(Duration::from_secs(300));
     let config = overslash_api::config::Config {
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -1255,6 +1267,9 @@ async fn test_cache_invalidation_org_flushes_all() {
 
     let cache = RateLimitConfigCache::new(Duration::from_secs(300));
     let config = overslash_api::config::Config {
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),

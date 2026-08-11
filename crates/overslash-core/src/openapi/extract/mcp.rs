@@ -11,7 +11,7 @@ use crate::types::{
 
 use super::{
     parse_aliases, parse_disclose, parse_download, parse_instance_config, parse_redact,
-    parse_resolver, parse_scope_params, parse_sql_policy,
+    parse_resolver, parse_scope_params, parse_sql_policy, parse_timeout_ms,
 };
 
 // ── x-overslash-mcp → McpSpec + ServiceActions ───────────────────────
@@ -317,6 +317,12 @@ fn lower_mcp_tool(
     let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, errors);
     let redact = parse_redact(obj.get("x-overslash-redact"), &base, errors);
     let download = parse_download(obj.get("x-overslash-download"), &base, errors);
+    let timeout_ms = parse_timeout_ms(
+        obj.get("x-overslash-timeout_ms"),
+        "x-overslash-timeout_ms",
+        &base,
+        errors,
+    );
 
     // The upstream MCP tool name defaults to the action key, but may be
     // overridden with `mcp_tool` when the server's tool name isn't a valid
@@ -331,25 +337,21 @@ fn lower_mcp_tool(
         .unwrap_or_else(|| name.to_string());
 
     Some(ServiceAction {
-        method: String::new(),
-        path: String::new(),
         description,
-        summary: None,
         risk,
-        response_type: None,
+        timeout_ms,
         params,
         scope_param,
-        required_scopes: Vec::new(),
-        permission: None,
         disclose,
         redact,
         mcp_tool: Some(mcp_tool),
         output_schema,
         disabled,
-        // MCP tool calls are framed by the MCP client (which sets its own
-        // JSON-RPC content type), never routed through `resolve`.
-        request_body: None,
         download,
+        // Everything else defaults — notably `request_body`, since MCP tool
+        // calls are framed by the MCP client (which sets its own JSON-RPC
+        // content type) and never routed through `resolve`.
+        ..Default::default()
     })
 }
 

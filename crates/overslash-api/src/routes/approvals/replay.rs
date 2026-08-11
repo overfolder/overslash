@@ -6,6 +6,8 @@
 
 use super::*;
 
+use crate::services::call_timeout;
+
 use super::replay_http::replay_http;
 use super::replay_mcp::replay_mcp;
 use super::replay_platform::replay_platform;
@@ -238,28 +240,52 @@ pub(super) async fn execute_claimed_approval(
         }
     };
 
-    let replay_timeout = std::time::Duration::from_secs(state.config.execution_replay_timeout_secs);
+    // The outer wall, not the timeout the caller asked for — that one is
+    // resolved per call and applied inside `call_action_request`. This bounds
+    // the whole replay future (upstream call *plus* filtering and
+    // finalisation) so a wedged replay can never hold the row in `executing`
+    // forever. Derived from `call_timeout_max_ms`, so it is always wide enough
+    // to let a legitimate max-length call finish.
+    let replay_timeout = state.config.replay_wall_clock();
 
-    // Org-level response-body capture mode for the replay's audit row,
-    // resolved once so the call pipeline stays query-free. Capture is
-    // best-effort observability (the audit write itself is fire-and-
-    // forget), so a failed read degrades to Off rather than erroring —
-    // the execution row is already claimed as "executing" here, and a
-    // `?` would skip finalization and wedge it in that state forever.
-    let audit_body_mode = match overslash_db::repos::org::get_audit_response_body_mode(
+    // Org-level call settings for this replay: audit capture mode plus the
+    // ceiling to re-clamp the stored timeout against. Resolved once so the
+    // call pipeline stays query-free.
+    //
+    // A failed read degrades rather than erroring — the execution row is
+    // already claimed as `executing` here, and a `?` would skip finalization
+    // and wedge it in that state forever. Capture degrades to Off; the
+    // ceiling degrades to "no org opinion", leaving the deployment maximum.
+    let org_call_settings = match overslash_db::repos::org::get_call_settings(
         state.db(ext),
         approval.org_id,
     )
     .await
     {
-        Ok(mode) => mode
-            .map(|m| audit_capture::AuditResponseBodyMode::parse_or_off(&m))
-            .unwrap_or(audit_capture::AuditResponseBodyMode::Off),
+        Ok(s) => s,
         Err(e) => {
-            tracing::warn!(error = %e, "audit_response_body_mode read failed; response capture disabled for this replay");
-            audit_capture::AuditResponseBodyMode::Off
+            tracing::warn!(error = %e, "org call settings read failed; replaying with deployment defaults");
+            None
         }
     };
+    let audit_body_mode = org_call_settings
+        .as_ref()
+        .map(|s| audit_capture::AuditResponseBodyMode::parse_or_off(&s.audit_response_body_mode))
+        .unwrap_or(audit_capture::AuditResponseBodyMode::Off);
+
+    // The budget the caller was granted when the approval was created,
+    // re-clamped against today's ceiling — so an org that tightened its
+    // maximum in the meantime binds retroactively rather than being
+    // outranked by a stale approval.
+    let call_timeout = call_timeout::reclamp_stored(
+        payload.stored_timeout_ms(),
+        org_call_settings
+            .as_ref()
+            .and_then(|s| s.max_call_timeout_ms)
+            .map(|v| v as u64),
+        state.config.call_timeout_ms,
+        state.config.call_timeout_max_ms,
+    );
 
     // Replays count toward the same execution/upstream metrics inline calls
     // record (they were invisible there before). The original call shape
@@ -287,6 +313,7 @@ pub(super) async fn execute_claimed_approval(
                 execution_id,
                 ip,
                 audit_body_mode,
+                call_timeout,
                 replay_timeout,
                 &replay_tpl,
             )

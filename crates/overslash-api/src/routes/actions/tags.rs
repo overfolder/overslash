@@ -180,6 +180,8 @@ mod tests {
 
     fn meta(scope: Option<ServiceScope>, binding: BindingFacts) -> ResolvedMeta {
         ResolvedMeta {
+            action_timeout_ms: None,
+            service_timeout_ms: None,
             description: None,
             service_scope: scope,
             risk: None,

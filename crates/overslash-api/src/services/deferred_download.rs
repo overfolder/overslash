@@ -252,12 +252,20 @@ pub async fn open_upstream(
         inject_secrets(request, &secret_values).map_err(|e| AppError::BadRequest(e.to_string()))?;
     let resolved_url = state.config.apply_base_overrides(&resolved_url);
 
+    // The deployment default, not a D56-resolved budget: a token redemption
+    // has no caller-supplied `timeout_ms` and no action key to read the
+    // template rungs from — the request was resolved when the token was
+    // minted, possibly under a different org policy. Bounding the header
+    // phase at the default is strictly better than the unbounded wait this
+    // replaced; wiring the full cascade through token minting is tracked in
+    // TECH_DEBT.md.
     http_caller::call_streaming(
         &state.http_client,
         &request.method,
         &resolved_url,
         &resolved_headers,
         request.body.as_deref(),
+        std::time::Duration::from_millis(state.config.call_timeout_ms),
     )
     .await
     .map_err(|e| AppError::BadGateway(format!("download upstream request failed: {e}")))
@@ -270,10 +278,17 @@ pub async fn open_upstream(
 /// the point. A 40 MB video is exactly the case the 5 MB buffered cap exists to
 /// prevent from reaching a context window, and exactly the case this path is
 /// for.
-pub fn stream_through(upstream: reqwest::Response) -> Response {
+pub fn stream_through(upstream: reqwest::Response, idle: std::time::Duration) -> Response {
     let status = upstream.status().as_u16();
     let headers = upstream.headers().clone();
-    let body = axum::body::Body::from_stream(upstream.bytes_stream());
+    // Guarded per chunk rather than in total: the response is already
+    // committed by the time bytes flow, so the only failure worth acting on
+    // is a stall. Applied here rather than at the two call sites so the
+    // inline `prefer_stream` path and `GET /v1/downloads/{token}` cannot
+    // drift apart on it, exactly as they already share the header allowlist.
+    let body = axum::body::Body::from_stream(crate::services::http_caller::idle_guarded_stream(
+        upstream, idle,
+    ));
 
     let mut builder = Response::builder().status(status);
     for (name, value) in headers.iter() {

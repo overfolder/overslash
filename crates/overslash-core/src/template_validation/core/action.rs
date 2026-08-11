@@ -717,6 +717,7 @@ mod tests {
         // An action with empty method/path (like overslash.yaml) must validate
         // clean as long as description is present.
         let mut d = ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "overslash".into(),
@@ -734,6 +735,7 @@ mod tests {
         d.actions.insert(
             "manage_secrets".into(),
             ServiceAction {
+                timeout_ms: None,
                 method: String::new(),
                 path: String::new(),
                 description: "Manage secrets".into(),

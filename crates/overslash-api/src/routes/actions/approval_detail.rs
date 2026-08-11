@@ -187,6 +187,8 @@ mod tests {
 
     fn http_meta() -> ResolvedMeta {
         ResolvedMeta {
+            action_timeout_ms: None,
+            service_timeout_ms: None,
             description: None,
             service_scope: Some(ServiceScope {
                 service_key: "github".into(),

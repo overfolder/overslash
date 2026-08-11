@@ -347,7 +347,17 @@ variable "container_port" {
 locals {
   env_vars = merge(
     {
-      APPROVAL_EXPIRY_SECS      = "1800"
+      APPROVAL_EXPIRY_SECS = "1800"
+      # D56 rollout pin. The app defaults to 30s, but the inline call path was
+      # previously unbounded in code and bounded only by `request_timeout_seconds`
+      # below — so anything currently taking 30-120s would start failing the
+      # moment this deploys. Pinned at the ceiling to keep deployed behaviour
+      # identical while new and self-hosted deploys get the safe default.
+      #
+      # Remove this line once `duration_ms` percentiles on `action.executed`
+      # audit rows show nothing legitimate living above 30s; slow actions
+      # should carry `x-overslash-timeout_ms` in their template by then.
+      CALL_TIMEOUT_MS           = "110000"
       CLOUD_SQL_CONNECTION_NAME = var.cloud_sql_connection_name
       DASHBOARD_ORIGIN          = var.dashboard_origin
       MCP_EXTRA_ORIGINS         = var.mcp_extra_origins

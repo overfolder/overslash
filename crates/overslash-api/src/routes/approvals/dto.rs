@@ -117,6 +117,7 @@ mod risk_tests {
         actions.insert(
             action.into(),
             ServiceAction {
+                timeout_ms: None,
                 method: "GET".into(),
                 path: "/".into(),
                 description: String::new(),
@@ -138,6 +139,7 @@ mod risk_tests {
         );
         let mut registry = ServiceRegistry::default();
         registry.insert(ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: key.into(),

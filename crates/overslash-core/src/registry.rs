@@ -46,6 +46,9 @@ fn http_pseudo_service() -> ServiceDefinition {
         secrets: Vec::new(),
         config: Vec::new(),
         actions: HashMap::new(),
+        // No upstream of its own to be slow — Mode A's timeout comes entirely
+        // from the caller, the org, or the deployment default.
+        default_timeout_ms: None,
         runtime: Runtime::Http,
         mcp: None,
         instance_defaults: None,

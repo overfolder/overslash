@@ -141,6 +141,7 @@ pub(super) async fn dispatch_read(
     // handler picks compact.
     body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
     insert_deliver(&mut body, args);
+    insert_timeout_ms(&mut body, args);
     forward(
         state,
         bearer,
@@ -162,6 +163,18 @@ pub(super) async fn dispatch_read(
 fn insert_deliver(body: &mut serde_json::Map<String, Value>, args: &Value) {
     if let Some(d) = args.get("deliver").filter(|v| !v.is_null()) {
         body.insert("deliver".into(), d.clone());
+    }
+}
+
+/// Forward a caller-supplied `timeout_ms` when there is one.
+///
+/// Same discipline as [`insert_deliver`]: pass it through untouched and let
+/// the inner `CallRequest` deserializer and the D56 resolver produce the
+/// error. Validating here would mean duplicating the org-ceiling logic in a
+/// place that has no org row.
+fn insert_timeout_ms(body: &mut serde_json::Map<String, Value>, args: &Value) {
+    if let Some(t) = args.get("timeout_ms").filter(|v| !v.is_null()) {
+        body.insert("timeout_ms".into(), t.clone());
     }
 }
 
@@ -220,6 +233,7 @@ pub(super) async fn dispatch_call(
     // default so the LLM consumer gets the compact shape.
     body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
     insert_deliver(&mut body, args);
+    insert_timeout_ms(&mut body, args);
     forward(
         state,
         bearer,
@@ -554,5 +568,38 @@ mod tests {
         let mut args = Value::Null;
         normalize_stringified_params(&mut args);
         assert_eq!(args, Value::Null);
+    }
+
+    #[test]
+    fn timeout_ms_is_forwarded_when_supplied() {
+        let mut body = serde_json::Map::new();
+        insert_timeout_ms(&mut body, &serde_json::json!({"timeout_ms": 90_000}));
+        assert_eq!(body.get("timeout_ms"), Some(&serde_json::json!(90_000)));
+    }
+
+    #[test]
+    fn an_absent_or_null_timeout_ms_is_not_stamped() {
+        // The inner `CallRequest` uses `#[serde(deny_unknown_fields)]` and a
+        // plain `Option`, so stamping a key the caller never sent would turn
+        // "no opinion" into an explicit null and skip the cascade.
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"timeout_ms": null}),
+        ] {
+            let mut body = serde_json::Map::new();
+            insert_timeout_ms(&mut body, &args);
+            assert!(body.is_empty(), "nothing should be stamped for {args}");
+        }
+    }
+
+    /// A bad value is forwarded verbatim rather than validated here — the
+    /// resolver owns the org ceiling, and this layer has no org row to check
+    /// it against. Guards against someone "helpfully" adding a local check
+    /// that would drift from the real one.
+    #[test]
+    fn an_invalid_timeout_ms_is_passed_through_for_the_resolver_to_reject() {
+        let mut body = serde_json::Map::new();
+        insert_timeout_ms(&mut body, &serde_json::json!({"timeout_ms": "30s"}));
+        assert_eq!(body.get("timeout_ms"), Some(&serde_json::json!("30s")));
     }
 }

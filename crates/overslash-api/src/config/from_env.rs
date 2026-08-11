@@ -69,6 +69,24 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(30),
+            call_timeout_ms: env::var("CALL_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(30_000),
+            // Just under the 120s both Cloud Run and the load balancer cut at,
+            // so we return our own 504 with an audit row rather than letting a
+            // proxy drop the connection anonymously.
+            call_timeout_max_ms: env::var("CALL_TIMEOUT_MAX_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(110_000),
+            call_stream_idle_timeout_ms: env::var("CALL_STREAM_IDLE_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(30_000),
             services_dir: env::var("SERVICES_DIR").unwrap_or_else(|_| "services".into()),
             google_auth_client_id: env::var("GOOGLE_AUTH_CLIENT_ID").ok(),
             google_auth_client_secret: env::var("GOOGLE_AUTH_CLIENT_SECRET").ok(),
