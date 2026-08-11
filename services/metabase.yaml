@@ -155,7 +155,7 @@ paths:
           filter: .params.query
           max_chars: 2000
         - label: Database
-          filter: .params.database | tostring
+          filter: .resolved.database // (.params.database | tostring)
       requestBody:
         required: true
         content:
@@ -168,6 +168,20 @@ paths:
                   type: integer
                   description: Metabase database id (from list_databases)
                   x-overslash-sql-database: .database | tostring
+                  # Turns the bare id into the database's own Metabase name for
+                  # the approval title and the `Database` disclosure — "4" tells
+                  # a reviewer nothing about whether a DELETE is aimed at
+                  # production. Display only: `sql.db` and the permission keys
+                  # stay on the operator-pinned `sql_databases` label, which an
+                  # upstream rename can't move out from under a grant.
+                  #
+                  # Canonical spelling, not the `resolve:` alias: alias
+                  # normalization only walks `parameters[]`, never requestBody
+                  # schema properties — same reason `x-overslash-sql-database`
+                  # is spelled out above.
+                  x-overslash-resolve:
+                    get: /api/database/{database}
+                    pick: name
                 query:
                   type: string
                   description: The SQL statement to run
@@ -196,8 +210,10 @@ paths:
           primary: true
           filter: .params.query.native.query
           max_chars: 2000
+        # Keyed by param name, and the resolver rides on `query` (see below),
+        # so the resolved name lands at `.resolved.query`.
         - label: Database
-          filter: .params.query.database | tostring
+          filter: .resolved.query // (.params.query.database | tostring)
         - label: Format
           filter: .params.export_format
       response_type: binary
@@ -228,3 +244,9 @@ paths:
                   # Extraction mode: the path descends into this object.
                   x-overslash-sql-field: query.native.query
                   x-overslash-sql-database: .query.database | tostring
+                  # The db id is nested inside this object, so the resolver
+                  # rides on the enclosing param and reaches the id by dotted
+                  # path. Same display-only contract as run_query.
+                  x-overslash-resolve:
+                    get: /api/database/{query.database}
+                    pick: name

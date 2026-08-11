@@ -52,24 +52,42 @@ async fn start_mock_metabase() -> (SocketAddr, SeenLog) {
             .unwrap_or_default();
         let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         let path = parts.uri.path().to_string();
+        let api_key = parts
+            .headers
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
         seen.lock().unwrap().push(Seen {
             method: parts.method.to_string(),
             path: path.clone(),
-            api_key: parts
-                .headers
-                .get("x-api-key")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string),
+            api_key: api_key.clone(),
             body,
         });
         let payload = if path == "/api/database" {
             json!({ "data": [ { "id": 1, "name": "pagila", "engine": "postgres" } ] })
+        } else if path == "/api/database/1" {
+            // What the `database` display resolver reads. Only db 1 exists —
+            // any other id 404s, which is how the fallback-to-raw-id path is
+            // exercised.
+            //
+            // Auth is enforced here on purpose: a real Metabase 401s an
+            // unauthenticated GET, and the resolver's credential arrives by a
+            // different route than the action's (secret refs are only
+            // materialized at send time). Answering regardless would let that
+            // gap pass unnoticed.
+            if api_key.is_none() {
+                return (axum::http::StatusCode::UNAUTHORIZED, axum::Json(json!({})))
+                    .into_response();
+            }
+            json!({ "id": 1, "name": "pagila", "engine": "postgres" })
+        } else if path.starts_with("/api/database/") && !path.ends_with("/metadata") {
+            return (axum::http::StatusCode::NOT_FOUND, axum::Json(json!({}))).into_response();
         } else if path == "/api/dataset" {
             json!({ "status": "completed", "data": { "rows": [[1]], "cols": [{"name": "n"}] } })
         } else {
             json!({ "ok": true })
         };
-        axum::Json(payload)
+        axum::Json(payload).into_response()
     }
 
     let app = Router::new()
@@ -276,6 +294,185 @@ async fn metabase_template_ships() {
         export_q.sql_database.as_deref(),
         Some(".query.database | tostring")
     );
+
+    // Display resolvers parse off both body properties. They're spelled
+    // canonically in the YAML because alias normalization never walks
+    // requestBody schema properties — if someone "tidies" them to the
+    // unprefixed `resolve:` form they'd be silently dropped, and this is
+    // what notices.
+    let db_resolve = svc.actions["run_query"].params["database"]
+        .resolve
+        .as_ref()
+        .expect("run_query.database declares a display resolver");
+    assert_eq!(db_resolve.get, "/api/database/{database}");
+    assert_eq!(db_resolve.pick, "name");
+    let export_resolve = export_q
+        .resolve
+        .as_ref()
+        .expect("export_query.query declares a display resolver");
+    assert_eq!(export_resolve.get, "/api/database/{query.database}");
+    assert_eq!(export_resolve.pick, "name");
+}
+
+/// Pull one labelled entry out of a `disclosed` array.
+fn disclosed_value<'a>(disclosed: &'a [Value], label: &str) -> Option<&'a str> {
+    disclosed
+        .iter()
+        .find(|d| d["label"].as_str() == Some(label))?["value"]
+        .as_str()
+}
+
+/// The reason this template carries resolvers at all: an approval reviewer
+/// reading "Database: 4" learns nothing about whether the statement is aimed
+/// at production. The disclosure names the database instead.
+#[tokio::test]
+async fn database_disclosure_carries_the_resolved_name() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    // A write statement so both build tiers land on the same surface: with
+    // the parser it classifies write, without it `risk: dynamic` fails closed
+    // to write anyway. That surface is the point — the approval payload is
+    // what a human reads before deciding.
+    let resp = run_query(
+        &base,
+        &client,
+        &agent_key,
+        "DELETE FROM public.film",
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        resp["status"].as_str(),
+        Some("pending_approval"),
+        "{resp:?}"
+    );
+
+    let disclosed = resp["disclosed_fields"]
+        .as_array()
+        .cloned()
+        .expect("inline disclosed_fields present");
+    assert_eq!(
+        disclosed_value(&disclosed, "Database"),
+        Some("pagila"),
+        "expected the resolved Metabase name, got: {disclosed:?}"
+    );
+    assert_eq!(
+        disclosed_value(&disclosed, "SQL"),
+        Some("DELETE FROM public.film"),
+        "{disclosed:?}"
+    );
+    // The same display name reaches the approval title.
+    assert_eq!(
+        resp["action_description"].as_str(),
+        Some("Run SQL on database 'pagila' (Metabase)"),
+        "{resp:?}"
+    );
+
+    // The resolver GET is authenticated exactly the way the action is.
+    let seen = seen.lock().unwrap();
+    let resolve = seen
+        .iter()
+        .find(|r| r.path == "/api/database/1")
+        .expect("resolver GET fired");
+    assert_eq!(resolve.method, "GET");
+    assert_eq!(resolve.api_key.as_deref(), Some("mb_test_key_123"));
+}
+
+/// export_query nests the id at `query.database`, so the resolver URL only
+/// builds if the placeholder substituter descends into the object param.
+#[tokio::test]
+async fn export_query_resolver_reaches_the_nested_database_id() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "export_query",
+            "params": {
+                "export_format": "csv",
+                "query": {
+                    "database": 1,
+                    "type": "native",
+                    "native": { "query": "DELETE FROM public.film" },
+                },
+            },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp["status"].as_str(),
+        Some("pending_approval"),
+        "{resp:?}"
+    );
+
+    let disclosed = resp["disclosed_fields"]
+        .as_array()
+        .cloned()
+        .expect("inline disclosed_fields present");
+    assert_eq!(
+        disclosed_value(&disclosed, "Database"),
+        Some("pagila"),
+        "dotted placeholder should have reached params.query.database, got: {disclosed:?}"
+    );
+    assert_eq!(disclosed_value(&disclosed, "Format"), Some("csv"));
+
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter().any(|r| r.path == "/api/database/1"),
+        "resolver GET should have hit the un-nested id, saw: {:?}",
+        seen.iter().map(|r| &r.path).collect::<Vec<_>>()
+    );
+}
+
+/// Resolution is best-effort: a lookup that fails must not blank the field or
+/// fail the call — the filter's `// (.params.database | tostring)` arm puts
+/// the raw id back.
+#[tokio::test]
+async fn unresolvable_database_falls_back_to_the_raw_id() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    // Only db 1 exists on the mock; 99 404s.
+    let resp = run_query(
+        &base,
+        &client,
+        &agent_key,
+        "DELETE FROM public.film",
+        json!({ "params": { "database": 99, "query": "DELETE FROM public.film" } }),
+    )
+    .await;
+    assert_eq!(
+        resp["status"].as_str(),
+        Some("pending_approval"),
+        "{resp:?}"
+    );
+
+    let disclosed = resp["disclosed_fields"]
+        .as_array()
+        .cloned()
+        .expect("inline disclosed_fields present");
+    assert_eq!(
+        disclosed_value(&disclosed, "Database"),
+        Some("99"),
+        "failed resolution should surface the raw id, got: {disclosed:?}"
+    );
+    // …and the title degrades to the id rather than rendering an empty quote.
+    assert_eq!(
+        resp["action_description"].as_str(),
+        Some("Run SQL on database 99 (Metabase)"),
+        "{resp:?}"
+    );
 }
 
 /// A read action executes with the API key injected as `x-api-key` — never a
@@ -414,6 +611,70 @@ mod classified {
         assert_eq!(
             req.body["native"]["query"].as_str(),
             Some("SELECT title FROM public.film")
+        );
+    }
+
+    /// The split is deliberate and load-bearing: the disclosure names the
+    /// database from a live lookup so a reviewer can judge the blast radius,
+    /// while `sql.db` and the permission keys stay on the operator-pinned
+    /// `sql_databases` label (here absent, so the raw id). A grant keyed on a
+    /// name an upstream admin can rename — or that silently reverts to the id
+    /// when a 3s lookup times out — is a grant that breaks or aliases without
+    /// anyone touching Overslash. If someone "unifies" these, this fails.
+    #[tokio::test]
+    async fn disclosure_names_the_database_while_keys_keep_the_id() {
+        let pool = common::test_pool().await;
+        let (mock, _seen) = start_mock_metabase().await;
+        // No sql_databases config → db_label falls back to the raw db key.
+        let (base, client, agent_key, admin_key, ident) =
+            setup(pool, mock, "read", false, None).await;
+        add_rule(
+            &base,
+            &client,
+            &admin_key,
+            &ident,
+            "metabase:run_query:table=1/public.*",
+            "allow",
+        )
+        .await;
+
+        let resp = run_query(
+            &base,
+            &client,
+            &agent_key,
+            "SELECT title FROM public.film",
+            json!({}),
+        )
+        .await;
+        assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+        let audit: Vec<Value> = client
+            .get(format!("{base}/v1/audit?limit=50"))
+            .header(auth(&admin_key).0, auth(&admin_key).1)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let executed = audit
+            .iter()
+            .find(|e| e["action"].as_str() == Some("action.executed"))
+            .expect("action.executed audit row present");
+
+        let disclosed = executed["detail"]["disclosed"]
+            .as_array()
+            .expect("disclosed present");
+        assert_eq!(
+            disclosed_value(disclosed, "Database"),
+            Some("pagila"),
+            "display side names the database, got: {disclosed:?}"
+        );
+        assert_eq!(
+            executed["detail"]["sql"]["db"].as_str(),
+            Some("1"),
+            "policy side keeps the raw id: {:?}",
+            executed["detail"]["sql"]
         );
     }
 
