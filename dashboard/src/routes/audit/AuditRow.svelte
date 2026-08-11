@@ -8,6 +8,7 @@
 	} from '$lib/identityDisplay';
 	import { formatBytes } from '$lib/approvals/format';
 	import {
+		recordedNames,
 		responseCapture,
 		transportError,
 		upstreamError,
@@ -68,19 +69,25 @@
 		formatIdentityPath(entry.identity_path, entry.identity_path_ids, labelUnit)
 	);
 
-	// The row records the actor's name as of write time; the SPIFFE path carries
-	// their current one. The table shows what was recorded — an operator who
+	// The row records its actors' names as of write time; the SPIFFE path carries
+	// their current ones. The table shows what was recorded — an operator who
 	// searches for a name they can see has to find the row — and the live chain
 	// stays one hover (or one expand) away. See D59.
-	const recordedName = $derived(entry.identity_name);
-	const liveLeafName = $derived(units.leaf?.name ?? null);
-	const renamedSince = $derived(
-		!!recordedName && !!liveLeafName && recordedName !== liveLeafName
-	);
-	const leafLabel = $derived(recordedName ?? liveLeafName);
+	//
+	// `names.actor` follows the leaf for an agent row and the user unit for a
+	// human acting directly, so a renamed user is reported too; comparing
+	// against the leaf alone would never fire for them.
+	const names = $derived(recordedNames(entry, units));
+	const renamedSince = $derived(names.actor.renamed);
+	const leafLabel = $derived(names.actor.label);
 	const leafTitle = $derived(
-		renamedSince ? `now ${liveLeafName} — ${chainTitle}` : chainTitle
+		renamedSince ? `now ${names.actor.live} — ${chainTitle}` : chainTitle
 	);
+	// The User column normally renders an *email* resolved live by id, and an
+	// email does not move when a display name does — so it is only marked when
+	// it has fallen back to rendering the path's name, which is the value that
+	// actually changed.
+	const userNameIsLive = $derived(!userDisplay && names.user.renamed);
 
 	function relativeTime(iso: string): string {
 		const then = new Date(iso).getTime();
@@ -250,8 +257,9 @@
 		{:else if units.user}
 			<a
 				class="identity-link"
+				class:renamed={userNameIsLive}
 				href={units.user.href}
-				title={userDisplay?.title}
+				title={userNameIsLive ? `recorded as ${names.user.recorded}` : userDisplay?.title}
 				onclick={(e) => e.stopPropagation()}
 			>{userDisplay?.primary ?? units.user.name}</a>
 		{:else if entry.owner_user_name}
@@ -363,7 +371,16 @@
 					{#if renamedSince}
 						<dt>Recorded as</dt>
 						<dd title="the name this identity had when the event was written">
-							{recordedName}
+							{names.actor.recorded}
+						</dd>
+					{/if}
+					{#if names.actorIsAgent && names.user.renamed}
+						<!-- Only for agent rows: on a row where the human acted
+						     directly this is the same identity as the actor, and
+						     the line above has already said it. -->
+						<dt>Recorded user as</dt>
+						<dd title="the name the owning user had when the event was written">
+							{names.user.recorded}
 						</dd>
 					{/if}
 					{#if entry.impersonated_by_path}

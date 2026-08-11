@@ -79,6 +79,60 @@ export interface AuditFilters {
 	is_error?: boolean;
 }
 
+/** How the names recorded on a row (D59) line up with the live identity chain
+ *  carried by `identity_path`. Each unit reports what the row recorded, what
+ *  the identity is called now, and whether those differ.
+ *
+ *  The actor is the **leaf when an agent acted and the user unit when a human
+ *  acted directly** — `identityUnits` returns `leaf: null` for the latter, so
+ *  comparing against the leaf alone silently never fires for user rows. That is
+ *  the most common rename there is: an agent has to be renamed deliberately
+ *  through `PATCH /v1/identities/{id}`, while a user's display name is
+ *  refreshed from their IdP on every sign-in. */
+export interface RecordedName {
+	/** Name as of write time, from the row. Null for rows with no actor. */
+	recorded: string | null;
+	/** Name the identity carries now, from the live chain. Null when the chain
+	 *  could not be resolved (deleted identity). */
+	live: string | null;
+	/** Both known and different — the row is showing history. */
+	renamed: boolean;
+	/** What to label the unit with: the record, falling back to the live name
+	 *  for rows written before those columns existed. */
+	label: string | null;
+}
+
+export interface RecordedNames {
+	actor: RecordedName;
+	/** The user unit specifically. For a row where a human acted directly this
+	 *  is the same identity as `actor`; for an agent row it is their owner. */
+	user: RecordedName;
+	/** True when actor and user are distinct identities, i.e. an agent acted.
+	 *  Callers use it to avoid reporting one rename twice. */
+	actorIsAgent: boolean;
+}
+
+function compare(recorded: string | null, live: string | null): RecordedName {
+	return {
+		recorded,
+		live,
+		renamed: !!recorded && !!live && recorded !== live,
+		label: recorded ?? live
+	};
+}
+
+export function recordedNames(
+	entry: AuditEntry,
+	units: { user: { name: string } | null; leaf: { name: string } | null }
+): RecordedNames {
+	const liveUser = units.user?.name ?? null;
+	return {
+		actor: compare(entry.identity_name, units.leaf?.name ?? liveUser),
+		user: compare(entry.owner_user_name, liveUser),
+		actorIsAgent: !!units.leaf
+	};
+}
+
 /** Execution events that carry the normalized `detail.is_error` flag.
  * `action.downloaded` is a deferred-download redemption: the bytes left the
  * gateway on that request, so it's an execution for filtering purposes even
