@@ -149,6 +149,7 @@ pub(super) async fn resolve_request(
                 download: None,
                 params: HashMap::new(),
                 resolved: HashMap::new(),
+                canonical: HashMap::new(),
                 mcp_target: None,
                 platform_target: None,
                 instance_id: instance.as_ref().map(|i| i.id),
@@ -272,16 +273,32 @@ pub(super) async fn resolve_request(
                 .clone()
                 .unwrap_or_else(|| action_key.clone());
             let arguments = serde_json::to_value(&req.params).unwrap_or(serde_json::Value::Null);
+
+            // Display-param resolution: dispatch each declared resolver as a
+            // read-only `tools/call` against this same instance, so an
+            // approval names the target instead of quoting an opaque handle.
+            // Best-effort — a slow or unreachable server degrades the
+            // approval's readability, it does not block the gate.
+            let resolved = crate::services::param_resolver::resolve_display_params_mcp(
+                state,
+                scope,
+                &resolved_url,
+                &resolved_auth,
+                mcp_oauth_header.as_ref(),
+                action,
+                &req.params,
+            )
+            .await;
+
             // Interpolate `{param}` placeholders in the action description
-            // using the caller's supplied params. Mirrors the HTTP path so
-            // approvals and audit rows name the actual target — e.g.
-            // "Search issues in team ENG" instead of "Search issues in team
-            // {team}". Resolvers don't apply (MCP has no HTTP parameter
-            // schema), so we pass an empty resolved map.
+            // using the caller's supplied params, preferring a resolved
+            // display name. Mirrors the HTTP path so approvals and audit rows
+            // name the actual target — e.g. "Search issues in team ENG"
+            // instead of "Search issues in team {team}".
             let interpolated = overslash_core::description::interpolate_description_with_resolved(
                 action.label_template(),
                 &req.params,
-                &std::collections::HashMap::new(),
+                &resolved.display,
             );
             let description = format!("{interpolated} ({})", svc.display_name);
             return Ok((
@@ -311,9 +328,8 @@ pub(super) async fn resolve_request(
                     redact: action.redact.clone(),
                     download: action.download.clone(),
                     params: req.params.clone(),
-                    // Resolvers don't run for MCP (no HTTP parameter schema),
-                    // so the disclosure projection's `resolved` stays empty.
-                    resolved: HashMap::new(),
+                    resolved: resolved.display,
+                    canonical: resolved.canonical,
                     mcp_target: Some(McpTarget {
                         url: resolved_url,
                         auth: resolved_auth,
@@ -371,6 +387,7 @@ pub(super) async fn resolve_request(
                     download: None,
                     params: HashMap::new(),
                     resolved: HashMap::new(),
+                    canonical: HashMap::new(),
                     mcp_target: None,
                     platform_target: Some(PlatformTarget {
                         action_key: action_key.clone(),
@@ -679,7 +696,7 @@ pub(super) async fn resolve_request(
         let interpolated = overslash_core::description::interpolate_description_with_resolved(
             action.label_template(),
             &req.params,
-            &resolved,
+            &resolved.display,
         );
         let description = format!("{interpolated} ({})", svc.display_name);
 
@@ -712,7 +729,8 @@ pub(super) async fn resolve_request(
                 redact: action.redact.clone(),
                 download: None,
                 params: req.params.clone(),
-                resolved,
+                resolved: resolved.display,
+                canonical: resolved.canonical,
                 mcp_target: None,
                 platform_target: None,
                 instance_id: instance.as_ref().map(|i| i.id),

@@ -58,9 +58,10 @@ x-overslash-mcp:
             type: string
             description: "Parent message ts to reply in-thread."
         required: [channel, text]
-      # MCP-runtime disclosure projects {runtime, tool, arguments, service,
-      # action}, so filters address `.arguments.*` (not the HTTP `.body.*`
-      # shape). Surfaces the target + message in the approval UI and audit log.
+      # MCP-runtime disclosure projects {runtime, tool, arguments, resolved,
+      # service, action}, so filters address `.arguments.*` (not the HTTP
+      # `.body.*` shape), and `.resolved.*` when a param declares a resolver.
+      # Surfaces the target + message in the approval UI and audit log.
       disclose:
         - label: "Channel"
           filter: ".arguments.channel"

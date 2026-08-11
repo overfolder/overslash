@@ -189,6 +189,7 @@ mod tests {
             download: None,
             params: Default::default(),
             resolved: Default::default(),
+            canonical: Default::default(),
             mcp_target: None,
             platform_target: None,
             instance_id: None,

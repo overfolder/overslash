@@ -611,6 +611,20 @@ Each identity (or each org) can set `notifications.managed_by_platform = true`. 
 
 This is a per-identity flag (so a single org can have both platform-mediated agents and direct-use agents) but typically set at agent-creation time by the platform's enrollment flow.
 
+### Canonical scope values
+
+A `scope_param` normally takes the caller's argument verbatim. When that argument is an *address* rather than an identity — the same WhatsApp contact answers to both a phone JID and a privacy `@lid` — each spelling mints its own key, so a grant made against one silently misses the other and the rules list fills with opaque handles.
+
+A param whose `resolve:` declares `scope:` (§9) fixes this: the resolver's canonical value replaces the raw argument **when deriving permission keys only**. `recipient=239135323373760@lid` and `recipient=34600111222@s.whatsapp.net` both become `recipient=+34600111222`.
+
+Three properties make this safe to rely on:
+
+- **The outgoing request is untouched.** Canonicalization renames the permission; it never retargets the call. The literal argument is what goes on the wire and what the approval discloses.
+- **It fails safe.** When resolution fails there is no canonical value and the raw argument stands. That derives a *different* key, which matches no existing grant, so the call raises an approval rather than slipping through one.
+- **Trust is already spent.** The canonical value comes from the same upstream the call is about to act on, which can already do anything the credential permits.
+
+Note this is a live behaviour change for any grant already stored against a raw address: it stops matching once its template declares `scope:`, and re-prompts for approval once.
+
 ### Specificity Tiers
 
 When an approval is created, Overslash derives the most specific permission keys from the request and generates broader alternatives by progressively replacing segments with `*`. These are returned as structured data in the approval payload — no human-readable labels, so platforms can render them in any language or UI format.
@@ -890,7 +904,7 @@ paths:
 - **`x-overslash-scope_param` / `scope_param:`** — which parameter(s) provide the `{arg}` segment in permission keys. Without it, the arg is `*`. Accepts a param name (`scope_param: repo`), a `param:label` pair, or a list of either (`scope_param: [to:recipient, cc:recipient, bcc:recipient]`). Each value mints one `{service}:{action}:{label}={value}` key — an array-valued param fans out per element — and the label defaults to the param name. Keys are deduped, so params sharing a label collapse a value that appears in more than one of them into a single key (and a single approval). See §5 for how rules match labelled keys.
 - **`x-overslash-sql-field` / `sql-field:`** — on a parameter, a dotted body path that both nominates this param as the raw-SQL field (D42/D43 content policy: parse → read/write risk floor; per-table permission keys split by context — read-context relations mint `{service}:{action}:table={label}/{relation}`, mutation targets mint `table_mut={label}/{relation}`, plus the mutation-shaped all-tables sentinel `table_mut={label}/*` when relations can't be enumerated; the label-less value-only form covers both classes; `column=`/`column_star=` deny screening) and names where the SQL string sits in the assembled JSON body. On a **string** param the value is *placed* at the path (`native.query` keeps the caller surface flat while nesting the outgoing body); on an **object** param the path is *descended into* (it must anchor at the param's own name). One per action, enforced at template compile.
 - **`x-overslash-sql-database` / `sql-database:`** — a jq expression over the call params (e.g. `.database | tostring`) whose result keys into the instance's `sql_databases` config map (`{"<db-key>": {"dialect": "...", "label": "..."}}`) to resolve the parse dialect and the human DB label used in audit rows and permission keys. Unresolved falls back to postgres with the raw key as label (fail-closed).
-- **`x-overslash-resolve` / `resolve:`** — on a parameter, fetch a human-readable name for an opaque ID. Runs a follow-up GET against the service and extracts a field. Used in agent-facing descriptions.
+- **`x-overslash-resolve` / `resolve:`** — on a parameter, fetch a human-readable name for an opaque ID before the approval is minted. Declares a target and a projection. The target is either `get:` (HTTP runtime — a follow-up authenticated GET against the same service host) or `tool:` + `args:` (MCP runtime — a `tools/call` against the same instance; the named tool must be `risk: read`, since a resolver runs before a human has seen anything). The projection is either `pick:` (one dot-path into the response) or `display:` (a `{dot.path}` template sharing the description grammar, so `{name}[ ({phone})]` drops the bracketed segment when the phone is unknown). Optional `scope:` names a dot-path whose value **canonicalizes the permission key** — see §5. Resolution is best-effort: a failed or slow lookup (3s timeout) degrades the approval's readability and never blocks it. Feeds agent-facing descriptions and the disclosure `.resolved.*` projection (§12a). Available on `parameters[]`, body-schema properties, and MCP `input_schema` properties.
 - **`x-overslash-aliases` / `aliases:`** — on a parameter, a list of alternate caller-facing names (e.g. `[to, dest]` on a `recipient` param). A call that supplies an alias key instead of the canonical name has it rewritten to the canonical name before validation, so a well-known synonym is accepted rather than rejected as an unknown argument. A declared field always wins over an alias that collides with it, and an alias claimed by two params is ambiguous and ignored (the caller gets the normal unknown-argument error, with a Levenshtein "did you mean" suggestion). The unprefixed `aliases:` form is normalized on `parameters[]` entries; body-schema properties use the canonical `x-overslash-aliases` key (same as `resolve`).
 - **`x-overslash-provider` / `provider:`** — on an `oauth2` security scheme, the symbolic OAuth provider name (`google`, `slack`, `github`, ...). Decoupled from OAuth URLs so the gateway can resolve credentials independently.
 - **`x-overslash-default_secret_name` / `default_secret_name:`** — on an `apiKey` or `http` security scheme, the canonical secret name for auto-wiring. Templates are expected to declare **either** an OAuth scheme **or** an apiKey/http scheme with this field — OAuth templates don't fall back to a secret.
@@ -1144,7 +1158,7 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 
 | Code | What it catches |
 |---|---|
-| `missing_field` | required field (`key`, `display_name`, `description`, `resolver.pick`, path on HTTP actions) is empty |
+| `missing_field` | required field (`key`, `display_name`, `description`, a `resolve` projection — `pick` or `display` —, path on HTTP actions) is empty |
 | `invalid_key` | service `key` does not match `^[a-z][a-z0-9_-]*$` |
 | `invalid_action_key` | action key does not match `^[a-z][a-z0-9_]*$` |
 | `invalid_host` | host is empty, contains scheme, path, or whitespace |
@@ -1157,10 +1171,16 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 | `path_param_not_required` | `{param}` in `path` references a param not marked `required: true` |
 | `invalid_param_type` | `params.<name>.type` is not one of `string`, `number`, `integer`, `boolean`, `array`, `object` |
 | `invalid_enum_values` | `enum` is empty, or `default` is set but not a member of `enum` |
-| `unbalanced_brackets` | description has an unbalanced or nested `[` (segments are flat only) |
+| `unbalanced_brackets` | description or `resolve.display` has an unbalanced or nested `[` (segments are flat only) |
 | `invalid_description_syntax` | description has an unclosed `{` placeholder |
+| `invalid_path_syntax` | `resolve.get`, a `resolve.args` value, or `resolve.display` has an unclosed `{` placeholder |
 | `unknown_description_param` | `{param}` in description does not reference a defined param |
-| `unknown_resolver_param` | `{param}` in `resolve.get` does not reference a defined param on the same action |
+| `unknown_resolver_param` | `{param}` in `resolve.get` or a `resolve.args` value does not reference a defined param on the same action |
+| `invalid_resolver_target` | `resolve` declares neither or both of `get` / `tool`; `args` on a `get` resolver; or a target that does not match the service runtime (`get:` on MCP, `tool:` on HTTP) |
+| `invalid_resolver_projection` | `resolve` declares both `pick` and `display` |
+| `invalid_resolver_scope` | `resolve.scope` on an array param — each element mints its own key, so one canonical value cannot replace the list |
+| `unknown_resolver_tool` | `resolve.tool` does not name a tool on this service (matched on the wire name, i.e. `mcp_tool` when it differs from the action key) |
+| `invalid_resolver_tool` | `resolve.tool` names a `write`/`delete` action — resolvers run before approval and must be read-only |
 | `unknown_scope_param` | a `scope_param` entry does not reference a defined param |
 | `invalid_scope_param` | `scope_param` is not a param name / `param:label` pair / list of them |
 | `invalid_response_type` | `response_type` is set to something other than `"json"` or `"binary"` |
@@ -1391,7 +1411,7 @@ Each disclose filter runs against this projection of the resolved request:
 
 - `body` is parsed as JSON when the outbound request's `Content-Type` is a JSON media type (`application/json`, `application/*+json`); otherwise it's carried as the raw string.
 - `params` is the post-resolution parameter map — every arg the agent passed, regardless of whether it was bound to the URL path, the query string, or the body.
-- `resolved` is the display-name map produced by the template's `resolve` param declarations (param name → human-readable string, e.g. a Drive `fileId` → the file's name). Only params whose lookup succeeded appear, so filters should fall back explicitly: `.resolved.fileId // .params.fileId`. Resolution runs **once, at resolve time**, and the map rides in the request metadata through execution — a delete action's audit-write disclosure still names the object even though it no longer exists upstream. MCP- and platform-runtime actions keep their own projections unchanged (`{runtime, tool, arguments, service, action}` / `{runtime, action, params, service}`, no `resolved` key): display-param resolvers are HTTP-action-only.
+- `resolved` is the display-name map produced by the template's `resolve` param declarations (param name → human-readable string, e.g. a Drive `fileId` → the file's name). Only params whose lookup succeeded appear, so filters should fall back explicitly: `.resolved.fileId // .params.fileId`. Resolution runs **once, at resolve time**, and the map rides in the request metadata through execution — a delete action's audit-write disclosure still names the object even though it no longer exists upstream. MCP-runtime actions carry the same key in their own projection (`{runtime, tool, arguments, resolved, service, action}`), so the idiom there reads `.resolved.recipient // .arguments.recipient`. Platform-runtime actions have no `resolved` key (`{runtime, action, params, service}`): they make no outgoing call for a resolver to ride on.
 
 ### Declaration
 

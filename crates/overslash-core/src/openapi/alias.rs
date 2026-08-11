@@ -290,6 +290,26 @@ pub fn normalize_aliases(v: &mut Value) -> Vec<ValidationIssue> {
                     };
                     let base = format!("x-overslash-mcp.{field}[{i}]");
                     rewrite_aliases(obj, MCP_TOOL_ALIASES, &base, &mut issues);
+
+                    // A tool's params live in its JSON-Schema `input_schema`,
+                    // and carry the same parameter-level extensions an HTTP
+                    // `parameters[]` entry does (`resolve`, `aliases`,
+                    // `instance-config`, …). Without this walk the unprefixed
+                    // spelling is silently ignored on MCP tools alone — an
+                    // author writes `resolve:` next to an already-unprefixed
+                    // `risk:` and gets a no-op.
+                    if let Some(props) = obj
+                        .get_mut("input_schema")
+                        .and_then(Value::as_object_mut)
+                        .and_then(|schema| schema.get_mut("properties"))
+                        .and_then(Value::as_object_mut)
+                    {
+                        for (name, prop) in props.iter_mut() {
+                            let Value::Object(pm) = prop else { continue };
+                            let base = format!("{base}.input_schema.properties.{name}");
+                            rewrite_aliases(pm, PARAMETER_ALIASES, &base, &mut issues);
+                        }
+                    }
                 }
             }
         }
@@ -320,6 +340,38 @@ mod tests {
         assert_eq!(info["x-overslash-hidden"], true);
         assert!(!info.contains_key("key"));
         assert!(!info.contains_key("hidden"));
+    }
+
+    /// The unprefixed spelling must work on an MCP tool's params, not just at
+    /// the tool level — otherwise `resolve:` next to an unprefixed `risk:`
+    /// reads as authored but silently does nothing.
+    #[test]
+    fn rewrites_param_aliases_inside_mcp_input_schema() {
+        let mut v = doc(json!({
+            "x-overslash-mcp": {"tools": [{
+                "name": "send_message",
+                "risk": "write",
+                "input_schema": {"type": "object", "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "resolve": {"tool": "resolve_jid", "pick": "name"},
+                        "aliases": ["to"]
+                    }
+                }}
+            }]}
+        }));
+        let issues = normalize_aliases(&mut v);
+        assert!(issues.is_empty(), "{issues:?}");
+        let prop = &v["x-overslash-mcp"]["tools"][0]["input_schema"]["properties"]["recipient"];
+        assert_eq!(prop["x-overslash-resolve"]["tool"], "resolve_jid");
+        assert_eq!(prop["x-overslash-aliases"][0], "to");
+        assert!(prop.as_object().unwrap().get("resolve").is_none());
+        assert!(prop.as_object().unwrap().get("aliases").is_none());
+        // The tool level still normalizes as before.
+        assert_eq!(
+            v["x-overslash-mcp"]["tools"][0]["x-overslash-risk"],
+            "write"
+        );
     }
 
     #[test]

@@ -310,6 +310,44 @@ mod tests {
         assert!(out.iter().all(|f| f.error.is_none()));
     }
 
+    /// `.resolved.x // .arguments.x` is the MCP shape's fallback idiom — the
+    /// same one HTTP filters spell `.resolved.fileId // .params.fileId`. It
+    /// must prefer the resolved display string and degrade to the literal
+    /// argument when the resolver could not answer.
+    #[tokio::test]
+    async fn resolved_value_is_preferred_over_the_raw_argument() {
+        let filter = f("Recipient", ".resolved.recipient // .arguments.recipient");
+        let arguments = json!({"recipient": "239135323373760@lid", "text": "hi"});
+
+        let resolved = json!({
+            "runtime": "mcp",
+            "tool": "send_message",
+            "arguments": arguments,
+            "resolved": {"recipient": "Sonia Pérez (+34600111222)"},
+        });
+        let out = run_disclosures(
+            std::slice::from_ref(&filter),
+            &resolved,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out[0].value.as_deref(), Some("Sonia Pérez (+34600111222)"));
+
+        // Resolution failed: `resolved` is present but empty.
+        let unresolved = json!({
+            "runtime": "mcp",
+            "tool": "send_message",
+            "arguments": arguments,
+            "resolved": {},
+        });
+        let out = run_disclosures(&[filter], &unresolved, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(out[0].value.as_deref(), Some("239135323373760@lid"));
+        assert!(out[0].error.is_none());
+    }
+
     #[tokio::test]
     async fn empty_yielding_filter_renders_when_present() {
         // When the optional argument *is* supplied, the same filter yields the

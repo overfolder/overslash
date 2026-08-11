@@ -76,6 +76,19 @@ x-overslash-mcp:
           recipient:
             type: string
             description: "Destination chat: a JID (`user@s.whatsapp.net` or `group@g.us`) or a raw phone number with country code (digits only)."
+            # A privacy LID (`239135323373760@lid`) names a person only to
+            # WhatsApp — its digits are not a phone number, so no local
+            # formatting can make it reviewable. `resolve_jid` is the one
+            # read tool that answers for every value this param accepts, so
+            # the approval reads "Sonia Pérez (+34600111222)" and the
+            # permission key collapses onto the phone number instead of
+            # minting a separate rule per address the same human answers at.
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{recipient}'
+              display: '{name}[ ({phone})]'
+              scope: phone
           text:
             type: string
             minLength: 1
@@ -85,11 +98,17 @@ x-overslash-mcp:
             description: "Optional stanza id of the message to quote-reply to."
         required: [recipient, text]
       # MCP-runtime disclosure projection is {runtime, tool, arguments,
-      # service, action} (see compute_approval_detail in routes/actions.rs),
-      # so filters address `.arguments.*` rather than the HTTP `.params.*` /
-      # `.body.*` shape used by Mode A/C HTTP actions.
+      # resolved, service, action} (see compute_approval_detail in
+      # routes/actions/approval_detail.rs), so filters address `.arguments.*`
+      # rather than the HTTP `.params.*` / `.body.*` shape used by Mode A/C
+      # HTTP actions.
       disclose:
+        # `.resolved.*` carries the resolver output; fall back to the literal
+        # argument whenever the container could not answer, so a lookup
+        # failure degrades this row rather than blanking it.
         - label: "Recipient"
+          filter: ".resolved.recipient // .arguments.recipient"
+        - label: "JID"
           filter: ".arguments.recipient"
         - label: "Message"
           primary: true
@@ -138,7 +157,14 @@ x-overslash-mcp:
     - name: get_contact_details
       risk: read
       scope_param: jid
-      description: "Fetch full details for the contact at {jid} (cache + live USync: status, profile picture, is_on_whatsapp)"
+      description: >-
+        Fetch full details for the contact at {jid} — cache + live USync:
+        `name` (display-name cascade), `phone`, push/business/full/first name,
+        nickname, status, profile picture, is_on_whatsapp. Resolves a @lid
+        through the alias map first, so a privacy LID finds the cached
+        contact; `phone` is empty rather than wrong when the real number is
+        unknown. For just the readable identity — including groups and
+        newsletters, which this tool does not cover — prefer resolve_jid.
       input_schema:
         type: object
         properties:
@@ -146,6 +172,32 @@ x-overslash-mcp:
             type: string
             minLength: 1
             description: "WhatsApp JID (e.g. `1234567890@s.whatsapp.net`)."
+        required: [jid]
+
+    - name: resolve_jid
+      risk: read
+      scope_param: jid
+      description: >-
+        Resolve {jid} — any address send_message accepts: phone JID, privacy
+        @lid, group, newsletter, or a bare phone number — to a readable
+        identity: `name` (display-name cascade), `phone` (E.164), and
+        `canonical_jid` (the phone JID when one is known). Follows the
+        lid↔phone alias map, so a @lid never reports its own digits as a
+        phone number; when the alias has not been observed yet, `phone` comes
+        back empty rather than wrong. `kind` is user|group|newsletter|unknown.
+        A JID nothing is known about answers with empty fields, not an error.
+        Cache-first and cheap — this is also what the gateway calls to render
+        a send approval, so a reviewer sees "Sonia Pérez (+34600111222)"
+        instead of "239135323373760@lid".
+        Keywords: who is this, whose number, identify, phone number, contact
+        name, resolve lid, translate jid.
+      input_schema:
+        type: object
+        properties:
+          jid:
+            type: string
+            minLength: 1
+            description: "Any address `send_message` accepts: `user@s.whatsapp.net`, `...@lid`, `group@g.us`, a newsletter JID, or digits."
         required: [jid]
 
     - name: get_group_info

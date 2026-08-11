@@ -253,7 +253,7 @@ pub(super) async fn call_action_impl(
             &scope_meta.service_key,
             &scope_meta.action_key,
             &scope_meta.scope_param,
-            &req.params,
+            &canonical_scope_params(&req.params, &meta.canonical),
         )
     };
     // D42: per-table keys join (or, for the bare `:*` fallback, replace)

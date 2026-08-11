@@ -174,11 +174,34 @@ fn schema_fields(
     (param_type, enum_values, default)
 }
 
-fn parse_resolver(v: &Value) -> Option<ParamResolver> {
+/// Lower an `x-overslash-resolve` block into a [`ParamResolver`].
+///
+/// Deliberately lenient: a block missing its target or its projection still
+/// lands on the action so `template_validation` can name the problem. Dropping
+/// it here — as this did while the shape was HTTP-only `{get, pick}` — turns a
+/// typo'd `resolve:` into a silent no-op that only shows up as an approval
+/// still quoting a raw ID.
+pub(super) fn parse_resolver(v: &Value) -> Option<ParamResolver> {
     let obj = v.as_object()?;
-    let get = obj.get("get").and_then(Value::as_str)?.to_string();
-    let pick = obj.get("pick").and_then(Value::as_str)?.to_string();
-    Some(ParamResolver { get, pick })
+    let text = |key: &str| obj.get(key).and_then(Value::as_str).map(str::to_string);
+    let args = obj
+        .get("args")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(ParamResolver {
+        get: text("get"),
+        tool: text("tool"),
+        args,
+        pick: text("pick"),
+        display: text("display"),
+        scope: text("scope"),
+    })
 }
 
 #[cfg(test)]
@@ -377,8 +400,8 @@ mod tests {
             .resolve
             .as_ref()
             .unwrap();
-        assert_eq!(r.get, "/cal/{id}");
-        assert_eq!(r.pick, "summary");
+        assert_eq!(r.get.as_deref(), Some("/cal/{id}"));
+        assert_eq!(r.pick.as_deref(), Some("summary"));
     }
 
     #[test]
@@ -574,8 +597,12 @@ mod tests {
 
     // ── parse_resolver structural edge cases ──────────────────────────
 
+    /// A half-declared resolver is *kept*, not dropped, so the template
+    /// linter can name the missing half. Dropping it here — the behaviour
+    /// while this was HTTP-only `{get, pick}` — turned a typo into a silent
+    /// no-op whose only symptom was an approval still quoting a raw ID.
     #[test]
-    fn resolver_drops_entry_missing_get() {
+    fn resolver_missing_get_is_kept_for_the_linter() {
         let doc = json!({
             "info": {"title": "T", "x-overslash-key": "t"},
             "paths": {"/x/{id}": {"get": {
@@ -588,11 +615,23 @@ mod tests {
             }}}
         });
         let (svc, _) = compile_service(&doc).unwrap();
-        assert!(svc.actions["x"].params["id"].resolve.is_none());
+        let resolver = svc.actions["x"].params["id"]
+            .resolve
+            .as_ref()
+            .expect("resolver kept");
+        assert!(!resolver.has_one_target(), "no target declared");
+
+        let report = crate::template_validation::validate_service_definition(&svc, &[]);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.code == "invalid_resolver_target")
+        );
     }
 
     #[test]
-    fn resolver_drops_entry_missing_pick() {
+    fn resolver_missing_pick_is_kept_for_the_linter() {
         let doc = json!({
             "info": {"title": "T", "x-overslash-key": "t"},
             "paths": {"/x/{id}": {"get": {
@@ -605,6 +644,58 @@ mod tests {
             }}}
         });
         let (svc, _) = compile_service(&doc).unwrap();
-        assert!(svc.actions["x"].params["id"].resolve.is_none());
+        let resolver = svc.actions["x"].params["id"]
+            .resolve
+            .as_ref()
+            .expect("resolver kept");
+        assert!(resolver.display_template().is_none(), "no projection");
+
+        let report = crate::template_validation::validate_service_definition(&svc, &[]);
+        assert!(report.errors.iter().any(|e| e.code == "missing_field"));
+    }
+
+    /// The MCP shape parses from an `input_schema` property, the surface that
+    /// used to hardcode `resolve: None`.
+    #[test]
+    fn mcp_tool_param_parses_a_tool_resolver() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {},
+            "x-overslash-runtime": "mcp",
+            "x-overslash-mcp": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {"kind": "none"},
+                "tools": [
+                    {"name": "lookup", "risk": "read", "description": "Look up {jid}",
+                     "input_schema": {"type": "object", "properties": {"jid": {"type": "string"}},
+                                      "required": ["jid"]}},
+                    {"name": "send", "risk": "write", "description": "Send to {to}",
+                     "input_schema": {"type": "object", "properties": {"to": {
+                         "type": "string",
+                         "x-overslash-resolve": {
+                             "tool": "lookup",
+                             "args": {"jid": "{to}"},
+                             "display": "{name}[ ({phone})]",
+                             "scope": "phone"
+                         }}}, "required": ["to"]},
+                     "disclose": [{"label": "To", "filter": ".arguments.to"}]}
+                ]
+            }
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let resolver = svc.actions["send"].params["to"]
+            .resolve
+            .as_ref()
+            .expect("MCP param resolver parsed");
+        assert_eq!(resolver.tool.as_deref(), Some("lookup"));
+        assert_eq!(resolver.args.get("jid").map(String::as_str), Some("{to}"));
+        assert_eq!(
+            resolver.display_template().as_deref(),
+            Some("{name}[ ({phone})]")
+        );
+        assert_eq!(resolver.scope.as_deref(), Some("phone"));
+
+        let report = crate::template_validation::validate_service_definition(&svc, &[]);
+        assert!(report.errors.is_empty(), "unexpected: {:?}", report.errors);
     }
 }

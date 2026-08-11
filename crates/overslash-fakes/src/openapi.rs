@@ -113,10 +113,16 @@ async fn clear_received_requests(State(s): State<SharedState>) -> &'static str {
     "ok"
 }
 
-/// Display-param resolver target: GET /things/{id} → {"id", "name"}.
+/// Display-param resolver target: GET /things/{id} →
+/// {"id", "name", "canonical_id"}.
+///
 /// Backs `resolve: {get, pick}` e2e tests — the resolver GET lands here and
 /// picks `name`. Recorded in `received_requests` so tests can assert the
 /// lookup happened exactly once (at resolve time, never at audit-write).
+///
+/// `canonical_id` is deliberately *different* from `id` so a test asserting
+/// `resolve.scope` canonicalization cannot pass by accident: a no-op
+/// canonicalization would leave the raw id in the permission key.
 async fn thing_display(
     State(s): State<SharedState>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -128,7 +134,11 @@ async fn thing_display(
         "headers": {},
         "body": "",
     }));
-    Json(json!({ "id": id, "name": format!("Thing {id}") }))
+    Json(json!({
+        "id": id,
+        "name": format!("Thing {id}"),
+        "canonical_id": format!("canon-{id}"),
+    }))
 }
 
 async fn receive_webhook(

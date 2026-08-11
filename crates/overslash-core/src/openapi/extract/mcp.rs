@@ -11,7 +11,7 @@ use crate::types::{
 
 use super::{
     parse_aliases, parse_disclose, parse_download, parse_instance_config, parse_redact,
-    parse_scope_params, parse_sql_policy,
+    parse_resolver, parse_scope_params, parse_sql_policy,
 };
 
 // ── x-overslash-mcp → McpSpec + ServiceActions ───────────────────────
@@ -428,6 +428,10 @@ pub(crate) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
         let aliases = parse_aliases(Some(po), name);
         let instance_config = parse_instance_config(Some(po));
         let (sql_field, sql_database) = parse_sql_policy(Some(po));
+        // MCP params carry resolvers too — an MCP resolver names a sibling
+        // `risk: read` tool rather than a GET path, but the declaration and
+        // the projection are the same shape the HTTP path parses.
+        let resolve = po.get("x-overslash-resolve").and_then(parse_resolver);
         out.insert(
             name.clone(),
             ActionParam {
@@ -436,7 +440,7 @@ pub(crate) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
                 description,
                 enum_values,
                 default,
-                resolve: None,
+                resolve,
                 aliases,
                 location: ParamLocation::Body,
                 instance_config,

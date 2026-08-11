@@ -11,12 +11,14 @@ use crate::types::{Runtime, ServiceDefinition};
 mod action;
 mod auth;
 mod mcp;
+mod resolver;
 mod service_shape;
 mod sql_policy;
 
 use action::{check_action, check_platform_action};
 use auth::check_auth;
 use mcp::check_mcp;
+use resolver::check_resolver_targets;
 use service_shape::check_service_shape;
 
 /// Validate a parsed [`ServiceDefinition`].
@@ -37,6 +39,7 @@ pub fn validate_service_definition(
     }
     check_mcp(def, &mut issues);
     check_duplicate_action_keys(raw_action_keys, &mut issues);
+    check_resolver_targets(def, &mut issues);
 
     // Iterate actions in a deterministic order so test assertions can match
     // on issue order when needed.

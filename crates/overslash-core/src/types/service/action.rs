@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -222,14 +222,63 @@ pub struct DisclosureField {
 
 /// Describes how to resolve an opaque ID into a human-readable display name.
 ///
-/// The resolver makes a GET request to the same service host (reusing existing auth)
-/// and extracts a value from the JSON response using a dot-path.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Two runtimes, one shape. An HTTP action names a `get` path, fetched with a
+/// GET against the same service host reusing existing auth; an MCP action
+/// names a `tool` on the same service plus the `args` to call it with. Either
+/// way the JSON response is projected through `pick` (a single dot-path) or
+/// `display` (a `{dot.path}` template with `[optional]` segments).
+///
+/// `scope` additionally names the dot-path whose value canonicalizes the
+/// permission key. Without it a WhatsApp grant is minted against whichever
+/// opaque address the agent happened to use — `recipient=2391...@lid` one
+/// call, `recipient=34600...@s.whatsapp.net` the next, for the same human.
+/// With it both collapse to `recipient=+34600123456`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParamResolver {
-    /// GET endpoint path with `{param}` placeholders, e.g. `/calendar/v3/calendars/{calendarId}`.
-    pub get: String,
-    /// Dot-separated path into the JSON response, e.g. `summary` or `owner.login`.
-    pub pick: String,
+    /// HTTP runtime: GET endpoint path with `{param}` placeholders, e.g.
+    /// `/calendar/v3/calendars/{calendarId}`. Mutually exclusive with `tool`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub get: Option<String>,
+    /// MCP runtime: the name of a `risk: read` tool on the same service.
+    /// Mutually exclusive with `get`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// MCP runtime: arguments for `tool`. Values may contain `{param}`
+    /// placeholders naming params of the action being called.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub args: BTreeMap<String, String>,
+    /// Dot-separated path into the JSON response, e.g. `summary` or
+    /// `owner.login`. Shorthand for a single-placeholder `display`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pick: Option<String>,
+    /// Display template over response dot-paths, e.g. `{name}[ ({phone})]`.
+    /// Mutually exclusive with `pick`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
+    /// Dot-path whose value replaces the raw argument when deriving the
+    /// permission key. The value sent upstream is never rewritten — this
+    /// renames the permission, it does not retarget the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+impl ParamResolver {
+    /// The display projection, with the `pick` shorthand normalized into the
+    /// `display` template form so callers only handle one shape. `None` when
+    /// the template declares neither — a malformed resolver that
+    /// `template_validation` reports rather than silently half-running.
+    pub fn display_template(&self) -> Option<String> {
+        match (&self.display, &self.pick) {
+            (Some(display), _) => Some(display.clone()),
+            (None, Some(pick)) => Some(format!("{{{pick}}}")),
+            (None, None) => None,
+        }
+    }
+
+    /// Whether exactly one runtime target is declared.
+    pub fn has_one_target(&self) -> bool {
+        self.get.is_some() != self.tool.is_some()
+    }
 }
 
 /// Where a parameter is sent on the wire, mirroring the OpenAPI `in:` field.
