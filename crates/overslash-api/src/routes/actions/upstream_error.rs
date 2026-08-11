@@ -16,10 +16,17 @@ use crate::services::{call_timeout::CallTimeout, http_caller};
 /// Map a transport-level `CallError` to the client-facing `AppError`.
 /// Shared by the streamed and buffered forks so the error contract stays
 /// what it was before transport failures gained audit rows.
+///
+/// `download` carries a capability URL the caller minted for the oversized
+/// case, if it could. It is threaded in rather than minted here because
+/// minting needs `AppState`, a DB write and the resolved request, none of
+/// which belong in a pure mapping function — and because the streamed fork,
+/// which never buffers and so never hits the cap, has nothing to pass.
 pub(super) fn map_call_error(
     e: http_caller::CallError,
     timeout: CallTimeout,
     offer_prefer_stream: bool,
+    download: Option<crate::services::deferred_download::Descriptor>,
 ) -> AppError {
     match e {
         http_caller::CallError::ResponseTooLarge {
@@ -31,6 +38,8 @@ pub(super) fn map_call_error(
             content_type,
             limit_bytes,
             offer_prefer_stream,
+            download_url: download.as_ref().map(|d| d.download_url.clone()),
+            expires_at: download.map(|d| d.expires_at),
         },
         // `timeout_ms` comes from the transport (what was actually applied),
         // the rest from the resolver (who set it, and what the caller would

@@ -113,6 +113,17 @@ pub enum AppError {
         /// reads it: that path renders the error through `Display`, never
         /// `IntoResponse`. See `services::action_caller::map_call_error`.
         offer_prefer_stream: bool,
+        /// A capability URL for the same request, minted at the point of
+        /// failure so the caller's retry is already in hand rather than
+        /// something it has to construct from the hint.
+        ///
+        /// `None` whenever minting was refused or failed — OAuth-injected
+        /// services cannot re-mint a bearer at fetch time, raw HTTP with
+        /// inline credential headers must not be persisted, and a mint that
+        /// errors must never mask the error the caller actually hit. The
+        /// hint adapts, so a `None` reads exactly like the pre-D57 502.
+        download_url: Option<String>,
+        expires_at: Option<String>,
     },
 
     /// The upstream did not answer within the timeout resolved for this call.
@@ -441,14 +452,31 @@ impl IntoResponse for AppError {
                 content_type,
                 limit_bytes,
                 offer_prefer_stream,
+                download_url,
+                expires_at,
             } => {
-                // `deliver: "url"` leads and is never omitted: it works from
-                // every surface and is the answer an agent wants anyway, since
-                // it puts the bytes on disk rather than in a context window.
-                // `prefer_stream` is appended only where it is reachable —
-                // naming an option the caller cannot send turns one wasted
-                // round trip into two.
-                let hint = if *offer_prefer_stream {
+                // Three states, not two. Never name a recovery the caller
+                // cannot use — that is what turns one wasted round trip into
+                // two, and it is the reason both halves of this exist.
+                //
+                // Minted: there is nothing left to retry. The URL is already
+                // in hand, so the words go to the *other* lever — narrowing
+                // the call so the next one fits inline. Neither flag appears,
+                // `prefer_stream` included: it is moot once the bytes have a
+                // home outside the response.
+                //
+                // Not minted: a second round trip really is the only way
+                // through, so name the flags. `deliver: "url"` leads and is
+                // never omitted — it works from every surface and puts bytes
+                // on disk rather than in a context window. `prefer_stream` is
+                // appended only where it is reachable; it is absent from the
+                // MCP tool schemas, which are `additionalProperties: false`.
+                let hint = if download_url.is_some() {
+                    "the response exceeded the cap; fetch the full body at \
+                     download_url, or narrow the call with the action's own \
+                     paging parameters or a filter. The URL returns the \
+                     unfiltered body."
+                } else if *offer_prefer_stream {
                     "retry with deliver: \"url\" to get a download URL instead \
                      of the body, or prefer_stream: true to stream the bytes \
                      back on this response"
@@ -463,6 +491,8 @@ impl IntoResponse for AppError {
                         "content_length": content_length,
                         "content_type": content_type,
                         "limit_bytes": limit_bytes,
+                        "download_url": download_url,
+                        "expires_at": expires_at,
                         "hint": hint,
                     })),
                 )
