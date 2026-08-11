@@ -8,9 +8,11 @@
 // Prereq: `make e2e-up`. Output: dashboard/screenshots/audit-*.png.
 
 import {
+	api,
 	login,
 	makeSnapper,
 	seedAgent,
+	seedAgentApiKey,
 	seedApproval,
 	seedExecution,
 	seedSecret,
@@ -35,6 +37,24 @@ await setAuditResponseBodyMode(session, 'errors_only');
 await seedExecution(session, { url: 'http://127.0.0.1:9/unreachable', expect: 502 });
 await seedExecution(session, { url: `${session.apiUrl}/health` });
 await seedExecution(session, { url: `${session.apiUrl}/v1/secrets` });
+
+// 1b. A renamed actor. The audit row keeps the name the agent had when it
+//     acted (D56), so the table renders `deploy-bot` with a dotted underline
+//     while the live SPIFFE path in the expanded pane reads `release-bot`.
+//     Driven entirely through the real API: the agent writes its own secret
+//     with its own key, then is renamed via PATCH /v1/identities/{id}.
+const renamedStamp = Date.now();
+const renamedAgent = await seedAgent(session, { name: `deploy-bot-${renamedStamp}` });
+const renamedKey = await seedAgentApiKey(session, renamedAgent.id, 'audit-rename-demo');
+await api(session, `/v1/secrets/renamed-actor-demo-${renamedStamp}`, {
+	method: 'PUT',
+	body: { value: 'hunter2' },
+	bearer: renamedKey.key
+});
+await api(session, `/v1/identities/${renamedAgent.id}`, {
+	method: 'PATCH',
+	body: { name: `release-bot-${renamedStamp}` }
+});
 
 const snap = await makeSnapper(session);
 
@@ -93,6 +113,25 @@ try {
 		await transportRow.click();
 		await page.waitForTimeout(400);
 		await snap.snap(page, 'audit-transport-error-expanded');
+		await ctx.close();
+	}
+
+	// 4c. Renamed actor — the row labelled with the name recorded at write
+	//     time, expanded so the "Recorded as" line and the live identity path
+	//     sit side by side.
+	{
+		const { page, ctx } = await snap.navigateAndSnap('audit-recorded-name', '/audit', {
+			viewport: { width: 1400, height: 900 },
+			waitFor: async (p) => {
+				await p.locator('tr.row .identity-link.renamed').first().waitFor({ timeout: 15_000 });
+			}
+		});
+		const renamedRow = page
+			.locator('tr.row', { has: page.locator('.identity-link.renamed') })
+			.first();
+		await renamedRow.click();
+		await page.waitForTimeout(400);
+		await snap.snap(page, 'audit-recorded-name-expanded');
 		await ctx.close();
 	}
 

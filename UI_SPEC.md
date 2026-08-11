@@ -1215,6 +1215,8 @@ A dedicated nav item. Filterable, searchable event stream — newest first, pagi
 
 The audit log uses **infinite scroll** over a paginated API (cursor-based). No page numbers or "Load more" button — new events load automatically as the user scrolls near the bottom.
 
+The cursor is `before` + `before_id` (the timestamp and id of the last row loaded), not an offset: `OFFSET n` makes the database walk `n + limit` index entries, so a long scroll session would get slower with every page. `before_id` is not decoration — events written in one transaction share a timestamp, and a cursor without a tiebreaker skips or repeats them at that boundary.
+
 **Scroll trigger**: when the viewport is within 200px of the last loaded row, the next page is fetched.
 
 **States**:
@@ -1440,6 +1442,8 @@ Login required. If not logged in → redirect to login → redirect back. If log
 
 - Shows human-readable description + raw request details + resolved service instance (qualified: `user/github` or `org/github`)
 - **Agent (identity)** — rendered as a SPIFFE-style hierarchical path (`acme/user/alice/agent/henry/...`), with the same link-unit treatment as the audit log Identity column (see §"Audit Log"). Backed by `identity_path` on the approval API response. The bare `identity_id` UUID is never shown to end users.
+
+> **Audit rows show recorded names.** Unlike every other surface, the audit table labels its actor with the name the identity had *when the event was written* (`identity_name` / `owner_user_name`, D59) — an audit row records who acted under the name they acted under. A name that has since changed is marked with a dotted underline, carries the current name in its hover, and shows a "Recorded as" line in the expanded pane. This applies to a human acting directly as much as to an agent — user display names are refreshed from the IdP on every sign-in, so they are in fact the names most likely to have moved. The User column is the one exception: it renders an *email* resolved live by id, and an email does not move when a display name does, so it is marked only where it has fallen back to rendering the path's name. the expanded pane's SPIFFE path stays live and id-linked. Free-text search matches the recorded name, so what an operator can see is what they can search for; `identity = <name>` still resolves to an id and is unaffected by renames.
 - Full specificity picker for "Allow & Remember" — reads `suggested_tiers` and `description` from the approval API (same as Agents view)
 - After resolution → confirmation + link to Agents view
 - **Already resolved** — "This approval was allowed by alice 3m ago." (or denied)

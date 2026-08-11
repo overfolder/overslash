@@ -1,14 +1,21 @@
 import { identityUnits } from '$lib/identityPath';
 import type { AuditEntry } from './types';
 
+// Names are the ones *recorded on the row* (D59), falling back to the live
+// chain for rows written before those columns existed. An exported audit log is
+// a record: it should say who acted under the name they acted under.
 const COLUMNS: Array<{ key: string; get: (e: AuditEntry) => string }> = [
 	{ key: 'timestamp', get: (e) => e.created_at },
 	{ key: 'identity_id', get: (e) => e.identity_id ?? '' },
-	{ key: 'user', get: (e) => identityUnits(e.identity_path, e.identity_path_ids).user?.name ?? '' },
+	{
+		key: 'user',
+		get: (e) =>
+			e.owner_user_name ?? identityUnits(e.identity_path, e.identity_path_ids).user?.name ?? ''
+	},
 	{
 		key: 'agent',
 		get: (e) =>
-			identityUnits(e.identity_path, e.identity_path_ids).leaf?.name ?? e.identity_name ?? ''
+			e.identity_name ?? identityUnits(e.identity_path, e.identity_path_ids).leaf?.name ?? ''
 	},
 	{ key: 'action', get: (e) => e.action },
 	{ key: 'resource_type', get: (e) => e.resource_type ?? '' },

@@ -9,8 +9,10 @@
 	import { makeIdentityFormatter } from '$lib/identityDisplay';
 	import {
 		buildQuery,
+		cursorFrom,
 		filtersToSearchString,
 		PAGE_LIMIT,
+		type AuditCursor,
 		type AuditEntry,
 		type AuditFilters
 	} from './types';
@@ -39,8 +41,10 @@
 	const searchKeys = buildAuditSearchKeys(identities, currentUser);
 	// svelte-ignore state_referenced_locally
 	let searchValue = $state<SearchValue>(filtersToSearch(data.filters, identities, currentUser));
+	// Keyset cursor rather than a row offset: `OFFSET n` walks n+limit index
+	// entries, so scrolling a long log would get slower with every page.
 	// svelte-ignore state_referenced_locally
-	let offset = $state(data.entries.length);
+	let cursor = $state<AuditCursor | null>(cursorFrom(data.entries));
 	// svelte-ignore state_referenced_locally
 	let done = $state(data.entries.length < PAGE_LIMIT);
 	let loading = $state(false);
@@ -76,20 +80,17 @@
 		inFlight = ctrl;
 		loading = true;
 		loadError = null;
-		const nextOffset = reset ? 0 : offset;
+		const nextCursor = reset ? null : cursor;
 		const requestFilters = filters;
 		try {
 			const page = await session.get<AuditEntry[]>(
-				`/v1/audit?${buildQuery(requestFilters, PAGE_LIMIT, nextOffset)}`,
+				`/v1/audit?${buildQuery(requestFilters, PAGE_LIMIT, nextCursor)}`,
 				ctrl.signal
 			);
-			if (reset) {
-				entries = page;
-				offset = page.length;
-			} else {
-				entries = [...entries, ...page];
-				offset += page.length;
-			}
+			entries = reset ? page : [...entries, ...page];
+			// Derived from the rows we actually hold, so an aborted-and-retried
+			// fetch can never advance the cursor past a page that never landed.
+			cursor = cursorFrom(entries);
 			done = page.length < PAGE_LIMIT;
 		} catch (e) {
 			if ((e as { name?: string })?.name === 'AbortError') return;

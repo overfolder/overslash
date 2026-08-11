@@ -18,7 +18,15 @@ pub fn router() -> Router<AppState> {
 struct AuditEntry {
     id: Uuid,
     identity_id: Option<Uuid>,
+    /// The actor's name **as recorded on the row** — the name they had when
+    /// they acted, not their current one (D56). Falls back to the live name
+    /// for rows written before migration 109, and stays populated after the
+    /// identity is deleted, which the old live lookup could not do.
     identity_name: Option<String>,
+    /// Recorded name of the root user of the actor's chain. Same historical
+    /// semantics as `identity_name`; the User column falls back to it when the
+    /// identity can no longer be resolved live.
+    owner_user_name: Option<String>,
     /// SPIFFE-style hierarchical path of the actor identity, e.g.
     /// `spiffe://acme/user/alice/agent/henry`. Null when the chain could not
     /// be resolved (deleted identity, unknown org).
@@ -50,8 +58,20 @@ struct AuditEntry {
 struct AuditQuery {
     #[serde(default = "default_limit")]
     limit: i64,
+    /// Legacy offset pagination. Still supported, but `OFFSET n` walks
+    /// `n + limit` index entries, so paging a long log with it costs O(pages²)
+    /// over a session. Prefer the `before` / `before_id` cursor.
     #[serde(default)]
     offset: i64,
+    /// Keyset cursor: `created_at` of the last row already seen. Combined with
+    /// `before_id` it returns the next page in `(created_at DESC, id DESC)`
+    /// order at constant cost, whatever the depth.
+    #[serde(default, deserialize_with = "deserialize_optional_datetime")]
+    before: Option<OffsetDateTime>,
+    /// Tiebreaker for the cursor: `id` of the last row already seen. Rows
+    /// written in one transaction share a timestamp, so without it a cursor at
+    /// that boundary would skip or repeat them.
+    before_id: Option<Uuid>,
     action: Option<String>,
     resource_type: Option<String>,
     identity_id: Option<Uuid>,
@@ -209,6 +229,8 @@ async fn query_audit(
         tags: tags.filter(|v| !v.is_empty()),
         tag_contains: params.tag_contains.and_then(empty),
         limit: params.limit,
+        before: params.before,
+        before_id: params.before_id,
         offset: params.offset,
     };
 
@@ -278,7 +300,12 @@ async fn query_audit(
     Ok(Json(
         rows.into_iter()
             .map(|r| {
-                let identity_name = r.identity_id.and_then(|id| name_map.get(&id).cloned());
+                // Recorded name first (D56), live name only as a fallback for
+                // rows predating migration 109. A hard-deleted identity keeps
+                // its name here; the live map has nothing to offer for it.
+                let identity_name = r
+                    .actor_name
+                    .or_else(|| r.identity_id.and_then(|id| name_map.get(&id).cloned()));
                 let (identity_path, identity_path_ids) = r
                     .identity_id
                     .and_then(|id| path_map.get(&id).cloned())
@@ -321,6 +348,7 @@ async fn query_audit(
                     id: r.id,
                     identity_id: r.identity_id,
                     identity_name,
+                    owner_user_name: r.owner_user_name,
                     identity_path,
                     identity_path_ids,
                     action: r.action,
