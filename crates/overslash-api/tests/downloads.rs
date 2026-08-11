@@ -403,38 +403,34 @@ async fn inline_credential_headers_are_rejected_rather_than_persisted() {
     assert_eq!(ok.status(), 200);
 }
 
-/// An OAuth-backed service must refuse deferral even when it builds no
-/// `Authorization` header.
+/// Stand up an OAuth-backed service whose token rides in a query parameter,
+/// with a live connection behind it, and return an agent key that can call it.
 ///
-/// A template declaring `x-overslash-token_injection: {as: query}` resolves
-/// OAuth successfully but produces `auth_header: None` — `auth_resolve.rs:133`
-/// maps over `token_injection.header_name`, which is absent for query
-/// injection, while `oauth_injected` stays `true`. Gating on
-/// `auth_header.is_some()` therefore reads as "no credential needed" and mints
-/// a token whose deferred fetch carries nothing: a URL that 401s minutes later
-/// instead of an error now. The gate reads `oauth_injected` instead.
-///
-/// The connection has to be seeded for this to bite — without one, resolution
-/// short-circuits to `needs_authentication` long before the deferred branch,
-/// and the test would pass against the broken guard too.
-#[tokio::test]
-async fn oauth_with_query_token_injection_is_refused_not_silently_minted() {
-    let pool = common::test_pool().await;
-    let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
-    let base = format!("http://{api_addr}");
-    let (org_id, ident_id, api_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+/// Factored out of [`oauth_with_query_token_injection_is_refused_not_silently_minted`]
+/// so the D57 mint-refusal test exercises exactly the same shape. Every step
+/// here is load-bearing: without org client credentials OAuth resolution
+/// refuses before the deferred branch, and without a live connection it
+/// short-circuits to `needs_authentication` — either way the test would pass
+/// against a broken guard.
+async fn oauth_query_token_service(
+    pool: &sqlx::PgPool,
+    base: &str,
+    client: &reqwest::Client,
+    server_url: &str,
+    paths_yaml: &str,
+) -> String {
+    let (org_id, ident_id, api_key, admin_key) = common::bootstrap_org_identity(base, client).await;
 
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "openapi": "openapi: 3.1.0\n\
+            "openapi": format!("openapi: 3.1.0\n\
                 info:\n  title: Query OAuth Svc\n  key: queryoauth\n\
-                servers:\n  - url: https://queryoauth.example.com\n\
+                servers:\n  - url: {server_url}\n\
                 components:\n  securitySchemes:\n    oauth:\n      type: oauth2\n      provider: google\n      x-overslash-token_injection:\n        as: query\n        query_param: access_token\n      flows:\n        authorizationCode:\n          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth\n          tokenUrl: https://oauth2.googleapis.com/token\n          scopes:\n            openid: \"\"\n\
                 security:\n  - oauth: []\n\
-                paths:\n  /file:\n    get:\n      operationId: get_file\n      summary: Get file\n      risk: read\n",
+                {paths_yaml}"),
             "user_level": false,
         }))
         .send()
@@ -456,7 +452,7 @@ async fn oauth_with_query_token_injection_is_refused_not_silently_minted() {
 
     // The group ceiling gates services independently of permission rules, and
     // the owner user is what it attaches to (not the calling agent).
-    let owner_id = common::owner_user_id(&pool, org_id).await;
+    let owner_id = common::owner_user_id(pool, org_id).await;
     let groups: serde_json::Value = client
         .get(format!("{base}/v1/groups"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -487,7 +483,13 @@ async fn oauth_with_query_token_injection_is_refused_not_silently_minted() {
     let inst: serde_json::Value = client
         .post(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({ "name": "queryoauth", "template_key": "queryoauth" }))
+        // Pin the upstream per instance, the way every other template test
+        // points at its mock — `servers[0].url` is only the default.
+        .json(&json!({
+            "name": "queryoauth",
+            "template_key": "queryoauth",
+            "url": server_url,
+        }))
         .send()
         .await
         .unwrap()
@@ -531,9 +533,157 @@ async fn oauth_with_query_token_injection_is_refused_not_silently_minted() {
         &access,
         &vec!["openid".to_string()][..],
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
+
+    api_key
+}
+
+/// An OAuth-injected service whose response blows the cap gets the plain 502.
+///
+/// The refusal reason is the one
+/// `oauth_with_query_token_injection_is_refused_not_silently_minted` pins for
+/// an explicit `deliver: "url"`: a deferred fetch cannot re-mint an OAuth
+/// bearer. The difference is what the caller sees — there, a 400 saying so;
+/// here, the error it actually hit, with no URL attached and no token row.
+#[tokio::test]
+async fn an_oversized_oauth_response_gets_the_plain_502_with_no_download_url() {
+    // Template services resolve to a real host, so the loopback SSRF guard
+    // refuses the in-process mock unless the test opts out.
+    common::allow_loopback_ssrf();
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+    let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
+    let base = format!("http://{api_addr}");
+
+    let api_key = oauth_query_token_service(
+        &pool,
+        &base,
+        &client,
+        &format!("http://{mock_addr}"),
+        "paths:\n  /large-file:\n    get:\n      operationId: get_file\n      summary: Get file\n      risk: read\n      parameters:\n        - name: size\n          in: query\n          schema:\n            type: integer\n",
+    )
+    .await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "service": "queryoauth",
+            "action": "get_file",
+            "params": { "size": 10240 },
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(status, 502, "the real error must still surface: {body}");
+    assert_eq!(body["error"], "response_too_large", "{body}");
+    assert!(
+        body["download_url"].is_null(),
+        "an OAuth bearer cannot be re-minted at fetch time, so nothing may be \
+         handed out: {body}"
+    );
+    // With nothing minted the hint falls back to naming the flags.
+    assert!(body["hint"].as_str().unwrap().contains("deliver"), "{body}");
+
+    let rows = sqlx::query_scalar!("SELECT count(*) FROM download_tokens")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, Some(0), "a refused mint must write no token row");
+}
+
+/// A refused mint must not mask the error the caller actually hit.
+///
+/// The D57 mint is best-effort: an oversized response tries to hand back a
+/// working URL, but every refusal reason still has to surface the 502 that
+/// caused it. Raw HTTP carrying an inline credential header is one such
+/// reason — persisting it with the token would write a plaintext credential
+/// into the row, which is exactly what `reject_inline_credentials` exists to
+/// stop.
+///
+/// (The other refusal, OAuth-injected services, is pinned for the explicit
+/// `deliver: "url"` request by
+/// `oauth_with_query_token_injection_is_refused_not_silently_minted` above.)
+#[tokio::test]
+async fn a_refused_mint_still_surfaces_the_oversized_error() {
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+    let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, _ident_id, api_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/large-file?size=10240"),
+            "headers": { "Authorization": "Bearer inline-plaintext-token" },
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 502, "the real error must still surface");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["error"], "response_too_large",
+        "a refused mint must not turn the 502 into something else: {body}"
+    );
+    assert!(
+        body["download_url"].is_null(),
+        "an inline credential must never be persisted into a token: {body}"
+    );
+    // With nothing minted the hint falls back to naming the two flags — the
+    // pre-D57 text, because a second round trip really is the only way out.
+    let hint = body["hint"].as_str().unwrap();
+    assert!(
+        hint.contains("prefer_stream") && hint.contains("deliver"),
+        "the fallback hint must name both levers, got: {hint}"
+    );
+
+    let rows = sqlx::query_scalar!("SELECT count(*) FROM download_tokens")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, Some(0), "a refused mint must write no token row");
+}
+
+/// An OAuth-backed service must refuse deferral even when it builds no
+/// `Authorization` header.
+///
+/// A template declaring `x-overslash-token_injection: {as: query}` resolves
+/// OAuth successfully but produces `auth_header: None` — `auth_resolve.rs:133`
+/// maps over `token_injection.header_name`, which is absent for query
+/// injection, while `oauth_injected` stays `true`. Gating on
+/// `auth_header.is_some()` therefore reads as "no credential needed" and mints
+/// a token whose deferred fetch carries nothing: a URL that 401s minutes later
+/// instead of an error now. The gate reads `oauth_injected` instead.
+///
+/// The connection has to be seeded for this to bite — without one, resolution
+/// short-circuits to `needs_authentication` long before the deferred branch,
+/// and the test would pass against the broken guard too.
+#[tokio::test]
+async fn oauth_with_query_token_injection_is_refused_not_silently_minted() {
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
+    let base = format!("http://{api_addr}");
+
+    let api_key = oauth_query_token_service(
+        &pool,
+        &base,
+        &client,
+        "https://queryoauth.example.com",
+        "paths:\n  /file:\n    get:\n      operationId: get_file\n      summary: Get file\n      risk: read\n",
+    )
+    .await;
 
     let resp = client
         .post(format!("{base}/v1/actions/call"))

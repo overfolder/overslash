@@ -272,6 +272,63 @@ pub(super) async fn mint_http_download(
     action_req: &ActionRequest,
     d: HttpDeferred<'_>,
 ) -> Result<Response, AppError> {
+    let descriptor =
+        mint_http_descriptor(state, ext, scope, action_req, &d, MintCause::Requested).await?;
+    let result = overslash_core::types::ActionResult {
+        status_code: 200,
+        headers: std::collections::HashMap::new(),
+        body: serde_json::to_string(&descriptor).unwrap_or_default(),
+        duration_ms: 0,
+        filtered_body: None,
+    };
+    Ok((
+        StatusCode::OK,
+        Json(CallResponse::Called {
+            result: render_action_result(&result, d.req.verbose),
+            action_description: d.meta.description.clone(),
+            is_error: false,
+        }),
+    )
+        .into_response())
+}
+
+/// Why a capability URL was minted, recorded on the `action.deferred` audit
+/// row. The two cases look identical in the `download_tokens` table but mean
+/// very different things operationally: one is a caller that knew it wanted a
+/// file, the other is a caller that asked for a body too big to hand back.
+#[derive(Clone, Copy)]
+pub(super) enum MintCause {
+    /// The caller passed `deliver: "url"`.
+    Requested,
+    /// The response blew `max_response_body_bytes`, so the URL was minted at
+    /// the point of failure to save the caller a second round trip.
+    ResponseTooLarge,
+}
+
+impl MintCause {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Requested => "requested",
+            Self::ResponseTooLarge => "response_too_large",
+        }
+    }
+}
+
+/// Mint the capability URL itself, without rendering a response around it.
+///
+/// Split from [`mint_http_download`] so the oversized-response path can mint
+/// the same token from its error arm: `deliver: "url"` never needs the body
+/// (the row stores the credential-free request and replays it at redemption),
+/// so a call that failed *because* its body was too large can still hand back
+/// a working URL instead of only naming the flag that would have worked.
+pub(super) async fn mint_http_descriptor(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    scope: &OrgScope,
+    action_req: &ActionRequest,
+    d: &HttpDeferred<'_>,
+    cause: MintCause,
+) -> Result<crate::services::deferred_download::Descriptor, AppError> {
     // `oauth_injected`, not `auth_header.is_some()`: a template declaring a
     // query-param token injection resolves OAuth successfully but builds no
     // header, so the header check reads as "no credential" and would mint a
@@ -332,6 +389,7 @@ pub(super) async fn mint_http_download(
                     "service": d.req.service,
                     "action": d.req.action,
                     "expires_at": descriptor.expires_at,
+                    "cause": cause.as_str(),
                 }),
                 description: d.meta.description.as_deref(),
                 ip_address: d.ip,
@@ -340,22 +398,7 @@ pub(super) async fn mint_http_download(
         )
         .await;
 
-    let result = overslash_core::types::ActionResult {
-        status_code: 200,
-        headers: std::collections::HashMap::new(),
-        body: serde_json::to_string(&descriptor).unwrap_or_default(),
-        duration_ms: 0,
-        filtered_body: None,
-    };
-    Ok((
-        StatusCode::OK,
-        Json(CallResponse::Called {
-            result: render_action_result(&result, d.req.verbose),
-            action_description: d.meta.description.clone(),
-            is_error: false,
-        }),
-    )
-        .into_response())
+    Ok(descriptor)
 }
 
 #[cfg(test)]

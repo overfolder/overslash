@@ -85,13 +85,43 @@ paths:
       summary: List saved questions
       risk: read
       description: >-
-        List saved questions (cards). Use the returned `id` with run_card.
+        List saved questions (cards), returning every match in a single
+        response. Metabase's endpoint offers no pagination, no sorting and no
+        field selection, so on an instance with a few thousand cards this is
+        tens of megabytes and will exceed the response size cap. Reach for it
+        only when you genuinely need the whole set. To find particular cards
+        use `search` with models=card, which pages via limit/offset; for the
+        most-viewed cards use `popular_items`. Params: f — which cards to
+        return, one of all (default), mine, bookmarked, archived, database,
+        table, using_model, using_segment; model_id — the id the filter
+        applies to, required when f is database, table, using_model or
+        using_segment. Use the returned `id` with run_card.
       parameters:
         - name: f
           in: query
-          description: "Optional filter: all, mine, archived (default all)"
+          description: >-
+            Which cards to return. `database`, `table`, `using_model` and
+            `using_segment` each need a matching `model_id`.
           schema:
             type: string
+            enum:
+              - all
+              - mine
+              - bookmarked
+              - archived
+              - database
+              - table
+              - using_model
+              - using_segment
+            default: all
+        - name: model_id
+          in: query
+          description: >-
+            Id the filter applies to — a database id for f=database, a table
+            id for f=table, a card id for f=using_model, a segment id for
+            f=using_segment. Ignored for the other filters.
+          schema:
+            type: integer
   /api/card/{card_id}/query:
     post:
       operationId: run_card
@@ -123,8 +153,19 @@ paths:
       summary: "Search Metabase for '{q}'"
       risk: read
       description: >-
-        Native Metabase search over cards, dashboards, tables, collections,
-        and databases.
+        Native Metabase search over cards, dashboards, tables, collections
+        and databases. This is the paginated way to enumerate content —
+        prefer it over list_cards, which has no page size at all. Metabase's
+        relevance ranking already weights view count, so the first page
+        approximates "the most-used things matching q"; for instance-wide
+        popularity with no search term, use `popular_items` instead. The
+        response carries `total` next to the page of results, so you can see
+        how much you have not fetched. Params: q — search term (required);
+        models — comma-separated type filter, any of card, dataset,
+        dashboard, table, collection, database, segment, metric, action,
+        indexed-entity; limit — page size, defaults to 50 when omitted;
+        offset — how many results to skip, for paging; archived — set true
+        to search archived content instead of active content.
       parameters:
         - name: q
           in: query
@@ -140,11 +181,74 @@ paths:
             type: string
         - name: models
           in: query
+          # Deliberately not enum'd, despite naming its members. `models`
+          # takes a comma-separated *list*, and validate_input matches an
+          # enum against the whole value — so `enum:` here would reject
+          # "card,dashboard", the exact usage the param exists for. The
+          # members live in the description, which is what reaches the model.
           description: >-
-            Optional comma-separated type filter (card, dashboard, table,
-            collection, database)
+            Optional comma-separated type filter (card, dataset, dashboard,
+            table, collection, database, segment, metric). Omit to search
+            everything.
           schema:
             type: string
+        - name: limit
+          in: query
+          description: >-
+            Page size. Metabase applies 50 when limit and offset are both
+            omitted; pass it explicitly to keep the response small.
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          description: >-
+            How many results to skip before the page starts. Combine with
+            limit to walk the full result set; stop when offset + limit
+            reaches the `total` in the response.
+          schema:
+            type: integer
+        - name: archived
+          in: query
+          description: Search archived content instead of active content.
+          schema:
+            type: boolean
+  /api/activity/popular_items:
+    get:
+      operationId: popular_items
+      summary: List the most popular items
+      risk: read
+      description: >-
+        The most popular items on this Metabase instance — cards,
+        dashboards, tables and collections — ranked by total view count and
+        recency across all users, not just yours. This is the direct answer
+        to "which questions/dashboards do people actually use", and it costs
+        one small response rather than enumerating every card. Instance-wide
+        and takes no parameters. For the current user's own history use
+        `recents`.
+  /api/activity/recents:
+    get:
+      operationId: recents
+      summary: "List recently {context} items"
+      risk: read
+      description: >-
+        Items the *current user* (the identity behind this Metabase API key)
+        recently viewed or selected. Scoped to one user, so it answers "what
+        was I just looking at", not "what is popular" — use `popular_items`
+        for the instance-wide view. Params: context — required, either views
+        (things opened) or selections (things picked in a picker).
+      parameters:
+        - name: context
+          in: query
+          required: true
+          description: >-
+            Which recents to return: views (items opened) or selections
+            (items chosen from a picker).
+          schema:
+            type: string
+            enum:
+              - views
+              - selections
   /api/dataset:
     post:
       operationId: run_query
@@ -245,7 +349,19 @@ paths:
           filter: .resolved.query // (.params.query.database | tostring)
         - label: Format
           filter: .params.export_format
-      response_type: binary
+      # `response_type:` is not read off an operation — the compiler derives it
+      # from `responses` (see openapi::extract::actions::detect_response_type),
+      # so the intent has to be spelled here to have any effect. Only
+      # octet-stream is listed: the real content type follows export_format,
+      # and naming application/json alongside it would derive "json" and
+      # mislabel the xlsx and csv cases.
+      responses:
+        "200":
+          description: >-
+            The exported result set. The content type follows export_format:
+            text/csv, application/json, or the xlsx spreadsheet type.
+          content:
+            application/octet-stream: {}
       parameters:
         - name: export_format
           in: path

@@ -479,6 +479,13 @@ pub(super) async fn call_action_impl(
             &mcp_target.url,
             &mcp_target.arguments,
         );
+        // An MCP tool has no upstream size cap to dodge, but it has the same
+        // context budget as an HTTP one — a `list` tool returning 500 rows is
+        // the same problem. Applied after the audit shape is built so the
+        // org-gated `response` capture still records what the tool returned,
+        // not what the caller chose to look at.
+        let filter_audit = filter_apply::apply_to(&state, &req, &mut result).await;
+        filter_apply::record(&mut audit_detail, filter_audit);
         // Transport + JSON-RPC succeeded (failures short-circuit above via
         // AppError::BadGateway and record nothing here); the tool's in-band
         // error flag is the only "upstream status" MCP has.
@@ -594,11 +601,23 @@ pub(super) async fn call_action_impl(
         )
         .await?;
 
-        let audit_detail = serde_json::json!({
+        let mut result = overslash_core::types::ActionResult {
+            status_code: 200,
+            body: serde_json::to_string(&value).unwrap_or_default(),
+            headers: std::collections::HashMap::new(),
+            duration_ms: 0,
+            filtered_body: None,
+        };
+        let mut audit_detail = serde_json::json!({
             "runtime": "platform",
             "action": req.action,
             "service": req.service,
         });
+        // Platform handlers answer from our own database, so there is no cap
+        // to dodge here either — but `list_pending` on a busy org is exactly
+        // the kind of response a caller wants to project down before reading.
+        let filter_audit = filter_apply::apply_to(&state, &req, &mut result).await;
+        filter_apply::record(&mut audit_detail, filter_audit);
         let _ = scope
             .clone()
             .log_audit_tagged(
@@ -616,13 +635,6 @@ pub(super) async fn call_action_impl(
             )
             .await;
 
-        let result = overslash_core::types::ActionResult {
-            status_code: 200,
-            body: serde_json::to_string(&value).unwrap_or_default(),
-            headers: std::collections::HashMap::new(),
-            duration_ms: 0,
-            filtered_body: None,
-        };
         return Ok((
             StatusCode::OK,
             Json(CallResponse::Called {
@@ -699,10 +711,13 @@ pub(super) async fn call_action_impl(
                     &tags::with_outcome(call_tags.clone(), true),
                 )
                 .await;
+                // Streamed fork: never buffers, so never oversized — there is
+                // nothing to mint from.
                 return Err(map_call_error(
                     e,
                     call_timeout,
                     transport.offers_prefer_stream(),
+                    None,
                 ));
             }
         };
@@ -826,10 +841,38 @@ pub(super) async fn call_action_impl(
                 &tags::with_outcome(call_tags.clone(), true),
             )
             .await;
+            // Mint the retry the hint would otherwise only name. This is
+            // best-effort by construction: `mint_http_descriptor` refuses
+            // OAuth-injected services and inline raw-HTTP credentials, and a
+            // mint that fails for any other reason must not replace the error
+            // the caller actually hit — so every failure collapses to `None`
+            // and the 502 goes out exactly as it did before.
+            let download = if matches!(e, http_caller::CallError::ResponseTooLarge { .. }) {
+                deferred::mint_http_descriptor(
+                    &state,
+                    &ext,
+                    &scope,
+                    &action_req,
+                    &deferred::HttpDeferred {
+                        auth: &auth,
+                        req: &req,
+                        meta: &meta,
+                        identity_id,
+                        ip: ip.0.as_deref(),
+                        tags: &call_tags,
+                    },
+                    deferred::MintCause::ResponseTooLarge,
+                )
+                .await
+                .ok()
+            } else {
+                None
+            };
             return Err(map_call_error(
                 e,
                 call_timeout,
                 transport.offers_prefer_stream(),
+                download,
             ));
         }
     };
@@ -842,20 +885,7 @@ pub(super) async fn call_action_impl(
         overslash_metrics::actions::status_class(result.status_code),
     );
 
-    // Apply the optional response filter (jq today). The original body is
-    // preserved on `result.body` either way; the filtered output goes on
-    // `result.filtered_body` (Some on both ok and error envelopes).
-    let filter_audit = if let Some(filter) = req.filter.clone() {
-        let lang = filter.lang().to_string();
-        let expr = filter.expr().to_string();
-        let timeout = std::time::Duration::from_millis(state.config.filter_timeout_ms);
-        let filtered = response_filter::apply(filter, result.body.clone(), timeout).await;
-        let audit = filter_audit_entry(&lang, &expr, &filtered);
-        result.filtered_body = Some(filtered);
-        Some(audit)
-    } else {
-        None
-    };
+    let filter_audit = filter_apply::apply_to(&state, &req, &mut result).await;
 
     let upstream_error = result.status_code >= 400;
     let mut audit_detail = serde_json::json!({
@@ -891,12 +921,7 @@ pub(super) async fn call_action_impl(
                 ),
             );
     }
-    if let Some(filter_audit) = filter_audit {
-        audit_detail
-            .as_object_mut()
-            .expect("audit_detail is a json object")
-            .insert("filter".to_string(), filter_audit);
-    }
+    filter_apply::record(&mut audit_detail, filter_audit);
     let called_disclosed = compute_disclosure(
         &meta,
         &action_req,

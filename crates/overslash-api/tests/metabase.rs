@@ -264,11 +264,82 @@ async fn metabase_template_ships() {
         ("list_cards", DeclaredRisk::Read),
         ("run_card", DeclaredRisk::Read),
         ("search", DeclaredRisk::Read),
+        ("popular_items", DeclaredRisk::Read),
+        ("recents", DeclaredRisk::Read),
         ("run_query", DeclaredRisk::Dynamic),
         ("export_query", DeclaredRisk::Dynamic),
     ] {
         assert_eq!(svc.actions[action].risk, want, "{action}");
     }
+
+    // ── The middle gear ──────────────────────────────────────────────
+    //
+    // An agent asked "which cards are popular" and the only gears were
+    // `run_card` (one card by id) and `list_cards` (all 2,033 of them). The
+    // template now has to keep offering something in between.
+    let search = &svc.actions["search"];
+    assert_eq!(
+        search.params["limit"].default,
+        Some(serde_json::json!(50)),
+        "search's page size must carry a default — an omitted `limit` is \
+         exactly how the unbounded call gets made"
+    );
+    assert!(search.params.contains_key("offset"), "search must page");
+    // `models` names its members in prose rather than an `enum:` on purpose:
+    // it takes a comma-separated list and `validate_input` matches an enum
+    // against the whole value, so enum'ing it would reject "card,dashboard".
+    assert!(
+        search.params["models"].enum_values.is_none(),
+        "an enum on a comma-separated param rejects the multi-value usage"
+    );
+    assert!(
+        search.params["models"].description.contains("card"),
+        "models must still name its members somewhere the model can read"
+    );
+
+    // `GET /api/card` genuinely has nothing to paginate with upstream, so the
+    // fix there is honesty plus the two params that do exist.
+    let cards = &svc.actions["list_cards"];
+    assert!(
+        cards.params["f"]
+            .enum_values
+            .as_ref()
+            .is_some_and(|e| e.iter().any(|v| v == "mine")),
+        "list_cards `f` must be enum'd, not prose"
+    );
+    assert!(cards.params.contains_key("model_id"));
+    for needle in ["search", "popular_items"] {
+        assert!(
+            cards.description.contains(needle),
+            "list_cards must redirect to the narrower call — `description` is \
+             still the only string about an action that reliably reaches the \
+             model. Missing {needle} in: {}",
+            cards.description
+        );
+    }
+
+    // `recents` is per-user and `popular_items` is instance-wide; conflating
+    // them answers the wrong question, so the contract is pinned.
+    assert!(
+        svc.actions["popular_items"].params.is_empty(),
+        "popular_items takes no parameters"
+    );
+    let ctx = &svc.actions["recents"].params["context"];
+    assert!(ctx.required, "recents needs a context");
+    assert_eq!(
+        ctx.enum_values,
+        Some(vec!["views".to_string(), "selections".to_string()])
+    );
+
+    // The export is binary. It used to say so with a `response_type:` key
+    // nothing reads — the compiler derives it from `responses` — so the
+    // "use prefer_stream" hint never fired and a large xlsx was buffered
+    // against the size cap.
+    assert_eq!(
+        svc.actions["export_query"].response_type.as_deref(),
+        Some("binary"),
+        "export_query must compile to a binary response type"
+    );
 
     let query = &svc.actions["run_query"].params["query"];
     assert_eq!(query.sql_field.as_deref(), Some("native.query"));

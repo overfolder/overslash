@@ -32,8 +32,12 @@ pub const COMPACT_BUDGET_BYTES: usize = 8 * 1024;
 /// Conservative upper bound on the bytes the truncation marker
 /// (`"_truncated": true, "_hint": "…"`) adds to the serialized envelope.
 /// Subtracted from the working budget so the final output, marker
-/// included, still fits inside [`COMPACT_BUDGET_BYTES`].
-const MARKER_RESERVE_BYTES: usize = 128;
+/// included, still fits inside [`COMPACT_BUDGET_BYTES`]. Sized with real
+/// headroom over the current marker rather than snugly around it, so
+/// rewording the hint doesn't silently push the output back over budget —
+/// the 64 bytes this costs the body are worth not re-deriving the bound
+/// every time the text changes.
+const MARKER_RESERVE_BYTES: usize = 192;
 
 const MAX_STRING_CHARS: usize = 200;
 const MAX_ARRAY_ITEMS: usize = 10;
@@ -55,9 +59,21 @@ pub fn compact(result: &ActionResult) -> Value {
         && let Some(obj) = value.as_object_mut()
     {
         obj.insert("_truncated".into(), Value::Bool(true));
+        // Leads with narrowing, not widening. This marker is the only
+        // in-band signal an agent gets that a response was cropped, and
+        // pointing it solely at `verbose=true` taught exactly the wrong
+        // reflex: re-issue the same over-broad call and pull the whole
+        // payload into context. The cheaper answers — the action's own
+        // paging parameters, or a `filter` that projects the fields
+        // actually wanted — come first; `verbose` stays as the fallback
+        // for when the full body really is what's needed.
         obj.insert(
             "_hint".into(),
-            Value::String("pass verbose=true to see the full response".into()),
+            Value::String(
+                "narrow with the action's paging params or a jq filter, \
+                 or pass verbose=true for the full body"
+                    .into(),
+            ),
         );
     }
     value
