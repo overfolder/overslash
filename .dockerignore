@@ -1,11 +1,20 @@
+# Build contexts are whole-repo now: the Dockerfiles hand the workspace to
+# cargo-chef (`COPY . .`) instead of listing crate manifests one by one, so
+# what lands in the image is decided here rather than by a COPY allow-list.
 target/
+target-wt/
 .git/
 .github/
 .githooks/
+.cline/
 docs/
 infra/
-tests/mock-target/src/
 crates/overslash-api/tests/
+node_modules/
+**/node_modules/
+dashboard/.svelte-kit/
+dashboard/test-results/
+dashboard/playwright-report/
 *.md
 !crates/**/README.md
 !SKILL.md

@@ -39,6 +39,18 @@ variable "github_branch" {
   type = string
 }
 
+locals {
+  image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api"
+
+  # Distinct tag under the `/cache` path Kaniko used, so old blobs age out alone.
+  cache_ref = "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api/cache:buildcache"
+
+  # Only prod claims the clean manifest version. A branch-push deploy has no
+  # release tag to inject, so OVERSLASH_RELEASE tells build.rs to drop the
+  # "-dev" suffix from the manifest version; dev omits it and stays "-dev".
+  release_build_arg = var.env == "prod" ? "--build-arg OVERSLASH_RELEASE=1" : ""
+}
+
 resource "google_cloudbuild_trigger" "deploy" {
   name     = "${var.base_prefix}-deploy"
   project  = var.project_id
@@ -56,43 +68,42 @@ resource "google_cloudbuild_trigger" "deploy" {
   }
 
   build {
-    # Build with Kaniko so the Docker layer cache persists across builds.
-    # Cloud Build runs each build on a fresh VM, so a plain `docker build`
-    # always starts from a cold cache and recompiles every Rust dependency
-    # from scratch (~6 min), wasting the dependency-caching layer the
-    # Dockerfile is carefully designed around. Kaniko stores each layer
-    # (including the builder-stage dependency layer) as a content-addressed
-    # blob in a dedicated cache repo (<dest>/cache), keyed by command+input
-    # hash, so unchanged layers are reused. It also pushes the image
-    # directly, replacing the separate `docker push` step. The cache repo
-    # lives in the same Artifact Registry repository and is isolated per
-    # project (dev vs prod), so it needs no extra IAM; --cache-ttl bounds
-    # staleness to one week.
+    # buildx hands auth to a separate BuildKit container, so Cloud Build's own
+    # docker credential wiring isn't enough — log in explicitly. /workspace is
+    # the only volume shared between steps; the next step deletes the token.
     step {
-      name = "gcr.io/kaniko-project/executor:latest"
-      # Only prod claims the clean manifest version. A branch-push deploy has no
-      # release tag to inject, so OVERSLASH_RELEASE tells build.rs to drop the
-      # "-dev" suffix from the manifest version; dev omits it and stays "-dev".
-      args = concat([
-        "--dockerfile=crates/overslash-api/Dockerfile",
-        "--context=dir:///workspace",
-        # Bake the commit into the binary so /health and GET /v1/version can
-        # report which build is serving. The build context has no .git, so
-        # this substitution is the only way the SHA reaches the compiler.
-        "--build-arg=OVERSLASH_GIT_SHA=$COMMIT_SHA",
-        "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:$COMMIT_SHA",
-        "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:latest",
-        "--cache=true",
-        # Pin the cache repo explicitly. Kaniko otherwise infers it from a
-        # --destination; the tagged ($COMMIT_SHA) destinations make that
-        # inference fragile, so we point every build at one stable repo.
-        "--cache-repo=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api/cache",
-        "--cache-ttl=168h",
-        # Kaniko caches layers in memory; the multi-GB target/release layer OOMs it (exit 137).
-        "--compressed-caching=false",
-        ], var.env == "prod" ? [
-        "--build-arg=OVERSLASH_RELEASE=1",
-      ] : [])
+      name       = "gcr.io/google.com/cloudsdktool/cloud-sdk"
+      entrypoint = "bash"
+      args       = ["-c", "gcloud auth print-access-token > /workspace/.ar-token"]
+    }
+
+    # Cloud Build gives each build a fresh VM, so the layer cache has to live in
+    # the registry: mode=max exports every stage, incl. cargo-chef's dependency
+    # layer. Replaces Kaniko (archived June 2025, OOM'd snapshotting that layer).
+    # --provenance=false keeps the push a plain manifest, as Kaniko produced. D54.
+    step {
+      name       = "gcr.io/cloud-builders/docker"
+      entrypoint = "bash"
+      args = ["-c", <<-EOT
+        set -eu
+        docker login -u oauth2accesstoken --password-stdin \
+          https://${var.region}-docker.pkg.dev < /workspace/.ar-token
+        rm -f /workspace/.ar-token
+        docker buildx create --name cloudbuild --driver docker-container --use --bootstrap
+        docker buildx build \
+          --file crates/overslash-api/Dockerfile \
+          --build-arg OVERSLASH_GIT_SHA=$COMMIT_SHA \
+          ${local.release_build_arg} \
+          --tag ${local.image}:$COMMIT_SHA \
+          --tag ${local.image}:latest \
+          --cache-from type=registry,ref=${local.cache_ref} \
+          --cache-to type=registry,ref=${local.cache_ref},mode=max,image-manifest=true,oci-mediatypes=true \
+          --provenance=false \
+          --progress=plain \
+          --push \
+          .
+      EOT
+      ]
     }
 
     step {
@@ -100,7 +111,7 @@ resource "google_cloudbuild_trigger" "deploy" {
       entrypoint = "gcloud"
       args = [
         "run", "deploy", var.cloud_run_service,
-        "--image", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:$COMMIT_SHA",
+        "--image", "${local.image}:$COMMIT_SHA",
         "--region", var.region,
       ]
     }
@@ -111,11 +122,8 @@ resource "google_cloudbuild_trigger" "deploy" {
       machine_type = "E2_HIGHCPU_8"
     }
 
-    # Headroom for a cold build. The image compiles the `sql_policy` feature
-    # (D42), whose vendored libpg_query C build lands on top of the ~6 min of
-    # Rust dependencies — enough to crowd 1200s whenever Kaniko's dependency
-    # layer misses (feature change, Cargo.lock bump, cache TTL expiry). Warm
-    # builds still finish in a few minutes.
+    # Headroom for a cold build: libpg_query (D42) on top of ~6 min of Rust deps
+    # crowds 1200s whenever the cargo-chef layer misses. Warm builds: minutes.
     timeout = "2400s"
   }
 }
