@@ -34,6 +34,60 @@ impl<S: Send + Sync> FromRequestParts<S> for ReqExt {
     }
 }
 
+/// Which Overslash surface a request came in on.
+///
+/// MCP tool calls do not reach `/v1/actions/call` in-process — `routes::mcp`
+/// re-issues them as a loopback HTTP request carrying the caller's own bearer
+/// (see `routes::mcp::forward`), so on arrival they are indistinguishable from
+/// any other REST call. `forward` stamps [`TRANSPORT_HEADER`] and this reads it
+/// back.
+///
+/// The header is **advisory**: it rides on an ordinary request and any caller
+/// can set it. That is acceptable because nothing behind it is a decision about
+/// access — it only selects which recovery options an error message names, so
+/// the worst a spoofed value buys is a less useful hint. Do not grow a
+/// permission, quota, or billing check onto this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallerTransport {
+    /// Arrived over `POST /mcp` and was forwarded here.
+    Mcp,
+    /// Everything else — direct REST callers and dashboard sessions. Not
+    /// approval replay, which reaches the call pipeline without a request of
+    /// its own and so never runs this extractor.
+    Rest,
+}
+
+/// Header `routes::mcp::forward` stamps on its loopback requests.
+pub const TRANSPORT_HEADER: &str = "x-overslash-transport";
+
+impl CallerTransport {
+    /// Whether this surface can act on a `prefer_stream: true` retry.
+    ///
+    /// The MCP tool schemas expose `deliver` but not `prefer_stream`, and they
+    /// are `additionalProperties: false`, so an MCP caller cannot send it even
+    /// knowing it exists. Telling one to "retry with prefer_stream" is a dead
+    /// end dressed up as a fix.
+    pub fn offers_prefer_stream(self) -> bool {
+        self == Self::Rest
+    }
+}
+
+impl FromRequestParts<AppState> for CallerTransport {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &AppState,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        let is_mcp = parts
+            .headers
+            .get(TRANSPORT_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("mcp"));
+        Ok(if is_mcp { Self::Mcp } else { Self::Rest })
+    }
+}
+
 /// Extracts the client IP address from request headers or connection info.
 #[derive(Debug, Clone)]
 pub struct ClientIp(pub Option<String>);

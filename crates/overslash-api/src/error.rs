@@ -104,6 +104,15 @@ pub enum AppError {
         content_length: Option<u64>,
         content_type: Option<String>,
         limit_bytes: usize,
+        /// Whether the hint should name `prefer_stream: true` as a recovery.
+        /// False for MCP callers — it is absent from their tool schemas, which
+        /// are `additionalProperties: false`. `IntoResponse` has no request
+        /// context, so the decision has to ride on the variant.
+        ///
+        /// The approval-replay pipeline also passes `false`, but nothing there
+        /// reads it: that path renders the error through `Display`, never
+        /// `IntoResponse`. See `services::action_caller::map_call_error`.
+        offer_prefer_stream: bool,
     },
 
     /// The upstream did not answer within the timeout resolved for this call.
@@ -431,7 +440,22 @@ impl IntoResponse for AppError {
                 content_length,
                 content_type,
                 limit_bytes,
+                offer_prefer_stream,
             } => {
+                // `deliver: "url"` leads and is never omitted: it works from
+                // every surface and is the answer an agent wants anyway, since
+                // it puts the bytes on disk rather than in a context window.
+                // `prefer_stream` is appended only where it is reachable —
+                // naming an option the caller cannot send turns one wasted
+                // round trip into two.
+                let hint = if *offer_prefer_stream {
+                    "retry with deliver: \"url\" to get a download URL instead \
+                     of the body, or prefer_stream: true to stream the bytes \
+                     back on this response"
+                } else {
+                    "retry with deliver: \"url\" to get a download URL instead \
+                     of the body"
+                };
                 return (
                     StatusCode::BAD_GATEWAY,
                     Json(json!({
@@ -439,16 +463,7 @@ impl IntoResponse for AppError {
                         "content_length": content_length,
                         "content_type": content_type,
                         "limit_bytes": limit_bytes,
-                        // Two options because the two callers can't use the
-                        // same one. `prefer_stream` streams bytes back on this
-                        // response — fine for a REST client writing to a file,
-                        // useless (and unrequestable) over MCP. `deliver: "url"`
-                        // works from every surface and is the only sane answer
-                        // for an agent, which wants the file on disk rather
-                        // than in its context.
-                        "hint": "retry with deliver: \"url\" to get a download URL \
-                                 instead of the body, or prefer_stream: true to \
-                                 stream the bytes back on this response"
+                        "hint": hint,
                     })),
                 )
                     .into_response();

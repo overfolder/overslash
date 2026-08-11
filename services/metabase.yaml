@@ -72,6 +72,11 @@ paths:
           in: path
           required: true
           description: Metabase database id (from list_databases)
+          # `run_query` calls the same id `database`, because that is the field
+          # name Metabase's dataset API puts on the wire. Rather than rename
+          # either one away from its upstream spelling, each accepts the other
+          # as an alias, so one concept answers to one name across the service.
+          x-overslash-aliases: [database]
           schema:
             type: integer
   /api/card:
@@ -125,6 +130,12 @@ paths:
           in: query
           required: true
           description: Search term
+          # Metabase's own MCP server names this argument `query`, and `q` is
+          # the kind of one-letter name a caller guesses wrong. Safe next to
+          # `run_query`/`export_query`, whose `query` carries SQL: aliases are
+          # per-action, and `apply_aliases` skips any alias that collides with
+          # a declared param, so a real `query` field always wins.
+          x-overslash-aliases: [query, search_term]
           schema:
             type: string
         - name: models
@@ -171,6 +182,16 @@ paths:
                 database:
                   type: integer
                   description: Metabase database id (from list_databases)
+                  # The other half of the `database`/`database_id` pairing on
+                  # `get_database_schema`. Canonical `x-overslash-` spelling is
+                  # mandatory here for the same reason as the two extensions
+                  # below: the unprefixed `aliases:` shorthand is only
+                  # normalized on `parameters[]`, never on requestBody schema
+                  # properties. `export_query` gets no such alias on purpose —
+                  # its database id is nested inside the `query` object, and
+                  # only top-level properties are lowered into params, so there
+                  # is nothing there to hang an alias on.
+                  x-overslash-aliases: [database_id]
                   x-overslash-sql-database: .database | tostring
                   # Turns the bare id into the database's own Metabase name for
                   # the approval title and the `Database` disclosure — "4" tells

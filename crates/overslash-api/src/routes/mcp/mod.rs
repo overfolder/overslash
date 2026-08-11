@@ -352,7 +352,16 @@ async fn forward(
     body: Option<Value>,
 ) -> Result<ForwardOutcome, String> {
     let url = format!("{}{}", state.config.public_url.trim_end_matches('/'), path);
-    let mut req = state.http_client.request(method, &url).bearer_auth(bearer);
+    // Stamp the surface. This request is about to look exactly like a direct
+    // REST call — same URL, same bearer — and the handler on the other end has
+    // no other way to tell that an MCP client is waiting on the far side. Read
+    // back by `extractors::CallerTransport`; see its doc comment for why an
+    // advisory header is the right weight for what depends on it.
+    let mut req = state
+        .http_client
+        .request(method, &url)
+        .header(crate::extractors::TRANSPORT_HEADER, "mcp")
+        .bearer_auth(bearer);
     if let Some(b) = body {
         req = req.json(&b);
     }

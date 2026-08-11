@@ -38,7 +38,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::AppError,
-    extractors::{AuthContext, ClientIp, ReqExt},
+    extractors::{AuthContext, CallerTransport, ClientIp, ReqExt},
     services::{disclosure, response_filter::ResponseFilter},
 };
 use overslash_core::{
@@ -207,12 +207,16 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
 /// the inner function — we classify by HTTP status, plus the
 /// `UpstreamErrored` response-extension marker the executor branches set
 /// when the upstream itself failed (MCP in-band `is_error`, HTTP 5xx).
+// Same reason as `call_action_impl`: an axum handler's arguments are its
+// extractors, so the list is a flat function of what the request carries.
+#[allow(clippy::too_many_arguments)]
 async fn call_action(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
+    transport: CallerTransport,
     Query(q): Query<CallQuery>,
     Json(req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
@@ -228,7 +232,16 @@ async fn call_action(
     };
     let template_key = bounded_template_key(&state.registry, req.service.as_deref());
 
-    let result = call_action_impl(State(state), ReqExt(ext), auth, scope, ip, Json(req)).await;
+    let result = call_action_impl(
+        State(state),
+        ReqExt(ext),
+        auth,
+        scope,
+        ip,
+        transport,
+        Json(req),
+    )
+    .await;
 
     // Resolve the outcome to its eventual HTTP status so 4xx user-input errors
     // (BadRequest, NotFound, Forbidden, RateLimited) don't count as `failed`.

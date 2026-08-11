@@ -517,7 +517,19 @@ pub async fn call_action_request(
 
 /// Map a transport-level `CallError` to the client-facing `AppError`.
 /// Kept identical to the pre-audit-row error contract.
+///
+/// `offer_prefer_stream` is always `false` here, and inert either way. This
+/// pipeline's only consumer is the approval replay at
+/// `routes::approvals::replay_http`, whose error arm stores
+/// `app_err.to_string()` — the `#[error("response too large")]` Display, not
+/// the JSON body — so `IntoResponse` never runs and no hint of any wording is
+/// rendered on this path. `false` is the honest value rather than a live one:
+/// replay forces `prefer_stream: false` (the reviewer's connection is not the
+/// original caller's), and `deliver` is not sendable on a replay either, since
+/// `call_approval` takes no request body. If this path ever grows a hint, it
+/// needs its own wording — neither recovery is reachable from here.
 fn map_call_error(e: http_caller::CallError, timeout: CallTimeout) -> AppError {
+    let offer_prefer_stream = false;
     match e {
         http_caller::CallError::ResponseTooLarge {
             content_length,
@@ -527,6 +539,7 @@ fn map_call_error(e: http_caller::CallError, timeout: CallTimeout) -> AppError {
             content_length,
             content_type,
             limit_bytes,
+            offer_prefer_stream,
         },
         // `timeout_ms` comes from the transport (what was actually applied),
         // the rest from the resolver (who set it, and what the caller would

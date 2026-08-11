@@ -37,9 +37,24 @@ Current behavior with a safety net. Configurable via `MAX_RESPONSE_BODY_BYTES` (
   "content_length": 2147483648,
   "content_type": "application/octet-stream",
   "limit_bytes": 5242880,
-  "hint": "retry with prefer_stream: true to stream large responses"
+  "hint": "retry with deliver: \"url\" to get a download URL instead of the body, or prefer_stream: true to stream the bytes back on this response"
 }
 ```
+
+The `hint` is **transport-aware**. `deliver: "url"` (D51) leads and is always
+offered — it works from every surface. `prefer_stream` is appended only for
+callers who can act on it, which today means direct REST callers; MCP callers
+get the `deliver`-only wording, because `prefer_stream` is absent from the
+`overslash_read` / `overslash_call` input schemas (which are
+`additionalProperties: false`). `routes::mcp::forward` stamps
+`X-Overslash-Transport` on its loopback request and
+`extractors::CallerTransport` reads it back.
+
+The approval-replay path renders no hint at all: it surfaces the error through
+`AppError`'s `Display` impl (`"response too large"`) rather than
+`IntoResponse`, so the JSON body — `hint` included — is never built. Neither
+recovery is reachable there anyway; replay forces `prefer_stream: false` and
+`POST /v1/approvals/{id}/call` takes no request body to carry `deliver`.
 
 ### Strategy C: Streaming Proxy (`prefer_stream: true`)
 

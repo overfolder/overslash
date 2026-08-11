@@ -572,6 +572,203 @@ async fn dynamic_without_parser_executes_under_sentinel_grant() {
     assert_eq!(req.api_key.as_deref(), Some("mb_test_key_123"));
 }
 
+// ─── parameter aliases ────────────────────────────────────────────────────
+//
+// Metabase names one concept two ways: `/api/database/{database_id}/metadata`
+// takes `database_id`, the dataset API's body field is `database`. Both
+// spellings stay wire-true and each action accepts the other as an alias, so
+// an agent that carries the name across actions is not sent back for a second
+// round trip. What these pin is that the alias is a *front door only* — it is
+// rewritten to canonical before anything downstream (resolution, disclosure,
+// permission keys, the outgoing body) can see it.
+
+/// The alias reaches the gateway; only the canonical name reaches Metabase.
+#[cfg(not(feature = "sql_policy"))]
+#[tokio::test]
+async fn run_query_accepts_database_id_without_leaking_it_upstream() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, admin_key, ident) = setup(pool, mock, "admin", false, None).await;
+    add_rule(
+        &base,
+        &client,
+        &admin_key,
+        &ident,
+        "metabase:run_query:table_mut=1/*",
+        "allow",
+    )
+    .await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "run_query",
+            // `database_id`, the spelling get_database_schema uses.
+            "params": { "database_id": 1, "query": "SELECT 1" },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+    // Byte-identical to what the canonical spelling produces
+    // (`dynamic_without_parser_executes_under_sentinel_grant`): Metabase's
+    // dataset API only knows `database`, so an alias that reached the wire
+    // would be a silently dropped field, not a rename.
+    let seen = seen.lock().unwrap();
+    let req = seen.last().unwrap();
+    assert_eq!(req.path, "/api/dataset");
+    assert_eq!(
+        req.body,
+        json!({ "database": 1, "type": "native", "native": { "query": "SELECT 1" } })
+    );
+}
+
+/// The mirror direction: the path param answers to the body field's name.
+#[tokio::test]
+async fn get_database_schema_accepts_database() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "get_database_schema",
+            // `database`, the spelling run_query uses.
+            "params": { "database": 1 },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+    // The alias has to resolve before URL substitution or the placeholder
+    // `{database_id}` would have nothing to bind and the path would be wrong.
+    let seen = seen.lock().unwrap();
+    let req = seen.last().expect("mock saw the request");
+    assert_eq!(req.method, "GET");
+    assert_eq!(req.path, "/api/database/1/metadata");
+}
+
+/// `search` takes `q`; Metabase's own MCP server calls the same argument
+/// `query`. Accepting both costs nothing and removes a guess.
+#[tokio::test]
+async fn search_accepts_query_as_an_alias_for_q() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "search",
+            "params": { "query": "orders" },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // `q` is `required: true`, so reaching the upstream at all is the
+    // assertion: an unaliased `query` would have been rejected as an unknown
+    // argument with `q` still missing.
+    assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+    let seen = seen.lock().unwrap();
+    let req = seen.last().expect("mock saw the request");
+    assert_eq!(req.path, "/api/search");
+}
+
+/// Aliasing is not the same as switching validation off — a name that is
+/// neither canonical nor declared as an alias is still rejected, with the
+/// suggestion still pointing somewhere useful.
+#[tokio::test]
+async fn an_undeclared_name_is_still_an_unknown_argument() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "get_database_schema",
+            "params": { "databaseId": 1 },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "expected a rejection, got {resp:?}");
+    let body: Value = resp.json().await.unwrap();
+    let msg = serde_json::to_string(&body).unwrap();
+    assert!(msg.contains("databaseId"), "{msg}");
+}
+
+/// The alias cannot move what a human approves or what a grant is matched
+/// against: both spellings produce the same disclosure and the same title.
+#[tokio::test]
+async fn the_alias_does_not_move_the_disclosure_or_the_title() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    // A write so both build tiers land on the approval surface — with the
+    // parser it classifies write, without it `risk: dynamic` fails closed.
+    let resp: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "run_query",
+            "params": { "database_id": 1, "query": "DELETE FROM public.film" },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp["status"].as_str(),
+        Some("pending_approval"),
+        "{resp:?}"
+    );
+
+    let disclosed = resp["disclosed_fields"]
+        .as_array()
+        .cloned()
+        .expect("inline disclosed_fields present");
+    // Identical to `database_disclosure_carries_the_resolved_name`, which
+    // sends the canonical spelling. The `x-overslash-resolve` and
+    // `disclose` filters both read `.database`; if the alias survived past
+    // `apply_aliases` they would find nothing and fall back to the raw id.
+    assert_eq!(
+        disclosed_value(&disclosed, "Database"),
+        Some("pagila"),
+        "{disclosed:?}"
+    );
+    assert_eq!(
+        resp["action_description"].as_str(),
+        Some("Run SQL on database 'pagila' (Metabase)"),
+        "{resp:?}"
+    );
+}
+
 // ─── sql_policy tier (cargo test -p overslash-api --features sql_policy) ───
 
 #[cfg(feature = "sql_policy")]
