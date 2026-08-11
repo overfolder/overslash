@@ -21,6 +21,19 @@
 		elapsedMs: number | null;
 	} = $props();
 
+	/**
+	 * The credential/expiry sentence for a minted download.
+	 *
+	 * Built here rather than inline around an `{#if}`: Svelte trims whitespace
+	 * at block boundaries, so splitting a sentence across one silently welds
+	 * the words on either side together ("expiresat 4:53 PM").
+	 */
+	const expiryNote = $derived(
+		errorDownload?.expiresAt
+			? `It needs no credentials and expires at ${new Date(errorDownload.expiresAt).toLocaleTimeString()}, so fetch it promptly.`
+			: 'It needs no credentials, so fetch it promptly.'
+	);
+
 	function statusVariant(code: number): 'ok' | 'warn' | 'err' {
 		if (code >= 200 && code < 300) return 'ok';
 		if (code >= 300 && code < 500) return 'warn';
@@ -87,15 +100,15 @@
 			<p>{error}</p>
 			{#if errorDownload}
 				<p class="retry">
-					The response was too large to return inline, so the gateway minted a
-					download for the same request:
-					<a href={errorDownload.url} target="_blank" rel="noopener noreferrer"
-						>fetch the full body</a
-					>{#if errorDownload.expiresAt}<span class="muted">
-							— expires {new Date(errorDownload.expiresAt).toLocaleString()}</span
-						>{/if}. It needs no credentials, so fetch it promptly. To keep the
-					response inline instead, narrow the call with the action's own paging
-					parameters or a jq filter.
+					Too large to return inline, so the gateway minted a download for the
+					same request —
+					<a href={errorDownload.url} target="_blank" rel="noopener noreferrer">
+						fetch the full body</a
+					>. {expiryNote}
+				</p>
+				<p class="retry muted">
+					To keep the response inline instead, narrow the call with the action's
+					own paging parameters or a jq filter.
 				</p>
 			{/if}
 		</div>
