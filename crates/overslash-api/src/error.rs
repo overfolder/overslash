@@ -732,6 +732,55 @@ mod tests {
         (parts.status, value)
     }
 
+    /// Build a `response_too_large` in each of the three states its hint
+    /// distinguishes.
+    fn too_large(offer_prefer_stream: bool, minted: bool) -> AppError {
+        AppError::ResponseTooLarge {
+            content_length: Some(31_457_280),
+            content_type: Some("application/json".into()),
+            limit_bytes: 5_242_880,
+            offer_prefer_stream,
+            download_url: minted.then(|| "https://api.example/v1/downloads/tok".to_string()),
+            expires_at: minted.then(|| "2026-08-11T12:15:00Z".to_string()),
+        }
+    }
+
+    /// The one rule behind all three hint forms: never name a recovery the
+    /// caller cannot use. Unit-tested here because the wording is a pure
+    /// function of the variant — reaching all three end-to-end would need an
+    /// OAuth service just to make a mint refuse.
+    #[tokio::test]
+    async fn response_too_large_names_only_reachable_recoveries() {
+        // 1. Minted — the retry is already done, so neither flag is named.
+        let (status, body) = body_json(too_large(true, true).into_response()).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"], "response_too_large");
+        assert_eq!(body["download_url"], "https://api.example/v1/downloads/tok");
+        assert_eq!(body["expires_at"], "2026-08-11T12:15:00Z");
+        let hint = body["hint"].as_str().unwrap();
+        assert!(hint.contains("download_url"), "{hint}");
+        assert!(
+            !hint.contains("deliver") && !hint.contains("prefer_stream"),
+            "a minted URL supersedes both flags — naming either is the wasted \
+             round trip this hint exists to prevent: {hint}"
+        );
+
+        // 2. Not minted, REST — both flags, `deliver` leading.
+        let (_, body) = body_json(too_large(true, false).into_response()).await;
+        assert!(body["download_url"].is_null());
+        let hint = body["hint"].as_str().unwrap();
+        let deliver_at = hint.find("deliver").expect("names deliver");
+        let stream_at = hint.find("prefer_stream").expect("names prefer_stream");
+        assert!(deliver_at < stream_at, "deliver should lead: {hint}");
+
+        // 3. Not minted, MCP — `deliver` only. `prefer_stream` is absent from
+        //    the tool schemas, so naming it sends the agent down a dead end.
+        let (_, body) = body_json(too_large(false, false).into_response()).await;
+        let hint = body["hint"].as_str().unwrap();
+        assert!(hint.contains("deliver"), "{hint}");
+        assert!(!hint.contains("prefer_stream"), "{hint}");
+    }
+
     #[tokio::test]
     async fn missing_scopes_renders_typed_envelope() {
         let conn_id = Uuid::new_v4();

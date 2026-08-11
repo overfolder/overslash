@@ -483,7 +483,13 @@ async fn oauth_query_token_service(
     let inst: serde_json::Value = client
         .post(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({ "name": "queryoauth", "template_key": "queryoauth" }))
+        // Pin the upstream per instance, the way every other template test
+        // points at its mock — `servers[0].url` is only the default.
+        .json(&json!({
+            "name": "queryoauth",
+            "template_key": "queryoauth",
+            "url": server_url,
+        }))
         .send()
         .await
         .unwrap()
@@ -532,6 +538,63 @@ async fn oauth_query_token_service(
     .unwrap();
 
     api_key
+}
+
+/// An OAuth-injected service whose response blows the cap gets the plain 502.
+///
+/// The refusal reason is the one
+/// `oauth_with_query_token_injection_is_refused_not_silently_minted` pins for
+/// an explicit `deliver: "url"`: a deferred fetch cannot re-mint an OAuth
+/// bearer. The difference is what the caller sees — there, a 400 saying so;
+/// here, the error it actually hit, with no URL attached and no token row.
+#[tokio::test]
+async fn an_oversized_oauth_response_gets_the_plain_502_with_no_download_url() {
+    // Template services resolve to a real host, so the loopback SSRF guard
+    // refuses the in-process mock unless the test opts out.
+    common::allow_loopback_ssrf();
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+    let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
+    let base = format!("http://{api_addr}");
+
+    let api_key = oauth_query_token_service(
+        &pool,
+        &base,
+        &client,
+        &format!("http://{mock_addr}"),
+        "paths:\n  /large-file:\n    get:\n      operationId: get_file\n      summary: Get file\n      risk: read\n      parameters:\n        - name: size\n          in: query\n          schema:\n            type: integer\n",
+    )
+    .await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "service": "queryoauth",
+            "action": "get_file",
+            "params": { "size": 10240 },
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(status, 502, "the real error must still surface: {body}");
+    assert_eq!(body["error"], "response_too_large", "{body}");
+    assert!(
+        body["download_url"].is_null(),
+        "an OAuth bearer cannot be re-minted at fetch time, so nothing may be \
+         handed out: {body}"
+    );
+    // With nothing minted the hint falls back to naming the flags.
+    assert!(body["hint"].as_str().unwrap().contains("deliver"), "{body}");
+
+    let rows = sqlx::query_scalar!("SELECT count(*) FROM download_tokens")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, Some(0), "a refused mint must write no token row");
 }
 
 /// A refused mint must not mask the error the caller actually hit.
