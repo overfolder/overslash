@@ -150,6 +150,20 @@ function unquote(raw: string): string {
 }
 
 /**
+ * Drop the quotes from every balanced `"…"` span in a run of free text.
+ *
+ * Quotes are grouping syntax, not something to search for: they exist so a
+ * phrase can be held together and shielded from the `key op value` tokenizer.
+ * Stripping them only when they wrapped the *whole* run left the marks inside
+ * the bubble anywhere else — `hello "foo=bar" world` searched for text that
+ * included the quote characters. An unbalanced quote is left alone, since it
+ * is far likelier to be part of what the user meant to search for.
+ */
+function stripQuoteSpans(raw: string): string {
+	return raw.replace(/"([^"]*)"/g, '$1');
+}
+
+/**
  * Parse raw input into terms.
  *
  * Recognised `key op value` tokens become filter terms; each remaining *gap*
@@ -168,7 +182,7 @@ export function parseSearch(input: string, knownKeys: string[]): Term[] {
 	let m: RegExpExecArray | null;
 
 	const pushText = (raw: string) => {
-		const value = unquote(raw).replace(/\s+/g, ' ').trim();
+		const value = stripQuoteSpans(raw).replace(/\s+/g, ' ').trim();
 		if (value) terms.push({ kind: 'text', value });
 	};
 

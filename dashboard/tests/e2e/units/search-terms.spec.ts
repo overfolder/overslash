@@ -63,6 +63,21 @@ test.describe('parseSearch', () => {
 		]);
 	});
 
+	test('quotes are grouping syntax wherever they appear, not searched text', () => {
+		// They exist to hold a phrase together and shield it from the tokenizer;
+		// leaving the marks in the bubble would search for them literally.
+		expect(parseSearch('hello "foo=bar" world', KEYS)).toEqual([
+			{ kind: 'text', value: 'hello foo=bar world' }
+		]);
+		// Nothing filter-like involved — the same rule still applies.
+		expect(parseSearch('a "b c" d', KEYS)).toEqual([{ kind: 'text', value: 'a b c d' }]);
+	});
+
+	test('an unbalanced quote is left alone', () => {
+		// Far likelier to be part of what the user meant to search for.
+		expect(parseSearch('a "b', KEYS)).toEqual([{ kind: 'text', value: 'a "b' }]);
+	});
+
 	test('quotes group a value, and are stripped', () => {
 		expect(parseSearch('tag="a b"', KEYS)).toEqual([
 			{ kind: 'filter', key: 'tag', op: '=', value: 'a b' }
