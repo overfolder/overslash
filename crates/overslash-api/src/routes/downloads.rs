@@ -132,7 +132,10 @@ async fn redeem(
 
     let status = upstream.status().as_u16();
     log_download(&scope, &row, ip, Some(status), status >= 400).await;
-    deferred_download::stream_through(upstream)
+    deferred_download::stream_through(
+        upstream,
+        std::time::Duration::from_millis(state.config.call_stream_idle_timeout_ms),
+    )
 }
 
 /// Audit the redemption. Sibling of `action.streamed`: like that row, the body

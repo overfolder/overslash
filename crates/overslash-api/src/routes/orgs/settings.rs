@@ -384,25 +384,12 @@ pub(super) async fn patch_execution_settings(
         }
     }
 
-    // Cross-field check against the *resulting* row, not just the patch: a
-    // patch that lowers only the maximum must still be rejected when it would
-    // drop below a default the org already has stored.
-    let current = overslash_db::repos::org::get_call_settings(state.db(&ext), id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
-    let next_default = req.call_timeout_ms.unwrap_or(current.call_timeout_ms);
-    let next_max = req
-        .max_call_timeout_ms
-        .unwrap_or(current.max_call_timeout_ms);
-    if let (Some(d), Some(m)) = (next_default, next_max)
-        && d > m
-    {
-        return Err(AppError::BadRequest(format!(
-            "call_timeout_ms ({d}) cannot exceed max_call_timeout_ms ({m})"
-        )));
-    }
-
-    let updated = overslash_db::repos::org::update_execution_settings(
+    // The cross-field rule spans a value this patch may not mention, so the
+    // read, the check and the write happen together under a row lock inside
+    // the repo — validating here against a separate read would let two
+    // concurrent patches each pass on stale state and leave the second to
+    // trip the DB CHECK as a 500.
+    let outcome = overslash_db::repos::org::update_execution_settings(
         state.db(&ext),
         id,
         req.default_deferred_execution,
@@ -412,13 +399,32 @@ pub(super) async fn patch_execution_settings(
         req.max_call_timeout_ms.flatten(),
     )
     .await?;
-    if !updated {
-        return Err(AppError::NotFound("org not found".into()));
-    }
 
-    let next_deferred = req
-        .default_deferred_execution
-        .unwrap_or(current_deferred_execution(state.db(&ext), id).await?);
+    use overslash_db::repos::org::ExecutionSettingsUpdate;
+    let (next_deferred, next_call, next_max) = match outcome {
+        ExecutionSettingsUpdate::NotFound => {
+            return Err(AppError::NotFound("org not found".into()));
+        }
+        ExecutionSettingsUpdate::WouldViolateBounds {
+            call_timeout_ms,
+            max_call_timeout_ms,
+        } => {
+            return Err(AppError::BadRequest(format!(
+                "call_timeout_ms ({}) cannot exceed max_call_timeout_ms ({})",
+                call_timeout_ms.unwrap_or_default(),
+                max_call_timeout_ms.unwrap_or_default()
+            )));
+        }
+        ExecutionSettingsUpdate::Applied {
+            default_deferred_execution,
+            call_timeout_ms,
+            max_call_timeout_ms,
+        } => (
+            default_deferred_execution,
+            call_timeout_ms,
+            max_call_timeout_ms,
+        ),
+    };
 
     let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
@@ -429,7 +435,7 @@ pub(super) async fn patch_execution_settings(
             resource_id: Some(id),
             detail: serde_json::json!({
                 "default_deferred_execution": next_deferred,
-                "call_timeout_ms": next_default,
+                "call_timeout_ms": next_call,
                 "max_call_timeout_ms": next_max,
             }),
             description: None,
@@ -439,19 +445,9 @@ pub(super) async fn patch_execution_settings(
 
     Ok(Json(ExecutionSettingsResponse {
         default_deferred_execution: next_deferred,
-        call_timeout_ms: next_default,
+        call_timeout_ms: next_call,
         max_call_timeout_ms: next_max,
     }))
-}
-
-/// Read back `default_deferred_execution` for the response and audit row.
-///
-/// Needed because the patch is now partial: when the caller omits the flag we
-/// must report what the row actually holds, not echo an absent field.
-async fn current_deferred_execution(pool: &sqlx::PgPool, id: Uuid) -> Result<bool> {
-    overslash_db::repos::org::get_default_deferred_execution(pool, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("org not found".into()))
 }
 
 // ─── Audit settings (response body capture mode) ────────────────────────

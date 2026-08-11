@@ -21,10 +21,20 @@ async fn boot(
     default_ms: u64,
     max_ms: u64,
 ) -> (String, String, uuid::Uuid, std::net::SocketAddr) {
+    boot_with(pool, default_ms, max_ms, 30_000).await
+}
+
+async fn boot_with(
+    pool: sqlx::PgPool,
+    default_ms: u64,
+    max_ms: u64,
+    stream_idle_ms: u64,
+) -> (String, String, uuid::Uuid, std::net::SocketAddr) {
     common::allow_loopback_ssrf();
     let (addr, client) = common::start_api_with(pool, |cfg| {
         cfg.call_timeout_ms = default_ms;
         cfg.call_timeout_max_ms = max_ms;
+        cfg.call_stream_idle_timeout_ms = stream_idle_ms;
     })
     .await;
     let base = format!("http://{addr}");
@@ -349,4 +359,94 @@ async fn a_timed_out_call_still_writes_an_audit_row() {
         "a timed-out call must leave an audit trail, not vanish"
     );
     assert_eq!(detail["error"]["timeout_ms"], 300);
+}
+
+/// The companion to `a_live_stream_outlives_the_resolved_timeout`: slowness is
+/// fine, but a *stall* must still be fatal, or the idle guard is decorative.
+///
+/// Covers the inline `/v1/actions/call` path specifically, which reaches the
+/// wire through `deferred_download::stream_through` rather than building its
+/// own body — the two used to disagree about whether the guard applied.
+#[tokio::test]
+async fn a_stalled_stream_is_cut_by_the_idle_guard() {
+    let (pool, _fx) = common::test_pool_bootstrapped().await;
+    // Generous header budget so this can only fail on the idle guard, plus a
+    // short idle window so the stall is reached quickly.
+    let (base, key, _org, mock) = boot_with(pool, 30_000, 110_000, 400).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            // Headers arrive at once, one chunk lands, then the upstream goes
+            // quiet for 5s — well past the 400ms idle window.
+            "url": format!("http://{mock}/slow-stream?headers_ms=10&chunks=3&gap_ms=5000"),
+            "prefer_stream": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Headers already went out, so the status is the upstream's 200 — the
+    // guard can only show up as a body that does not complete.
+    assert_eq!(resp.status(), 200);
+    let body = resp.bytes().await;
+    match body {
+        Err(_) => {} // connection aborted mid-body: the guard fired
+        Ok(bytes) => assert!(
+            bytes.len() < 5 * 3,
+            "stalled transfer should not have delivered every chunk, got {} bytes",
+            bytes.len()
+        ),
+    }
+}
+
+/// The bounds rule spans a value a patch may not mention, so it cannot be
+/// validated against a read taken outside the write. Concurrent patches that
+/// each pass in isolation must still never reach the DB CHECK as a 500.
+#[tokio::test]
+async fn concurrent_execution_settings_patches_never_surface_the_db_constraint() {
+    let (pool, _fx) = common::test_pool_bootstrapped().await;
+    let (base, key, org, _mock) = boot(pool, 30_000, 110_000).await;
+
+    patch_org_timeouts(
+        &base,
+        &key,
+        org,
+        json!({"call_timeout_ms": 20_000, "max_call_timeout_ms": 100_000}),
+    )
+    .await;
+
+    // One side pushes the default up while the other pulls the maximum down,
+    // repeatedly. Either may legitimately 400; neither may 500.
+    let mut tasks = Vec::new();
+    for i in 0..12 {
+        let (base, key) = (base.clone(), key.clone());
+        let patch = if i % 2 == 0 {
+            json!({ "call_timeout_ms": 90_000 })
+        } else {
+            json!({ "max_call_timeout_ms": 30_000 })
+        };
+        tasks.push(tokio::spawn(async move {
+            reqwest::Client::new()
+                .patch(format!("{base}/v1/orgs/{org}/execution-settings"))
+                .header("Authorization", format!("Bearer {key}"))
+                .json(&patch)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }));
+    }
+
+    for t in tasks {
+        let status = t.await.unwrap();
+        assert!(
+            status == 200 || status == 400,
+            "expected success or a typed rejection, got {status}"
+        );
+    }
 }

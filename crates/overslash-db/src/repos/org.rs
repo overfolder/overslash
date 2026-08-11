@@ -399,6 +399,27 @@ pub async fn get_call_settings(
     }))
 }
 
+/// Outcome of [`update_execution_settings`].
+///
+/// A distinct variant for the bounds failure rather than a bare `bool`, so the
+/// caller can answer with a 400 that names the offending pair instead of
+/// letting the DB `CHECK` surface as a 500.
+pub enum ExecutionSettingsUpdate {
+    NotFound,
+    /// The *resulting* row would have `call_timeout_ms > max_call_timeout_ms`.
+    /// Carries what the row would have become, not what the patch asked for —
+    /// one of the two values may be pre-existing.
+    WouldViolateBounds {
+        call_timeout_ms: Option<i32>,
+        max_call_timeout_ms: Option<i32>,
+    },
+    Applied {
+        default_deferred_execution: bool,
+        call_timeout_ms: Option<i32>,
+        max_call_timeout_ms: Option<i32>,
+    },
+}
+
 /// Partial-patch the org's execution settings.
 ///
 /// Each field is three-valued — absent, explicit `null`, or a value — which is
@@ -406,6 +427,13 @@ pub async fn get_call_settings(
 /// `COALESCE`: `COALESCE` cannot distinguish "leave it alone" from "clear it
 /// back to the deployment default", and clearing is the only way back off an
 /// org-specific timeout.
+///
+/// Reads, validates and writes inside one transaction with the org row locked.
+/// The cross-field rule (`call_timeout_ms <= max_call_timeout_ms`) spans a
+/// value the patch may not mention, so validating against a row read outside
+/// the write would let two concurrent patches — one lowering the maximum, one
+/// raising the default — each pass on stale state and leave the second to trip
+/// the DB `CHECK` as a 500.
 pub async fn update_execution_settings(
     pool: &PgPool,
     id: Uuid,
@@ -414,27 +442,63 @@ pub async fn update_execution_settings(
     call_timeout_ms: Option<i32>,
     set_max_call_timeout: bool,
     max_call_timeout_ms: Option<i32>,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!(
+) -> Result<ExecutionSettingsUpdate, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let Some(current) = sqlx::query!(
+        "SELECT default_deferred_execution, call_timeout_ms, max_call_timeout_ms
+           FROM orgs WHERE id = $1 FOR UPDATE",
+        id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Ok(ExecutionSettingsUpdate::NotFound);
+    };
+
+    let next_call = if set_call_timeout {
+        call_timeout_ms
+    } else {
+        current.call_timeout_ms
+    };
+    let next_max = if set_max_call_timeout {
+        max_call_timeout_ms
+    } else {
+        current.max_call_timeout_ms
+    };
+    let next_deferred = default_deferred_execution.unwrap_or(current.default_deferred_execution);
+
+    if let (Some(call), Some(max)) = (next_call, next_max)
+        && call > max
+    {
+        // Dropping the transaction rolls back the lock; nothing was written.
+        return Ok(ExecutionSettingsUpdate::WouldViolateBounds {
+            call_timeout_ms: next_call,
+            max_call_timeout_ms: next_max,
+        });
+    }
+
+    sqlx::query!(
         "UPDATE orgs
-            SET default_deferred_execution =
-                    COALESCE($2, default_deferred_execution),
-                call_timeout_ms =
-                    CASE WHEN $3 THEN $4 ELSE call_timeout_ms END,
-                max_call_timeout_ms =
-                    CASE WHEN $5 THEN $6 ELSE max_call_timeout_ms END,
+            SET default_deferred_execution = $2,
+                call_timeout_ms = $3,
+                max_call_timeout_ms = $4,
                 updated_at = now()
           WHERE id = $1",
         id,
-        default_deferred_execution,
-        set_call_timeout,
-        call_timeout_ms,
-        set_max_call_timeout,
-        max_call_timeout_ms,
+        next_deferred,
+        next_call,
+        next_max,
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    Ok(result.rows_affected() > 0)
+    tx.commit().await?;
+
+    Ok(ExecutionSettingsUpdate::Applied {
+        default_deferred_execution: next_deferred,
+        call_timeout_ms: next_call,
+        max_call_timeout_ms: next_max,
+    })
 }
 
 /// Read the `audit_response_body_mode` setting for an org

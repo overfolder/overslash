@@ -278,10 +278,17 @@ pub async fn open_upstream(
 /// the point. A 40 MB video is exactly the case the 5 MB buffered cap exists to
 /// prevent from reaching a context window, and exactly the case this path is
 /// for.
-pub fn stream_through(upstream: reqwest::Response) -> Response {
+pub fn stream_through(upstream: reqwest::Response, idle: std::time::Duration) -> Response {
     let status = upstream.status().as_u16();
     let headers = upstream.headers().clone();
-    let body = axum::body::Body::from_stream(upstream.bytes_stream());
+    // Guarded per chunk rather than in total: the response is already
+    // committed by the time bytes flow, so the only failure worth acting on
+    // is a stall. Applied here rather than at the two call sites so the
+    // inline `prefer_stream` path and `GET /v1/downloads/{token}` cannot
+    // drift apart on it, exactly as they already share the header allowlist.
+    let body = axum::body::Body::from_stream(crate::services::http_caller::idle_guarded_stream(
+        upstream, idle,
+    ));
 
     let mut builder = Response::builder().status(status);
     for (name, value) in headers.iter() {

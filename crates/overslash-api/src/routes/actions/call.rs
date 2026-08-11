@@ -778,7 +778,10 @@ pub(super) async fn call_action_impl(
         // Build streaming response — pipe upstream bytes through to caller.
         // Shared with `GET /v1/downloads/{token}` so the forwarded-header
         // allowlist can't drift between the inline and deferred paths.
-        let mut response = crate::services::deferred_download::stream_through(upstream);
+        let mut response = crate::services::deferred_download::stream_through(
+            upstream,
+            std::time::Duration::from_millis(state.config.call_stream_idle_timeout_ms),
+        );
         // Streamed 5xx passes the upstream status straight through, where
         // the metrics wrapper would otherwise classify it as Overslash's
         // own "failed". The marker keeps it attributed to the upstream.
