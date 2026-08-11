@@ -128,6 +128,20 @@
 		const t = value.terms[index];
 		if (!t) return;
 		clearIdleKeys();
+		// Whatever is half-typed is a term in its own right. Commit it before the
+		// clicked bubble takes over the input, rather than silently dropping it.
+		// Appending never shifts `index`, so the term to edit stays put.
+		let next = value;
+		if (draft.trim()) {
+			next = pendingKey
+				? addTerm(next, {
+						kind: 'filter',
+						key: pendingKey.name,
+						op: pendingOp,
+						value: draft.trim()
+					})
+				: addTerms(next, parseSearch(draft, knownKeyNames));
+		}
 		if (t.kind === 'text') {
 			pendingKey = null;
 			draft = t.value;
@@ -140,7 +154,7 @@
 			// pending chip — hand it back as editable text instead of dropping it.
 			draft = key ? t.value : termToDraft(t);
 		}
-		emit(removeTermAt(value, index));
+		emit(removeTermAt(next, index));
 		await tick();
 		inputEl?.focus();
 		recompute();
@@ -293,6 +307,10 @@
 		// Commit on the way out so nothing typed is silently dropped (and the
 		// audit page's URL stays in sync).
 		commitDraft();
+		// A half-picked `key op …` with nothing typed after it would otherwise
+		// sit in the bar with no way back out except focusing and hitting
+		// Backspace. Drop it when the user leaves the field empty-handed.
+		if (!draft.trim()) pendingKey = null;
 		// Delay hiding so click on suggestion still fires.
 		setTimeout(() => (showSuggestions = false), 150);
 	}
@@ -386,6 +404,19 @@
 					<span class="chip-key">{pendingKey.name}</span>
 					<span class="chip-op">{pendingOp}</span>
 				</span>
+				<button
+					type="button"
+					class="chip-remove"
+					aria-label={`Cancel filter ${pendingKey.name} ${pendingOp}`}
+					onmousedown={(e) => e.preventDefault()}
+					onclick={(e) => {
+						e.stopPropagation();
+						pendingKey = null;
+						draft = '';
+						inputEl?.focus();
+						recompute();
+					}}>✕</button
+				>
 			</span>
 		{/if}
 		<input
