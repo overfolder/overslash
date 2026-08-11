@@ -230,8 +230,9 @@ no table analysis at all, while the release-binary matrix above made it look
 handled. Both `cargo build` lines in that Dockerfile now pass
 `--features sql_policy`, and `GET /v1/version` / `/health` report a
 `sql_policy` boolean so the question is answerable without reading a build
-recipe. Keep the two Dockerfile invocations identical — the first exists only
-to warm Kaniko's dependency layer, and a feature mismatch silently wastes it.
+recipe. Keep the two Dockerfile invocations identical — the first is
+`cargo chef cook`, which exists only to warm the dependency layer, and a
+feature mismatch between it and the real `cargo build` silently wastes it.
 
 Two adjacent small items:
 

@@ -1,59 +1,28 @@
 # Cloud Run Job image for the business-metrics exporter.
-# Mirrors the API Dockerfile's two-stage layout so workspace dependency
-# caching works the same way.
+# Mirrors the API Dockerfile's cargo-chef layout — see it for why the
+# hand-maintained manifest/stub scaffold is gone.
 
-FROM rust:1.97-trixie AS builder
+FROM rust:1.97-trixie AS chef
 
 WORKDIR /app
 
-# Workspace manifests for dependency caching
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY crates/overslash-core/Cargo.toml crates/overslash-core/Cargo.toml
-COPY crates/overslash-db/Cargo.toml crates/overslash-db/Cargo.toml
-COPY crates/overslash-api/Cargo.toml crates/overslash-api/Cargo.toml
-COPY crates/overslash-mcp/Cargo.toml crates/overslash-mcp/Cargo.toml
-COPY crates/overslash-mcp-puppet/Cargo.toml crates/overslash-mcp-puppet/Cargo.toml
-COPY crates/overslash-cli/Cargo.toml crates/overslash-cli/Cargo.toml
-COPY crates/oversla-sh/Cargo.toml crates/oversla-sh/Cargo.toml
-COPY crates/overslash-metrics/Cargo.toml crates/overslash-metrics/Cargo.toml
-COPY crates/overslash-metrics-exporter/Cargo.toml crates/overslash-metrics-exporter/Cargo.toml
-COPY crates/overslash-fakes/Cargo.toml crates/overslash-fakes/Cargo.toml
-COPY tests/mock-target/Cargo.toml tests/mock-target/Cargo.toml
+RUN cargo install cargo-chef --locked --version ^0.1
 
-RUN mkdir -p crates/overslash-core/src \
-    && echo "pub fn _dummy() {}" > crates/overslash-core/src/lib.rs \
-    && mkdir -p crates/overslash-db/src \
-    && echo "pub fn _dummy() {}" > crates/overslash-db/src/lib.rs \
-    && mkdir -p crates/overslash-api/src \
-    && echo "pub fn _dummy() {}" > crates/overslash-api/src/lib.rs \
-    && mkdir -p crates/overslash-mcp/src \
-    && echo "pub fn _dummy() {}" > crates/overslash-mcp/src/lib.rs \
-    && mkdir -p crates/overslash-mcp-puppet/src/bin \
-    && echo "pub fn _dummy() {}" > crates/overslash-mcp-puppet/src/lib.rs \
-    && echo "fn main() {}" > crates/overslash-mcp-puppet/src/bin/overslash-mcp-puppet.rs \
-    && mkdir -p crates/overslash-cli/src \
-    && echo "fn main() {}" > crates/overslash-cli/src/main.rs \
-    && mkdir -p crates/oversla-sh/src \
-    && echo "pub fn _dummy() {}" > crates/oversla-sh/src/lib.rs \
-    && echo "fn main() {}" > crates/oversla-sh/src/main.rs \
-    && mkdir -p crates/overslash-metrics/src \
-    && echo "pub fn _dummy() {}" > crates/overslash-metrics/src/lib.rs \
-    && mkdir -p crates/overslash-metrics-exporter/src \
-    && echo "fn main() {}" > crates/overslash-metrics-exporter/src/main.rs \
-    && mkdir -p crates/overslash-fakes/src/bin \
-    && echo "pub fn _dummy() {}" > crates/overslash-fakes/src/lib.rs \
-    && echo "fn main() {}" > crates/overslash-fakes/src/bin/overslash_fakes.rs \
-    && mkdir -p tests/mock-target/src \
-    && echo "fn main() {}" > tests/mock-target/src/main.rs
+# --- Planner: workspace in, dependency recipe out ---
+FROM chef AS planner
 
-# Build the dependency tree only (cached layer).
-RUN cargo build --release --package overslash-metrics-exporter
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-COPY crates/ crates/
-COPY .sqlx/ .sqlx/
+# --- Builder ---
+FROM chef AS builder
 
-# Touch sources to invalidate the dummy-only layer.
-RUN find crates/ -name "*.rs" -exec touch {} +
+COPY --from=planner /app/recipe.json recipe.json
+
+# Dependencies only (cached layer).
+RUN cargo chef cook --release --package overslash-metrics-exporter --recipe-path recipe.json
+
+COPY . .
 
 ENV SQLX_OFFLINE=true
 RUN cargo build --release --package overslash-metrics-exporter

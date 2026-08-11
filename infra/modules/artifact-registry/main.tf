@@ -10,11 +10,11 @@ variable "base_prefix" {
   type = string
 }
 
-# Age after which artifact versions (deployed images AND Kaniko cache
-# layers) become eligible for deletion. MUST stay above the Kaniko
-# --cache-ttl (currently 168h/7d) set in the cloud-build modules: any cache
-# layer Kaniko would reuse is re-pushed within the TTL, so it is always
-# younger than this threshold and never pruned. Default 30 days.
+# Age after which artifact versions (deployed images AND the BuildKit layer
+# cache the cloud-build modules export) become eligible for deletion. Each
+# build re-pushes the `cache:buildcache` manifest, so the live cache version
+# is always newer than this threshold; what ages out is the superseded,
+# now-untagged versions behind it. Default 30 days.
 variable "cleanup_delete_older_than" {
   type    = string
   default = "2592000s" # 30 days
@@ -47,8 +47,9 @@ resource "google_artifact_registry_repository" "repo" {
   cleanup_policy_dry_run = var.cleanup_dry_run
 
   # Protect the 10 most recent versions of every package (images and the
-  # Kaniko cache) from deletion regardless of age. Safety net for rollbacks
-  # and always keeps the live :latest / newest-SHA images. KEEP takes
+  # BuildKit cache) from deletion regardless of age. Safety net for rollbacks,
+  # always keeps the live :latest / newest-SHA images, and keeps the current
+  # cache manifest alive through a quiet month with no builds. KEEP takes
   # precedence over the DELETE policy below on any overlap.
   cleanup_policies {
     id     = "keep-recent"
@@ -61,10 +62,9 @@ resource "google_artifact_registry_repository" "repo" {
 
   # Delete versions older than the threshold to bound repo growth. Without a
   # DELETE policy a KEEP-only config deletes nothing, so the registry (and
-  # the Kaniko cache) grows unbounded. Covers both images and cache layers;
-  # see cleanup_delete_older_than for why the age must exceed the Kaniko
-  # cache TTL. The keep-recent policy above still protects the 10 newest
-  # versions per package even if they are older than this.
+  # the build cache, which gets a new version per build) grows unbounded.
+  # The keep-recent policy above still protects the 10 newest versions per
+  # package even if they are older than this.
   cleanup_policies {
     id     = "delete-old"
     action = "DELETE"
