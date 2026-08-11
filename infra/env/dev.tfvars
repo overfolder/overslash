@@ -57,9 +57,13 @@ cloud_sql_disk_size_gb = 10
 cloud_sql_zone         = "europe-west1-b"
 
 # Cloud Run — scale to zero, minimal resources
-cloud_run_cpu           = "1"
-cloud_run_memory        = "512Mi"
-cloud_run_min_instances = 0
+cloud_run_cpu    = "1"
+cloud_run_memory = "512Mi"
+# Async execution needs an instance to exist in order to drain its queue, and
+# Cloud Run's autoscaler is request-driven — a pending row creates no scale-out
+# pressure. At 0 a queued job would sit until unrelated traffic warmed an
+# instance, so dev keeps one warm.
+cloud_run_min_instances = 1
 cloud_run_max_instances = 3
 
 # Networking — Auth Proxy mode (no VPC connector cost)
@@ -112,3 +116,5 @@ email_provider = "resend"
 email_from     = "no-reply@dev.overslash.com"
 email_reply_to = "support@overslash.com"
 
+# Async (non-blocking) action calls. On here first; prod follows once validated.
+enable_async_execution = true

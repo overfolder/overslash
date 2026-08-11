@@ -107,8 +107,14 @@ async fn batch_responses(
     }
     let approval_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     let executions = scope.list_executions_by_approvals(&approval_ids).await?;
-    let mut exec_map: std::collections::HashMap<Uuid, ExecutionRow> =
-        executions.into_iter().map(|e| (e.approval_id, e)).collect();
+    // `approval_id` is nullable since async executions can exist without one,
+    // but every row here came from a lookup *by* approval id, so the filter
+    // drops nothing in practice — it just avoids an unwrap that would be a
+    // panic waiting for the first async row to reach this code path.
+    let mut exec_map: std::collections::HashMap<Uuid, ExecutionRow> = executions
+        .into_iter()
+        .filter_map(|e| e.approval_id.map(|aid| (aid, e)))
+        .collect();
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let (identity_path, identity_path_ids) =

@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions\n            SET lease_expires_at = now() + make_interval(secs => $3)\n          WHERE id = $1 AND worker_id = $2 AND status = 'executing'\n         RETURNING cancel_requested",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cancel_requested",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "cancel_requested"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f95044c2c2b0506e43a77f3c5d30ca80ff09e5684c69de1e54788c19ac528400"
+}

@@ -87,6 +87,12 @@ variable "enable_magic_link" {
   default     = true
 }
 
+variable "enable_async_execution" {
+  description = "Enable async (non-blocking) action calls (ASYNC_EXECUTION_ENABLED). Default-off. The worker only drains while an instance exists, so enable it only where cloud_run_min_instances >= 1."
+  type        = bool
+  default     = false
+}
+
 variable "enable_google_login" {
   description = "Provision + inject the Google LOGIN OAuth client (Sign-in with Google). Default-on to preserve existing behavior; populate the secret values post-apply."
   type        = bool

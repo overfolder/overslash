@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions\n            SET status = 'pending',\n                worker_id = NULL,\n                started_at = NULL,\n                lease_expires_at = NULL,\n                expires_at = GREATEST(expires_at, now() + make_interval(secs => $3))\n          WHERE id = $1 AND worker_id = $2 AND status = 'executing'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c2575f57d4f366f412d1a1e845b9f5e3fa93929b37ac3c6f0a39fdecb4917768"
+}
