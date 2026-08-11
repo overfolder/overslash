@@ -167,6 +167,72 @@ create_pull:
     title: { from: response, path: title }
 ```
 
+## Index behaviour under load (measured 2026-08-11)
+
+The non-goal above ("composite indexes for filtered queries -- premature; add
+when needed") was revisited when the dashboard search bar grew multi-term
+free-text filters. Measured on PostgreSQL 16.14 with 500k synthetic rows
+(400k in the queried org, 100k in a second org as noise), `LIMIT 50`:
+
+| Query | Plan | Time |
+|---|---|---|
+| No filters, first page | Index Scan `idx_audit_log_org` | 0.11 ms |
+| `q` = one common term | same index + filter | 1.45 ms |
+| `q` = two common terms | same index + filter | 1.32 ms |
+| `action =` matching 1 row in 4 | same index + filter | 0.07 ms |
+| `ip_address =` matching 1 row in 250 | same index + filter, 10k rows walked | 3.6 ms |
+| **`q` matching nothing** | **same index + filter, all 400k rows walked** | **2553 ms** |
+| No filters, `OFFSET 5000` | same index, 5050 entries walked | 2.7 ms |
+
+Three durable findings:
+
+1. **`idx_audit_log_org (org_id, created_at DESC)` drives every query.** It
+   satisfies the org predicate *and* the `ORDER BY created_at DESC LIMIT n`, so
+   an unfiltered page touches five buffers. Pairing the org column with the sort
+   column is what makes that work -- any new index on this table intended for the
+   dashboard's query shape must end in `created_at DESC` for the same reason.
+
+2. **Every other predicate is a post-index filter, and cost scales with how many
+   rows must be walked before `LIMIT` is satisfied.** Dense filters are free;
+   a filter matching nothing walks the org's entire history. Multi-term `q` does
+   not move that cliff (the `NOT EXISTS (unnest(...))` subplan runs once per
+   candidate row whether there is one term or five) -- it was already there for
+   single-term `q`, because an unanchored `ILIKE '%x%'` is not indexable.
+
+3. **`idx_audit_log_tags` (GIN) is not used by this query.** The planner prefers
+   the ordered index because it can stop at `LIMIT 50`, where a bitmap scan would
+   have to sort the whole match set first. `tags @>` appears in exactly one query
+   (this one), so the index currently costs write amplification on the hottest
+   insert path and buys nothing.
+
+### If the cliff needs fixing
+
+Measured, not assumed:
+
+- A `pg_trgm` GIN index on `action` and `description` takes the no-match case
+  from 2553 ms to **0.058 ms** -- but *only* when the predicate touches
+  `audit_log` columns alone. With `i.name ILIKE` in the same `OR`, the planner
+  cannot use it and falls back to a parallel seq scan (473 ms). The blocker is
+  that `q` searches a **joined** column. Splitting the name match out
+  (`identity_id IN (SELECT id FROM identities WHERE org_id = $1 AND name ILIKE ...)`)
+  is the prerequisite for any trigram strategy.
+- `(org_id, action, created_at DESC)` takes a sparse `action =` from a full scan
+  to 0.037 ms. The same shape would serve `resource_type`.
+- `OFFSET` is linear, so infinite scroll costs O(pages^2) over a session.
+  Keyset pagination (`created_at < $last_seen`) is the cheaper fix and needs no
+  new index.
+
+### Known dead index
+
+`idx_audit_log_impersonated_by (org_id, impersonated_by_identity_id) WHERE
+impersonated_by_identity_id IS NOT NULL` (migration 047) is not used by any
+query: `impersonated_by_identity_id` appears only in `SELECT` lists and
+`INSERT`s, never in a `WHERE`. It is also the one audit index not paired with
+`created_at`. Drop it, or pair it, when something actually filters on it.
+
+Caveat: synthetic uniform data. The plan *shapes* are the durable result; the
+millisecond figures are directional.
+
 ## Alternatives considered
 
 **Middleware-based logging**: An Axum middleware could intercept all requests and log automatically. Rejected because it can't capture resource-specific context (resource_type, resource_id, semantic action names, detail payloads). The per-handler pattern gives precise control over what's logged.

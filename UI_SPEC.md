@@ -257,16 +257,21 @@ Used throughout for lists of users, services, secrets, audit events, etc.
 
 ### Search Bar
 
-A unified search component used across Services, Template Catalog, Audit Log, and Org Users/Groups views. Combines free-text search with structured filters.
+A unified search component used across Services, Template Catalog, Audit Log, Approvals, Secrets, Connections and Org Users/Groups views. Combines free-text search with structured filters.
 
 **Behavior:**
-- **Free text**: typing plain text matches against any visible field (name, template, owner, identity, etc.)
-- **Structured expressions**: `key operator value` syntax. Operators: `=` (exact), `~` (contains), `!=` (not equal). Multiple expressions are joined by AND.
-- **Parsed expressions** render as **removable pill chips** inside the input field. Each chip shows `key = value` with an "✕" to remove. Free text remains as editable text after the chips.
+- **Everything is a bubble.** A search is an ordered list of **terms**, and every term renders as a removable pill inside the input with an "✕". There is no loose text left in the field once a term is committed.
+- **Text bubbles**: typing plain text and pressing Enter mints one bubble. The whole phrase becomes a single bubble (`pull request` is one term, not two), and it matches against any visible field.
+- **Filter bubbles**: `key operator value` syntax. Operators: `=` (exact), `~` (contains), `!=` (not equal).
+- **Terms AND**, whatever their kind or order. Two text bubbles both have to match; a text bubble and a filter bubble both have to match. Text bubbles are the only way to express "narrow by two different phrases".
+- **Committing**: Enter, blur, or picking a value from autocomplete. A term identical to one already present is swallowed rather than duplicated (text compares case-insensitively).
+- **Editing**: clicking a bubble's body returns it to the input — a filter reopens in its `key op …` pending state so value autocomplete still works. Backspace on an empty input removes the last bubble.
+- **Quoting**: a `"quoted phrase"` is opaque to the parser, so `"foo=bar"` stays one text bubble even on a surface that has a `foo` key.
+- **Pinned bubbles**: filters owned by the URL rather than by the bar (`/services?connection=<id>`) render first, greyed and non-editable; removing one drops the query param.
 
 ```
 /-------------------------------------------------------------------------------------\
-| [owner = Org][name ~ "fish"] blah blah                                              |
+| [owner = Org ✕][name ~ "fish" ✕][⌕ blah blah ✕]                                      |
 \-------------------------------------------------------------------------------------/
 ```
 
@@ -274,11 +279,14 @@ A unified search component used across Services, Template Catalog, Audit Log, an
 - **Services**: `owner`, `name`, `template`, `status`, `connection`
 - **Template Catalog**: `source`, `name`, `category`
 - **Audit Log**: `identity`, `event`, `service`, `result`, `time`
-- **Org Users**: `name`, `email`, `group`, `role`, `status`
+- **Approvals**: `risk`, `service`, `agent`
+- **Secrets**: `name`, `owner`
+- **Connections**: `provider`, `account`
+- **Org Users**: `name`, `email`, `role`, `provider`
 
 **Autocomplete**: After typing 3+ characters that match a known key prefix, a dropdown appears below the input suggesting matching keys (e.g., typing "own" suggests `owner =`). Debounced at 200ms to avoid interrupting normal typing. Selecting a key suggestion inserts the key + operator and positions the cursor for value entry. **Values are also autocompleted** when possible — e.g., after `owner =`, the dropdown shows known values ("Org", "You", specific user names). Selecting a value **creates the pill** immediately. Recent searches appear below suggestions.
 
-**Visual**: White background, neutral-200 border, 8px corner radius. Pill chips have primary-50 background, primary text, small "✕".
+**Visual**: White background, neutral-200 border, 8px corner radius. Filter bubbles use the primary tint (`--color-primary-bg` / `--color-primary`); text bubbles use a neutral tint with a leading `⌕`, so the two kinds read apart at a glance. Both carry a small "✕".
 
 ### Split Button
 

@@ -25,7 +25,11 @@
 	import TemplateCard from '$lib/components/services/TemplateCard.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
-	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
+	import SearchBar, {
+		emptySearch,
+		filterTerms,
+		matchesAllText, type SearchKey, type SearchValue
+	} from '$lib/components/SearchBar.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
 	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
 	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
@@ -48,7 +52,7 @@
 	let byocClientId = $state('');
 	let byocClientSecret = $state('');
 
-	let searchValue = $state<SearchValue>({ expressions: [], freeText: '' });
+	let searchValue = $state<SearchValue>(emptySearch());
 
 	let selectedKey = $state<string | null>(null);
 	let selectedDetail = $state<TemplateDetail | null>(null);
@@ -173,16 +177,10 @@
 
 	const filteredTemplates = $derived(
 		templates.filter((t) => {
-			for (const expr of searchValue.expressions) {
+			for (const expr of filterTerms(searchValue)) {
 				if (!templateMatches(t, expr)) return false;
 			}
-			const q = searchValue.freeText.trim().toLowerCase();
-			if (!q) return true;
-			return (
-				t.key.toLowerCase().includes(q) ||
-				t.display_name.toLowerCase().includes(q) ||
-				(t.description ?? '').toLowerCase().includes(q)
-			);
+			return matchesAllText([t.key, t.display_name, t.description ?? ''], searchValue);
 		})
 	);
 

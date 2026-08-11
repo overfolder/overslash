@@ -55,8 +55,12 @@ struct AuditQuery {
     action: Option<String>,
     resource_type: Option<String>,
     identity_id: Option<Uuid>,
-    /// Free-text substring (case-insensitive) over action, description and
-    /// identity name. Drives the audit log search bar.
+    /// Free-text search over action, description and identity name. Comma
+    /// separated, and every term must match (AND) — the same convention as
+    /// `tag` and `identity_kind`, so the search bar's text bubbles narrow the
+    /// way its filter chips do. A comma inside a term is escaped as `\,`, so
+    /// a phrase like `New York\, NY` stays one term and survives the URL
+    /// round-trip intact. See `split_q_terms`.
     q: Option<String>,
     /// Exact match on `audit_log.id`. Powers the `?event=<uuid>` deep-link
     /// — the dashboard fires this query to verify a deep-linked event exists
@@ -124,6 +128,45 @@ where
     }
 }
 
+/// Split the `q` parameter into free-text terms on unescaped commas, so a
+/// search phrase may itself contain one: `New York\, NY` is a single term.
+///
+/// `tag` and `identity_kind` split on a plain comma — they carry controlled
+/// vocabularies where a comma cannot occur. `q` is arbitrary user text, and a
+/// naive split would turn one search bubble into two on the next page load.
+fn split_q_terms(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                // Only `,` and `\` are escapes; anything else keeps both
+                // characters so a Windows path or a regex is never eaten.
+                Some(next @ (',' | '\\')) => cur.push(next),
+                Some(other) => {
+                    cur.push('\\');
+                    cur.push(other);
+                }
+                None => cur.push('\\'),
+            },
+            ',' => {
+                let term = cur.trim();
+                if !term.is_empty() {
+                    out.push(term.to_string());
+                }
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    let term = cur.trim();
+    if !term.is_empty() {
+        out.push(term.to_string());
+    }
+    out
+}
+
 async fn query_audit(
     scope: OrgScope,
     axum::extract::Query(params): axum::extract::Query<AuditQuery>,
@@ -135,6 +178,7 @@ async fn query_audit(
             .filter(|k| !k.is_empty())
             .collect::<Vec<_>>()
     });
+    let q_terms = params.q.and_then(empty).map(|s| split_q_terms(&s));
     let tags = params.tag.and_then(empty).map(|s| {
         s.split(',')
             .map(|t| t.trim().to_string())
@@ -148,7 +192,7 @@ async fn query_audit(
         identity_id: params.identity_id,
         since: params.since,
         until: params.until,
-        q: params.q.and_then(empty),
+        q_terms: q_terms.filter(|v| !v.is_empty()),
         event_id: params.event_id,
         uuid: params.uuid,
         action_contains: params.action_contains.and_then(empty),

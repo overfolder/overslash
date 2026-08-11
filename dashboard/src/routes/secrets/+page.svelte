@@ -15,6 +15,14 @@
 		OAuthProviderInfo,
 		SecretSummary
 	} from '$lib/types';
+	import SearchBar, {
+		emptySearch,
+		filterTerms,
+		matchesAllText,
+		type FilterTerm,
+		type SearchKey,
+		type SearchValue
+	} from '$lib/components/SearchBar.svelte';
 	import OwnerCell from '$lib/components/secrets/OwnerCell.svelte';
 	import NewSecretModal from '$lib/components/secrets/NewSecretModal.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
@@ -32,7 +40,7 @@
 	let providers = $state<OAuthProviderInfo[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
-	let query = $state('');
+	let search = $state<SearchValue>(emptySearch());
 	let creating = $state(false);
 	let byocBusy = $state<string | null>(null);
 	let confirmDelete = $state<ByocCredentialSummary | null>(null);
@@ -45,17 +53,53 @@
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 	const providerByKey = $derived(new Map(providers.map((p) => [p.key, p])));
 
-	const filtered = $derived.by(() => {
-		const q = query.trim().toLowerCase();
-		if (!q) return secrets;
-		return secrets.filter((s) => {
-			if (s.name.toLowerCase().includes(q)) return true;
-			const ownerName = s.owner_identity_id
-				? identityById.get(s.owner_identity_id)?.name ?? ''
-				: '';
-			return ownerName.toLowerCase().includes(q);
-		});
-	});
+	function ownerName(s: SecretSummary): string {
+		return s.owner_identity_id ? (identityById.get(s.owner_identity_id)?.name ?? '') : '';
+	}
+
+	const searchKeys = $derived<SearchKey[]>([
+		{ name: 'name', operators: ['=', '~'], values: secrets.map((s) => s.name), hint: 'secret name' },
+		{
+			name: 'owner',
+			operators: ['=', '~'],
+			values: [...new Set(secrets.map(ownerName).filter(Boolean))],
+			hint: 'owning identity'
+		}
+	]);
+
+	function matchesFilter(s: SecretSummary, expr: FilterTerm): boolean {
+		const v = expr.value.toLowerCase();
+		let field = '';
+		switch (expr.key) {
+			case 'name':
+				field = s.name;
+				break;
+			case 'owner':
+				field = ownerName(s);
+				break;
+			default:
+				return true;
+		}
+		field = field.toLowerCase();
+		switch (expr.op) {
+			case '=':
+				return field === v;
+			case '!=':
+				return field !== v;
+			case '~':
+				return field.includes(v);
+		}
+		return true;
+	}
+
+	const filtered = $derived(
+		secrets.filter((s) => {
+			for (const expr of filterTerms(search)) {
+				if (!matchesFilter(s, expr)) return false;
+			}
+			return matchesAllText([s.name, ownerName(s)], search);
+		})
+	);
 
 	const totalVersions = $derived(
 		secrets.reduce((acc, s) => acc + s.current_version, 0)
@@ -135,11 +179,11 @@
 
 	{#if !loading && secrets.length > 0}
 		<div class="searchbar">
-			<input
-				type="search"
-				bind:value={query}
-				placeholder="Search by name or owner"
-				aria-label="Search secrets"
+			<SearchBar
+				keys={searchKeys}
+				bind:value={search}
+				placeholder="Search secrets… (try owner=alice)"
+				onchange={(next) => (search = next)}
 			/>
 		</div>
 	{/if}
@@ -360,27 +404,7 @@
 		background: var(--color-primary-hover);
 	}
 	.searchbar {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 10px;
-		border: 1px solid var(--color-border);
-		border-radius: 8px;
-		background: var(--color-surface);
 		margin-bottom: 16px;
-	}
-	.searchbar input {
-		flex: 1;
-		border: 0;
-		background: transparent;
-		outline: 0;
-		font-size: 13px;
-		color: var(--color-text);
-	}
-	.searchbar:focus-within {
-		border-color: var(--color-primary);
-		outline: 2px solid var(--color-primary-bg);
-		outline-offset: -1px;
 	}
 	.error {
 		background: rgba(229, 56, 54, 0.06);

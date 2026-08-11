@@ -2,7 +2,7 @@
 	import { replaceState } from '$app/navigation';
 	import { tick } from 'svelte';
 	import { session, ApiError } from '$lib/session';
-	import SearchBar, { type SearchValue } from '$lib/components/SearchBar.svelte';
+	import SearchBar, { addTerm, type SearchValue, type Term } from '$lib/components/SearchBar.svelte';
 	import AuditRow from './AuditRow.svelte';
 	import { downloadCsv } from './exportCsv';
 	import { buildAuditSearchKeys, filtersToSearch, searchToFilters } from './searchMapping';
@@ -131,14 +131,11 @@
 	/** Add `tag = <t>` to the active search. Tags AND, so clicking a second chip
 	 *  narrows rather than replaces; clicking one already present is a no-op. */
 	function onTagClick(t: string) {
-		const already = searchValue.expressions.some(
-			(e) => e.key === 'tag' && e.op === '=' && e.value === t
-		);
-		if (already) return;
-		onSearchChange({
-			...searchValue,
-			expressions: [...searchValue.expressions, { key: 'tag', op: '=', value: t }]
-		});
+		const term: Term = { kind: 'filter', key: 'tag', op: '=', value: t };
+		// `addTerm` returns the same object when the term is already there, so a
+		// repeat click costs no refetch.
+		const next = addTerm(searchValue, term);
+		if (next !== searchValue) onSearchChange(next);
 	}
 
 	function refresh() {

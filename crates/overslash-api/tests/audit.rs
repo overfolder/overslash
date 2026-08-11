@@ -1116,6 +1116,163 @@ async fn test_audit_column_filters() {
     assert_eq!(r[0].identity_id, Some(user_id));
 }
 
+/// Free-text search bar bubbles. Each bubble is one `q` term, the terms are
+/// comma-joined on the wire, and every one of them must match — so two bubbles
+/// narrow the result set instead of asking for one literal phrase.
+#[tokio::test]
+async fn test_audit_free_text_terms_and() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+
+    let agent_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, $4)")
+        .bind(agent_id)
+        .bind(org_id)
+        .bind("henry")
+        .bind("agent")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let scope = overslash_db::OrgScope::new(org_id, pool.clone());
+    scope
+        .log_audit(AuditEntry {
+            org_id,
+            identity_id: Some(agent_id),
+            action: "action.executed",
+            resource_type: Some("secret"),
+            resource_id: None,
+            detail: json!({}),
+            description: Some("fetched token"),
+            ip_address: None,
+        })
+        .await
+        .unwrap();
+    scope
+        .log_audit(AuditEntry {
+            org_id,
+            identity_id: None,
+            action: "approval.resolved",
+            resource_type: Some("approval"),
+            resource_id: None,
+            detail: json!({}),
+            description: Some("approved call"),
+            ip_address: None,
+        })
+        .await
+        .unwrap();
+
+    let only = |mut f: overslash_db::repos::audit::AuditFilter| async {
+        f.org_id = org_id;
+        scope.query_audit_log(f).await.unwrap()
+    };
+    let base = || filter(org_id);
+
+    // One term behaves exactly as the old single-substring `q` did.
+    let r = only(AuditFilter {
+        q_terms: Some(vec!["approved".into()]),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].description.as_deref(), Some("approved call"));
+
+    // Two terms AND, and each may land in a *different* column — `henry` is the
+    // identity name, `fetched` the description.
+    let r = only(AuditFilter {
+        q_terms: Some(vec!["henry".into(), "fetched".into()]),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].identity_id, Some(agent_id));
+
+    // Terms that match different *rows* match no row at all.
+    let r = only(AuditFilter {
+        q_terms: Some(vec!["henry".into(), "approved".into()]),
+        ..base()
+    })
+    .await;
+    assert!(r.is_empty());
+
+    // No terms is not "match nothing".
+    let r = only(AuditFilter {
+        q_terms: Some(vec![]),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 2);
+}
+
+/// A comma *inside* a search phrase is escaped as `\,`, so one bubble stays
+/// one term instead of splitting into two on the way through the URL.
+#[tokio::test]
+async fn test_audit_q_term_escaped_comma() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    let scope = overslash_db::OrgScope::new(fx.org_id, pool.clone());
+    for description in ["New York, NY", "New York and NY"] {
+        scope
+            .log_audit(AuditEntry {
+                org_id: fx.org_id,
+                identity_id: None,
+                action: "action.executed",
+                resource_type: Some("http"),
+                resource_id: None,
+                detail: json!({}),
+                description: Some(description),
+                ip_address: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    // Escaped: one term, so only the row carrying the literal phrase matches.
+    let one = fetch_audit_with(&base, &client, &key, "q=New%20York%5C%2C%20NY").await;
+    assert_eq!(one.len(), 1, "escaped comma must stay one term: {one:?}");
+    assert_eq!(one[0]["description"], "New York, NY");
+
+    // Unescaped: two terms (`New York` AND `NY`), which both rows satisfy.
+    let two = fetch_audit_with(&base, &client, &key, "q=New%20York%2CNY").await;
+    assert_eq!(two.len(), 2, "unescaped comma must separate terms: {two:?}");
+}
+
+/// The `q` query param carries the bubbles comma-separated, mirroring `tag`.
+#[tokio::test]
+async fn test_audit_api_q_param_splits_on_commas() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    client
+        .put(format!("{base}/v1/secrets/comma_split"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "val"}))
+        .send()
+        .await
+        .unwrap();
+
+    // One term: the pre-existing single-substring behaviour.
+    let one = fetch_audit_with(&base, &client, &key, "q=secret.put").await;
+    assert!(!one.is_empty());
+    assert!(one.iter().all(|e| e["action"] == "secret.put"));
+
+    // Two terms AND — the second cannot match, so the whole set goes away.
+    let two = fetch_audit_with(&base, &client, &key, "q=secret.put,zzzznotathing").await;
+    assert!(
+        two.is_empty(),
+        "an unmatchable second term must narrow to nothing, got {two:?}"
+    );
+
+    // Empty terms between commas are dropped, not treated as "match nothing".
+    let blank = fetch_audit_with(&base, &client, &key, "q=secret.put,,").await;
+    assert_eq!(blank.len(), one.len());
+}
+
 /// `user =` (owner_user_id) / `user ~` (owner_user_contains) match the owning
 /// user *subtree*: the user acting directly plus any agent they own — wider
 /// than the exact-actor `identity_id` used by `agent`/`identity`.

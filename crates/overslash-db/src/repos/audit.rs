@@ -87,10 +87,12 @@ pub struct AuditFilter {
     pub identity_id: Option<Uuid>,
     pub since: Option<OffsetDateTime>,
     pub until: Option<OffsetDateTime>,
-    /// Free-text substring matched (case-insensitive) against `action`,
-    /// `description`, and the joined identity name. Powers the audit log
-    /// search bar.
-    pub q: Option<String>,
+    /// Free-text terms matched (case-insensitively) against `action`,
+    /// `description`, and the joined identity name. Every term must match at
+    /// least one of those columns — AND, not OR, because each text bubble in
+    /// the search bar narrows, exactly like `tags`. Powers the audit log
+    /// search bar's text bubbles.
+    pub q_terms: Option<Vec<String>>,
     /// Exact match on `audit_log.id`. Used by the dashboard deep-link
     /// (`/audit?event=<uuid>`) to confirm a target event exists outside the
     /// active filter set.
@@ -151,7 +153,11 @@ pub(crate) async fn query_filtered(
 ) -> Result<Vec<AuditRow>, sqlx::Error> {
     // Build `%term%` patterns once so the query plan can short-circuit when a
     // filter is None. The LEFT JOIN keeps rows whose identity has been deleted.
-    let like = filter.q.as_deref().map(|q| format!("%{q}%"));
+    let q_likes = filter
+        .q_terms
+        .as_deref()
+        .filter(|terms| !terms.is_empty())
+        .map(|terms| terms.iter().map(|q| format!("%{q}%")).collect::<Vec<_>>());
     let action_like = filter.action_contains.as_deref().map(|q| format!("%{q}%"));
     let resource_like = filter
         .resource_type_contains
@@ -188,10 +194,17 @@ pub(crate) async fn query_filtered(
            AND ($4::uuid IS NULL OR a.identity_id = $4)
            AND ($5::timestamptz IS NULL OR a.created_at >= $5)
            AND ($6::timestamptz IS NULL OR a.created_at <= $6)
-           AND ($7::text IS NULL
-                OR a.action ILIKE $7
-                OR a.description ILIKE $7
-                OR i.name ILIKE $7)
+           -- Every free-text term must hit at least one of the three columns.
+           -- Phrased as no-term-fails so one NOT EXISTS covers N terms.
+           -- COALESCE is load-bearing: `description` and the LEFT JOINed
+           -- `i.name` are nullable, and an unmatched NULL makes the OR NULL,
+           -- which the surrounding NOT would turn back into a pass.
+           AND ($7::text[] IS NULL
+                OR NOT EXISTS (
+                    SELECT 1 FROM unnest($7::text[]) AS term
+                    WHERE NOT COALESCE(a.action ILIKE term
+                                    OR a.description ILIKE term
+                                    OR i.name ILIKE term, FALSE)))
            AND ($8::uuid IS NULL OR a.id = $8)
            AND ($9::uuid IS NULL
                 OR a.id = $9
@@ -233,7 +246,7 @@ pub(crate) async fn query_filtered(
         filter.identity_id,
         filter.since,
         filter.until,
-        like,
+        q_likes.as_deref(),
         filter.event_id,
         filter.uuid,
         filter.limit,
