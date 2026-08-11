@@ -326,7 +326,7 @@ fn check_description(
     }
 
     for (_, ident) in iter_placeholders(label) {
-        if !params.contains_key(ident) {
+        if !param_ident_resolvable(params, ident) {
             issues.err(
                 "unknown_description_param",
                 format!("{field} placeholder {{{ident}}} does not reference a defined param"),
@@ -385,7 +385,7 @@ fn check_param(
             );
         }
         for (_, ident) in iter_placeholders(&resolver.get) {
-            if !all_params.contains_key(ident) {
+            if !param_ident_resolvable(all_params, ident) {
                 issues.err(
                     "unknown_resolver_param",
                     format!(
@@ -403,6 +403,28 @@ fn check_param(
             );
         }
     }
+}
+
+/// Does `ident` name something the runtime substituter can resolve?
+///
+/// Exact param name, or a dotted path whose head segment is a defined param —
+/// `crate::description::substitute_placeholders` descends nested objects, so
+/// `{query.database}` resolves against the object-valued `query` param. Only
+/// the head is checkable here: the shape inside an object param is the
+/// upstream's, not something the template declares.
+///
+/// Deliberately not used for action-path placeholders. Those are substituted
+/// by a separate flat loop over the call params
+/// (`routes::actions::resolve`), which never descends — a dotted path
+/// placeholder would survive into the outbound URL verbatim.
+fn param_ident_resolvable(
+    params: &std::collections::HashMap<String, ActionParam>,
+    ident: &str,
+) -> bool {
+    params.contains_key(ident)
+        || ident
+            .split_once('.')
+            .is_some_and(|(head, _)| params.contains_key(head))
 }
 
 /// Detect an unclosed `{` — something that iter_placeholders silently skips
@@ -701,6 +723,52 @@ mod tests {
         a.params.insert("x".into(), p);
         let r = run(&d);
         assert!(r.errors.iter().any(|e| e.code == "unknown_resolver_param"));
+    }
+
+    /// The export_query shape: the resolver reaches an id nested inside an
+    /// object-valued body param, so only the head segment is a declared param.
+    #[test]
+    fn resolver_dotted_placeholder_checks_only_the_head_segment() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        let mut p = param("object", false);
+        p.resolve = Some(ParamResolver {
+            get: "/api/database/{query.database}".into(),
+            pick: "name".into(),
+        });
+        a.params.insert("query".into(), p);
+        let r = run(&d);
+        assert!(!r.errors.iter().any(|e| e.code == "unknown_resolver_param"));
+    }
+
+    #[test]
+    fn resolver_dotted_placeholder_with_unknown_head_is_still_reported() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        let mut p = param("object", false);
+        p.resolve = Some(ParamResolver {
+            get: "/api/database/{ghost.database}".into(),
+            pick: "name".into(),
+        });
+        a.params.insert("query".into(), p);
+        let r = run(&d);
+        assert!(r.errors.iter().any(|e| e.code == "unknown_resolver_param"));
+    }
+
+    /// Descriptions run through the same substituter, so the linter accepts
+    /// there what the runtime resolves.
+    #[test]
+    fn description_dotted_placeholder_checks_only_the_head_segment() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.params.insert("query".into(), param("object", false));
+        a.description = "Run SQL on database {query.database}".into();
+        let r = run(&d);
+        assert!(
+            !r.errors
+                .iter()
+                .any(|e| e.code == "unknown_description_param")
+        );
     }
 
     #[test]
