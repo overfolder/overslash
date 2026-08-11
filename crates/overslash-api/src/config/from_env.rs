@@ -94,6 +94,7 @@ impl Config {
             github_auth_client_secret: env::var("GITHUB_AUTH_CLIENT_SECRET").ok(),
             public_url,
             dev_auth_enabled: env::var("DEV_AUTH").is_ok(),
+            live_map_enabled: env::var("OVERSLASH_LIVE_MAP").is_ok(),
             // Default-on; only an explicit falsey value disables it.
             magic_link_enabled: env::var("MAGIC_LINK_ENABLED")
                 .map(|v| !matches!(v.trim().to_lowercase().as_str(), "false" | "0" | "no"))

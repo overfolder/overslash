@@ -113,6 +113,12 @@ pub struct Config {
     pub github_auth_client_secret: Option<String>,
     pub public_url: String,
     pub dev_auth_enabled: bool,
+    /// Live Map (`/map` in the dashboard) and the per-call `action.*` events
+    /// that feed it. Off unless `OVERSLASH_LIVE_MAP` is set, because emission
+    /// costs one durable `events` row per action call — the hottest path in
+    /// the system. Reported on `GET /v1/version` so the dashboard knows
+    /// whether to offer the view at all.
+    pub live_map_enabled: bool,
     /// Passwordless email magic-link login. Default-on: it needs no external
     /// IdP credentials, so it's the working login on a fresh self-hosted
     /// deploy. Set `MAGIC_LINK_ENABLED=false` to disable (e.g. an org that
@@ -756,6 +762,7 @@ mod tests {
             github_auth_client_secret: None,
             public_url: "http://localhost:0".into(),
             dev_auth_enabled: false,
+            live_map_enabled: false,
             magic_link_enabled: true,
             max_response_body_bytes: 0,
             audit_response_body_max_bytes: 0,

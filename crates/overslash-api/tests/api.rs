@@ -71,6 +71,7 @@ mod key_rotation;
 mod large_file;
 mod layered_templates;
 mod linkedin;
+mod live_map;
 mod mcp_approve_split;
 mod mcp_elicitation;
 mod mcp_external;

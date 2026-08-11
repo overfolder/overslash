@@ -90,6 +90,22 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 
 - [ ] **Approval visibility scoping** — `GET /v1/approvals?scope=actionable` vs `?scope=mine` (Phase 3 carry-over).
 - [ ] **Webhook payload**: include `gap_identity` and `can_be_handled_by` on approval events (Phase 3 carry-over).
+- [ ] **Live Map follow-ups** (D57, dev-gated behind `OVERSLASH_LIVE_MAP`):
+  - Structural agent→service edges from permission rules. Today they only
+    appear once traffic reveals them, because `GET /v1/permissions` is
+    per-identity and deriving them up front would cost one request per agent.
+  - Node icons. Deferred because identities and services carry no icon field —
+    the map renders monograms. Revisit when they do.
+  - Resolve an approval from the map. The amber state is real (it comes off
+    `approval.pending`); the design's click-a-packet Allow/Deny popover was
+    dropped rather than built against a half-modelled in-flight approval.
+  - The force layout's repulsion pass is O(n²) over every structural node,
+    every frame — inherited from the design prototype. Fine for a few hundred
+    nodes, and the reason the map is dev-gated is not this, but it is the first
+    thing to fix if it ever ships wider. A spatial grid is the usual answer.
+  - Decide whether `activity` can ever be on by default. It is the only topic
+    whose volume scales with the gateway's hot path — one durable `events` row
+    per call — so ungating it means answering that first.
 - [ ] **MCP Login Flow Fixes** (review card `877cb`) — assignment/consent page served from dashboard, default `inherit_permissions=true` for new MCP agents, reuse the existing agent on reauth, hide revoked MCP clients from the UI after 3s.
 
 ---

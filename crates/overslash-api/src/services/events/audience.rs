@@ -116,3 +116,15 @@ pub async fn for_secret_request(
     }
     audience
 }
+
+/// Actions: the actor's chain, and nothing else.
+///
+/// A parent keeps seeing what its sub-agents call, which is what makes the
+/// Live Map show an owner-user their whole fleet. A sibling chain sees
+/// nothing. Org admins bypass the array in the delivery predicate, so the same
+/// stream is an org-wide operator view for them and a personal one for
+/// everyone else — no second ACL, and no view wider than what
+/// `GET /v1/audit` already discloses to the same caller.
+pub async fn for_action(scope: &OrgScope, actor_id: Uuid) -> Vec<Uuid> {
+    chain(scope, actor_id).await
+}

@@ -45,7 +45,7 @@ compatibility surface from day one, which is why it is versioned.
 ### Wire contract (v1)
 
 ```
-GET /v1/events/stream?topics=approvals,connections,secrets
+GET /v1/events/stream?topics=approvals,connections,secrets,activity
 Authorization: Bearer <osk_… | mcp jwt>      (or the oss_session cookie)
 Last-Event-ID: <cursor>                      (sent automatically by EventSource)
 
@@ -148,6 +148,36 @@ interleaving would let a third party delay the second event on the stream).
 the item needs to know as much as the one gaining it, and after a hand-up the
 previous resolver may no longer sit on the new resolver's chain.
 
+### The `activity` topic
+
+`action.called` and `action.completed` bracket every call through
+`POST /v1/actions/call`. They exist for the Live Map, and they are the first
+events on the gateway's **hottest path** — one durable `events` row each, per
+call, where every other event here is emitted once per operator action. So
+emission is gated on `OVERSLASH_LIVE_MAP` (`config.live_map_enabled`), which is
+set on dev and in `scripts/e2e-up.sh` and never in production, and reported to
+clients as `live_map` on `GET /v1/version`.
+
+The **topic string stays valid either way**. A client asking for `activity` on a
+deployment with the flag off gets silence, not a 400 — a subscription that
+succeeds or fails depending on an env var would be a worse contract than one
+that is simply quiet.
+
+Both are emitted from `routes/actions/mod.rs::call_action`, the wrapper that
+already brackets the request for metrics, rather than from the four terminal
+sites inside `call_action_impl`. That wrapper owns the outcome taxonomy —
+including the `UpstreamErrored` marker that tells an upstream's 500 riding
+behind an outer 200 apart from Overslash's own failure — and `action.completed`
+reports exactly it (`called | denied | rejected | failed | upstream_error`)
+alongside `duration_ms`.
+
+The pair is **not ordered**. The two events bracket the upstream call, so
+[`emit_all`] cannot span them and each `emit` spawns its own task; the inserts
+race and `completed` can carry the lower cursor. That is why they share a
+`call_id` minted in the wrapper rather than being paired by arrival order, and
+why the dashboard treats a `completed` for an unknown `call_id` as a packet
+already on its return leg instead of dropping the call.
+
 ### Visibility
 
 `audience` is the access-control decision, resolved once by the code path that
@@ -164,6 +194,7 @@ The rules mirror the corresponding read endpoints:
 | `approval.*` | `chain(requester) ∪ chain(current_resolver)` | Requester covers `?scope=mine`; resolver covers `?scope=assigned`; the resolver's *ancestors* are exactly `?scope=actionable`, since an identity can act iff the resolver is itself or a descendant. The requester's ancestors come along so a parent keeps seeing its sub-agents' traffic. |
 | `connection.*` | `chain(owner) ∪ {actor}` | **Not** the owner's descendants. Sub-agents *use* an owner-level connection via `on_behalf_of` but cannot list or manage it, and an event stream must never be wider than the read model it reflects. |
 | `secret_request.*` | `chain(requested_by) ∪ chain(target)` | The requesting agent is the one blocked on the secret. The target's chain covers the owner-user whose vault slot is written. Whoever pastes the value is anonymous and gains nothing by doing so. |
+| `action.*` | `chain(actor)` | The Live Map's feed. A parent keeps seeing what its sub-agents call; a sibling chain sees nothing. Org admins bypass the array, which is what makes one stream an org-wide operator view and a personal one for everyone else. Discloses no more than `GET /v1/audit` already shows the same caller. |
 
 Delivery applies one predicate, in two places:
 

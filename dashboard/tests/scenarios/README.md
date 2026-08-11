@@ -148,6 +148,7 @@ Real-stack scripts (use this library):
 - `screenshot-approvals.mjs`
 - `screenshot-audit.mjs`
 - `screenshot-groups.mjs`
+- `screenshot-live-map.mjs` — needs `OVERSLASH_LIVE_MAP=1` (set by `e2e-up.sh`); seeds a fleet, loads `/map` once, then fires real calls so the traffic in the shot arrived over SSE
 - `screenshot-secrets.mjs`
 
 Still mocked (need follow-up; require richer fakes seeding):
