@@ -29,11 +29,8 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AuthContext, ClientIp, OrgAcl, ReqExt, WriteAcl},
-    services::action_caller::{self, AuditSource, CallContext, CallOutcome, ReplayPayload},
+    services::action_caller::{self, AuditSource, ReplayPayload},
     services::audit_capture,
-    services::group_ceiling,
-    services::mcp_caller,
-    services::platform_caller,
 };
 
 /// Maximum bytes of `action_detail` returned on approval responses. The raw
