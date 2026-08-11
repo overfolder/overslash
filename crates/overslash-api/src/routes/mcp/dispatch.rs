@@ -142,6 +142,7 @@ pub(super) async fn dispatch_read(
     body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
     insert_deliver(&mut body, args);
     insert_timeout_ms(&mut body, args);
+    insert_filter(&mut body, args);
     forward(
         state,
         bearer,
@@ -176,6 +177,27 @@ fn insert_timeout_ms(body: &mut serde_json::Map<String, Value>, args: &Value) {
     if let Some(t) = args.get("timeout_ms").filter(|v| !v.is_null()) {
         body.insert("timeout_ms".into(), t.clone());
     }
+}
+
+/// Forward the caller's `filter` tool argument when they set one.
+///
+/// The tool schema takes a bare jq expression, because that is what an agent
+/// can write without knowing our wire format; `CallRequest.filter` is the
+/// tagged `{lang, expr}` object. A string is lifted into that object here.
+/// Anything else is passed through untouched for the same reason
+/// [`insert_deliver`] passes unknown strings through: the action handler's
+/// deserializer produces a real error, where swallowing it at this layer
+/// would let a caller believe it had narrowed a response it then receives
+/// whole.
+fn insert_filter(body: &mut serde_json::Map<String, Value>, args: &Value) {
+    let Some(f) = args.get("filter").filter(|v| !v.is_null()) else {
+        return;
+    };
+    let value = match f.as_str() {
+        Some(expr) => serde_json::json!({ "lang": "jq", "expr": expr }),
+        None => f.clone(),
+    };
+    body.insert("filter".into(), value);
 }
 
 /// Read the caller-supplied `verbose: bool` tool argument, defaulting to
@@ -234,6 +256,7 @@ pub(super) async fn dispatch_call(
     body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
     insert_deliver(&mut body, args);
     insert_timeout_ms(&mut body, args);
+    insert_filter(&mut body, args);
     forward(
         state,
         bearer,

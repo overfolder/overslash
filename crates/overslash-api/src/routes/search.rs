@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_core::search::{Candidate, MIN_SCORE, apply_post_bonuses, keyword_fuzzy_score};
-use overslash_core::types::{DeclaredRisk, ServiceAuth, ServiceDefinition};
+use overslash_core::types::{DeclaredRisk, ServiceAction, ServiceAuth, ServiceDefinition};
 use overslash_db::repos::{org as org_repo, service_action_embedding, service_template};
 use overslash_db::scopes::{OrgScope, UserScope};
 
@@ -140,6 +140,89 @@ struct SearchResult {
     /// (and omitted) otherwise.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     missing_scopes: Vec<String>,
+    /// The action's caller-supplied parameter contract — what may be passed
+    /// in `overslash_call.params`. Present on action rows, empty (and
+    /// omitted) in browse mode, where the row is service-level.
+    ///
+    /// Before this existed, an action's `description` was the only string
+    /// about it that ever reached the model, so a paging parameter a
+    /// template declared was undiscoverable unless its prose happened to
+    /// restate it — and an agent facing a list endpoint had no way to see
+    /// that a narrower call was available.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    params: Vec<ParamInfo>,
+}
+
+/// The model-facing projection of an [`ServiceAction`] parameter.
+///
+/// Deliberately not `ActionParam` itself: that type also carries `resolve`,
+/// `sql_field`, `sql_database` and `instance_config`, which are gateway
+/// plumbing the caller neither supplies nor benefits from seeing.
+#[derive(Serialize)]
+struct ParamInfo {
+    name: String,
+    #[serde(rename = "type", skip_serializing_if = "String::is_empty")]
+    param_type: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    required: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    description: String,
+    #[serde(rename = "enum", skip_serializing_if = "Option::is_none")]
+    enum_values: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default: Option<serde_json::Value>,
+}
+
+/// Longest parameter description carried into a search result.
+///
+/// Every row in a response holds up to this much per parameter, so the cap
+/// is a context-budget decision, not a display one. The widest action in the
+/// shipped registry declares 10 parameters, which bounds a row's parameter
+/// block at roughly 2 KB and a default 20-row response well under what the
+/// action's own descriptions already cost.
+const MAX_PARAM_DESCRIPTION_CHARS: usize = 160;
+
+/// Project an action's parameters for the model.
+///
+/// Ordering is explicit — required first, then alphabetical — because
+/// `ServiceAction.params` is a `HashMap`, and emitting its iteration order
+/// would make byte-identical requests return differently-ordered JSON.
+/// Required-first also front-loads what the caller cannot omit.
+fn param_infos(action: &ServiceAction) -> Vec<ParamInfo> {
+    let mut out: Vec<ParamInfo> = action
+        .params
+        .iter()
+        // `instance-config` params are pinned per service instance by an org
+        // admin and merged in under the caller's args at execution time. A
+        // caller has no business supplying them, so listing them here would
+        // only invite a wrong one.
+        .filter(|(_, p)| !p.instance_config)
+        .map(|(name, p)| ParamInfo {
+            name: name.clone(),
+            param_type: p.param_type.clone(),
+            required: p.required,
+            description: clamp_chars(&p.description, MAX_PARAM_DESCRIPTION_CHARS),
+            enum_values: p.enum_values.clone(),
+            default: p.default.clone(),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.required
+            .cmp(&a.required)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    out
+}
+
+/// Truncate `s` to at most `max` characters, appending an ellipsis when it
+/// actually cut. Cuts at a char *index* rather than a byte index — `&s[..n]`
+/// panics mid-codepoint, and template descriptions are exactly the strings
+/// that carry non-ASCII.
+fn clamp_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", &s[..cut]),
+        None => s.to_string(),
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -311,6 +394,7 @@ async fn search(
                     setup_required: Some(true),
                     scope_coverage: None,
                     missing_scopes: Vec::new(),
+                    params: Vec::new(),
                 });
             } else {
                 for inst in connected_instances {
@@ -331,6 +415,8 @@ async fn search(
                         // per-action, so nothing to annotate here.
                         scope_coverage: None,
                         missing_scopes: Vec::new(),
+                        // Likewise: the parameter contract is per-action.
+                        params: Vec::new(),
                     });
                 }
             }
@@ -456,6 +542,7 @@ async fn search(
                     // says it's not callable — don't pile on Unknown coverage.
                     scope_coverage: None,
                     missing_scopes: Vec::new(),
+                    params: param_infos(action),
                 });
             } else {
                 // Fan-out: one row per (action × instance). Score is the
@@ -486,6 +573,7 @@ async fn search(
                         setup_required: None,
                         scope_coverage,
                         missing_scopes,
+                        params: param_infos(action),
                     });
                 }
             }
@@ -550,6 +638,7 @@ async fn search(
                     setup_required: None,
                     scope_coverage,
                     missing_scopes,
+                    params: param_infos(action),
                 });
             }
         }
