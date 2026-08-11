@@ -223,6 +223,37 @@ fn parse_download(
     })
 }
 
+/// Read an `x-overslash-timeout_ms` (or `x-overslash-default_timeout_ms`) off an
+/// operation, MCP tool, or `info` object.
+///
+/// Strict: a value that is present but not a positive integer is an authoring
+/// error, not a "fall back to the default" — a template that says `timeout_ms:
+/// "30s"` means to raise the ceiling, and silently ignoring it would leave the
+/// author staring at timeouts they thought they had fixed.
+///
+/// `key` is the canonical extension name so the same parser serves the
+/// per-action and per-service spellings, and the issue pointer names the field
+/// the author actually wrote.
+pub(in crate::openapi) fn parse_timeout_ms(
+    v: Option<&Value>,
+    key: &str,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<u64> {
+    let v = v?;
+    match v.as_u64() {
+        Some(ms) if ms > 0 => Some(ms),
+        _ => {
+            issues.push(ValidationIssue::new(
+                "invalid_timeout",
+                format!("{key} must be a positive integer number of milliseconds"),
+                format!("{base}.{key}"),
+            ));
+            None
+        }
+    }
+}
+
 fn parse_redact(v: Option<&Value>, base: &str, issues: &mut Vec<ValidationIssue>) -> Vec<String> {
     let Some(v) = v else { return Vec::new() };
     let Some(arr) = v.as_array() else {

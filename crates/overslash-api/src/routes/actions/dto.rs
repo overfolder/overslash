@@ -61,6 +61,20 @@ pub(super) struct CallRequest {
     #[serde(default)]
     pub(super) deliver: Option<Delivery>,
 
+    /// How long this call may wait on the upstream, in milliseconds.
+    ///
+    /// The most specific rung of the D56 cascade: it beats the action
+    /// template, the service template, the org default, and the deployment
+    /// default. It does *not* beat the ceilings — asking for more than the
+    /// org (or deployment) maximum is a 400 rather than a silent clamp,
+    /// because unlike a template default there is a caller present who asked
+    /// explicitly and can act on the error.
+    ///
+    /// For `prefer_stream: true` this bounds time-to-first-byte only; the
+    /// transfer itself is bounded by a per-chunk idle timeout.
+    #[serde(default)]
+    pub(super) timeout_ms: Option<u64>,
+
     // Optional server-side filter applied to the upstream response body
     // (e.g., jq). Output is attached to `result.filtered_body`; the
     // original `body` is always preserved.
@@ -218,6 +232,13 @@ pub(super) struct ResolvedMeta {
     /// verb / `http`). Applied to the request projection before it's
     /// persisted as `approvals.action_detail`.
     pub(super) redact: Vec<String>,
+    /// `x-overslash-timeout_ms` on the resolved action, post-fold — an org
+    /// `ActionPatch` has already overwritten the shipped template's value, so
+    /// this single field carries both the template and org-per-action rungs.
+    /// `None` for verb / `http` shapes, which have no action to read.
+    pub(super) action_timeout_ms: Option<u64>,
+    /// `info.x-overslash-default_timeout_ms` on the resolved service, post-fold.
+    pub(super) service_timeout_ms: Option<u64>,
     /// `x-overslash-download` from the action template. MCP actions only —
     /// it's how a tool result says "the bytes are over there". HTTP actions
     /// are their own download and leave this `None`.

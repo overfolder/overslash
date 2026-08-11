@@ -149,6 +149,7 @@ mod tests {
 
     fn def_with(params: &[(&str, bool)]) -> ServiceDefinition {
         let mut action = ServiceAction {
+            timeout_ms: None,
             method: "GET".into(),
             path: "/x".into(),
             description: "x".into(),
@@ -173,6 +174,7 @@ mod tests {
                 .insert((*name).to_string(), param(*instance_config));
         }
         ServiceDefinition {
+            default_timeout_ms: None,
             config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),

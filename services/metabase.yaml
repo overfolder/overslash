@@ -141,6 +141,10 @@ paths:
       # D42: classified per call — SELECT-only queries execute as reads
       # (gated per referenced table), anything else routes to approval.
       risk: dynamic
+      # Analytics aggregations routinely outrun the 30s deployment default;
+      # 30s was chosen for API-shaped calls, not for scans. A caller with a
+      # genuinely slow query can still raise this per call, up to the org max.
+      timeout_ms: 90000
       description: >-
         Run a native SQL query against a database and return up to ~2000
         rows. The statement is parsed by the gateway: single read-only
@@ -197,6 +201,10 @@ paths:
       operationId: export_query
       summary: "Export SQL results as {export_format}"
       risk: dynamic
+      # Same query cost as run_query, plus serialising up to ~1M rows. Sits at
+      # the deployment ceiling because there is no useful budget beyond it —
+      # anything slower cannot survive the request cap in front of the API.
+      timeout_ms: 110000
       description: >-
         Run a native SQL query and return the full result set (up to ~1M
         rows) as csv, json, or xlsx — the payload comes back in the

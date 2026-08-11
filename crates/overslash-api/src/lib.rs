@@ -385,6 +385,9 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         // The auto-bubble sweep emits the same events a human bubble does, so
         // it needs a client for the webhook half of that.
         let bg_http_client = state.http_client.clone();
+        // Hoisted out of the task: it is constant for the process lifetime, and
+        // reading it inside the `async move` would drag the whole `Config` in.
+        let orphan_grace = state.config.orphan_execution_grace_secs();
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
@@ -401,9 +404,9 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                 })
                 .await;
                 // Orphaned `executing` rows — API crashed mid-replay. Grace
-                // window is the replay timeout plus a minute of slack.
-                let orphan_grace =
-                    (state.config.execution_replay_timeout_secs as i64).saturating_add(60);
+                // window is the replay wall plus a minute of slack: if the wall
+                // had been going to fire it already would have, so anything
+                // still `executing` past it lost its process.
                 instrumented_step(
                     "orphan_execution_reap",
                     system.expire_orphaned_executions(orphan_grace),

@@ -665,8 +665,11 @@ CREATE TABLE public.orgs (
     audit_response_body_mode text DEFAULT 'off'::text NOT NULL,
     headless boolean DEFAULT false NOT NULL,
     allow_services_outside_catalog boolean DEFAULT false NOT NULL,
+    call_timeout_ms integer,
+    max_call_timeout_ms integer,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_audit_response_body_mode_check CHECK ((audit_response_body_mode = ANY (ARRAY['off'::text, 'errors_only'::text, 'all'::text]))),
+    CONSTRAINT orgs_call_timeout_bounds CHECK ((((call_timeout_ms IS NULL) OR ((call_timeout_ms >= 1000) AND (call_timeout_ms <= 600000))) AND ((max_call_timeout_ms IS NULL) OR ((max_call_timeout_ms >= 1000) AND (max_call_timeout_ms <= 600000))) AND ((call_timeout_ms IS NULL) OR (max_call_timeout_ms IS NULL) OR (call_timeout_ms <= max_call_timeout_ms)))),
     CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))
 );
 

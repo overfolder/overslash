@@ -83,6 +83,12 @@ export interface SecretRequestSettings {
  */
 export interface ExecutionSettings {
   default_deferred_execution: boolean;
+  /** Default upstream timeout for action calls, in ms. `null` inherits the
+   * deployment default. A template action or an individual call overrides it. */
+  call_timeout_ms: number | null;
+  /** Ceiling on any resolved call timeout, in ms. `null` inherits the
+   * deployment maximum. A caller asking for more is rejected. */
+  max_call_timeout_ms: number | null;
 }
 
 /** Org-level capture mode for upstream response bodies on

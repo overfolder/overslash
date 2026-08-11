@@ -362,6 +362,81 @@ pub async fn set_default_deferred_execution(
     Ok(result.rows_affected() > 0)
 }
 
+/// The org-level inputs the action-call pipeline needs, in one round trip.
+///
+/// Both paths that execute an action (inline `/v1/actions/call` and the
+/// approval replay) already read exactly one org column each; folding them
+/// into a single struct means the D56 timeout columns ride along for free
+/// rather than adding a second query on the hot path.
+pub struct CallSettings {
+    /// `'off' | 'errors_only' | 'all'` — see [`get_audit_response_body_mode`].
+    pub audit_response_body_mode: String,
+    /// Org default upstream timeout in ms. `None` inherits the deployment
+    /// default.
+    pub call_timeout_ms: Option<i32>,
+    /// Org ceiling on any resolved timeout in ms. `None` inherits the
+    /// deployment maximum.
+    pub max_call_timeout_ms: Option<i32>,
+}
+
+/// Read every org setting the call pipeline consults, in one query.
+/// Returns `None` if the org doesn't exist.
+pub async fn get_call_settings(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<CallSettings>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT audit_response_body_mode, call_timeout_ms, max_call_timeout_ms
+           FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| CallSettings {
+        audit_response_body_mode: r.audit_response_body_mode,
+        call_timeout_ms: r.call_timeout_ms,
+        max_call_timeout_ms: r.max_call_timeout_ms,
+    }))
+}
+
+/// Partial-patch the org's execution settings.
+///
+/// Each field is three-valued — absent, explicit `null`, or a value — which is
+/// why the two timeout columns take a paired `set_*` flag rather than riding a
+/// `COALESCE`: `COALESCE` cannot distinguish "leave it alone" from "clear it
+/// back to the deployment default", and clearing is the only way back off an
+/// org-specific timeout.
+pub async fn update_execution_settings(
+    pool: &PgPool,
+    id: Uuid,
+    default_deferred_execution: Option<bool>,
+    set_call_timeout: bool,
+    call_timeout_ms: Option<i32>,
+    set_max_call_timeout: bool,
+    max_call_timeout_ms: Option<i32>,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs
+            SET default_deferred_execution =
+                    COALESCE($2, default_deferred_execution),
+                call_timeout_ms =
+                    CASE WHEN $3 THEN $4 ELSE call_timeout_ms END,
+                max_call_timeout_ms =
+                    CASE WHEN $5 THEN $6 ELSE max_call_timeout_ms END,
+                updated_at = now()
+          WHERE id = $1",
+        id,
+        default_deferred_execution,
+        set_call_timeout,
+        call_timeout_ms,
+        set_max_call_timeout,
+        max_call_timeout_ms,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Read the `audit_response_body_mode` setting for an org
 /// (`'off' | 'errors_only' | 'all'`, enforced by a CHECK constraint).
 /// Governs whether `action.executed` audit rows persist the upstream

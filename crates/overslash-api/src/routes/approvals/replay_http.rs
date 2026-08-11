@@ -3,6 +3,8 @@
 
 use super::*;
 
+use crate::services::call_timeout::CallTimeout;
+
 use super::replay::fail_and_return;
 
 /// Replay a stored HTTP call (`ReplayPayload::Http`). Returns the
@@ -20,6 +22,11 @@ pub(super) async fn replay_http(
     execution_id: Uuid,
     ip: Option<&str>,
     audit_body_mode: audit_capture::AuditResponseBodyMode,
+    // The per-call budget (inner). Bounds the upstream request itself.
+    call_timeout: CallTimeout,
+    // The wall (outer). Bounds the whole replay future, including the DB work
+    // after the upstream answers, so a wedged replay can't hold the execution
+    // row in `executing` forever. Always wider than `call_timeout`.
     replay_timeout: std::time::Duration,
     replay_tpl: &str,
 ) -> Result<(ExecutionRow, bool, bool, Option<serde_json::Value>)> {
@@ -69,6 +76,7 @@ pub(super) async fn replay_http(
             execution_id,
         },
         audit_body_mode,
+        timeout: call_timeout,
     };
 
     let outcome = tokio::time::timeout(

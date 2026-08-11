@@ -57,6 +57,8 @@ pub fn router(state: SharedState) -> Router {
             get(echo).post(echo).put(echo).delete(echo).patch(echo),
         )
         .route("/large-file", get(large_file))
+        .route("/slow", get(slow).post(slow))
+        .route("/slow-stream", get(slow_stream))
         .route("/things/{id}", get(thing_display))
         .route("/drive/files/download", get(drive_download))
         .route("/drive/files/content", get(drive_content))
@@ -172,6 +174,53 @@ async fn large_file(Query(params): Query<HashMap<String, String>>) -> axum::resp
         .unwrap_or(1024);
     let data = vec![0xABu8; size];
     ([("content-type", "application/octet-stream")], data).into_response()
+}
+
+/// Sleep `?ms=` before answering. Exercises a total (buffered) timeout.
+async fn slow(Query(params): Query<HashMap<String, String>>) -> Json<Value> {
+    let ms: u64 = params.get("ms").and_then(|s| s.parse().ok()).unwrap_or(0);
+    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    Json(json!({ "slept_ms": ms }))
+}
+
+/// Delay the *headers* by `?headers_ms=`, then dribble `?chunks=` chunks
+/// `?gap_ms=` apart.
+///
+/// The two knobs exist to separate the two things a streaming timeout can
+/// bound. `headers_ms` drives time-to-first-byte (which the resolved call
+/// timeout bounds); `gap_ms` drives per-chunk idleness (which it must *not*
+/// bound, or a slow-but-live transfer would die at an arbitrary total).
+async fn slow_stream(Query(params): Query<HashMap<String, String>>) -> axum::response::Response {
+    let headers_ms: u64 = params
+        .get("headers_ms")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let chunks: usize = params
+        .get("chunks")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4);
+    let gap_ms: u64 = params
+        .get("gap_ms")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    tokio::time::sleep(std::time::Duration::from_millis(headers_ms)).await;
+
+    let stream = futures_util::stream::unfold(0usize, move |i| async move {
+        if i >= chunks {
+            return None;
+        }
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(gap_ms)).await;
+        }
+        Some((Ok::<_, std::io::Error>(Bytes::from_static(b"chunk")), i + 1))
+    });
+
+    (
+        [("content-type", "application/octet-stream")],
+        axum::body::Body::from_stream(stream),
+    )
+        .into_response()
 }
 
 /// Simulates Google Drive redirect: returns 302 to `/drive/files/content`

@@ -73,6 +73,7 @@ mod test_fixtures {
 
     pub(super) fn mcp_bearer_template(default_secret: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "t".into(),
@@ -97,6 +98,7 @@ mod test_fixtures {
 
     pub(super) fn mcp_oauth_template(provider: &str, scopes: &[&str]) -> ServiceDefinition {
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "t".into(),
@@ -124,6 +126,7 @@ mod test_fixtures {
 
     pub(super) fn secret_template() -> ServiceDefinition {
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "t".into(),
@@ -162,6 +165,7 @@ mod test_fixtures {
             map.insert(
                 key.to_string(),
                 ServiceAction {
+                    timeout_ms: None,
                     method: "GET".into(),
                     path: "/".into(),
                     description: String::new(),
@@ -183,6 +187,7 @@ mod test_fixtures {
             );
         }
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "t".into(),

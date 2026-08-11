@@ -15,7 +15,10 @@ use crate::{
     AppState,
     error::AppError,
     extractors::{AuthContext, ClientIp},
-    services::action_caller::{StoredCallRequest, StoredMcpCall, StoredPlatformCall},
+    services::{
+        action_caller::{StoredCallRequest, StoredMcpCall, StoredPlatformCall},
+        call_timeout::CallTimeout,
+    },
 };
 use overslash_core::{
     permissions::{PermissionKey, suggest_tiers},
@@ -63,6 +66,9 @@ pub(super) async fn enforce_permission_chain(
     effective: Risk,
     needs_gate: bool,
     skip_layer2: bool,
+    // The D56-resolved timeout for this call, stored on the approval so a
+    // later replay reproduces the budget the caller actually asked for.
+    call_timeout: CallTimeout,
 ) -> Result<Option<Response>, AppError> {
     // Users are gated by groups only — they are their own approvers.
     // Agents walk the ancestor chain; first gap → approval at gap level.
@@ -163,6 +169,7 @@ pub(super) async fn enforce_permission_chain(
                         req.prefer_stream.unwrap_or(false),
                         replay_service_key,
                         replay_instance_id,
+                        Some(call_timeout.ms()),
                     ))
                     .ok()
                 };

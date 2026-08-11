@@ -75,10 +75,37 @@ pub struct Config {
     /// Seconds a pending execution row (`executions.status='pending'`) lives
     /// before the sweeper marks it `expired`. Default 900 (15 minutes).
     pub execution_pending_ttl_secs: u64,
-    /// Upper bound on how long the synchronous replay inside
-    /// `POST /v1/approvals/{id}/call` may wait for the upstream call.
-    /// Beyond this the row is finalised as `failed` with `error='replay_timeout'`.
+    /// Floor for the outer wall-clock guard on the synchronous replay inside
+    /// `POST /v1/approvals/{id}/call`. Beyond the wall the row is finalised as
+    /// `failed` with `error='replay_timeout'`.
+    ///
+    /// Since D56 this is no longer the timeout a caller feels — that is
+    /// resolved per call by [`crate::services::call_timeout`]. This is the
+    /// crash-recovery backstop that also covers the DB work, filtering, and
+    /// finalisation *after* the upstream returns, so it must never sit below
+    /// the largest per-call timeout the resolver can hand out. Read it through
+    /// [`Config::replay_wall_clock`], never directly.
     pub execution_replay_timeout_secs: u64,
+    /// Default upstream timeout, in milliseconds, for an action call that
+    /// names no timeout of its own and whose template and org say nothing.
+    /// The bottom rung of the D56 cascade.
+    pub call_timeout_ms: u64,
+    /// Hard ceiling on any resolved per-call timeout — the synchronous budget.
+    ///
+    /// Sized to sit just under the deployment's own request cap (Cloud Run and
+    /// the load balancer both cut at 120s), so a call fails with our 504 and a
+    /// real audit row rather than an opaque proxy timeout. It is a *config*
+    /// knob rather than a constant precisely because a self-hosted deploy
+    /// behind no such proxy has no reason to inherit our 120s.
+    pub call_timeout_max_ms: u64,
+    /// Per-chunk idle timeout for streamed response bodies.
+    ///
+    /// Streaming deliberately does not take the resolved call timeout as a
+    /// total deadline — that would mean "your 900MB export fails at exactly
+    /// 90s", which is the opposite of what streaming is for. The resolved
+    /// timeout bounds time-to-first-byte; this bounds the gap between chunks,
+    /// so a stalled transfer still dies while a slow-but-live one does not.
+    pub call_stream_idle_timeout_ms: u64,
     pub services_dir: String,
     pub google_auth_client_id: Option<String>,
     pub google_auth_client_secret: Option<String>,
@@ -257,7 +284,32 @@ pub struct PlatformCredential {
     pub value: String,
 }
 
+/// Slack added to [`Config::call_timeout_max_ms`] to get the replay wall.
+///
+/// Covers what the replay future does *after* the upstream answers — secret
+/// decryption, jq filtering, finalising the execution row — so the wall never
+/// fires on a call that merely used its full, legitimate budget.
+const REPLAY_WALL_SLACK_MS: u64 = 5_000;
+
 impl Config {
+    /// Outer wall-clock guard for `POST /v1/approvals/{id}/call`.
+    ///
+    /// Derived rather than configured, so a per-call timeout can never be
+    /// silently shadowed by the wall and an operator never has to bump two env
+    /// vars in lockstep. Always at least the largest timeout the D56 resolver
+    /// can return, plus slack for the post-call work.
+    pub fn replay_wall_clock(&self) -> std::time::Duration {
+        let floor_ms = self.call_timeout_max_ms + REPLAY_WALL_SLACK_MS;
+        std::time::Duration::from_millis((self.execution_replay_timeout_secs * 1_000).max(floor_ms))
+    }
+
+    /// Grace before the sweeper reclaims an `executing` execution row as
+    /// orphaned. One minute past the wall: if the wall had been going to fire,
+    /// it already would have, so anything still `executing` lost its process.
+    pub fn orphan_execution_grace_secs(&self) -> i64 {
+        self.replay_wall_clock().as_secs() as i64 + 60
+    }
+
     /// Build the [`Keyring`](overslash_core::crypto::Keyring) used by every
     /// encrypt/decrypt call. Returns a single-key keyring at rest and a
     /// dual-key (active + previous) one during a rotation.
@@ -678,6 +730,9 @@ mod tests {
 
     fn empty_test_config() -> Config {
         Config {
+            call_stream_idle_timeout_ms: 30_000,
+            call_timeout_max_ms: 110_000,
+            call_timeout_ms: 30_000,
             host: "127.0.0.1".into(),
             port: 0,
             database_url: String::new(),

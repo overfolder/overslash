@@ -84,6 +84,7 @@ mod tests {
 
     pub(super) fn minimal_valid() -> ServiceDefinition {
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "svc".into(),
@@ -114,6 +115,7 @@ mod tests {
                 m.insert(
                     "list".into(),
                     ServiceAction {
+                        timeout_ms: None,
                         method: "GET".into(),
                         path: "/items".into(),
                         description: "List items".into(),
@@ -187,6 +189,7 @@ mod tests {
         actions.insert(
             "search".into(),
             ServiceAction {
+                timeout_ms: None,
                 method: String::new(),
                 path: String::new(),
                 description: "Search {team}".into(),
@@ -226,6 +229,7 @@ mod tests {
             },
         );
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "linear_mcp".into(),

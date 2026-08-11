@@ -169,6 +169,10 @@ pub fn apply_delta(
         // never redeclares them.
         config: base.config.clone(),
         actions,
+        // Carried straight through: a layer tunes timeouts per action via
+        // `ActionPatch::timeout_ms`, and the org-wide knob lives on the org
+        // row rather than in the mask.
+        default_timeout_ms: base.default_timeout_ms,
         runtime: base.runtime,
         mcp: base.mcp.clone(),
         instance_defaults,
@@ -193,6 +197,12 @@ fn apply_action_patch(action: &mut ServiceAction, patch: &ActionPatch) {
     }
     if let Some(desc) = &patch.description {
         action.description = desc.clone();
+    }
+    // Overwrites in place, which is what collapses the "org per-action" layer
+    // into the action layer: by the time anything resolves a timeout, the
+    // patched value *is* the action's value and there is no second lookup.
+    if let Some(ms) = patch.timeout_ms {
+        action.timeout_ms = Some(ms);
     }
 }
 

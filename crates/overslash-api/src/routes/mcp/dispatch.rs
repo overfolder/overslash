@@ -141,6 +141,7 @@ pub(super) async fn dispatch_read(
     // handler picks compact.
     body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
     insert_deliver(&mut body, args);
+    insert_timeout_ms(&mut body, args);
     forward(
         state,
         bearer,
@@ -162,6 +163,18 @@ pub(super) async fn dispatch_read(
 fn insert_deliver(body: &mut serde_json::Map<String, Value>, args: &Value) {
     if let Some(d) = args.get("deliver").filter(|v| !v.is_null()) {
         body.insert("deliver".into(), d.clone());
+    }
+}
+
+/// Forward a caller-supplied `timeout_ms` when there is one.
+///
+/// Same discipline as [`insert_deliver`]: pass it through untouched and let
+/// the inner `CallRequest` deserializer and the D56 resolver produce the
+/// error. Validating here would mean duplicating the org-ceiling logic in a
+/// place that has no org row.
+fn insert_timeout_ms(body: &mut serde_json::Map<String, Value>, args: &Value) {
+    if let Some(t) = args.get("timeout_ms").filter(|v| !v.is_null()) {
+        body.insert("timeout_ms".into(), t.clone());
     }
 }
 
@@ -220,6 +233,7 @@ pub(super) async fn dispatch_call(
     // default so the LLM consumer gets the compact shape.
     body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
     insert_deliver(&mut body, args);
+    insert_timeout_ms(&mut body, args);
     forward(
         state,
         bearer,

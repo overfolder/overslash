@@ -201,6 +201,7 @@
 - Mode B (`connection: <uuid>` calls) killed; replaced by SPEC §8 Service + HTTP verb (PR #261, DECISIONS D14). Single `CallRequest` shape across all execution paths.
 - Typed `reauth_required` + `needs_authentication` error envelopes (PR #259); structured 400 + dry-run `POST /v1/actions/validate` (PR #256); MCP tools/call surfaces the same typed envelopes (PR #263).
 - Stable webhook envelope with routing headers (PR #258); connection lifecycle events emit webhooks (PR #260).
+- Layered call timeouts (DECISIONS D56): `timeout_ms` per call, `x-overslash-timeout_ms` per action, `x-overslash-default_timeout_ms` per service, `call_timeout_ms` / `max_call_timeout_ms` per org, `CALL_TIMEOUT_MS` / `CALL_TIMEOUT_MAX_MS` per deployment. 504 carries `timeout_source`. The previously-unbounded inline path is now bounded; streaming bounds time-to-first-byte and guards the transfer with a per-chunk idle timeout. `CALL_TIMEOUT_MS` is pinned to 110000 in Cloud Run for the rollout, to be removed once audit percentiles confirm nothing legitimate lives above 30s.
 
 ### MCP — additional surface (beyond the OAuth transport already documented)
 

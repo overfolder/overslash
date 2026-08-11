@@ -168,6 +168,7 @@ mod tests {
 
     fn mk_service(key: &str, display: &str, desc: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: key.into(),
@@ -202,6 +203,7 @@ mod tests {
 
     fn mk_action(desc: &str, risk: Risk) -> ServiceAction {
         ServiceAction {
+            timeout_ms: None,
             method: "POST".into(),
             path: "/x".into(),
             description: desc.into(),

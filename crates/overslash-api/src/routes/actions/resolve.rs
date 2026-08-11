@@ -146,6 +146,10 @@ pub(super) async fn resolve_request(
                 risk: None,
                 disclose: Vec::new(),
                 redact: Vec::new(),
+                // The verb shape names no action, so there is no action rung —
+                // but the service still knows whether its upstream is slow.
+                action_timeout_ms: None,
+                service_timeout_ms: svc.default_timeout_ms,
                 download: None,
                 params: HashMap::new(),
                 resolved: HashMap::new(),
@@ -326,6 +330,8 @@ pub(super) async fn resolve_request(
                     risk: Some(action.risk),
                     disclose: action.disclose.clone(),
                     redact: action.redact.clone(),
+                    action_timeout_ms: action.timeout_ms,
+                    service_timeout_ms: svc.default_timeout_ms,
                     download: action.download.clone(),
                     params: req.params.clone(),
                     resolved: resolved.display,
@@ -382,6 +388,10 @@ pub(super) async fn resolve_request(
                     risk: Some(action.risk),
                     disclose: Vec::new(),
                     redact: Vec::new(),
+                    // Platform actions dispatch in-process; nothing is dialed,
+                    // so there is no upstream to time out.
+                    action_timeout_ms: None,
+                    service_timeout_ms: None,
                     // Platform actions dispatch in-process; nothing is dialed.
                     oauth_injected: false,
                     download: None,
@@ -727,6 +737,8 @@ pub(super) async fn resolve_request(
                 risk: Some(action_risk),
                 disclose: action.disclose.clone(),
                 redact: action.redact.clone(),
+                action_timeout_ms: action.timeout_ms,
+                service_timeout_ms: svc.default_timeout_ms,
                 download: None,
                 params: req.params.clone(),
                 resolved: resolved.display,

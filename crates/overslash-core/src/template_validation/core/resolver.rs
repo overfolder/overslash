@@ -547,6 +547,7 @@ mod tests {
         params: HashMap<String, crate::types::ActionParam>,
     ) -> ServiceAction {
         ServiceAction {
+            timeout_ms: None,
             method: String::new(),
             path: String::new(),
             description: format!("{tool} something"),

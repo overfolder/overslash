@@ -106,6 +106,25 @@ pub enum AppError {
         limit_bytes: usize,
     },
 
+    /// The upstream did not answer within the timeout resolved for this call.
+    ///
+    /// Kept separate from [`Self::BadGateway`] and [`Self::Request`] — which
+    /// also describe "the upstream failed us" — because it is the one such
+    /// failure the caller can *fix*, by asking for a bigger budget or getting
+    /// the org ceiling raised. A 504 plus the layer that set the budget is
+    /// what makes that actionable.
+    #[error("upstream timed out after {timeout_ms}ms")]
+    UpstreamTimeout {
+        timeout_ms: u64,
+        /// Which rung of the D56 cascade produced the budget.
+        ///
+        /// Not named `source`: `thiserror` reserves that name for the error
+        /// cause and would try to treat this enum as one.
+        timeout_source: crate::services::call_timeout::TimeoutSource,
+        /// The ceiling the caller would have to clear to ask for more.
+        max_ms: u64,
+    },
+
     #[error("filter syntax error: {0}")]
     FilterSyntax(String),
 
@@ -279,6 +298,7 @@ impl AppError {
             Self::BadGateway(_) | Self::Request(_) | Self::ResponseTooLarge { .. } => {
                 StatusCode::BAD_GATEWAY
             }
+            Self::UpstreamTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Gone(_) => StatusCode::GONE,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -381,6 +401,31 @@ impl IntoResponse for AppError {
                 headers.insert("X-RateLimit-Remaining", "0".parse().unwrap());
                 headers.insert("X-RateLimit-Reset", reset_at.to_string().parse().unwrap());
                 return response;
+            }
+            Self::UpstreamTimeout {
+                timeout_ms,
+                timeout_source,
+                max_ms,
+            } => {
+                return (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    Json(json!({
+                        "error": "upstream_timeout",
+                        "timeout_ms": timeout_ms,
+                        // The single most useful field here. Without it,
+                        // "why did this time out at 30s when the org default
+                        // is 90s" is an afternoon of grepping; with it, the
+                        // answer is `action_template` and the fix is one line
+                        // of YAML.
+                        "timeout_source": timeout_source,
+                        "max_timeout_ms": max_ms,
+                        "hint": format!(
+                            "pass a larger timeout_ms (max {max_ms} for this org), \
+                             or raise the org's max_call_timeout_ms"
+                        ),
+                    })),
+                )
+                    .into_response();
             }
             Self::ResponseTooLarge {
                 content_length,

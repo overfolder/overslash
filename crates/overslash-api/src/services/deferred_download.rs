@@ -252,12 +252,20 @@ pub async fn open_upstream(
         inject_secrets(request, &secret_values).map_err(|e| AppError::BadRequest(e.to_string()))?;
     let resolved_url = state.config.apply_base_overrides(&resolved_url);
 
+    // The deployment default, not a D56-resolved budget: a token redemption
+    // has no caller-supplied `timeout_ms` and no action key to read the
+    // template rungs from — the request was resolved when the token was
+    // minted, possibly under a different org policy. Bounding the header
+    // phase at the default is strictly better than the unbounded wait this
+    // replaced; wiring the full cascade through token minting is tracked in
+    // TECH_DEBT.md.
     http_caller::call_streaming(
         &state.http_client,
         &request.method,
         &resolved_url,
         &resolved_headers,
         request.body.as_deref(),
+        std::time::Duration::from_millis(state.config.call_timeout_ms),
     )
     .await
     .map_err(|e| AppError::BadGateway(format!("download upstream request failed: {e}")))

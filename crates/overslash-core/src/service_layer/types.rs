@@ -69,6 +69,19 @@ pub struct ActionPatch {
     /// action through `Extensions.actions` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Replace the action's upstream timeout, in milliseconds.
+    ///
+    /// The one field on this struct that is **not** restrictive, and the
+    /// exception is deliberate (D56): a timeout grants no capability the
+    /// caller did not already have, and the org and deployment maxima still
+    /// clamp whatever this sets. Without it an org running a slow self-hosted
+    /// upstream would have to re-author the whole action through
+    /// [`Extensions`] just to move one number.
+    ///
+    /// Overwrites rather than raises — an org that knows its own Metabase is
+    /// slower *or* faster than the shipped default should be able to say so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 /// The expansive half of a delta: new actions + hosts. No auth, no rebinding.

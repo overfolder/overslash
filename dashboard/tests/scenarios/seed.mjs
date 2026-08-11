@@ -421,6 +421,20 @@ export async function setAuditResponseBodyMode(session, mode) {
 }
 
 /**
+ * Patch the org's per-call upstream timeouts (D56). Pass `null` for a field to
+ * clear it back to the deployment default; omit it to leave it unchanged.
+ * @param {import('./auth.mjs').Session} session
+ * @param {{ call_timeout_ms?: number | null, max_call_timeout_ms?: number | null }} timeouts
+ * @returns {Promise<{ default_deferred_execution: boolean, call_timeout_ms: number | null, max_call_timeout_ms: number | null }>}
+ */
+export async function setCallTimeouts(session, timeouts) {
+	return api(session, `/v1/orgs/${session.orgId}/execution-settings`, {
+		method: 'PATCH',
+		body: timeouts
+	});
+}
+
+/**
  * Patch the org's managed sign-in admission settings (migration 066/092).
  * Any field left undefined is omitted so the partial PATCH leaves it as-is.
  * @param {import('./auth.mjs').Session} session
