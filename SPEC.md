@@ -1265,6 +1265,10 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
       "description": "Send email as {userId}",
       "risk": "write",
       "tier": "global",
+      "params": [
+        { "name": "userId", "type": "string", "required": true, "description": "The sending account, or `me`." },
+        { "name": "maxResults", "type": "integer", "description": "Page size.", "default": 100 }
+      ],
       "auth": { "type": "oauth", "provider": "google", "connected": true },
       "score": 0.78
     },
@@ -1296,7 +1300,13 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
 }
 ```
 
-In browse mode (`query=""`), each row omits `action`, `description`, `risk`, and `score` — the response is an instance-level directory.
+In browse mode (`query=""`), each row omits `action`, `description`, `risk`, `params`, and `score` — the response is an instance-level directory.
+
+**`params` — the action's caller-supplied contract** (action rows only). Each entry carries `name`, `type`, `required` (omitted when false), `description` (clamped to 160 characters), `enum`, and `default`. Ordered required-first, then alphabetically, so byte-identical requests return byte-identical JSON.
+
+This is the answer to a specific failure: before it existed, `description` was the only string about an action that ever reached the model, so a paging parameter a template declared was undiscoverable unless its prose happened to restate it — an agent facing a list endpoint had no way to see that a narrower call was available. Note `default` in particular: a declared default is injected into the arg map at call time, so it is what the caller *gets* when it omits the parameter.
+
+Parameters marked `instance-config` are excluded. An org admin pins those per service instance and they are merged in under the caller's arguments at execution time, so listing them would only invite a wrong one.
 
 **Catalog rows.** Under `include_catalog=true`, templates with no configured instance for the caller appear as catalog rows: they omit `service` and `account_email`/`secret_name`, set `auth.connected: false`, and carry `"setup_required": true`. Agents must call `overslash_auth.create_service_from_template` to provision an instance before any of those actions become callable.
 
@@ -1494,7 +1504,7 @@ Unprefixed `disclose:` / `redact:` aliases normalize to `x-overslash-disclose` /
 
 `GET /v1/downloads/{token}` is unauthenticated — the token *is* the capability, the way a presigned URL is. It is 256 bits of randomness stored only as a SHA-256 hash, expires after `DOWNLOAD_TOKEN_TTL_SECS` (default 900), and stays redeemable until then so a resumed or retried transfer works. Redemption re-resolves the upstream credential from the vault and re-checks the identity, then streams the bytes through with `content-type` / `content-length` / `content-disposition` / `etag` / `last-modified` / `cache-control` forwarded. `MAX_RESPONSE_BODY_BYTES` does not apply, exactly as with `prefer_stream`. Unknown and expired tokens both return a bare `404`.
 
-Combining `deliver: "url"` with `filter` or `prefer_stream` is a `400`, as is passing a credential in an inline `headers` entry on a raw-HTTP call — name it via `secrets` instead, and it is resolved at fetch time. Mint writes an `action.deferred` audit row (HTTP runtime only; MCP already wrote `action.executed`); redemption writes `action.downloaded`.
+`filter` is reachable from every surface including MCP, where both call tools declare it as a bare jq string and the dispatcher lifts it into the wire's `{lang, expr}`. It applies on all three runtimes (HTTP, MCP, platform). It narrows what the caller *receives*, not what the upstream *sends*: the size cap fires while the body is still arriving, so an oversized response fails before the filter runs — pair it with the action's own paging parameters. Combining `deliver: "url"` with `filter` or `prefer_stream` is a `400`, as is passing a credential in an inline `headers` entry on a raw-HTTP call — name it via `secrets` instead, and it is resolved at fetch time. Mint writes an `action.deferred` audit row (HTTP runtime only; MCP already wrote `action.executed`); redemption writes `action.downloaded`.
 
 An HTTP action needs no declaration — it *is* its own download, so the token captures the resolved request. An MCP tool returns a *descriptor pointing at* the bytes, so it declares where:
 
@@ -1511,7 +1521,11 @@ An HTTP action needs no declaration — it *is* its own download, so the token c
 
 Filters are jq over the same `{runtime, tool, structured, content, is_error}` envelope the `disclose` filters see. The resolved location **must be same-origin with the MCP server's own URL** — a relative path is joined against it, an absolute URL elsewhere is refused. The deferred fetch attaches that instance's credential, so without this a compromised MCP server could name any host and be handed the bearer. OAuth-authenticated services are not supported yet: their credential is minted live and deliberately not persistable. The gate reads `oauth_injected` rather than the presence of an `Authorization` header, since a query-param token injection resolves OAuth with no header to check.
 
-See D51.
+**A cap failure mints one for you.** When a buffered call exceeds `MAX_RESPONSE_BODY_BYTES`, the token for that same request is minted at the point of failure and returned on the `502` as `download_url` + `expires_at` — `deliver: "url"` on the HTTP runtime never needs the body, so the failure already holds everything the retry needs. The status stays `502`: nothing silently succeeds, and a caller that ignores the fields sees the same error it saw before. Minting is best-effort — the refusals above (OAuth-injected services, inline raw-HTTP credentials) and any other failure leave the fields absent and the hint falls back to naming the two flags. A caller that passed a `filter` still gets a URL, and the hint says the URL serves the *unfiltered* body, since the filter never ran. The audit row records `cause: "response_too_large"` to distinguish it from a caller that asked.
+
+This does not extend to the MCP runtime or to approval replay. An MCP tool's download URL is derived by running the action's `x-overslash-download` filters over the tool result — which is precisely the thing that was too large — and replay has no resolved mint context, so a gated `deliver: "url"` still hits the buffered cap.
+
+See D51 and D57.
 
 ### Wire shape of a disclosed field
 
