@@ -40,8 +40,14 @@ pub fn pick_value(json: &Value, dot_path: &str) -> Option<String> {
 ///
 /// A placeholder that survives outside a `[...]` segment but has no value
 /// collapses to empty rather than leaking a literal `{name}` into an
-/// approval. When nothing at all resolves the result is `None`, so the
-/// caller falls back to the raw argument instead of showing a blank field.
+/// approval.
+///
+/// Returns `None` when **no placeholder resolved**, not merely when the
+/// rendered string is empty — literal text outside `[...]` would otherwise
+/// survive on its own and `display: 'Contact {name}[ ({phone})]'` against an
+/// all-empty response would render `Contact`, which reads to a reviewer like
+/// a real recipient. Falling back to the raw argument is strictly better than
+/// a fabricated-looking name.
 pub fn render_display(template: &str, json: &Value) -> Option<String> {
     // `Null` (not a missing key) is what marks a placeholder absent for
     // `resolve_optional_segments` — it checks presence, and an empty string
@@ -57,6 +63,12 @@ pub fn render_display(template: &str, json: &Value) -> Option<String> {
             (key.to_string(), value)
         })
         .collect();
+
+    // Nothing looked up → nothing to show. Checked before rendering so a
+    // template that is all literal text cannot report a "resolved" name.
+    if !values.values().any(|v| !v.is_null()) {
+        return None;
+    }
 
     let after_optionals = crate::description::resolve_optional_segments(template, &values);
 
@@ -183,6 +195,23 @@ mod tests {
         assert_eq!(
             render_display("{name}[ ({phone})]", &json).as_deref(),
             Some("Sonia Pérez")
+        );
+    }
+
+    /// Literal text must not survive on its own: `Contact` reads to a
+    /// reviewer like a real recipient, and is worse than the raw JID.
+    #[test]
+    fn display_is_none_when_only_literal_text_would_survive() {
+        let json = json!({"kind": "unknown", "name": "", "phone": ""});
+        assert_eq!(render_display("Contact {name}[ ({phone})]", &json), None);
+    }
+
+    #[test]
+    fn display_keeps_literal_text_when_something_did_resolve() {
+        let json = json!({"name": "Sonia", "phone": ""});
+        assert_eq!(
+            render_display("Contact {name}[ ({phone})]", &json).as_deref(),
+            Some("Contact Sonia")
         );
     }
 

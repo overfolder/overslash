@@ -183,12 +183,15 @@ pub async fn resolve_display_params_mcp(
     // the vault, so building it per resolver would multiply vault reads by
     // the number of resolvers on the action.
     //
-    // Inside the timeout as well as the tools/call below: `build_client`
-    // reaches `ssrf_guard::build_pinned_client`, whose host resolution is a
-    // blocking `to_socket_addrs` with no deadline of its own, and this runs
-    // synchronously on the approval-minting path.
-    let built = tokio::time::timeout(
-        RESOLVE_TIMEOUT,
+    // One deadline for the whole phase, shared by the client build and every
+    // tools/call, so the documented budget is what the approval path actually
+    // pays — two sequential `timeout`s would make it 2×. `build_client` is
+    // inside it because it reaches `ssrf_guard::build_pinned_client`, whose
+    // host resolution is a blocking `to_socket_addrs` with no deadline of its
+    // own, and this all runs synchronously while an approval is minted.
+    let deadline = tokio::time::Instant::now() + RESOLVE_TIMEOUT;
+    let built = tokio::time::timeout_at(
+        deadline,
         crate::services::mcp_caller::build_client(state, scope, url, auth, oauth_header),
     )
     .await;
@@ -235,26 +238,70 @@ pub async fn resolve_display_params_mcp(
             );
 
             async move {
-                let result = match tokio::time::timeout(
-                    RESOLVE_TIMEOUT,
+                let result = match tokio::time::timeout_at(
+                    deadline,
                     client.tools_call(&headers, &tool, &arguments),
                 )
                 .await
                 {
                     Ok(Ok(result)) if !result.is_error => result,
-                    outcome => {
+                    // In-band: the tool ran and said "no". A JID nobody has
+                    // messaged is the ordinary case, so this is not a warning.
+                    Ok(Ok(_)) => {
                         tracing::debug!(
                             tool = %tool,
                             param = %name,
-                            timed_out = outcome.is_err(),
-                            "mcp display-param resolver did not answer; \
-                             falling back to the raw argument"
+                            "mcp resolver reported no result; using the raw argument"
+                        );
+                        return None;
+                    }
+                    // Transport, auth, HTTP status or JSON-RPC error — a
+                    // renamed tool, an expired token, a 5xx. `warn` because
+                    // the deployed default is RUST_LOG=info and this silently
+                    // changes which permission keys are minted.
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            tool = %tool,
+                            param = %name,
+                            error = %e,
+                            "mcp display-param resolver failed; using the raw argument"
+                        );
+                        return None;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            tool = %tool,
+                            param = %name,
+                            timeout_ms = RESOLVE_TIMEOUT.as_millis(),
+                            "mcp display-param resolver timed out; using the raw argument"
                         );
                         return None;
                     }
                 };
-                let body = resolver_body(&result)?;
+                let Some(body) = resolver_body(&result) else {
+                    tracing::warn!(
+                        tool = %tool,
+                        param = %name,
+                        "mcp resolver returned neither structuredContent nor a JSON text \
+                         block; using the raw argument"
+                    );
+                    return None;
+                };
                 let (display, canonical) = project(&resolver, &body);
+                // Schema drift lands here: the call succeeded but the declared
+                // dot-paths found nothing. Worth a warning because a missing
+                // `scope` value silently reverts the permission key to the raw
+                // argument, so previously-granted rules stop matching.
+                let (has_display, has_scope) = (display.is_some(), canonical.is_some());
+                if !has_display || (resolver.scope.is_some() && !has_scope) {
+                    tracing::warn!(
+                        tool = %tool,
+                        param = %name,
+                        has_display,
+                        has_scope,
+                        "mcp resolver answered but the declared paths found nothing"
+                    );
+                }
                 Some((name, display, canonical))
             }
         })
