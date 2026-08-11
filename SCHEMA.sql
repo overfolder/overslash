@@ -113,8 +113,24 @@ CREATE TABLE public.audit_log (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     description text,
     impersonated_by_identity_id uuid,
-    tags text[] DEFAULT '{}'::text[] NOT NULL
+    tags text[] DEFAULT '{}'::text[] NOT NULL,
+    actor_name text,
+    owner_user_name text
 );
+
+
+--
+-- Name: COLUMN audit_log.actor_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.audit_log.actor_name IS 'Name of identity_id as of write time. Historical by design (D56) — the row records the name the actor had when they acted, not their current one.';
+
+
+--
+-- Name: COLUMN audit_log.owner_user_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.audit_log.owner_user_name IS 'Name of the root user of the actor''s identity chain, as of write time. Root, not direct parent: a sub-agent resolves to the human at the top, matching the audit table''s User column.';
 
 
 --
@@ -1501,24 +1517,31 @@ CREATE INDEX idx_audit_log_identity ON public.audit_log USING btree (identity_id
 
 
 --
--- Name: idx_audit_log_impersonated_by; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_audit_log_org_action; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_audit_log_impersonated_by ON public.audit_log USING btree (org_id, impersonated_by_identity_id) WHERE (impersonated_by_identity_id IS NOT NULL);
-
-
---
--- Name: idx_audit_log_org; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_audit_log_org ON public.audit_log USING btree (org_id, created_at DESC);
+CREATE INDEX idx_audit_log_org_action ON public.audit_log USING btree (org_id, action, created_at DESC);
 
 
 --
--- Name: idx_audit_log_tags; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_audit_log_org_created_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_audit_log_tags ON public.audit_log USING gin (tags);
+CREATE INDEX idx_audit_log_org_created_id ON public.audit_log USING btree (org_id, created_at DESC, id DESC);
+
+
+--
+-- Name: idx_audit_log_org_resource_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_audit_log_org_resource_type ON public.audit_log USING btree (org_id, resource_type, created_at DESC);
+
+
+--
+-- Name: idx_audit_log_search_trgm; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_audit_log_search_trgm ON public.audit_log USING gin ((((((action || ' '::text) || COALESCE(description, ''::text)) || ' '::text) || COALESCE(actor_name, ''::text))) public.gin_trgm_ops);
 
 
 --

@@ -1,0 +1,210 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at, a.impersonated_by_identity_id, a.tags, a.actor_name, a.owner_user_name\n         FROM audit_log a\n         WHERE a.org_id = $1\n           AND ($2::text IS NULL OR a.action = $2)\n           AND ($3::text IS NULL OR a.resource_type = $3)\n           AND ($4::uuid IS NULL OR a.identity_id = $4)\n           AND ($5::timestamptz IS NULL OR a.created_at >= $5)\n           AND ($6::timestamptz IS NULL OR a.created_at <= $6)\n           -- Every free-text term must hit at least one of the three columns.\n           -- Phrased as no-term-fails so one NOT EXISTS covers N terms.\n           -- COALESCE is load-bearing: `description` and `actor_name` are\n           -- nullable, and an unmatched NULL makes the OR NULL, which the\n           -- surrounding NOT would turn back into a pass.\n           AND ($7::text[] IS NULL\n                OR NOT EXISTS (\n                    SELECT 1 FROM unnest($7::text[]) AS term\n                    WHERE NOT COALESCE(a.action ILIKE term\n                                    OR a.description ILIKE term\n                                    OR a.actor_name ILIKE term, FALSE)))\n           -- Redundant by construction, indexable unlike the clause above.\n           -- Must spell the expression exactly as idx_audit_log_search_trgm\n           -- does, or the index is not considered.\n           AND ($25::text IS NULL\n                OR (a.action || ' ' || COALESCE(a.description, '') || ' ' || COALESCE(a.actor_name, '')) ILIKE $25)\n           AND ($8::uuid IS NULL OR a.id = $8)\n           AND ($9::uuid IS NULL\n                OR a.id = $9\n                OR a.identity_id = $9\n                OR a.resource_id = $9\n                OR CASE WHEN a.detail->>'execution_id' ~ '^[0-9a-fA-F-]{36}$'\n                        THEN (a.detail->>'execution_id')::uuid = $9\n                        ELSE FALSE END\n                OR CASE WHEN a.detail->>'replayed_from_approval' ~ '^[0-9a-fA-F-]{36}$'\n                        THEN (a.detail->>'replayed_from_approval')::uuid = $9\n                        ELSE FALSE END)\n           AND ($12::text IS NULL OR a.action ILIKE $12)\n           AND ($13::text IS NULL OR a.resource_type ILIKE $13)\n           AND ($14::text IS NULL OR a.description = $14)\n           AND ($15::text IS NULL OR a.description ILIKE $15)\n           AND ($16::text IS NULL OR a.ip_address = $16)\n           AND ($17::text IS NULL OR a.ip_address ILIKE $17)\n           AND ($18::text IS NULL OR a.actor_name ILIKE $18)\n           -- Kind and ownership are the only things still worth a lookup, and\n           -- an EXISTS keeps the planner from paying for one when they are\n           -- absent. Semantics match the LEFT JOIN they replace: a row whose\n           -- identity is gone matches neither.\n           AND ($19::text[] IS NULL\n                OR EXISTS (SELECT 1 FROM identities i\n                            WHERE i.id = a.identity_id AND i.org_id = a.org_id\n                              AND i.kind = ANY($19)))\n           AND ($20::uuid IS NULL\n                OR a.identity_id = $20\n                OR EXISTS (SELECT 1 FROM identities i\n                            WHERE i.id = a.identity_id AND i.org_id = a.org_id\n                              AND i.owner_id = $20))\n           AND ($21::text IS NULL OR a.owner_user_name ILIKE $21)\n           AND ($22::boolean IS NULL\n                OR ($22 AND a.detail->>'is_error' = 'true')\n                OR (NOT $22 AND a.detail->>'is_error' = 'false'))\n           -- Containment (not overlap): every requested tag must be present.\n           AND ($23::text[] IS NULL OR a.tags @> $23)\n           -- No index for this one; it rides the org/created_at scan alongside\n           -- the other ILIKE filters.\n           AND ($24::text IS NULL\n                OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE t ILIKE $24))\n           -- Keyset cursor, in two conjuncts on purpose. The first is a plain\n           -- range bound idx_audit_log_org_created_id serves as a starting\n           -- point; a row-comparison `(created_at, id) < ($26, $27)` is not\n           -- reliably extracted as an index qual. The second drops the rows\n           -- already seen at the boundary timestamp.\n           AND ($26::timestamptz IS NULL OR a.created_at <= $26)\n           AND ($26::timestamptz IS NULL OR $27::uuid IS NULL\n                OR a.created_at < $26 OR a.id < $27)\n         ORDER BY a.created_at DESC, a.id DESC\n         LIMIT $10 OFFSET $11",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "action",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "action"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "resource_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "resource_type"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "resource_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "detail",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "detail"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "ip_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "ip_address"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "impersonated_by_identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "impersonated_by_identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "tags",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "tags"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "actor_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "actor_name"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "owner_user_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "owner_user_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz",
+        "TextArray",
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "Uuid",
+        "Text",
+        "Bool",
+        "TextArray",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "7a33dc03c7b3116a5979e519c215e72762ff30dc25fc779ab39a22be44182f50"
+}

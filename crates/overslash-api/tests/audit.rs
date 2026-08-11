@@ -71,6 +71,29 @@ async fn insert_identity(pool: &PgPool, org_id: Uuid) -> Uuid {
     id
 }
 
+/// Insert an identity with an explicit name/kind/owner. Returns identity_id.
+async fn insert_named_identity(
+    pool: &PgPool,
+    org_id: Uuid,
+    name: &str,
+    kind: &str,
+    owner_id: Option<Uuid>,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO identities (id, org_id, name, kind, owner_id) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id)
+    .bind(org_id)
+    .bind(name)
+    .bind(kind)
+    .bind(owner_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
 /// Helper to build an AuditEntry for insertion.
 fn entry<'a>(
     org_id: Uuid,
@@ -360,6 +383,21 @@ async fn test_audit_log_identity_set_null_on_delete() {
     assert!(
         rows[0].identity_id.is_none(),
         "identity_id should be NULL after identity deletion"
+    );
+    // The name is the whole reason it is on the row: a deleted identity used to
+    // take its own audit trail's legibility with it.
+    assert_eq!(rows[0].actor_name.as_deref(), Some("agent"));
+
+    let mut f = filter(org_id);
+    f.q_terms = Some(vec!["agent".to_string()]);
+    let found = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
+        .await
+        .unwrap();
+    assert_eq!(
+        found.len(),
+        1,
+        "free-text search should still find rows whose actor has been deleted"
     );
 }
 
@@ -2028,4 +2066,330 @@ async fn test_audit_api_filter_by_uuid_tolerates_malformed_detail() {
         .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].action, "real.match");
+}
+
+// ===========================================================================
+// Recorded actor names (D56, migration 109)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_audit_actor_name_is_recorded_at_write_time() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+    let user_id = insert_named_identity(&pool, org_id, "alice", "user", None).await;
+    let agent_id = insert_named_identity(&pool, org_id, "henry", "agent", Some(user_id)).await;
+
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            Some(agent_id),
+            "secret.put",
+            None,
+            None,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE identities SET name = 'bob' WHERE id = $1")
+        .bind(agent_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(filter(org_id))
+        .await
+        .unwrap();
+    assert_eq!(rows[0].actor_name.as_deref(), Some("henry"));
+
+    // Search follows the record, not the rename — the row says henry acted, so
+    // searching for henry has to find it.
+    let mut f = filter(org_id);
+    f.q_terms = Some(vec!["henry".to_string()]);
+    assert_eq!(
+        overslash_db::OrgScope::new(org_id, pool.clone())
+            .query_audit_log(f)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut f = filter(org_id);
+    f.identity_name_contains = Some("bob".to_string());
+    assert!(
+        overslash_db::OrgScope::new(org_id, pool.clone())
+            .query_audit_log(f)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the current name is not what the row recorded"
+    );
+
+    // The id-keyed filter is unaffected by renames, which is what makes the
+    // search bar's `identity = <name>` chip the durable way to filter by actor.
+    let mut f = filter(org_id);
+    f.identity_id = Some(agent_id);
+    assert_eq!(
+        overslash_db::OrgScope::new(org_id, pool.clone())
+            .query_audit_log(f)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn test_audit_owner_user_name_is_root_of_chain() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+    let user_id = insert_named_identity(&pool, org_id, "alice", "user", None).await;
+    let agent_id = insert_named_identity(&pool, org_id, "henry", "agent", Some(user_id)).await;
+    let sub_id =
+        insert_named_identity(&pool, org_id, "researcher", "sub_agent", Some(agent_id)).await;
+
+    for id in [user_id, agent_id, sub_id] {
+        overslash_db::OrgScope::new(org_id, pool.clone())
+            .log_audit(entry(
+                org_id,
+                Some(id),
+                "action.executed",
+                None,
+                None,
+                json!({}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(filter(org_id))
+        .await
+        .unwrap();
+    let by_actor: std::collections::HashMap<_, _> = rows
+        .iter()
+        .map(|r| (r.identity_id.unwrap(), r.owner_user_name.clone()))
+        .collect();
+
+    // Two hops up from the sub-agent, not one: the direct parent is an agent,
+    // and "user" has to mean the human.
+    assert_eq!(by_actor[&sub_id].as_deref(), Some("alice"));
+    assert_eq!(by_actor[&agent_id].as_deref(), Some("alice"));
+    assert_eq!(by_actor[&user_id].as_deref(), Some("alice"));
+
+    // `user ~` therefore reaches the whole subtree.
+    let mut f = filter(org_id);
+    f.owner_user_contains = Some("alic".to_string());
+    assert_eq!(
+        overslash_db::OrgScope::new(org_id, pool.clone())
+            .query_audit_log(f)
+            .await
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+#[tokio::test]
+async fn test_audit_actor_names_null_without_identity() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(org_id, None, "org.created", None, None, json!({})))
+        .await
+        .unwrap();
+
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(filter(org_id))
+        .await
+        .unwrap();
+    assert!(rows[0].actor_name.is_none());
+    assert!(rows[0].owner_user_name.is_none());
+}
+
+#[tokio::test]
+async fn test_audit_q_prune_conjunct_does_not_change_results() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+    let ident = insert_named_identity(&pool, org_id, "henry", "agent", None).await;
+
+    for (action, desc) in [
+        ("secret.put", "Rotated the warehouse credential"),
+        ("action.executed", "Queried the warehouse"),
+        ("approval.created", "Nothing relevant here"),
+    ] {
+        let mut e = entry(org_id, Some(ident), action, None, None, json!({}));
+        e.description = Some(desc);
+        overslash_db::OrgScope::new(org_id, pool.clone())
+            .log_audit(e)
+            .await
+            .unwrap();
+    }
+
+    // The pruning conjunct only fires for terms of three characters or more, so
+    // these two searches take different paths through the query and must still
+    // agree with each other and with the per-column semantics.
+    let run = |terms: Vec<String>| {
+        let pool = pool.clone();
+        async move {
+            let mut f = filter(org_id);
+            f.q_terms = Some(terms);
+            overslash_db::OrgScope::new(org_id, pool)
+                .query_audit_log(f)
+                .await
+                .unwrap()
+        }
+    };
+
+    assert_eq!(run(vec!["warehouse".to_string()]).await.len(), 2);
+    assert_eq!(run(vec!["wa".to_string()]).await.len(), 2);
+    // Terms AND: only the row matching both.
+    assert_eq!(
+        run(vec!["warehouse".to_string(), "secret".to_string()])
+            .await
+            .len(),
+        1
+    );
+    // A term matching the actor's recorded name still counts as a hit.
+    assert_eq!(run(vec!["henry".to_string()]).await.len(), 3);
+    assert!(run(vec!["zzzznotathing".to_string()]).await.is_empty());
+}
+
+// ===========================================================================
+// Keyset pagination
+// ===========================================================================
+
+#[tokio::test]
+async fn test_audit_keyset_pagination_ties_on_timestamp() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+
+    // Rows written inside one transaction share `now()`. Five of them at the
+    // same instant is the case a naive `created_at < cursor` cursor drops.
+    let ts = time::OffsetDateTime::now_utc();
+    for i in 0..5 {
+        sqlx::query(
+            "INSERT INTO audit_log (org_id, action, detail, created_at) VALUES ($1, $2, '{}', $3)",
+        )
+        .bind(org_id)
+        .bind(format!("tied_{i}"))
+        .bind(ts)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let mut seen: Vec<Uuid> = Vec::new();
+    let mut cursor: Option<(time::OffsetDateTime, Uuid)> = None;
+    loop {
+        let mut f = filter(org_id);
+        f.limit = 2;
+        if let Some((before, before_id)) = cursor {
+            f.before = Some(before);
+            f.before_id = Some(before_id);
+        }
+        let page = overslash_db::OrgScope::new(org_id, pool.clone())
+            .query_audit_log(f)
+            .await
+            .unwrap();
+        if page.is_empty() {
+            break;
+        }
+        let last = page.last().unwrap();
+        cursor = Some((last.created_at, last.id));
+        seen.extend(page.iter().map(|r| r.id));
+    }
+
+    assert_eq!(seen.len(), 5, "every row is returned exactly once");
+    let unique: std::collections::HashSet<_> = seen.iter().collect();
+    assert_eq!(unique.len(), 5, "no row is returned twice");
+}
+
+#[tokio::test]
+async fn test_audit_keyset_matches_offset_paging() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+
+    for i in 0..10 {
+        overslash_db::OrgScope::new(org_id, pool.clone())
+            .log_audit(entry(
+                org_id,
+                None,
+                &format!("action_{i}"),
+                None,
+                None,
+                json!({}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let mut f = filter(org_id);
+    f.limit = 4;
+    let page1 = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f.clone())
+        .await
+        .unwrap();
+
+    let mut keyset = f.clone();
+    keyset.before = Some(page1.last().unwrap().created_at);
+    keyset.before_id = Some(page1.last().unwrap().id);
+    let page2_keyset = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(keyset)
+        .await
+        .unwrap();
+
+    let mut offset = f;
+    offset.offset = 4;
+    let page2_offset = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(offset)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        page2_keyset.iter().map(|r| r.id).collect::<Vec<_>>(),
+        page2_offset.iter().map(|r| r.id).collect::<Vec<_>>(),
+        "the cursor and the offset must land on the same page"
+    );
+}
+
+#[tokio::test]
+async fn test_audit_api_keyset_params() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    for i in 0..6 {
+        overslash_db::OrgScope::new(fx.org_id, pool.clone())
+            .log_audit(entry(
+                fx.org_id,
+                None,
+                &format!("paged_{i}"),
+                None,
+                None,
+                json!({}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let page1 = fetch_audit_with(&base, &client, &fx.org_key, "limit=3").await;
+    assert_eq!(page1.len(), 3);
+    let last = page1.last().unwrap();
+    let qs = format!(
+        "limit=3&before={}&before_id={}",
+        urlencoding::encode(last["created_at"].as_str().unwrap()),
+        last["id"].as_str().unwrap()
+    );
+    let page2 = fetch_audit_with(&base, &client, &fx.org_key, &qs).await;
+
+    let ids1: Vec<&str> = page1.iter().map(|e| e["id"].as_str().unwrap()).collect();
+    let ids2: Vec<&str> = page2.iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert!(
+        ids2.iter().all(|id| !ids1.contains(id)),
+        "the second page must not repeat the first"
+    );
 }
