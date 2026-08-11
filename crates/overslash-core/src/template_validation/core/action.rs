@@ -377,31 +377,7 @@ fn check_param(
     }
 
     if let Some(ref resolver) = param.resolve {
-        if has_unclosed_brace(&resolver.get) {
-            issues.err(
-                "invalid_path_syntax",
-                "resolver.get has an unclosed '{' placeholder",
-                format!("{base}.resolve.get"),
-            );
-        }
-        for (_, ident) in iter_placeholders(&resolver.get) {
-            if !param_ident_resolvable(all_params, ident) {
-                issues.err(
-                    "unknown_resolver_param",
-                    format!(
-                        "resolver placeholder {{{ident}}} does not reference a defined param on this action"
-                    ),
-                    format!("{base}.resolve.get"),
-                );
-            }
-        }
-        if resolver.pick.trim().is_empty() {
-            issues.err(
-                "missing_field",
-                "resolver.pick is required",
-                format!("{base}.resolve.pick"),
-            );
-        }
+        super::resolver::check_resolver(resolver, name, all_params, &base, issues);
     }
 }
 
@@ -417,7 +393,7 @@ fn check_param(
 /// by a separate flat loop over the call params
 /// (`routes::actions::resolve`), which never descends — a dotted path
 /// placeholder would survive into the outbound URL verbatim.
-fn param_ident_resolvable(
+pub(super) fn param_ident_resolvable(
     params: &std::collections::HashMap<String, ActionParam>,
     ident: &str,
 ) -> bool {
@@ -429,7 +405,7 @@ fn param_ident_resolvable(
 
 /// Detect an unclosed `{` — something that iter_placeholders silently skips
 /// but is a syntax error in the linter's view.
-fn has_unclosed_brace(s: &str) -> bool {
+pub(super) fn has_unclosed_brace(s: &str) -> bool {
     let mut i = 0;
     let bytes = s.as_bytes();
     while i < bytes.len() {
@@ -448,7 +424,7 @@ fn has_unclosed_brace(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::template_validation::core::tests::{minimal_mcp, minimal_valid, param, run};
-    use crate::types::{McpAuth, ParamResolver, Risk, Runtime, ServiceAction, ServiceDefinition};
+    use crate::types::{McpAuth, Risk, Runtime, ServiceAction, ServiceDefinition};
     use std::collections::HashMap;
 
     #[test]
@@ -709,50 +685,6 @@ mod tests {
         d.actions.get_mut("list").unwrap().response_type = Some("xml".into());
         let r = run(&d);
         assert!(r.errors.iter().any(|e| e.code == "invalid_response_type"));
-    }
-
-    #[test]
-    fn unknown_resolver_param() {
-        let mut d = minimal_valid();
-        let a = d.actions.get_mut("list").unwrap();
-        let mut p = param("string", false);
-        p.resolve = Some(ParamResolver {
-            get: "/items/{ghost}".into(),
-            pick: "name".into(),
-        });
-        a.params.insert("x".into(), p);
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "unknown_resolver_param"));
-    }
-
-    /// The export_query shape: the resolver reaches an id nested inside an
-    /// object-valued body param, so only the head segment is a declared param.
-    #[test]
-    fn resolver_dotted_placeholder_checks_only_the_head_segment() {
-        let mut d = minimal_valid();
-        let a = d.actions.get_mut("list").unwrap();
-        let mut p = param("object", false);
-        p.resolve = Some(ParamResolver {
-            get: "/api/database/{query.database}".into(),
-            pick: "name".into(),
-        });
-        a.params.insert("query".into(), p);
-        let r = run(&d);
-        assert!(!r.errors.iter().any(|e| e.code == "unknown_resolver_param"));
-    }
-
-    #[test]
-    fn resolver_dotted_placeholder_with_unknown_head_is_still_reported() {
-        let mut d = minimal_valid();
-        let a = d.actions.get_mut("list").unwrap();
-        let mut p = param("object", false);
-        p.resolve = Some(ParamResolver {
-            get: "/api/database/{ghost.database}".into(),
-            pick: "name".into(),
-        });
-        a.params.insert("query".into(), p);
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "unknown_resolver_param"));
     }
 
     /// Descriptions run through the same substituter, so the linter accepts

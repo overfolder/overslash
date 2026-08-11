@@ -30,6 +30,7 @@ pub use mcp::overlay_discovered_tools;
 pub(super) use actions::{extract_http_action, extract_platform_action};
 pub(super) use auth::{CompiledCredentials, extract_auth};
 pub(super) use mcp::{extract_mcp_actions, extract_mcp_spec};
+use params::parse_resolver;
 
 /// Lower `x-overslash-scope_param` — a param name, a `param:label` pair, or a
 /// list of either — into [`ScopeParams`].

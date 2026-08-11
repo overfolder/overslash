@@ -59,7 +59,7 @@ pub fn interpolate_template(template: &str, params: &HashMap<String, serde_json:
 }
 
 /// Resolve `[...]` optional segments. Flat only — no nesting.
-fn resolve_optional_segments(
+pub(crate) fn resolve_optional_segments(
     template: &str,
     params: &HashMap<String, serde_json::Value>,
 ) -> String {

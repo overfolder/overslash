@@ -556,6 +556,41 @@ fn effective_risk(
     }
 }
 
+/// Overlay `resolve.scope` values onto the params used to derive permission
+/// keys.
+///
+/// The same human is reachable at several opaque addresses — a WhatsApp
+/// contact answers to both a phone JID and a privacy `@lid` — and each would
+/// otherwise mint its own permission key, so a grant made against one
+/// silently misses the other. A resolver that declares `scope` collapses them
+/// onto the canonical value (the phone number), which is both stable across
+/// addresses and legible in the rules list.
+///
+/// Only key derivation sees this. The outgoing request keeps the caller's raw
+/// arguments: canonicalization renames the permission, it must never silently
+/// retarget the call.
+///
+/// When resolution failed there is no canonical value and the raw argument
+/// stands. That direction is safe — the call derives a *different* key,
+/// matches no existing grant, and raises an approval.
+pub(super) fn canonical_scope_params(
+    params: &HashMap<String, serde_json::Value>,
+    canonical: &HashMap<String, String>,
+) -> HashMap<String, serde_json::Value> {
+    if canonical.is_empty() {
+        return params.clone();
+    }
+    let mut out = params.clone();
+    for (name, value) in canonical {
+        // Only rewrite params the caller actually supplied — a resolver must
+        // not conjure a scope value for an argument that was never passed.
+        if out.contains_key(name) {
+            out.insert(name.clone(), serde_json::Value::String(value.clone()));
+        }
+    }
+    out
+}
+
 /// Merge D42 table keys into the scope_param-derived key set.
 ///
 /// Appended when real scoped keys exist (DB-scoping and table-scoping are
@@ -584,4 +619,53 @@ fn merge_sql_keys(
         }
     }
     perm_keys
+}
+
+#[cfg(test)]
+mod canonical_scope_tests {
+    use super::canonical_scope_params;
+    use std::collections::HashMap;
+
+    fn params(pairs: &[(&str, serde_json::Value)]) -> HashMap<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn no_canonical_values_passes_the_params_through() {
+        let raw = params(&[("recipient", serde_json::json!("239135323373760@lid"))]);
+        assert_eq!(canonical_scope_params(&raw, &HashMap::new()), raw);
+    }
+
+    #[test]
+    fn canonical_value_replaces_the_raw_argument() {
+        let raw = params(&[
+            ("recipient", serde_json::json!("239135323373760@lid")),
+            ("text", serde_json::json!("hola")),
+        ]);
+        let canonical: HashMap<String, String> =
+            [("recipient".to_string(), "+34600111222".to_string())]
+                .into_iter()
+                .collect();
+        let out = canonical_scope_params(&raw, &canonical);
+        assert_eq!(out["recipient"], serde_json::json!("+34600111222"));
+        // Untouched params ride through unchanged.
+        assert_eq!(out["text"], serde_json::json!("hola"));
+    }
+
+    /// A resolver must not conjure a scope value for an argument the caller
+    /// never passed — that would mint a key for a param not in the request.
+    #[test]
+    fn a_canonical_value_for_an_absent_param_is_ignored() {
+        let raw = params(&[("text", serde_json::json!("hola"))]);
+        let canonical: HashMap<String, String> =
+            [("recipient".to_string(), "+34600111222".to_string())]
+                .into_iter()
+                .collect();
+        let out = canonical_scope_params(&raw, &canonical);
+        assert!(!out.contains_key("recipient"));
+        assert_eq!(out.len(), 1);
+    }
 }

@@ -30,11 +30,54 @@ use tokio::net::TcpListener;
 #[derive(Default)]
 struct StubInner {
     list_calls: u32,
+    /// The `jid` argument every `resolve_jid` call arrived with, so a test can
+    /// pin that the gateway resolves against the *raw* argument rather than
+    /// something it rewrote first.
+    resolved_jids: Vec<String>,
 }
 
 #[derive(Clone, Default)]
 struct Stub {
     inner: Arc<Mutex<StubInner>>,
+    /// When true, `resolve_jid` answers `isError: true`. Models the container
+    /// being unpaired, mid-resync, or simply down.
+    failing_resolver: bool,
+}
+
+/// The `resolve_jid` answer for a JID the stub's contact cache knows about,
+/// mirroring whatsapp-mcp-docker's `ResolvedJID` shape.
+fn resolve_jid_result(jid: &str) -> Value {
+    let structured = match jid {
+        "239135323373760@lid" => json!({
+            "jid": jid,
+            "canonical_jid": "34600111222@s.whatsapp.net",
+            "kind": "user",
+            "name": "Sonia Pérez",
+            "phone": "+34600111222",
+        }),
+        j if j.ends_with("@g.us") => json!({
+            "jid": jid,
+            "canonical_jid": jid,
+            "kind": "group",
+            "name": "Peluquería canina",
+            // Groups have no phone number; the container spells that "".
+            "phone": "",
+        }),
+        // Nothing known: a populated jid/kind and empty everything else. The
+        // container answers this successfully rather than erroring.
+        _ => json!({
+            "jid": jid,
+            "canonical_jid": jid,
+            "kind": "unknown",
+            "name": "",
+            "phone": "",
+        }),
+    };
+    json!({
+        "content": [{ "type": "text", "text": structured.to_string() }],
+        "structuredContent": structured,
+        "isError": false
+    })
 }
 
 async fn stub_handler(
@@ -68,26 +111,56 @@ async fn stub_handler(
                 }]
             })
         }
-        "tools/call" => json!({
-            "content": [{ "type": "text", "text": "ok" }],
-            "isError": false
-        }),
+        "tools/call" => {
+            let params = req.get("params").cloned().unwrap_or(Value::Null);
+            let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+            let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+            match name {
+                "resolve_jid" => {
+                    let jid = args.get("jid").and_then(Value::as_str).unwrap_or("");
+                    stub.inner
+                        .lock()
+                        .unwrap()
+                        .resolved_jids
+                        .push(jid.to_string());
+                    if stub.failing_resolver {
+                        json!({
+                            "content": [{ "type": "text", "text": "not paired" }],
+                            "isError": true
+                        })
+                    } else {
+                        resolve_jid_result(jid)
+                    }
+                }
+                _ => json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "isError": false
+                }),
+            }
+        }
         _ => json!({}),
     };
     Json(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
 }
 
 async fn start_stub() -> SocketAddr {
+    start_stub_with(Stub::default()).await.0
+}
+
+/// Start a stub and keep a handle on its state so a test can read back which
+/// JIDs the gateway asked it to resolve.
+async fn start_stub_with(stub: Stub) -> (SocketAddr, Arc<Mutex<StubInner>>) {
     common::allow_loopback_ssrf();
+    let inner = stub.inner.clone();
     let app = Router::new()
         .route("/mcp", post(stub_handler))
-        .with_state(Stub::default());
+        .with_state(stub);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    addr
+    (addr, inner)
 }
 
 // ── Template fixture ────────────────────────────────────────────────────
@@ -130,6 +203,61 @@ x-overslash-mcp:
     )
 }
 
+/// The shipped template's resolver wiring: `send_message.recipient` declares
+/// an MCP `resolve` pointing at the read-only `resolve_jid` tool, and the
+/// disclose block prefers the resolved display string over the raw argument.
+/// Mirrors `services/whatsapp.yaml` — keep the two in step.
+fn whatsapp_resolver_template_yaml(key: &str, url: &str, secret_name: &str) -> String {
+    format!(
+        r#"openapi: "3.1.0"
+info:
+  title: WhatsApp Resolver Stub
+  x-overslash-key: {key}
+x-overslash-runtime: mcp
+paths: {{}}
+x-overslash-mcp:
+  url: {url}
+  auth: {{ kind: bearer, secret_name: {secret_name} }}
+  autodiscover: false
+  tools:
+    - name: resolve_jid
+      risk: read
+      scope_param: jid
+      description: "Resolve {{jid}} to its readable identity"
+      input_schema:
+        type: object
+        properties:
+          jid: {{ type: string, minLength: 1 }}
+        required: [jid]
+
+    - name: send_message
+      risk: write
+      scope_param: recipient
+      description: 'Send WhatsApp message "{{text}}" to {{recipient}}'
+      input_schema:
+        type: object
+        properties:
+          recipient:
+            type: string
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{{recipient}}'
+              display: '{{name}}[ ({{phone}})]'
+              scope: phone
+          text: {{ type: string, minLength: 1 }}
+        required: [recipient, text]
+      disclose:
+        - label: Recipient
+          filter: ".resolved.recipient // .arguments.recipient"
+        - label: JID
+          filter: ".arguments.recipient"
+        - label: Message
+          filter: ".arguments.text"
+"#
+    )
+}
+
 fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
 }
@@ -146,17 +274,27 @@ struct RegisterCtx<'a> {
 }
 
 async fn register_whatsapp_template(ctx: RegisterCtx<'_>) {
+    let yaml = whatsapp_template_yaml(ctx.key, ctx.url, ctx.secret_name);
+    register_template_with(ctx, yaml).await;
+}
+
+/// Same registration, but the template carries the `resolve` wiring.
+async fn register_whatsapp_resolver_template(ctx: RegisterCtx<'_>) {
+    let yaml = whatsapp_resolver_template_yaml(ctx.key, ctx.url, ctx.secret_name);
+    register_template_with(ctx, yaml).await;
+}
+
+async fn register_template_with(ctx: RegisterCtx<'_>, yaml: String) {
     let RegisterCtx {
         base,
         client,
         admin_key,
         agent_key,
         key,
-        url,
+        url: _,
         secret_name,
         secret_value,
     } = ctx;
-    let yaml = whatsapp_template_yaml(key, url, secret_name);
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(admin_key).0, auth(admin_key).1)
@@ -416,6 +554,263 @@ async fn correct_call_creates_approval_with_disclosed_recipient_and_message() {
             "recipient JID must appear in permission key, got: {joined}"
         );
     }
+}
+
+/// The headline case: a privacy LID is unreadable on its own, so the gateway
+/// resolves it through `resolve_jid` before the approval is minted. The
+/// reviewer sees the human, the raw JID is still disclosed for auditability,
+/// and the permission key collapses onto the phone number.
+#[tokio::test]
+async fn lid_recipient_resolves_to_contact_and_phone() {
+    let pool = common::test_pool().await;
+    let (stub_addr, stub_state) = start_stub_with(Stub::default()).await;
+    let stub_url = format!("http://{stub_addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_org, _agent_ident, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    register_whatsapp_resolver_template(RegisterCtx {
+        base: &base,
+        client: &client,
+        admin_key: &admin_key,
+        agent_key: &agent_key,
+        key: "whatsapp_resolve",
+        url: &stub_url,
+        secret_name: "whatsapp_resolve_token",
+        secret_value: "stub-token",
+    })
+    .await;
+
+    let exec: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "whatsapp_resolve",
+            "action": "send_message",
+            "params": {
+                "recipient": "239135323373760@lid",
+                "text": "Hola Sonia, ¿tienes hueco esta semana?"
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("pending_approval"),
+        "expected pending_approval, got: {exec:?}"
+    );
+    let approval_id = exec["approval_id"].as_str().unwrap();
+
+    // The resolver ran against the raw argument, not something rewritten.
+    assert_eq!(
+        stub_state.lock().unwrap().resolved_jids,
+        vec!["239135323373760@lid".to_string()],
+        "resolver must be called once, with the caller's literal recipient"
+    );
+
+    // The summary names the human instead of the LID.
+    let summary = exec["action_description"].as_str().unwrap();
+    assert!(
+        summary.contains("Sonia Pérez") && summary.contains("+34600111222"),
+        "summary must carry the resolved identity, got: {summary}"
+    );
+
+    let approval: Value = client
+        .get(format!("{base}/v1/approvals/{approval_id}"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let disclosed = approval["disclosed_fields"].as_array().unwrap();
+    assert_eq!(disclosed[0]["label"].as_str(), Some("Recipient"));
+    assert_eq!(
+        disclosed[0]["value"].as_str(),
+        Some("Sonia Pérez (+34600111222)")
+    );
+    // The literal argument stays on the approval — the readable row is an
+    // addition, never a replacement for what actually goes on the wire.
+    assert_eq!(disclosed[1]["label"].as_str(), Some("JID"));
+    assert_eq!(disclosed[1]["value"].as_str(), Some("239135323373760@lid"));
+
+    let keys: Vec<&str> = approval["permission_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        keys.contains(&"whatsapp_resolve:send_message:recipient=+34600111222"),
+        "permission key must canonicalize onto the phone number, got: {keys:?}"
+    );
+    assert!(
+        !keys.iter().any(|k| k.contains("@lid")),
+        "the LID must not survive into a permission key: {keys:?}"
+    );
+}
+
+/// Resolution is best-effort. A container that is down, unpaired or mid-resync
+/// must degrade the *readability* of the approval, never stop one being
+/// raised — and the key falls back to the raw argument, which matches no
+/// existing grant and so still gates.
+#[tokio::test]
+async fn a_failing_resolver_still_gates_on_the_raw_jid() {
+    let pool = common::test_pool().await;
+    let (stub_addr, _stub_state) = start_stub_with(Stub {
+        failing_resolver: true,
+        ..Default::default()
+    })
+    .await;
+    let stub_url = format!("http://{stub_addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_org, _agent_ident, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    register_whatsapp_resolver_template(RegisterCtx {
+        base: &base,
+        client: &client,
+        admin_key: &admin_key,
+        agent_key: &agent_key,
+        key: "whatsapp_resolve_fail",
+        url: &stub_url,
+        secret_name: "whatsapp_resolve_fail_token",
+        secret_value: "stub-token",
+    })
+    .await;
+
+    let exec: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "whatsapp_resolve_fail",
+            "action": "send_message",
+            "params": { "recipient": "239135323373760@lid", "text": "Hola" }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("pending_approval"),
+        "a dead resolver must not block the gate: {exec:?}"
+    );
+    let approval_id = exec["approval_id"].as_str().unwrap();
+
+    let approval: Value = client
+        .get(format!("{base}/v1/approvals/{approval_id}"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let disclosed = approval["disclosed_fields"].as_array().unwrap();
+    assert_eq!(disclosed[0]["label"].as_str(), Some("Recipient"));
+    assert_eq!(
+        disclosed[0]["value"].as_str(),
+        Some("239135323373760@lid"),
+        "unresolved recipient falls back to the literal argument"
+    );
+
+    let keys: Vec<&str> = approval["permission_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        keys.iter().any(|k| k.contains("239135323373760@lid")),
+        "with no canonical value the raw JID keys the permission: {keys:?}"
+    );
+}
+
+/// A group has a name but no phone number. The `[ ({phone})]` segment drops
+/// whole rather than rendering a dangling ` ()`, and with nothing to
+/// canonicalize the key keeps the group JID.
+#[tokio::test]
+async fn group_recipient_resolves_to_a_name_without_a_phone() {
+    let pool = common::test_pool().await;
+    let (stub_addr, _stub_state) = start_stub_with(Stub::default()).await;
+    let stub_url = format!("http://{stub_addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_org, _agent_ident, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    register_whatsapp_resolver_template(RegisterCtx {
+        base: &base,
+        client: &client,
+        admin_key: &admin_key,
+        agent_key: &agent_key,
+        key: "whatsapp_resolve_group",
+        url: &stub_url,
+        secret_name: "whatsapp_resolve_group_token",
+        secret_value: "stub-token",
+    })
+    .await;
+
+    let exec: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "whatsapp_resolve_group",
+            "action": "send_message",
+            "params": { "recipient": "120363000000000000@g.us", "text": "Hola" }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let approval_id = exec["approval_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected pending_approval, got: {exec:?}"));
+
+    let approval: Value = client
+        .get(format!("{base}/v1/approvals/{approval_id}"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let disclosed = approval["disclosed_fields"].as_array().unwrap();
+    assert_eq!(
+        disclosed[0]["value"].as_str(),
+        Some("Peluquería canina"),
+        "no phone on a group → the optional segment drops entirely"
+    );
+
+    let keys: Vec<&str> = approval["permission_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        keys.iter().any(|k| k.contains("120363000000000000@g.us")),
+        "nothing to canonicalize → the group JID keys the permission: {keys:?}"
+    );
 }
 
 #[tokio::test]

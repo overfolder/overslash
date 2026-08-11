@@ -236,12 +236,20 @@ pub(super) struct ResolvedMeta {
     pub(super) params: HashMap<String, serde_json::Value>,
     /// Display names from the template's `resolve` declarations (param name →
     /// human-readable string), feeding both description interpolation and the
-    /// disclosure `.resolved.*` projection. Populated for the HTTP action
-    /// shape only — resolvers are HTTP-only today, so verb / MCP / platform
-    /// shapes carry an empty map. Resolution happens once, at resolve time,
-    /// and rides here across execution: audit-write disclosure for a delete
-    /// action still names the object even though it's gone upstream.
+    /// disclosure `.resolved.*` projection. Populated for the HTTP and MCP
+    /// action shapes; verb / platform shapes carry an empty map. Resolution
+    /// happens once, at resolve time, and rides here across execution:
+    /// audit-write disclosure for a delete action still names the object even
+    /// though it's gone upstream.
     pub(super) resolved: HashMap<String, String>,
+    /// Canonical scope values from `resolve.scope` (param name → canonical
+    /// string), used *only* to derive the permission key.
+    ///
+    /// Separate from `resolved` because the two decide different things: a
+    /// display string is cosmetic, while this one selects which grants match.
+    /// The value sent upstream is never rewritten from here — canonicalization
+    /// renames the permission, it does not retarget the call.
+    pub(super) canonical: HashMap<String, String>,
     /// When the resolved service has `runtime: Mcp`, dispatch skips the HTTP
     /// executor and goes through `mcp_caller::invoke` with this payload.
     pub(super) mcp_target: Option<McpTarget>,

@@ -250,6 +250,8 @@ paths:
         resolve:
           get: /things/{thing_id}
           pick: name
+          # Canonicalizes the permission key onto the upstream's own id.
+          scope: canonical_id
       - name: other_id
         in: query
         required: false
@@ -365,6 +367,24 @@ async fn resolver_display_names_flow_into_disclosed_fields() {
     assert!(
         detail.contains("\"resolved\"") && detail.contains("Thing tt-42"),
         "action_detail should include the resolved projection:\n{detail}"
+    );
+
+    // `resolve.scope` canonicalizes the permission key onto the upstream's
+    // own id. The fake returns `canon-tt-42`, deliberately different from the
+    // caller's `tt-42`, so a no-op canonicalization cannot pass this.
+    let keys: Vec<&str> = exec["permission_keys"]
+        .as_array()
+        .expect("permission_keys present")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        keys.contains(&"thingsvc:archive_thing:thing_id=canon-tt-42"),
+        "scope should canonicalize the key, got: {keys:?}"
+    );
+    assert!(
+        !keys.iter().any(|k| k.contains("thing_id=tt-42")),
+        "the raw id must not survive canonicalization: {keys:?}"
     );
 
     // ── Site 2: audit-write ─────────────────────────────────────────────
