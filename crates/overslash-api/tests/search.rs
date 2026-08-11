@@ -1795,3 +1795,134 @@ async fn hidden_template_with_connected_instance_still_surfaces() {
         .expect("connected hidden-template instance missing from search");
     assert_eq!(legacy["service"], "legacy-gh");
 }
+
+/// An action row carries its parameter contract.
+///
+/// Until this existed, `description` was the only string about an action that
+/// ever reached the model, so a paging parameter a template declared was
+/// undiscoverable unless its prose happened to restate it. That is how an
+/// agent asked for popular Metabase cards ended up pulling all 2,033 of them:
+/// `search`'s `limit` was right there in the template and invisible from the
+/// outside.
+#[tokio::test]
+async fn action_rows_carry_their_parameter_contract() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+    let body: Value = client
+        .get(format!(
+            "{base}/v1/search?q={}&include_catalog=true",
+            urlencoding::encode("search metabase cards")
+        ))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+    let row = results
+        .iter()
+        .find(|r| r["template"] == "metabase" && r["action"] == "search")
+        .unwrap_or_else(|| panic!("metabase search action missing from {results:?}"));
+
+    let params = row["params"].as_array().expect("params on an action row");
+    let by_name = |n: &str| {
+        params
+            .iter()
+            .find(|p| p["name"] == n)
+            .unwrap_or_else(|| panic!("param {n} missing from {params:?}"))
+    };
+
+    // The required one leads, because it is what the caller cannot omit.
+    assert_eq!(params[0]["name"], "q", "required params sort first");
+    assert_eq!(by_name("q")["required"], true);
+
+    // And the paging contract — the whole point — is visible.
+    assert_eq!(
+        by_name("limit")["default"],
+        50,
+        "a declared default is what the caller gets when it omits the param, \
+         so it has to be visible"
+    );
+    assert!(by_name("offset")["type"] == "integer");
+    // `f` on list_cards *is* enum'd (single value), and its members have to
+    // reach the model — an enum that only the validator can see turns a
+    // discoverable choice into a guess-and-get-400.
+    let cards = results
+        .iter()
+        .find(|r| r["template"] == "metabase" && r["action"] == "list_cards")
+        .unwrap_or_else(|| panic!("metabase list_cards missing from {results:?}"));
+    let f = cards["params"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "f")
+        .expect("list_cards f param");
+    assert!(
+        f["enum"]
+            .as_array()
+            .is_some_and(|e| e.iter().any(|v| v == "mine")),
+        "an enum'd param must show its members: {f:?}"
+    );
+
+    // Optional params carry no `required` key at all rather than `false` —
+    // the field is skipped when unset, which keeps 20 rows of this cheap.
+    assert!(by_name("limit").get("required").is_none());
+}
+
+/// Two identical requests must return identically-ordered params.
+///
+/// `ServiceAction.params` is a `HashMap`, so without an explicit sort this
+/// would emit a different order per process, and nothing downstream — a
+/// caching layer, a snapshot test, a diff of two search calls — could rely
+/// on it.
+#[tokio::test]
+async fn parameter_ordering_is_deterministic() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+    let fetch = || async {
+        let body: Value = client
+            .get(format!(
+                "{base}/v1/search?q={}&include_catalog=true",
+                urlencoding::encode("search metabase cards")
+            ))
+            .header(auth(&admin_key).0, auth(&admin_key).1)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        body["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["template"] == "metabase" && r["action"] == "search")
+            .expect("metabase search action")["params"]
+            .clone()
+    };
+    assert_eq!(fetch().await, fetch().await);
+}
+
+/// Browse mode rows are service-level, so there is no parameter contract to
+/// carry and the field is omitted rather than emitted empty.
+#[tokio::test]
+async fn browse_mode_rows_omit_params() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+    let body: Value = client
+        .get(format!("{base}/v1/search?q=&include_catalog=true"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+    assert!(!results.is_empty(), "browse mode returned nothing");
+    for r in results {
+        assert!(
+            r.get("params").is_none(),
+            "browse row carries a parameter contract it has no action for: {r:?}"
+        );
+    }
+}

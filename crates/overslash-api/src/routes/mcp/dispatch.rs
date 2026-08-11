@@ -625,4 +625,50 @@ mod tests {
         insert_timeout_ms(&mut body, &serde_json::json!({"timeout_ms": "30s"}));
         assert_eq!(body.get("timeout_ms"), Some(&serde_json::json!("30s")));
     }
+
+    /// The tool schema takes a bare jq string because that is what an agent
+    /// can write without knowing our wire format. `CallRequest.filter` is the
+    /// tagged object, so the lift has to happen here or every MCP filter is a
+    /// 400.
+    #[test]
+    fn a_bare_filter_string_is_lifted_into_the_tagged_object() {
+        let mut body = serde_json::Map::new();
+        insert_filter(
+            &mut body,
+            &serde_json::json!({"filter": "[.data[] | {id}]"}),
+        );
+        assert_eq!(
+            body.get("filter"),
+            Some(&serde_json::json!({"lang": "jq", "expr": "[.data[] | {id}]"}))
+        );
+    }
+
+    #[test]
+    fn an_absent_or_null_filter_is_not_stamped() {
+        // `CallRequest` is `deny_unknown_fields` with a plain `Option`, so
+        // stamping a key the caller never sent turns "no filter" into an
+        // explicit null.
+        for args in [serde_json::json!({}), serde_json::json!({"filter": null})] {
+            let mut body = serde_json::Map::new();
+            insert_filter(&mut body, &args);
+            assert!(body.is_empty(), "nothing should be stamped for {args}");
+        }
+    }
+
+    /// A caller that already knows the wire shape gets it through untouched,
+    /// and a malformed one is forwarded for the action handler's deserializer
+    /// to reject. Swallowing it here would let a caller believe it had
+    /// narrowed a response it then receives whole.
+    #[test]
+    fn a_non_string_filter_is_passed_through_for_the_handler_to_judge() {
+        for raw in [
+            serde_json::json!({"lang": "jq", "expr": ".id"}),
+            serde_json::json!({"lang": "jsonpath", "expr": "$.id"}),
+            serde_json::json!(42),
+        ] {
+            let mut body = serde_json::Map::new();
+            insert_filter(&mut body, &serde_json::json!({"filter": raw.clone()}));
+            assert_eq!(body.get("filter"), Some(&raw));
+        }
+    }
 }

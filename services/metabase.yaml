@@ -181,6 +181,11 @@ paths:
             type: string
         - name: models
           in: query
+          # Deliberately not enum'd, despite naming its members. `models`
+          # takes a comma-separated *list*, and validate_input matches an
+          # enum against the whole value — so `enum:` here would reject
+          # "card,dashboard", the exact usage the param exists for. The
+          # members live in the description, which is what reaches the model.
           description: >-
             Optional comma-separated type filter (card, dataset, dashboard,
             table, collection, database, segment, metric). Omit to search
