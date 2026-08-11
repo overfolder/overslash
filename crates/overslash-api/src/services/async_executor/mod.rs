@@ -1,5 +1,5 @@
 //! The async-execution worker: a claim-and-lease sweeper over queued
-//! `executions` rows. See DECISIONS D57 and `docs/design/async-execution.md`.
+//! `executions` rows. See DECISIONS D62 and `docs/design/async-execution.md`.
 //!
 //! # Why a leased row and not a detached task
 //!

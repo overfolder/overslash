@@ -424,7 +424,7 @@ pub(super) async fn call_action_impl(
     // below are the only code that dials anything. Sitting exactly between them
     // is what makes "async runs the same call, just not on this connection"
     // structurally true — and why this is a field on CallRequest, not a second
-    // endpoint. See `async_accept` and DECISIONS D57.
+    // endpoint. See `async_accept` and DECISIONS D62.
     if is_async {
         return super::async_accept::accept(
             &state,

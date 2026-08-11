@@ -37,7 +37,7 @@ const SECRET_EVENT_TYPES = ['secret_request.created', 'secret_request.fulfilled'
 /**
  * Async (worker-run) executions. Distinct from the `approval.execution_*`
  * names on purpose: those are keyed on an approval, and an async call may not
- * have one. See DECISIONS D57.
+ * have one. See DECISIONS D62.
  */
 export const EXECUTION_EVENT_TYPES = [
 	'execution.completed',

@@ -305,7 +305,7 @@ pub struct PlatformCredential {
     pub value: String,
 }
 
-/// Async (non-blocking) action execution — see DECISIONS D57.
+/// Async (non-blocking) action execution — see DECISIONS D62.
 ///
 /// Nested rather than five flat `Config` fields on purpose. Every `Config`
 /// field has to be repeated in the test builder and in ~14 test fixtures that

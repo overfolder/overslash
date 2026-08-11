@@ -153,7 +153,7 @@ impl Delivery {
 /// `Sync` is the historical behaviour: the response carries the upstream body,
 /// bounded by the deployment's request cap. `Async` accepts the call, persists
 /// it, and hands back an execution id to poll — the only way a call can outlive
-/// the caller's connection. See DECISIONS D57.
+/// the caller's connection. See DECISIONS D62.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(super) enum ExecutionMode {

@@ -113,7 +113,7 @@ pub enum EventType {
     /// are keyed on an approval, and an async call may not have one. The wire
     /// strings here are public API and are stored verbatim by webhook
     /// subscriptions, so overloading an existing name would silently start
-    /// delivering unrelated events to every current subscriber. See D57.
+    /// delivering unrelated events to every current subscriber. See D62.
     ExecutionCompleted,
     ExecutionFailed,
     ExecutionCancelled,
@@ -225,11 +225,21 @@ pub fn parse_topics(raw: Option<&str>) -> Result<Vec<Topic>, String> {
 
 #[cfg(test)]
 mod tests {
-    /// The array length is typed, so this really asserts that a new variant
-    /// was added to `ALL` and not just to the enum.
+    /// A variant added to the enum but not to `ALL` compiles fine and then
+    /// silently never reaches `parse_topics(None)`, so the count is asserted
+    /// rather than inferred.
+    ///
+    /// If this fires after a merge, the likely cause is two branches each
+    /// adding a topic: both write `[Topic; 4]`, and resolving the conflict by
+    /// taking one side drops the other topic entirely. Bump the number *and*
+    /// check both variants are present.
     #[test]
     fn every_topic_is_in_all_and_round_trips() {
-        assert_eq!(Topic::ALL.len(), 4);
+        assert_eq!(
+            Topic::ALL.len(),
+            4,
+            "Topic::ALL is out of step with the enum — see this test's doc comment"
+        );
         for t in Topic::ALL {
             assert_eq!(
                 Topic::from_str(t.as_str()),
