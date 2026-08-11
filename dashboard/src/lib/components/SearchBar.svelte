@@ -1,63 +1,65 @@
 <script lang="ts" module>
-	export type Operator = '=' | '~' | '!=';
+	// The model lives in a plain `.ts` so it can be unit-tested; it is re-exported
+	// here because every consumer imports its types from this component.
+	import {
+		addTerm,
+		addTerms,
+		emptySearch,
+		filterTerms,
+		hasTerm,
+		matchesAllText,
+		parseSearch,
+		removeTermAt,
+		sameTerm,
+		termId,
+		termToDraft,
+		textTerms
+	} from '$lib/search/terms';
+	import type {
+		FilterTerm,
+		Operator,
+		SearchKey,
+		SearchValue,
+		Term,
+		TextTerm
+	} from '$lib/search/terms';
 
-	export interface SearchKey {
-		/** Key name shown to the user (e.g. `event`, `identity`). */
-		name: string;
-		/** Allowed operators. Defaults to `['=']`. */
-		operators?: Operator[];
-		/** Static value list, or an async loader for value autocomplete. */
-		values?: string[] | (() => Promise<string[]>);
-		/** Help text shown next to the key suggestion. */
-		hint?: string;
-	}
-
-	export interface Expression {
-		key: string;
-		op: Operator;
-		value: string;
-	}
-
-	export interface SearchValue {
-		expressions: Expression[];
-		freeText: string;
-	}
-
-	const TOKEN_RE = /(\w+)\s*(!=|=|~)\s*("[^"]*"|\S+)/g;
-
-	/** Parse a free string into structured expressions + remaining free text. */
-	export function parseSearch(input: string, knownKeys: string[]): SearchValue {
-		const expressions: Expression[] = [];
-		let lastIndex = 0;
-		let freeText = '';
-		const re = new RegExp(TOKEN_RE);
-		let m: RegExpExecArray | null;
-		while ((m = re.exec(input)) !== null) {
-			const [full, key, op, rawValue] = m;
-			if (!knownKeys.includes(key)) continue;
-			freeText += input.slice(lastIndex, m.index);
-			lastIndex = m.index + full.length;
-			const value = rawValue.startsWith('"') ? rawValue.slice(1, -1) : rawValue;
-			expressions.push({ key, op: op as Operator, value });
-		}
-		freeText += input.slice(lastIndex);
-		return { expressions, freeText: freeText.replace(/\s+/g, ' ').trim() };
-	}
+	export {
+		addTerm,
+		addTerms,
+		emptySearch,
+		filterTerms,
+		hasTerm,
+		matchesAllText,
+		parseSearch,
+		removeTermAt,
+		sameTerm,
+		termId,
+		termToDraft,
+		textTerms
+	};
+	export type { FilterTerm, Operator, SearchKey, SearchValue, Term, TextTerm };
 </script>
 
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { tick, untrack } from 'svelte';
 
 	let {
 		keys,
 		value = $bindable(),
+		pinned = [],
 		placeholder = 'Search…',
-		onchange
+		onchange,
+		onremovepinned
 	}: {
 		keys: SearchKey[];
 		value: SearchValue;
+		/** Filters owned by the URL rather than by the bar (`?connection=<id>`).
+		 *  Rendered first, not editable, removed through `onremovepinned`. */
+		pinned?: FilterTerm[];
 		placeholder?: string;
 		onchange: (next: SearchValue) => void;
+		onremovepinned?: (term: FilterTerm, index: number) => void;
 	} = $props();
 
 	// A `key` suggestion carries its `key`/`op` directly so selecting it can set
@@ -68,7 +70,9 @@
 		| { kind: 'value'; label: string; insert: string };
 
 	let inputEl: HTMLInputElement | undefined = $state();
-	let draft = $state(value.freeText);
+	// Uncommitted text only. Nothing here is part of `value` until it is
+	// committed into a bubble (Enter, blur, or picking a suggestion).
+	let draft = $state('');
 	let suggestions = $state<Suggestion[]>([]);
 	let showSuggestions = $state(false);
 	let activeIndex = $state(0);
@@ -87,24 +91,59 @@
 		onchange(next);
 	}
 
-	function removeChip(index: number) {
-		const next: SearchValue = {
-			expressions: value.expressions.filter((_, i) => i !== index),
-			freeText: draft.trim()
-		};
-		emit(next);
+	function removeTerm(index: number) {
+		emit(removeTermAt(value, index));
 		inputEl?.focus();
 	}
 
-	function addExpression(expr: Expression) {
-		const next: SearchValue = {
-			expressions: [...value.expressions, expr],
-			freeText: ''
-		};
+	/** Commit one term and reset the input to its resting state. A duplicate is
+	 *  swallowed rather than emitted — on the audit page an emit costs a refetch. */
+	function commit(term: Term) {
+		const next = addTerm(value, term);
 		draft = '';
 		pendingKey = null;
 		showSuggestions = false;
-		emit(next);
+		if (next !== value) emit(next);
+	}
+
+	/** Turn whatever is typed into bubbles. `key op value` (typed in full, or
+	 *  half-picked from the dropdown) becomes a filter bubble; every remaining
+	 *  gap becomes one text bubble. */
+	function commitDraft() {
+		if (!draft.trim()) return;
+		if (pendingKey) {
+			commit({ kind: 'filter', key: pendingKey.name, op: pendingOp, value: draft.trim() });
+			return;
+		}
+		const next = addTerms(value, parseSearch(draft, knownKeyNames));
+		draft = '';
+		showSuggestions = false;
+		if (next !== value) emit(next);
+	}
+
+	/** Click a bubble to fix a typo: it leaves the bar and returns to the input,
+	 *  a filter reopening in its `key op …` pending state so value autocomplete
+	 *  still works on the second pass. */
+	async function editTerm(index: number) {
+		const t = value.terms[index];
+		if (!t) return;
+		clearIdleKeys();
+		if (t.kind === 'text') {
+			pendingKey = null;
+			draft = t.value;
+		} else {
+			const key = keys.find((k) => k.name === t.key) ?? null;
+			pendingKey = key;
+			pendingOp = t.op;
+			pendingValues = [];
+			// A filter whose key this surface no longer offers can't reopen as a
+			// pending chip — hand it back as editable text instead of dropping it.
+			draft = key ? t.value : termToDraft(t);
+		}
+		emit(removeTermAt(value, index));
+		await tick();
+		inputEl?.focus();
+		recompute();
 	}
 
 	async function loadValues(key: SearchKey): Promise<string[]> {
@@ -212,28 +251,8 @@
 			inputEl?.focus();
 			recompute();
 		} else if (s.kind === 'value' && pendingKey) {
-			addExpression({ key: pendingKey.name, op: pendingOp, value: s.insert });
+			commit({ kind: 'filter', key: pendingKey.name, op: pendingOp, value: s.insert });
 		}
-	}
-
-	function commitFromInput() {
-		// Try parsing what's typed as `key op value` (no autocomplete needed).
-		const parsed = parseSearch(draft, knownKeyNames);
-		if (parsed.expressions.length) {
-			emit({
-				expressions: [...value.expressions, ...parsed.expressions],
-				freeText: parsed.freeText
-			});
-			draft = parsed.freeText;
-			return;
-		}
-		// In pendingKey mode, treat the whole draft as the value.
-		if (pendingKey && draft.trim()) {
-			addExpression({ key: pendingKey.name, op: pendingOp, value: draft.trim() });
-			return;
-		}
-		// Otherwise emit free text as-is.
-		emit({ expressions: value.expressions, freeText: draft.trim() });
 	}
 
 	function onKeydown(e: KeyboardEvent) {
@@ -260,53 +279,113 @@
 		}
 		if (e.key === 'Enter') {
 			e.preventDefault();
-			commitFromInput();
+			commitDraft();
 		} else if (e.key === 'Backspace' && draft === '' && pendingKey) {
 			pendingKey = null;
 			recompute();
-		} else if (e.key === 'Backspace' && draft === '' && value.expressions.length > 0) {
-			removeChip(value.expressions.length - 1);
+		} else if (e.key === 'Backspace' && draft === '' && value.terms.length > 0) {
+			removeTerm(value.terms.length - 1);
 		}
 	}
 
 	function onBlur() {
 		clearIdleKeys();
-		// Commit free text on blur so URL stays in sync.
-		commitFromInput();
+		// Commit on the way out so nothing typed is silently dropped (and the
+		// audit page's URL stays in sync).
+		commitDraft();
 		// Delay hiding so click on suggestion still fires.
 		setTimeout(() => (showSuggestions = false), 150);
 	}
 
 	$effect(() => {
-		// Sync external value back into draft when parent resets filters.
-		if (value.freeText !== draft && document.activeElement !== inputEl) {
-			draft = value.freeText;
-		}
+		// Parent reset the bar (a "Clear filters" button, a navigation) — drop any
+		// uncommitted text with it, unless the user is mid-type in the field.
+		if (value.terms.length !== 0) return;
+		untrack(() => {
+			if (draft !== '' && document.activeElement !== inputEl) draft = '';
+		});
 	});
+
+	function editLabel(t: Term): string {
+		return t.kind === 'text'
+			? `Edit search term ${t.value}`
+			: `Edit filter ${t.key} ${t.op} ${t.label ?? t.value}`;
+	}
+
+	function removeLabel(t: Term): string {
+		return t.kind === 'text'
+			? `Remove search term ${t.value}`
+			: `Remove filter ${t.key} ${t.op} ${t.label ?? t.value}`;
+	}
 </script>
 
 <div class="search">
 	<div class="field" onclick={() => inputEl?.focus()} role="presentation">
-		{#each value.expressions as expr, i (i + expr.key + expr.value)}
-			<span class="chip">
-				<span class="chip-key">{expr.key}</span>
-				<span class="chip-op">{expr.op}</span>
-				<span class="chip-val">{expr.value}</span>
+		{#each pinned as t, i (i)}
+			<span class="chip is-pinned">
+				<span class="chip-body">
+					<span class="chip-key">{t.key}</span>
+					<span class="chip-op">{t.op}</span>
+					<span class="chip-val">{t.label ?? t.value}</span>
+				</span>
+				{#if onremovepinned}
+					<button
+						type="button"
+						class="chip-remove"
+						aria-label={removeLabel(t)}
+						onmousedown={(e) => e.preventDefault()}
+						onclick={(e) => {
+							e.stopPropagation();
+							onremovepinned?.(t, i);
+						}}>✕</button
+					>
+				{/if}
+			</span>
+		{/each}
+		<!-- Keyed by index, not by term: chips hold no local state, the index *is*
+		     the remove/edit handle, and a hand-crafted URL (`?tag=a,a`) can hydrate
+		     two identical terms, which a value-based key would crash on. -->
+		{#each value.terms as t, i (i)}
+			<span class="chip" class:is-text={t.kind === 'text'}>
+				<!-- mousedown is swallowed so the field never blurs mid-click, which
+				     would commit the draft (and re-index the terms) under our feet. -->
+				<button
+					type="button"
+					class="chip-body"
+					aria-label={editLabel(t)}
+					onmousedown={(e) => e.preventDefault()}
+					onclick={(e) => {
+						e.stopPropagation();
+						editTerm(i);
+					}}
+				>
+					{#if t.kind === 'text'}
+						<span class="chip-ico" aria-hidden="true">⌕</span>
+						<span class="chip-val">{t.value}</span>
+					{:else}
+						<span class="chip-key">{t.key}</span>
+						<span class="chip-op">{t.op}</span>
+						<span class="chip-val">{t.label ?? t.value}</span>
+					{/if}
+				</button>
 				<button
 					type="button"
 					class="chip-remove"
-					aria-label="Remove filter"
+					aria-label={removeLabel(t)}
+					onmousedown={(e) => e.preventDefault()}
 					onclick={(e) => {
 						e.stopPropagation();
-						removeChip(i);
+						removeTerm(i);
 					}}>✕</button
 				>
 			</span>
 		{/each}
 		{#if pendingKey}
-			<span class="chip pending">
-				<span class="chip-key">{pendingKey.name}</span>
-				<span class="chip-op">{pendingOp}</span>
+			<span class="chip is-pending">
+				<span class="chip-body">
+					<span class="chip-key">{pendingKey.name}</span>
+					<span class="chip-op">{pendingOp}</span>
+				</span>
 			</span>
 		{/if}
 		<input
@@ -377,16 +456,41 @@
 	.chip {
 		display: inline-flex;
 		align-items: center;
-		gap: 4px;
-		padding: 2px 6px 2px 8px;
-		background: var(--primary-50, #ededff);
-		color: var(--primary-700, #4238a8);
+		/* `--color-primary-bg` / `--color-primary` both carry dark-mode overrides;
+		   the older `--primary-50` / `--primary-700` pair did not, which left chip
+		   text as dark indigo on a translucent field in dark mode. */
+		background: var(--color-primary-bg);
+		color: var(--color-primary);
 		border-radius: 4px;
 		font-size: 0.85rem;
+		max-width: 100%;
 	}
-	.chip.pending {
+	/* Text bubbles read as "words I searched for", filters as "column = value" —
+	   a neutral tint plus the glyph keeps the two apart at a glance. */
+	.chip.is-text,
+	.chip.is-pending {
 		background: var(--neutral-100, #f5f5f7);
 		color: var(--color-text);
+	}
+	.chip.is-pinned {
+		background: var(--neutral-100, #f5f5f7);
+		color: var(--color-text-muted);
+	}
+	.chip-body {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		min-width: 0;
+		padding: 2px 4px 2px 8px;
+		border: none;
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		font-size: inherit;
+		text-align: left;
+	}
+	button.chip-body {
+		cursor: pointer;
 	}
 	.chip-key {
 		font-weight: 600;
@@ -394,13 +498,21 @@
 	.chip-op {
 		opacity: 0.7;
 	}
+	.chip-ico {
+		opacity: 0.6;
+	}
+	.chip-val {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
 	.chip-remove {
 		border: none;
 		background: transparent;
 		color: inherit;
 		cursor: pointer;
 		font-size: 0.85rem;
-		padding: 0 2px;
+		padding: 2px 6px 2px 2px;
 		line-height: 1;
 	}
 	.chip-remove:hover {
@@ -436,7 +548,7 @@
 	}
 	.suggestions button.active,
 	.suggestions button:hover {
-		background: var(--primary-50, #ededff);
-		color: var(--primary-700, #4238a8);
+		background: var(--color-primary-bg);
+		color: var(--color-primary);
 	}
 </style>

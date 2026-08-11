@@ -1,4 +1,4 @@
-import type { Expression, SearchKey, SearchValue } from '$lib/components/SearchBar.svelte';
+import type { SearchKey, SearchValue, Term } from '$lib/search/terms';
 import type { AuditFilters } from './types';
 
 /** Time presets accepted by the `time` key. */
@@ -155,14 +155,17 @@ export function searchToFilters(
 	const filters: AuditFilters = {};
 	const qTerms: string[] = [];
 	const tagTerms: string[] = [];
-	if (value.freeText) qTerms.push(value.freeText);
+	for (const t of value.terms) {
+		if (t.kind === 'text') qTerms.push(t.value);
+	}
 	// Resolve a name to an identity id, optionally constrained to a set of
 	// kinds (so `agent = bot` doesn't match a user also named `bot`).
 	const resolveId = (name: string, kinds?: string[]): string | undefined =>
 		identities.find(
 			(i) => i.name.toLowerCase() === name.toLowerCase() && (!kinds || kinds.includes(i.kind))
 		)?.id;
-	for (const expr of value.expressions) {
+	for (const expr of value.terms) {
+		if (expr.kind !== 'filter') continue;
 		if (expr.key === 'event') {
 			if (expr.op === '~') filters.action_contains = expr.value;
 			else filters.action = expr.value;
@@ -233,7 +236,10 @@ export function searchToFilters(
 			}
 		}
 	}
-	if (qTerms.length) filters.q = qTerms.join(' ');
+	// Comma-joined: the API splits `q` on commas and requires *every* term to
+	// match, the same convention `tag` and `identity_kind` use. Joining with a
+	// space instead would ask for one literal phrase and match nothing.
+	if (qTerms.length) filters.q = qTerms.join(',');
 	if (tagTerms.length) filters.tag = tagTerms.join(',');
 	return filters;
 }
@@ -244,23 +250,29 @@ export function filtersToSearch(
 	identities: IdentitySummary[],
 	currentUser?: CurrentUser
 ): SearchValue {
-	const expressions: Expression[] = [];
-	if (filters.action) expressions.push({ key: 'event', op: '=', value: filters.action });
+	const terms: Term[] = [];
+	if (filters.action) terms.push({ kind: 'filter', key: 'event', op: '=', value: filters.action });
 	if (filters.action_contains)
-		expressions.push({ key: 'event', op: '~', value: filters.action_contains });
+		terms.push({ kind: 'filter', key: 'event', op: '~', value: filters.action_contains });
 	if (filters.is_error !== undefined)
-		expressions.push({ key: 'result', op: '=', value: filters.is_error ? 'error' : 'success' });
+		terms.push({
+			kind: 'filter',
+			key: 'result',
+			op: '=',
+			value: filters.is_error ? 'error' : 'success'
+		});
 	if (filters.resource_type)
-		expressions.push({ key: 'resource', op: '=', value: filters.resource_type });
+		terms.push({ kind: 'filter', key: 'resource', op: '=', value: filters.resource_type });
 	if (filters.resource_type_contains)
-		expressions.push({ key: 'resource', op: '~', value: filters.resource_type_contains });
+		terms.push({ kind: 'filter', key: 'resource', op: '~', value: filters.resource_type_contains });
 	if (filters.description)
-		expressions.push({ key: 'description', op: '=', value: filters.description });
+		terms.push({ kind: 'filter', key: 'description', op: '=', value: filters.description });
 	if (filters.description_contains)
-		expressions.push({ key: 'description', op: '~', value: filters.description_contains });
-	if (filters.ip_address) expressions.push({ key: 'ip', op: '=', value: filters.ip_address });
+		terms.push({ kind: 'filter', key: 'description', op: '~', value: filters.description_contains });
+	if (filters.ip_address)
+		terms.push({ kind: 'filter', key: 'ip', op: '=', value: filters.ip_address });
 	if (filters.ip_address_contains)
-		expressions.push({ key: 'ip', op: '~', value: filters.ip_address_contains });
+		terms.push({ kind: 'filter', key: 'ip', op: '~', value: filters.ip_address_contains });
 	if (filters.identity_id) {
 		const match = identities.find((i) => i.id === filters.identity_id);
 		// `identity_id` is an exact-actor filter (from `agent =` or `identity =`).
@@ -268,34 +280,40 @@ export function filtersToSearch(
 		// `user`, which now means the owning-user subtree (owner_user_id) and
 		// would silently broaden an exact-actor filter on the next edit.
 		const key = match && AGENT_KINDS.includes(match.kind) ? 'agent' : 'identity';
-		expressions.push({ key, op: '=', value: match?.name ?? filters.identity_id });
+		terms.push({ kind: 'filter', key, op: '=', value: match?.name ?? filters.identity_id });
 	}
 	if (filters.identity_name_contains) {
 		const kinds = filters.identity_kind?.split(',') ?? [];
 		// `user ~` now maps to owner_user_contains, so a kind=user substring here
 		// can only be a legacy/identity match — never reverse it to `user`.
 		const key = kinds.some((k) => AGENT_KINDS.includes(k)) ? 'agent' : 'identity';
-		expressions.push({ key, op: '~', value: filters.identity_name_contains });
+		terms.push({ kind: 'filter', key, op: '~', value: filters.identity_name_contains });
 	}
 	if (filters.owner_user_id) {
 		const value =
 			currentUser && filters.owner_user_id === currentUser.id
 				? 'me'
 				: (identities.find((i) => i.id === filters.owner_user_id)?.name ?? filters.owner_user_id);
-		expressions.push({ key: 'user', op: '=', value });
+		terms.push({ kind: 'filter', key: 'user', op: '=', value });
 	}
 	if (filters.owner_user_contains) {
-		expressions.push({ key: 'user', op: '~', value: filters.owner_user_contains });
+		terms.push({ kind: 'filter', key: 'user', op: '~', value: filters.owner_user_contains });
 	}
 	if (filters.tag) {
 		// One expression per tag, so editing or removing one doesn't drop the rest.
 		for (const t of filters.tag.split(',').filter(Boolean)) {
-			expressions.push({ key: 'tag', op: '=', value: t });
+			terms.push({ kind: 'filter', key: 'tag', op: '=', value: t });
 		}
 	}
-	if (filters.tag_contains) expressions.push({ key: 'tag', op: '~', value: filters.tag_contains });
-	if (filters.uuid) expressions.push({ key: 'uuid', op: '=', value: filters.uuid });
+	if (filters.tag_contains)
+		terms.push({ kind: 'filter', key: 'tag', op: '~', value: filters.tag_contains });
+	if (filters.uuid) terms.push({ kind: 'filter', key: 'uuid', op: '=', value: filters.uuid });
 	// We can't reliably reverse `time` from since/until alone (presets are
 	// snapshotted to ISO timestamps); leave it out and let the user re-pick.
-	return { expressions, freeText: filters.q ?? '' };
+	// Text bubbles come back last; `AuditFilters` is an unordered bag, so the
+	// original interleaving of a shared URL can't be recovered.
+	for (const q of (filters.q ?? '').split(',')) {
+		if (q) terms.push({ kind: 'text', value: q });
+	}
+	return { terms };
 }

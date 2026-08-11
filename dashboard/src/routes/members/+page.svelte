@@ -3,6 +3,14 @@
 	import { invalidateAll } from '$app/navigation';
 	import type { Identity, ApiKeySummary } from './types';
 	import { makeIdentityFormatter, providerLabel } from '$lib/identityDisplay';
+	import SearchBar, {
+		emptySearch,
+		filterTerms,
+		matchesAllText,
+		type FilterTerm,
+		type SearchKey,
+		type SearchValue
+	} from '$lib/components/SearchBar.svelte';
 
 	let {
 		data
@@ -20,7 +28,7 @@
 	// and the drawer carries both losslessly. See `$lib/identityDisplay`.
 	const fmt = $derived(makeIdentityFormatter(data.allowedDomains));
 
-	let query = $state('');
+	let search = $state<SearchValue>(emptySearch());
 	let selectedId: string | null = $state(null);
 
 	// Identity id currently being promoted/demoted (drives the spinner + disables
@@ -91,14 +99,62 @@
 		return m;
 	});
 
-	const filtered = $derived.by(() => {
-		const q = query.trim().toLowerCase();
-		if (!q) return users;
-		return users.filter(
-			(u) =>
-				u.name.toLowerCase().includes(q) || (u.email ?? '').toLowerCase().includes(q)
-		);
-	});
+	const searchKeys = $derived<SearchKey[]>([
+		{ name: 'name', operators: ['=', '~'], values: users.map((u) => u.name), hint: 'member name' },
+		{
+			name: 'email',
+			operators: ['=', '~'],
+			values: users.map((u) => u.email ?? '').filter(Boolean),
+			hint: 'email address'
+		},
+		{ name: 'role', operators: ['=', '!='], values: ['admin', 'member'], hint: 'org role' },
+		{
+			name: 'provider',
+			operators: ['=', '!='],
+			values: [...new Set(users.map((u) => u.provider ?? '').filter(Boolean))],
+			hint: 'identity provider'
+		}
+	]);
+
+	function matchesFilter(u: Identity, expr: FilterTerm): boolean {
+		const v = expr.value.toLowerCase();
+		let field = '';
+		switch (expr.key) {
+			case 'name':
+				field = u.name;
+				break;
+			case 'email':
+				field = u.email ?? '';
+				break;
+			case 'role':
+				field = u.is_org_admin ? 'admin' : 'member';
+				break;
+			case 'provider':
+				field = u.provider ?? '';
+				break;
+			default:
+				return true;
+		}
+		field = field.toLowerCase();
+		switch (expr.op) {
+			case '=':
+				return field === v;
+			case '!=':
+				return field !== v;
+			case '~':
+				return field.includes(v);
+		}
+		return true;
+	}
+
+	const filtered = $derived(
+		users.filter((u) => {
+			for (const expr of filterTerms(search)) {
+				if (!matchesFilter(u, expr)) return false;
+			}
+			return matchesAllText([u.name, u.email ?? ''], search);
+		})
+	);
 
 	const selected = $derived(filtered.find((u) => u.id === selectedId) ?? null);
 
@@ -142,12 +198,12 @@
 		</div>
 	</header>
 
-	<div class="search">
-		<input
-			type="search"
-			placeholder="Search by name or email…"
-			bind:value={query}
-			aria-label="Search members"
+	<div class="member-search">
+		<SearchBar
+			keys={searchKeys}
+			bind:value={search}
+			placeholder="Search members… (try role=admin)"
+			onchange={(next) => (search = next)}
 		/>
 	</div>
 
@@ -161,8 +217,8 @@
 		</div>
 	{:else if filtered.length === 0}
 		<div class="empty">
-			<div class="empty-title">No members match “{query}”</div>
-			<div class="empty-body">Try a different name or email.</div>
+			<div class="empty-title">No members match your filters</div>
+			<div class="empty-body">Remove a bubble from the search bar to widen the results.</div>
 		</div>
 	{:else}
 		<div class="card">
@@ -372,20 +428,8 @@
 		margin: var(--space-1) 0 0;
 	}
 
-	.search input {
-		width: 100%;
-		max-width: 360px;
-		padding: var(--space-2) var(--space-3);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-surface);
-		color: var(--color-text);
-		font: var(--text-body);
-	}
-	.search input:focus {
-		outline: none;
-		border-color: var(--color-primary);
-		box-shadow: 0 0 0 3px var(--color-primary-bg);
+	.member-search {
+		max-width: 480px;
 	}
 
 	.card {

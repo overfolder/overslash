@@ -55,8 +55,11 @@ struct AuditQuery {
     action: Option<String>,
     resource_type: Option<String>,
     identity_id: Option<Uuid>,
-    /// Free-text substring (case-insensitive) over action, description and
-    /// identity name. Drives the audit log search bar.
+    /// Free-text search over action, description and identity name. Comma
+    /// separated, and every term must match (AND) — the same convention as
+    /// `tag` and `identity_kind`, so the search bar's text bubbles narrow the
+    /// way its filter chips do. A literal comma therefore splits into two
+    /// terms, which broadens the match rather than returning nothing.
     q: Option<String>,
     /// Exact match on `audit_log.id`. Powers the `?event=<uuid>` deep-link
     /// — the dashboard fires this query to verify a deep-linked event exists
@@ -135,6 +138,12 @@ async fn query_audit(
             .filter(|k| !k.is_empty())
             .collect::<Vec<_>>()
     });
+    let q_terms = params.q.and_then(empty).map(|s| {
+        s.split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+    });
     let tags = params.tag.and_then(empty).map(|s| {
         s.split(',')
             .map(|t| t.trim().to_string())
@@ -148,7 +157,7 @@ async fn query_audit(
         identity_id: params.identity_id,
         since: params.since,
         until: params.until,
-        q: params.q.and_then(empty),
+        q_terms: q_terms.filter(|v| !v.is_empty()),
         event_id: params.event_id,
         uuid: params.uuid,
         action_contains: params.action_contains.and_then(empty),

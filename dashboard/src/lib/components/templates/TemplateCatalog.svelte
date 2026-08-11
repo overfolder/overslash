@@ -20,7 +20,11 @@
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
-	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
+	import SearchBar, {
+		emptySearch,
+		filterTerms,
+		matchesAllText, type SearchKey, type SearchValue
+	} from '$lib/components/SearchBar.svelte';
 	import SortableHeader from '$lib/components/SortableHeader.svelte';
 	import { compareBy, type SortDir } from '$lib/sort';
 
@@ -42,7 +46,7 @@
 	// Curation controls only make sense for admins who know the org context and
 	// while the org is in curated mode.
 	const canCurate = $derived(isAdmin && !!orgId);
-	let searchValue = $state<SearchValue>({ expressions: [], freeText: '' });
+	let searchValue = $state<SearchValue>(emptySearch());
 	let pendingDelete = $state<TemplateSummary | null>(null);
 	let pendingDiscard = $state<DraftTemplateDetail | null>(null);
 
@@ -112,16 +116,10 @@
 
 	const filtered = $derived(
 		templates.filter((t) => {
-			for (const expr of searchValue.expressions) {
+			for (const expr of filterTerms(searchValue)) {
 				if (!matchesExpression(t, expr)) return false;
 			}
-			const q = searchValue.freeText.trim().toLowerCase();
-			if (!q) return true;
-			return (
-				t.key.toLowerCase().includes(q) ||
-				t.display_name.toLowerCase().includes(q) ||
-				(t.description ?? '').toLowerCase().includes(q)
-			);
+			return matchesAllText([t.key, t.display_name, t.description ?? ''], searchValue);
 		})
 	);
 

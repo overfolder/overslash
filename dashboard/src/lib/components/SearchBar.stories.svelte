@@ -1,7 +1,7 @@
 <script module lang="ts">
 	import { defineMeta } from '@storybook/addon-svelte-csf';
 	import { fn } from 'storybook/test';
-	import SearchBar, { type SearchKey, type SearchValue } from './SearchBar.svelte';
+	import SearchBar, { emptySearch, type SearchKey, type SearchValue } from './SearchBar.svelte';
 
 	// Mirrors the Audit Log key set from UI_SPEC § Search Bar.
 	const auditKeys: SearchKey[] = [
@@ -12,13 +12,23 @@
 		{ name: 'time', operators: ['=', '~'], hint: 'e.g. 24h' }
 	];
 
-	const empty: SearchValue = { expressions: [], freeText: '' };
+	const empty: SearchValue = emptySearch();
+	// Every term is a bubble: two column filters plus a free-text phrase, which
+	// AND together in the order they were typed.
 	const withChips: SearchValue = {
-		expressions: [
-			{ key: 'service', op: '=', value: 'github' },
-			{ key: 'result', op: '=', value: 'error' }
-		],
-		freeText: 'pull request'
+		terms: [
+			{ kind: 'filter', key: 'service', op: '=', value: 'github' },
+			{ kind: 'filter', key: 'result', op: '=', value: 'error' },
+			{ kind: 'text', value: 'pull request' }
+		]
+	};
+	// Two text bubbles AND with each other and with a filter, whatever the order.
+	const textBubbles: SearchValue = {
+		terms: [
+			{ kind: 'text', value: 'timeout' },
+			{ kind: 'filter', key: 'result', op: '=', value: 'error' },
+			{ kind: 'text', value: 'rate limit' }
+		]
 	};
 
 	const { Story } = defineMeta({
@@ -31,11 +41,12 @@
 </script>
 
 <script lang="ts">
-	let value = $state<SearchValue>({ expressions: [], freeText: '' });
+	let value = $state<SearchValue>(emptySearch());
 </script>
 
 <Story name="Empty" args={{ value: empty }} />
 <Story name="With filter chips" args={{ value: withChips }} />
+<Story name="Text bubbles" args={{ value: textBubbles }} />
 
 <Story name="Interactive" asChild>
 	<div style="width:560px; max-width:100%;">

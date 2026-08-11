@@ -5,6 +5,18 @@
 	import { collapse, motionDuration } from '$lib/utils/motion';
 	import { flip } from 'svelte/animate';
 	import { APPROVAL_EVENT_TYPES, eventStream, onEvent } from '$lib/stores/events.svelte';
+	import SearchBar, {
+		addTerm,
+		emptySearch,
+		filterTerms,
+		hasTerm,
+		matchesAllText,
+		sameTerm,
+		type FilterTerm,
+		type SearchKey,
+		type SearchValue,
+		type Term
+	} from '$lib/components/SearchBar.svelte';
 
 	let {
 		data
@@ -19,10 +31,9 @@
 	let approvals = $state<ApprovalResponse[]>([]);
 	let pendingExecutions = $state<ApprovalResponse[]>([]);
 
-	// filters
-	let query = $state('');
-	let riskFilter = $state<'all' | 'low' | 'med' | 'high'>('all');
-	let serviceFilter = $state('all');
+	// One composable bar: risk, service and agent are column filters, anything
+	// else typed is a text bubble, and they all AND together.
+	let search = $state<SearchValue>(emptySearch());
 
 	/**
 	 * What belongs in "Pending calls": a deferred execution waiting on a
@@ -100,28 +111,78 @@
 
 	const services = $derived([...new Set(approvals.map(primaryService))].sort());
 
-	// Keep the service filter valid: if the selected service drains out of the
-	// queue (all its approvals resolved), its chip disappears — reset to "all"
-	// so the filter can't get stuck hiding every row with no way to clear it.
-	$effect(() => {
-		if (serviceFilter !== 'all' && !services.includes(serviceFilter)) {
-			serviceFilter = 'all';
-		}
-	});
+	const agents = $derived([...new Set(approvals.map(agentName))].sort());
 
-	const visible = $derived.by(() => {
-		const q = query.trim().toLowerCase();
-		return approvals.filter((a) => {
-			if (riskFilter !== 'all' && a.risk !== riskFilter) return false;
-			if (serviceFilter !== 'all' && primaryService(a) !== serviceFilter) return false;
-			if (q) {
-				const hay =
-					`${a.action_summary} ${agentName(a)} ${primaryArg(a)} ${primaryService(a)}`.toLowerCase();
-				if (!hay.includes(q)) return false;
+	const searchKeys = $derived<SearchKey[]>([
+		{ name: 'risk', operators: ['=', '!='], values: ['high', 'med', 'low'], hint: 'risk class' },
+		{ name: 'service', operators: ['=', '~'], values: services, hint: 'requested service' },
+		{ name: 'agent', operators: ['=', '~'], values: agents, hint: 'requesting agent' }
+	]);
+
+	function matchesFilter(a: ApprovalResponse, expr: FilterTerm): boolean {
+		const v = expr.value.toLowerCase();
+		let field = '';
+		switch (expr.key) {
+			case 'risk':
+				field = a.risk ?? '';
+				break;
+			case 'service':
+				field = primaryService(a);
+				break;
+			case 'agent':
+				field = agentName(a);
+				break;
+			default:
+				return true;
+		}
+		field = field.toLowerCase();
+		switch (expr.op) {
+			case '=':
+				return field === v;
+			case '!=':
+				return field !== v;
+			case '~':
+				return field.includes(v);
+		}
+		return true;
+	}
+
+	// A `service =` filter whose approvals have all drained now shows as an empty
+	// list *and* a visible bubble the operator can remove — so unlike the old
+	// dropdown, it can't get stuck, and we don't silently discard their filter.
+	const visible = $derived(
+		approvals.filter((a) => {
+			for (const expr of filterTerms(search)) {
+				if (!matchesFilter(a, expr)) return false;
 			}
-			return true;
-		});
-	});
+			return matchesAllText(
+				[a.action_summary, agentName(a), primaryArg(a), primaryService(a)],
+				search
+			);
+		})
+	);
+
+	// The service quick-pick row writes into the bar rather than owning its own
+	// state, so picking a service is just another removable bubble.
+	function serviceTerm(s: string): Term {
+		return { kind: 'filter', key: 'service', op: '=', value: s };
+	}
+	const pickedServices = $derived(
+		new Set(
+			filterTerms(search)
+				.filter((t) => t.key === 'service' && t.op === '=')
+				.map((t) => t.value)
+		)
+	);
+	function toggleService(name: string) {
+		const term = serviceTerm(name);
+		search = hasTerm(search, term)
+			? { terms: search.terms.filter((t) => !sameTerm(t, term)) }
+			: addTerm(search, term);
+	}
+	function clearServices() {
+		search = { terms: search.terms.filter((t) => !(t.kind === 'filter' && t.key === 'service')) };
+	}
 
 	function dropResolved(updated: ApprovalResponse) {
 		const cascaded = new Set(updated.cascaded_approval_ids ?? []);
@@ -181,29 +242,26 @@
 
 		{#if approvals.length > 0}
 			<div class="aq-filters">
-				<label class="aq-search">
-					<span class="ico"></span>
-					<input placeholder="Search content, agent, or target…" bind:value={query} />
-				</label>
-				<select class="aq-risk-sel" bind:value={riskFilter}>
-					<option value="all">All risk</option>
-					<option value="high">High risk</option>
-					<option value="med">Medium risk</option>
-					<option value="low">Low risk</option>
-				</select>
+				<SearchBar
+					keys={searchKeys}
+					bind:value={search}
+					placeholder="Search approvals… (try risk=high)"
+					onchange={(next) => (search = next)}
+				/>
 			</div>
 			{#if services.length > 1}
 				<div class="aq-chiprow">
 					<button
 						class="aq-chip"
-						class:is-active={serviceFilter === 'all'}
-						onclick={() => (serviceFilter = 'all')}>All services</button
+						class:is-active={pickedServices.size === 0}
+						onclick={clearServices}>All services</button
 					>
 					{#each services as s}
 						<button
 							class="aq-chip"
-							class:is-active={serviceFilter === s}
-							onclick={() => (serviceFilter = s)}
+							class:is-active={pickedServices.has(s)}
+							aria-pressed={pickedServices.has(s)}
+							onclick={() => toggleService(s)}
 						>
 							<span class="mono-tile">{s.slice(0, 2).toUpperCase()}</span>
 							{humanize(s)}
@@ -351,64 +409,6 @@
 		margin-bottom: 14px;
 		flex-wrap: wrap;
 	}
-	.aq-search {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex: 1;
-		min-width: 220px;
-		height: 36px;
-		padding: 0 12px;
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: 8px;
-	}
-	.aq-search:focus-within {
-		border-color: var(--color-primary);
-		outline: 2px solid var(--color-primary-bg);
-		outline-offset: -1px;
-	}
-	.aq-search input {
-		flex: 1;
-		border: 0;
-		background: transparent;
-		outline: 0;
-		font-size: 13px;
-		color: var(--color-text);
-	}
-	.aq-search input::placeholder {
-		color: var(--color-text-muted);
-	}
-	.aq-search .ico {
-		width: 14px;
-		height: 14px;
-		border-radius: 50%;
-		border: 1.5px solid var(--color-text-muted);
-		position: relative;
-		flex: none;
-	}
-	.aq-search .ico::after {
-		content: '';
-		position: absolute;
-		right: -3px;
-		bottom: -3px;
-		width: 6px;
-		height: 1.5px;
-		background: var(--color-text-muted);
-		transform: rotate(45deg);
-	}
-	.aq-risk-sel {
-		height: 36px;
-		border: 1px solid var(--color-border);
-		border-radius: 8px;
-		background: var(--color-surface);
-		color: var(--color-text);
-		font: var(--text-label);
-		font-size: 12px;
-		padding: 0 8px;
-		cursor: pointer;
-	}
-
 	.aq-chiprow {
 		display: flex;
 		align-items: center;
