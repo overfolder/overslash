@@ -11,8 +11,10 @@
 // transform does not resolve.
 import { test, expect } from '@playwright/test';
 import {
+	escapeQTerm,
 	filtersToSearch,
 	searchToFilters,
+	splitQTerms,
 	type IdentitySummary
 } from '../../../src/routes/audit/searchMapping';
 import type { SearchValue, Term } from '../../../src/lib/search/terms';
@@ -110,6 +112,35 @@ test.describe('filtersToSearch', () => {
 	test('an exact agent id reverses to an agent filter', () => {
 		const v = filtersToSearch({ identity_id: IDENTITIES[1].id }, IDENTITIES);
 		expect(v.terms).toEqual([{ kind: 'filter', key: 'agent', op: '=', value: 'scout' }]);
+	});
+});
+
+test.describe('commas inside a text term', () => {
+	test('a term containing a comma stays one bubble across the round trip', () => {
+		const original = value({ kind: 'text', value: 'New York, NY' });
+		const f = searchToFilters(original, IDENTITIES);
+		// Escaped on the wire so the server splits on the unescaped comma only.
+		expect(f.q).toBe('New York\\, NY');
+		expect(filtersToSearch(f, IDENTITIES).terms).toEqual(original.terms);
+	});
+
+	test('a comma-bearing term still ANDs with an ordinary one', () => {
+		const f = searchToFilters(
+			value({ kind: 'text', value: 'a,b' }, { kind: 'text', value: 'c' }),
+			IDENTITIES
+		);
+		expect(f.q).toBe('a\\,b,c');
+		expect(splitQTerms(f.q!)).toEqual(['a,b', 'c']);
+	});
+
+	test('backslashes survive, and a stray one is not eaten', () => {
+		expect(splitQTerms(escapeQTerm('C:\\path'))).toEqual(['C:\\path']);
+		// `\d` is not an escape sequence — keep both characters.
+		expect(splitQTerms('\\d+')).toEqual(['\\d+']);
+	});
+
+	test('unescaped commas still separate terms', () => {
+		expect(splitQTerms('a,b, c ,,')).toEqual(['a', 'b', 'c']);
 	});
 });
 

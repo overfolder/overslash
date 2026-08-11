@@ -120,6 +120,47 @@ export function buildAuditSearchKeys(
 }
 
 /**
+ * `q` carries one free-text term per comma. Since a search phrase may itself
+ * contain a comma, terms are escaped on the way out and split on unescaped
+ * commas on the way back — mirroring `split_q_terms` in
+ * `crates/overslash-api/src/routes/audit.rs`.
+ *
+ * `tag` needs none of this: it carries a controlled vocabulary where a comma
+ * cannot occur.
+ */
+export function escapeQTerm(term: string): string {
+	return term.replace(/\\/g, '\\\\').replace(/,/g, '\\,');
+}
+
+export function splitQTerms(raw: string): string[] {
+	const out: string[] = [];
+	let cur = '';
+	for (let i = 0; i < raw.length; i++) {
+		const c = raw[i];
+		if (c === '\\') {
+			const next = raw[i + 1];
+			// Only `,` and `\` are escapes; anything else keeps both characters
+			// so a Windows path or a regex is never eaten.
+			if (next === ',' || next === '\\') {
+				cur += next;
+				i++;
+			} else {
+				cur += c;
+			}
+		} else if (c === ',') {
+			const term = cur.trim();
+			if (term) out.push(term);
+			cur = '';
+		} else {
+			cur += c;
+		}
+	}
+	const term = cur.trim();
+	if (term) out.push(term);
+	return out;
+}
+
+/**
  * Convert a SearchBar value into an AuditFilters object the API understands.
  *
  * Mapping rules:
@@ -239,7 +280,9 @@ export function searchToFilters(
 	// Comma-joined: the API splits `q` on commas and requires *every* term to
 	// match, the same convention `tag` and `identity_kind` use. Joining with a
 	// space instead would ask for one literal phrase and match nothing.
-	if (qTerms.length) filters.q = qTerms.join(',');
+	// Commas inside a term are escaped, so `New York, NY` stays one bubble
+	// across the URL round-trip instead of splitting into two.
+	if (qTerms.length) filters.q = qTerms.map(escapeQTerm).join(',');
 	if (tagTerms.length) filters.tag = tagTerms.join(',');
 	return filters;
 }
@@ -312,8 +355,8 @@ export function filtersToSearch(
 	// snapshotted to ISO timestamps); leave it out and let the user re-pick.
 	// Text bubbles come back last; `AuditFilters` is an unordered bag, so the
 	// original interleaving of a shared URL can't be recovered.
-	for (const q of (filters.q ?? '').split(',')) {
-		if (q) terms.push({ kind: 'text', value: q });
+	for (const q of splitQTerms(filters.q ?? '')) {
+		terms.push({ kind: 'text', value: q });
 	}
 	return { terms };
 }

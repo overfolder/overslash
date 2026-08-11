@@ -11,6 +11,18 @@ import { test, expect, loginAs } from '../fixtures/auth';
 const BAR = '.search input';
 const CHIP = '.search .chip';
 
+/**
+ * Write one audit row we can search for. The page's own cookies carry the
+ * session, so this lands as the signed-in user.
+ */
+async function seedAuditRow(page: import('@playwright/test').Page) {
+	const res = await page.request.put(
+		`${process.env.API_URL}/v1/secrets/e2e_search_bubbles_${Date.now()}`,
+		{ data: { value: 'seed' } }
+	);
+	expect(res.ok(), `seeding audit row failed: HTTP ${res.status()}`).toBeTruthy();
+}
+
 /** Commit one bubble per Enter. */
 async function type(page: import('@playwright/test').Page, ...terms: string[]) {
 	const input = page.locator(BAR).first();
@@ -28,12 +40,17 @@ test.describe('search bubbles', () => {
 	});
 
 	test('text becomes a bubble on Enter, and text bubbles AND server-side', async ({ page }) => {
+		// Seed our own audit row rather than relying on whatever traffic other
+		// specs happen to have left behind — `secret.put` gives a row whose
+		// `action` contains both of the terms searched below.
+		await seedAuditRow(page);
+
 		await page.goto('/audit');
 		await expect(page.locator(BAR).first()).toBeVisible({ timeout: 15_000 });
 		await expect(page.locator('tr.row').first()).toBeVisible({ timeout: 15_000 });
 
 		// One text bubble; the input is left empty, so nothing is loose text.
-		await type(page, 'action');
+		await type(page, 'secret');
 		await expect(page.locator(CHIP)).toHaveCount(1);
 		await expect(page.locator(BAR).first()).toHaveValue('');
 		await expect(page.locator('tr.row').first()).toBeVisible();
@@ -44,12 +61,28 @@ test.describe('search bubbles', () => {
 		await type(page, 'zzzznotathing');
 		await expect(page.locator(CHIP)).toHaveCount(2);
 		await expect(page.locator('tr.row')).toHaveCount(0);
-		await expect(page).toHaveURL(/q=action%2Czzzznotathing|q=action,zzzznotathing/);
+		await expect(page).toHaveURL(/q=secret%2Czzzznotathing|q=secret,zzzznotathing/);
 
 		// ✕ on the second bubble widens the result set back out.
 		await page.locator(`${CHIP} .chip-remove`).nth(1).click();
 		await expect(page.locator(CHIP)).toHaveCount(1);
 		await expect(page.locator('tr.row').first()).toBeVisible({ timeout: 15_000 });
+	});
+
+	test('a comma inside a text term stays one bubble across a reload', async ({ page }) => {
+		await seedAuditRow(page);
+		await page.goto('/audit');
+		await expect(page.locator(BAR).first()).toBeVisible({ timeout: 15_000 });
+
+		// The comma is what would naively split `q` into two terms on the way
+		// back in; it is escaped on the wire so the bubble survives intact.
+		await type(page, 'New York, NY');
+		await expect(page.locator(CHIP)).toHaveCount(1);
+
+		await page.reload();
+		await expect(page.locator(BAR).first()).toBeVisible({ timeout: 15_000 });
+		await expect(page.locator(CHIP)).toHaveCount(1);
+		await expect(page.locator(CHIP).first()).toContainText('New York, NY');
 	});
 
 	test('a column filter and text compose, and survive a reload', async ({ page }) => {
@@ -119,17 +152,24 @@ test.describe('search bubbles', () => {
 		await expect(page.locator('.chip.is-pending')).toHaveCount(0);
 	});
 
-	test('surfaces that used a bare input now compose too', async ({ page }) => {
-		// /approvals used to hold a text input, a risk <select> and a service
-		// chip row as three states that could not be combined.
-		await page.goto('/approvals');
+	test('a surface that used a bare input now composes too', async ({ page }) => {
+		// /members held a bare `<input type="search">` with no keys and no
+		// bubbles. It is the deterministic subject for this: the signed-in admin
+		// is always a member, whereas /approvals only renders its bar when the
+		// queue is non-empty, so a fresh CI org has nothing to search.
+		await page.goto('/members');
 		await expect(page.locator(BAR).first()).toBeVisible({ timeout: 15_000 });
+		await expect(page.locator('tbody tr').first()).toBeVisible({ timeout: 15_000 });
 
-		await type(page, 'risk = med', 'nothing-matches-this');
+		// `email ~ @` matches every member regardless of fixture data, so the
+		// text bubble is what does the narrowing.
+		await type(page, 'email ~ @', 'zzzznotathing');
 		await expect(page.locator(CHIP)).toHaveCount(2);
-		await expect(page.getByText(/No requests match your filters/i)).toBeVisible();
+		await expect(page.locator('tbody tr')).toHaveCount(0);
 
+		// Dropping the text bubble leaves the column filter, and the rows return.
 		await page.locator(`${CHIP} .chip-remove`).nth(1).click();
 		await expect(page.locator(CHIP)).toHaveCount(1);
+		await expect(page.locator('tbody tr').first()).toBeVisible();
 	});
 });

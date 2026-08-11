@@ -1204,6 +1204,42 @@ async fn test_audit_free_text_terms_and() {
     assert_eq!(r.len(), 2);
 }
 
+/// A comma *inside* a search phrase is escaped as `\,`, so one bubble stays
+/// one term instead of splitting into two on the way through the URL.
+#[tokio::test]
+async fn test_audit_q_term_escaped_comma() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    let scope = overslash_db::OrgScope::new(fx.org_id, pool.clone());
+    for description in ["New York, NY", "New York and NY"] {
+        scope
+            .log_audit(AuditEntry {
+                org_id: fx.org_id,
+                identity_id: None,
+                action: "action.executed",
+                resource_type: Some("http"),
+                resource_id: None,
+                detail: json!({}),
+                description: Some(description),
+                ip_address: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    // Escaped: one term, so only the row carrying the literal phrase matches.
+    let one = fetch_audit_with(&base, &client, &key, "q=New%20York%5C%2C%20NY").await;
+    assert_eq!(one.len(), 1, "escaped comma must stay one term: {one:?}");
+    assert_eq!(one[0]["description"], "New York, NY");
+
+    // Unescaped: two terms (`New York` AND `NY`), which both rows satisfy.
+    let two = fetch_audit_with(&base, &client, &key, "q=New%20York%2CNY").await;
+    assert_eq!(two.len(), 2, "unescaped comma must separate terms: {two:?}");
+}
+
 /// The `q` query param carries the bubbles comma-separated, mirroring `tag`.
 #[tokio::test]
 async fn test_audit_api_q_param_splits_on_commas() {
