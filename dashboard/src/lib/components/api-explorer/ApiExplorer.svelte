@@ -2,7 +2,7 @@
 	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { ApiError } from '$lib/session';
+	import { ApiError, apiErrorReason } from '$lib/session';
 	import { listServices, listConnections, getServiceActions } from '$lib/api/services';
 	import { callAction, getTemplateActionDetail } from '$lib/api/actions';
 	import type {
@@ -62,6 +62,13 @@
 	let running = $state(false);
 	let response = $state<CallResponse | null>(null);
 	let runError = $state<string | null>(null);
+	/**
+	 * The capability URL a `response_too_large` 502 mints for the same request
+	 * (D57). Held apart from `runError` because it is the one part of that
+	 * error the operator can act on — flattening it into the message string
+	 * would render a working download link as unclickable prose.
+	 */
+	let runErrorDownload = $state<{ url: string; expiresAt: string | null } | null>(null);
 	let elapsedMs = $state<number | null>(null);
 
 	// Match by id first (new UUID-in-URL path used by the services table) and
@@ -200,6 +207,23 @@
 		return raw;
 	}
 
+	/**
+	 * Read the pre-minted capability URL off a `response_too_large` 502.
+	 *
+	 * Best-effort on the server side too: OAuth-injected services and raw HTTP
+	 * carrying an inline credential header get the plain 502 with no URL, so
+	 * the absence of one is normal and must not read as an error.
+	 */
+	function downloadFromError(e: ApiError): { url: string; expiresAt: string | null } | null {
+		if (!e.body || typeof e.body !== 'object') return null;
+		const b = e.body as { download_url?: unknown; expires_at?: unknown };
+		if (typeof b.download_url !== 'string' || !b.download_url) return null;
+		return {
+			url: b.download_url,
+			expiresAt: typeof b.expires_at === 'string' ? b.expires_at : null
+		};
+	}
+
 	function attachFilter(req: CallRequest): CallRequest {
 		const expr = filterExpr.trim();
 		if (!expr) return req;
@@ -244,6 +268,7 @@
 
 	async function run() {
 		runError = null;
+		runErrorDownload = null;
 		response = null;
 		const req = mode === 'service_action' ? buildServiceActionRequest() : buildRawHttpRequest();
 		if (!req) {
@@ -258,7 +283,12 @@
 		try {
 			response = await callAction(req);
 		} catch (e) {
-			runError = e instanceof ApiError ? `${e.status}: ${e.message}` : String(e);
+			if (e instanceof ApiError) {
+				runError = `${e.status}: ${apiErrorReason(e) ?? e.message}`;
+				runErrorDownload = downloadFromError(e);
+			} else {
+				runError = String(e);
+			}
 		} finally {
 			elapsedMs = performance.now() - start;
 			running = false;
@@ -352,7 +382,13 @@
 			</div>
 		</section>
 
-		<ResponsePanel {response} error={runError} {running} {elapsedMs} />
+		<ResponsePanel
+			{response}
+			error={runError}
+			errorDownload={runErrorDownload}
+			{running}
+			{elapsedMs}
+		/>
 	</div>
 </div>
 

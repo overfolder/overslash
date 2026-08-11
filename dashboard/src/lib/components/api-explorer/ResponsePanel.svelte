@@ -5,11 +5,18 @@
 	let {
 		response,
 		error,
+		errorDownload = null,
 		running,
 		elapsedMs
 	}: {
 		response: CallResponse | null;
 		error: string | null;
+		/**
+		 * Capability URL minted for a `response_too_large` 502 (D57). Present
+		 * only when the server could mint one — OAuth-injected services and
+		 * inline raw-HTTP credentials get the plain error.
+		 */
+		errorDownload?: { url: string; expiresAt: string | null } | null;
 		running: boolean;
 		elapsedMs: number | null;
 	} = $props();
@@ -78,6 +85,19 @@
 		<div class="error">
 			<strong>Request failed</strong>
 			<p>{error}</p>
+			{#if errorDownload}
+				<p class="retry">
+					The response was too large to return inline, so the gateway minted a
+					download for the same request:
+					<a href={errorDownload.url} target="_blank" rel="noopener noreferrer"
+						>fetch the full body</a
+					>{#if errorDownload.expiresAt}<span class="muted">
+							— expires {new Date(errorDownload.expiresAt).toLocaleString()}</span
+						>{/if}. It needs no credentials, so fetch it promptly. To keep the
+					response inline instead, narrow the call with the action's own paging
+					parameters or a jq filter.
+				</p>
+			{/if}
 		</div>
 	{:else if !response}
 		<p class="placeholder">Run a request to see the response here.</p>
@@ -299,5 +319,14 @@
 		font: inherit;
 		font-size: 0.82rem;
 		text-decoration: underline;
+	}
+
+	.retry {
+		margin-top: 0.5rem;
+		line-height: 1.5;
+	}
+
+	.retry a {
+		font-weight: 600;
 	}
 </style>
