@@ -2142,13 +2142,19 @@ async fn test_audit_actor_name_is_recorded_at_write_time() {
 }
 
 #[tokio::test]
-async fn test_audit_owner_user_name_is_root_of_chain() {
+async fn test_audit_owner_user_name_and_owner_filter_reach_a_sub_agent() {
     let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
+    // Built the way the product builds it: `owner_id` is a flattened pointer to
+    // the root user, not to the parent — a sub_agent inherits `parent.owner_id`
+    // on create, and a move rewrites descendants to "the top-level user of the
+    // new chain". Pinned by identity_hierarchy.rs:322 and :752. A fixture that
+    // pointed the sub_agent at its parent agent would be testing a shape the
+    // API cannot produce.
     let user_id = insert_named_identity(&pool, org_id, "alice", "user", None).await;
     let agent_id = insert_named_identity(&pool, org_id, "henry", "agent", Some(user_id)).await;
     let sub_id =
-        insert_named_identity(&pool, org_id, "researcher", "sub_agent", Some(agent_id)).await;
+        insert_named_identity(&pool, org_id, "researcher", "sub_agent", Some(user_id)).await;
 
     for id in [user_id, agent_id, sub_id] {
         overslash_db::OrgScope::new(org_id, pool.clone())
@@ -2173,13 +2179,13 @@ async fn test_audit_owner_user_name_is_root_of_chain() {
         .map(|r| (r.identity_id.unwrap(), r.owner_user_name.clone()))
         .collect();
 
-    // Two hops up from the sub-agent, not one: the direct parent is an agent,
-    // and "user" has to mean the human.
+    // Every depth resolves to the human, including the user acting directly —
+    // whose own `owner_id` is NULL, so their name comes off their own row.
     assert_eq!(by_actor[&sub_id].as_deref(), Some("alice"));
     assert_eq!(by_actor[&agent_id].as_deref(), Some("alice"));
     assert_eq!(by_actor[&user_id].as_deref(), Some("alice"));
 
-    // `user ~` therefore reaches the whole subtree.
+    // `user ~` reaches the whole subtree.
     let mut f = filter(org_id);
     f.owner_user_contains = Some("alic".to_string());
     assert_eq!(
@@ -2190,6 +2196,18 @@ async fn test_audit_owner_user_name_is_root_of_chain() {
             .len(),
         3
     );
+
+    // And so does `user =`, which matches by id rather than by name: the
+    // sub_agent is two levels down but its owner_id points straight at alice,
+    // so no chain walk is needed for it to be included.
+    let mut f = filter(org_id);
+    f.owner_user_id = Some(user_id);
+    let owned = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
+        .await
+        .unwrap();
+    assert_eq!(owned.len(), 3, "user = <id> must reach nested descendants");
+    assert!(owned.iter().any(|r| r.identity_id == Some(sub_id)));
 }
 
 #[tokio::test]

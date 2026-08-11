@@ -28,10 +28,10 @@ pub struct AuditRow {
     /// event had no actor, or for rows written before migration 110 whose
     /// identity had already been hard-deleted.
     pub actor_name: Option<String>,
-    /// Name of the **root user** of the actor's identity chain as of write
-    /// time — the human at the top, not the direct `owner_id` parent, so a
-    /// sub-agent's row resolves to the same person the audit table's User
-    /// column shows.
+    /// Name of the actor's owning user as of write time — `owner_id`, which is
+    /// a flattened pointer to the root user, so a sub_agent at any depth
+    /// resolves to the human the audit table's User column shows. Falls back to
+    /// the actor's own name when the actor is a user (their `owner_id` is NULL).
     pub owner_user_name: Option<String>,
 }
 
@@ -70,31 +70,35 @@ pub(crate) async fn log_tagged(
     impersonated_by_identity_id: Option<Uuid>,
     tags: &[String],
 ) -> Result<(), sqlx::Error> {
-    // The actor's name and their root user's are resolved inside the INSERT
+    // The actor's name and their owning user's are resolved inside the INSERT
     // rather than by a second round trip: `log_audit` is called from over a
     // hundred sites on the hottest write path in the system, and every one of
-    // them has an `identity_id` and nothing else. The recursive walk is a
-    // handful of primary-key lookups (a sub-agent is two hops from its human);
-    // `depth < 10` is a cycle backstop, `owner_id` being an application-
-    // maintained pointer rather than a constrained tree.
+    // them has an `identity_id` and nothing else.
+    //
+    // One hop reaches the user at any depth. `owner_id` is not a parent
+    // pointer — it is a *flattened pointer to the root user*, maintained for
+    // every descendant on create (`parent.owner_id` for a sub_agent) and on
+    // move (`descendant_owner_id`, "the top-level user of the new chain"), and
+    // pinned by identity_hierarchy.rs:322 and :752. A user's own `owner_id` is
+    // NULL, which is why their name is read off the row itself — mirroring the
+    // two disjuncts the query's `owner.name` filter has always had.
     //
     // Both names come out NULL when there is no actor or the identity is gone,
     // which is what the LEFT JOIN they replace produced. See D59 for why the
     // row keeps the *historical* name.
     sqlx::query!(
-        "WITH RECURSIVE chain AS (
-             SELECT id, org_id, owner_id, kind, name, 1 AS depth
-               FROM identities WHERE id = $2 AND org_id = $1
-             UNION ALL
-             SELECT i.id, i.org_id, i.owner_id, i.kind, i.name, c.depth + 1
+        "WITH actor AS (
+             SELECT i.name AS actor_name,
+                    CASE WHEN i.kind = 'user' THEN i.name ELSE owner.name END AS owner_user_name
                FROM identities i
-               JOIN chain c ON i.id = c.owner_id AND i.org_id = c.org_id
-              WHERE c.depth < 10
+               LEFT JOIN identities owner
+                      ON owner.id = i.owner_id AND owner.org_id = i.org_id
+              WHERE i.id = $2 AND i.org_id = $1
          )
          INSERT INTO audit_log (org_id, identity_id, action, resource_type, resource_id, detail, description, ip_address, impersonated_by_identity_id, tags, actor_name, owner_user_name)
          SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                (SELECT name FROM chain WHERE id = $2),
-                (SELECT name FROM chain WHERE kind = 'user' ORDER BY depth DESC LIMIT 1)",
+                (SELECT actor_name FROM actor),
+                (SELECT owner_user_name FROM actor)",
         entry.org_id,
         entry.identity_id,
         entry.action,
@@ -163,10 +167,10 @@ pub struct AuditFilter {
     /// table's "User" column.
     pub owner_user_id: Option<Uuid>,
     /// Substring (case-insensitive) on the recorded owning-user name — the
-    /// actor's own name when they are a user, else the **root user** of their
-    /// chain. Powers `user ~`. Root rather than direct parent since migration
-    /// 109: a sub-agent's row used to match its parent *agent's* name here,
-    /// which agreed with neither this field's name nor the User column.
+    /// actor's own name when they are a user, else their `owner_id`, which is a
+    /// flattened pointer to the root user rather than to the parent. Powers
+    /// `user ~`. Semantics are unchanged by migration 110: the join this
+    /// replaced resolved to the same identity at every depth.
     pub owner_user_contains: Option<String>,
     /// Upstream result of execution events, matched against the normalized
     /// `detail.is_error` flag written by the action executors. `Some(true)`

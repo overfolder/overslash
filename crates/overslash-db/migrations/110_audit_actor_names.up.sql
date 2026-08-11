@@ -23,34 +23,23 @@ ALTER TABLE audit_log ADD COLUMN owner_user_name TEXT;
 COMMENT ON COLUMN audit_log.actor_name IS
   'Name of identity_id as of write time. Historical by design (D59) — the row records the name the actor had when they acted, not their current one.';
 COMMENT ON COLUMN audit_log.owner_user_name IS
-  'Name of the root user of the actor''s identity chain, as of write time. Root, not direct parent: a sub-agent resolves to the human at the top, matching the audit table''s User column.';
+  'Name of the owning user (identities.owner_id, a flattened pointer to the root user) as of write time, or the actor''s own name when the actor is a user. Historical by design (D59).';
 
 -- Backfill: actor.
 UPDATE audit_log a SET actor_name = i.name
   FROM identities i
  WHERE i.id = a.identity_id AND i.org_id = a.org_id;
 
--- Backfill: root user of each actor's chain. Recursive because a sub-agent is
--- two hops from its human; the depth guard is a cycle backstop, `owner_id`
--- being an application-maintained pointer rather than a constrained tree.
-WITH RECURSIVE chain AS (
-    SELECT id AS leaf_id, id, org_id, owner_id, kind, name, 1 AS depth
-      FROM identities
-    UNION ALL
-    SELECT c.leaf_id, i.id, i.org_id, i.owner_id, i.kind, i.name, c.depth + 1
-      FROM identities i
-      JOIN chain c ON i.id = c.owner_id AND i.org_id = c.org_id
-     WHERE c.depth < 10
-),
-root_user AS (
-    SELECT DISTINCT ON (leaf_id) leaf_id, name
-      FROM chain
-     WHERE kind = 'user'
-     ORDER BY leaf_id, depth DESC
-)
-UPDATE audit_log a SET owner_user_name = r.name
-  FROM root_user r
- WHERE r.leaf_id = a.identity_id;
+-- Backfill: owning user of each actor. One hop, not a walk — `owner_id` is a
+-- flattened pointer to the *root* user, maintained for every descendant on
+-- create and on move, so a sub_agent at any depth already points straight at
+-- the human. A user's own `owner_id` is NULL, hence the CASE.
+UPDATE audit_log a SET owner_user_name =
+    (SELECT CASE WHEN i.kind = 'user' THEN i.name ELSE owner.name END
+       FROM identities i
+       LEFT JOIN identities owner ON owner.id = i.owner_id AND owner.org_id = i.org_id
+      WHERE i.id = a.identity_id AND i.org_id = a.org_id)
+ WHERE a.identity_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- Indexes
