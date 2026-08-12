@@ -464,7 +464,7 @@ fn render_action_result(result: &ActionResult, verbose: Option<bool>) -> serde_j
 /// error on every failure path, so a full disk cannot turn a successful call
 /// into a 500. The envelope then carries the unstored hint, which is exactly
 /// the pre-D57 behaviour.
-pub(super) async fn render_stored(
+pub(in crate::routes::actions) async fn render_stored(
     state: &AppState,
     ext: &axum::http::Extensions,
     result: &ActionResult,

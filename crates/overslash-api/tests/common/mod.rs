@@ -2181,6 +2181,7 @@ pub async fn seed_oauth_flow_with_scopes(
 /// `pool` rather than a shared bootstrap pool.
 pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
     let config = overslash_api::config::Config {
+        call_result_max_bytes: 1024 * 1024,
         async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
