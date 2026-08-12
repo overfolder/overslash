@@ -175,7 +175,16 @@ fn ext_from_bare(key: &str) -> Option<Ext> {
 }
 
 fn describe_positions(e: Ext) -> String {
-    let names: Vec<&str> = e.positions().iter().map(|p| p.describe()).collect();
+    // Deduplicated: several positions share a description on purpose — an
+    // authored tool and a pasted `discovered_tools` entry are both "an MCP tool"
+    // — and "read on an MCP tool and an MCP tool" reads like a bug.
+    let mut names: Vec<&str> = Vec::new();
+    for p in e.positions() {
+        let d = p.describe();
+        if !names.contains(&d) {
+            names.push(d);
+        }
+    }
     match names.as_slice() {
         [] => "nothing".to_string(),
         [one] => (*one).to_string(),

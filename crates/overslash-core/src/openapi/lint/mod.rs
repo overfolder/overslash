@@ -243,6 +243,13 @@ mod tests {
             "should name where it IS read: {}",
             i.message
         );
+        // An authored tool and a pasted snapshot share a description, so the
+        // list must dedupe — "an MCP tool and an MCP tool" reads like a bug.
+        assert!(
+            !i.message.contains("an MCP tool and an MCP tool"),
+            "duplicate position description: {}",
+            i.message
+        );
     }
 
     /// The normalizer used to rewrite these onto an `http` scheme that reads
