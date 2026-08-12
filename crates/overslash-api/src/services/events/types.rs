@@ -237,7 +237,7 @@ mod tests {
     fn every_topic_is_in_all_and_round_trips() {
         assert_eq!(
             Topic::ALL.len(),
-            4,
+            5,
             "Topic::ALL is out of step with the enum — see this test's doc comment"
         );
         for t in Topic::ALL {
