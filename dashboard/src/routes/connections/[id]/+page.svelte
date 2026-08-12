@@ -13,7 +13,7 @@
 	import type { ConnectionDetail, OAuthProviderInfo } from '$lib/types';
 	import { relativeTime, absoluteTime } from '$lib/utils/time';
 	import { PopupBlockedError } from '$lib/oauth-connect';
-	import ProviderTile from '$lib/components/connections/ProviderTile.svelte';
+	import ConnectionAvatar from '$lib/components/connections/ConnectionAvatar.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
@@ -179,7 +179,13 @@
 		<div class="head-card">
 			<div class="titleblock">
 				<div class="title-row">
-					<ProviderTile provider={conn.provider_key} size={44} label={displayName(conn.provider_key)} />
+					<ConnectionAvatar
+				provider={conn.provider_key}
+				accountEmail={conn.account_email}
+				picture={conn.account_picture}
+				size={52}
+				label={displayName(conn.provider_key)}
+			/>
 					<div class="title-text">
 						<div class="eyebrow">{displayName(conn.provider_key)}</div>
 						<h1 class="account">{conn.account_email ?? '—'}</h1>

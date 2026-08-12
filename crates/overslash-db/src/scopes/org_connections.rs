@@ -169,6 +169,9 @@ impl OrgScope {
     /// Update tokens *and* scopes in place. Used by the incremental scope
     /// upgrade callback — keeps the existing `connection_id` so services
     /// bound to it stay bound.
+    // Mirrors the repo function's own allow: this is a pass-through, and
+    // bundling the arguments here would only move the list one layer down.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_connection_tokens_and_scopes(
         &self,
         id: Uuid,
@@ -177,6 +180,7 @@ impl OrgScope {
         token_expires_at: Option<time::OffsetDateTime>,
         scopes: Option<&[String]>,
         account_email: Option<&str>,
+        account_picture: Option<&str>,
     ) -> Result<bool, sqlx::Error> {
         connection::update_tokens_and_scopes(
             self.db(),
@@ -187,6 +191,7 @@ impl OrgScope {
             token_expires_at,
             scopes,
             account_email,
+            account_picture,
         )
         .await
     }

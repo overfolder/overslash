@@ -1,0 +1,18 @@
+-- The avatar of the account behind an OAuth connection.
+--
+-- Every provider we orchestrate already returns one from the userinfo endpoint
+-- the connect flow calls anyway to label the connection
+-- (services/oauth.rs::fetch_account_profile) — Google's `picture`, GitHub's
+-- `avatar_url`, Slack's `image_512`. Until now the response body was dropped
+-- the moment the email came out of it.
+--
+-- A plain column rather than a jsonb bag: it is one scalar, it lives next to
+-- the `account_email` it labels, and connections have no metadata column to
+-- add it to. The value is a provider-hosted https URL that the dashboard
+-- hotlinks; no bytes are stored here (see the `picture` on identity metadata
+-- for the same treatment of a signed-in user's avatar).
+--
+-- Nullable with no default: a provider that returns no picture, an imported
+-- token that never ran a userinfo call, and every row predating this migration
+-- are all legitimately unlabeled, and the UI falls back to initials.
+ALTER TABLE connections ADD COLUMN account_picture TEXT;

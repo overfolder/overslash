@@ -86,6 +86,7 @@ async fn test_notion_mode_c() {
             token_expires_at: None,
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc.id),
         })
         .await
@@ -307,6 +308,7 @@ async fn test_notion_real() {
             token_expires_at: None,
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc.id),
         })
         .await

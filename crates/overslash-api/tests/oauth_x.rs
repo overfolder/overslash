@@ -194,6 +194,7 @@ async fn test_oauth_x_token_refresh() {
             token_expires_at: Some(expired_at),
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: None,
         })
         .await
@@ -379,6 +380,7 @@ async fn test_x_real_e2e() {
             token_expires_at: Some(expires_at),
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc_id),
         })
         .await

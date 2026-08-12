@@ -35,6 +35,7 @@ mod byoc_self_service;
 mod call_results;
 mod call_timeouts;
 mod compact_response;
+mod connection_account_picture;
 mod connection_credential_source;
 mod connection_import;
 mod connection_owner_migration;

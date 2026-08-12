@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at\n         FROM connections WHERE org_id = $1 AND id = ANY($2)",
+  "query": "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,\n                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,\n                    c.account_picture, c.byoc_credential_id, c.is_default, c.keep, c.reauth_required,\n                    c.created_at, c.updated_at\n             FROM connections c\n             JOIN identities i ON i.id = c.identity_id\n             WHERE c.identity_id = $1 AND i.org_id = $2 AND c.provider_key = $3\n             ORDER BY c.is_default DESC, c.created_at DESC LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -82,7 +82,7 @@
       },
       {
         "ordinal": 7,
-        "name": "scopes?: Vec<String>",
+        "name": "scopes",
         "type_info": "TextArray",
         "origin": {
           "Table": {
@@ -104,6 +104,17 @@
       },
       {
         "ordinal": 9,
+        "name": "account_picture",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "account_picture"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
         "name": "byoc_credential_id",
         "type_info": "Uuid",
         "origin": {
@@ -114,7 +125,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "is_default",
         "type_info": "Bool",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "keep",
         "type_info": "Bool",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "reauth_required",
         "type_info": "Bool",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -172,7 +183,8 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "UuidArray"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -186,6 +198,7 @@
       true,
       true,
       true,
+      true,
       false,
       false,
       false,
@@ -193,5 +206,5 @@
       false
     ]
   },
-  "hash": "6d8a4ab1dab7b82817b2109abd9075c5949f1d2c4c7d6ef709412aec8e621c58"
+  "hash": "6c02c3f2fcf37e7bd765a0394c1c4815c65c415e7cdf4645b9368cc1d518443a"
 }

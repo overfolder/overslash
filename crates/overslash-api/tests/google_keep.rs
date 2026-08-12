@@ -122,6 +122,7 @@ async fn test_google_keep_mock() {
             token_expires_at: Some(future_time),
             scopes: Some(&["https://www.googleapis.com/auth/keep".to_string()]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc.id),
         })
         .await
@@ -314,6 +315,7 @@ async fn test_google_keep_real_byoc() {
             token_expires_at: Some(expires_at),
             scopes: Some(&["https://www.googleapis.com/auth/keep".to_string()]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc_id),
         })
         .await

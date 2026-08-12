@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Identity } from '$lib/types';
-	import { formatIdentity, identityInitials, providerLabel } from '$lib/identityDisplay';
+	import { formatIdentity, providerLabel } from '$lib/identityDisplay';
+	import Avatar from '$lib/components/Avatar.svelte';
 
 	let {
 		data
@@ -36,11 +37,7 @@
 		</div>
 	{:else}
 		<header class="header">
-			{#if ident.picture}
-				<img class="avatar" src={ident.picture} alt="" referrerpolicy="no-referrer" />
-			{:else}
-				<div class="avatar">{identityInitials(ident)}</div>
-			{/if}
+			<Avatar name={ident.name} email={ident.email} picture={ident.picture} size={48} />
 			<div>
 				<h1 title={display?.title}>{display?.primary}</h1>
 				<p class="muted">{display?.secondary ?? ident.email ?? '—'}</p>
@@ -108,20 +105,6 @@
 		align-items: center;
 		gap: 0.85rem;
 		margin-bottom: 1rem;
-	}
-	.avatar {
-		width: 48px;
-		height: 48px;
-		border-radius: 999px;
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-weight: 600;
-		font-size: 1.1rem;
-		flex: none;
-		object-fit: cover;
 	}
 	h1 {
 		font: var(--text-h1);

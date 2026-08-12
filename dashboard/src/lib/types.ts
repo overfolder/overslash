@@ -870,6 +870,10 @@ export interface ConnectionSummary {
   owner_identity_id: string;
   provider_key: string;
   account_email: string | null;
+  /** Provider-hosted avatar for the linked account, when the provider named
+   *  one at connect time. Hotlinked; falls back to initials when absent or
+   *  when the URL has rotted (see `Avatar.svelte`). */
+  account_picture: string | null;
   scopes: string[];
   used_by_service_templates: string[];
   is_default: boolean;
@@ -908,6 +912,10 @@ export interface ConnectionDetail {
   id: string;
   provider_key: string;
   account_email: string | null;
+  /** Provider-hosted avatar for the linked account, when the provider named
+   *  one at connect time. Hotlinked; falls back to initials when absent or
+   *  when the URL has rotted (see `Avatar.svelte`). */
+  account_picture: string | null;
   scopes: string[];
   is_default: boolean;
   /** When true, this connection is preserved from the service-deletion

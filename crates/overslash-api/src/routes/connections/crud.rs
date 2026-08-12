@@ -12,6 +12,10 @@ pub(super) struct ConnectionSummary {
     owner_identity_id: Uuid,
     provider_key: String,
     account_email: Option<String>,
+    /// Provider-hosted avatar for the linked account, when the provider named
+    /// one at connect time. The dashboard hotlinks it beside the label and
+    /// falls back to initials when it is absent or the URL has rotted.
+    account_picture: Option<String>,
     /// Scopes the provider actually granted at the last OAuth flow. The
     /// dashboard renders these as chips and compares them to a template's
     /// required scopes when deciding whether to offer the "upgrade" prompt.
@@ -103,6 +107,7 @@ pub(super) async fn list_connections(
                 owner_identity_id: r.identity_id,
                 provider_key: r.provider_key,
                 account_email: r.account_email,
+                account_picture: r.account_picture,
                 scopes: r.scopes.unwrap_or_default(),
                 is_default: r.is_default,
                 keep: r.keep,
@@ -131,6 +136,8 @@ pub(super) struct ConnectionDetail {
     id: Uuid,
     provider_key: String,
     account_email: Option<String>,
+    /// See [`ConnectionSummary::account_picture`].
+    account_picture: Option<String>,
     scopes: Vec<String>,
     is_default: bool,
     /// When true, this connection is preserved from the service-deletion
@@ -202,6 +209,7 @@ pub(super) async fn get_connection(
         id: conn.id,
         provider_key: conn.provider_key,
         account_email: conn.account_email,
+        account_picture: conn.account_picture,
         scopes: conn.scopes.unwrap_or_default(),
         is_default: conn.is_default,
         keep: conn.keep,

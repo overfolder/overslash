@@ -20,6 +20,7 @@
 	} from '$lib/types';
 	import { session, ApiError, type ApprovalResponse } from '$lib/session';
 	import { makeIdentityFormatter, providerLabel } from '$lib/identityDisplay';
+	import Avatar from '$lib/components/Avatar.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import ApprovalRow from '$lib/components/approval/ApprovalRow.svelte';
@@ -776,9 +777,12 @@
 						<div class="field-row">
 							<span class="field-label">Display name</span>
 							<span class="field-value user-name">
-								{#if selected.picture}
-									<img class="user-avatar" src={selected.picture} alt="" referrerpolicy="no-referrer" />
-								{/if}
+								<Avatar
+									name={selected.name}
+									email={selected.email}
+									picture={selected.picture}
+									size={20}
+								/>
 								{sel.secondary}
 							</span>
 						</div>
@@ -1508,12 +1512,6 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 6px;
-	}
-	.user-avatar {
-		width: 20px;
-		height: 20px;
-		border-radius: 50%;
-		flex: none;
 	}
 	.field-help {
 		font-size: 12px;
