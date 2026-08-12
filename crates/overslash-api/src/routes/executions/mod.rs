@@ -128,22 +128,32 @@ async fn list_executions(
         .ok_or_else(|| AppError::Forbidden("identity-bound credential required".into()))?;
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
 
+    // Rejected rather than treated as "matches nothing": a typo would otherwise
+    // return an empty list that looks like an answer.
+    if let Some(other) = q.origin.as_deref()
+        && other != "approval"
+        && other != "async_call"
+    {
+        return Err(AppError::BadRequest(format!(
+            "invalid origin '{other}': expected 'approval' or 'async_call'"
+        )));
+    }
+
+    // `origin` is filtered in SQL, not here. Applied after `LIMIT` it would
+    // silently short a page — asking for 50 async calls could return 20 because
+    // the first 50 rows by date happened to include 30 approval-backed ones.
     let rows = scope
-        .list_executions_for_identity(caller, subtree, q.status.as_deref(), limit)
+        .list_executions_for_identity(
+            caller,
+            subtree,
+            q.status.as_deref(),
+            q.origin.as_deref(),
+            limit,
+        )
         .await?;
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        if let Some(origin) = q.origin.as_deref() {
-            let row_origin = if row.approval_id.is_some() {
-                "approval"
-            } else {
-                "async_call"
-            };
-            if origin != row_origin {
-                continue;
-            }
-        }
         let mut detail = ExecutionDetail::from_row(row);
         // Always: see the reasoning on this handler.
         detail.summary.redact_result();

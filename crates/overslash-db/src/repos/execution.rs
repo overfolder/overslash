@@ -745,6 +745,10 @@ pub(crate) async fn list_for_identity(
     identity_id: Uuid,
     subtree: bool,
     status: Option<&str>,
+    // `approval` | `async_call`, or `None` for both. Filtered here rather than
+    // by the caller: applied after `LIMIT` it would silently short a page,
+    // returning fewer rows than asked for while more matched.
+    origin: Option<&str>,
     limit: i64,
 ) -> Result<Vec<ExecutionRow>, sqlx::Error> {
     sqlx::query_as!(
@@ -760,12 +764,16 @@ pub(crate) async fn list_for_identity(
             AND ($3 OR identity_id = $2)
             AND (NOT $3 OR identity_id IN (SELECT id FROM subtree))
             AND ($4::text IS NULL OR status = $4)
+            AND ($5::text IS NULL
+                 OR ($5 = 'approval' AND approval_id IS NOT NULL)
+                 OR ($5 = 'async_call' AND approval_id IS NULL))
           ORDER BY created_at DESC
-          LIMIT $5",
+          LIMIT $6",
         org_id,
         identity_id,
         subtree,
         status,
+        origin,
         limit,
     )
     .fetch_all(pool)

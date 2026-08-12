@@ -149,6 +149,7 @@ impl OrgScope {
         identity_id: Uuid,
         subtree: bool,
         status: Option<&str>,
+        origin: Option<&str>,
         limit: i64,
     ) -> Result<Vec<ExecutionRow>, sqlx::Error> {
         crate::repos::execution::list_for_identity(
@@ -157,6 +158,7 @@ impl OrgScope {
             identity_id,
             subtree,
             status,
+            origin,
             limit,
         )
         .await

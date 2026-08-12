@@ -533,3 +533,81 @@ async fn a_worker_starting_during_shutdown_claims_nothing() {
     assert_eq!(status_of(&pool, id).await, "pending");
     assert_eq!(attempts_of(&pool, id).await, 0);
 }
+
+/// Filtering by `origin` must happen in SQL, before `LIMIT`.
+///
+/// Applied after the limit it silently shorts a page: ask for 3 async calls
+/// and get 1, because the newest 3 rows by date happened to be approval-backed.
+/// The page looks like an answer, so nothing downstream can tell it was cut.
+#[tokio::test]
+async fn origin_filtering_does_not_short_the_page() {
+    let pool = common::test_pool().await;
+    let (org_id, identity_id) = seed_identity(&pool).await;
+    let scope = SystemScope::new_internal(pool.clone()).scope_for_org(org_id);
+
+    // Interleave so the newest rows are approval-backed: any filter applied
+    // after `LIMIT 3` sees mostly the wrong origin.
+    for i in 0..4 {
+        let async_id = queue_async(&pool, org_id, identity_id).await;
+        sqlx::query!(
+            "UPDATE executions SET created_at = now() - make_interval(secs => $2) WHERE id = $1",
+            async_id,
+            (100 - i * 10) as f64,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let approval_id = Uuid::new_v4();
+        sqlx::query!(
+            "INSERT INTO approvals (id, org_id, identity_id, action_summary, permission_keys,
+                                    status, token, expires_at, current_resolver_identity_id)
+             VALUES ($1, $2, $3, 'gated', '{}', 'allowed', $4, now() + interval '1 hour', $3)",
+            approval_id,
+            org_id,
+            identity_id,
+            Uuid::new_v4().to_string(),
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO executions (approval_id, org_id, identity_id, status, expires_at, created_at)
+             VALUES ($1, $2, $3, 'executed', now() + interval '1 hour', now())",
+            approval_id,
+            org_id,
+            identity_id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let async_rows = scope
+        .list_executions_for_identity(identity_id, false, None, Some("async_call"), 3)
+        .await
+        .unwrap();
+    assert_eq!(
+        async_rows.len(),
+        3,
+        "a full page of async rows exists, so the limit must be filled"
+    );
+    assert!(
+        async_rows.iter().all(|r| r.approval_id.is_none()),
+        "async_call must not return approval-backed rows"
+    );
+
+    let approval_rows = scope
+        .list_executions_for_identity(identity_id, false, None, Some("approval"), 3)
+        .await
+        .unwrap();
+    assert_eq!(approval_rows.len(), 3);
+    assert!(approval_rows.iter().all(|r| r.approval_id.is_some()));
+
+    // Unfiltered still sees both kinds.
+    let all = scope
+        .list_executions_for_identity(identity_id, false, None, None, 8)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 8);
+}
