@@ -269,11 +269,13 @@ async fn cancel_is_immediate_before_start_and_cooperative_after() {
 }
 
 /// The regression that matters most: the async sweeps and the pre-existing
-/// orphan reap must never touch each other's rows. An approval-backed
-/// execution has `request IS NULL`, so no async sweep may see it — and the
-/// orphan reap must still see it.
+/// orphan reap must never touch each other's rows. The discriminator is
+/// `request`, *not* `approval_id` — a gated call approved and queued (D66) is
+/// approval-backed and worker-run at once. An approval-backed execution with no
+/// stored payload runs on a request, so no async sweep may see it, and the
+/// orphan reap must still see it. The symmetric case is pinned below.
 #[tokio::test]
-async fn async_sweeps_never_touch_approval_backed_rows() {
+async fn async_sweeps_never_touch_inline_approval_replays() {
     let pool = common::test_pool().await;
     let (org_id, identity_id) = seed_identity(&pool).await;
     let system = SystemScope::new_internal(pool.clone());
@@ -324,6 +326,64 @@ async fn async_sweeps_never_touch_approval_backed_rows() {
     // The pre-existing orphan reap still owns it — semantics unchanged.
     assert_eq!(system.expire_orphaned_executions(60).await.unwrap(), 1);
     assert_eq!(status_of(&pool, exec_id).await, "failed");
+}
+
+/// The symmetric half: a gated call that was approved and queued *is* the async
+/// sweeps' business, and is none of the orphan reap's.
+///
+/// This is the shape D66 introduced — `approval_id NOT NULL, request NOT NULL` —
+/// and it is exactly the one an `approval_id IS NULL` predicate would have
+/// missed. The sweeps key off `request`, so they see it.
+#[tokio::test]
+async fn async_sweeps_do_reach_a_queued_approval_replay() {
+    let pool = common::test_pool().await;
+    let (org_id, identity_id) = seed_identity(&pool).await;
+    let system = SystemScope::new_internal(pool.clone());
+
+    let approval_id = Uuid::new_v4();
+    sqlx::query!(
+        "INSERT INTO approvals (id, org_id, identity_id, action_summary, permission_keys,
+                                status, token, expires_at, current_resolver_identity_id,
+                                execution_mode)
+         VALUES ($1, $2, $3, 'gated then queued', '{}', 'allowed', $4,
+                 now() + interval '1 hour', $3, 'async')",
+        approval_id,
+        org_id,
+        identity_id,
+        Uuid::new_v4().to_string(),
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Claimed by a worker that then died: lease expired, payload present.
+    let exec_id = Uuid::new_v4();
+    sqlx::query!(
+        "INSERT INTO executions (id, approval_id, org_id, identity_id, status, started_at,
+                                 lease_expires_at, expires_at, worker_id, request)
+         VALUES ($1, $2, $3, $4, 'executing', now() - interval '1 hour',
+                 now() - interval '1 hour', now() + interval '1 hour', 'dead-worker',
+                 '{\"action\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:1/x\", \"headers\": {}}}'::jsonb)",
+        exec_id,
+        approval_id,
+        org_id,
+        identity_id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The orphan reap is blind to it — lease liveness governs, not `started_at`.
+    assert_eq!(system.expire_orphaned_executions(60).await.unwrap(), 0);
+    assert_eq!(status_of(&pool, exec_id).await, "executing");
+
+    // The reclaim sweep is not: it hands the row back and charges an attempt.
+    assert_eq!(
+        system.requeue_expired_async_leases(5, 900).await.unwrap(),
+        1
+    );
+    assert_eq!(status_of(&pool, exec_id).await, "pending");
+    assert_eq!(attempts_of(&pool, exec_id).await, 1);
 }
 
 /// The wall-clock backstop catches a worker that heartbeats forever on an

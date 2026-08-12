@@ -24,6 +24,7 @@ mod approval_token_leak;
 mod approvals_cascade;
 mod approvals_remember_keys;
 mod async_call;
+mod async_call_gated;
 mod async_worker;
 mod audit;
 mod audit_tags;

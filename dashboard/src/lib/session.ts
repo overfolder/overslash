@@ -314,6 +314,14 @@ export interface ApprovalResponse {
 	 *  declared no disclose entries. */
 	disclosed_fields: DisclosedField[] | null;
 	status: string;
+	/** Whether an approved replay runs on the connection that triggers it or is
+	 *  queued for the async worker. Stamped from the original call's
+	 *  `execution` mode, so a reviewer can be told — before approving — that
+	 *  this one will not produce a result on the page. */
+	execution_mode: 'sync' | 'async';
+	/** Suggested delay before the first poll, ms. Present only on the response
+	 *  to POST /v1/approvals/{id}/call that queued the replay. */
+	poll_after_ms?: number;
 	token: string;
 	expires_at: string;
 	created_at: string;
@@ -353,7 +361,11 @@ export interface ExecutionSummary {
 	 *  the requesting agent's identity has `auto_call_on_approve` enabled
 	 *  (default true). Applies uniformly to MCP, REST, and white-label
 	 *  agents. */
-	triggered_by?: 'agent' | 'user' | 'auto';
+	triggered_by?: 'agent' | 'user' | 'auto' | 'async';
+	/** This execution runs on the async worker, not on a request. It changes
+	 *  what `pending` means: "queued, nothing to trigger" rather than
+	 *  "approved, waiting for the agent". Absent on every synchronous row. */
+	queued?: boolean;
 	started_at?: string;
 	completed_at?: string;
 	expires_at: string;

@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT status, cancel_requested FROM executions WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "cancel_requested",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "cancel_requested"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c4261f33a5550246ea2cbc801e0b8dc912d4a6a79eb852b99755773a124e1081"
+}

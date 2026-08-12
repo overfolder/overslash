@@ -504,18 +504,19 @@ async fn auto_bubble_advances_resolver() {
     let token = format!("tok_{}", Uuid::new_v4());
     let test_scope = overslash_db::scopes::OrgScope::new(org_id, pool.clone());
     let approval = test_scope
-        .create_approval(
-            researcher_id,
-            chief_id,
-            "test",
-            None,
-            None,
-            None,
-            &["http:GET:example.com/x".to_string()],
-            &token,
-            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
-            &[],
-        )
+        .create_approval(overslash_db::repos::approval::CreateApproval {
+            identity_id: researcher_id,
+            current_resolver_identity_id: chief_id,
+            action_summary: "test",
+            action_detail: None,
+            disclosed_fields: None,
+            replay_payload: None,
+            permission_keys: &["http:GET:example.com/x".to_string()],
+            token: &token,
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            tags: &[],
+            execution_mode: "sync",
+        })
         .await
         .unwrap();
 
@@ -895,18 +896,19 @@ async fn stale_expected_resolver_rejects_resolve_and_update() {
     let token = format!("tok_{}", Uuid::new_v4());
     let test_scope = overslash_db::scopes::OrgScope::new(org_id, pool.clone());
     let approval = test_scope
-        .create_approval(
-            researcher_id,
-            chief_id,
-            "test",
-            None,
-            None,
-            None,
-            &["http:GET:example.com/x".to_string()],
-            &token,
-            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
-            &[],
-        )
+        .create_approval(overslash_db::repos::approval::CreateApproval {
+            identity_id: researcher_id,
+            current_resolver_identity_id: chief_id,
+            action_summary: "test",
+            action_detail: None,
+            disclosed_fields: None,
+            replay_payload: None,
+            permission_keys: &["http:GET:example.com/x".to_string()],
+            token: &token,
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            tags: &[],
+            execution_mode: "sync",
+        })
         .await
         .unwrap();
 
@@ -979,18 +981,19 @@ async fn requester_cannot_resolve_own_approval_orphan() {
     // Manually create an approval where requester == current_resolver.
     let token = format!("tok_{}", Uuid::new_v4());
     let approval = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_approval(
-            orphan_id,
-            orphan_id,
-            "self-resolve attempt",
-            None,
-            None,
-            None,
-            &["http:GET:example.com/x".to_string()],
-            &token,
-            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
-            &[],
-        )
+        .create_approval(overslash_db::repos::approval::CreateApproval {
+            identity_id: orphan_id,
+            current_resolver_identity_id: orphan_id,
+            action_summary: "self-resolve attempt",
+            action_detail: None,
+            disclosed_fields: None,
+            replay_payload: None,
+            permission_keys: &["http:GET:example.com/x".to_string()],
+            token: &token,
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            tags: &[],
+            execution_mode: "sync",
+        })
         .await
         .unwrap();
 

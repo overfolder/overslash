@@ -95,18 +95,19 @@ async fn seed_approval(
     expires_in_secs: i64,
 ) -> Uuid {
     scope
-        .create_approval(
-            requester,
-            resolver,
-            summary,
-            None,
-            None,
-            None,
-            &["http:POST:example.com/x".to_string()],
-            &format!("tok_{}", Uuid::new_v4()),
-            time::OffsetDateTime::now_utc() + time::Duration::seconds(expires_in_secs),
+        .create_approval(overslash_db::repos::approval::CreateApproval {
+            identity_id: requester,
+            current_resolver_identity_id: resolver,
+            action_summary: summary,
+            action_detail: None,
+            disclosed_fields: None,
+            replay_payload: None,
+            permission_keys: &["http:POST:example.com/x".to_string()],
+            token: &format!("tok_{}", Uuid::new_v4()),
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::seconds(expires_in_secs),
             tags,
-        )
+            execution_mode: "sync",
+        })
         .await
         .unwrap()
         .id

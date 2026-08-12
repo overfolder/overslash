@@ -122,9 +122,7 @@ pub(super) async fn accept(
             action_description: meta.description.clone(),
             expires_at: crate::routes::util::fmt_time(exec.expires_at),
             timeout_ms: call_timeout.ms(),
-            // One worker tick plus a little: polling sooner than the worker can
-            // possibly have claimed the row just burns a request.
-            poll_after_ms: 2_500,
+            poll_after_ms: crate::routes::approvals::POLL_AFTER_MS,
         }),
     )
         .into_response())

@@ -71,6 +71,8 @@
 	const executionPending = $derived(ctrl.executionPending);
 	const executionRunning = $derived(ctrl.executionRunning);
 	const executionTerminal = $derived(ctrl.executionTerminal);
+	const executionQueued = $derived(ctrl.executionQueued);
+	const willRunInBackground = $derived(ctrl.willRunInBackground);
 
 	let tick = $state(0);
 	onMount(() => {
@@ -230,6 +232,30 @@
 					>
 				</div>
 			</div>
+			{#if willRunInBackground}
+				<div class="aq-statusbar banner-queued">
+					This call asked to run in the background. Approving it hands it to the
+					worker — the result appears on its execution page, not here.
+				</div>
+			{/if}
+			{#if error}<div class="aq-error">{error}</div>{/if}
+		{:else if executionPending && executionQueued}
+			<div class="aq-statusbar banner-queued" role="status" aria-live="polite">
+				<div class="aq-statusbar-text">
+					<strong>Queued.</strong> This call runs in the background; there is nothing
+					to trigger. Cancel to stop it before it starts.
+				</div>
+				<div class="aq-ab-btns">
+					{#if execution}
+						<a class="ovs-btn ovs-btn-secondary" href="/executions/{execution.id}"
+							>View execution</a
+						>
+					{/if}
+					<button class="ovs-btn ovs-btn-secondary" disabled={submitting} onclick={ctrl.cancelExecution}
+						>Cancel</button
+					>
+				</div>
+			</div>
 			{#if error}<div class="aq-error">{error}</div>{/if}
 		{:else if executionPending}
 			<div class="aq-statusbar banner-pending">
@@ -243,6 +269,21 @@
 					>
 					<button class="ovs-btn ovs-btn-primary" disabled={submitting} onclick={ctrl.triggerCall}
 						>Call now</button
+					>
+				</div>
+			</div>
+			{#if error}<div class="aq-error">{error}</div>{/if}
+		{:else if executionRunning && executionQueued}
+			<div class="aq-statusbar banner-running" role="status" aria-live="polite">
+				<div class="aq-statusbar-text">Running in the background…</div>
+				<div class="aq-ab-btns">
+					{#if execution}
+						<a class="ovs-btn ovs-btn-secondary" href="/executions/{execution.id}"
+							>View execution</a
+						>
+					{/if}
+					<button class="ovs-btn ovs-btn-secondary" disabled={submitting} onclick={ctrl.cancelExecution}
+						>Cancel</button
 					>
 				</div>
 			</div>
@@ -668,6 +709,12 @@
 		border-color: var(--color-border);
 		background: var(--color-sidebar);
 		color: var(--color-text-muted);
+	}
+	/* Queued on the worker: informational rather than "your move", so it borrows
+	   the muted surface instead of the pending amber. */
+	.banner-queued {
+		border-color: var(--color-border-subtle);
+		background: var(--color-bg);
 	}
 	.banner-cascade {
 		font-size: 12px;

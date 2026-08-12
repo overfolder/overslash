@@ -244,8 +244,12 @@ API_HOST_SUFFIX="api.localtest.me"
 log "starting API on $API_URL"
 # OVERSLASH_LIVE_MAP turns on the Live Map and the per-call `action.*` events
 # it animates. Dev/e2e only — one durable events row per action call.
+# ASYNC_EXECUTION_ENABLED starts the async worker: without it `execution:
+# "async"` is a 400, so the queued-execution surfaces (the /executions pages,
+# the "runs in the background" approval states) are unreachable from e2e.
 DEV_AUTH=1 \
 OVERSLASH_LIVE_MAP=1 \
+ASYNC_EXECUTION_ENABLED=1 \
 OVERSLASH_SSRF_ALLOW_PRIVATE=1 \
 OVERSLASH_SERVICE_BASE_OVERRIDES="$OVERRIDES" \
 OVERSLASH_TEMPLATE_VAR_MAILBOX_HOST="mailbox.overslash.com" \

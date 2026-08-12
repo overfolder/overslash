@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE approvals\n            SET current_resolver_identity_id = $2,\n                resolver_assigned_at = now()\n          WHERE id = $1 AND org_id = $4 AND status = 'pending' AND current_resolver_identity_id = $3\n          RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags",
+  "query": "WITH RECURSIVE descendants AS (\n            SELECT id FROM identities WHERE id = $2\n            UNION ALL\n            SELECT i.id FROM identities i\n            INNER JOIN descendants d ON i.parent_id = d.id\n        )\n        SELECT a.id as \"id!\", a.org_id as \"org_id!\", a.identity_id as \"identity_id!\",\n               a.current_resolver_identity_id as \"current_resolver_identity_id!\",\n               a.resolver_assigned_at as \"resolver_assigned_at!\",\n               a.action_summary as \"action_summary!\", a.action_detail,\n               a.disclosed_fields,\n               a.replay_payload,\n               a.permission_keys as \"permission_keys!\", a.status as \"status!\",\n               a.resolved_at, a.resolved_by, a.remember as \"remember!\",\n               a.token as \"token!\", a.expires_at as \"expires_at!\", a.created_at as \"created_at!\", a.tags as \"tags!\", a.execution_mode as \"execution_mode!\"\n        FROM approvals a\n        WHERE a.org_id = $1\n          AND a.status = 'pending'\n          AND a.identity_id <> $2\n          AND a.current_resolver_identity_id IN (SELECT id FROM descendants)\n        ORDER BY a.created_at DESC",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "id!",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "org_id",
+        "name": "org_id!",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -27,7 +27,7 @@
       },
       {
         "ordinal": 2,
-        "name": "identity_id",
+        "name": "identity_id!",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -38,7 +38,7 @@
       },
       {
         "ordinal": 3,
-        "name": "current_resolver_identity_id",
+        "name": "current_resolver_identity_id!",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -49,7 +49,7 @@
       },
       {
         "ordinal": 4,
-        "name": "resolver_assigned_at",
+        "name": "resolver_assigned_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -60,7 +60,7 @@
       },
       {
         "ordinal": 5,
-        "name": "action_summary",
+        "name": "action_summary!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +104,7 @@
       },
       {
         "ordinal": 9,
-        "name": "permission_keys",
+        "name": "permission_keys!",
         "type_info": "TextArray",
         "origin": {
           "Table": {
@@ -115,7 +115,7 @@
       },
       {
         "ordinal": 10,
-        "name": "status",
+        "name": "status!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -148,7 +148,7 @@
       },
       {
         "ordinal": 13,
-        "name": "remember",
+        "name": "remember!",
         "type_info": "Bool",
         "origin": {
           "Table": {
@@ -159,7 +159,7 @@
       },
       {
         "ordinal": 14,
-        "name": "token",
+        "name": "token!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -170,7 +170,7 @@
       },
       {
         "ordinal": 15,
-        "name": "expires_at",
+        "name": "expires_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -181,7 +181,7 @@
       },
       {
         "ordinal": 16,
-        "name": "created_at",
+        "name": "created_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -192,7 +192,7 @@
       },
       {
         "ordinal": 17,
-        "name": "tags",
+        "name": "tags!",
         "type_info": "TextArray",
         "origin": {
           "Table": {
@@ -200,12 +200,21 @@
             "name": "tags"
           }
         }
+      },
+      {
+        "ordinal": 18,
+        "name": "execution_mode!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "execution_mode"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
         "Uuid",
         "Uuid"
       ]
@@ -228,8 +237,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "3619b6fa43cec809ac844b99ef32de386968a8eb53e20e2533a0d7f338a901a6"
+  "hash": "0470d4c678ac5bdda9a96b01646356cf99edff14f890d49764e6464eb3241c3b"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags\n         FROM approvals WHERE token = $1 AND org_id = $2",
+  "query": "INSERT INTO approvals (org_id, identity_id, current_resolver_identity_id, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, token, expires_at, tags, execution_mode)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)\n         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags, execution_mode",
   "describe": {
     "columns": [
       {
@@ -200,12 +200,33 @@
             "name": "tags"
           }
         }
+      },
+      {
+        "ordinal": 18,
+        "name": "execution_mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "execution_mode"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
         "Text",
-        "Uuid"
+        "Jsonb",
+        "Jsonb",
+        "Jsonb",
+        "TextArray",
+        "Text",
+        "Timestamptz",
+        "TextArray",
+        "Text"
       ]
     },
     "nullable": [
@@ -226,8 +247,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "59a9fb9ab51908800d944b17da30db3c8cb0423aa513084dcd2e1fc4f552517e"
+  "hash": "1f0a818a1f1b6f43ac3f16dfd1f4bc5b3f0fcd9ab744c2d68afc4b48d3624062"
 }

@@ -1,7 +1,7 @@
 # Async (non-blocking) action calls
 
-**Status**: In progress (behind `ASYNC_EXECUTION_ENABLED`, default off)
-**Decision record**: [D62](../../DECISIONS.md)
+**Status**: Shipped (behind `ASYNC_EXECUTION_ENABLED`, default off)
+**Decision record**: [D62](../../DECISIONS.md), [D66](../../DECISIONS.md) (gated async)
 **Supersedes nothing.** Extends [D56](../../DECISIONS.md) (call timeouts).
 
 ## The problem
@@ -84,20 +84,57 @@ A gated async call returns the ordinary `pending_approval` envelope, not a 202.
 The gate fires before the fork, and the two are different axes: an agent must
 be able to tell "queued" from "waiting on a human" without a second field.
 
-**Not implemented in the first cut.** A gated call runs *synchronously* when it
-is approved, still bounded by the deployment's request cap — so the one shape
-that most wants async, a slow query that needed a human's approval, does not
-get it yet. This is a known gap, not a subtlety: `execution: "async"` on a
-gated call is accepted and then quietly forgotten at the gate.
+What the caller asked for is stamped on `approvals.execution_mode`, and read
+back when the replay is **triggered** — by `POST /v1/approvals/{id}/call` or by
+`spawn_auto_call`. Triggering an async approval *enqueues* it: an `UPDATE` lifts
+`approvals.replay_payload` into `executions.request` on the row that was already
+created when the approval was allowed, and the worker claims it on its next
+tick. `/call` answers **202 with the ordinary `ApprovalResponse`**, carrying
+`execution_mode`, `poll_after_ms`, and the queued execution — not the `accepted`
+envelope, because the dashboard, MCP and the CLI all already parse this shape
+and a second body under one route would be a silent client break.
 
-The intended design, for when it is built: persist the intent on
-`approvals.execution_mode` — a column rather than a field inside
-`replay_payload`, because the resolve auto-call branch and
-`POST /v1/approvals/{id}/call` must both branch on async-ness *before* parsing
-a payload that has three different shapes. On approval the replay is routed
-through the worker rather than run inline, which is what dodges the request cap
-`/approvals/{id}/call` otherwise imposes. The column ships with migration 112
-and is reserved for exactly that; nothing reads it today.
+Trigger time rather than approve time, because `auto_call_on_approve = false`
+means "nothing runs until the agent says so", and queueing at approve time would
+run it anyway. It also keeps `services::inbox`'s `ready_to_call` honest: a queued
+row sits in `pending`, so the inbox would otherwise tell an agent to dispatch a
+row the worker already owns. `ExecutionSummary` grew a `queued` flag for exactly
+that distinction, and the inbox, the approval page and the queue row all branch
+on it.
+
+The load-bearing detail is one predicate. The enqueue leaves the row `pending`,
+which is precisely what `claim_for_execution` accepts, so **the synchronous claim
+gained `AND request IS NULL`**. Without it a manual `/call` could dial inline
+while a worker dialled the same row — two upstream calls, and there are no
+idempotency keys. The two triggers are now mutually exclusive by predicate rather
+than by timing.
+
+An approval whose `replay_payload` predates the column has nothing to hand the
+worker: the enqueue matches no row, and `/call` falls back to the inline
+synchronous replay. A deployment that has since turned the flag off does the
+same — the stamp records intent, the flag decides.
+
+On the worker, an approval-backed row runs the **same post-execution tail** the
+inline replay runs (`routes::approvals::tail`): the "Allow & Remember" rules, the
+cascade they unblock, the `approval.executed` audit row, and the approval event.
+Its `action.executed` row is stamped `AuditSource::Replay`, so it names the
+approval that authorised it exactly as the inline path does, and its execution
+metric is recorded under `mode = "replay"` with the template key recovered from
+the live registry. An approved call must not owe different things depending on
+which trigger dialled it, and one copy of the tail is the only way to make that
+a fact.
+
+Cancellation has three windows. A queued-but-unclaimed row flips to `cancelled`
+immediately from either `POST /v1/approvals/{id}/cancel` or
+`POST /v1/executions/{id}/cancel`. A row a worker already owns can only be
+*asked* to stop: the approval cancel falls through to `request_cancel`, and the
+terminal event is emitted by the worker when it observes the flag on its next
+heartbeat — announcing it at request time would show a cancelled row that keeps
+running. A terminal row is a 409 either way.
+
+The budget is the async one: the gated path resolves its timeout above the gate,
+so `ASYNC_CALL_TIMEOUT_MAX_MS` applies and the stored value is re-clamped against
+today's org maximum when the worker picks it up.
 
 ## The row
 
@@ -185,6 +222,9 @@ already had its effect. Unavoidable without idempotency keys, and the reason
   slow analytics query) is read-class, but that tool has its own required-args
   schema and body-builder, so it is a second forwarder plus a second schema
   plus tests.
+- **A dashboard trigger for a queued call.** Not needed and deliberately absent:
+  a queued row has nothing to trigger, so the approval page and the queue row
+  drop "Call now" rather than offering a button whose only outcome is a 409.
 - **`orgs.max_async_call_timeout_ms`.** Deferred. Async is currently clamped by
   the existing `orgs.max_call_timeout_ms`, which means an org that set 60000 to
   bound connection-holding has also bounded its async jobs. Kept knowingly:

@@ -91,14 +91,20 @@ platform_actions:
       events, each with a type: approval_needed (someone in your subtree is
       blocked and you can resolve it), ready_to_call (your approved action is
       waiting to be dispatched), or result_unread (your action already ran and
-      you have not read its output — fetch it with get_result). Result bodies
+      you have not read its output — fetch it with get_result). An approved
+      call that is queued on the async worker produces no event until its
+      result lands — there is nothing for you to dispatch. Result bodies
       are omitted here; use get_result for the payload.
     risk: read
   call_pending:
     description: >
       Dispatch a previously-approved action. Requires params.approval_id
       (string). The execution must still be in pending state — it expires 15
-      minutes after the approval was granted.
+      minutes after the approval was granted. If the original call asked for
+      execution: "async", this queues it instead of running it: the response
+      carries execution_mode "async" and a pending execution, and the result
+      arrives via get_result (or get_execution with the execution id), not in
+      this response.
     risk: write
   cancel_pending:
     description: >

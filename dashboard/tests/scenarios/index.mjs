@@ -32,6 +32,7 @@ export {
 	seedGroupGrant,
 	seedGroupMember,
 	seedApproval,
+	seedApprovalCall,
 	seedApprovalResolution,
 	seedExecution,
 	setAuditResponseBodyMode,

@@ -208,7 +208,7 @@ pub(super) async fn tools_list_response(
                     "params":      {},
                     "approval_id": {
                         "type": "string",
-                        "description": "Trigger the replay of a previously-approved action. Mutually exclusive with service/action/params."
+                        "description": "Trigger the replay of a previously-approved action. Mutually exclusive with service/action/params. If the original call asked for `execution: \"async\"`, this queues the replay rather than running it: the response carries `execution_mode: \"async\"` and a pending execution, and you fetch the outcome with `get_result` (or `get_execution` with the execution id)."
                     },
                     "verbose": {
                         "type": "boolean",
@@ -233,7 +233,7 @@ pub(super) async fn tools_list_response(
                         "type": "string",
                         "enum": ["sync", "async"],
                         "default": "sync",
-                        "description": "Whether to wait for the result. `sync` (default) returns the upstream response in this tool result, bounded by the deployment's request cap. `async` accepts the call and returns immediately with `status: \"accepted\"` and an `execution_id`; the call runs in the background and you fetch the outcome with `overslash_read` `get_execution`, polling until its status is terminal. Use it for work that takes longer than a tool call should block on — a large export, a slow analytics query, a batch job — and in particular when a synchronous call was rejected for exceeding the timeout ceiling. Not available with prefer_stream, deliver: \"url\", return_url, platform actions, or actions that return binary. Only takes effect on fresh calls (service + action); ignored when approval_id is set."
+                        "description": "Whether to wait for the result. `sync` (default) returns the upstream response in this tool result, bounded by the deployment's request cap. `async` accepts the call and returns immediately with `status: \"accepted\"` and an `execution_id`; the call runs in the background and you fetch the outcome with `overslash_read` `get_execution`, polling until its status is terminal. Use it for work that takes longer than a tool call should block on — a large export, a slow analytics query, a batch job — and in particular when a synchronous call was rejected for exceeding the timeout ceiling. Not available with prefer_stream, deliver: \"url\", return_url, platform actions, or actions that return binary. Only takes effect on fresh calls (service + action); ignored when approval_id is set — but it is remembered: if the call is gated, triggering the approval later queues it instead of running it inline."
                     }
                 },
                 "additionalProperties": false
