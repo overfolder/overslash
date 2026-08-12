@@ -227,7 +227,7 @@ async fn run_mcp(ctx: StoredCallCtx<'_>, call: StoredMcpCall) -> StoredOutcome {
             )
             .await
             {
-                Ok(Some(h)) => Some(h),
+                Ok(Some(bearer)) => Some(bearer.header),
                 Ok(None) => {
                     let msg = "cannot replay: no OAuth connection for the MCP provider \
                                (it may have been removed since the approval was created)";

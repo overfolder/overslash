@@ -157,6 +157,33 @@ impl Config {
             dashboard_origin: env::var("DASHBOARD_ORIGIN").unwrap_or_else(|_| "*localhost*".into()),
             mcp_extra_origins: env::var("MCP_EXTRA_ORIGINS").unwrap_or_default(),
             redis_url: env::var("REDIS_URL").ok(),
+            // No `.filter(|n| *n > 0)` on the TTLs: `0` is a real value that
+            // turns the cache off, not a typo to fall back from.
+            resolve_cache_ttl_secs: env::var("RESOLVE_CACHE_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300), // 5 min
+            resolve_cache_negative_ttl_secs: env::var("RESOLVE_CACHE_NEGATIVE_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
+            resolve_cache_scope_ttl_max_secs: env::var("RESOLVE_CACHE_SCOPE_TTL_MAX_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300), // 5 min
+            resolve_cache_timeout_ms: env::var("RESOLVE_CACHE_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(100),
+            resolve_cache_max_entries: env::var("RESOLVE_CACHE_MAX_ENTRIES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(10_000),
+            resolve_cache_namespace: env::var("RESOLVE_CACHE_NAMESPACE")
+                .ok()
+                .filter(|s| !s.is_empty()),
             default_rate_limit: env::var("DEFAULT_RATE_LIMIT")
                 .ok()
                 .and_then(|s| s.parse().ok())

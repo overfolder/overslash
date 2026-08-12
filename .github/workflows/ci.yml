@@ -193,6 +193,10 @@ jobs:
       SQLX_OFFLINE: "true"
       # Points oversla-sh integration tests at the valkey service above.
       VALKEY_URL: redis://localhost:6380
+      # Same service, the name the API crate reads. Without it the resolver
+      # cache (D64) falls back to its in-memory store and the Redis backend —
+      # the one a deployed instance actually uses — ships unexercised.
+      REDIS_URL: redis://localhost:6380
     steps:
       # Free ~25 GB of pre-installed tooling we never use (Android SDK,
       # .NET, Haskell, CodeQL, cached Docker images, etc.) so the

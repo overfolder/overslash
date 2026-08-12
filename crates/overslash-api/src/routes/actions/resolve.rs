@@ -305,6 +305,8 @@ pub(super) async fn resolve_request(
                 url: resolved_url,
                 auth: resolved_auth,
                 oauth_header: mcp_oauth_header,
+                connection_id: mcp_connection_id,
+                principal: mcp_principal,
             } = resolve_effective_mcp(
                 state,
                 ext,
@@ -332,6 +334,34 @@ pub(super) async fn resolve_request(
             // approval names the target instead of quoting an opaque handle.
             // Best-effort — a slow or unreachable server degrades the
             // approval's readability, it does not block the gate.
+            // Ask the cache before `resolve_display_params_mcp` gets anywhere
+            // near `build_client` — a full hit skips the vault reads and the
+            // blocking host resolution entirely. The fingerprint is the
+            // connection when OAuth named one, else the vault secret the
+            // Bearer arm resolved: two instances pointed at two different
+            // containers must never share an entry, and neither must two
+            // owners on the same instance.
+            let mcp_fingerprint = crate::services::resolve_cache::mcp_credential_fingerprint(
+                mcp_connection_id,
+                &resolved_auth,
+            );
+            let resolver_cache_scope = crate::services::resolve_cache::CacheScope {
+                org_id: scope.org_id(),
+                ceiling_user_id,
+                instance_id: instance.as_ref().map(|i| i.id),
+                credential_fingerprint: mcp_fingerprint,
+                service_key: service_key.to_string(),
+                runtime: "mcp",
+                namespace: state.config.resolve_cache_namespace.clone(),
+            };
+            let resolver_plan = crate::services::resolve_cache::plan(
+                state.resolve_cache(ext),
+                &state.config,
+                &resolver_cache_scope,
+                crate::services::resolve_cache::mcp_targets(&resolved_url, action, &req.params),
+            )
+            .await;
+
             let resolved = crate::services::param_resolver::resolve_display_params_mcp(
                 state,
                 scope,
@@ -340,6 +370,8 @@ pub(super) async fn resolve_request(
                 mcp_oauth_header.as_ref(),
                 action,
                 &req.params,
+                state.resolve_cache(ext),
+                &resolver_plan,
             )
             .await;
 
@@ -394,7 +426,7 @@ pub(super) async fn resolve_request(
                     }),
                     platform_target: None,
                     instance_id: None,
-                    binding: BindingFacts::new(instance.as_ref(), &svc, None),
+                    binding: BindingFacts::new(instance.as_ref(), &svc, mcp_principal),
                 },
             ));
         }
@@ -689,6 +721,36 @@ pub(super) async fn resolve_request(
         // Reuse the same base the action URL resolved to (instance override or
         // template host) so display-param GETs hit the same deployment.
         let resolver_base = base.clone();
+
+        // Ask the cache first (D64). This runs *before* the credential build
+        // below on purpose: a secret-backed resolver's headers cost a vault
+        // decrypt, and there is no reason to pay it for an answer we already
+        // hold.
+        let resolver_cache_scope = crate::services::resolve_cache::CacheScope {
+            org_id: scope.org_id(),
+            ceiling_user_id,
+            instance_id: instance.as_ref().map(|i| i.id),
+            credential_fingerprint: crate::services::resolve_cache::http_credential_fingerprint(
+                resolved_auth.principal.as_deref(),
+                &resolved_auth.secrets,
+                resolved_auth.oauth_injected || resolved_auth.auth_header.is_some(),
+            ),
+            service_key: service_key.to_string(),
+            runtime: "http",
+            namespace: state.config.resolve_cache_namespace.clone(),
+        };
+        let resolver_plan = crate::services::resolve_cache::plan(
+            state.resolve_cache(ext),
+            &state.config,
+            &resolver_cache_scope,
+            crate::services::resolve_cache::http_targets(
+                &state.config,
+                &resolver_base,
+                action,
+                &req.params,
+            ),
+        )
+        .await;
         // Display-param resolution makes authenticated GETs against the
         // provider. Build the credential into a throwaway header map for
         // those calls only; it never lands on the ActionRequest itself,
@@ -703,57 +765,59 @@ pub(super) async fn resolve_request(
         // 401s, and resolution "fails" silently back to the raw id — the
         // exact thing the resolver exists to avoid.
         //
-        // Gated on the action actually declaring a resolver so the common
-        // case pays for no extra decrypt.
-        let resolver_headers = if action.params.values().any(|p| p.resolve.is_some()) {
-            let mut h = headers.clone();
-            if let Some(ah) = &resolved_auth.auth_header {
-                h.insert(ah.name.clone(), ah.value.clone());
-            }
-            if !resolved_auth.secrets.is_empty() {
-                // A probe request carrying just the credential refs and the
-                // headers so far. `inject_secrets` also does query-param
-                // injection, but against this probe's empty URL — a
-                // `in: query` credential therefore still does not reach
-                // resolver GETs. No shipped template pairs one with a
-                // resolver; when one does, the resolver URL has to be built
-                // before injection rather than inside `resolve_display_params`.
-                let probe = ActionRequest {
-                    method: "GET".to_string(),
-                    url: String::new(),
-                    headers: h.clone(),
-                    body: None,
-                    secrets: resolved_auth.secrets.clone(),
-                };
-                match crate::services::action_caller::resolve_credential_values(
-                    state,
-                    scope,
-                    Some(service_key),
-                    &probe,
-                )
-                .await
-                .and_then(|values| {
-                    overslash_core::secret_injection::inject_secrets(&probe, &values)
-                        .map_err(|e| AppError::BadRequest(e.to_string()))
-                }) {
-                    Ok((_url, injected)) => h = injected,
-                    // Best-effort, like resolution itself: the send path is
-                    // about to resolve the same credential and will report
-                    // the failure properly. Don't fail the call from the
-                    // display path.
-                    Err(e) => {
-                        tracing::warn!(
-                            service = %service_key,
-                            "display-resolver credential build failed ({e}); \
-                             resolver GETs will be unauthenticated"
-                        );
+        // Gated on the action actually declaring a resolver — and on the cache
+        // not having answered all of them — so the common case pays for no
+        // extra decrypt.
+        let resolver_headers =
+            if !resolver_plan.all_hit() && action.params.values().any(|p| p.resolve.is_some()) {
+                let mut h = headers.clone();
+                if let Some(ah) = &resolved_auth.auth_header {
+                    h.insert(ah.name.clone(), ah.value.clone());
+                }
+                if !resolved_auth.secrets.is_empty() {
+                    // A probe request carrying just the credential refs and the
+                    // headers so far. `inject_secrets` also does query-param
+                    // injection, but against this probe's empty URL — a
+                    // `in: query` credential therefore still does not reach
+                    // resolver GETs. No shipped template pairs one with a
+                    // resolver; when one does, the resolver URL has to be built
+                    // before injection rather than inside `resolve_display_params`.
+                    let probe = ActionRequest {
+                        method: "GET".to_string(),
+                        url: String::new(),
+                        headers: h.clone(),
+                        body: None,
+                        secrets: resolved_auth.secrets.clone(),
+                    };
+                    match crate::services::action_caller::resolve_credential_values(
+                        state,
+                        scope,
+                        Some(service_key),
+                        &probe,
+                    )
+                    .await
+                    .and_then(|values| {
+                        overslash_core::secret_injection::inject_secrets(&probe, &values)
+                            .map_err(|e| AppError::BadRequest(e.to_string()))
+                    }) {
+                        Ok((_url, injected)) => h = injected,
+                        // Best-effort, like resolution itself: the send path is
+                        // about to resolve the same credential and will report
+                        // the failure properly. Don't fail the call from the
+                        // display path.
+                        Err(e) => {
+                            tracing::warn!(
+                                service = %service_key,
+                                "display-resolver credential build failed ({e}); \
+                                 resolver GETs will be unauthenticated"
+                            );
+                        }
                     }
                 }
-            }
-            h
-        } else {
-            headers.clone()
-        };
+                h
+            } else {
+                headers.clone()
+            };
         let resolved = crate::services::param_resolver::resolve_display_params(
             &state.http_client,
             &state.config,
@@ -761,6 +825,8 @@ pub(super) async fn resolve_request(
             &resolver_headers,
             action,
             &req.params,
+            state.resolve_cache(ext),
+            &resolver_plan,
         )
         .await;
 

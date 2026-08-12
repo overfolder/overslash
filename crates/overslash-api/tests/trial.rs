@@ -147,6 +147,12 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 1000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
@@ -197,6 +203,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
     }
 }
