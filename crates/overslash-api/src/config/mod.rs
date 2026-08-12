@@ -140,6 +140,18 @@ pub struct Config {
     /// long enough that an agent can hand the URL to a shell and let a large
     /// file finish transferring, including a retry or two.
     pub download_token_ttl_secs: i64,
+    /// Ceiling on the plaintext size of a stored call result.
+    ///
+    /// A truncated compact render stores the full `ActionResult` so the same
+    /// bytes can be delivered again without re-running upstream. That store is
+    /// bounded well under `max_response_body_bytes`: 5 MB per cropped call is
+    /// heavy write amplification for a "let me look again" cache, and a payload
+    /// that large wants `deliver: "url"` up front anyway. Over the cap nothing
+    /// is stored and the caller is told why — a *partial* stored copy would be
+    /// worse than none, since the agent would fetch it and believe it complete.
+    ///
+    /// `0` disables result storage entirely.
+    pub call_result_max_bytes: usize,
     pub dashboard_url: String,
     pub dashboard_origin: String,
     /// Additional CORS origins allowed *only* on MCP transport
@@ -768,6 +780,7 @@ mod tests {
             audit_response_body_max_bytes: 0,
             filter_timeout_ms: 0,
             download_token_ttl_secs: 900,
+            call_result_max_bytes: 1024 * 1024,
             dashboard_url: "/".into(),
             dashboard_origin: "*".into(),
             mcp_extra_origins: String::new(),

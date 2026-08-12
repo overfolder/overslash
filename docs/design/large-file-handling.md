@@ -69,6 +69,39 @@ which today means direct REST callers; it is absent from the `overslash_read`
 `routes::mcp::forward` stamps `X-Overslash-Transport` on its loopback request
 and `extractors::CallerTransport` reads it back.
 
+### Not the same wall as the compact crop
+
+There are two distinct size limits, they fire at different moments, and they
+have different recoveries. Confusing them is easy because both surface as "the
+response was too big".
+
+| | Transport cap | Rendering budget |
+|---|---|---|
+| Constant | `max_response_body_bytes` (5 MB) | `COMPACT_BUDGET_BYTES` (8 KB) |
+| Fires | while the body is still arriving, inside `http_caller::call` | after the body is buffered, in `compact_response::compact` |
+| Result | **502**, no body ever existed | **200**, cropped body with `_truncated: true` |
+| Applies to | every caller | only `verbose: false` (i.e. MCP) |
+| Recovery | D57 — a token for the *same request*, replayed on redemption | D61 — a token for the *stored bytes*, served without an upstream call |
+
+The asymmetry in that last row is the whole reason they are separate mechanisms.
+On the 502 there is nothing to keep, so the only thing that can be handed back
+is a promise to run the call again; the token is cheap precisely because
+`deliver: "url"` never needed the body. On a crop the bytes are in hand and
+throwing them away is what forced the re-query the field report describes, so
+the token points at a stored copy and redemption dials nothing.
+
+That difference also lands one capability the 502 path cannot have: a
+result-backed token needs no credential at fetch time, so it works for
+OAuth-authenticated services, which are one of the refusals D57's best-effort
+mint collapses to `None` on.
+
+`call_result_max_bytes` (1 MB) deliberately sits *below*
+`max_response_body_bytes` rather than at it. A body between the two caps
+buffers and renders fine; keeping every one of them for a possible "let me look
+again" is write amplification for a working-set cache. Over the cap nothing is
+stored and the hint says so, because a silently shortened "full result" is
+worse than none — the agent would fetch it and believe it complete.
+
 The approval-replay path renders no hint at all: it surfaces the error through
 `AppError`'s `Display` impl (`"response too large"`) rather than
 `IntoResponse`, so the JSON body — `hint` included — is never built. Neither

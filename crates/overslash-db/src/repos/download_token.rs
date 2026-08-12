@@ -18,8 +18,12 @@ pub struct DownloadTokenRow {
     pub service_instance_id: Option<Uuid>,
     pub service_key: Option<String>,
     pub action_key: Option<String>,
-    /// Replayable upstream request: `{method, url, headers, body}`.
-    pub request: serde_json::Value,
+    /// Replayable upstream request: `{method, url, headers, body}`. `None` on a
+    /// result-backed token, which serves stored bytes instead of replaying.
+    pub request: Option<serde_json::Value>,
+    /// When set, redemption serves this stored result instead of dialing
+    /// upstream. Mutually exclusive with `request` — see migration 111.
+    pub call_result_id: Option<Uuid>,
     /// How to re-resolve the upstream credential at fetch time.
     pub credential_ref: serde_json::Value,
     pub mime: Option<String>,
@@ -42,15 +46,33 @@ pub struct NewDownloadToken<'a> {
     pub service_instance_id: Option<Uuid>,
     pub service_key: Option<&'a str>,
     pub action_key: Option<&'a str>,
-    pub request: serde_json::Value,
+    pub request: Option<serde_json::Value>,
+    pub call_result_id: Option<Uuid>,
     pub credential_ref: serde_json::Value,
     pub mime: Option<&'a str>,
     pub size_bytes: Option<i64>,
     pub filename: Option<&'a str>,
     pub ttl_secs: i64,
+    /// Upper bound on `expires_at`, on top of `ttl_secs`. Set when the token
+    /// points at something with its own lifetime (a stored call result), so a
+    /// capability cannot outlive the bytes it names.
+    ///
+    /// Applied in SQL rather than by the caller on purpose: `expires_at` is
+    /// written from the database clock, so subtracting `now()` from it on the
+    /// API side compares two clocks. Under skew that arithmetic yields a
+    /// negative remaining lifetime, and any clamp of it mints a token that is
+    /// dead on arrival while handing the caller a plausible `expires_at`.
+    /// `LEAST` evaluates both bounds against the one clock that wrote them.
+    pub expires_at_ceiling: Option<OffsetDateTime>,
 }
 
-/// Mint a token row. `expires_at = now() + ttl_secs`.
+/// Mint a token row. `expires_at = now() + ttl_secs`, further clamped by
+/// `expires_at_ceiling` when one is given.
+///
+/// Postgres' `LEAST` ignores NULL operands rather than propagating them, so a
+/// `None` ceiling leaves the plain TTL untouched — no second query shape.
+/// A ceiling already in the past yields a row `claim` will never match, which
+/// is the honest outcome: the bytes are gone, so the capability is too.
 pub async fn create(
     pool: &PgPool,
     t: NewDownloadToken<'_>,
@@ -59,13 +81,13 @@ pub async fn create(
         DownloadTokenRow,
         "INSERT INTO download_tokens (
              token_hash, org_id, identity_id, service_instance_id,
-             service_key, action_key, request, credential_ref,
+             service_key, action_key, request, call_result_id, credential_ref,
              mime, size_bytes, filename, expires_at
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                 now() + make_interval(secs => $12))
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                 LEAST(now() + make_interval(secs => $13), $14::timestamptz))
          RETURNING id, token_hash, org_id, identity_id, service_instance_id,
-                   service_key, action_key, request, credential_ref,
+                   service_key, action_key, request, call_result_id, credential_ref,
                    mime, size_bytes, filename, created_at, expires_at,
                    last_used_at, use_count",
         t.token_hash,
@@ -75,11 +97,13 @@ pub async fn create(
         t.service_key,
         t.action_key,
         t.request,
+        t.call_result_id,
         t.credential_ref,
         t.mime,
         t.size_bytes,
         t.filename,
         t.ttl_secs as f64,
+        t.expires_at_ceiling,
     )
     .fetch_one(pool)
     .await
@@ -103,7 +127,7 @@ pub async fn claim(
          SET use_count = use_count + 1, last_used_at = now()
          WHERE token_hash = $1 AND expires_at > now()
          RETURNING id, token_hash, org_id, identity_id, service_instance_id,
-                   service_key, action_key, request, credential_ref,
+                   service_key, action_key, request, call_result_id, credential_ref,
                    mime, size_bytes, filename, created_at, expires_at,
                    last_used_at, use_count",
         token_hash,

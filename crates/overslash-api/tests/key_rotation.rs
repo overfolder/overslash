@@ -157,6 +157,100 @@ async fn master_key_rotation_end_to_end() {
     );
 }
 
+/// A stored call result (D57) is encrypted, and therefore must also be
+/// *rotatable*. An encrypted column that never joins `key_rotation::TARGETS`
+/// looks safe and silently pins one key forever — the failure mode this test
+/// exists to make loud.
+#[tokio::test]
+async fn stored_call_results_rotate_with_the_master_key() {
+    let pool = common::test_pool().await;
+    let (_addr, _http) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.secrets_encryption_key = hex(KEY_A_HEX);
+        cfg.secrets_encryption_key_previous = None;
+        cfg.secrets_encryption_key_active_id = 1;
+    })
+    .await;
+
+    // Insert directly rather than driving a truncated call: the rotation
+    // property is about the column, and a real call would drag a mock upstream
+    // and the whole compact-render path into a test about key management.
+    let (org_id, identity_id) = seed_org_identity_ids(&pool).await;
+    let keyring_v1 = Keyring::single(1, parse_hex(&hex(KEY_A_HEX))).unwrap();
+    let plaintext = br#"{"status_code":200,"headers":{},"body":"stored","duration_ms":1}"#;
+    let ct = overslash_core::crypto::encrypt(&keyring_v1, plaintext).unwrap();
+
+    overslash_db::repos::call_result::create(
+        &pool,
+        overslash_db::repos::call_result::NewCallResult {
+            org_id,
+            identity_id,
+            service_key: Some("http"),
+            action_key: None,
+            body_ciphertext: &ct,
+            status_code: 200,
+            content_type: Some("application/json"),
+            body_bytes: plaintext.len() as i64,
+            ttl_secs: 900,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(first_byte_of_call_result(&pool).await, 1);
+
+    let keyring_v2 =
+        Keyring::dual(2, parse_hex(&hex(KEY_B_HEX)), 1, parse_hex(&hex(KEY_A_HEX))).unwrap();
+    let stats = key_rotation::run(
+        &pool,
+        &keyring_v2,
+        key_rotation::Options::default(),
+        &mut NoopReporter,
+    )
+    .await
+    .expect("re-encrypt loop should succeed");
+    assert_eq!(stats.errors, 0, "{stats:?}");
+
+    assert_eq!(
+        first_byte_of_call_result(&pool).await,
+        2,
+        "call_results.body_ciphertext must be in key_rotation::TARGETS",
+    );
+
+    // And it still decrypts under a post-rotation single-key deploy.
+    let keyring_v3 = Keyring::single(2, parse_hex(&hex(KEY_B_HEX))).unwrap();
+    let blob: Vec<u8> = sqlx::query_scalar("SELECT body_ciphertext FROM call_results LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let round_tripped = overslash_core::crypto::decrypt(&keyring_v3, &blob).unwrap();
+    assert_eq!(round_tripped, plaintext);
+}
+
+async fn first_byte_of_call_result(pool: &sqlx::PgPool) -> u8 {
+    let blob: Vec<u8> = sqlx::query_scalar("SELECT body_ciphertext FROM call_results LIMIT 1")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    blob[0]
+}
+
+/// Any org + identity pair; the rotation loop does not read either.
+async fn seed_org_identity_ids(pool: &sqlx::PgPool) -> (uuid::Uuid, uuid::Uuid) {
+    let org_id: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO orgs (name, slug) VALUES ('rot', 'rot-kr') RETURNING id")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let identity_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO identities (org_id, kind, name) VALUES ($1, 'user', 'rot') RETURNING id",
+    )
+    .bind(org_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (org_id, identity_id)
+}
+
 /// Simulates the TOCTOU window: between the loop's SELECT and UPDATE on a
 /// row, a live API write replaces the ciphertext with a fresh value. The
 /// CAS guard must leave the live write in place; the loop must NOT

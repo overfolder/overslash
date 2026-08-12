@@ -21,6 +21,7 @@ pub mod audit;
 pub mod billing;
 pub mod billing_email_log;
 pub mod byoc_credential;
+pub mod call_result;
 pub mod connection;
 pub mod download_token;
 pub mod email_unsubscribe_token;

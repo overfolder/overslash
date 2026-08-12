@@ -119,6 +119,7 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 - Light mode + theme toggle on the dashboard.
 - More e2e: MCP approval-bubbling and elicitation full-chain (puppet + scaffold specs in; deterministic gap-trigger pending — likely via a seeded service template + a no-permissions sub-agent).
 - Increase integration coverage across all API routes; unit tests for permission resolution; OAuth refresh + BYOC fallback edge cases.
+- **Priority-aware compact truncation.** `compact_response::shrink_to_budget` applies uniform limits across the whole JSON tree, so a payload that ships column descriptors alongside rows (Metabase, BigQuery, Snowflake, most tabular APIs) spends the 8 KB budget on metadata before the truncator reaches the rows — a 254-row Metabase result renders as 10 rows plus `…+244 more items`. Make it priority-aware: detect the principal collection by shape, drop sibling metadata before it, and add a depth lever so nested descriptor subtrees (`cols[i].fingerprint`) collapse while their scalar leaves (`cols[i].name`) survive. Heuristic rather than a template `x-overslash-*` extension: the motivating traffic arrives over Mode A (`service: "http"`), which has no template action to annotate. D57 (advertised paging params, a reachable `filter`) and D61 (a cropped result now carries a URL to its own full bytes) both made this less urgent, but neither made it wrong.
 
 ---
 
