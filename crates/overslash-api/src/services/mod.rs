@@ -3,6 +3,7 @@ pub mod approval_expiry;
 pub mod audit_capture;
 pub mod billing_email;
 pub mod billing_tier;
+pub mod call_result;
 pub mod call_timeout;
 pub mod client_credentials;
 pub mod compact_response;

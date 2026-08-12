@@ -106,7 +106,18 @@ async fn redeem(
         }
     }
 
-    let request: ActionRequest = match serde_json::from_value(row.request.clone()) {
+    // Two byte sources, exactly one per row (migration 111's CHECK). A stored
+    // result is already in hand — no upstream, no credential to re-resolve.
+    if let Some(call_result_id) = row.call_result_id {
+        return serve_stored(&state, &ext, &scope, &row, ip, call_result_id).await;
+    }
+
+    let Some(raw_request) = row.request.clone() else {
+        // Unreachable under the CHECK: a row with neither source cannot exist.
+        tracing::error!(token_id = %row.id, "download: token names no byte source");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "download failed").into_response();
+    };
+    let request: ActionRequest = match serde_json::from_value(raw_request) {
         Ok(r) => r,
         Err(e) => {
             // Only reachable if a row was written by an incompatible build.
@@ -125,17 +136,111 @@ async fn redeem(
     {
         Ok(r) => r,
         Err(e) => {
-            log_download(&scope, &row, ip, None, true).await;
+            log_download(&scope, &row, ip, Redeemed::Failed).await;
             return e.into_response();
         }
     };
 
     let status = upstream.status().as_u16();
-    log_download(&scope, &row, ip, Some(status), status >= 400).await;
+    log_download(&scope, &row, ip, Redeemed::Upstream { status }).await;
     deferred_download::stream_through(
         upstream,
         std::time::Duration::from_millis(state.config.call_stream_idle_timeout_ms),
     )
+}
+
+/// Serve a stored call result: the bytes this token was minted from.
+///
+/// The mirror of the replay path above, minus everything that makes replay
+/// expensive — no credential re-resolution, no upstream dial, no idle guard.
+/// That absence is also why this path works for OAuth-authenticated services,
+/// which `deliver: "url"` still refuses on a fresh call: there is no bearer to
+/// re-mint when the answer is already on disk.
+///
+/// A missing or expired backing row returns the same bare 404 as an unknown
+/// token. Distinguishing them would confirm to someone probing that a given
+/// token was once real.
+async fn serve_stored(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    scope: &OrgScope,
+    row: &overslash_db::repos::download_token::DownloadTokenRow,
+    ip: &str,
+    call_result_id: uuid::Uuid,
+) -> Response {
+    let result = match crate::services::call_result::load(state, state.db(ext), call_result_id)
+        .await
+    {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND, "unknown or expired token").into_response(),
+        Err(e) => {
+            tracing::error!(token_id = %row.id, error = %e, "download: stored result unreadable");
+            log_download(scope, row, ip, Redeemed::Failed).await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, "download failed").into_response();
+        }
+    };
+
+    log_download(
+        scope,
+        row,
+        ip,
+        Redeemed::Stored {
+            stored_status: result.status_code,
+        },
+    )
+    .await;
+
+    // The upstream status is *not* replayed onto this response. The stored body
+    // may well be a 404 the agent asked to look at again; the fetch of it
+    // succeeded, and a curl that saw 404 here would write nothing and report a
+    // failure that did not happen. The status travels in the body, which is the
+    // serialized ActionResult the caller already knows how to read.
+    let mut builder = Response::builder().status(StatusCode::OK);
+    for name in deferred_download::FORWARDED_HEADERS {
+        // `content-length` is deliberately dropped: the stored body went
+        // through `String::from_utf8_lossy` on the way in, so the upstream's
+        // byte count can disagree with what we are about to write, and a
+        // mismatched length is a framing error rather than a cosmetic one.
+        // Everything else in the allowlist describes the payload, not its size.
+        if name.eq_ignore_ascii_case("content-length") {
+            continue;
+        }
+        if let Some((_, value)) = result
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        {
+            builder = builder.header(name, value);
+        }
+    }
+    builder
+        .body(axum::body::Body::from(result.body))
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "download: stored result response failed to build");
+            (StatusCode::INTERNAL_SERVER_ERROR, "download failed").into_response()
+        })
+}
+
+/// What a redemption actually did, so the audit row can describe *this fetch*
+/// rather than smuggling two different meanings through one `status_code`.
+///
+/// The distinction is not cosmetic. On the replay path the client receives the
+/// upstream's own status, so "the status" and "what the caller got" are the
+/// same number. On the stored path they are not: the caller always gets 200
+/// (the bytes were served), while the stored body may itself record a 404 the
+/// agent asked to look at again. Logging the stored 404 as `status_code`
+/// produced rows reading `status_code: 404, is_error: false` — contradictory
+/// on their face, and misleading either way you resolve them. Two facts, two
+/// fields.
+enum Redeemed {
+    /// Replayed upstream; `status` is what the caller received.
+    Upstream { status: u16 },
+    /// Served stored bytes. The caller received 200; `stored_status` is the
+    /// status the *original* call recorded, which its own `action.executed`
+    /// row already carries.
+    Stored { stored_status: u16 },
+    /// The redemption failed before any bytes could be chosen.
+    Failed,
 }
 
 /// Audit the redemption. Sibling of `action.streamed`: like that row, the body
@@ -146,9 +251,13 @@ async fn log_download(
     scope: &OrgScope,
     row: &overslash_db::repos::download_token::DownloadTokenRow,
     ip: &str,
-    status: Option<u16>,
-    is_error: bool,
+    outcome: Redeemed,
 ) {
+    let (status, is_error, stored_status) = match outcome {
+        Redeemed::Upstream { status } => (Some(status), status >= 400, None),
+        Redeemed::Stored { stored_status } => (Some(200), false, Some(stored_status)),
+        Redeemed::Failed => (None, true, None),
+    };
     let _ = scope
         .clone()
         .log_audit(AuditEntry {
@@ -163,6 +272,9 @@ async fn log_download(
                 "action": row.action_key,
                 "status_code": status,
                 "is_error": is_error,
+                // Only on the stored path, and deliberately a separate key:
+                // it describes the call the bytes came from, not this fetch.
+                "stored_status_code": stored_status,
                 "mime": row.mime,
                 "size_bytes": row.size_bytes,
                 "filename": row.filename,

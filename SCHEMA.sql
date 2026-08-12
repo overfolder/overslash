@@ -165,6 +165,46 @@ CREATE TABLE public.byoc_credentials (
 
 
 --
+-- Name: call_results; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.call_results (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    service_key text,
+    action_key text,
+    body_ciphertext bytea NOT NULL,
+    status_code integer NOT NULL,
+    content_type text,
+    body_bytes bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: TABLE call_results; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.call_results IS 'Full ActionResult of a call whose compact rendering was truncated, stored so the same bytes can be delivered again without re-running upstream. Written by POST /v1/actions/call when verbose=false truncated; read via GET /v1/downloads/{token}.';
+
+
+--
+-- Name: COLUMN call_results.body_ciphertext; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.call_results.body_ciphertext IS 'AES-256-GCM [version|nonce|ct+tag] over the serialized ActionResult. Response headers live inside the blob, which is why the whole thing is encrypted.';
+
+
+--
+-- Name: COLUMN call_results.body_bytes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.call_results.body_bytes IS 'Plaintext size, for the download Descriptor. Bounded by call_result_max_bytes.';
+
+
+--
 -- Name: connections; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -198,7 +238,7 @@ CREATE TABLE public.download_tokens (
     service_instance_id uuid,
     service_key text,
     action_key text,
-    request jsonb NOT NULL,
+    request jsonb,
     credential_ref jsonb DEFAULT '{}'::jsonb NOT NULL,
     mime text,
     size_bytes bigint,
@@ -206,7 +246,9 @@ CREATE TABLE public.download_tokens (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     last_used_at timestamp with time zone,
-    use_count integer DEFAULT 0 NOT NULL
+    use_count integer DEFAULT 0 NOT NULL,
+    call_result_id uuid,
+    CONSTRAINT download_tokens_one_byte_source CHECK ((num_nonnulls(request, call_result_id) = 1))
 );
 
 
@@ -215,6 +257,13 @@ CREATE TABLE public.download_tokens (
 --
 
 COMMENT ON TABLE public.download_tokens IS 'Capability tokens for deferred (out-of-band) byte delivery. Minted by POST /v1/actions/call with deliver:"url", redeemed by GET /v1/downloads/{token}.';
+
+
+--
+-- Name: COLUMN download_tokens.call_result_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.download_tokens.call_result_id IS 'When set, redemption serves these stored bytes instead of replaying `request`. Mutually exclusive with `request` (download_tokens_one_byte_source).';
 
 
 --
@@ -1025,6 +1074,14 @@ ALTER TABLE ONLY public.byoc_credentials
 
 
 --
+-- Name: call_results call_results_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.call_results
+    ADD CONSTRAINT call_results_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: connections connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1444,6 +1501,13 @@ CREATE INDEX billing_email_log_user_id ON public.billing_email_log USING btree (
 --
 
 CREATE INDEX email_unsubscribe_tokens_user_id ON public.email_unsubscribe_tokens USING btree (user_id);
+
+
+--
+-- Name: call_results_expiry_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX call_results_expiry_idx ON public.call_results USING btree (expires_at);
 
 
 --
@@ -2166,6 +2230,22 @@ ALTER TABLE ONLY public.byoc_credentials
 
 
 --
+-- Name: call_results call_results_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.call_results
+    ADD CONSTRAINT call_results_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: call_results call_results_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.call_results
+    ADD CONSTRAINT call_results_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: connections connections_byoc_credential_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2195,6 +2275,14 @@ ALTER TABLE ONLY public.connections
 
 ALTER TABLE ONLY public.connections
     ADD CONSTRAINT connections_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
+
+
+--
+-- Name: download_tokens download_tokens_call_result_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_call_result_id_fkey FOREIGN KEY (call_result_id) REFERENCES public.call_results(id) ON DELETE CASCADE;
 
 
 --

@@ -116,6 +116,13 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .filter(|n| *n > 0)
                 .unwrap_or(900), // 15 min
+            // No `.filter(|n| *n > 0)` here, unlike the TTL above: 0 is a
+            // meaningful value — it turns result storage off — whereas a
+            // zero-second token lifetime is only ever a misconfiguration.
+            call_result_max_bytes: env::var("CALL_RESULT_MAX_BYTES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1024 * 1024), // 1 MB
             dashboard_url: env::var("DASHBOARD_URL").unwrap_or_else(|_| "/".into()),
             // "*localhost*" matches any http://localhost:<port> / http://127.0.0.1:<port>
             // origin so that worktrees with dynamic dashboard ports work out of the box.

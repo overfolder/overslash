@@ -76,6 +76,11 @@ const TARGETS: &[Target] = &[
         nullable: true,
     },
     Target {
+        table: "call_results",
+        column: "body_ciphertext",
+        nullable: false,
+    },
+    Target {
         table: "mcp_upstream_tokens",
         column: "access_token_ciphertext",
         nullable: false,

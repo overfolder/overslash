@@ -1,0 +1,156 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO call_results (\n             org_id, identity_id, service_key, action_key,\n             body_ciphertext, status_code, content_type, body_bytes, expires_at\n         )\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8,\n                 now() + make_interval(secs => $9))\n         RETURNING id, org_id, identity_id, service_key, action_key,\n                   body_ciphertext, status_code, content_type, body_bytes,\n                   created_at, expires_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "service_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "service_key"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "action_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "action_key"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "body_ciphertext",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "body_ciphertext"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "status_code",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "status_code"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "content_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "body_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "body_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Bytea",
+        "Int4",
+        "Text",
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4a44451087bb76ec53f97c08a15131c4faef0e2a3450210a53d1a02db5cc8041"
+}

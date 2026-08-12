@@ -54,7 +54,7 @@ use crate::{AppState, error::AppError, services::http_caller};
 /// dropped: an upstream `Set-Cookie` or `WWW-Authenticate` has no business
 /// reaching a caller that never spoke to that host, and forwarding
 /// `Transfer-Encoding` would contradict the framing axum applies itself.
-const FORWARDED_HEADERS: [&str; 6] = [
+pub const FORWARDED_HEADERS: [&str; 6] = [
     "content-type",
     "content-length",
     "content-disposition",
@@ -92,10 +92,27 @@ pub struct Mint<'a> {
     /// Callers whose `headers` come from user input must run
     /// [`reject_inline_credentials`] first; the other construction paths
     /// satisfy this structurally.
-    pub request: ActionRequest,
+    ///
+    /// `None` iff `call_result_id` is set: those bytes are already stored, so
+    /// there is nothing to replay. Migration 111 enforces the exclusivity as a
+    /// CHECK rather than leaving it to this struct, because the redemption path
+    /// branches on it and a row satisfying neither would be unreachable state.
+    pub request: Option<ActionRequest>,
+    /// Serve these stored bytes instead of dialing upstream. See
+    /// [`crate::services::call_result`].
+    pub call_result_id: Option<Uuid>,
     pub mime: Option<String>,
     pub size_bytes: Option<i64>,
     pub filename: Option<String>,
+    /// Cap the token's expiry at this instant, on top of the configured TTL.
+    /// Set when the token points at something with its own lifetime (a stored
+    /// result), so the `expires_at` handed to the caller is not optimistic.
+    ///
+    /// Passed through to SQL rather than differenced against `now()` here:
+    /// this value came from the database clock, so doing the arithmetic on the
+    /// API side compares two clocks and, under skew, mints a token that is
+    /// already expired while reporting a healthy `expires_at`.
+    pub expires_at_ceiling: Option<time::OffsetDateTime>,
 }
 
 /// Mint a capability token and return the descriptor to hand the caller.
@@ -111,8 +128,21 @@ pub async fn mint(
     let raw_token = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, buf);
     let token_hash = Sha256::digest(raw_token.as_bytes()).to_vec();
 
-    let request = serde_json::to_value(&m.request)
+    let request = m
+        .request
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
         .map_err(|e| AppError::Internal(format!("download request not serializable: {e}")))?;
+
+    // A token must name exactly one source of bytes. Checked here as well as in
+    // the DB CHECK so a construction mistake fails at the call site with a
+    // readable message rather than as a constraint violation.
+    if request.is_some() == m.call_result_id.is_some() {
+        return Err(AppError::Internal(
+            "download token needs exactly one of `request` or `call_result_id`".into(),
+        ));
+    }
 
     let row = download_token::create(
         state.db(ext),
@@ -124,6 +154,7 @@ pub async fn mint(
             service_key: m.service_key,
             action_key: m.action_key,
             request,
+            call_result_id: m.call_result_id,
             // Reserved for credential shapes an `ActionRequest` can't name on
             // its own (a live OAuth connection). Bearer/none — every shape
             // supported today — travel as `SecretRef`s inside `request`.
@@ -132,6 +163,7 @@ pub async fn mint(
             size_bytes: m.size_bytes,
             filename: m.filename.as_deref(),
             ttl_secs: state.config.download_token_ttl_secs,
+            expires_at_ceiling: m.expires_at_ceiling,
         },
     )
     .await?;

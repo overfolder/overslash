@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO download_tokens (\n             token_hash, org_id, identity_id, service_instance_id,\n             service_key, action_key, request, credential_ref,\n             mime, size_bytes, filename, expires_at\n         )\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,\n                 now() + make_interval(secs => $12))\n         RETURNING id, token_hash, org_id, identity_id, service_instance_id,\n                   service_key, action_key, request, credential_ref,\n                   mime, size_bytes, filename, created_at, expires_at,\n                   last_used_at, use_count",
+  "query": "UPDATE download_tokens\n         SET use_count = use_count + 1, last_used_at = now()\n         WHERE token_hash = $1 AND expires_at > now()\n         RETURNING id, token_hash, org_id, identity_id, service_instance_id,\n                   service_key, action_key, request, call_result_id, credential_ref,\n                   mime, size_bytes, filename, created_at, expires_at,\n                   last_used_at, use_count",
   "describe": {
     "columns": [
       {
@@ -93,6 +93,17 @@
       },
       {
         "ordinal": 8,
+        "name": "call_result_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "call_result_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
         "name": "credential_ref",
         "type_info": "Jsonb",
         "origin": {
@@ -103,7 +114,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "mime",
         "type_info": "Text",
         "origin": {
@@ -114,7 +125,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "size_bytes",
         "type_info": "Int8",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "filename",
         "type_info": "Text",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "expires_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "last_used_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "use_count",
         "type_info": "Int4",
         "origin": {
@@ -182,18 +193,7 @@
     ],
     "parameters": {
       "Left": [
-        "Bytea",
-        "Uuid",
-        "Uuid",
-        "Uuid",
-        "Text",
-        "Text",
-        "Jsonb",
-        "Jsonb",
-        "Text",
-        "Int8",
-        "Text",
-        "Float8"
+        "Bytea"
       ]
     },
     "nullable": [
@@ -204,7 +204,8 @@
       true,
       true,
       true,
-      false,
+      true,
+      true,
       false,
       true,
       true,
@@ -215,5 +216,5 @@
       false
     ]
   },
-  "hash": "8dcc1e55ee4e3bd9537cf2e992c8d9327b18cb36a50e97a8011fc6bb6f56eed0"
+  "hash": "9f521ba774bf87beabab65633887794aa374ef57c349ae0913e37f560114cb05"
 }

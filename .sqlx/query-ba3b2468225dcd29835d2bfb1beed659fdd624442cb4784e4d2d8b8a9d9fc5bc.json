@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT body_bytes FROM call_results LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "body_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "body_bytes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ba3b2468225dcd29835d2bfb1beed659fdd624442cb4784e4d2d8b8a9d9fc5bc"
+}

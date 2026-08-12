@@ -448,6 +448,50 @@ fn render_action_result(result: &ActionResult, verbose: Option<bool>) -> serde_j
     }
 }
 
+/// [`render_action_result`], plus: when the compact view actually dropped
+/// something, store the full result and hand back a URL to it.
+///
+/// This is the whole of D57 at the call path. The condition is deliberately
+/// narrow — a verbose render loses nothing, and a compact render that fit
+/// loses nothing either, so neither writes a row. Only a caller who asked for
+/// compact *and* got less than the upstream sent has anything to re-fetch.
+///
+/// Storage is best-effort: [`call_result::store`] returns `None` rather than an
+/// error on every failure path, so a full disk cannot turn a successful call
+/// into a 500. The envelope then carries the unstored hint, which is exactly
+/// the pre-D57 behaviour.
+async fn render_stored(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    result: &ActionResult,
+    req: &CallRequest,
+    org_id: uuid::Uuid,
+    identity_id: uuid::Uuid,
+) -> serde_json::Value {
+    let mut rendered = render_action_result(result, req.verbose);
+    if rendered
+        .get("_truncated")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        return rendered;
+    }
+    let stored = crate::services::call_result::Stored {
+        org_id,
+        identity_id,
+        service_key: req.service.as_deref(),
+        action_key: req.action.as_deref(),
+    };
+    if let Some(d) = crate::services::call_result::store(state, ext, stored, result).await {
+        crate::services::compact_response::attach_full_result(
+            &mut rendered,
+            &d.download_url,
+            &d.expires_at,
+        );
+    }
+    rendered
+}
+
 /// Overlay the pinned `config` onto a call's args — the instance's own pins
 /// first, then any an org layer supplies as defaults.
 ///

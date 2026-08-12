@@ -208,10 +208,15 @@ async fn mint_mcp_download(
             service_instance_id: None,
             service_key,
             action_key,
-            request: crate::services::deferred_download::bearer_request(url, secret_name),
+            request: Some(crate::services::deferred_download::bearer_request(
+                url,
+                secret_name,
+            )),
+            call_result_id: None,
             mime: pick("mime"),
             size_bytes,
             filename: pick("filename"),
+            expires_at_ceiling: None,
         },
     )
     .await
@@ -359,13 +364,15 @@ pub(super) async fn mint_http_descriptor(
             service_instance_id: d.meta.instance_id,
             service_key: d.req.service.as_deref(),
             action_key: d.req.action.as_deref(),
-            request: action_req.clone(),
+            request: Some(action_req.clone()),
+            call_result_id: None,
             // Nothing has been fetched yet, so there is no upstream
             // content-type or length to report. The caller learns them
             // from the fetch response headers.
             mime: None,
             size_bytes: None,
             filename: None,
+            expires_at_ceiling: None,
         },
     )
     .await?;

@@ -1179,6 +1179,7 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),

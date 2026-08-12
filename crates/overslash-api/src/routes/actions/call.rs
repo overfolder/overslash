@@ -565,10 +565,11 @@ pub(super) async fn call_action_impl(
             .await?;
         }
 
+        let rendered = render_stored(&state, &ext, &result, &req, auth.org_id, identity_id).await;
         let mut resp = (
             StatusCode::OK,
             Json(CallResponse::Called {
-                result: render_action_result(&result, req.verbose),
+                result: rendered,
                 action_description: meta.description,
                 is_error,
             }),
@@ -635,10 +636,11 @@ pub(super) async fn call_action_impl(
             )
             .await;
 
+        let rendered = render_stored(&state, &ext, &result, &req, auth.org_id, identity_id).await;
         return Ok((
             StatusCode::OK,
             Json(CallResponse::Called {
-                result: render_action_result(&result, req.verbose),
+                result: rendered,
                 action_description: meta.description,
                 // Platform handlers run in-process: failures surface as
                 // `AppError`, so a Called envelope is always a success.
@@ -649,9 +651,7 @@ pub(super) async fn call_action_impl(
     }
 
     // ── Deferred delivery (HTTP runtime) ─────────────────────────────
-    //
-
-    // Deferred delivery (HTTP runtime). See `deferred::mint_http_download`.
+    // See `deferred::mint_http_download`.
     if deliver_url {
         let d = deferred::HttpDeferred {
             auth: &auth,
@@ -976,10 +976,12 @@ pub(super) async fn call_action_impl(
         return Err(err);
     }
 
+    let rendered = render_stored(&state, &ext, &result, &req, auth.org_id, identity_id).await;
+
     let mut resp = (
         StatusCode::OK,
         Json(CallResponse::Called {
-            result: render_action_result(&result, req.verbose),
+            result: rendered,
             action_description: meta.description,
             is_error: upstream_error,
         }),
