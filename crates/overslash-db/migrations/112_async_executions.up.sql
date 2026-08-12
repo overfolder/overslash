@@ -114,6 +114,11 @@ COMMENT ON COLUMN executions.cancel_requested IS
 
 -- Whether a gated call should run async once approved.
 --
+-- RESERVED: nothing reads this yet. Gated async is not in the first cut, so an
+-- approved call runs synchronously regardless of what the caller asked for.
+-- The column ships now because the shape is settled and adding it later means a
+-- second migration for one default-valued column.
+--
 -- A column rather than a field inside `replay_payload` because the resolve
 -- auto-call branch and POST /v1/approvals/{id}/call must both branch on
 -- async-ness BEFORE parsing the payload, and the payload has three different

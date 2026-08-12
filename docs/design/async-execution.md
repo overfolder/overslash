@@ -84,13 +84,20 @@ A gated async call returns the ordinary `pending_approval` envelope, not a 202.
 The gate fires before the fork, and the two are different axes: an agent must
 be able to tell "queued" from "waiting on a human" without a second field.
 
-The async intent is persisted on `approvals.execution_mode` — a column rather
-than a field inside `replay_payload`, because the resolve auto-call branch and
+**Not implemented in the first cut.** A gated call runs *synchronously* when it
+is approved, still bounded by the deployment's request cap — so the one shape
+that most wants async, a slow query that needed a human's approval, does not
+get it yet. This is a known gap, not a subtlety: `execution: "async"` on a
+gated call is accepted and then quietly forgotten at the gate.
+
+The intended design, for when it is built: persist the intent on
+`approvals.execution_mode` — a column rather than a field inside
+`replay_payload`, because the resolve auto-call branch and
 `POST /v1/approvals/{id}/call` must both branch on async-ness *before* parsing
 a payload that has three different shapes. On approval the replay is routed
-through the worker rather than run inline, which is what dodges the 120s cap
-that `/approvals/{id}/call` would otherwise impose on the exact query async
-exists to enable.
+through the worker rather than run inline, which is what dodges the request cap
+`/approvals/{id}/call` otherwise imposes. The column ships with migration 112
+and is reserved for exactly that; nothing reads it today.
 
 ## The row
 
