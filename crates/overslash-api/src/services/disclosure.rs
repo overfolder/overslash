@@ -20,14 +20,33 @@
 //! errors here only surface if a filter's input shape at execute time
 //! triggers a type mismatch (e.g. `.body.raw` when body is null).
 //!
+//! ## Errors must never quote the input
+//!
+//! jq's runtime errors embed their operands, and the projection these filters
+//! read is deliberately **un-redacted** — the Gmail template redacts
+//! `body.raw` and discloses To/Subject/Body extracted *from* `body.raw`, so
+//! extraction has to see the original. That makes a jaq message here a carrier
+//! for exactly what `x-overslash-redact` exists to withhold, and it lands
+//! somewhere durable: `approvals.disclosed_fields`, `audit_log.detail.disclosed`,
+//! and the inline `pending_approval` envelope the calling agent reads.
+//!
+//! So every failure collapses to [`classify`], whose `&'static str` return type
+//! is the guarantee. Nothing in this module lets a jaq message reach a
+//! `DisclosedField`. Keep it that way — this is the same rule
+//! [`crate::services::credential_template`] enforces over credentials, and
+//! [`crate::services::response_filter`] is the deliberate exception (its
+//! operand is the upstream body, which the caller already has on
+//! `result.body`). See DECISIONS.md D65.
+//!
 //! See SPEC §N "Detail disclosure" for the wire contract.
 
 use std::time::Duration;
 
 use overslash_core::types::DisclosureField;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
-use super::response_filter::{JqErr, cap_message, run_jq_blocking};
+use super::response_filter::{JqErr, run_jq_blocking};
 
 /// Hard ceiling on the stringified length of a single disclosed value,
 /// applied on top of the per-field `max_chars` clamp. Stops a rogue filter
@@ -143,10 +162,32 @@ fn run_one(field: &DisclosureField, input_str: &str) -> Option<DisclosedField> {
                 })
             }
         }
-        Err(JqErr::BodyNotJson(msg)) | Err(JqErr::RuntimeError(msg)) => Some(DisclosedField {
+        Err(JqErr::RuntimeError(msg)) => {
+            let class = classify(&msg);
+            // The operator-facing half: enough to find the broken template
+            // without carrying the operand. Mirrors the `expr_sha256` the
+            // audit `filter` block already logs in place of filter output.
+            tracing::warn!(
+                label = %field.label,
+                filter_sha256 = %hex::encode(Sha256::digest(field.filter.as_bytes())),
+                class,
+                "disclose filter failed",
+            );
+            Some(DisclosedField {
+                label: field.label.clone(),
+                value: None,
+                error: Some(class.to_string()),
+                truncated: false,
+                primary: field.primary,
+            })
+        }
+        // Unreachable in practice — we serialize the projection ourselves a
+        // few lines up. Kept distinct so a future regression reads as itself
+        // rather than as a template's bad filter.
+        Err(JqErr::BodyNotJson(_)) => Some(DisclosedField {
             label: field.label.clone(),
             value: None,
-            error: Some(cap_message(msg)),
+            error: Some("projection is not JSON".to_string()),
             truncated: false,
             primary: field.primary,
         }),
@@ -157,6 +198,32 @@ fn run_one(field: &DisclosureField, input_str: &str) -> Option<DisclosedField> {
             truncated: true,
             primary: field.primary,
         }),
+    }
+}
+
+/// The only thing we may say about a jaq failure — see the module docs.
+///
+/// Returns `&'static str`, never a slice of `msg`: the classification is a
+/// whitelist of jaq's own fixed prefixes, which in `jaq_core::Error` always
+/// precede the first operand (`Error::index` builds
+/// `["cannot index ", Val(l), " with ", Val(r)]`, and `math`/`typ` are the
+/// same shape). Nothing operand-derived can ride out. A filter can try to
+/// imitate a prefix by raising `error("cannot index …")`, but jaq renders a
+/// raised string with its JSON quotes, so it never matches — and the return
+/// type means a match would only ever buy a wrong hint anyway.
+///
+/// The class survives because it is genuinely the useful half: "your dot-path
+/// indexed something that is not an object" is what shortens the round trip
+/// for a template author who can no longer read the message.
+fn classify(msg: &str) -> &'static str {
+    if msg.starts_with("cannot index ") {
+        "filter runtime error (cannot index)"
+    } else if msg.starts_with("cannot calculate ") {
+        "filter runtime error (cannot calculate)"
+    } else if msg.starts_with("cannot use ") {
+        "filter runtime error (cannot use)"
+    } else {
+        "filter runtime error"
     }
 }
 
@@ -276,9 +343,10 @@ mod tests {
         .unwrap();
         assert_eq!(out[0].value.as_deref(), Some("#general"));
         assert!(out[0].error.is_none());
-        assert!(
-            out[1].error.is_some(),
-            "expected runtime error on bad indexing"
+        assert_eq!(
+            out[1].error.as_deref(),
+            Some("filter runtime error (cannot index)"),
+            "expected the fixed classification on bad indexing"
         );
     }
 
@@ -407,6 +475,100 @@ mod tests {
         assert!(!out[0].primary, "unmarked field must stay primary: false");
         assert_eq!(out[1].label, "Message");
         assert!(out[1].primary, "marked field must carry primary: true");
+    }
+
+    /// The property that matters most, and the reason this module exists in
+    /// its current shape: disclosure reads the *un-redacted* projection, and a
+    /// jaq error quotes the value it choked on. None of that may escape.
+    #[tokio::test]
+    async fn error_never_quotes_the_redacted_operand() {
+        // `.body.api_key.last4` is what an author writes for a provider that
+        // returns the key as an object. Against the plain string a caller
+        // actually sent, it is a type error.
+        let input = json!({
+            "method": "POST",
+            "url": "https://x",
+            "params": {},
+            "body": {"api_key": "sk_SENSITIVE_123", "channel": "#general"}
+        });
+        let out = run_disclosures(
+            &[
+                f("Channel", ".body.channel"),
+                f("Key tail", ".body.api_key.last4"),
+            ],
+            &input,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        // Per-field isolation is unchanged: the sibling still resolves.
+        assert_eq!(out[0].value.as_deref(), Some("#general"));
+        assert_eq!(
+            out[1].error.as_deref(),
+            Some("filter runtime error (cannot index)")
+        );
+        assert!(out[1].value.is_none(), "a failed filter carries no value");
+
+        // Prove the hazard is real, so this test can't be "simplified" away:
+        // the engine itself would happily have named the redacted value.
+        let raw = run_jq_blocking(".body.api_key.last4", &input.to_string())
+            .expect_err("the filter errors");
+        let msg = match raw {
+            JqErr::RuntimeError(m) => m,
+            _ => panic!("expected a runtime error"),
+        };
+        assert!(
+            msg.contains("sk_SENSITIVE_123"),
+            "jaq stopped quoting operands — re-check whether this guard is \
+             still needed before deleting it; got: {msg}"
+        );
+    }
+
+    /// A jaq error names the *enclosing* value, not the path that was
+    /// addressed — so one arithmetic slip on `.body` dumps every redacted
+    /// field at once, past the per-field `max_chars` clamp.
+    #[tokio::test]
+    async fn error_never_dumps_the_enclosing_object() {
+        let input = json!({
+            "method": "POST",
+            "url": "https://x",
+            "params": {},
+            "body": {"api_key": "sk_SENSITIVE_123", "card_number": "4111111111111111"}
+        });
+        let field = DisclosureField {
+            label: "Total".into(),
+            filter: ".body + 1".into(),
+            max_chars: Some(4),
+            primary: false,
+        };
+        let out = run_disclosures(&[field], &input, Duration::from_secs(2))
+            .await
+            .unwrap();
+        let err = out[0].error.as_deref().expect("the filter errors");
+        assert_eq!(err, "filter runtime error (cannot calculate)");
+        assert!(!err.contains("sk_SENSITIVE_123"), "leaked the key: {err}");
+        assert!(!err.contains("4111"), "leaked the card number: {err}");
+    }
+
+    /// `classify` matches on jaq's own fixed prefixes, so the obvious attack is
+    /// a filter that *raises* a message imitating one. Two things stop it, and
+    /// the test pins both: a raised string is rendered by jaq with its JSON
+    /// quotes, so it cannot reach the whitelist at all and falls to the generic
+    /// class; and the `&'static str` return type means even a match would only
+    /// buy a wrong label, never a byte of the operand.
+    #[tokio::test]
+    async fn a_raised_message_cannot_imitate_a_classification() {
+        let input = json!({"body": {}});
+        let out = run_disclosures(
+            &[f("Spoof", r#"error("cannot index \"sk_LEAK\" with 1")"#)],
+            &input,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        let err = out[0].error.as_deref().expect("the filter errors");
+        assert!(!err.contains("sk_LEAK"), "leaked through classify: {err}");
+        assert_eq!(err, "filter runtime error");
     }
 
     // Local base64-url encoder to avoid pulling `base64` into the API crate

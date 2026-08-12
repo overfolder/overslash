@@ -1538,7 +1538,11 @@ See D51 and D57.
 { "label": "To", "value": "alice@example.com", "error": null, "truncated": false }
 ```
 
-`error` carries a per-filter runtime error (jq type mismatch, missing field, etc.) — one filter's failure never poisons the rest of the summary. `truncated` is set when the value hit the per-field `max_chars` clamp or the 10 KB hard ceiling.
+`error` carries a **fixed classification** of a per-filter failure — `filter runtime error`, optionally qualified with jq's own error kind (`(cannot index)`, `(cannot calculate)`, `(cannot use)`), plus `filter produced more than N values` for the output cap. One filter's failure never poisons the rest of the summary.
+
+The engine's own message is deliberately **never** carried. jq embeds the operands it choked on directly in its error text, and disclosure filters run against the *un-redacted* projection (see below) — so propagating that text would put a redacted value onto `approvals.disclosed_fields` and `audit_log.detail.disclosed`, the two places redaction exists to keep it out of. This mirrors the rule the credential-template renderer has always enforced (`services/credential_template.rs`). Response filters (§ `filter`) are the deliberate exception: their operand is the upstream body, which the caller already receives on `result.body`.
+
+`truncated` is set when the value hit the per-field `max_chars` clamp or the 10 KB hard ceiling.
 
 ### Sandbox guarantees
 
@@ -1553,6 +1557,8 @@ All of an action's filters run in one `spawn_blocking` task with these limits:
 ### Trust boundary
 
 Templates are authored by org ops (three-tier registry: global / org / user). A template author who chooses not to redact a sensitive path takes responsibility for that call — redaction is declarative, not heuristic. The `disclose` jq engine can read redacted-target paths (extraction runs on the un-redacted projection); if an author surfaces a token via a filter, they're doing so deliberately.
+
+That responsibility covers what an author *writes*, not what the engine says when a filter breaks. Extraction has to see the un-redacted projection — the shipped Gmail template redacts `body.raw` and discloses To/Subject/Body extracted *from* `body.raw` — so a filter that assumed the wrong shape (`.body.card_number.last4` against a plain string) would otherwise hand back the very value the same template redacted, with nothing in the filter text for a reviewer to catch. Hence the fixed error strings above: a **shape mismatch** can never leak what an author did redact.
 
 ---
 
