@@ -36,6 +36,53 @@ of its id. Two gaps remain in how those GETs are made
    an un-guarded egress on an operator-supplied URL, and it predates any
    particular template.
 
+Both are unchanged by the D64 cache: a hit skips the GET entirely, and a miss
+makes exactly the same request it always did.
+
+---
+
+## Resolver cache: Valkey holds PII, on an instance with no AUTH and no TLS
+
+`services::resolve_cache` (D64) writes resolved display names — people's names,
+phone numbers, email addresses, Drive file titles — to Valkey when `REDIS_URL`
+is set. The values are encrypted with the existing keyring, so what lands in
+the store is ciphertext, and the key hashes everything except the org id.
+
+What is *not* fixed: `infra/modules/memorystore/main.tf` creates
+`google_redis_instance.valkey` with neither `auth_enabled` nor
+`transit_encryption_mode`, so the instance is protected only by
+`authorized_network` — and `infra/main.tf` points both the API's `REDIS_URL`
+and `oversla-sh`'s `VALKEY_URL` at the same `module.memorystore[0]`, so a
+public URL shortener shares that keyspace. That was unremarkable while the only
+tenant was rate-limit counters. Follow-up: set `auth_enabled = true` and
+`transit_encryption_mode = "SERVER_AUTHENTICATION"`, plumbing the auth string
+through Secret Manager into both URLs. Note this is **breaking for oversla-sh**
+too, and there is no terraform CI — someone has to run `make tofu-apply`.
+
+---
+
+## `crates/overslash-api/src/lib.rs` sits exactly on the 1000-line gate
+
+`scripts/check-line-counts.sh` fails any file under `crates/*/src` over 1000
+lines, and `lib.rs` is now at 1000 exactly. Two consecutive PRs (D63's icons,
+D64's resolver cache) have each had to shave their own comments to fit, which
+means the file is being kept under the limit by prose golf rather than by
+structure, and **the next change to it will fail CI**.
+
+The seam is already visible: `AppState`, `TestResources`, `TestResourceResolver`
+and the ~8 near-identical per-request accessors (`db`, `auth_code_store`,
+`rate_limit_cache`, `free_unlimited_cache`, `rate_limiter`, `event_bus`,
+`resolve_cache`, …) are one cohesive ~150-line block with a single job —
+swapping process-wide resources for per-test ones — and would move to a
+`state.rs` module without touching anything else. Deliberately not done inside
+the D64 PR: it is a refactor of code that PR does not otherwise own, and it
+would conflict with anything else in flight against `lib.rs`.
+
+Also open, and cheaper: the cache has no single-flight, so N concurrent
+identical misses still make N upstream calls. That is exactly the pre-D64
+behaviour — the herd is now cross-replica but no larger — so it is a
+missed optimisation, not a regression.
+
 ---
 
 ## Domain admission does not verify Google's `hd` claim, and two domain lists coexist

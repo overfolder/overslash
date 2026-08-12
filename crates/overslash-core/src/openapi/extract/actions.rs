@@ -108,14 +108,19 @@ pub(crate) fn extract_http_action(
 
     // Merge path-level parameters with operation-level parameters. Operation-
     // level entries win on name collision (OpenAPI rule).
+    //
+    // `param_errors` is the same sink `disclose_errors` becomes below; it is
+    // declared up here because parameter lowering is the first thing that can
+    // report an issue (a malformed `cache_ttl` on a resolver).
+    let mut param_errors: Vec<ValidationIssue> = Vec::new();
     let mut params: HashMap<String, ActionParam> = HashMap::new();
     if let Some(arr) = path_level_params.and_then(Value::as_array) {
-        collect_parameters(arr, &mut params);
+        collect_parameters(arr, &mut params, &base, &mut param_errors);
     }
     if let Some(arr) = op.get("parameters").and_then(Value::as_array) {
-        collect_parameters(arr, &mut params);
+        collect_parameters(arr, &mut params, &base, &mut param_errors);
     }
-    collect_body_parameters(op.get("requestBody"), &mut params);
+    collect_body_parameters(op.get("requestBody"), &mut params, &base, &mut param_errors);
     let request_body = parse_request_body(op.get("requestBody"));
 
     // Per-action OAuth scopes. The operation's own `security` key, when present
@@ -128,7 +133,7 @@ pub(crate) fn extract_http_action(
         .map(scopes_from_security)
         .unwrap_or_default();
 
-    let mut disclose_errors = Vec::new();
+    let mut disclose_errors = param_errors;
     let disclose = parse_disclose(op.get("x-overslash-disclose"), &base, &mut disclose_errors);
     let redact = parse_redact(op.get("x-overslash-redact"), &base, &mut disclose_errors);
     let timeout_ms = parse_timeout_ms(

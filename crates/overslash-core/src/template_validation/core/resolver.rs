@@ -13,6 +13,11 @@ use crate::types::{ActionParam, ParamResolver, Runtime, ServiceDefinition};
 
 use super::action::{has_unclosed_brace, param_ident_resolvable};
 
+/// Above this, a `scope`-bearing resolver earns a `resolver_cache_ttl_wide`
+/// warning. Mirrors the deployment's default ceiling for the same case, so the
+/// linter names exactly the values that would be clamped anyway.
+const SCOPE_TTL_WARN_SECS: u64 = 300;
+
 /// Intra-action resolver checks: the target and projection are each declared
 /// exactly once, and every `{param}` placeholder names a param on this action.
 ///
@@ -38,6 +43,28 @@ pub(super) fn check_resolver(
             "resolver.args applies to `tool` resolvers only; an HTTP `get` resolver \
              interpolates its placeholders into the path",
             format!("{base}.resolve.args"),
+        );
+    }
+
+    // A resolver that canonicalizes the permission key is doing authorization
+    // work, so a wide reuse window means a grant can be matched against a
+    // mapping that is minutes out of date while the request still carries the
+    // caller's raw argument. A warning rather than a clamp: the author may
+    // genuinely know the mapping is immutable, and the deployment ceiling
+    // clamps the effective value regardless.
+    if resolver.scope.is_some()
+        && resolver
+            .cache_ttl
+            .is_some_and(|ttl| ttl > SCOPE_TTL_WARN_SECS)
+    {
+        issues.warn(
+            "resolver_cache_ttl_wide",
+            format!(
+                "resolver declares `scope` (which decides the permission key) with a \
+                 cache_ttl over {SCOPE_TTL_WARN_SECS}s; a grant can then match a mapping \
+                 that stale while the call still targets the raw argument"
+            ),
+            format!("{base}.resolve.cache_ttl"),
         );
     }
 
@@ -230,6 +257,57 @@ mod tests {
     use crate::template_validation::core::tests::{minimal_mcp, minimal_valid, param, run};
     use crate::types::{McpAuth, ParamResolver, Risk, ServiceAction, ServiceDefinition};
     use std::collections::HashMap;
+
+    /// A wide `cache_ttl` on a `scope`-bearing resolver is warned about, not
+    /// rejected: the author may know the mapping is immutable, but they should
+    /// have to know they're widening an authorization window to do it.
+    #[test]
+    fn a_wide_cache_ttl_on_a_scope_resolver_warns() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        let mut p = param("string", false);
+        p.resolve = Some(ParamResolver {
+            get: Some("/items/{x}".into()),
+            pick: Some("name".into()),
+            scope: Some("phone".into()),
+            cache_ttl: Some(3600),
+            ..Default::default()
+        });
+        a.params.insert("x".into(), p);
+        let r = run(&d);
+        assert!(
+            r.warnings
+                .iter()
+                .any(|w| w.code == "resolver_cache_ttl_wide")
+        );
+        assert!(
+            r.errors.is_empty(),
+            "a warning, not an error: {:?}",
+            r.errors
+        );
+    }
+
+    /// The same wide TTL without `scope` is unremarkable — nothing about a
+    /// display string decides which grant matches.
+    #[test]
+    fn a_wide_cache_ttl_without_scope_is_silent() {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        let mut p = param("string", false);
+        p.resolve = Some(ParamResolver {
+            get: Some("/items/{x}".into()),
+            pick: Some("name".into()),
+            cache_ttl: Some(86_400),
+            ..Default::default()
+        });
+        a.params.insert("x".into(), p);
+        let r = run(&d);
+        assert!(
+            !r.warnings
+                .iter()
+                .any(|w| w.code == "resolver_cache_ttl_wide")
+        );
+    }
 
     #[test]
     fn unknown_resolver_param() {

@@ -179,13 +179,28 @@ pub(crate) async fn resolve_service_auth(
     Ok(ResolvedAuth::none())
 }
 
+/// A live MCP bearer plus the identity of the connection that minted it.
+///
+/// The header is the credential; the other two name the *principal*. They ride
+/// together because the connection row is already in hand when the token
+/// resolves — re-loading it later to answer "which account is this?" would be
+/// a second query for something we just had. `principal` is the connection's
+/// `account_email`, mirroring [`ResolvedAuth::principal`] on the HTTP path.
+pub(crate) struct McpBearer {
+    pub header: AuthHeader,
+    pub connection_id: Uuid,
+    pub principal: Option<String>,
+}
+
 /// Resolve a live OAuth bearer for an MCP-runtime service whose `mcp.auth`
 /// declares `{ kind: oauth, provider }`. Mirrors the OAuth arm of
 /// [`resolve_service_auth`] but for the single provider named in the MCP
 /// block and always as `Authorization: Bearer <token>` (MCP servers take the
 /// token in that header). Returns:
-/// - `Ok(Some(header))` — a connection exists and a token resolved (refreshed
-///   via the org/BYOC client if the access token had expired).
+/// - `Ok(Some(bearer))` — a connection exists and a token resolved (refreshed
+///   via the org/BYOC client if the access token had expired). The connection
+///   it resolved *through* rides along on [`McpBearer`]: callers need to name
+///   the principal without re-loading the row.
 /// - `Ok(None)` — no connection for `provider` yet. The caller decides: the
 ///   inline resolver mints an auth URL and gates; replay fails the execution.
 /// - `Err(_)` — reauth required (refresh failed / no refresh token) mapped to
@@ -204,7 +219,7 @@ pub(crate) async fn resolve_mcp_oauth_bearer(
     instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
     provider: &str,
     return_url_hint: Option<&str>,
-) -> Result<Option<AuthHeader>, AppError> {
+) -> Result<Option<McpBearer>, AppError> {
     let org_id = scope.org_id();
     let enc_key = state
         .config
@@ -247,9 +262,13 @@ pub(crate) async fn resolve_mcp_oauth_bearer(
     )
     .await
     {
-        Ok(access_token) => Ok(Some(AuthHeader {
-            name: "Authorization".to_string(),
-            value: format!("Bearer {access_token}"),
+        Ok(access_token) => Ok(Some(McpBearer {
+            header: AuthHeader {
+                name: "Authorization".to_string(),
+                value: format!("Bearer {access_token}"),
+            },
+            connection_id: conn.id,
+            principal: conn.account_email.clone(),
         })),
         Err(e) => {
             // RefreshFailed / NoRefreshToken → `ReauthRequired` (gated URL);

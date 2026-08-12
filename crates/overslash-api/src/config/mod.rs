@@ -166,6 +166,34 @@ pub struct Config {
     /// (`/v1/*` etc.). Default empty.
     pub mcp_extra_origins: String,
     pub redis_url: Option<String>,
+    // ── Display-param resolver cache (D64) ──────────────────────────
+    /// Default reuse window for a resolver's answer, in seconds. A resolver's
+    /// own `cache_ttl:` overrides it; `0` disables the cache entirely.
+    ///
+    /// Short on purpose. A cached `scope` value decides which *grant* matches
+    /// while the outgoing request still carries the caller's raw argument, so
+    /// the window is one of bounded-staleness authorization, not just latency.
+    /// Templates whose mapping is genuinely immutable opt *up*.
+    pub resolve_cache_ttl_secs: u64,
+    /// Reuse window for a resolver that *failed*, in seconds. Separate and
+    /// shorter: it stops a down provider costing every call the full resolver
+    /// timeout, without keeping approvals unreadable long after it recovers.
+    pub resolve_cache_negative_ttl_secs: u64,
+    /// Ceiling on the effective TTL for resolvers that declare `scope`. Policy,
+    /// not knowledge — a template author sets a default, a deployment sets the
+    /// cap, and the tighter of the two wins (cf. D56).
+    pub resolve_cache_scope_ttl_max_secs: u64,
+    /// Per-operation budget for the cache backend itself. Bounds a slow or
+    /// wedged Valkey well inside the 3s resolver budget; exceeding it is a
+    /// miss, never an error the caller sees.
+    pub resolve_cache_timeout_ms: u64,
+    /// Cap on the in-memory backend only. Resolver arguments are
+    /// caller-supplied, so an agent looping over distinct ids would otherwise
+    /// grow the map unboundedly between eviction sweeps.
+    pub resolve_cache_max_entries: usize,
+    /// Extra key-namespace segment. Empty in production; set it when two
+    /// deployments (or two test runs) share one Valkey.
+    pub resolve_cache_namespace: Option<String>,
     pub default_rate_limit: u32,
     pub default_rate_window_secs: u32,
     /// When `false`, `POST /v1/orgs` returns 403 and the dashboard hides the
@@ -557,7 +585,7 @@ impl Config {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::parse::parse_platform_credential;
     use super::*;
     use std::env;
@@ -833,7 +861,9 @@ mod tests {
         assert_eq!(kr.previous_id(), None);
     }
 
-    fn empty_test_config() -> Config {
+    /// A `Config` with every field at a harmless value. `pub(crate)` so unit
+    /// tests in other modules can build one without restating ~100 fields.
+    pub(crate) fn empty_test_config() -> Config {
         Config {
             async_execution: Default::default(),
             call_stream_idle_timeout_ms: 30_000,
@@ -873,6 +903,12 @@ mod tests {
             dashboard_origin: "*".into(),
             mcp_extra_origins: String::new(),
             redis_url: None,
+            resolve_cache_ttl_secs: 300,
+            resolve_cache_negative_ttl_secs: 30,
+            resolve_cache_scope_ttl_max_secs: 300,
+            resolve_cache_timeout_ms: 100,
+            resolve_cache_max_entries: 10_000,
+            resolve_cache_namespace: None,
             default_rate_limit: 0,
             default_rate_window_secs: 0,
             allow_org_creation: true,

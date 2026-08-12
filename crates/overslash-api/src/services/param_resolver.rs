@@ -16,17 +16,28 @@
 //! the caller falls back to the raw argument. A provider being down must
 //! degrade the *readability* of an approval, never block one from being
 //! raised.
+//!
+//! Answers are cached (D64) — see [`crate::services::resolve_cache`], which
+//! also explains why a cached `scope` value is an authorization decision and
+//! not merely a latency optimisation. The lookup is threaded in as a
+//! [`ResolverPlan`] built by the *caller*, before it assembles credentials,
+//! because on both runtimes the expensive part is the preamble: an HTTP
+//! resolver's headers cost a vault decrypt, and an MCP resolver's client costs
+//! vault reads plus blocking DNS. A plan that is all hits lets the caller skip
+//! that entirely.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
-use overslash_core::description::substitute_placeholders;
 use overslash_core::param_resolver::{pick_value, render_display};
 use overslash_core::types::service::ServiceAction;
 use overslash_core::types::{AuthHeader, McpAuth};
 use overslash_db::scopes::OrgScope;
 
 use crate::AppState;
+use crate::services::resolve_cache::{
+    PlanEntry, ResolverOutcome, ResolverPlan, http_target, mcp_arguments,
+};
 
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -46,23 +57,17 @@ pub struct ResolvedParams {
     pub canonical: HashMap<String, String>,
 }
 
-/// Collect per-resolver outcomes into the two maps. `None` entries are
-/// resolvers that failed, and are simply absent — the caller falls back to
-/// the raw argument for those.
-impl FromIterator<Option<(String, Option<String>, Option<String>)>> for ResolvedParams {
-    fn from_iter<I: IntoIterator<Item = Option<(String, Option<String>, Option<String>)>>>(
-        iter: I,
-    ) -> Self {
-        let mut out = Self::default();
-        for (param, display, canonical) in iter.into_iter().flatten() {
-            if let Some(display) = display {
-                out.display.insert(param.clone(), display);
-            }
-            if let Some(canonical) = canonical {
-                out.canonical.insert(param, canonical);
-            }
+impl ResolvedParams {
+    /// Fold one resolution into the two maps. Used for cached and freshly
+    /// fetched answers alike — an absent half contributes nothing, which is
+    /// the same shape a live failure leaves behind.
+    fn insert_resolution(&mut self, param: &str, display: Option<&str>, canonical: Option<&str>) {
+        if let Some(d) = display {
+            self.display.insert(param.to_string(), d.to_string());
         }
-        out
+        if let Some(c) = canonical {
+            self.canonical.insert(param.to_string(), c.to_string());
+        }
     }
 }
 
@@ -91,6 +96,7 @@ fn project(
 /// Resolver URLs honor `service_base_overrides` the same way the executor
 /// does — an e2e stack that rewrites a service's host to a local fake needs
 /// the resolver GETs to land there too, not on the real provider.
+#[allow(clippy::too_many_arguments)]
 pub async fn resolve_display_params(
     client: &reqwest::Client,
     config: &crate::config::Config,
@@ -98,19 +104,35 @@ pub async fn resolve_display_params(
     headers: &HashMap<String, String>,
     action: &ServiceAction,
     params: &HashMap<String, serde_json::Value>,
+    cache: &dyn crate::services::resolve_cache::ResolveCacheStore,
+    plan: &ResolverPlan,
 ) -> ResolvedParams {
+    let mut out = ResolvedParams::default();
+    for (name, cached) in plan.hits() {
+        out.insert_resolution(name, cached.d.as_deref(), cached.c.as_deref());
+    }
+
+    // Only the params the cache could not answer.
     let resolvers: Vec<_> = action
         .params
         .iter()
         .filter_map(|(name, param)| {
             let resolver = param.resolve.as_ref()?;
             let get = resolver.get.as_ref()?;
-            Some((name.clone(), resolver.clone(), get.clone()))
+            // Only a hit is skipped. A param the plan says nothing about
+            // resolves live and simply isn't written back — the plan is built
+            // from this same action so that should be unreachable, but the
+            // failure mode of guessing wrong is "a resolver silently stopped
+            // running", which is the bug D55's rationale was written about.
+            match plan.get(name) {
+                Some(PlanEntry::Hit(_)) => None,
+                _ => Some((name.clone(), resolver.clone(), get.clone())),
+            }
         })
         .collect();
 
     if resolvers.is_empty() {
-        return ResolvedParams::default();
+        return out;
     }
 
     let futures: Vec<_> = resolvers
@@ -118,31 +140,42 @@ pub async fn resolve_display_params(
         .map(|(name, resolver, get)| {
             let client = client.clone();
             let headers = headers.clone();
-            let path = substitute_placeholders(&get, params);
-            let url = config.apply_base_overrides(&format!("{base_url}{path}"));
+            // Shared with the key builder so the cache key and the outgoing
+            // request cannot disagree about what was asked.
+            let url = http_target(config, base_url, &get, params);
 
             async move {
-                let mut req = client.get(&url).timeout(RESOLVE_TIMEOUT);
-                for (key, value) in &headers {
-                    req = req.header(key, value);
+                let fetched = async {
+                    let mut req = client.get(&url).timeout(RESOLVE_TIMEOUT);
+                    for (key, value) in &headers {
+                        req = req.header(key, value);
+                    }
+                    let resp = req.send().await.ok()?;
+                    if !resp.status().is_success() {
+                        return None;
+                    }
+                    let json: serde_json::Value = resp.json().await.ok()?;
+                    Some(project(&resolver, &json))
                 }
-
-                let resp = req.send().await.ok()?;
-                if !resp.status().is_success() {
-                    return None;
-                }
-
-                let json: serde_json::Value = resp.json().await.ok()?;
-                let (display, canonical) = project(&resolver, &json);
-                Some((name, display, canonical))
+                .await;
+                (name, fetched)
             }
         })
         .collect();
 
-    futures_util::future::join_all(futures)
-        .await
-        .into_iter()
-        .collect()
+    let fetched: Vec<ResolverOutcome> = futures_util::future::join_all(futures).await;
+
+    // A failed HTTP resolver GET is the provider's answer (a 404, a 5xx, a
+    // timeout), so it is cacheable — that is the case where a negative entry
+    // earns the most, converting a repeated 3s stall into an instant miss.
+    crate::services::resolve_cache::write_back(cache, config, plan, &fetched, true).await;
+
+    for (name, outcome) in fetched {
+        if let Some((display, canonical)) = outcome {
+            out.insert_resolution(&name, display.as_deref(), canonical.as_deref());
+        }
+    }
+    out
 }
 
 /// Resolve display names for MCP-runtime action params that declare `tool:`.
@@ -164,19 +197,34 @@ pub async fn resolve_display_params_mcp(
     oauth_header: Option<&AuthHeader>,
     action: &ServiceAction,
     params: &HashMap<String, serde_json::Value>,
+    cache: &dyn crate::services::resolve_cache::ResolveCacheStore,
+    plan: &ResolverPlan,
 ) -> ResolvedParams {
+    let mut out = ResolvedParams::default();
+    for (name, cached) in plan.hits() {
+        out.insert_resolution(name, cached.d.as_deref(), cached.c.as_deref());
+    }
+
     let resolvers: Vec<_> = action
         .params
         .iter()
         .filter_map(|(name, param)| {
             let resolver = param.resolve.as_ref()?;
             let tool = resolver.tool.as_ref()?;
-            Some((name.clone(), resolver.clone(), tool.clone()))
+            // As above: skip only a hit, never an absence.
+            match plan.get(name) {
+                Some(PlanEntry::Hit(_)) => None,
+                _ => Some((name.clone(), resolver.clone(), tool.clone())),
+            }
         })
         .collect();
 
+    // Every resolver answered from cache — return without building a client.
+    // This is the branch the whole two-phase shape exists for: `build_client`
+    // reads the vault and resolves the host through a blocking
+    // `to_socket_addrs`, all while an approval is being minted.
     if resolvers.is_empty() {
-        return ResolvedParams::default();
+        return out;
     }
 
     // One client for the whole fan-out: `build_client` resolves secrets from
@@ -201,13 +249,19 @@ pub async fn resolve_display_params_mcp(
         // misconfiguration can surface. `mcp_caller::invoke` never runs on a
         // gated call, so without this line the operator sees approvals
         // quoting raw handles forever with nothing to grep for.
+        // Nothing is written back on either arm below. The failure is *ours*
+        // — a credential that would not build, a host that would not resolve —
+        // not an answer from the provider, and caching it would turn a
+        // transient local misconfiguration into a sticky one on every replica.
         Ok(Err(e)) => {
             tracing::warn!(
                 action = %action.mcp_tool.as_deref().unwrap_or_default(),
                 error = %e,
                 "mcp display-param resolution skipped: could not build client"
             );
-            return ResolvedParams::default();
+            crate::services::resolve_cache::write_back(cache, &state.config, plan, &[], false)
+                .await;
+            return out;
         }
         Err(_) => {
             tracing::warn!(
@@ -215,7 +269,9 @@ pub async fn resolve_display_params_mcp(
                 timeout_ms = RESOLVE_TIMEOUT.as_millis(),
                 "mcp display-param resolution skipped: client build timed out"
             );
-            return ResolvedParams::default();
+            crate::services::resolve_cache::write_back(cache, &state.config, plan, &[], false)
+                .await;
+            return out;
         }
     };
 
@@ -224,93 +280,97 @@ pub async fn resolve_display_params_mcp(
         .map(|(name, resolver, tool)| {
             let client = client.clone();
             let headers = headers.clone();
-            let arguments = serde_json::Value::Object(
-                resolver
-                    .args
-                    .iter()
-                    .map(|(k, v)| {
-                        (
-                            k.clone(),
-                            serde_json::Value::String(substitute_placeholders(v, params)),
-                        )
-                    })
-                    .collect(),
-            );
+            // Shared with the key builder so the cache key and the outgoing
+            // call can never disagree about what was asked.
+            let arguments = mcp_arguments(&resolver, params);
 
             async move {
-                let result = match tokio::time::timeout_at(
-                    deadline,
-                    client.tools_call(&headers, &tool, &arguments),
-                )
-                .await
-                {
-                    Ok(Ok(result)) if !result.is_error => result,
-                    // In-band: the tool ran and said "no". A JID nobody has
-                    // messaged is the ordinary case, so this is not a warning.
-                    Ok(Ok(_)) => {
-                        tracing::debug!(
-                            tool = %tool,
-                            param = %name,
-                            "mcp resolver reported no result; using the raw argument"
-                        );
-                        return None;
-                    }
-                    // Transport, auth, HTTP status or JSON-RPC error — a
-                    // renamed tool, an expired token, a 5xx. `warn` because
-                    // the deployed default is RUST_LOG=info and this silently
-                    // changes which permission keys are minted.
-                    Ok(Err(e)) => {
+                let outcome = async {
+                    let result = match tokio::time::timeout_at(
+                        deadline,
+                        client.tools_call(&headers, &tool, &arguments),
+                    )
+                    .await
+                    {
+                        Ok(Ok(result)) if !result.is_error => result,
+                        // In-band: the tool ran and said "no". A JID nobody has
+                        // messaged is the ordinary case, so this is not a warning.
+                        Ok(Ok(_)) => {
+                            tracing::debug!(
+                                tool = %tool,
+                                param = %name,
+                                "mcp resolver reported no result; using the raw argument"
+                            );
+                            return None;
+                        }
+                        // Transport, auth, HTTP status or JSON-RPC error — a
+                        // renamed tool, an expired token, a 5xx. `warn` because
+                        // the deployed default is RUST_LOG=info and this silently
+                        // changes which permission keys are minted.
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                tool = %tool,
+                                param = %name,
+                                error = %e,
+                                "mcp display-param resolver failed; using the raw argument"
+                            );
+                            return None;
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                tool = %tool,
+                                param = %name,
+                                timeout_ms = RESOLVE_TIMEOUT.as_millis(),
+                                "mcp display-param resolver timed out; using the raw argument"
+                            );
+                            return None;
+                        }
+                    };
+                    let Some(body) = resolver_body(&result) else {
                         tracing::warn!(
                             tool = %tool,
                             param = %name,
-                            error = %e,
-                            "mcp display-param resolver failed; using the raw argument"
+                            "mcp resolver returned neither structuredContent nor a JSON text \
+                             block; using the raw argument"
                         );
                         return None;
-                    }
-                    Err(_) => {
+                    };
+                    let (display, canonical) = project(&resolver, &body);
+                    // Schema drift lands here: the call succeeded but the declared
+                    // dot-paths found nothing. Worth a warning because a missing
+                    // `scope` value silently reverts the permission key to the raw
+                    // argument, so previously-granted rules stop matching.
+                    let (has_display, has_scope) = (display.is_some(), canonical.is_some());
+                    if !has_display || (resolver.scope.is_some() && !has_scope) {
                         tracing::warn!(
                             tool = %tool,
                             param = %name,
-                            timeout_ms = RESOLVE_TIMEOUT.as_millis(),
-                            "mcp display-param resolver timed out; using the raw argument"
+                            has_display,
+                            has_scope,
+                            "mcp resolver answered but the declared paths found nothing"
                         );
-                        return None;
                     }
-                };
-                let Some(body) = resolver_body(&result) else {
-                    tracing::warn!(
-                        tool = %tool,
-                        param = %name,
-                        "mcp resolver returned neither structuredContent nor a JSON text \
-                         block; using the raw argument"
-                    );
-                    return None;
-                };
-                let (display, canonical) = project(&resolver, &body);
-                // Schema drift lands here: the call succeeded but the declared
-                // dot-paths found nothing. Worth a warning because a missing
-                // `scope` value silently reverts the permission key to the raw
-                // argument, so previously-granted rules stop matching.
-                let (has_display, has_scope) = (display.is_some(), canonical.is_some());
-                if !has_display || (resolver.scope.is_some() && !has_scope) {
-                    tracing::warn!(
-                        tool = %tool,
-                        param = %name,
-                        has_display,
-                        has_scope,
-                        "mcp resolver answered but the declared paths found nothing"
-                    );
+                    Some((display, canonical))
                 }
-                Some((name, display, canonical))
+                .await;
+                (name, outcome)
             }
         })
         .collect();
 
-    futures_util::future::join_all(futures)
-        .await
-        .into_iter()
-        .collect()
+    let fetched: Vec<ResolverOutcome> = futures_util::future::join_all(futures).await;
+
+    // Cacheable: by this point the client built, so every outcome above is
+    // something the *server* said — a result, an in-band "no", a transport
+    // error, or a timeout. All four are the provider's answer.
+    crate::services::resolve_cache::write_back(cache, &state.config, plan, &fetched, true).await;
+
+    for (name, outcome) in fetched {
+        if let Some((display, canonical)) = outcome {
+            out.insert_resolution(&name, display.as_deref(), canonical.as_deref());
+        }
+    }
+    out
 }
 
 /// The JSON a resolver's dot-paths address.

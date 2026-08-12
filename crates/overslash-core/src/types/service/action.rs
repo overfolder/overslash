@@ -275,6 +275,17 @@ pub struct ParamResolver {
     /// renames the permission, it does not retarget the call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// How long this resolver's answer may be reused, in seconds. Overrides
+    /// the deployment default; `Some(0)` opts out of caching entirely.
+    ///
+    /// A default, not a cap — the deployment's ceiling still clamps it, and
+    /// tighter still when `scope` is set, because a cached `scope` value
+    /// decides which *grant* matches while the request keeps the caller's raw
+    /// argument. The template author is the one who knows whether the mapping
+    /// is immutable (`me` → your own address) or something the provider can
+    /// re-point under you (a JID → a phone number).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl: Option<u64>,
 }
 
 impl ParamResolver {

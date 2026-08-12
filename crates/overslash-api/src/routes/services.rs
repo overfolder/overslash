@@ -616,6 +616,9 @@ async fn resync_mcp_service(
         url,
         auth,
         oauth_header,
+        // The resync route only lists tools; it does not mint permission keys
+        // or cache anything, so it has no use for the principal.
+        ..
     } = crate::routes::actions::resolve_effective_mcp(
         &state,
         &ext,
