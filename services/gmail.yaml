@@ -48,6 +48,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
   /gmail/v1/users/{userId}/labels:
     get:
@@ -68,6 +72,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
     post:
       operationId: create_label
@@ -93,6 +101,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
       requestBody:
         required: true
@@ -132,6 +144,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: id
           in: path
@@ -162,6 +178,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: id
           in: path
@@ -191,6 +211,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: q
           in: query
@@ -236,6 +260,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: id
           in: path
@@ -286,6 +314,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: id
           in: path
@@ -334,6 +366,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: id
           in: path
@@ -363,6 +399,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: q
           in: query
@@ -408,6 +448,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: id
           in: path
@@ -470,6 +514,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
       requestBody:
         required: true
@@ -507,6 +555,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: id
           in: path
@@ -536,6 +588,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: q
           in: query
@@ -587,6 +643,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
       requestBody:
         required: true
@@ -625,6 +685,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: id
           in: path
@@ -666,6 +730,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: id
           in: path
@@ -717,6 +785,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
         - name: id
           in: path
@@ -755,6 +827,10 @@ paths:
             default: me
           resolve:
             get: /gmail/v1/users/{userId}/profile
+            # `me` is the connected account's own address, and it changes only
+            # when the connection does. No `scope:` here, so nothing cached
+            # reaches a permission key — the key still uses the raw param (D64).
+            cache_ttl: 3600
             pick: emailAddress
       requestBody:
         required: true

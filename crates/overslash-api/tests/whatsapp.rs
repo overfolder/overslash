@@ -1133,3 +1133,109 @@ async fn download_media_without_deliver_url_returns_the_raw_descriptor() {
     );
     assert!(envelope.get("download_url").is_none());
 }
+
+/// The MCP half of the resolver cache (D64). A second identical call must not
+/// touch the server at all — not the `tools/call`, and not the `initialize`
+/// that precedes it.
+///
+/// Asserting the *whole round trip* is absent, rather than just the resolver
+/// invocation, is the point: on the MCP path the expensive part is
+/// `mcp_caller::build_client`, which reads the vault and resolves the host
+/// through a blocking `to_socket_addrs` while an approval is being minted. A
+/// cache that skipped only `tools/call` would still pay for all of that.
+#[tokio::test]
+async fn a_repeated_lid_resolves_once_across_calls() {
+    let pool = common::test_pool().await;
+    let (stub_addr, stub_state) = start_stub_with(Stub::default()).await;
+    let stub_url = format!("http://{stub_addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_org, _agent_ident, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    register_whatsapp_resolver_template(RegisterCtx {
+        base: &base,
+        client: &client,
+        admin_key: &admin_key,
+        agent_key: &agent_key,
+        key: "whatsapp_resolve",
+        url: &stub_url,
+        secret_name: "whatsapp_resolve_token",
+        secret_value: "stub-token",
+    })
+    .await;
+
+    let send = |body: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        let agent_key = agent_key.clone();
+        async move {
+            client
+                .post(format!("{base}/v1/actions/call"))
+                .header(auth(&agent_key).0, auth(&agent_key).1)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let payload = json!({
+        "service": "whatsapp_resolve",
+        "action": "send_message",
+        "params": {
+            "recipient": "239135323373760@lid",
+            "text": "Hola Sonia, ¿tienes hueco esta semana?"
+        }
+    });
+
+    let first = send(payload.clone()).await;
+    assert_eq!(
+        first["status"].as_str(),
+        Some("pending_approval"),
+        "expected pending_approval, got: {first:?}"
+    );
+    assert_eq!(
+        stub_state.lock().unwrap().resolved_jids.len(),
+        1,
+        "the first call resolves live"
+    );
+
+    let second = send(payload).await;
+    assert_eq!(
+        second["status"].as_str(),
+        Some("pending_approval"),
+        "expected pending_approval, got: {second:?}"
+    );
+    assert_eq!(
+        stub_state.lock().unwrap().resolved_jids,
+        vec!["239135323373760@lid".to_string()],
+        "the second call must answer from cache, making no further resolve_jid"
+    );
+
+    // Both approvals name the human, not the LID — a cached answer has to be
+    // as good as a fresh one or the resolver may as well not exist.
+    let summary = second["action_description"].as_str().unwrap();
+    assert!(
+        summary.contains("Sonia Pérez") && summary.contains("+34600111222"),
+        "the cached call must still carry the resolved identity, got: {summary}"
+    );
+
+    // And the canonicalized permission key survives the round trip: `scope:
+    // phone` is what collapses every address Sonia answers at onto one grant,
+    // so a cache that dropped it would silently re-fragment the rules list.
+    let keys = second["permission_keys"]
+        .as_array()
+        .expect("permission_keys present")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(
+        keys.contains("+34600111222"),
+        "cached canonical value must still key the permission, got: {keys}"
+    );
+}

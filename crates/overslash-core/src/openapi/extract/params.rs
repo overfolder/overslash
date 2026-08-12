@@ -4,13 +4,19 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 
+use crate::template_validation::ValidationIssue;
 use crate::types::{ActionParam, ParamLocation, ParamResolver, RequestBodySpec};
 
 use super::{parse_aliases, parse_instance_config, parse_sql_policy};
 
 // ── parameters → HashMap<String, ActionParam> ────────────────────────
 
-pub(super) fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
+pub(super) fn collect_parameters(
+    arr: &[Value],
+    out: &mut HashMap<String, ActionParam>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
     for p in arr {
         let Some(obj) = p.as_object() else { continue };
         let Some(name) = obj.get("name").and_then(Value::as_str) else {
@@ -28,7 +34,9 @@ pub(super) fn collect_parameters(arr: &[Value], out: &mut HashMap<String, Action
         let schema = obj.get("schema").and_then(Value::as_object);
         let (param_type, enum_values, default) = schema_fields(schema);
 
-        let resolve = obj.get("x-overslash-resolve").and_then(parse_resolver);
+        let resolve = obj
+            .get("x-overslash-resolve")
+            .and_then(|v| parse_resolver(v, &format!("{base}.parameters.{name}"), issues));
         let aliases = parse_aliases(Some(obj), name);
 
         let location = match obj.get("in").and_then(Value::as_str) {
@@ -87,6 +95,8 @@ pub(super) fn parse_request_body(body: Option<&Value>) -> Option<RequestBodySpec
 pub(super) fn collect_body_parameters(
     body: Option<&Value>,
     out: &mut HashMap<String, ActionParam>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
 ) {
     let Some(b) = body.and_then(Value::as_object) else {
         return;
@@ -127,7 +137,7 @@ pub(super) fn collect_body_parameters(
             .to_string();
         let resolve = pobj
             .and_then(|o| o.get("x-overslash-resolve"))
-            .and_then(parse_resolver);
+            .and_then(|v| parse_resolver(v, &format!("{base}.requestBody.{name}"), issues));
         let aliases = parse_aliases(pobj, name);
         let instance_config = parse_instance_config(pobj);
         let (sql_field, sql_database) = parse_sql_policy(pobj);
@@ -181,7 +191,11 @@ fn schema_fields(
 /// it here — as this did while the shape was HTTP-only `{get, pick}` — turns a
 /// typo'd `resolve:` into a silent no-op that only shows up as an approval
 /// still quoting a raw ID.
-pub(super) fn parse_resolver(v: &Value) -> Option<ParamResolver> {
+pub(super) fn parse_resolver(
+    v: &Value,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<ParamResolver> {
     let obj = v.as_object()?;
     let text = |key: &str| obj.get(key).and_then(Value::as_str).map(str::to_string);
     let args = obj
@@ -194,6 +208,27 @@ pub(super) fn parse_resolver(v: &Value) -> Option<ParamResolver> {
         })
         .unwrap_or_default();
 
+    // `cache_ttl` is the one strict field in an otherwise lenient block, for
+    // the same reason `x-overslash-timeout_ms` is: `cache_ttl: "5m"` is an
+    // author asking for a specific reuse window, and silently ignoring it
+    // would leave them staring at upstream traffic they thought they had
+    // stopped. `0` is meaningful — it opts this resolver out of caching — so
+    // the check is "an integer", not "a positive integer".
+    let cache_ttl = match obj.get("cache_ttl") {
+        None => None,
+        Some(v) => match v.as_u64() {
+            Some(secs) => Some(secs),
+            None => {
+                issues.push(ValidationIssue::new(
+                    "invalid_resolver_cache_ttl",
+                    "cache_ttl must be a non-negative integer number of seconds".to_string(),
+                    format!("{base}.x-overslash-resolve.cache_ttl"),
+                ));
+                None
+            }
+        },
+    };
+
     Some(ParamResolver {
         get: text("get"),
         tool: text("tool"),
@@ -201,6 +236,7 @@ pub(super) fn parse_resolver(v: &Value) -> Option<ParamResolver> {
         pick: text("pick"),
         display: text("display"),
         scope: text("scope"),
+        cache_ttl,
     })
 }
 
@@ -233,7 +269,7 @@ mod tests {
             }}}
         });
         let mut params = HashMap::new();
-        collect_body_parameters(Some(&body), &mut params);
+        collect_body_parameters(Some(&body), &mut params, "t", &mut Vec::new());
         assert_eq!(params["query"].sql_field.as_deref(), Some("native.query"));
         assert!(params["query"].sql_database.is_none());
         assert_eq!(
@@ -251,7 +287,7 @@ mod tests {
             "x-overslash-sql-field": "q"
         })];
         let mut params = HashMap::new();
-        collect_parameters(&arr, &mut params);
+        collect_parameters(&arr, &mut params, "t", &mut Vec::new());
         assert_eq!(params["q"].sql_field.as_deref(), Some("q"));
     }
 
@@ -697,5 +733,132 @@ mod tests {
 
         let report = crate::template_validation::validate_service_definition(&svc, &[]);
         assert!(report.errors.is_empty(), "unexpected: {:?}", report.errors);
+    }
+
+    /// `cache_ttl` has to survive **all three** lowering sites. A resolver key
+    /// that silently fails to reach one surface is the exact bug D55's
+    /// rationale describes (alias normalization stopping short of
+    /// `input_schema`), and the symptom would be invisible: the resolver keeps
+    /// working, it just never honours the window the author asked for.
+    #[test]
+    fn cache_ttl_survives_all_three_lowering_sites() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x/{id}": {"post": {
+                "operationId": "x",
+                "parameters": [{
+                    "name": "id", "in": "path", "required": true,
+                    "schema": {"type": "string"},
+                    "x-overslash-resolve": {"get": "/x/{id}", "pick": "name", "cache_ttl": 3600}
+                }],
+                "requestBody": {"required": true, "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {"other": {
+                        "type": "string",
+                        "x-overslash-resolve": {"get": "/y/{other}", "pick": "name", "cache_ttl": 7}
+                    }}
+                }}}}
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        // parameters[]
+        assert_eq!(
+            svc.actions["x"].params["id"]
+                .resolve
+                .as_ref()
+                .unwrap()
+                .cache_ttl,
+            Some(3600)
+        );
+        // requestBody properties
+        assert_eq!(
+            svc.actions["x"].params["other"]
+                .resolve
+                .as_ref()
+                .unwrap()
+                .cache_ttl,
+            Some(7)
+        );
+
+        // MCP input_schema properties
+        let mcp = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {},
+            "x-overslash-runtime": "mcp",
+            "x-overslash-mcp": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {"kind": "none"},
+                "tools": [
+                    {"name": "lookup", "risk": "read", "description": "Look up {jid}",
+                     "input_schema": {"type": "object", "properties": {"jid": {"type": "string"}},
+                                      "required": ["jid"]}},
+                    {"name": "send", "risk": "write", "description": "Send to {to}",
+                     "input_schema": {"type": "object", "properties": {"to": {
+                         "type": "string",
+                         "x-overslash-resolve": {
+                             "tool": "lookup", "args": {"jid": "{to}"},
+                             "pick": "name", "cache_ttl": 42
+                         }}}, "required": ["to"]}}
+                ]
+            }
+        });
+        let (svc, _) = compile_service(&mcp).unwrap();
+        assert_eq!(
+            svc.actions["send"].params["to"]
+                .resolve
+                .as_ref()
+                .unwrap()
+                .cache_ttl,
+            Some(42)
+        );
+    }
+
+    /// `0` is a real value — it opts this resolver out of caching — so the
+    /// strict parse must accept it rather than treating it as "unset".
+    #[test]
+    fn cache_ttl_zero_is_accepted_as_an_opt_out() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x/{id}": {"get": {
+                "operationId": "x",
+                "parameters": [{
+                    "name": "id", "in": "path", "required": true,
+                    "schema": {"type": "string"},
+                    "x-overslash-resolve": {"get": "/x/{id}", "pick": "name", "cache_ttl": 0}
+                }]
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert_eq!(
+            svc.actions["x"].params["id"]
+                .resolve
+                .as_ref()
+                .unwrap()
+                .cache_ttl,
+            Some(0)
+        );
+    }
+
+    /// A non-integer `cache_ttl` is an error, not a silent fallback — same
+    /// argument as `x-overslash-timeout_ms`: the author asked for a specific
+    /// window and would otherwise stare at traffic they thought they'd stopped.
+    #[test]
+    fn a_non_integer_cache_ttl_is_a_compile_error() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x/{id}": {"get": {
+                "operationId": "x",
+                "parameters": [{
+                    "name": "id", "in": "path", "required": true,
+                    "schema": {"type": "string"},
+                    "x-overslash-resolve": {"get": "/x/{id}", "pick": "name", "cache_ttl": "5m"}
+                }]
+            }}}
+        });
+        let err = compile_service(&doc).expect_err("non-integer cache_ttl rejected");
+        assert!(
+            err.iter().any(|e| e.code == "invalid_resolver_cache_ttl"),
+            "got: {err:?}"
+        );
     }
 }

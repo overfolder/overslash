@@ -312,7 +312,9 @@ fn lower_mcp_tool(
         ));
         return None;
     }
-    let params = input_schema.map(lower_input_schema).unwrap_or_default();
+    let params = input_schema
+        .map(|s| lower_input_schema(s, &base, errors))
+        .unwrap_or_default();
 
     let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, errors);
     let redact = parse_redact(obj.get("x-overslash-redact"), &base, errors);
@@ -393,7 +395,11 @@ pub fn overlay_discovered_tools(def: &mut ServiceDefinition, discovered: &[Value
 /// into the subset of `ActionParam` shape Overslash understands. Unsupported
 /// constructs (oneOf, nested object properties) are silently ignored — they
 /// remain in the raw `output_schema` / `input_schema` for agent consumption.
-pub(crate) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam> {
+pub(crate) fn lower_input_schema(
+    schema: &Value,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> HashMap<String, ActionParam> {
     let mut out = HashMap::new();
     let Some(obj) = schema.as_object() else {
         return out;
@@ -433,7 +439,9 @@ pub(crate) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
         // MCP params carry resolvers too — an MCP resolver names a sibling
         // `risk: read` tool rather than a GET path, but the declaration and
         // the projection are the same shape the HTTP path parses.
-        let resolve = po.get("x-overslash-resolve").and_then(parse_resolver);
+        let resolve = po.get("x-overslash-resolve").and_then(|v| {
+            parse_resolver(v, &format!("{base}.input_schema.properties.{name}"), issues)
+        });
         out.insert(
             name.clone(),
             ActionParam {
@@ -469,7 +477,7 @@ mod tests {
             },
             "required": ["recipient"]
         });
-        let params = lower_input_schema(&schema);
+        let params = lower_input_schema(&schema, "tools.t", &mut Vec::new());
         let mut aliases = params["recipient"].aliases.clone();
         aliases.sort();
         assert_eq!(aliases, vec!["dest".to_string(), "to".to_string()]);

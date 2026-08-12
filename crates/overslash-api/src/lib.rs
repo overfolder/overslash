@@ -73,6 +73,10 @@ pub struct AppState {
     /// the Postgres listener task (see `services::events::bus`), so every
     /// replica sees every event regardless of which one produced it.
     pub event_bus: services::events::EventBus,
+    /// Caches `x-overslash-resolve` answers so a display-name lookup is not a
+    /// round trip on every call (D64). Valkey-backed when `REDIS_URL` is set,
+    /// process-local otherwise; a backend failure is a miss, never an error.
+    pub resolve_cache: Arc<dyn services::resolve_cache::ResolveCacheStore>,
     /// Per-request resource resolver. `None` in production: the field
     /// accessors below fall through to `self.db`, `self.rate_limit_cache`,
     /// etc. `Some(_)` only in test builds where multiple test pools share
@@ -101,6 +105,10 @@ pub struct TestResources {
     /// template shares one org id, so one test's events would surface on
     /// another's stream.
     pub event_bus: services::events::EventBus,
+    /// Per-test resolver cache: keyed on org + owner + credential, and
+    /// `BootstrapFixtures.org_id` is shared, so one process-wide store would
+    /// let one test's resolved names answer another's lookup.
+    pub resolve_cache: Arc<dyn services::resolve_cache::ResolveCacheStore>,
 }
 
 /// Marker stamped into request `Extensions` by the test-pool middleware,
@@ -173,6 +181,16 @@ impl AppState {
         match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
             Some(res) => &res.free_unlimited_cache,
             None => &self.free_unlimited_cache,
+        }
+    }
+
+    pub fn resolve_cache<'a>(
+        &'a self,
+        ext: &'a Extensions,
+    ) -> &'a dyn services::resolve_cache::ResolveCacheStore {
+        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
+            Some(res) => res.resolve_cache.as_ref(),
+            None => self.resolve_cache.as_ref(),
         }
     }
 
@@ -340,6 +358,9 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         std::time::Duration::from_secs(30),
     ));
 
+    let (resolve_cache, in_memory_resolve_cache) =
+        services::resolve_cache::create_resolve_cache(&config).await;
+
     let (embedder, embeddings_available) = init_embeddings(&db).await;
 
     let http_client = reqwest::Client::new();
@@ -362,6 +383,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         platform_registry: std::sync::Arc::new(services::platform_registry::build_registry()),
         mailer,
         event_bus: event_bus.clone(),
+        resolve_cache,
         test_resources: None,
     };
 
@@ -526,6 +548,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         {
             let rate_limit_cache = state.rate_limit_cache.clone();
             let free_unlimited_cache = state.free_unlimited_cache.clone();
+            let resolve_cache_evict = in_memory_resolve_cache.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -535,6 +558,11 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     }
                     rate_limit_cache.evict_expired();
                     free_unlimited_cache.evict_expired();
+                    // Same tick as the two above; only the in-memory backend
+                    // needs it, as Valkey expires its own keys via `SET .. EX`.
+                    if let Some(store) = &resolve_cache_evict {
+                        store.evict_expired();
+                    }
                     overslash_metrics::background::record_tick(
                         "rate_limit_evict",
                         "ok",
