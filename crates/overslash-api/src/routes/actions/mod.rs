@@ -56,6 +56,7 @@ mod auth_envelopes;
 mod auth_resolve;
 mod auth_scopes;
 mod call;
+mod call_mcp;
 mod deferred;
 mod dto;
 mod errors;
@@ -463,7 +464,7 @@ fn render_action_result(result: &ActionResult, verbose: Option<bool>) -> serde_j
 /// error on every failure path, so a full disk cannot turn a successful call
 /// into a 500. The envelope then carries the unstored hint, which is exactly
 /// the pre-D57 behaviour.
-async fn render_stored(
+pub(super) async fn render_stored(
     state: &AppState,
     ext: &axum::http::Extensions,
     result: &ActionResult,

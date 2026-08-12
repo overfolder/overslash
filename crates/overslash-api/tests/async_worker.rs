@@ -400,3 +400,100 @@ async fn a_job_releases_its_lease_when_shutdown_is_already_signalled() {
     assert_eq!(status_of(&pool, id).await, "pending");
     assert_eq!(attempts_of(&pool, id).await, 0);
 }
+
+/// An approval-backed async execution notifies the approver, not just the
+/// requester.
+///
+/// `audience::for_execution` documents that a resolver who gated a call has a
+/// legitimate interest in how it turned out, but the worker passed `None`
+/// unconditionally — so approvers never heard about the async calls they had
+/// approved. The audience is frozen into the event row at emit time, which is
+/// what makes this assertable.
+#[tokio::test]
+async fn an_approval_backed_execution_notifies_its_resolver() {
+    let pool = common::test_pool().await;
+    let (org_id, identity_id) = seed_identity(&pool).await;
+    let system = SystemScope::new_internal(pool.clone());
+
+    // A second identity stands in for the approver, so "resolver present in the
+    // audience" cannot pass by accidentally matching the requester.
+    let resolver_id = Uuid::new_v4();
+    sqlx::query!(
+        "INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, 'approver', 'user')",
+        resolver_id,
+        org_id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let approval_id = Uuid::new_v4();
+    sqlx::query!(
+        "INSERT INTO approvals (id, org_id, identity_id, action_summary, permission_keys,
+                                status, token, expires_at, current_resolver_identity_id)
+         VALUES ($1, $2, $3, 'gated then queued', '{}', 'allowed', $4,
+                 now() + interval '1 hour', $5)",
+        approval_id,
+        org_id,
+        identity_id,
+        Uuid::new_v4().to_string(),
+        resolver_id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let exec_id = queue_async(&pool, org_id, identity_id).await;
+    sqlx::query!(
+        "UPDATE executions SET approval_id = $2 WHERE id = $1",
+        exec_id,
+        approval_id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let claims = system
+        .claim_async_executions(overslash_api::services::async_executor::worker_id(), 60, 10)
+        .await
+        .unwrap();
+    let claim = claims.into_iter().find(|c| c.id == exec_id).unwrap();
+
+    let state = common::make_app_state(pool.clone()).await;
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    overslash_api::services::async_executor::job::execute(state, pool.clone(), claim, rx)
+        .await
+        .unwrap();
+
+    // `emit` is fire-and-forget, so give the insert a moment to land.
+    for _ in 0..40 {
+        let n: i64 = sqlx::query_scalar!(
+            "SELECT count(*) AS \"n!\" FROM events WHERE org_id = $1",
+            org_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if n > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    let audience: Vec<Uuid> = sqlx::query_scalar!(
+        "SELECT audience FROM events WHERE org_id = $1 ORDER BY id DESC LIMIT 1",
+        org_id
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert!(
+        audience.contains(&identity_id),
+        "the requester must always see their own execution: {audience:?}"
+    );
+    assert!(
+        audience.contains(&resolver_id),
+        "the approver who gated this call must be in the audience: {audience:?}"
+    );
+}

@@ -302,7 +302,24 @@ async fn finish(
     // org-wide, and an upstream response body is exactly where a credential
     // hides. `is_error` and the status are enough to route on; the body is
     // fetched through the authorized endpoint, which is also what marks it read.
-    let audience = events::audience::for_execution(scope, claim.identity_id, None).await;
+    // An approval-backed row has a resolver who gated this call and therefore
+    // has a legitimate interest in how it turned out — the same rule
+    // `for_approval` applies to the approval's own events. Passing `None`
+    // unconditionally would silently drop them from the audience.
+    //
+    // A failed lookup degrades to the requester's chain alone, which only ever
+    // *narrows* who can see the event — the safe direction for a transient
+    // database error.
+    let resolver_id = match claim.approval_id {
+        Some(approval_id) => scope
+            .get_approval(approval_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|a| a.current_resolver_identity_id),
+        None => None,
+    };
+    let audience = events::audience::for_execution(scope, claim.identity_id, resolver_id).await;
     events::emit(
         state.db.clone(),
         state.http_client.clone(),
