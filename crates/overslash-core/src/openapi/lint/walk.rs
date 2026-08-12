@@ -78,7 +78,13 @@ pub(super) fn walk(v: &Value, node: Node, path: &str, out: &mut Vec<ValidationIs
             // an action key), so only the prefixed rules can apply to them.
             check_keys(obj, Pos::Other, path, out);
             for (k, child) in obj {
-                if k.starts_with(PREFIX) || STOP.contains(&k.as_str()) {
+                // `STOP` is deliberately *not* consulted here. It exists to stop
+                // the walk descending into author-supplied data, and every entry
+                // in it is a schema keyword — which is what these keys are not. A
+                // body property may legitimately be named `default` or `enum`, and
+                // `collect_body_parameters` reads its extensions like any other's,
+                // so skipping it would blind the lint at a position that is read.
+                if k.starts_with(PREFIX) {
                     continue;
                 }
                 walk(child, Node::At(pos), &join(path, k), out);

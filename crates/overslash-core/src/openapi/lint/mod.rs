@@ -545,6 +545,52 @@ mod tests {
         assert!(issues.is_empty(), "{issues:?}");
     }
 
+    /// A property may legitimately be *named* after a schema keyword, and
+    /// `collect_body_parameters` reads its extensions like any other's. `STOP`
+    /// stops the walk descending into author-supplied *data*, so it must not also
+    /// stop it descending into a map whose keys are author-chosen names — that
+    /// would blind the lint at a position the compiler does read.
+    #[test]
+    fn a_property_named_after_a_schema_keyword_is_still_walked() {
+        let issues = lint(json!({
+            "paths": {"/x": {"post": {
+                "operationId": "x",
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "default": {"type": "string", "x-overslash-rsik": "read"},
+                        "enum": {"type": "string", "x-overslash-download": {"url": ".u"}},
+                        // Valid at this position: must stay silent.
+                        "example": {
+                            "type": "string",
+                            "x-overslash-resolve": {"get": "/u/{example}", "pick": "name"},
+                        },
+                    },
+                }}}},
+            }}},
+        }));
+        let by_path = |p: &str| issues.iter().find(|i| i.path == p);
+        assert_eq!(
+            by_path("paths./x.post.requestBody.content.application/json.schema.properties.default.x-overslash-rsik")
+                .map(|i| i.code.as_str()),
+            Some("unknown_extension"),
+            "{issues:?}"
+        );
+        assert_eq!(
+            by_path("paths./x.post.requestBody.content.application/json.schema.properties.enum.x-overslash-download")
+                .map(|i| i.code.as_str()),
+            Some("misplaced_extension"),
+            "{issues:?}"
+        );
+        assert_eq!(
+            issues.len(),
+            2,
+            "the valid resolver must stay silent: {issues:?}"
+        );
+    }
+
+    /// The other half of the same rule: `STOP` still applies where the keys *are*
+    /// schema keywords, so a documented example payload is never walked.
     #[test]
     fn example_payloads_are_not_walked() {
         let issues = lint(json!({
