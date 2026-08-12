@@ -3,6 +3,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import type { Identity, ApiKeySummary } from './types';
 	import { makeIdentityFormatter, providerLabel } from '$lib/identityDisplay';
+	import Avatar from '$lib/components/Avatar.svelte';
 	import SearchBar, {
 		emptySearch,
 		filterTerms,
@@ -243,11 +244,7 @@
 						>
 							<td class="col-user">
 								<div class="user-cell">
-									{#if u.picture}
-										<img class="avatar" src={u.picture} alt="" referrerpolicy="no-referrer" />
-									{:else}
-										<div class="avatar avatar-fallback">{fmt.initials(u)}</div>
-									{/if}
+									<Avatar name={u.name} email={u.email} picture={u.picture} size={32} />
 									<span class="id-labels" title={d.title}>
 										<span class="name">{d.primary}</span>
 										{#if d.secondary}<span class="display-name">{d.secondary}</span>{/if}
@@ -306,11 +303,12 @@
 	<aside class="drawer" aria-label="Member detail">
 		<header class="drawer-header">
 			<div class="drawer-id">
-				{#if selected.picture}
-					<img class="avatar lg" src={selected.picture} alt="" referrerpolicy="no-referrer" />
-				{:else}
-					<div class="avatar avatar-fallback lg">{fmt.initials(selected)}</div>
-				{/if}
+				<Avatar
+					name={selected.name}
+					email={selected.email}
+					picture={selected.picture}
+					size={56}
+				/>
 				<div>
 					<h2 title={sel.title}>{sel.primary}</h2>
 					<p class="muted">{sel.secondary ?? selected.email ?? 'no email on file'}</p>
@@ -517,29 +515,6 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-
-	.avatar {
-		width: 32px;
-		height: 32px;
-		border-radius: var(--radius-pill);
-		object-fit: cover;
-		background: var(--color-bg);
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		flex-shrink: 0;
-	}
-	.avatar.lg {
-		width: 56px;
-		height: 56px;
-		font-size: 20px;
-	}
-	.avatar-fallback {
-		background: var(--primary-50);
-		color: var(--primary-600);
-		font: var(--text-label);
-		text-transform: uppercase;
 	}
 
 	.badge {

@@ -2283,6 +2283,7 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
             token_expires_at: Some(expired_time),
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: None,
         })
         .await
@@ -2347,6 +2348,7 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
             token_expires_at: Some(future_time),
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: None,
         })
         .await
@@ -2403,6 +2405,7 @@ async fn test_update_tokens_preserves_refresh_token_when_none() {
             token_expires_at: Some(time::OffsetDateTime::now_utc() - time::Duration::hours(1)),
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: None,
         })
         .await

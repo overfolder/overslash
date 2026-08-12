@@ -294,12 +294,12 @@ async fn oauth_callback_inner(
     .await
     .map_err(|e| AppError::BadRequest(format!("token exchange failed: {e}")))?;
 
-    // Fetch account identity (email / login) from the provider — best-effort;
-    // a failure leaves the label blank but still lands the connection.
-    let account_email =
-        oauth::fetch_account_email(&state.http_client, &provider, &tokens.access_token)
-            .await
-            .unwrap_or(None);
+    // Fetch the account's identity (email / login) and avatar from the
+    // provider — best-effort; a failure leaves both blank but still lands the
+    // connection.
+    let account = oauth::fetch_account_profile(&state.http_client, &provider, &tokens.access_token)
+        .await
+        .unwrap_or_default();
     // When the token response omits `scope` entirely (HubSpot always does),
     // RFC 6749 §5.1 means the requested set was granted verbatim — record
     // that instead of a known-empty `[]` the scope gate would then enforce.
@@ -346,11 +346,13 @@ async fn oauth_callback_inner(
                     encrypted_refresh.as_deref(),
                     expires_at,
                     Some(&merged),
-                    // Refresh the label too — the provider may have renamed the
-                    // account between the original connect and the upgrade.
-                    // `COALESCE` on the repo side leaves the existing value
-                    // intact when we pass `None` (userinfo fetch failed).
-                    account_email.as_deref(),
+                    // Refresh the label and avatar too — the provider may have
+                    // renamed the account or had its photo changed between the
+                    // original connect and the upgrade. `COALESCE` on the repo
+                    // side leaves the existing values intact when we pass
+                    // `None` (userinfo fetch failed).
+                    account.email.as_deref(),
+                    account.picture.as_deref(),
                 )
                 .await?;
             if !updated {
@@ -379,7 +381,8 @@ async fn oauth_callback_inner(
                     // by the token response, or the requested set when the
                     // provider omitted `scope`) — record it, never NULL.
                     scopes: Some(&granted_scopes),
-                    account_email: account_email.as_deref(),
+                    account_email: account.email.as_deref(),
+                    account_picture: account.picture.as_deref(),
                     byoc_credential_id: effective_byoc_id,
                 })
                 .await?;
@@ -399,7 +402,7 @@ async fn oauth_callback_inner(
             resource_id: Some(connection_id),
             detail: serde_json::json!({
                 "provider": provider_key,
-                "account_email": account_email,
+                "account_email": account.email.as_deref(),
                 "scopes": granted_scopes,
             }),
             description: None,
@@ -414,7 +417,7 @@ async fn oauth_callback_inner(
         let payload = serde_json::json!({
             "connection_id": connection_id,
             "provider": provider_key,
-            "account_email": account_email,
+            "account_email": account.email.as_deref(),
             "scopes": effective_scopes,
             "identity_id": identity_id,
         });
@@ -505,7 +508,7 @@ async fn oauth_callback_inner(
     Ok(CallbackSuccess {
         connection_id,
         provider_key: provider_key.to_string(),
-        account_email,
+        account_email: account.email,
         scopes: granted_scopes,
         // Back-compat: surface the first bound id in the singular field the
         // JSON/redirect shapes have always carried.

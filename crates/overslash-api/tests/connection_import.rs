@@ -366,6 +366,7 @@ async fn emailless_import_does_not_overwrite_differently_pinned_connection() {
             token_expires_at: None,
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: None,
         })
         .await

@@ -8,6 +8,7 @@
 	import { deleteByocCredential } from '$lib/api/services';
 	import { updatePermissionExpiry } from '$lib/identityApi';
 	import ExpiryControl from '$lib/components/approval/ExpiryControl.svelte';
+	import Avatar from '$lib/components/Avatar.svelte';
 	import type { ByocCredentialSummary, OAuthProviderInfo } from '$lib/types';
 
 	let { data } = $props<{
@@ -30,15 +31,6 @@
 	);
 
 	const profile = $derived(data.user);
-	const initials = $derived(
-		(profile.name || profile.email || '?')
-			.split(/\s+/)
-			.map((s: string) => s[0])
-			.filter(Boolean)
-			.slice(0, 2)
-			.join('')
-			.toUpperCase()
-	);
 
 	let busy = $state<string | null>(null);
 	let error = $state<string | null>(null);
@@ -190,13 +182,12 @@
 
 	<!-- 1. Header -->
 	<div class="card header-card">
-		<div class="avatar">
-			{#if profile.picture}
-				<img src={profile.picture} alt="" />
-			{:else}
-				<span>{initials}</span>
-			{/if}
-		</div>
+		<Avatar
+			name={profile.name ?? ''}
+			email={profile.email}
+			picture={profile.picture}
+			size={72}
+		/>
 		<div class="header-info">
 			<h2 class="name">{profile.name}</h2>
 			<div class="email">{profile.email}</div>
@@ -438,25 +429,6 @@
 	.sign-out {
 		margin-left: auto;
 		flex-shrink: 0;
-	}
-	.avatar {
-		width: 72px;
-		height: 72px;
-		border-radius: 50%;
-		background: var(--color-primary);
-		color: white;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-size: 1.75rem;
-		font-weight: 600;
-		overflow: hidden;
-		flex-shrink: 0;
-	}
-	.avatar img {
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
 	}
 	.header-info {
 		display: flex;

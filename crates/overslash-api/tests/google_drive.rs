@@ -148,6 +148,7 @@ async fn test_google_drive_e2e() {
             token_expires_at: None,
             scopes: Some(&["https://www.googleapis.com/auth/drive".to_string()]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc_id),
         })
         .await

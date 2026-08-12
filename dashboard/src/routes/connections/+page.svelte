@@ -15,7 +15,7 @@
 	} from '$lib/components/SearchBar.svelte';
 	import SortableHeader from '$lib/components/SortableHeader.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import ProviderTile from '$lib/components/connections/ProviderTile.svelte';
+	import ConnectionAvatar from '$lib/components/connections/ConnectionAvatar.svelte';
 	import ConnectAccountModal from '$lib/components/connections/ConnectAccountModal.svelte';
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[] } } =
@@ -278,7 +278,13 @@
 						>
 							<td data-label="Provider">
 								<span class="cell-provider">
-									<ProviderTile provider={c.provider_key} size={22} label={displayName(c.provider_key)} />
+									<ConnectionAvatar
+										provider={c.provider_key}
+										accountEmail={c.account_email}
+										picture={c.account_picture}
+										size={28}
+										label={displayName(c.provider_key)}
+									/>
 									<span class="provider-name">{displayName(c.provider_key)}</span>
 								</span>
 							</td>

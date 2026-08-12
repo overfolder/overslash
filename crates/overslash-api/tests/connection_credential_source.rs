@@ -273,6 +273,7 @@ async fn resolve_soft_pin_falls_back_when_byoc_id_is_dangling() {
         token_expires_at: None,
         scopes: Some(vec![]),
         account_email: None,
+        account_picture: None,
         byoc_credential_id: Some(Uuid::new_v4()),
         is_default: true,
         keep: false,

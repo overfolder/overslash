@@ -47,6 +47,12 @@
 		more: number;
 	} | null>(null);
 
+	// Avatar URLs the browser could not load — a provider rotates them when the
+	// user changes their photo, and the one we snapshotted keeps 404ing until
+	// they next sign in. Remembered per URL so the node falls back to its
+	// monogram once and does not retry on every re-render.
+	let brokenPictures = $state<string[]>([]);
+
 	let stage: HTMLElement;
 	let canvas: HTMLCanvasElement;
 	let layer: HTMLElement;
@@ -284,7 +290,20 @@
 						}}
 					>
 						<div class="lm-ball">
-							{n.mono}
+							<!-- Monogram and avatar share one grid cell rather than
+							     branching: a third-party avatar host that hangs
+							     fires neither `load` nor `error`, and an `{:else}`
+							     would leave the ball empty until it does. -->
+							<span class="lm-ball-mono">{n.mono}</span>
+							{#if n.picture && !brokenPictures.includes(n.picture)}
+								<img
+									class="lm-ball-img"
+									src={n.picture}
+									alt=""
+									referrerpolicy="no-referrer"
+									onerror={() => n.picture && brokenPictures.push(n.picture)}
+								/>
+							{/if}
 							{#if badge}
 								<button
 									class="lm-badge"

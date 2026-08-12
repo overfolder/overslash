@@ -103,6 +103,7 @@ async fn test_outlook_mock() {
                 "https://graph.microsoft.com/User.Read".to_string(),
             ]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc.id),
         })
         .await
@@ -365,6 +366,7 @@ async fn test_outlook_e2e() {
             token_expires_at: Some(expires_at),
             scopes: Some(&full_scopes),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc_id),
         })
         .await
@@ -602,6 +604,7 @@ async fn test_outlook_e2e() {
             token_expires_at: Some(expires_at),
             scopes: Some(&["https://graph.microsoft.com/Mail.Read".to_string()]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc_id),
         })
         .await

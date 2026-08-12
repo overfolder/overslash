@@ -10,7 +10,7 @@
 		isInstanceAdmin = false,
 		onMenu = () => {}
 	}: {
-		user: { name?: string; email?: string } | null;
+		user: { name?: string; email?: string; picture?: string | null } | null;
 		isInstanceAdmin?: boolean;
 		onMenu?: () => void;
 	} = $props();
@@ -35,7 +35,12 @@
 		<ThemeToggle />
 		{#if user}
 			<div class="user-block">
-				<ProfileAvatar name={user.name ?? ''} email={user.email ?? ''} showName />
+				<ProfileAvatar
+					name={user.name ?? ''}
+					email={user.email ?? ''}
+					picture={user.picture}
+					showName
+				/>
 				{#if isInstanceAdmin}
 					<span class="instance-badge" title="Instance admin">⚡ Instance</span>
 				{/if}

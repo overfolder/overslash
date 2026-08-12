@@ -23,6 +23,9 @@ export interface MapNode {
 	label: string;
 	/** 1–2 characters inside the ball. */
 	mono: string;
+	/** The identity's IdP avatar, when it has one. Drawn in place of `mono`;
+	 *  agents and services have none and keep the monogram. */
+	picture?: string;
 	/** Parent in the identity tree — the agent, for a subagent. */
 	parent?: string;
 	/** The owner *user*, for anything below one. */
@@ -125,6 +128,7 @@ function identityNodes(identities: Identity[]): MapNode[] {
 				kind: 'user' as const,
 				label: i.name,
 				mono: mono(i.name),
+				picture: i.picture ?? undefined,
 				sub: childCount.get(i.id) ?? 0
 			};
 		}
@@ -137,6 +141,10 @@ function identityNodes(identities: Identity[]): MapNode[] {
 			kind: parentIsUser ? ('agent' as const) : ('subagent' as const),
 			label: i.name,
 			mono: mono(i.name),
+			// Agents are created through the API and have no IdP, so this is
+			// almost always undefined — but the column is on every identity,
+			// so read it rather than assume.
+			picture: i.picture ?? undefined,
 			parent: i.parent_id ?? undefined,
 			owner,
 			sub: childCount.get(i.id) ?? 0

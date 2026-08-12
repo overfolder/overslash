@@ -94,8 +94,9 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
   - Structural agent→service edges from permission rules. Today they only
     appear once traffic reveals them, because `GET /v1/permissions` is
     per-identity and deriving them up front would cost one request per agent.
-  - Node icons. Deferred because identities and services carry no icon field —
-    the map renders monograms. Revisit when they do.
+  - Service node icons. User nodes now draw their IdP avatar; services still
+    carry no icon field, so they keep their monograms. Revisit when a template
+    can declare a logo.
   - Resolve an approval from the map. The amber state is real (it comes off
     `approval.pending`); the design's click-a-packet Allow/Deny popover was
     dropped rather than built against a half-modelled in-flight approval.

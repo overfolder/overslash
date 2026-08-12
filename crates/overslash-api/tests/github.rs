@@ -65,6 +65,7 @@ async fn test_github_e2e() {
             token_expires_at: None,
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: None,
         })
         .await

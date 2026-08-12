@@ -96,6 +96,23 @@
 		box-shadow 0.12s,
 		background 0.12s;
 }
+/* Monogram and avatar occupy the same grid cell (`.lm-ball` is a grid), so
+   the avatar covers the monogram once it decodes and the monogram shows
+   whenever it does not — including while a slow host is still thinking.
+   Sized to the ball's content box, so the ball's own border and the
+   running/waiting rings still read around the avatar. */
+.lm-ball-mono,
+.lm-ball-img {
+	grid-area: 1 / 1;
+}
+.lm-ball-img {
+	width: 100%;
+	height: 100%;
+	border-radius: 50%;
+	object-fit: cover;
+	display: block;
+	background: var(--color-surface);
+}
 .lm-cap {
 	max-width: 132px;
 	padding: 2px 6px;

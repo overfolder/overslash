@@ -32,6 +32,7 @@
 	} from '$lib/types';
 	import { listSecrets } from '$lib/api/secrets';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
+	import ConnectionAvatar from '$lib/components/connections/ConnectionAvatar.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
 	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
@@ -1003,7 +1004,16 @@
 						<span class="label">Status</span>
 						{#if currentConnection}
 							<StatusBadge variant="connected" />
-							<span class="muted">{connectionLabel(currentConnection)}</span>
+							<span class="conn-label">
+								<ConnectionAvatar
+									provider={currentConnection.provider_key}
+									accountEmail={currentConnection.account_email}
+									picture={currentConnection.account_picture}
+									size={24}
+									label={oauthProvider}
+								/>
+								<span class="muted">{connectionLabel(currentConnection)}</span>
+							</span>
 						{:else}
 							<StatusBadge variant="needs-setup" />
 						{/if}
@@ -1355,6 +1365,12 @@
 	.mono {
 		font-family: var(--font-mono);
 		font-size: 0.82rem;
+	}
+	.conn-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
 	}
 	.muted {
 		color: var(--color-text-muted);
