@@ -329,3 +329,26 @@ same treatment, but it is a bigger decision than it looks: the tests are a
 separate binary, so a `#[cfg(test)]` helper cannot reach them, and a public
 `Config::for_tests()` is a surface worth agreeing on rather than adding in
 passing.
+
+## `ext::READS` positions are reviewed, not proven
+
+`crates/overslash-core/src/openapi/ext.rs` records which document position reads
+each `x-overslash-*` extension, and D67's lint reads that matrix to decide
+whether a key is misplaced. Two of the three drift directions are closed
+mechanically: `ext::get`'s `debug_assert!` fails a reader whose position is
+missing from the matrix, and `no_extension_getter_bypasses_the_accessor` bans the
+raw `obj.get("x-overslash-…")` spelling in `openapi/` production code.
+
+The third is not. A matrix entry claiming a position that no extractor actually
+reads would make the lint stay *silent* on precisely the no-op it exists to
+catch, and nothing detects that — `ext::get` is never called at the phantom
+position, so the assertion never runs. Each entry cites the reader line it
+records (`// schemes.rs:95`), which makes it reviewable, and the four known
+asymmetries are pinned by `position_asymmetries_are_recorded`. But the guarantee
+is "someone checked", not "the compiler checked".
+
+Closing it properly means the readers *enumerating* their positions rather than
+naming one per call — e.g. a per-position extractor trait whose implementation
+list is the matrix. That is a much larger refactor of `openapi::extract` than
+D67 warranted, and the payoff is bounded: the entries are cited, and a phantom
+position only costs a missed warning, never a false one.
