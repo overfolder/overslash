@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 use crate::template_validation::ValidationIssue;
 use crate::types::{ActionParam, ParamLocation, ParamResolver, RequestBodySpec};
 
+use super::super::ext::{self, Ext, Pos};
 use super::{parse_aliases, parse_instance_config, parse_sql_policy};
 
 // ── parameters → HashMap<String, ActionParam> ────────────────────────
@@ -34,10 +35,9 @@ pub(super) fn collect_parameters(
         let schema = obj.get("schema").and_then(Value::as_object);
         let (param_type, enum_values, default) = schema_fields(schema);
 
-        let resolve = obj
-            .get("x-overslash-resolve")
+        let resolve = ext::get(obj, Pos::Parameter, Ext::Resolve)
             .and_then(|v| parse_resolver(v, &format!("{base}.parameters.{name}"), issues));
-        let aliases = parse_aliases(Some(obj), name);
+        let aliases = parse_aliases(Some(obj), name, Pos::Parameter);
 
         let location = match obj.get("in").and_then(Value::as_str) {
             Some("query") => ParamLocation::Query,
@@ -46,8 +46,8 @@ pub(super) fn collect_parameters(
             _ => ParamLocation::Body,
         };
 
-        let instance_config = parse_instance_config(Some(obj));
-        let (sql_field, sql_database) = parse_sql_policy(Some(obj));
+        let instance_config = parse_instance_config(Some(obj), Pos::Parameter);
+        let (sql_field, sql_database) = parse_sql_policy(Some(obj), Pos::Parameter);
 
         out.insert(
             name.to_string(),
@@ -136,11 +136,11 @@ pub(super) fn collect_body_parameters(
             .unwrap_or("")
             .to_string();
         let resolve = pobj
-            .and_then(|o| o.get("x-overslash-resolve"))
+            .and_then(|o| ext::get(o, Pos::BodyProperty, Ext::Resolve))
             .and_then(|v| parse_resolver(v, &format!("{base}.requestBody.{name}"), issues));
-        let aliases = parse_aliases(pobj, name);
-        let instance_config = parse_instance_config(pobj);
-        let (sql_field, sql_database) = parse_sql_policy(pobj);
+        let aliases = parse_aliases(pobj, name, Pos::BodyProperty);
+        let instance_config = parse_instance_config(pobj, Pos::BodyProperty);
+        let (sql_field, sql_database) = parse_sql_policy(pobj, Pos::BodyProperty);
 
         out.insert(
             name.clone(),

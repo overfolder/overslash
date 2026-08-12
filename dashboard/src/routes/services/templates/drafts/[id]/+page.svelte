@@ -222,6 +222,28 @@
 			</section>
 		{/if}
 
+		{#if draft.validation.warnings.length > 0}
+			<!-- The draft saves and can be promoted with these outstanding, but each
+			     one is a key the compiler ignores — the whole point is that they stop
+			     being invisible. -->
+			<section class="card warnings">
+				<h2 class="card-title">Ignored declarations ({draft.validation.warnings.length})</h2>
+				<ul>
+					{#each draft.validation.warnings as w (w.code + (w.path ?? '') + w.message)}
+						<li>
+							{#if w.code}<code class="tag">{w.code}</code>{/if}
+							{w.message}
+							{#if w.path}<span class="path">· {w.path}</span>{/if}
+						</li>
+					{/each}
+				</ul>
+				<p class="hint">
+					These do not block promotion — the template compiles without them.
+					Each names something declared in the YAML that nothing reads.
+				</p>
+			</section>
+		{/if}
+
 		<section class="card">
 			<h2 class="card-title">
 				Operations ({draft.operations.filter((o) => o.included).length} selected

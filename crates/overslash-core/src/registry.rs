@@ -70,6 +70,12 @@ impl ServiceRegistry {
     /// single broken shipped template can't take down the whole process — CI
     /// catches the same cases via `shipped_services_load_clean` below.
     ///
+    /// The extension lint ([`crate::openapi::lint_extensions`]) is the one check
+    /// that reports without skipping: its findings are `tracing::warn!` and the
+    /// template still loads, because a key nothing reads is a smaller problem
+    /// than an absent service. `shipped_services_lint_clean` is where that
+    /// leniency is paid for.
+    ///
     /// `vars` is normally [`Vars::from_env`]; tests pass an explicit set rather
     /// than mutating the process environment, which races across the suite.
     #[cfg(feature = "yaml")]
@@ -114,6 +120,23 @@ impl ServiceRegistry {
                     "alias normalization failed; skipping"
                 );
                 continue;
+            }
+
+            // Extension lint findings are logged and the template still loads.
+            // Making them fatal here would mean a stray key *removes a service*,
+            // which is strictly worse than the ignored field the lint exists to
+            // report — and `shipped_services_lint_clean` already refuses to let
+            // one reach a release. The log line matters for an operator pointing
+            // `services_dir` at templates of their own, which never passed our
+            // CI. See D67.
+            for w in crate::openapi::lint_extensions(&doc) {
+                tracing::warn!(
+                    file = %path.display(),
+                    code = %w.code,
+                    path = %w.path,
+                    message = %w.message,
+                    "shipped service template declares something nothing reads"
+                );
             }
 
             // Expand `${VAR}` before compile, so `servers[].url` is already the
@@ -809,6 +832,11 @@ paths:
         // it only checks non-emptiness). Assert every shipped `*.yaml` both
         // validates AND lands in the registry under its declared key, so a
         // validation regression fails loudly here instead of at call time.
+        //
+        // Its one-level-down analogue is `shipped_services_lint_clean` (in
+        // `template_validation::yaml`), for the template that loads fine and
+        // quietly does less than it says — this test catches a template that
+        // vanishes, that one catches a key nothing reads.
         let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()

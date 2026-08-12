@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 use crate::template_validation::ValidationIssue;
 use crate::types::{ActionParam, DeclaredRisk, ParamLocation, Risk, ServiceAction};
 
+use super::super::ext::{self, Ext, Pos};
 use super::params::{collect_body_parameters, collect_parameters, parse_request_body};
 use super::{
     parse_aliases, parse_disclose, parse_instance_config, parse_redact, parse_scope_params,
@@ -82,27 +83,28 @@ pub(crate) fn extract_http_action(
         .or_else(|| summary.clone())
         .unwrap_or_default();
 
-    let risk = match op.get("x-overslash-risk").and_then(Value::as_str) {
+    let risk = match ext::get(op, Pos::Operation, Ext::Risk).and_then(Value::as_str) {
         Some("read") => DeclaredRisk::Read,
         Some("write") => DeclaredRisk::Write,
         Some("delete") => DeclaredRisk::Delete,
         // Classified per call from the SQL the caller supplies (D42);
-        // validation rejects it on actions with no `x-overslash-sql` param.
+        // validation rejects it on actions with no `x-overslash-sql-field` param.
         Some("dynamic") => DeclaredRisk::Dynamic,
         Some(other) => {
             return Err(vec![ValidationIssue::new(
                 "invalid_risk",
                 format!(
-                    "x-overslash-risk must be one of read/write/delete/dynamic (got {other:?})"
+                    "{} must be one of read/write/delete/dynamic (got {other:?})",
+                    Ext::Risk.key()
                 ),
-                format!("{base}.x-overslash-risk"),
+                format!("{base}.{}", Ext::Risk.key()),
             )]);
         }
         None => Risk::from_http_method(method).into(),
     };
 
-    let scope_param =
-        parse_scope_params(op.get("x-overslash-scope_param"), &base).map_err(|e| vec![e])?;
+    let scope_param = parse_scope_params(ext::get(op, Pos::Operation, Ext::ScopeParam), &base)
+        .map_err(|e| vec![e])?;
 
     let response_type = detect_response_type(op);
 
@@ -134,11 +136,19 @@ pub(crate) fn extract_http_action(
         .unwrap_or_default();
 
     let mut disclose_errors = param_errors;
-    let disclose = parse_disclose(op.get("x-overslash-disclose"), &base, &mut disclose_errors);
-    let redact = parse_redact(op.get("x-overslash-redact"), &base, &mut disclose_errors);
+    let disclose = parse_disclose(
+        ext::get(op, Pos::Operation, Ext::Disclose),
+        &base,
+        &mut disclose_errors,
+    );
+    let redact = parse_redact(
+        ext::get(op, Pos::Operation, Ext::Redact),
+        &base,
+        &mut disclose_errors,
+    );
     let timeout_ms = parse_timeout_ms(
-        op.get("x-overslash-timeout_ms"),
-        "x-overslash-timeout_ms",
+        ext::get(op, Pos::Operation, Ext::TimeoutMs),
+        Ext::TimeoutMs.key(),
         &base,
         &mut disclose_errors,
     );
@@ -177,7 +187,7 @@ pub(crate) fn extract_platform_action(
     action_key: &str,
     op: &Map<String, Value>,
 ) -> Result<ServiceAction, Vec<ValidationIssue>> {
-    let base = format!("x-overslash-platform_actions.{action_key}");
+    let base = format!("{}.{action_key}", Ext::PlatformActions.key());
 
     let description = op
         .get("description")
@@ -186,7 +196,7 @@ pub(crate) fn extract_platform_action(
         .unwrap_or("")
         .to_string();
 
-    let risk = match op.get("x-overslash-risk").and_then(Value::as_str) {
+    let risk = match ext::get(op, Pos::PlatformAction, Ext::Risk).and_then(Value::as_str) {
         Some("read") | None => DeclaredRisk::Read,
         Some("write") => DeclaredRisk::Write,
         Some("delete") => DeclaredRisk::Delete,
@@ -195,8 +205,11 @@ pub(crate) fn extract_platform_action(
         Some(other) => {
             return Err(vec![ValidationIssue::new(
                 "invalid_risk",
-                format!("x-overslash-risk must be one of read/write/delete (got {other:?})"),
-                format!("{base}.x-overslash-risk"),
+                format!(
+                    "{} must be one of read/write/delete (got {other:?})",
+                    Ext::Risk.key()
+                ),
+                format!("{base}.{}", Ext::Risk.key()),
             )]);
         }
     };
@@ -212,8 +225,8 @@ pub(crate) fn extract_platform_action(
         .and_then(Value::as_str)
         .map(str::to_string);
 
-    let scope_param =
-        parse_scope_params(op.get("x-overslash-scope_param"), &base).map_err(|e| vec![e])?;
+    let scope_param = parse_scope_params(ext::get(op, Pos::PlatformAction, Ext::ScopeParam), &base)
+        .map_err(|e| vec![e])?;
 
     Ok(ServiceAction {
         description,
@@ -252,9 +265,9 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let aliases = parse_aliases(Some(obj), name);
-            let instance_config = parse_instance_config(Some(obj));
-            let (sql_field, sql_database) = parse_sql_policy(Some(obj));
+            let aliases = parse_aliases(Some(obj), name, Pos::PlatformActionParam);
+            let instance_config = parse_instance_config(Some(obj), Pos::PlatformActionParam);
+            let (sql_field, sql_database) = parse_sql_policy(Some(obj), Pos::PlatformActionParam);
             Some((
                 name.clone(),
                 ActionParam {

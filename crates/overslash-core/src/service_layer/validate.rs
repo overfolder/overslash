@@ -98,15 +98,26 @@ pub fn validate_delta(
             );
         }
     }
-    if !delta.extensions.actions.is_empty()
-        && let Err(errs) = compile_extension_actions(base, &delta.extensions)
-    {
-        for e in errs {
-            issues.err(
-                "extension_invalid",
-                format!("extension actions failed to compile: {}", e.message),
-                "extensions.actions",
-            );
+    if !delta.extensions.actions.is_empty() {
+        match compile_extension_actions(base, &delta.extensions) {
+            // Write-time surfacing, so an extension operation declaring something
+            // nothing reads is named while the author still has the delta open —
+            // `POST /v1/templates/validate-delta` renders these in the layer
+            // editor.
+            Ok((_, lint_warnings)) => {
+                for w in lint_warnings {
+                    issues.warn(w.code, w.message, w.path);
+                }
+            }
+            Err(errs) => {
+                for e in errs {
+                    issues.err(
+                        "extension_invalid",
+                        format!("extension actions failed to compile: {}", e.message),
+                        "extensions.actions",
+                    );
+                }
+            }
         }
     }
 
@@ -383,6 +394,51 @@ mod tests {
             report.valid,
             "expected valid, got errors: {:?}",
             report.errors
+        );
+    }
+
+    /// An extension operation goes through the same compile as a shipped
+    /// template, so it inherits the same silent no-ops — `x-overslash-download`
+    /// is MCP-only and does nothing on an HTTP operation.
+    ///
+    /// The finding's path must address the delta the author submitted, not the
+    /// synthetic `paths./regional.get` document assembled to compile it.
+    #[test]
+    fn extension_action_declaring_an_ignored_key_warns_against_the_delta_path() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            extensions: Extensions {
+                actions: HashMap::from([(
+                    "regional".to_string(),
+                    ExtensionAction {
+                        method: "GET".into(),
+                        path: "/regional".into(),
+                        operation: serde_json::json!({
+                            "description": "Regional lookup",
+                            "x-overslash-risk": "read",
+                            "x-overslash-download": { "url": ".url" },
+                            "response_type": "binary"
+                        }),
+                    },
+                )]),
+                hosts: vec![],
+            },
+            ..Default::default()
+        };
+        let report = validate_delta(&delta, &base, false);
+        assert!(
+            report.valid,
+            "an ignored key must not block the delta: {:?}",
+            report.errors
+        );
+        let paths: Vec<&str> = report.warnings.iter().map(|w| w.path.as_str()).collect();
+        assert!(
+            paths.contains(&"extensions.actions.regional.operation.x-overslash-download"),
+            "download finding should address the delta, got {paths:?}"
+        );
+        assert!(
+            paths.contains(&"extensions.actions.regional.operation.response_type"),
+            "response_type finding should address the delta, got {paths:?}"
         );
     }
 }

@@ -425,11 +425,20 @@
 
 		{#if validation && (validation.errors.length || validation.warnings.length)}
 			<section class="card report">
+				<!-- `path` addresses the delta the author wrote (the extension lint
+				     re-roots it onto `extensions.actions.{key}.operation`), so it is
+				     the only thing that locates a finding in a large delta. -->
 				{#each validation.errors as m}
-					<div class="msg err"><span class="code">{m.code ?? 'error'}</span> {m.message}</div>
+					<div class="msg err">
+						<span class="code">{m.code ?? 'error'}</span> {m.message}
+						{#if m.path}<span class="msg-path">· {m.path}</span>{/if}
+					</div>
 				{/each}
 				{#each validation.warnings as m}
-					<div class="msg warn"><span class="code">{m.code ?? 'warning'}</span> {m.message}</div>
+					<div class="msg warn">
+						<span class="code">{m.code ?? 'warning'}</span> {m.message}
+						{#if m.path}<span class="msg-path">· {m.path}</span>{/if}
+					</div>
 				{/each}
 			</section>
 		{/if}
@@ -704,6 +713,11 @@
 		padding: 0.05rem 0.3rem;
 		border-radius: 3px;
 		margin-right: 0.4rem;
+	}
+	.report .msg-path {
+		font-family: var(--font-mono, monospace);
+		font-size: 0.72rem;
+		color: var(--color-text-muted);
 	}
 	.msg.err {
 		color: #b91c1c;

@@ -13,6 +13,7 @@ use crate::template_validation::ValidationIssue;
 use crate::types::{Runtime, ServiceAction, ServiceDefinition};
 
 use super::alias::HTTP_METHODS;
+use super::ext::{self, Ext, Pos};
 use super::extract;
 use super::extract::{
     extract_auth, extract_hosts, extract_http_action, extract_mcp_actions, extract_mcp_spec,
@@ -44,7 +45,7 @@ pub fn compile_service(
     let info = root.get("info").and_then(Value::as_object);
 
     let key = info
-        .and_then(|i| i.get("x-overslash-key"))
+        .and_then(|i| ext::get(i, Pos::Info, Ext::Key))
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
@@ -61,11 +62,11 @@ pub fn compile_service(
         .map(str::to_string);
 
     let category = info
-        .and_then(|i| i.get("x-overslash-category"))
+        .and_then(|i| ext::get(i, Pos::Info, Ext::Category))
         .and_then(Value::as_str)
         .map(str::to_string);
 
-    let hidden = match info.and_then(|i| i.get("x-overslash-hidden")) {
+    let hidden = match info.and_then(|i| ext::get(i, Pos::Info, Ext::Hidden)) {
         None => false,
         Some(Value::Bool(b)) => *b,
         Some(other) => {
@@ -73,8 +74,8 @@ pub fn compile_service(
             // and fall back to visible so the mistake is observable.
             warnings.push(ValidationIssue::new(
                 "openapi_invalid",
-                format!("x-overslash-hidden must be a boolean (got {other})"),
-                "info.x-overslash-hidden",
+                format!("{} must be a boolean (got {other})", Ext::Hidden.key()),
+                format!("info.{}", Ext::Hidden.key()),
             ));
             false
         }
@@ -90,15 +91,15 @@ pub fn compile_service(
     // free. Resolving it here rather than at response time is what lets a
     // derived layer inherit it — `apply_delta` keys off the *layer's* name, so
     // a later lookup would find no asset and silently drop the base's icon.
-    let authored_icon = match info.and_then(|i| i.get("x-overslash-icon")) {
+    let authored_icon = match info.and_then(|i| ext::get(i, Pos::Info, Ext::Icon)) {
         None => None,
         Some(Value::String(raw)) => match ServiceIcon::try_from(raw.clone()) {
             Ok(icon) => Some(icon),
             Err(e) => {
                 warnings.push(ValidationIssue::new(
                     "openapi_invalid",
-                    format!("x-overslash-icon: {e}"),
-                    "info.x-overslash-icon",
+                    format!("{}: {e}", Ext::Icon.key()),
+                    format!("info.{}", Ext::Icon.key()),
                 ));
                 None
             }
@@ -106,8 +107,8 @@ pub fn compile_service(
         Some(other) => {
             warnings.push(ValidationIssue::new(
                 "openapi_invalid",
-                format!("x-overslash-icon must be a string (got {other})"),
-                "info.x-overslash-icon",
+                format!("{} must be a string (got {other})", Ext::Icon.key()),
+                format!("info.{}", Ext::Icon.key()),
             ));
             None
         }
@@ -118,8 +119,8 @@ pub fn compile_service(
     // unparseable value here would otherwise refuse to load a whole template
     // over one slow-upstream hint.
     let default_timeout_ms = parse_timeout_ms(
-        info.and_then(|i| i.get("x-overslash-default_timeout_ms")),
-        "x-overslash-default_timeout_ms",
+        info.and_then(|i| ext::get(i, Pos::Info, Ext::DefaultTimeoutMs)),
+        Ext::DefaultTimeoutMs.key(),
         "info",
         &mut warnings,
     );
@@ -173,16 +174,15 @@ pub fn compile_service(
         }
     }
 
-    if let Some(platform) = root
-        .get("x-overslash-platform_actions")
-        .and_then(Value::as_object)
+    if let Some(platform) =
+        ext::get(root, Pos::Root, Ext::PlatformActions).and_then(Value::as_object)
     {
         for (action_key, action) in platform {
             let Some(obj) = action.as_object() else {
                 errors.push(ValidationIssue::new(
                     "openapi_invalid",
                     "platform action must be an object",
-                    format!("x-overslash-platform_actions.{action_key}"),
+                    format!("{}.{action_key}", Ext::PlatformActions.key()),
                 ));
                 continue;
             };
@@ -197,15 +197,18 @@ pub fn compile_service(
 
     // MCP runtime branch: populate McpSpec + per-tool actions from the
     // x-overslash-mcp block (merging discovered_tools[] + tools[]).
-    let runtime = match root.get("x-overslash-runtime").and_then(Value::as_str) {
+    let runtime = match ext::get(root, Pos::Root, Ext::Runtime).and_then(Value::as_str) {
         Some("mcp") => Runtime::Mcp,
         Some("platform") => Runtime::Platform,
         Some("http") | None => Runtime::Http,
         Some(other) => {
             errors.push(ValidationIssue::new(
                 "openapi_invalid",
-                format!("x-overslash-runtime must be `http`, `mcp`, or `platform` (got {other:?})"),
-                "x-overslash-runtime",
+                format!(
+                    "{} must be `http`, `mcp`, or `platform` (got {other:?})",
+                    Ext::Runtime.key()
+                ),
+                Ext::Runtime.key(),
             ));
             Runtime::Http
         }

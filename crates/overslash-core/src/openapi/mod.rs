@@ -16,6 +16,10 @@
 //!
 //! - [`alias`] — context-aware alias-to-canonical rewriter ([`normalize_aliases`])
 //!   and its tests.
+//! - [`ext`] — the extension vocabulary, the position table recording where each
+//!   key is *read*, and the accessor every extractor reads through.
+//! - [`lint`] — [`lint_extensions`], which reports every extension key the
+//!   compiler will silently ignore.
 //! - [`extract`] — compile-step helpers (hosts, auth, actions, parameters,
 //!   response types, resolvers) and their tests.
 //! - [`compile`] — [`compile_service`], which wires the extract helpers
@@ -24,8 +28,10 @@
 
 mod alias;
 mod compile;
+mod ext;
 mod extract;
 pub mod import;
+mod lint;
 pub mod validate_input;
 #[cfg(feature = "yaml")]
 mod yaml;
@@ -36,5 +42,6 @@ pub use alias::normalize_aliases;
 pub use compile::compile_service;
 pub use extract::overlay_discovered_tools;
 pub use extract::url_to_host;
+pub use lint::{LINT_CODES, lint_extensions};
 #[cfg(feature = "yaml")]
 pub use yaml::{parse_yaml, to_yaml_string};

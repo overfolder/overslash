@@ -196,6 +196,12 @@
 			{:else if validationUnavailable}
 				<span class="status-icon muted-icon">&#x25cb;</span>
 				<span class="muted">Structured validation coming soon — only YAML syntax is checked locally.</span>
+			{:else if hasWarnings}
+				<!-- The document saves, but something in it is being ignored. Saying
+				     "Valid" over a list of warnings is how a silent no-op stays
+				     invisible even once the linter has found it. -->
+				<span class="status-icon warn-icon">&#x26a0;</span>
+				<span>Valid — {validationResult!.warnings.length} warning{validationResult!.warnings.length === 1 ? '' : 's'}</span>
 			{:else}
 				<span class="status-icon ok-icon">&#x2713;</span>
 				<span>Valid</span>
@@ -305,6 +311,9 @@
 	}
 	.ok-icon {
 		color: #22c55e;
+	}
+	.warn-icon {
+		color: #a16207;
 	}
 	.muted-icon {
 		color: var(--color-text-muted);

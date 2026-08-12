@@ -37,7 +37,10 @@ mod test_helpers;
 pub use coerce::{apply_aliases, apply_defaults, coerce_args};
 pub use error::{ArgError, format_errors};
 
-use error::{closest_match, key, value_to_plain_string};
+// Re-exported for `super::lint`, which suggests a canonical extension name for a
+// near-miss the same way argument validation suggests a parameter name.
+pub(in crate::openapi) use error::closest_match;
+use error::{key, value_to_plain_string};
 
 /// Validate `args` against `params` (a lowered `input_schema`).
 ///
