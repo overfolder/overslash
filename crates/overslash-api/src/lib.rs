@@ -715,6 +715,10 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::health::router())
         .merge(routes::version::router())
         .merge(routes::skill_md::router())
+        // Built-in service icons. Outside auth for the same reason as
+        // /SKILL.md: an <img> carries no Authorization header, and
+        // cross-origin it carries no cookie either.
+        .merge(routes::icons::router())
         .merge(routes::oauth_upstream::router())
         .merge(routes::oauth::consent_router())
         // Public one-click unsubscribe — must stay outside auth + rate-limit

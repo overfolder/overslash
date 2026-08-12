@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { TemplateSummary } from '$lib/types';
+	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import StatusBadge from './StatusBadge.svelte';
 
 	let {
@@ -20,6 +21,7 @@
 	onclick={() => onselect(template)}
 >
 	<div class="head">
+		<ServiceIcon src={template.icon_url} name={template.display_name} size={32} />
 		<span class="name">{template.display_name}</span>
 		<span class="badges">
 			{#if template.hidden}
@@ -76,6 +78,13 @@
 	.name {
 		font-weight: 600;
 		font-size: 0.95rem;
+		/* Takes the slack between the icon and the badges so a long name
+		   truncates instead of shoving the badges off the card. */
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.key {
 		font-family: var(--font-mono);

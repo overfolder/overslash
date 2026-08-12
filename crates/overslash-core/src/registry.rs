@@ -42,6 +42,9 @@ fn http_pseudo_service() -> ServiceDefinition {
         hosts: Vec::new(),
         category: Some("Platform".to_string()),
         hidden: false,
+        // Mode A is not a vendor — the dashboard's letter tile is the honest
+        // rendering.
+        icon: None,
         auth: Vec::new(),
         secrets: Vec::new(),
         config: Vec::new(),
@@ -491,6 +494,39 @@ paths:
             ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
                 .unwrap();
         assert!(!reg.is_empty(), "no shipped templates loaded");
+    }
+
+    #[test]
+    fn every_shipped_template_resolves_to_a_shipped_icon() {
+        // Catches the two ways this silently degrades: a renamed asset (the
+        // implicit `builtin:<key>` rule stops matching and the service drops to
+        // a letter tile), and an `icon:` naming an asset nobody shipped.
+        //
+        // Templates listed as `pending` in assets/service-icons/manifest.json
+        // legitimately have no mark yet and are expected to be iconless.
+        const EXPECTED_WITHOUT_ICON: &[&str] = &["eventbrite", "linkedin", "outlook", "slack"];
+
+        let reg =
+            ServiceRegistry::load_from_dir(&shipped_services_dir(), Vars::for_tests()).unwrap();
+
+        for def in reg.all() {
+            let key = def.key.as_str();
+            if key == HTTP_PSEUDO_SERVICE {
+                continue;
+            }
+            match &def.icon {
+                None => assert!(
+                    EXPECTED_WITHOUT_ICON.contains(&key),
+                    "template '{key}' has no icon; add one to \
+                     assets/service-icons/manifest.json or list it as pending"
+                ),
+                Some(icon) => assert!(
+                    icon.is_known_builtin()
+                        || matches!(icon, crate::service_icon::ServiceIcon::Remote { .. }),
+                    "template '{key}' points at '{icon}', which is not a shipped asset"
+                ),
+            }
+        }
     }
 
     #[test]

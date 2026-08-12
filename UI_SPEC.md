@@ -978,6 +978,8 @@ Scope upgrade is deliberately absent from this view — it lives in the service-
 
 A single nav item covering both **service templates** (API blueprints) and **services** (named instances with credentials). Two sub-views via tabs at the top: **My Services** (default) and **Template Catalog**.
 
+**Service marks** are rendered by `ServiceIcon.svelte` wherever a service or template is named: the instances table (20px), the catalog card (32px), the service detail header (40px), the template editor breadcrumb (20px) and the new-service preview (28px). It takes the `icon_url` the API resolved and draws the existing `ServiceTile` monogram **underneath** it — not as an `{:else}` — for the same reason `Avatar` does: a third-party host that hangs fires neither `load` nor `error`, so a branch would leave an empty square for as long as that takes. A service with no icon, or one whose image fails, is therefore always a letter tile and never a gap. The image sits on a fixed light ground in both themes, because a brand mark carries its own colours (several of the shipped ones are near-black) and cannot be restyled — it is served cross-origin and rendered in an `<img>`.
+
 ### My Services
 
 Uses the **Search Bar** (see Design System) with keys: `name`, `template`, `owner`, `status`.

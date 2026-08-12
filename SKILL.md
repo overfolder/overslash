@@ -155,6 +155,10 @@ info:
   title: Acme
   key: acme                      # unique template key, ^[a-z][a-z0-9_-]*$
   category: Productivity
+  # icon: omitted on purpose. A template whose key matches an icon Overslash
+  # ships resolves to it automatically. Set `icon: builtin:<name>` to reuse a
+  # different shipped mark, or `icon: https://…` to host your own — https only.
+
 servers:
   - url: https://api.acme.com    # calls are bounded to this host
 components:

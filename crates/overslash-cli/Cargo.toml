@@ -46,3 +46,8 @@ base64 = "0.23"
 rand = { workspace = true }
 webbrowser = "1"
 urlencoding = "2"
+
+[dev-dependencies]
+# `ServiceExt::oneshot`, so the route-precedence test can drive a Router
+# without binding a port.
+tower = "0.5"

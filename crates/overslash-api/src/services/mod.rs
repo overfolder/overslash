@@ -17,6 +17,7 @@ pub mod events;
 pub mod execution_access;
 pub mod group_ceiling;
 pub mod http_caller;
+pub mod icon_url;
 pub mod identity_path;
 pub mod inbox;
 pub mod invite_adoption;

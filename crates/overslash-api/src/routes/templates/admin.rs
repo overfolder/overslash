@@ -37,6 +37,7 @@ pub(super) async fn list_templates_admin(
             hosts: svc.hosts.clone(),
             action_count: svc.actions.len(),
             tier: "global".into(),
+            icon_url: resolve_icon_url(svc.icon.as_ref(), &state.config.public_url),
             id: None,
             owner_identity_id: None,
             enabled,
@@ -64,6 +65,7 @@ pub(super) async fn list_templates_admin(
             hosts: s.hosts,
             action_count: s.action_count,
             tier: tier.into(),
+            icon_url: resolve_icon_url(s.icon.as_ref(), &state.config.public_url),
             id: Some(t.id),
             owner_identity_id: t.owner_identity_id,
             enabled: true, // org/user templates are always "enabled"

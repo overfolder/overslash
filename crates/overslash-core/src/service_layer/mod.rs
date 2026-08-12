@@ -156,6 +156,9 @@ pub(crate) mod fixtures {
             hosts: vec!["api.github.com".into()],
             category: Some("Dev".into()),
             hidden: false,
+            // Mirrors what `compile_service` produces for this key: the
+            // implicit `builtin:github`, not a declared one.
+            icon: crate::service_icon::ServiceIcon::implicit_for_key("github"),
             auth: vec![],
             actions,
             runtime: Runtime::Http,

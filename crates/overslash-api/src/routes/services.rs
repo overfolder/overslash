@@ -138,8 +138,17 @@ async fn list_services(
                 row.owner_identity_id,
             )
             .await;
+            let icon_url = platform_services::resolve_instance_icon_url(
+                state.db(&ext),
+                &state.registry,
+                &row,
+                row.owner_identity_id,
+                &state.config.public_url,
+            )
+            .await;
             let mut summary = platform_services::row_to_summary(row, groups);
             summary.credentials_status = credentials_status;
+            summary.icon_url = icon_url;
             summaries.push(summary);
         }
         if let Some(conn) = q.connection {

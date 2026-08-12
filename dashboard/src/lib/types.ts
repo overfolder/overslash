@@ -246,6 +246,9 @@ export interface TemplateSummary {
   hosts: string[];
   action_count: number;
   tier: TemplateTier;
+  /** Absolute URL of the catalog icon, resolved server-side (a built-in asset
+   * or an https:// URL a template declared). Absent means render the letter tile. */
+  icon_url?: string | null;
   /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
   hidden?: boolean;
   /** Base template key when this row is a derived layer; absent for standalone/global. */
@@ -351,6 +354,9 @@ export interface TemplateDetail {
   description?: string | null;
   category?: string | null;
   hosts: string[];
+  /** Absolute URL of the catalog icon, resolved server-side (a built-in asset
+   * or an https:// URL a template declared). Absent means render the letter tile. */
+  icon_url?: string | null;
   /** Compiled auth view for rendering the detail/connect UIs without re-parsing. */
   auth: ServiceAuth[];
   /**
@@ -621,6 +627,9 @@ export interface ServiceInstanceSummary {
   template_key: string;
   status: ServiceStatus;
   is_system: boolean;
+  /** Absolute URL of the template's catalog icon, resolved server-side (a built-in asset
+   * or an https:// URL a template declared). Absent means render the letter tile. */
+  icon_url?: string | null;
   owner_identity_id?: string;
   connection_id?: string;
   secret_name?: string;

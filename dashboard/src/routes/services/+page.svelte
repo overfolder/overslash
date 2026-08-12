@@ -16,6 +16,7 @@
 		ServiceStatus,
 		ConnectionSummary
 	} from '$lib/types';
+	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SearchBar, {
@@ -428,7 +429,10 @@
 						{#each sorted as s (s.id)}
 							<tr>
 								<td>
-									<a href={`/services/${s.id}`} class="link">{s.name}</a>
+									<span class="name-cell">
+										<ServiceIcon src={s.icon_url} name={s.name} size={20} />
+										<a href={`/services/${s.id}`} class="link">{s.name}</a>
+									</span>
 								</td>
 								<td>
 									<span class="mono">{s.template_key}</span>
@@ -686,5 +690,11 @@
 		color: var(--color-text-muted, #6b7280);
 		font-size: 0.72rem;
 		line-height: 1.4;
+	}
+	.name-cell {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-width: 0;
 	}
 </style>

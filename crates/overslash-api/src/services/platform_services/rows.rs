@@ -7,6 +7,9 @@ pub fn row_to_summary(
     groups: Vec<ServiceGroupRef>,
 ) -> ServiceInstanceSummary {
     ServiceInstanceSummary {
+        // Set by the caller, which is where the resolved template is in hand —
+        // same as `credentials_status`.
+        icon_url: None,
         id: row.id,
         name: row.name,
         template_source: row.template_source,
@@ -27,6 +30,7 @@ pub fn row_to_summary(
 
 pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
     ServiceInstanceDetail {
+        icon_url: None,
         id: row.id,
         org_id: row.org_id,
         owner_identity_id: row.owner_identity_id,

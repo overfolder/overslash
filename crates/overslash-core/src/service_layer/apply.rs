@@ -160,6 +160,7 @@ pub fn apply_delta(
         hosts,
         category: base.category.clone(),
         hidden: delta.hidden.unwrap_or(base.hidden),
+        icon: delta.icon.clone().or_else(|| base.icon.clone()),
         auth: base.auth.clone(),
         // Credential slots ride with `auth`: a mask may add actions and hosts,
         // never rebind credentials.
@@ -225,10 +226,47 @@ fn url_to_origin(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service_icon::ServiceIcon;
     use crate::service_layer::fixtures::*;
     use crate::service_layer::{ExtensionAction, Extensions, validate_delta};
     use crate::types::Risk;
     use std::collections::HashMap;
+
+    #[test]
+    fn layer_inherits_an_implicit_base_icon() {
+        // The reason the implicit rule resolves at compile rather than at
+        // response time. This layer is keyed `github` here, but in production a
+        // derived layer carries its own key (`acme_github`) for which no asset
+        // exists — resolving any later would find nothing and silently demote
+        // it to a letter tile.
+        let base = base_with(&[("a", Risk::Read)]);
+        assert_eq!(
+            base.icon,
+            Some(ServiceIcon::Builtin {
+                slug: "github".into()
+            })
+        );
+        let (def, _) = apply_delta(&Delta::default(), &base);
+        assert_eq!(def.icon, base.icon);
+    }
+
+    #[test]
+    fn delta_icon_rebrands_the_layer() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            icon: Some(ServiceIcon::Remote {
+                url: "https://cdn.acme.test/logo.svg".into(),
+            }),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(
+            def.icon,
+            Some(ServiceIcon::Remote {
+                url: "https://cdn.acme.test/logo.svg".into()
+            })
+        );
+    }
 
     #[test]
     fn allowlist_intersects() {

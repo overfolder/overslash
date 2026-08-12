@@ -92,3 +92,43 @@ pub async fn run(host: String, port: u16) -> anyhow::Result<()> {
     common::print_banner("web", &public, &health, cfg!(feature = "embed-dashboard"));
     common::serve_router(&addr, app).await
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{Router, body::Body, http::Request, routing::get};
+    use tower::ServiceExt;
+
+    /// The API's `/icons/{file}` and the SPA's `/{*path}` fallback both match an
+    /// icon request. Axum's matchit gives the literal segment priority, so the
+    /// icon handler wins and a missing icon 404s instead of being answered with
+    /// `index.html` at 200 `text/html` — which an `<img>` renders as a broken
+    /// image rather than falling back to the letter tile.
+    ///
+    /// The property under test is route precedence, not the handler, so a stub
+    /// stands in for the real API router (which would need a database).
+    #[tokio::test]
+    async fn the_icons_route_outranks_the_spa_fallback() {
+        let app = Router::new()
+            .route("/icons/{file}", get(|| async { "icon-handler" }))
+            .merge(super::embed::fallback_router());
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/icons/github.svg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(
+            &body[..],
+            b"icon-handler",
+            "the SPA fallback swallowed an icon request"
+        );
+    }
+}

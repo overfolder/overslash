@@ -43,7 +43,7 @@ pub use kernels::{
 pub use rows::{row_to_detail, row_to_summary};
 pub use status::{
     ScopeCoverage, ScopeKnowledge, action_scope_coverage, compute_credentials_status,
-    derive_credentials_status,
+    derive_credentials_status, resolve_instance_icon_url,
 };
 pub use templates::{resolve_template_definition, resolve_template_source};
 pub use types::{
@@ -82,6 +82,7 @@ mod test_fixtures {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Mcp,
@@ -107,6 +108,7 @@ mod test_fixtures {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             // MCP tools carry no per-action required_scopes; scopes live on the
             // service-level oauth block.
@@ -135,6 +137,7 @@ mod test_fixtures {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![ServiceAuth::Secret {
                 template: None,
                 slots: Vec::new(),
@@ -196,6 +199,7 @@ mod test_fixtures {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![ServiceAuth::OAuth {
                 provider: "google".into(),
                 scopes: vec![],

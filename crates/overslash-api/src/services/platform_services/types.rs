@@ -129,6 +129,12 @@ pub struct ServiceInstanceSummary {
     pub template_key: String,
     pub status: String,
     pub is_system: bool,
+    /// Absolute URL of the template's catalog icon. Instances deliberately
+    /// have no icon of their own — an instance is a binding of a template to a
+    /// credential, and two Gmail instances are both Gmail. Omitted when the
+    /// template resolves to nothing renderable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_identity_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -194,6 +200,12 @@ pub struct ServiceInstanceDetail {
     pub name: String,
     pub template_source: String,
     pub template_key: String,
+    /// Absolute URL of the template's catalog icon. Instances deliberately
+    /// have no icon of their own — an instance is a binding of a template to a
+    /// credential, and two Gmail instances are both Gmail. Omitted when the
+    /// template resolves to nothing renderable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub template_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]

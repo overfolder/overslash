@@ -12,7 +12,7 @@ mod action;
 mod auth;
 mod mcp;
 mod resolver;
-mod service_shape;
+pub(crate) mod service_shape;
 mod sql_policy;
 
 use action::{check_action, check_platform_action};
@@ -93,6 +93,7 @@ mod tests {
             hosts: vec!["api.example.com".into()],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![ServiceAuth::Secret {
                 template: None,
                 slots: Vec::new(),
@@ -238,6 +239,7 @@ mod tests {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             actions,
             runtime: Runtime::Mcp,

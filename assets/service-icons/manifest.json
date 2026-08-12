@@ -1,0 +1,76 @@
+{
+  "_comment": [
+    "Source of truth for the built-in service icons. Regenerate with `make service-icons`.",
+    "The map key is the SERVICE TEMPLATE KEY, and the generated file is named after it",
+    "(google_calendar.svg, not googlecalendar.svg). That is what lets a template omit",
+    "`icon:` entirely and still resolve to `builtin:<key>` — see DECISIONS.md.",
+    "",
+    "source forms:",
+    "  simple-icons:<slug>  copied from the pinned simple-icons package; owner/guidelines",
+    "                       metadata is read from the package and folded into NOTICE.md",
+    "  local:<file>         copied from assets/service-icons/local/<file>; requires `owner`",
+    "  pending              no asset shipped. The template falls back to the letter tile.",
+    "                       Requires `owner`, `guidelines` and `note` so the gap is legible."
+  ],
+  "simple_icons_version": "16.28.0",
+  "icons": {
+    "deepwiki": {
+      "source": "local:book.svg",
+      "owner": "Overspiral S.L.",
+      "note": "Generic wiki glyph authored by us. DeepWiki has no mark in simple-icons and we do not ship theirs."
+    },
+    "email": {
+      "source": "local:envelope.svg",
+      "owner": "Overspiral S.L.",
+      "note": "Generic envelope glyph authored by us. Not a vendor mark."
+    },
+    "eventbrite": {
+      "source": "pending",
+      "owner": "Eventbrite, Inc.",
+      "guidelines": "https://www.eventbrite.com/l/for-press/",
+      "note": "No simple-icons entry. Source from the vendor brand page before shipping."
+    },
+    "github": { "source": "simple-icons:github" },
+    "gmail": { "source": "simple-icons:gmail" },
+    "google_calendar": { "source": "simple-icons:googlecalendar" },
+    "google_drive": { "source": "simple-icons:googledrive" },
+    "google_keep": { "source": "simple-icons:googlekeep" },
+    "google_tasks": { "source": "simple-icons:googletasks" },
+    "hubspot": { "source": "simple-icons:hubspot" },
+    "linkedin": {
+      "source": "pending",
+      "owner": "LinkedIn Corporation (Microsoft)",
+      "guidelines": "https://brand.linkedin.com/",
+      "note": "Removed from simple-icons at the brand's request. Source from the vendor brand page before shipping."
+    },
+    "metabase": { "source": "simple-icons:metabase" },
+    "notion": { "source": "simple-icons:notion" },
+    "outlook": {
+      "source": "pending",
+      "owner": "Microsoft Corporation",
+      "guidelines": "https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks",
+      "note": "No Microsoft marks in simple-icons. Source from the vendor brand page before shipping."
+    },
+    "overslash": {
+      "source": "local:overslash.svg",
+      "owner": "Overspiral S.L.",
+      "note": "Our own mark, derived from the dashboard logo."
+    },
+    "resend": { "source": "simple-icons:resend" },
+    "slack": {
+      "source": "pending",
+      "owner": "Slack Technologies, LLC (Salesforce)",
+      "guidelines": "https://slack.com/media-kit",
+      "note": "Removed from simple-icons at the brand's request. Source from the vendor brand page before shipping."
+    },
+    "stripe": { "source": "simple-icons:stripe" },
+    "telegram": { "source": "simple-icons:telegram" },
+    "test_email": {
+      "source": "local:envelope.svg",
+      "owner": "Overspiral S.L.",
+      "note": "Generic envelope glyph authored by us. Not a vendor mark."
+    },
+    "whatsapp": { "source": "simple-icons:whatsapp" },
+    "x": { "source": "simple-icons:x" }
+  }
+}

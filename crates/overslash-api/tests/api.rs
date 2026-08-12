@@ -127,6 +127,7 @@ mod secret_requests;
 mod secrets_chain_visibility;
 mod secrets_dashboard;
 mod service_connection_cleanup;
+mod service_icons;
 mod service_instances;
 mod service_pin_connection;
 mod services_admin_view;

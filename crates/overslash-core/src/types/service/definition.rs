@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::service_icon::ServiceIcon;
+
 use super::action::ServiceAction;
 use super::auth::{ConfigVar, SecretSlot, ServiceAuth};
 
@@ -48,6 +50,12 @@ pub struct ServiceDefinition {
     /// dashboard surfaces show them flagged.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    /// Catalog icon (`info.x-overslash-icon`). Usually implicit: a template
+    /// whose key matches a shipped asset gets `builtin:<key>` without
+    /// declaring anything. Resolved to an absolute URL at the API boundary —
+    /// never rendered from this value directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<ServiceIcon>,
     #[serde(default)]
     pub auth: Vec<ServiceAuth>,
     /// Credential slots this template needs, declared once
@@ -391,6 +399,7 @@ mod tests {
             hosts: vec!["slack.com".into()],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Http,
@@ -441,6 +450,7 @@ mod tests {
             hosts: vec![],
             category: Some("Development".into()),
             hidden: false,
+            icon: None,
             auth: vec![],
             actions,
             runtime: Runtime::Mcp,
