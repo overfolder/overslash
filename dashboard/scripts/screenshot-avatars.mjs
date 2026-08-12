@@ -128,15 +128,23 @@ try {
 	}
 
 	// 1. Members — the table avatars plus the top-bar one, light and dark.
+	//
+	// Not `makeSnapper`'s `theme` option: it stamps `documentElement.dataset`
+	// in an init script, and the app's own theme boot reads `ovs_theme` from
+	// localStorage a moment later and stamps over it — the first run of this
+	// script produced two byte-identical "light" and "dark" files. Seed the
+	// key the store actually reads instead.
 	for (const theme of /** @type {const} */ (['light', 'dark'])) {
-		const { ctx } = await snap.navigateAndSnap(`avatars-members-${theme}`, '/members', {
-			theme,
-			fullPage: false,
-			viewport: { width: 1440, height: 900 },
-			waitFor: async (p) => {
-				await p.locator('table tbody tr').first().waitFor({ timeout: 15_000 });
-			}
-		});
+		const { ctx, page } = await snap.page({ viewport: { width: 1440, height: 900 } });
+		await page.addInitScript((t) => {
+			try {
+				localStorage.setItem('ovs_theme', JSON.stringify(t));
+			} catch {}
+		}, theme);
+		await page.goto(`${session.dashboardUrl}/members`);
+		await page.locator('table tbody tr').first().waitFor({ timeout: 15_000 });
+		await wait(500);
+		await snap.snap(page, `avatars-members-${theme}`, { fullPage: false });
 		await ctx.close();
 	}
 
