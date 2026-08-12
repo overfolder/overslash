@@ -10,7 +10,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{AppState, error::AppError};
 use overslash_core::types::{AuthHeader, InjectAs, SecretRef};
 
-use super::auth::ResolvedAuth;
+use super::auth::{MissingCredentials, ResolvedAuth};
 use super::auth_envelopes::{oauth_error_to_app_error, oauth_error_to_app_error_or_continue};
 
 /// Auto-resolve auth for a service. Uses the identity's OAuth connection when the
@@ -496,7 +496,7 @@ pub(crate) async fn resolve_instance_auth(
     // through; instances with empty `credentials` keep the historical
     // behaviour exactly (steps 2 and 3).
     let mut secret_refs: Vec<SecretRef> = Vec::new();
-    let mut instance_secret_missing = false;
+    let mut missing = MissingCredentials::default();
     // Where this instance's traffic lands — the same derivation the executor
     // uses, so the platform-credential host check below can't disagree with the
     // URL actually dialled. Only consulted for the platform rung.
@@ -578,7 +578,7 @@ pub(crate) async fn resolve_instance_auth(
                             // the caller to bind the credential.
                             None => {
                                 if !slot.optional {
-                                    instance_secret_missing = true;
+                                    missing.add_slot(&slot.key);
                                 }
                                 scheme_unresolved = true;
                                 break;
@@ -594,7 +594,7 @@ pub(crate) async fn resolve_instance_auth(
             // partially-authenticated request downstream.
             if name.is_empty() {
                 if !slot.optional {
-                    instance_secret_missing = true;
+                    missing.add_slot(&slot.key);
                 }
                 scheme_unresolved = true;
                 break;
@@ -628,7 +628,7 @@ pub(crate) async fn resolve_instance_auth(
                 // that reads downstream as a wrong password rather than as
                 // missing configuration.
                 None if var.required => {
-                    instance_secret_missing = true;
+                    missing.add_config(&var.key);
                     scheme_unresolved = true;
                     break;
                 }
@@ -661,7 +661,7 @@ pub(crate) async fn resolve_instance_auth(
     // available. A missing instance-source secret falls through to the
     // auto-resolve / `needs_authentication` path below (matching the historical
     // single-apiKey behaviour: an unbound instance was never partially injected).
-    if !instance_secret_missing && !secret_refs.is_empty() {
+    if missing.is_empty() && !secret_refs.is_empty() {
         return Ok(ResolvedAuth::secrets_only(secret_refs));
     }
 
@@ -683,7 +683,7 @@ pub(crate) async fn resolve_instance_auth(
         return Ok(ResolvedAuth::none());
     }
 
-    resolve_service_auth(
+    let fallback = resolve_service_auth(
         state,
         ext,
         scope,
@@ -692,5 +692,16 @@ pub(crate) async fn resolve_instance_auth(
         explicit_secrets,
         return_url_hint,
     )
-    .await
+    .await?;
+
+    // The fallback only knows OAuth and the env-backed OAuth *client* cascade.
+    // For a secret-backed template it resolves nothing, and without the
+    // diagnosis above the caller would have no way to tell "this template needs
+    // no credentials" from "this instance never got configured" — and would
+    // dial upstream unauthenticated. Carry the missing keys forward so the gate
+    // in `resolve.rs` can name them.
+    if missing.is_empty() || fallback.oauth_injected || !fallback.secrets.is_empty() {
+        return Ok(fallback);
+    }
+    Ok(fallback.with_missing(missing))
 }

@@ -65,6 +65,7 @@ mod identity_repo;
 mod impersonation;
 mod inherit_permissions;
 mod instance_admin;
+mod instance_credentials_envelope;
 mod instance_visibility_consistency;
 mod integration;
 mod invite_adoption;

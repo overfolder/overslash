@@ -185,31 +185,6 @@ likely first caller), teach `collect_body_parameters` to pick the schema for the
 declared media type and give routing an encoder per type, keyed off
 `RequestBodySpec::content_type`.
 
-## An unresolvable instance credential sends an unauthenticated request
-
-When a service instance cannot resolve its credentials — an unbound secret slot,
-or (since D38) a `required` config var with no value — `resolve_instance_auth`
-sets `instance_secret_missing` and deliberately declines to return a partial
-credential set. It then falls through to `resolve_service_auth`, which only
-knows about OAuth and env-backed secrets. For a template like `email` that has
-neither, resolution ends with *no* credentials and the call is sent upstream
-**unauthenticated**, returning whatever the upstream says (a 401 from a real
-overfwd) rather than a `needs_authentication` prompt naming what to configure.
-
-Verified on `email`: both an unbound `mailbox_pass` and a missing `mailbox_user`
-produce an outbound request carrying neither `X-Mailbox-Auth` nor the org
-`Authorization` — correct in that nothing partial or truncated is ever sent, but
-the caller gets a confusing upstream error instead of "go set this field".
-
-The safety property is covered (`email_unbound_mailbox_never_injects_gateway_key_alone`,
-`email_missing_required_config_never_sends_a_truncated_credential`); the UX is
-not. Fixing it means short-circuiting to `needs_authentication` when the template
-declares no OAuth and no env fallback, which changes behaviour for every
-secret-backed template — deliberately out of scope for D38, which only had to
-match the existing unbound-slot contract.
-
----
-
 ## Object-array recipients can't be scoped — `scope_param` names params, not values inside them
 
 `scope_param` now accepts a list with per-entry labels

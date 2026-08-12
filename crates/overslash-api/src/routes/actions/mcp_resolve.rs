@@ -189,6 +189,8 @@ pub(crate) async fn resolve_effective_mcp(
                         required_scopes: scopes.clone(),
                         account_email: None,
                         headless: false,
+                        missing_credentials: Vec::new(),
+                        hint_url: None,
                     });
                 }
             }

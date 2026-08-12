@@ -135,6 +135,8 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
             required_scopes,
             account_email,
             headless,
+            missing_credentials,
+            hint_url,
         } => {
             let mut body = json!({ "status": "needs_authentication" });
             if let Some(s) = service {
@@ -162,6 +164,15 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
                 if let Some(s) = short {
                     body["short"] = json!(s);
                 }
+            }
+            // Mirrors `AppError::into_response`: the secret-backed shape rides
+            // in either branch, since a headless org still needs the field
+            // list even though it gets no dashboard link.
+            if !missing_credentials.is_empty() {
+                body["missing_credentials"] = json!(missing_credentials);
+            }
+            if let Some(url) = hint_url {
+                body["hint_url"] = json!(url);
             }
             Some((StatusCode::OK, Json(body)).into_response())
         }
