@@ -6,6 +6,8 @@
 
 use super::*;
 
+use axum::http::StatusCode;
+
 use crate::services::call_timeout;
 
 use super::replay_http::replay_http;
@@ -19,7 +21,7 @@ pub(super) async fn call_approval(
     scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
-) -> Result<Json<ApprovalResponse>> {
+) -> Result<(StatusCode, Json<ApprovalResponse>)> {
     let approval = scope
         .get_approval(id)
         .await?
@@ -61,6 +63,46 @@ pub(super) async fn call_approval(
         }
         "user"
     };
+
+    // ── Async fork: the call asked to run off the request path, so triggering
+    // it means handing the row to the worker rather than dialling here. The
+    // response is the ordinary approval envelope under a 202, not a second body
+    // shape — the dashboard, MCP and the CLI all already parse this one.
+    //
+    // The flag is re-read rather than trusted from stamp time: an approval
+    // marked `async` on a deployment that has since turned the worker off must
+    // run inline rather than queue a row nothing will ever claim.
+    if approval.is_async() && state.config.async_execution.enabled {
+        if let Some(queued) = scope
+            .enqueue_approval_execution(
+                id,
+                triggered_by,
+                ip.0.as_deref(),
+                state.config.execution_pending_ttl_secs as i64,
+            )
+            .await?
+        {
+            // Deliberately no `mark_execution_viewed` here. The stamp on the
+            // synchronous path is justified by the result riding back in this
+            // response; nothing rides back on a queued call, and stamping would
+            // suppress the `result_unread` signal the agent polls for.
+            let mut response =
+                build_queued_response(&scope, &state.registry, approval, queued).await?;
+            response
+                .decorate_relationship(&scope, auth.identity_id)
+                .await?;
+            return Ok((StatusCode::ACCEPTED, Json(response)));
+        }
+        // Nothing was queued. Either someone got there first — in which case
+        // this is a conflict, not an invitation to dial a second time — or the
+        // approval predates `replay_payload` and has nothing to hand the worker,
+        // which is the one case that falls through to the inline replay below.
+        if let Some(current) = scope.get_execution_by_approval(id).await?
+            && (current.has_request || current.status != "pending")
+        {
+            return Err(execution_conflict_error(Some(current)));
+        }
+    }
 
     // ── Atomic claim: pending → executing. A `None` return means the row
     // isn't available (already executing/terminal) or has expired — we probe
@@ -122,24 +164,35 @@ pub(super) async fn call_approval(
     response
         .decorate_relationship(&scope, auth.identity_id)
         .await?;
-    Ok(Json(response))
+    Ok((StatusCode::OK, Json(response)))
 }
 
-/// Recover a registry-bounded `template_key` for replay metrics from the
-/// approval's permission keys. Keys derive as `{service}:{action}:{arg}` or
-/// `{service}:{METHOD}:{path}` (SPEC §8), so the prefix before the first
-/// `:` is the service key. Anything that doesn't resolve to a registry
-/// entry collapses to `"_unknown"` — same cardinality bound the inline
-/// path applies via `bounded_template_key`.
-fn replay_template_key(registry: &ServiceRegistry, permission_keys: &[String]) -> String {
-    let service = permission_keys
-        .first()
-        .and_then(|k| k.split(':').next())
-        .filter(|s| !s.is_empty());
-    match service {
-        Some(s) if registry.get(s).is_some() => s.to_string(),
-        _ => "_unknown".to_string(),
-    }
+/// Render the 202 for a replay that was just handed to the worker.
+///
+/// The embedded `execution` is the queued row itself, so the caller gets the id
+/// to poll (`GET /v1/executions/{id}`) and `queued: true` to tell "waiting on a
+/// worker" from "waiting on you to trigger it".
+async fn build_queued_response(
+    scope: &OrgScope,
+    registry: &ServiceRegistry,
+    approval: overslash_db::repos::approval::ApprovalRow,
+    queued: ExecutionRow,
+) -> Result<ApprovalResponse> {
+    let (identity_path, identity_path_ids) =
+        crate::services::identity_path::build_for_identity(scope, approval.identity_id)
+            .await
+            .unwrap_or(None)
+            .map(|(p, ids)| (Some(p), ids))
+            .unwrap_or((None, Vec::new()));
+    let mut response = ApprovalResponse::from_row(
+        approval,
+        identity_path,
+        identity_path_ids,
+        Some(queued),
+        registry,
+    );
+    response.poll_after_ms = Some(POLL_AFTER_MS);
+    Ok(response)
 }
 
 // Validator: if any step fails, finalize the row and surface the error.
@@ -291,7 +344,7 @@ pub(super) async fn execute_claimed_approval(
     // record (they were invisible there before). The original call shape
     // isn't stored, so `mode = "replay"`; the template key is recovered from
     // the approval's permission keys.
-    let replay_tpl = replay_template_key(&state.registry, &approval.permission_keys);
+    let replay_tpl = tail::replay_template_key(&state.registry, &approval.permission_keys);
     let replay_start = std::time::Instant::now();
 
     // Each branch produces (finalised, succeeded, upstream_errored,
@@ -355,225 +408,23 @@ pub(super) async fn execute_claimed_approval(
         }
     };
 
-    // Replays were previously invisible in execution metrics — record them
-    // with the same status vocabulary the inline path uses so dashboards
-    // can split inline vs replay volume and an upstream failing during
-    // replay still shows as `upstream_error`, not silent success.
-    let replay_status = if !succeeded {
-        "failed"
-    } else if upstream_errored {
-        "upstream_error"
-    } else {
-        "called"
-    };
-    overslash_metrics::actions::record_execution(
-        &replay_tpl,
-        "replay",
-        replay_status,
-        replay_start.elapsed(),
-    );
-
-    // ── Rule creation for Allow & Remember. Only on successful replay —
-    // a failed replay leaves no rule so the reviewer can retry after fixing
-    // the underlying issue.
-    let mut cascaded_approval_ids: Vec<Uuid> = Vec::new();
-    if succeeded && finalised.remember {
-        let placement_id =
-            crate::services::permission_chain::rule_placement_for(scope, approval.identity_id)
-                .await?;
-        // Dedupe defensively: a broad tier used to arrive with the same key
-        // once per originating permission key (an N-recipient send collapsing
-        // to one `svc:send:*`), and rows stored before that fix — or a direct
-        // API caller — can still carry repeats. One key, one rule.
-        let keys_owned: Vec<String> = {
-            let mut seen = std::collections::HashSet::new();
-            finalised
-                .remember_keys
-                .clone()
-                .unwrap_or_else(|| approval.permission_keys.clone())
-                .into_iter()
-                .filter(|k| seen.insert(k.clone()))
-                .collect()
-        };
-        for key in &keys_owned {
-            let _ = scope
-                .create_permission_rule(placement_id, key, "allow", finalised.remember_rule_ttl)
-                .await;
-        }
-
-        // Cascade: re-evaluate other pending approvals under placement_id
-        // that the new rules might now satisfy. Best-effort — never fail the
-        // /call request just because the cascade hit a snag.
-        if !keys_owned.is_empty() {
-            let cascaded = match crate::services::permission_chain::cascade_resolve(
-                state,
-                scope,
-                placement_id,
-                id,
-            )
-            .await
-            {
-                Ok(resolved) => resolved,
-                Err(e) => {
-                    tracing::warn!(
-                        approval_id = %id,
-                        "cascade_resolve failed: {e}"
-                    );
-                    Vec::new()
-                }
-            };
-
-            // Auto-call each cascaded approval whose *own* requesting agent
-            // has `auto_call_on_approve` set, mirroring the `/resolve` path.
-            // Cascaded executions carry `remember=false`, so these replays
-            // can never write rules or cascade further. Lookup failures
-            // degrade to manual-only, same as `/resolve`.
-            for c in &cascaded {
-                // No pending execution row (best-effort creation failed in
-                // the cascade) → nothing to claim.
-                if c.execution_id.is_none() {
-                    continue;
-                }
-                let auto_call_enabled = match overslash_db::repos::identity::get_by_id(
-                    state.db(ext),
-                    c.approval.org_id,
-                    c.approval.identity_id,
-                )
-                .await
-                {
-                    Ok(Some(i)) => i.auto_call_on_approve,
-                    Ok(None) => {
-                        tracing::warn!(
-                            approval_id = %c.approval.id,
-                            "cascade auto-call identity lookup returned no row"
-                        );
-                        false
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            approval_id = %c.approval.id,
-                            "cascade auto-call identity lookup failed: {e}"
-                        );
-                        false
-                    }
-                };
-                if !auto_call_enabled {
-                    continue;
-                }
-                // Same elicitation suppression as `/resolve`: an in-flight
-                // elicitation drives its own /resolve → /call round-trip.
-                let elicitation_active =
-                    match overslash_db::repos::mcp_elicitation::has_active_for_approval(
-                        state.db(ext),
-                        c.approval.id,
-                    )
-                    .await
-                    {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!(
-                                approval_id = %c.approval.id,
-                                "cascade auto-call elicitation lookup failed: {e}"
-                            );
-                            false
-                        }
-                    };
-                if elicitation_active {
-                    continue;
-                }
-                // There is no human resolver here — attribute the execution
-                // audit to the cascaded approval's subject, consistent with
-                // `approval.cascade_resolved`.
-                spawn_auto_call(
-                    state.clone(),
-                    ext.clone(),
-                    c.approval.clone(),
-                    ip.map(str::to_string),
-                    c.approval.org_id,
-                    Some(c.approval.identity_id),
-                );
-            }
-
-            cascaded_approval_ids = cascaded.into_iter().map(|c| c.approval.id).collect();
-        }
-    }
-
-    // ── Audit + webhook.
-    let audit_action = if succeeded {
-        "approval.executed"
-    } else {
-        "approval.execution_failed"
-    };
-    let _ = scope
-        .log_audit_tagged(
-            AuditEntry {
-                org_id: audit_org_id,
-                identity_id: audit_identity_id,
-                action: audit_action,
-                resource_type: Some("approval"),
-                resource_id: Some(id),
-                detail: serde_json::json!({
-                    "execution_id": execution_id,
-                    "triggered_by": triggered_by,
-                    "status": finalised.status,
-                    "error": finalised.error,
-                    "cascaded_approval_ids": &cascaded_approval_ids,
-                }),
-                description: None,
-                ip_address: ip,
-            },
-            &replay_tags(approval, !succeeded),
-        )
-        .await;
-
-    {
-        let event_type = if succeeded {
-            crate::services::events::EventType::ApprovalExecuted
-        } else {
-            crate::services::events::EventType::ApprovalExecutionFailed
-        };
-        let mut payload = serde_json::json!({
-            "approval_id": id,
-            "execution_id": execution_id,
-            "status": finalised.status,
-            "triggered_by": triggered_by,
-            "error": finalised.error,
-            "summary": result_summary,
-        });
-        // Auto-fired executions ship the result body in the webhook so
-        // white-label platforms can render the outcome without a follow-up
-        // `GET /v1/approvals/{id}/execution`. Manual (`agent`/`user`) calls
-        // omit it — the caller already received the response in-band on
-        // their `POST /v1/approvals/{id}/call`. Apply the same
-        // `truncate_json_value` cap used by `ExecutionSummary::from` so a
-        // multi-megabyte upstream body can't blow past subscriber size
-        // limits or stress the webhook dispatcher.
-        if triggered_by == "auto"
-            && succeeded
-            && let Some(result) = finalised.result.clone()
-        {
-            payload
-                .as_object_mut()
-                .expect("payload is a json object")
-                .insert("result".into(), truncate_json_value(result));
-        }
-        let audience = crate::services::events::audience::for_approval(
-            scope,
-            approval.identity_id,
-            Some(approval.current_resolver_identity_id),
-        )
-        .await;
-        crate::services::events::emit(
-            state.db_pool(ext),
-            state.http_client.clone(),
-            crate::services::events::EventDraft {
-                org_id: audit_org_id,
-                event_type,
-                payload,
-                audience,
-            },
-        );
-    }
+    let cascaded_approval_ids = super::tail::run(super::tail::ApprovalTail {
+        state,
+        ext,
+        scope,
+        approval,
+        finalised: &finalised,
+        succeeded,
+        upstream_errored,
+        result_summary,
+        triggered_by,
+        ip,
+        audit_org_id,
+        audit_identity_id,
+        metrics_tpl: &replay_tpl,
+        elapsed: replay_start.elapsed(),
+    })
+    .await?;
 
     Ok((finalised, succeeded, cascaded_approval_ids))
 }
@@ -617,10 +468,24 @@ pub(super) async fn cancel_approval_execution(
         }
     }
 
-    let cancelled = scope.cancel_pending_execution(id).await?;
-    let Some(cancelled) = cancelled else {
-        let current = scope.get_execution_by_approval(id).await?;
-        return Err(execution_conflict_error(current));
+    // Two shapes of cancel. A row still waiting — for a trigger, or for a worker
+    // to claim it — flips to `cancelled` here and now. A row a worker is already
+    // running can only be *asked* to stop: the flag is observed on the next
+    // heartbeat, and the worker emits the terminal event when it does. Without
+    // this fall-through the button would stop working exactly when a background
+    // job is running, which is when a user most wants it.
+    let (cancelled, cooperative) = match scope.cancel_pending_execution(id).await? {
+        Some(row) => (row, false),
+        None => match scope.get_execution_by_approval(id).await? {
+            Some(current) if current.has_request && current.status == "executing" => {
+                let requested = scope
+                    .request_execution_cancel(current.id)
+                    .await?
+                    .ok_or_else(|| execution_conflict_error(Some(current)))?;
+                (requested, true)
+            }
+            other => return Err(execution_conflict_error(other)),
+        },
     };
     let execution_id = cancelled.id;
 
@@ -633,13 +498,18 @@ pub(super) async fn cancel_approval_execution(
             resource_id: Some(id),
             detail: serde_json::json!({
                 "execution_id": execution_id,
+                "cooperative": cooperative,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
         })
         .await;
 
-    {
+    // Only the immediate branch announces a terminal state. On the cooperative
+    // one the row is still `executing`; the worker emits `execution.cancelled`
+    // when it actually stops, and emitting both here would show a cancelled row
+    // that keeps running for another heartbeat.
+    if !cooperative {
         let audience = crate::services::events::audience::for_approval(
             &scope,
             approval.identity_id,
@@ -677,18 +547,4 @@ pub(super) async fn cancel_approval_execution(
     );
     resp.decorate_relationship(&scope, auth.identity_id).await?;
     Ok(Json(resp))
-}
-
-/// The approval's tags plus the replay's outcome.
-///
-/// Replay never re-classifies — it re-executes a stored payload — so the
-/// approval's tag set is authoritative and only the outcome is new
-/// information. Shared by all three runtime branches (the HTTP path here, plus
-/// `replay_mcp` and `replay_platform`) so a replayed MCP call and a replayed
-/// HTTP call can never end up tagged by different rules.
-pub(super) fn replay_tags(
-    approval: &overslash_db::repos::approval::ApprovalRow,
-    is_error: bool,
-) -> Vec<String> {
-    overslash_core::tags::with_outcome(approval.tags.clone(), is_error)
 }

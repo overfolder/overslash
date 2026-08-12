@@ -242,18 +242,19 @@ async fn test_archive_revokes_api_keys_and_expires_approvals() {
     let token = Uuid::new_v4().to_string();
     let test_scope = overslash_db::scopes::OrgScope::new(org_uuid, pool.clone());
     test_scope
-        .create_approval(
-            sub_id,
-            sub_id,
-            "test",
-            None,
-            None,
-            None,
-            &[],
-            &token,
-            time::OffsetDateTime::now_utc() + time::Duration::hours(2),
-            &[],
-        )
+        .create_approval(overslash_db::repos::approval::CreateApproval {
+            identity_id: sub_id,
+            current_resolver_identity_id: sub_id,
+            action_summary: "test",
+            action_detail: None,
+            disclosed_fields: None,
+            replay_payload: None,
+            permission_keys: &[],
+            token: &token,
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(2),
+            tags: &[],
+            execution_mode: "sync",
+        })
         .await
         .unwrap();
 

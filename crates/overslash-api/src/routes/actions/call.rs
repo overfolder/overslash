@@ -59,6 +59,17 @@ pub(super) async fn call_action_impl(
         is_async,
     } = super::flags::validate_request(&req)?;
 
+    // Refused here, above the permission gate, rather than only at the async
+    // fork below it. The fork sits *under* the gate, so on a flag-off
+    // deployment a gated async call would otherwise file an approval stamped
+    // `async` that no worker will ever drain — and its caller would never learn
+    // async was refused.
+    if is_async && !state.config.async_execution.enabled {
+        return Err(AppError::BadRequest(
+            "execution: \"async\" is not enabled on this deployment".into(),
+        ));
+    }
+
     // Validate filter syntax before any upstream call so a malformed
     // expression is a clean 400 — not a wasted upstream quota burn.
     // NOTE: More expensive that ceiling perms check, might move after it
@@ -378,7 +389,17 @@ pub(super) async fn call_action_impl(
                 .map(|v| v as u64),
         },
         state.config.call_timeout_ms,
-        state.config.call_timeout_max_ms,
+        // Per-mode ceiling (D62). The synchronous maximum exists to sit under
+        // Cloud Run's request cap, and no proxy is counting for an async call.
+        // It has to be chosen *here* rather than at the fork below: `resolve`
+        // errors on a per-call value above the ceiling, and the worker's
+        // `reclamp_stored` only ever clamps down — so a budget refused here can
+        // never be recovered later, on the direct path or through an approval.
+        if is_async {
+            state.config.async_execution.call_timeout_max_ms
+        } else {
+            state.config.call_timeout_max_ms
+        },
     )
     .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
@@ -407,6 +428,7 @@ pub(super) async fn call_action_impl(
         effective,
         pre_meta.needs_gate,
         skip_layer2,
+        is_async,
         call_timeout,
     )
     .await?

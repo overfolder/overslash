@@ -89,6 +89,10 @@ enum Command {
     /// that marks the output as read, so it stops showing up in
     /// `overslash inbox`.
     ///
+    /// A gated call made with `execution: "async"` runs on the worker once it
+    /// is triggered, so it stays "in flight" for a while: poll with
+    /// `until overslash get-result "$id"; do sleep 2; done`.
+    ///
     /// Exit code: 0 = executed, 1 = failed/cancelled/expired or still in
     /// flight, 2 = error.
     #[command(name = "get-result")]

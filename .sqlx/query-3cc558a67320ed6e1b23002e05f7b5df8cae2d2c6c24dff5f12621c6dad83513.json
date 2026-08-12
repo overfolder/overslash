@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) AS \"n!\" FROM audit_log\n          WHERE org_id = $1 AND action = 'action.executed'\n            AND detail->>'replayed_from_approval' = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3cc558a67320ed6e1b23002e05f7b5df8cae2d2c6c24dff5f12621c6dad83513"
+}

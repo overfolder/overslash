@@ -98,10 +98,17 @@ pub(crate) async fn create_pending(
     .await
 }
 
-/// Atomically claim a pending execution for replay. Returns `Some(row)` on
-/// win (status was 'pending' AND not yet expired), `None` on any other state.
-/// The caller must inspect the current row via `find_by_approval` to produce
-/// a specific error.
+/// Atomically claim a pending execution for replay *on this request*. Returns
+/// `Some(row)` on win (status was 'pending', not yet expired, and not queued for
+/// the worker), `None` on any other state. The caller must inspect the current
+/// row via `find_by_approval` to produce a specific error.
+///
+/// `request IS NULL` is what makes this and [`enqueue_from_approval`] mutually
+/// exclusive. The enqueue leaves the row `pending` — exactly the state this
+/// claim accepts — so without the predicate a manual `POST /approvals/{id}/call`
+/// could dial inline while a worker dials the same row. An action call is not
+/// idempotent and there is no idempotency key, so the two triggers have to be
+/// excluded by predicate rather than by timing.
 pub(crate) async fn claim_for_execution(
     pool: &PgPool,
     org_id: Uuid,
@@ -118,6 +125,7 @@ pub(crate) async fn claim_for_execution(
             AND org_id = $2
             AND status = 'pending'
             AND expires_at > now()
+            AND request IS NULL
           RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags, identity_id, (request IS NOT NULL) AS \"has_request!\", service_key, service_instance_id, lease_expires_at, worker_id, attempts, cancel_requested",
         approval_id,
         org_id,
@@ -412,47 +420,57 @@ pub(crate) async fn create_async_direct(
     .await
 }
 
-/// Create the queued row for a gated call that was approved and must run async.
+/// Hand an approved gated call to the async worker: stamp the approval's stored
+/// payload onto its pending execution row so the claim loop can take it.
 ///
-/// Same `INSERT … SELECT` shape as [`create_pending`], but it also lifts the
-/// approval's `replay_payload` into `request` so the worker has exactly one
-/// payload source and never joins back to `approvals`.
+/// The counterpart of [`claim_for_execution`], and deliberately the same verb at
+/// the same point in the lifecycle — both are "the replay was triggered". Which
+/// one runs is decided by `approvals.execution_mode`, and the two are mutually
+/// exclusive by predicate (see the `request IS NULL` guard on the claim).
 ///
-/// `a.replay_payload IS NOT NULL` in the `WHERE` means a legacy approval with
-/// no stored payload yields `RowNotFound`, and the caller falls back to
-/// creating a synchronous pending row.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn create_pending_async_from_approval(
+/// `expires_at` is extended for the same reason [`release_async`] extends it: the
+/// row was given its queue deadline when the approval was resolved, so one
+/// triggered late in that window would otherwise be handed to the worker
+/// already-dying and swept by [`expire_stale`] before any worker could claim it.
+///
+/// `None` means the row was not enqueueable — already claimed, cancelled,
+/// terminal, expired, already queued, or the approval predates `replay_payload`
+/// and has nothing to stamp. The caller disambiguates via `find_by_approval`;
+/// the last case is the one that falls back to the inline replay.
+pub(crate) async fn enqueue_from_approval(
     pool: &PgPool,
-    approval_id: Uuid,
     org_id: Uuid,
-    remember: bool,
-    remember_keys: Option<&[String]>,
-    remember_rule_ttl: Option<OffsetDateTime>,
-    expires_at: OffsetDateTime,
-) -> Result<ExecutionRow, sqlx::Error> {
+    approval_id: Uuid,
+    triggered_by: &str,
+    client_ip: Option<&str>,
+    queue_ttl_secs: i64,
+) -> Result<Option<ExecutionRow>, sqlx::Error> {
     sqlx::query_as!(
         ExecutionRow,
-        "INSERT INTO executions
-             (approval_id, org_id, status, remember, remember_keys, remember_rule_ttl,
-              expires_at, tags, identity_id, request, service_key, service_instance_id,
-              triggered_by)
-         SELECT $1, $2, 'pending', $3, $4, $5, $6, a.tags, a.identity_id,
-                a.replay_payload,
-                a.replay_payload->>'service_key',
-                (a.replay_payload->>'instance_id')::uuid,
-                'async'
+        "UPDATE executions e
+            SET request             = a.replay_payload,
+                service_key         = a.replay_payload->>'service_key',
+                service_instance_id = (a.replay_payload->>'instance_id')::uuid,
+                description         = a.action_summary,
+                client_ip           = $4,
+                triggered_by        = $3,
+                expires_at = GREATEST(e.expires_at, now() + make_interval(secs => $5))
            FROM approvals a
-          WHERE a.id = $1 AND a.org_id = $2 AND a.replay_payload IS NOT NULL
-         RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags, identity_id, (request IS NOT NULL) AS \"has_request!\", service_key, service_instance_id, lease_expires_at, worker_id, attempts, cancel_requested",
+          WHERE a.id = e.approval_id
+            AND e.approval_id = $1
+            AND e.org_id = $2
+            AND e.status = 'pending'
+            AND e.expires_at > now()
+            AND e.request IS NULL
+            AND a.replay_payload IS NOT NULL
+         RETURNING e.id, e.approval_id, e.org_id, e.status, e.remember, e.remember_keys, e.remember_rule_ttl, e.result, e.error, e.triggered_by, e.started_at, e.completed_at, e.expires_at, e.created_at, e.result_viewed_at, e.tags, e.identity_id, (e.request IS NOT NULL) AS \"has_request!\", e.service_key, e.service_instance_id, e.lease_expires_at, e.worker_id, e.attempts, e.cancel_requested",
         approval_id,
         org_id,
-        remember,
-        remember_keys as Option<&[String]>,
-        remember_rule_ttl,
-        expires_at,
+        triggered_by,
+        client_ip,
+        queue_ttl_secs as f64,
     )
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
 }
 

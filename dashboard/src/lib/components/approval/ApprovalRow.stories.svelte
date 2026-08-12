@@ -37,6 +37,7 @@
 		action_detail_size_bytes: 0,
 		disclosed_fields: null,
 		status: 'pending',
+		execution_mode: 'sync',
 		token: 'tok',
 		expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
 		created_at: new Date(Date.now() - 2 * 60_000).toISOString(),
@@ -69,6 +70,10 @@
 	args={{ approval: { ...base, current_resolver_identity_id: 'idn_user' } }}
 />
 
+<!-- Asked to run in the background: the reviewer is told before approving that
+     the result will not land on this page. -->
+<Story name="RunsInBackground" args={{ approval: { ...base, execution_mode: 'async' } }} />
+
 <!-- Allowed but deferred: the row shows the execution state instead of the
      three buttons, with Call now / Cancel. -->
 <Story
@@ -80,6 +85,28 @@
 			execution: {
 				id: 'exe_1',
 				status: 'pending',
+				created_at: new Date().toISOString(),
+				expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+				output_read: false
+			}
+		},
+		clickable: false
+	}}
+/>
+
+<!-- Queued on the async worker: `pending`, but there is nothing to trigger. -->
+<Story
+	name="QueuedOnWorker"
+	args={{
+		approval: {
+			...base,
+			status: 'allowed',
+			execution_mode: 'async',
+			execution: {
+				id: 'exe_2',
+				status: 'pending',
+				queued: true,
+				triggered_by: 'agent',
 				created_at: new Date().toISOString(),
 				expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
 				output_read: false

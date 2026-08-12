@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE executions\n            SET status = 'executing',\n                triggered_by = $3,\n                started_at = now()\n          WHERE approval_id = $1\n            AND org_id = $2\n            AND status = 'pending'\n            AND expires_at > now()\n          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags, identity_id, (request IS NOT NULL) AS \"has_request!\", service_key, service_instance_id, lease_expires_at, worker_id, attempts, cancel_requested",
+  "query": "UPDATE executions e\n            SET request             = a.replay_payload,\n                service_key         = a.replay_payload->>'service_key',\n                service_instance_id = (a.replay_payload->>'instance_id')::uuid,\n                description         = a.action_summary,\n                client_ip           = $4,\n                triggered_by        = $3,\n                expires_at = GREATEST(e.expires_at, now() + make_interval(secs => $5))\n           FROM approvals a\n          WHERE a.id = e.approval_id\n            AND e.approval_id = $1\n            AND e.org_id = $2\n            AND e.status = 'pending'\n            AND e.expires_at > now()\n            AND e.request IS NULL\n            AND a.replay_payload IS NOT NULL\n         RETURNING e.id, e.approval_id, e.org_id, e.status, e.remember, e.remember_keys, e.remember_rule_ttl, e.result, e.error, e.triggered_by, e.started_at, e.completed_at, e.expires_at, e.created_at, e.result_viewed_at, e.tags, e.identity_id, (e.request IS NOT NULL) AS \"has_request!\", e.service_key, e.service_instance_id, e.lease_expires_at, e.worker_id, e.attempts, e.cancel_requested",
   "describe": {
     "columns": [
       {
@@ -267,7 +267,9 @@
       "Left": [
         "Uuid",
         "Uuid",
-        "Text"
+        "Text",
+        "Text",
+        "Float8"
       ]
     },
     "nullable": [
@@ -297,5 +299,5 @@
       false
     ]
   },
-  "hash": "be4c114e97c47df6e8e4d32fa6c552d8dd7a6f85fb0dcbce24404f317f872121"
+  "hash": "5aa3506da735c317cb7bf6f899fef1499e3e2415ed66c34959a514686c387ed8"
 }

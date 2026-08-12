@@ -104,25 +104,23 @@ impl OrgScope {
         crate::repos::execution::create_async_direct(self.db(), input).await
     }
 
-    /// Queue an approved gated call that must run async. Returns
-    /// `RowNotFound` for a legacy approval with no stored payload, which the
-    /// caller treats as "fall back to a synchronous pending row".
-    pub async fn create_pending_execution_async(
+    /// Hand an approved gated call to the async worker. `None` when the row is
+    /// no longer enqueueable — see `enqueue_from_approval`; the "approval
+    /// predates `replay_payload`" case is what falls back to the inline replay.
+    pub async fn enqueue_approval_execution(
         &self,
         approval_id: Uuid,
-        remember: bool,
-        remember_keys: Option<&[String]>,
-        remember_rule_ttl: Option<OffsetDateTime>,
-        expires_at: OffsetDateTime,
-    ) -> Result<ExecutionRow, sqlx::Error> {
-        crate::repos::execution::create_pending_async_from_approval(
+        triggered_by: &str,
+        client_ip: Option<&str>,
+        queue_ttl_secs: i64,
+    ) -> Result<Option<ExecutionRow>, sqlx::Error> {
+        crate::repos::execution::enqueue_from_approval(
             self.db(),
-            approval_id,
             self.org_id(),
-            remember,
-            remember_keys,
-            remember_rule_ttl,
-            expires_at,
+            approval_id,
+            triggered_by,
+            client_ip,
+            queue_ttl_secs,
         )
         .await
     }

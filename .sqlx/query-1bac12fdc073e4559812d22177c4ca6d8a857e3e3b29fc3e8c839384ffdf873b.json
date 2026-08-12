@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO approvals (id, org_id, identity_id, action_summary, permission_keys,\n                                status, token, expires_at, current_resolver_identity_id,\n                                execution_mode)\n         VALUES ($1, $2, $3, 'gated then queued', '{}', 'allowed', $4,\n                 now() + interval '1 hour', $3, 'async')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1bac12fdc073e4559812d22177c4ca6d8a857e3e3b29fc3e8c839384ffdf873b"
+}

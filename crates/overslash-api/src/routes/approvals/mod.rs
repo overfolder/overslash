@@ -45,6 +45,13 @@ const MAX_ACTION_DETAIL_BYTES: usize = 100 * 1024;
 /// dashboard.
 const MAX_EXECUTION_RESULT_BYTES: usize = 256 * 1024;
 
+/// How long a caller should wait before polling a freshly-queued execution.
+/// One worker tick plus a little: polling sooner than the loop can possibly
+/// have claimed the row just burns a request. Shared by the direct async 202
+/// (`routes::actions::async_accept`) and the gated one below, so the two
+/// cannot drift.
+pub(crate) const POLL_AFTER_MS: u64 = 2_500;
+
 mod dto;
 mod read;
 mod replay;
@@ -52,6 +59,7 @@ mod replay_http;
 mod replay_mcp;
 mod replay_platform;
 mod resolve;
+mod tail;
 
 use dto::*;
 use read::{get_approval, get_execution, list_approvals};
@@ -61,6 +69,11 @@ use resolve::resolve_approval;
 // `routes::actions` renders the same inline `pending_approval` envelope and
 // must derive identical risk / action-detail strings.
 pub(crate) use dto::{render_action_detail, risk_class};
+
+// The async worker runs the same post-execution tail the inline replay runs —
+// see `tail` for why an approved call must not owe different things depending
+// on which trigger dialled it.
+pub(crate) use tail::{ApprovalTail, replay_template_key, run as run_approval_tail};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -106,6 +119,12 @@ pub(crate) struct ExecutionSummary {
     /// `result_viewed_at`). Drives the "called but output unread"
     /// pending-calls surface.
     output_read: bool,
+    /// This execution runs on the async worker rather than on a request
+    /// (D62/D66). It changes what `pending` *means*: "queued, nothing for you
+    /// to do" instead of "approved, waiting for you to trigger it" — which is
+    /// the distinction `services::inbox` and the dashboard both branch on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) queued: bool,
     /// True when policy hid the body: the viewer is not the requester, not in
     /// their chain, and not an org admin. `result` and `error` are omitted.
     /// Rendered as "hidden", never as empty — an empty panel reads as a bug
@@ -131,6 +150,7 @@ impl ExecutionSummary {
             None
         };
         let output_read = r.result_viewed_at.is_some();
+        let queued = r.has_request;
         let result = r.result.map(truncate_json_value);
         Self {
             id: r.id,
@@ -145,6 +165,7 @@ impl ExecutionSummary {
             runtime,
             http_status_code,
             output_read,
+            queued,
             // Callers decide visibility; `from_row` never hides on its own.
             result_redacted: false,
         }
@@ -195,6 +216,16 @@ struct ApprovalResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     disclosed_fields: Option<serde_json::Value>,
     status: String,
+    /// `sync` | `async` — whether an approved replay runs on the connection
+    /// that triggers it or is queued for the worker. Copied from
+    /// `approvals.execution_mode`, which is stamped from the original call's
+    /// `execution` mode. Reviewers see it before they approve; the dashboard
+    /// uses it to say "this one runs in the background".
+    execution_mode: String,
+    /// Suggested delay before the first poll, ms. Present only on the
+    /// `POST /v1/approvals/{id}/call` that queued the replay.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    poll_after_ms: Option<u64>,
     token: String,
     expires_at: String,
     created_at: String,
@@ -257,6 +288,8 @@ impl ApprovalResponse {
             action_detail_size_bytes,
             disclosed_fields: r.disclosed_fields,
             status: r.status,
+            execution_mode: r.execution_mode,
+            poll_after_ms: None,
             token: r.token,
             expires_at: fmt_time(r.expires_at),
             created_at: fmt_time(r.created_at),
@@ -316,16 +349,21 @@ async fn build_response(
     Ok(resp)
 }
 
-/// Spawn the background auto-call-on-approve task for `approval`: atomically
-/// claim its pending execution with `triggered_by="auto"` and run it to
-/// terminal state. Losing the claim is fine — it means a manual `/call` beat
+/// Spawn the background auto-call-on-approve task for `approval`: trigger its
+/// pending execution with `triggered_by="auto"` and see it through to a
+/// terminal state. Losing the trigger is fine — it means a manual `/call` beat
 /// us to it. Shared between the `/resolve` path and cascade resolution.
+///
+/// A call gated with `execution: "async"` is *queued* here rather than dialled:
+/// the branch lives inside this helper rather than at its three call sites so a
+/// cascaded approval that is itself async cannot quietly fall through to the
+/// inline path.
 ///
 /// Deliberately a plain fn (not `async`) that boxes the
 /// `execute_claimed_approval` future as `dyn Future`: cascade resolution makes
-/// `execute_claimed_approval` reach itself through this helper, and the type
-/// erasure is what stops the compiler from chasing an infinitely recursive
-/// opaque future type.
+/// `execute_claimed_approval` reach itself through the shared tail and this
+/// helper, and the type erasure is what stops the compiler from chasing an
+/// infinitely recursive opaque future type.
 fn spawn_auto_call(
     state: AppState,
     ext: axum::http::Extensions,
@@ -336,6 +374,43 @@ fn spawn_auto_call(
 ) {
     tokio::spawn(async move {
         let scope = OrgScope::new(approval.org_id, state.db_pool(&ext));
+
+        // Queued, not dialled. Every arm returns: falling through to the claim
+        // after a failed or lost enqueue is how the same call reaches the
+        // upstream twice, and an action call has no idempotency key.
+        //
+        // The flag is re-read here, not trusted from stamp time: an approval
+        // marked `async` on a deployment that has since turned the worker off
+        // must run inline rather than queue a row nothing will ever claim.
+        if approval.is_async() && state.config.async_execution.enabled {
+            match scope
+                .enqueue_approval_execution(
+                    approval.id,
+                    "auto",
+                    ip.as_deref(),
+                    state.config.execution_pending_ttl_secs as i64,
+                )
+                .await
+            {
+                Ok(Some(row)) => tracing::debug!(
+                    approval_id = %approval.id, execution_id = %row.id,
+                    "auto-call queued for the async worker"
+                ),
+                // Already claimed, cancelled, terminal — or a pre-`replay_payload`
+                // approval, whose fallback lives on `POST /approvals/{id}/call`
+                // where there is a caller to hand the result to.
+                Ok(None) => tracing::debug!(
+                    approval_id = %approval.id,
+                    "auto-call enqueue found no pending row to queue"
+                ),
+                Err(e) => tracing::warn!(
+                    approval_id = %approval.id,
+                    "auto-call enqueue failed: {e}"
+                ),
+            }
+            return;
+        }
+
         let claim = match scope.claim_execution(approval.id, "auto").await {
             Ok(Some(row)) => row,
             Ok(None) => return,
@@ -377,9 +452,18 @@ fn execution_conflict_error(current: Option<ExecutionRow>) -> AppError {
         Some(row) => match row.status.as_str() {
             "pending" => {
                 // The row is still pending but the guard failed — either the
-                // expiry has passed or it was claimed concurrently.
+                // expiry has passed, it was claimed concurrently, or it is
+                // already queued for the async worker (which leaves the row
+                // `pending`, so this is the only place that reads as a
+                // conflict without one).
                 if row.expires_at <= time::OffsetDateTime::now_utc() {
                     AppError::Gone("pending execution has expired".into())
+                } else if row.has_request {
+                    AppError::Conflict(
+                        "execution is already queued to run in the background — \
+                         poll GET /v1/executions/{id} for the result"
+                            .into(),
+                    )
                 } else {
                     AppError::Conflict("execution is being processed concurrently".into())
                 }

@@ -48,13 +48,32 @@ pub async fn execute(
     let scope = system.scope_for_org(claim.org_id);
     let worker_id = super::worker_id();
 
+    // Approval-backed rows are gated calls that asked for `execution: "async"`
+    // (D66). Loaded once, up front: it decides the audit provenance, the metrics
+    // key, the event audience, and whether the shared approval tail runs — all
+    // of which are needed before the dial, not after it.
+    let approval = match claim.approval_id {
+        Some(approval_id) => {
+            let row = scope.get_approval(approval_id).await.ok().flatten();
+            if row.is_none() {
+                tracing::warn!(
+                    execution_id = %claim.id, %approval_id,
+                    "approval-backed async execution could not load its approval; \
+                     running it as an ordinary async call"
+                );
+            }
+            row
+        }
+        None => None,
+    };
+
     let payload = match ReplayPayload::from_stored(&claim.request) {
         Ok(p) => p,
         Err(e) => {
             finish(
                 &state,
                 &system,
-                &scope,
+                approval.as_ref(),
                 &claim,
                 worker_id,
                 AsyncOutcome::Failed(&format!("unreadable stored payload: {e}")),
@@ -95,6 +114,20 @@ pub async fn execute(
         .map(|s| AuditResponseBodyMode::parse_or_off(&s.audit_response_body_mode))
         .unwrap_or(AuditResponseBodyMode::Off);
 
+    // The enqueue leaves `template_key` NULL — a key frozen when the call was
+    // gated goes stale the moment a service is renamed — so an approval-backed
+    // row recovers it from the live registry, the same way the inline replay
+    // does.
+    let metrics_tpl = match &approval {
+        Some(a) => {
+            crate::routes::approvals::replay_template_key(&state.registry, &a.permission_keys)
+        }
+        None => claim
+            .template_key
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+    };
+
     let ctx = StoredCallCtx {
         state: &state,
         ext: &ext,
@@ -104,13 +137,22 @@ pub async fn execute(
         ip: claim.client_ip.as_deref(),
         description: claim.description.as_deref(),
         tags: &claim.tags,
-        audit_source: AuditSource::Async {
-            execution_id: claim.id,
+        // A gated call's upstream metrics and audit trail must not depend on
+        // which trigger ran it: `Replay` is what stamps `replayed_from_approval`
+        // on the `action.executed` row, exactly as the inline replay does.
+        audit_source: match (&approval, claim.approval_id) {
+            (Some(_), Some(approval_id)) => AuditSource::Replay {
+                approval_id,
+                execution_id: claim.id,
+            },
+            _ => AuditSource::Async {
+                execution_id: claim.id,
+            },
         },
         audit_body_mode,
         timeout: Some(timeout),
         wall: state.config.async_wall_clock(),
-        metrics_tpl: claim.template_key.as_deref().unwrap_or("unknown"),
+        metrics_tpl: &metrics_tpl,
     };
 
     // Three arms. The middle one is the point: the heartbeat renews the lease
@@ -132,6 +174,7 @@ pub async fn execute(
     }
 
     let heartbeat_every = state.config.async_heartbeat_interval();
+    let started = std::time::Instant::now();
     let outcome = tokio::select! {
         outcome = stored_call::run_stored(ctx, payload) => Some(outcome),
         // `changed()` only fires on a *transition*, so the already-shutting-down
@@ -147,7 +190,7 @@ pub async fn execute(
                 // reqwest call. The upstream request may already have landed —
                 // cancelling means we stop waiting, not that nothing happened.
                 Stop::Cancelled => {
-                    finish(&state, &system, &scope, &claim, worker_id, AsyncOutcome::Cancelled).await;
+                    finish(&state, &system, approval.as_ref(), &claim, worker_id, AsyncOutcome::Cancelled).await;
                     return Ok(());
                 }
                 // Lease lost: another worker may already own this row, so
@@ -166,6 +209,7 @@ pub async fn execute(
     let Some(outcome) = outcome else {
         return Ok(());
     };
+    let elapsed = started.elapsed();
     let terminal = match &outcome {
         StoredOutcome::Executed { result, .. } => AsyncOutcome::Executed(result),
         StoredOutcome::Failed { message } => AsyncOutcome::Failed(message),
@@ -173,7 +217,64 @@ pub async fn execute(
         // that could not be re-minted is simply a failed row.
         StoredOutcome::Rejected { message, .. } => AsyncOutcome::Failed(message),
     };
-    finish(&state, &system, &scope, &claim, worker_id, terminal).await;
+    let finalised = finish(
+        &state,
+        &system,
+        approval.as_ref(),
+        &claim,
+        worker_id,
+        terminal,
+    )
+    .await;
+
+    // An approved call owes the same things whichever trigger ran it: the
+    // "Allow & Remember" rules, the cascade they unblock, the
+    // `approval.executed` audit row, and the approval webhook. Running the same
+    // tail the inline replay runs is what makes that identity a fact rather
+    // than two hand-synced blocks.
+    //
+    // `finalised` is `None` when the lease was lost between finishing and
+    // finalizing — the row belongs to someone else, so this worker must not
+    // write rules on its behalf either.
+    if let (Some(approval), Some(finalised)) = (approval.as_ref(), finalised.as_ref()) {
+        let (succeeded, upstream_errored, result_summary) = match &outcome {
+            StoredOutcome::Executed {
+                upstream_errored,
+                summary,
+                ..
+            } => (true, *upstream_errored, Some(summary.clone())),
+            StoredOutcome::Failed { .. } | StoredOutcome::Rejected { .. } => (false, false, None),
+        };
+        if let Err(e) =
+            crate::routes::approvals::run_approval_tail(crate::routes::approvals::ApprovalTail {
+                state: &state,
+                ext: &ext,
+                scope: &scope,
+                approval,
+                finalised,
+                succeeded,
+                upstream_errored,
+                result_summary,
+                // Read back off the row rather than assumed: the trigger that
+                // queued this is what stamped it (`agent` / `user` / `auto`).
+                triggered_by: finalised.triggered_by.as_deref().unwrap_or("auto"),
+                ip: claim.client_ip.as_deref(),
+                audit_org_id: claim.org_id,
+                // No live caller — attribute to the resolver who authorised the
+                // call, the same choice the cascade makes.
+                audit_identity_id: Some(approval.current_resolver_identity_id),
+                metrics_tpl: &metrics_tpl,
+                elapsed,
+            })
+            .await
+        {
+            tracing::warn!(
+                approval_id = %approval.id,
+                execution_id = %claim.id,
+                "approval tail failed after an async replay: {e}"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -252,14 +353,17 @@ async fn heartbeat_until_stop(
 }
 
 /// Write the terminal row and emit the event.
+/// Returns the finalised row, or `None` when the lease was lost before the
+/// result landed — in which case another worker owns the row and this one must
+/// not act on it further.
 async fn finish(
     state: &AppState,
     system: &SystemScope,
-    scope: &overslash_db::scopes::OrgScope,
+    approval: Option<&overslash_db::repos::approval::ApprovalRow>,
     claim: &AsyncClaim,
     worker_id: &str,
     outcome: AsyncOutcome<'_>,
-) {
+) -> Option<overslash_db::repos::execution::ExecutionRow> {
     let status = match &outcome {
         AsyncOutcome::Executed(_) => "executed",
         AsyncOutcome::Failed(_) => "failed",
@@ -274,8 +378,11 @@ async fn finish(
         AsyncOutcome::Failed(m) => Some((*m).to_string()),
         _ => None,
     };
+    // `outcome` is moved into the finalizer below; the approval-topic branch
+    // further down still needs to know whether this was a cancellation.
+    let was_cancelled = matches!(outcome, AsyncOutcome::Cancelled);
 
-    match system
+    let finalised = match system
         .finalize_async_execution(claim.org_id, claim.id, worker_id, outcome)
         .await
     {
@@ -286,17 +393,17 @@ async fn finish(
                 execution_id = %claim.id,
                 "async execution finished but its lease was gone; result discarded"
             );
-            return;
+            return None;
         }
         Err(e) => {
             tracing::error!(
                 "finalizing async execution {claim_id}: {e}",
                 claim_id = claim.id
             );
-            return;
+            return None;
         }
-        Ok(Some(_)) => {}
-    }
+        Ok(Some(row)) => row,
+    };
 
     // Payload deliberately carries no `result`: webhook subscriptions are
     // org-wide, and an upstream response body is exactly where a credential
@@ -310,16 +417,40 @@ async fn finish(
     // A failed lookup degrades to the requester's chain alone, which only ever
     // *narrows* who can see the event — the safe direction for a transient
     // database error.
-    let resolver_id = match claim.approval_id {
-        Some(approval_id) => scope
-            .get_approval(approval_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|a| a.current_resolver_identity_id),
-        None => None,
-    };
-    let audience = events::audience::for_execution(scope, claim.identity_id, resolver_id).await;
+    let resolver_id = approval.map(|a| a.current_resolver_identity_id);
+    let scope = system.scope_for_org(claim.org_id);
+
+    // A cancelled approval-backed row owes the approvals topic its terminal
+    // event. `POST /v1/approvals/{id}/cancel` deliberately stays silent when the
+    // cancel is cooperative — the row is still running at that point — so this
+    // is the *only* emitter of `approval.execution_cancelled` for a queued
+    // replay, and SPEC lists that webhook as one of the ways an agent observes
+    // the outcome. Emitted before the execution event so a subscriber sees the
+    // approval-level fact no later than the row-level one.
+    if let Some(approval) = approval.filter(|_| was_cancelled) {
+        let audience = events::audience::for_approval(
+            &scope,
+            approval.identity_id,
+            Some(approval.current_resolver_identity_id),
+        )
+        .await;
+        events::emit(
+            state.db.clone(),
+            state.http_client.clone(),
+            EventDraft {
+                org_id: claim.org_id,
+                event_type: EventType::ApprovalExecutionCancelled,
+                payload: serde_json::json!({
+                    "approval_id": approval.id,
+                    "execution_id": claim.id,
+                    "status": "cancelled",
+                }),
+                audience,
+            },
+        );
+    }
+
+    let audience = events::audience::for_execution(&scope, claim.identity_id, resolver_id).await;
     events::emit(
         state.db.clone(),
         state.http_client.clone(),
@@ -337,4 +468,6 @@ async fn finish(
             audience,
         },
     );
+
+    Some(finalised)
 }

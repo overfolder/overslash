@@ -94,7 +94,20 @@
 		<div class="card meta">
 			<dl>
 				<div><dt>Status</dt><dd>{detail.status}</dd></div>
-				<div><dt>Origin</dt><dd>{detail.origin === 'approval' ? 'Approved call' : 'Direct async call'}</dd></div>
+				<div>
+					<dt>Origin</dt>
+					<dd>
+						{#if detail.origin === 'approval' && detail.approval_id}
+							<!-- Round-tripping matters: a gated async call is visible from both
+							     sides, and the approval is where the reviewer's context lives. -->
+							<a href="/approvals/{detail.approval_id}">Approved call</a>
+						{:else if detail.origin === 'approval'}
+							Approved call
+						{:else}
+							Direct async call
+						{/if}
+					</dd>
+				</div>
 				<div><dt>Created</dt><dd>{formatTime(detail.created_at)}</dd></div>
 				<div><dt>Started</dt><dd>{detail.started_at ? formatTime(detail.started_at) : '—'}</dd></div>
 				<div><dt>Completed</dt><dd>{detail.completed_at ? formatTime(detail.completed_at) : '—'}</dd></div>

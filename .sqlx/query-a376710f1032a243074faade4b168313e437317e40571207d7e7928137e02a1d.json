@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags\n         FROM approvals\n         WHERE org_id = $1 AND identity_id = $2 AND status = 'pending'\n         ORDER BY created_at DESC",
+  "query": "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at, tags, execution_mode\n         FROM approvals\n         WHERE org_id = $1 AND identity_id = $2 AND status = 'pending'\n         ORDER BY created_at DESC",
   "describe": {
     "columns": [
       {
@@ -200,6 +200,17 @@
             "name": "tags"
           }
         }
+      },
+      {
+        "ordinal": 18,
+        "name": "execution_mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "execution_mode"
+          }
+        }
       }
     ],
     "parameters": {
@@ -226,8 +237,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "b1edc15bd65bd25496e5098d99ad4633534f6e16c31dd2351e9400ca04fee0f8"
+  "hash": "a376710f1032a243074faade4b168313e437317e40571207d7e7928137e02a1d"
 }

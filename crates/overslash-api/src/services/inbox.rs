@@ -64,20 +64,37 @@ pub fn output_read(approval: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Is this approval's execution queued for the async worker rather than waiting
+/// on the agent to trigger it?
+///
+/// A queued row sits in `pending` — the same status a not-yet-triggered one has
+/// — from the moment it is enqueued until a worker claims it. Without this the
+/// inbox would tell the agent to `POST /call` a row the worker already owns, and
+/// the claim would (correctly) refuse it. Missing reads as `false`: every row
+/// that existed before gated async is trigger-able, which is the shape the
+/// absent field describes.
+fn queued(approval: &Value) -> bool {
+    approval
+        .get("execution")
+        .and_then(|e| e.get("queued"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Does this approval from the caller's own `status=allowed` listing still
 /// need something from the caller?
 ///
 /// An approval's status stays `allowed` long after its execution has been
 /// dispatched, failed, or expired, so the raw listing is far too broad. Two
 /// classes survive:
-///   * `pending` — still dispatchable.
+///   * `pending` and not queued — still dispatchable by the agent.
 ///   * terminal but unread — already ran, output never collected.
 ///
-/// Anything else (`executing`, `cancelled`, `expired`, or already-read) is
-/// settled and would be noise on every subsequent poll.
+/// Anything else (`executing`, `cancelled`, `expired`, already-read, or queued
+/// on the async worker) is settled and would be noise on every subsequent poll.
 pub fn needs_attention(approval: &Value) -> bool {
     match execution_status(approval) {
-        Some("pending") => true,
+        Some("pending") => !queued(approval),
         Some("executed") | Some("failed") => !output_read(approval),
         _ => false,
     }
@@ -104,7 +121,11 @@ pub fn build_events(actionable: &Value, mine: &Value) -> Vec<Value> {
     }
     for item in mine.as_array().into_iter().flatten() {
         match execution_status(item) {
-            Some("pending") => events.push(event_from_approval(item, event_type::READY_TO_CALL)),
+            // A queued row is the worker's to run; the agent has nothing to
+            // do until the result lands, at which point `result_unread` fires.
+            Some("pending") if !queued(item) => {
+                events.push(event_from_approval(item, event_type::READY_TO_CALL))
+            }
             Some("executed") | Some("failed") if !output_read(item) => {
                 events.push(event_from_approval(item, event_type::RESULT_UNREAD));
             }
@@ -150,6 +171,10 @@ pub fn event_from_approval(approval: &Value, event_type: &str) -> Value {
             "http_status_code",
             "error",
             "output_read",
+            // Carried through so an agent reading the feed can tell "queued on
+            // the worker" from "waiting on me", the same way `needs_attention`
+            // does — without it the MCP and CLI views cannot see the difference.
+            "queued",
             "expires_at",
         ] {
             if let Some(v) = exec.get(key) {
@@ -186,6 +211,31 @@ mod tests {
         let a = approval(
             "a",
             Some(json!({"status": "pending", "output_read": false})),
+        );
+        assert!(needs_attention(&a));
+    }
+
+    #[test]
+    fn a_queued_execution_is_the_workers_problem_not_the_agents() {
+        // The row is `pending` from the moment it is enqueued until a worker
+        // claims it. Telling the agent to call it would race the worker, and
+        // the claim would refuse it.
+        let a = approval(
+            "a",
+            Some(json!({"status": "pending", "queued": true, "output_read": false})),
+        );
+        assert!(!needs_attention(&a));
+        let events = build_events(&json!([]), &json!([a]));
+        assert!(events.is_empty(), "a queued row must produce no event");
+    }
+
+    #[test]
+    fn a_queued_execution_still_surfaces_its_result() {
+        // Once the worker finishes, the ordinary unread path takes over —
+        // `queued` must not suppress the result the agent is waiting for.
+        let a = approval(
+            "a",
+            Some(json!({"status": "executed", "queued": true, "output_read": false})),
         );
         assert!(needs_attention(&a));
     }

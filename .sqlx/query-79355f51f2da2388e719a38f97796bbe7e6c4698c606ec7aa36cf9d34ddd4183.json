@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE approvals SET replay_payload = NULL WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "79355f51f2da2388e719a38f97796bbe7e6c4698c606ec7aa36cf9d34ddd4183"
+}

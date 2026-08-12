@@ -63,6 +63,11 @@ pub(super) async fn enforce_permission_chain(
     effective: Risk,
     needs_gate: bool,
     skip_layer2: bool,
+    // Whether the caller asked for `execution: "async"`. Passed in already
+    // validated rather than re-derived from `req` here, so the flag that drives
+    // the async rejections in `flags::validate_request` and the one stamped on
+    // the approval can never disagree.
+    is_async: bool,
     // The D56-resolved timeout for this call, stored on the approval so a
     // later replay reproduces the budget the caller actually asked for.
     call_timeout: CallTimeout,
@@ -148,22 +153,26 @@ pub(super) async fn enforce_permission_chain(
                 );
 
                 let approval = scope
-                    .create_approval(
+                    .create_approval(overslash_db::repos::approval::CreateApproval {
                         identity_id,
-                        initial_resolver_id,
-                        &summary,
-                        redacted_detail,
-                        if disclosed_fields.is_empty() {
+                        current_resolver_identity_id: initial_resolver_id,
+                        action_summary: &summary,
+                        action_detail: redacted_detail,
+                        disclosed_fields: if disclosed_fields.is_empty() {
                             None
                         } else {
                             serde_json::to_value(&disclosed_fields).ok()
                         },
                         replay_payload,
-                        &keys,
-                        &token,
+                        permission_keys: &keys,
+                        token: &token,
                         expires_at,
-                        &tags,
-                    )
+                        tags: &tags,
+                        // The gate fires above the async fork, so this is the
+                        // only record that the caller wanted this call run off
+                        // the request path. Both replay triggers read it back.
+                        execution_mode: if is_async { "async" } else { "sync" },
+                    })
                     .await?;
 
                 let mut approval_audit_detail = serde_json::json!({
