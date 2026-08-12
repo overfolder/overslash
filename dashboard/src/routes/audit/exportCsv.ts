@@ -18,6 +18,9 @@ const COLUMNS: Array<{ key: string; get: (e: AuditEntry) => string }> = [
 			e.identity_name ?? identityUnits(e.identity_path, e.identity_path_ids).leaf?.name ?? ''
 	},
 	{ key: 'action', get: (e) => e.action },
+	// Empty, not a placeholder dash: a CSV cell is read by a spreadsheet, and
+	// "not a gated call" is better spelled as absence than as an em dash.
+	{ key: 'risk', get: (e) => e.risk ?? '' },
 	{ key: 'resource_type', get: (e) => e.resource_type ?? '' },
 	{ key: 'resource_id', get: (e) => e.resource_id ?? '' },
 	{ key: 'description', get: (e) => e.description ?? '' },

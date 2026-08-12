@@ -32,7 +32,16 @@ export interface AuditEntry {
 	 * `service:metabase`, `outcome:error`, …). Empty for events outside the
 	 * action/approval path. Rendered as clickable chips in the detail pane. */
 	tags: string[];
+	/** Effective risk of a gated call — `read`, `write` or `delete`. Null for
+	 * events outside the action/approval path, and for history predating the
+	 * `risk:` tag. Rendered in the Risk column. */
+	risk: string | null;
 }
+
+// The risk ladder lives in $lib/types.ts with the rest of the backend mirror;
+// re-exported here so this module stays the one import the audit route needs.
+export { RISK_LADDER, isRiskLevel } from '$lib/types';
+export type { RiskLevel } from '$lib/types';
 
 export interface AuditFilters {
 	identity_id?: string;
@@ -72,6 +81,15 @@ export interface AuditFilters {
 	/** Substring against any one tag — finds `table:warehouse/orders` without
 	 * knowing the db label. Powers `tag ~`. */
 	tag_contains?: string;
+	/** Comma-separated risk values; a row matches **any** of them. ORs where
+	 * `tag` ANDs, because risk is one axis with mutually exclusive values.
+	 * Powers `risk =`; `risk !=` arrives here as its complement. */
+	risk?: string;
+	/** Lowest risk to include on the `read < write < delete` ladder —
+	 * `risk_min=write` is "write or worse". Intersected with `risk` by the API.
+	 * Powers `risk >=`. Kept as its own param so the URL reads as the question
+	 * that was asked. */
+	risk_min?: string;
 	/** Upstream result of execution events (`detail.is_error`). `true` →
 	 * executions whose upstream reported failure (MCP `is_error` envelope,
 	 * upstream HTTP >= 400); `false` → executions that succeeded. Powers
@@ -259,6 +277,8 @@ export function buildQuery(
 	if (filters.owner_user_contains) p.set('owner_user_contains', filters.owner_user_contains);
 	if (filters.tag) p.set('tag', filters.tag);
 	if (filters.tag_contains) p.set('tag_contains', filters.tag_contains);
+	if (filters.risk) p.set('risk', filters.risk);
+	if (filters.risk_min) p.set('risk_min', filters.risk_min);
 	if (filters.is_error !== undefined) p.set('is_error', String(filters.is_error));
 	return p.toString();
 }
@@ -284,7 +304,9 @@ export function filtersFromSearchParams(params: URLSearchParams): AuditFilters {
 		'owner_user_id',
 		'owner_user_contains',
 		'tag',
-		'tag_contains'
+		'tag_contains',
+		'risk',
+		'risk_min'
 	] as const;
 	for (const k of keys) {
 		const v = params.get(k);

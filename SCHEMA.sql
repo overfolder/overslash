@@ -115,7 +115,9 @@ CREATE TABLE public.audit_log (
     impersonated_by_identity_id uuid,
     tags text[] DEFAULT '{}'::text[] NOT NULL,
     actor_name text,
-    owner_user_name text
+    owner_user_name text,
+    risk text,
+    CONSTRAINT audit_log_risk_check CHECK (((risk IS NULL) OR (risk = ANY (ARRAY['read'::text, 'write'::text, 'delete'::text]))))
 );
 
 
@@ -131,6 +133,13 @@ COMMENT ON COLUMN public.audit_log.actor_name IS 'Name of identity_id as of writ
 --
 
 COMMENT ON COLUMN public.audit_log.owner_user_name IS 'Name of the root user of the actor''s identity chain, as of write time. Root, not direct parent: a sub-agent resolves to the human at the top, matching the audit table''s User column.';
+
+
+--
+-- Name: COLUMN audit_log.risk; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.audit_log.risk IS 'Effective risk of a gated call (declared risk merged with the SQL classifier''s floor), promoted out of the risk: metadata tag so it can be indexed, rendered and range-queried. NULL for events outside the action/approval path. Searchable via GET /v1/audit?risk= and ?risk_min=.';
 
 
 --
@@ -1599,6 +1608,13 @@ CREATE INDEX idx_audit_log_org_created_id ON public.audit_log USING btree (org_i
 --
 
 CREATE INDEX idx_audit_log_org_resource_type ON public.audit_log USING btree (org_id, resource_type, created_at DESC);
+
+
+--
+-- Name: idx_audit_log_org_risk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_audit_log_org_risk ON public.audit_log USING btree (org_id, risk, created_at DESC) WHERE (risk IS NOT NULL);
 
 
 --

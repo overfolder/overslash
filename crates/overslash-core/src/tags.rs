@@ -25,6 +25,7 @@
 //! exact statement node — which keeps its home in `audit_log.detail`.
 
 use crate::sql_policy::{SqlAnalysis, SqlClass, WriteReason};
+use crate::types::service::Risk;
 
 /// Maximum tags on one row. Beyond this the array is clipped and gains
 /// `truncated:tags`.
@@ -160,6 +161,26 @@ pub fn with_outcome(tags: Vec<String>, is_error: bool) -> Vec<String> {
     out.push(tag("outcome", if is_error { "error" } else { "ok" }));
     out.extend(tags);
     clamp(out)
+}
+
+/// Read the `risk:` tag back out as a [`Risk`].
+///
+/// The single seam between the tag vector and the `audit_log.risk` column.
+/// Deriving the column here — rather than threading a `Risk` down to every
+/// audit write — is not just less churn: the approval replay and expiry paths
+/// have no live `Risk` to thread. They act on an approval minted minutes or
+/// hours earlier, whose tags are the only surviving record of how it was
+/// classified. Re-deriving there would risk disagreeing with what the approver
+/// actually saw; reading the tag cannot.
+///
+/// Returns `None` for a row outside the gated action/approval path, which
+/// carries no tags at all. [`crate::tags`] guarantees at most one `risk:` tag
+/// per row (`call_tags` pushes it once, [`clamp`] dedupes), so the first match
+/// is the only match.
+pub fn risk_of(tags: &[String]) -> Option<Risk> {
+    tags.iter()
+        .find_map(|t| t.strip_prefix("risk:"))
+        .and_then(Risk::parse)
 }
 
 /// Dedupe (order-preserving) and cap a tag list before it is persisted.
@@ -394,6 +415,39 @@ mod tests {
         assert!(tags.contains(&"truncated:table".to_string()));
         assert!(tags.contains(&"truncated:column".to_string()));
         assert!(!tags.contains(&"truncated:tags".to_string()));
+    }
+
+    #[test]
+    fn risk_of_reads_back_what_tag_wrote() {
+        for r in [Risk::Read, Risk::Write, Risk::Delete] {
+            let tags = vec![tag("service", "metabase"), tag("risk", &r.to_string())];
+            assert_eq!(risk_of(&tags), Some(r));
+        }
+    }
+
+    #[test]
+    fn risk_of_is_none_without_a_risk_tag() {
+        // Control-plane audit rows carry no tags at all, and a namespace that
+        // merely starts with the same letters is not a `risk:` tag.
+        assert_eq!(risk_of(&[]), None);
+        assert_eq!(risk_of(&[tag("service", "metabase")]), None);
+        assert_eq!(risk_of(&[tag("risky", "write")]), None);
+        // An unparseable value is None rather than a silent `read`.
+        assert_eq!(risk_of(&["risk:admin".to_string()]), None);
+    }
+
+    /// `clamp` drops from the tail, so a maximally-tagged row must not lose its
+    /// risk — that would leave the column NULL on exactly the calls that
+    /// touched the most tables. `call_tags` emits at most ten scalar tags
+    /// before the SQL ones, and `with_outcome` prepends one more, so `risk:`
+    /// sits far inside the cap. This pins that.
+    #[test]
+    fn risk_survives_clamp_on_a_maximally_tagged_row() {
+        let mut tags = vec![tag("risk", "delete")];
+        tags.extend((0..MAX_TAGS * 2).map(|i| tag("column", &format!("wh/c{i}"))));
+        let out = with_outcome(tags, true);
+        assert_eq!(out.len(), MAX_TAGS);
+        assert_eq!(risk_of(&out), Some(Risk::Delete));
     }
 
     #[test]

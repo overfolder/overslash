@@ -23,7 +23,7 @@ import {
 	type Term
 } from '../../../src/lib/search/terms';
 
-const KEYS = ['event', 'result', 'tag', 'hidden'];
+const KEYS = ['event', 'result', 'tag', 'hidden', 'risk'];
 
 function value(...terms: Term[]): SearchValue {
 	return { terms };
@@ -196,13 +196,55 @@ test.describe('matchesAllText', () => {
 	});
 });
 
+test.describe('the >= operator', () => {
+	test('tokenizes as one operator, not `>` plus `=`', () => {
+		expect(parseSearch('risk >= write', KEYS)).toEqual([
+			{ kind: 'filter', key: 'risk', op: '>=', value: 'write' }
+		]);
+	});
+
+	test('parses without surrounding spaces', () => {
+		expect(parseSearch('risk>=write', KEYS)).toEqual([
+			{ kind: 'filter', key: 'risk', op: '>=', value: 'write' }
+		]);
+	});
+
+	test('does not steal the `=` from a plain equality', () => {
+		// The alternation is longest-first; a regression that ordered `=` before
+		// `>=` would leave the `>` stranded and turn this into text.
+		expect(parseSearch('risk = write', KEYS)).toEqual([
+			{ kind: 'filter', key: 'risk', op: '=', value: 'write' }
+		]);
+		expect(parseSearch('risk != write', KEYS)).toEqual([
+			{ kind: 'filter', key: 'risk', op: '!=', value: 'write' }
+		]);
+	});
+
+	test('coexists with other terms in one input', () => {
+		expect(parseSearch('event = action.executed risk >= write', KEYS)).toEqual([
+			{ kind: 'filter', key: 'event', op: '=', value: 'action.executed' },
+			{ kind: 'filter', key: 'risk', op: '>=', value: 'write' }
+		]);
+	});
+
+	test('chips at different operators are distinct bubbles', () => {
+		// `sameTerm` compares the operator, so `risk = write` must not swallow
+		// `risk >= write` — they select different rows.
+		const eq: Term = { kind: 'filter', key: 'risk', op: '=', value: 'write' };
+		const ge: Term = { kind: 'filter', key: 'risk', op: '>=', value: 'write' };
+		expect(sameTerm(eq, ge)).toBe(false);
+		expect(addTerm(value(eq), ge).terms).toHaveLength(2);
+	});
+});
+
 test.describe('termToDraft', () => {
 	test('round-trips every term shape back through the parser', () => {
 		const terms: Term[] = [
 			{ kind: 'text', value: 'pull request' },
 			{ kind: 'filter', key: 'event', op: '=', value: 'action.executed' },
 			{ kind: 'filter', key: 'tag', op: '~', value: 'a b' },
-			{ kind: 'filter', key: 'hidden', op: '!=', value: 'true' }
+			{ kind: 'filter', key: 'hidden', op: '!=', value: 'true' },
+			{ kind: 'filter', key: 'risk', op: '>=', value: 'write' }
 		];
 		for (const t of terms) {
 			expect(parseSearch(termToDraft(t), KEYS)).toEqual([t]);

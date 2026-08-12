@@ -40,6 +40,36 @@ impl Risk {
         }
     }
 
+    /// Parse the lowercase wire form — the exact inverse of [`Display`].
+    ///
+    /// Needed wherever a risk arrives as a bare string rather than through
+    /// serde: the `risk:` audit tag read back by
+    /// [`crate::tags::risk_of`], the `audit_log.risk` column, and the
+    /// `?risk=` / `?risk_min=` query params. Returns `None` rather than
+    /// defaulting, so a typo surfaces as a 400 instead of silently meaning
+    /// `read`.
+    pub fn parse(s: &str) -> Option<Risk> {
+        match s {
+            "read" => Some(Risk::Read),
+            "write" => Some(Risk::Write),
+            "delete" => Some(Risk::Delete),
+            _ => None,
+        }
+    }
+
+    /// Every risk at or above this one on the `read < write < delete` ladder.
+    ///
+    /// The expansion behind `?risk_min=` and the search bar's `risk >=`:
+    /// an ordered question answered as a set, so the read path keeps a single
+    /// `risk = ANY(...)` predicate and the ladder itself is defined in exactly
+    /// one place.
+    pub fn at_least(self) -> Vec<Risk> {
+        [Risk::Read, Risk::Write, Risk::Delete]
+            .into_iter()
+            .filter(|r| r.severity() >= self.severity())
+            .collect()
+    }
+
     /// Infer risk from an HTTP method.
     pub fn from_http_method(method: &str) -> Risk {
         match method.to_uppercase().as_str() {
@@ -175,6 +205,29 @@ mod tests {
     #[test]
     fn risk_default_is_read() {
         assert_eq!(Risk::default(), Risk::Read);
+    }
+
+    /// `parse` is the exact inverse of `Display`, and rejects everything else.
+    /// The two are used as a pair across the audit tag/column seam, so a drift
+    /// between them would silently drop rows out of `?risk=` results.
+    #[test]
+    fn risk_parse_inverts_display() {
+        for r in [Risk::Read, Risk::Write, Risk::Delete] {
+            assert_eq!(Risk::parse(&r.to_string()), Some(r));
+        }
+        for bad in ["", "admin", "Read", "READ", "risk:read", "dynamic"] {
+            assert_eq!(Risk::parse(bad), None, "{bad} should not parse");
+        }
+    }
+
+    #[test]
+    fn risk_at_least_walks_the_ladder_upward() {
+        assert_eq!(
+            Risk::Read.at_least(),
+            vec![Risk::Read, Risk::Write, Risk::Delete]
+        );
+        assert_eq!(Risk::Write.at_least(), vec![Risk::Write, Risk::Delete]);
+        assert_eq!(Risk::Delete.at_least(), vec![Risk::Delete]);
     }
 
     /// `DeclaredRisk` deserializes byte-compatibly with the pre-D43 `Risk`

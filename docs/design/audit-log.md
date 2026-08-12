@@ -91,10 +91,23 @@ All audit calls follow fire-and-forget: `let _ = audit::log(...).await;`
 | `identity_id` | UUID | Filter by actor |
 | `since` | RFC3339 datetime | `created_at >= since` |
 | `until` | RFC3339 datetime | `created_at <= until` |
+| `risk` | comma-separated | `read` / `write` / `delete`; a row matches **any** listed value |
+| `risk_min` | string | Lowest rung on `read < write < delete`; `write` means "write or worse" |
 
 The query uses optional parameter matching (`$N::type IS NULL OR column = $N`) to avoid dynamic SQL construction. The existing `(org_id, created_at DESC)` index covers the base case.
 
 Response now includes `ip_address`.
+
+`risk` **ORs** where `tag` **ANDs**, and the asymmetry is deliberate: tags narrow
+along independent axes, so requiring all of them is what a caller means, whereas
+risk is a single axis with mutually exclusive values where an AND is always
+empty. `risk_min` is expanded to its set by the handler (`Risk::at_least`) and
+intersected with `risk`, so both parameters narrow and the SQL keeps a single
+`risk = ANY(...)` predicate — the ladder is defined in exactly one place. An
+unparseable value is a 400 rather than an ignored parameter: silently dropping
+it would *widen* the result set, and a filter that quietly returns more than was
+asked for is the wrong failure mode for an audit log. Note `admin` is rejected
+here — it is a rung of the neighbouring `AccessLevel` ladder, not of `Risk`.
 
 ## Future: Human-readable audit descriptions (Mode C)
 
@@ -209,6 +222,49 @@ migration set without 110.
 3. **`idx_audit_log_tags` (GIN) was not used by this query.** The planner
    prefers the ordered index because it can stop at `LIMIT 50`, where a bitmap
    scan would have to sort the whole match set first.
+
+### Migration 112: the `risk` column
+
+`risk` is the one tag namespace promoted to a column of its own. That is a
+direct consequence of point 3 above: the value was already minted on every
+gated call as `risk:read|write|delete`, and `?tag=risk:write` worked, but inside
+a `text[]` it could not be indexed (the GIN the planner never chose), could not
+be rendered as a table column, and could not answer an ordered question.
+
+The index takes the shape this section established — `(org_id, risk,
+created_at DESC)` — and adds `WHERE risk IS NOT NULL`, because on a mature org
+most rows are control-plane events that no risk query ever wants. The partial
+predicate is sound for every query that reaches the conjunct: `risk = ANY(...)`
+over non-NULL values can never select the excluded rows.
+
+Measured on 50k rows (45k unclassified, 4.9k `read`, 100 `delete`), the split is
+the same sparse/dense one the `action` composite showed:
+
+| Query | Plan | Time |
+|---|---|---|
+| `risk = delete` (sparse, 100 rows) | `idx_audit_log_org_risk` | **0.09 ms** |
+| same, index dropped | Seq Scan | 4.69 ms |
+| `risk = read` (dense, 4.9k rows) | `idx_audit_log_org_created_id` | 0.07 ms |
+| whole ladder | `idx_audit_log_org_created_id` | 0.03 ms |
+
+The dense and whole-ladder cases do **not** use the new index, and that is the
+planner making the right call: the ordered index stops at `LIMIT 50` where the
+risk index would have to sort thousands of matches first. The index earns its
+place on the sparse case, which is also the interesting one — `risk = delete` is
+the query an auditor actually types.
+
+One correction to the intuition behind "any new index must end in
+`created_at DESC`": here it does not buy a sort-free plan. `= ANY` is a
+scalar-array op, so Postgres cannot prove the multi-rung scan is ordered and a
+sort node remains. The trailing column still helps — a scalar `risk =` gets an
+Incremental Sort that stops early — but the actual win is that only the matched
+rows reach the sort, rather than the org's history.
+
+The column is derived inside `log_tagged` from the tag rather than threaded down
+to each audit write. Besides sparing ~149 call sites, it is the only correct
+source on the replay and expiry paths, which act on an approval minted hours
+earlier and hold no live `Risk` — re-deriving there could disagree with what the
+approver actually saw.
 
 ### What migration 110 changed, and why the cliff needed two fixes
 

@@ -723,6 +723,135 @@ async fn test_audit_api_response_shape() {
         .unwrap_or_else(|e| panic!("created_at {created_at:?} not RFC 3339: {e}"));
 }
 
+/// The Mode A path declares no risk, so the column is whatever
+/// `Risk::from_http_method` made of the verb — and it must survive all the way
+/// out to the JSON the dashboard's Risk column renders.
+#[tokio::test]
+async fn test_audit_api_risk_follows_the_http_method() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, &fx, "http:**").await;
+    let mock_addr = start_mock().await;
+
+    for (method, want) in [("GET", "read"), ("POST", "write"), ("DELETE", "delete")] {
+        client
+            .post(format!("{base}/v1/actions/call"))
+            .header(auth(&key).0, auth(&key).1)
+            .json(&json!({
+                "service": "http",
+                "method": method,
+                "url": format!("http://{mock_addr}/echo"),
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        let entries = fetch_audit_with(&base, &client, &key, &format!("risk={want}")).await;
+        let entry = entries
+            .iter()
+            .find(|e| e["action"] == "action.executed" && e["detail"]["method"] == method)
+            .unwrap_or_else(|| panic!("no {method} execution at risk={want}"));
+        assert_eq!(entry["risk"], want);
+        // The column is a promotion of the tag, not a second opinion.
+        let tags: Vec<String> = serde_json::from_value(entry["tags"].clone()).unwrap();
+        assert!(tags.contains(&format!("risk:{want}")), "tags were {tags:?}");
+    }
+}
+
+#[tokio::test]
+async fn test_audit_api_risk_min_walks_the_ladder() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, &fx, "http:**").await;
+    let mock_addr = start_mock().await;
+
+    for method in ["GET", "POST", "DELETE"] {
+        client
+            .post(format!("{base}/v1/actions/call"))
+            .header(auth(&key).0, auth(&key).1)
+            .json(&json!({
+                "service": "http",
+                "method": method,
+                "url": format!("http://{mock_addr}/echo"),
+            }))
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let risks = |entries: &[Value]| -> Vec<String> {
+        entries
+            .iter()
+            .filter(|e| e["action"] == "action.executed")
+            .map(|e| e["risk"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // "write or worse" excludes the read and nothing else.
+    let got = risks(&fetch_audit_with(&base, &client, &key, "risk_min=write").await);
+    assert_eq!(got.len(), 2);
+    assert!(!got.contains(&"read".to_string()), "got {got:?}");
+
+    let got = risks(&fetch_audit_with(&base, &client, &key, "risk_min=delete").await);
+    assert_eq!(got, vec!["delete".to_string()]);
+
+    // The bottom rung admits the whole ladder, but still never the
+    // unclassified control-plane rows the bootstrap wrote.
+    let all = fetch_audit_with(&base, &client, &key, "risk_min=read").await;
+    assert_eq!(risks(&all).len(), 3);
+    assert!(all.iter().all(|e| !e["risk"].is_null()));
+
+    // Both params narrow: their intersection, not their union.
+    let got =
+        risks(&fetch_audit_with(&base, &client, &key, "risk=read,write&risk_min=write").await);
+    assert_eq!(got, vec!["write".to_string()]);
+
+    // A contradiction returns nothing rather than falling open.
+    let got = fetch_audit_with(&base, &client, &key, "risk=read&risk_min=write").await;
+    assert!(got.is_empty());
+}
+
+#[tokio::test]
+async fn test_audit_api_rejects_an_unknown_risk() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, &fx, "http:**").await;
+
+    // Silently ignoring an unparseable value would *widen* the result set, and
+    // a filter that quietly returns more than asked is the wrong failure mode
+    // for an audit log. `admin` is the tempting one — it is a real rung of the
+    // neighbouring AccessLevel ladder, but not of this one.
+    for qs in [
+        "risk=admin",
+        "risk=write,nonsense",
+        "risk_min=admin",
+        "risk_min=READ",
+    ] {
+        let resp = client
+            .get(format!("{base}/v1/audit?{qs}"))
+            .header(auth(&key).0, auth(&key).1)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "{qs} should be rejected");
+    }
+}
+
+#[tokio::test]
+async fn test_audit_api_control_plane_events_carry_no_risk() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, &fx, "http:**").await;
+
+    let entries = fetch_audit(&base, &client, &key).await;
+    let control = entries
+        .iter()
+        .find(|e| e["action"] != "action.executed")
+        .expect("bootstrap writes control-plane events");
+    assert!(
+        control["risk"].is_null(),
+        "{} should carry no risk, got {}",
+        control["action"],
+        control["risk"]
+    );
+}
+
 #[tokio::test]
 async fn test_audit_api_pagination() {
     let (pool, fx) = common::test_pool_bootstrapped().await;

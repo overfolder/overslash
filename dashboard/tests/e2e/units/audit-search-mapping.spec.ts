@@ -95,6 +95,93 @@ test.describe('searchToFilters', () => {
 	});
 });
 
+test.describe('the risk ladder', () => {
+	const risk = (op: '=' | '!=' | '>=', value: string): Term => ({
+		kind: 'filter',
+		key: 'risk',
+		op,
+		value
+	});
+
+	test('`=` sends the value as-is', () => {
+		expect(searchToFilters(value(risk('=', 'write')), IDENTITIES).risk).toBe('write');
+	});
+
+	test('repeated `=` chips OR into one comma-separated param', () => {
+		// Unlike `tag`, which ANDs: risk is one axis, so requiring both rungs at
+		// once would always be empty.
+		const f = searchToFilters(value(risk('=', 'read'), risk('=', 'write')), IDENTITIES);
+		expect(f.risk).toBe('read,write');
+	});
+
+	test('`>=` becomes risk_min, leaving the URL as the question asked', () => {
+		const f = searchToFilters(value(risk('>=', 'write')), IDENTITIES);
+		expect(f.risk_min).toBe('write');
+		expect(f.risk).toBeUndefined();
+	});
+
+	test('the highest `>=` wins, because both chips narrow', () => {
+		const f = searchToFilters(value(risk('>=', 'read'), risk('>=', 'delete')), IDENTITIES);
+		expect(f.risk_min).toBe('delete');
+	});
+
+	test('`!=` resolves to the complement', () => {
+		expect(searchToFilters(value(risk('!=', 'read')), IDENTITIES).risk).toBe('write,delete');
+	});
+
+	test('stacked `!=` chips each remove a rung', () => {
+		const f = searchToFilters(value(risk('!=', 'read'), risk('!=', 'delete')), IDENTITIES);
+		expect(f.risk).toBe('write');
+	});
+
+	test('`!=` narrows an explicit `=` set rather than replacing it', () => {
+		const f = searchToFilters(
+			value(risk('=', 'read'), risk('=', 'write'), risk('!=', 'read')),
+			IDENTITIES
+		);
+		expect(f.risk).toBe('write');
+	});
+
+	test('a contradiction sends an empty set, not no filter', () => {
+		// `risk = read` + `risk != read` must return nothing. Dropping the param
+		// would return everything — the wrong direction to fail in an audit log.
+		const f = searchToFilters(value(risk('=', 'read'), risk('!=', 'read')), IDENTITIES);
+		expect(f.risk).toBe('');
+	});
+
+	test('`=` and `>=` are sent separately for the API to intersect', () => {
+		const f = searchToFilters(value(risk('=', 'read'), risk('>=', 'write')), IDENTITIES);
+		expect(f.risk).toBe('read');
+		expect(f.risk_min).toBe('write');
+	});
+
+	test('an unknown rung is dropped rather than sent for the API to reject', () => {
+		const f = searchToFilters(value(risk('=', 'admin')), IDENTITIES);
+		expect(f.risk).toBeUndefined();
+	});
+
+	test('filtersToSearch gives one chip per value plus the floor', () => {
+		const v = filtersToSearch({ risk: 'write,delete', risk_min: 'write' }, IDENTITIES);
+		expect(v.terms).toEqual([
+			risk('=', 'write'),
+			risk('=', 'delete'),
+			risk('>=', 'write')
+		]);
+	});
+
+	test('round-trips `>=` through the URL shape', () => {
+		const before = value(risk('>=', 'write'));
+		expect(filtersToSearch(searchToFilters(before, IDENTITIES), IDENTITIES)).toEqual(before);
+	});
+
+	test('a `!=` chip comes back as the equivalent `=` chips', () => {
+		// Only the resolved values survive the URL; the two spellings select the
+		// same rows, so the bar is honest rather than lossy.
+		const f = searchToFilters(value(risk('!=', 'read')), IDENTITIES);
+		expect(filtersToSearch(f, IDENTITIES).terms).toEqual([risk('=', 'write'), risk('=', 'delete')]);
+	});
+});
+
 test.describe('filtersToSearch', () => {
 	test('a comma-joined q comes back as one bubble per term', () => {
 		const v = filtersToSearch({ q: 'timeout,rate limit' }, IDENTITIES);

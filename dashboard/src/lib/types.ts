@@ -285,6 +285,21 @@ export interface TemplateSettings {
   allow_services_outside_catalog: boolean;
 }
 
+/**
+ * The `read < write < delete` risk ladder, ascending.
+ *
+ * Mirrors `Risk::severity` in crates/overslash-core/src/types/service/risk.rs.
+ * The *order* is the contract, not just the membership: it is what gives the
+ * audit log's `risk >=` its meaning, so the two must not drift.
+ */
+export const RISK_LADDER = ['read', 'write', 'delete'] as const;
+
+export type RiskLevel = (typeof RISK_LADDER)[number];
+
+export function isRiskLevel(v: string): v is RiskLevel {
+  return (RISK_LADDER as readonly string[]).includes(v);
+}
+
 /** One entry in a derived layer's per-action metadata mask. */
 export interface ActionPatch {
   /** Clamp risk upward only (adds approvals): `read` | `write` | `delete`. */

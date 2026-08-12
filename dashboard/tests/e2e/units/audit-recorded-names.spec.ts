@@ -33,6 +33,7 @@ function entry(over: Partial<AuditEntry> = {}): AuditEntry {
 		impersonated_by_path: null,
 		impersonated_by_path_ids: [],
 		tags: [],
+		risk: null,
 		...over
 	};
 }

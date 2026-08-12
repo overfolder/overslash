@@ -10,7 +10,7 @@
  * `tests/e2e/units/` can only transform `.ts`.
  */
 
-export type Operator = '=' | '~' | '!=';
+export type Operator = '=' | '~' | '!=' | '>=';
 
 export interface SearchKey {
 	/** Key name shown to the user (e.g. `event`, `identity`). */
@@ -129,7 +129,9 @@ export function removeTermAt(v: SearchValue, index: number): SearchValue {
 	return { terms: v.terms.filter((_, i) => i !== index) };
 }
 
-const TOKEN_RE = /(\w+)\s*(!=|=|~)\s*("[^"]*"|\S+)/g;
+// Longest-first alternation: `=` would otherwise win the race against the
+// two-character operators and leave their first char stranded in the key.
+const TOKEN_RE = /(\w+)\s*(!=|>=|=|~)\s*("[^"]*"|\S+)/g;
 
 /** Byte ranges covered by a `"…"` span, which the tokenizer treats as opaque. */
 function quotedSpans(input: string): Array<[number, number]> {

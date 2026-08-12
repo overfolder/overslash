@@ -139,6 +139,15 @@
 		if (next !== searchValue) onSearchChange(next);
 	}
 
+	/** Add `risk = <v>` to the active search. Unlike tags, repeated risk chips
+	 *  widen (OR) rather than narrow — they are rungs of one axis, not
+	 *  independent facts. */
+	function onRiskClick(r: string) {
+		const term: Term = { kind: 'filter', key: 'risk', op: '=', value: r };
+		const next = addTerm(searchValue, term);
+		if (next !== searchValue) onSearchChange(next);
+	}
+
 	function refresh() {
 		fetchPage(true);
 	}
@@ -227,6 +236,7 @@
 							{identityById}
 							{fmt}
 							ontagclick={onTagClick}
+							onriskclick={onRiskClick}
 						/>
 					</tbody>
 				</table>
@@ -250,6 +260,7 @@
 						<th>User</th>
 						<th>Agent</th>
 						<th>Event</th>
+						<th>Risk</th>
 						<th>Resource</th>
 						<th>Description</th>
 						<th>IP</th>
@@ -266,10 +277,11 @@
 								{identityById}
 								{fmt}
 								ontagclick={onTagClick}
+								onriskclick={onRiskClick}
 							/>
 							{#snippet failed(error)}
 								<tr>
-									<td colspan="7" class="muted">
+									<td colspan="8" class="muted">
 										Failed to render entry {entry.id}: {String(
 											(error as { message?: string })?.message ?? error
 										)}

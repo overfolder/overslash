@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use overslash_core::types::service::Risk;
 use overslash_db::OrgScope;
 use overslash_db::repos::audit::AuditFilter;
 
-use crate::{AppState, error::Result};
+use crate::{AppState, error::AppError, error::Result};
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/audit", get(query_audit))
@@ -52,6 +53,10 @@ struct AuditEntry {
     /// System-derived metadata tags. Empty for events outside the
     /// action/approval path.
     tags: Vec<String>,
+    /// Effective risk of the gated call — `read`, `write` or `delete`. Null for
+    /// events outside the action/approval path, and for history predating the
+    /// `risk:` tag.
+    risk: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -121,6 +126,15 @@ struct AuditQuery {
     /// Substring against any one tag — finds `table:warehouse/orders` without
     /// knowing the db label. Powers `tag ~`.
     tag_contains: Option<String>,
+    /// Comma-separated risk values; a row must match **any** of them
+    /// (`write,delete` means "anything mutating"). ORs where `tag` ANDs, since
+    /// risk is one axis with mutually exclusive values. Powers the search bar's
+    /// `risk =` and `risk !=` keys — `!=` arrives here as its complement.
+    risk: Option<String>,
+    /// Lowest risk to include on the `read < write < delete` ladder:
+    /// `risk_min=write` is "write or worse". Expanded to a set and intersected
+    /// with `risk` when both are given. Powers `risk >=`.
+    risk_min: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
     since: Option<OffsetDateTime>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
@@ -187,6 +201,57 @@ fn split_q_terms(raw: &str) -> Vec<String> {
     out
 }
 
+/// Resolve `?risk=` and `?risk_min=` into the single set the repo filter takes.
+///
+/// `risk` is a comma-separated set (OR); `risk_min` is a rung on the
+/// `read < write < delete` ladder, expanded upward by `Risk::at_least`. Given
+/// both, the answer is their **intersection** — each parameter narrows, so
+/// `risk=read,write&risk_min=write` means `write`.
+///
+/// Every value is parsed rather than passed through. An unrecognized one is a
+/// 400: silently dropping it would widen the result set, and a filter that
+/// quietly returns more than asked is the wrong failure mode for an audit log.
+fn resolve_risks(
+    risk: Option<String>,
+    risk_min: Option<String>,
+) -> std::result::Result<Option<Vec<String>>, AppError> {
+    let parse_one = |s: &str| {
+        Risk::parse(s.trim()).ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "unknown risk `{}` — expected read, write or delete",
+                s.trim()
+            ))
+        })
+    };
+
+    let explicit = match risk.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => Some(
+            raw.split(',')
+                .filter(|v| !v.trim().is_empty())
+                .map(parse_one)
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        ),
+        None => None,
+    };
+    let floor = match risk_min.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => Some(parse_one(raw)?.at_least()),
+        None => None,
+    };
+
+    let resolved: Option<Vec<Risk>> = match (explicit, floor) {
+        (None, None) => None,
+        (Some(v), None) | (None, Some(v)) => Some(v),
+        (Some(a), Some(b)) => Some(a.into_iter().filter(|r| b.contains(r)).collect()),
+    };
+    // An empty set is not "no filter" — it is a contradiction the caller
+    // spelled out (`risk=read&risk_min=write`), and must return nothing rather
+    // than everything. Kept as `Some(vec![])`, which `= ANY('{}')` satisfies
+    // for no row.
+    // Rendered back to the wire form the column stores. `Display` and
+    // `Risk::parse` are inverses, so a value that survived parsing round-trips.
+    Ok(resolved.map(|v| v.into_iter().map(|r| r.to_string()).collect()))
+}
+
 async fn query_audit(
     scope: OrgScope,
     axum::extract::Query(params): axum::extract::Query<AuditQuery>,
@@ -205,6 +270,7 @@ async fn query_audit(
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
     });
+    let risks = resolve_risks(params.risk, params.risk_min)?;
     let filter = AuditFilter {
         org_id: scope.org_id(),
         action: params.action,
@@ -228,6 +294,7 @@ async fn query_audit(
         is_error: params.is_error,
         tags: tags.filter(|v| !v.is_empty()),
         tag_contains: params.tag_contains.and_then(empty),
+        risks,
         limit: params.limit,
         before: params.before,
         before_id: params.before_id,
@@ -363,6 +430,7 @@ async fn query_audit(
                     impersonated_by_path,
                     impersonated_by_path_ids,
                     tags: r.tags,
+                    risk: r.risk,
                 }
             })
             .collect(),

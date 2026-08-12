@@ -1,5 +1,6 @@
 import type { SearchKey, SearchValue, Term } from '$lib/search/terms';
 import type { AuditFilters } from './types';
+import { RISK_LADDER, isRiskLevel } from './types';
 
 /** Time presets accepted by the `time` key. */
 const TIME_PRESETS: Record<string, number> = {
@@ -48,15 +49,17 @@ const AGENT_KINDS = ['agent', 'sub_agent'];
 
 /** Tag namespaces the backend mints, offered as autocomplete seeds. Nobody
  *  recalls a whole tag, but the namespace is enough to start from — and the
- *  detail pane's chips are the other (and primary) way in. */
+ *  detail pane's chips are the other (and primary) way in.
+ *
+ *  `risk:*` is deliberately absent: it has a first-class `risk` key now, and
+ *  offering both would leave two ways to ask the same question with only one
+ *  of them able to answer `>=`. The tag itself still exists on the row, so a
+ *  saved `tag = risk:write` URL keeps working. */
 const TAG_NAMESPACE_HINTS = [
 	'sql:read',
 	'sql:write',
 	'outcome:error',
 	'outcome:ok',
-	'risk:read',
-	'risk:write',
-	'risk:delete',
 	'transport:http',
 	'transport:mcp',
 	'transport:platform',
@@ -108,6 +111,12 @@ export function buildAuditSearchKeys(
 			operators: ['=', '~'],
 			values: TAG_NAMESPACE_HINTS,
 			hint: 'metadata tag · repeat to narrow (AND)'
+		},
+		{
+			name: 'risk',
+			operators: ['=', '!=', '>='],
+			values: [...RISK_LADDER],
+			hint: 'read < write < delete · >= write for anything mutating'
 		},
 		{
 			name: 'uuid',
@@ -179,6 +188,9 @@ export function splitQTerms(raw: string): string[] {
  * - `identity ~ NAME`       → identity_name_contains (any kind)
  * - `tag = X` (repeatable)  → tag (comma-joined; a row must carry all of them)
  * - `tag ~ X`               → tag_contains (substring against any one tag)
+ * - `risk = X` (repeatable) → risk (comma-joined; a row matches any of them)
+ * - `risk != X`             → risk (the complement, resolved here)
+ * - `risk >= X`             → risk_min (ladder floor, expanded by the API)
  * - `<key> = <uuid>`        → the id field directly, skipping name resolution
  * - `time = preset`         → since/until window
  * - free text               → folded into q
@@ -196,6 +208,13 @@ export function searchToFilters(
 	const filters: AuditFilters = {};
 	const qTerms: string[] = [];
 	const tagTerms: string[] = [];
+	// Risk is resolved after the loop, because the three operators interact:
+	// `=` chips OR into a candidate set, each `!=` removes a value, and `>=`
+	// raises a floor. Applying them one at a time as they are read would let
+	// the last chip win instead of all of them narrowing.
+	const riskEq: string[] = [];
+	const riskNe: string[] = [];
+	let riskMin: string | undefined;
 	for (const t of value.terms) {
 		if (t.kind === 'text') qTerms.push(t.value);
 	}
@@ -267,6 +286,18 @@ export function searchToFilters(
 				// comma-separated param, matching the `identity_kind` shape.
 				tagTerms.push(expr.value);
 			}
+		} else if (expr.key === 'risk') {
+			// An unknown value is dropped rather than sent: the API would 400,
+			// and a half-typed chip should not blank the page.
+			if (!isRiskLevel(expr.value)) continue;
+			if (expr.op === '>=') {
+				// Highest floor wins — two `>=` chips both narrow.
+				if (riskMin === undefined || rung(expr.value) > rung(riskMin)) riskMin = expr.value;
+			} else if (expr.op === '!=') {
+				riskNe.push(expr.value);
+			} else {
+				riskEq.push(expr.value);
+			}
 		} else if (expr.key === 'uuid') {
 			filters.uuid = expr.value;
 		} else if (expr.key === 'time') {
@@ -284,7 +315,25 @@ export function searchToFilters(
 	// across the URL round-trip instead of splitting into two.
 	if (qTerms.length) filters.q = qTerms.map(escapeQTerm).join(',');
 	if (tagTerms.length) filters.tag = tagTerms.join(',');
+	// `=` chips give the candidate set; with none, every rung is a candidate so
+	// that a lone `!=` still means something. `!=` then removes. `>=` is left as
+	// its own param — the API intersects the two, and the URL keeps reading as
+	// the question that was asked (`?risk_min=write`, not `?risk=write,delete`).
+	if (riskEq.length || riskNe.length) {
+		const candidates = riskEq.length ? riskEq : [...RISK_LADDER];
+		const allowed = candidates.filter((r) => !riskNe.includes(r));
+		// An empty result is a contradiction the user spelled out
+		// (`risk = read` + `risk != read`), and must return nothing rather than
+		// silently dropping the filter. The API treats `risk=` the same way.
+		filters.risk = allowed.join(',');
+	}
+	if (riskMin) filters.risk_min = riskMin;
 	return filters;
+}
+
+/** Position on the `read < write < delete` ladder. */
+function rung(v: string): number {
+	return (RISK_LADDER as readonly string[]).indexOf(v);
 }
 
 /** Inverse mapping for hydrating the SearchBar from URL query state on load. */
@@ -350,6 +399,17 @@ export function filtersToSearch(
 	}
 	if (filters.tag_contains)
 		terms.push({ kind: 'filter', key: 'tag', op: '~', value: filters.tag_contains });
+	if (filters.risk) {
+		// One chip per value, like `tag`, so removing one leaves the rest. A set
+		// that arrived as `!=` comes back as its equivalent `=` chips: the two
+		// spellings select identical rows, and only the values are recoverable
+		// from the URL.
+		for (const r of filters.risk.split(',').filter(Boolean)) {
+			terms.push({ kind: 'filter', key: 'risk', op: '=', value: r });
+		}
+	}
+	if (filters.risk_min)
+		terms.push({ kind: 'filter', key: 'risk', op: '>=', value: filters.risk_min });
 	if (filters.uuid) terms.push({ kind: 'filter', key: 'uuid', op: '=', value: filters.uuid });
 	// We can't reliably reverse `time` from since/until alone (presets are
 	// snapshotted to ISO timestamps); leave it out and let the user re-pick.

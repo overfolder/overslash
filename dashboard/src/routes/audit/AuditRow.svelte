@@ -7,6 +7,7 @@
 		type IdentityLike
 	} from '$lib/identityDisplay';
 	import { formatBytes } from '$lib/approvals/format';
+	import RiskTag from '$lib/components/audit/RiskTag.svelte';
 	import {
 		recordedNames,
 		responseCapture,
@@ -23,7 +24,8 @@
 		currentUserId,
 		identityById = new Map(),
 		fmt = makeIdentityFormatter([]),
-		ontagclick
+		ontagclick,
+		onriskclick
 	}: {
 		entry: AuditEntry;
 		expanded: boolean;
@@ -39,6 +41,9 @@
 		/** Narrow the search to a tag. Clicking a chip is the discovery path —
 		 *  nobody types `table:warehouse/public.orders` from memory. */
 		ontagclick?: (tag: string) => void;
+		/** Narrow the search to a risk rung. Same discovery path as a tag chip:
+		 *  the value is in front of you, so clicking beats typing. */
+		onriskclick?: (risk: string) => void;
 	} = $props();
 
 	// Split the actor's identity path into its owning user and leaf agent so the
@@ -304,6 +309,9 @@
 			<span class="upstream-error" title={resultLabel}>error</span>
 		{/if}
 	</td>
+	<td class="risk">
+		<RiskTag risk={entry.risk} onclick={onriskclick} />
+	</td>
 	<td class="resource">
 		{#if entry.resource_type}
 			<span class="rtype">{entry.resource_type}</span>
@@ -319,7 +327,7 @@
 </tr>
 {#if expanded}
 	<tr class="detail-row">
-		<td colspan="7">
+		<td colspan="8">
 			<div class="detail">
 				<dl>
 					<dt>Event ID</dt>
@@ -529,6 +537,9 @@
 		border-radius: var(--radius-sm, 4px);
 		background: var(--color-bg);
 		border: 1px solid var(--color-border);
+	}
+	.risk {
+		white-space: nowrap;
 	}
 	.resource .rtype {
 		font-size: 0.85rem;

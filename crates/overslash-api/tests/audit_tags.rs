@@ -265,6 +265,196 @@ async fn tag_filter_requires_every_requested_tag() {
     assert!(rows.is_empty());
 }
 
+// ===========================================================================
+// The promoted `risk` column
+// ===========================================================================
+
+/// The column is derived from the `risk:` tag rather than passed in, so what
+/// matters is that the two can never disagree — including on the replay and
+/// expiry paths, which write an approval's stored tags with no live `Risk`.
+#[tokio::test]
+async fn risk_column_mirrors_the_risk_tag() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+    let scope = overslash_db::OrgScope::new(org_id, pool.clone());
+
+    for level in ["read", "write", "delete"] {
+        scope
+            .log_audit_tagged(
+                tagged_entry(org_id, "action.executed"),
+                &tags(&["service:metabase", &format!("risk:{level}")]),
+            )
+            .await
+            .unwrap();
+    }
+
+    let rows = scope.query_audit_log(filter(org_id)).await.unwrap();
+    assert_eq!(rows.len(), 3);
+    for row in &rows {
+        let from_tag = row
+            .tags
+            .iter()
+            .find_map(|t| t.strip_prefix("risk:"))
+            .map(str::to_string);
+        assert_eq!(row.risk, from_tag, "column disagreed with its own tag");
+    }
+}
+
+#[tokio::test]
+async fn rows_off_the_gated_path_carry_no_risk() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+    let scope = overslash_db::OrgScope::new(org_id, pool.clone());
+
+    // A control-plane event: no tags at all.
+    scope
+        .log_audit(tagged_entry(org_id, "secret.put"))
+        .await
+        .unwrap();
+    // Tagged, but on an axis that says nothing about risk.
+    scope
+        .log_audit_tagged(
+            tagged_entry(org_id, "action.executed"),
+            &tags(&["service:metabase"]),
+        )
+        .await
+        .unwrap();
+    // A value outside the ladder is not silently downgraded to `read` — it is
+    // no classification at all, which the CHECK constraint also requires.
+    scope
+        .log_audit_tagged(
+            tagged_entry(org_id, "action.executed"),
+            &tags(&["risk:admin"]),
+        )
+        .await
+        .unwrap();
+
+    let rows = scope.query_audit_log(filter(org_id)).await.unwrap();
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().all(|r| r.risk.is_none()));
+}
+
+#[tokio::test]
+async fn risk_filter_ors_where_the_tag_filter_ands() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+    let scope = overslash_db::OrgScope::new(org_id, pool.clone());
+
+    for level in ["read", "write", "delete"] {
+        scope
+            .log_audit_tagged(
+                tagged_entry(org_id, "action.executed"),
+                &tags(&[&format!("risk:{level}")]),
+            )
+            .await
+            .unwrap();
+    }
+    scope
+        .log_audit(tagged_entry(org_id, "secret.put"))
+        .await
+        .unwrap();
+
+    let risks = |v: &[&str]| Some(v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+    let rows = scope
+        .query_audit_log(AuditFilter {
+            risks: risks(&["write"]),
+            ..filter(org_id)
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].risk.as_deref(), Some("write"));
+
+    // Two values OR — this is the expansion behind `risk >= write`, and the
+    // reason the param cannot share the tag filter's AND semantics.
+    let rows = scope
+        .query_audit_log(AuditFilter {
+            risks: risks(&["write", "delete"]),
+            ..filter(org_id)
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.risk.as_deref() != Some("read")));
+
+    // The unclassified row is never swept in by a risk filter, and the whole
+    // ladder still excludes it.
+    let rows = scope
+        .query_audit_log(AuditFilter {
+            risks: risks(&["read", "write", "delete"]),
+            ..filter(org_id)
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+
+    // An empty set is a contradiction the caller spelled out, not an absent
+    // filter: it must select nothing rather than fall open to everything.
+    let rows = scope
+        .query_audit_log(AuditFilter {
+            risks: Some(vec![]),
+            ..filter(org_id)
+        })
+        .await
+        .unwrap();
+    assert!(rows.is_empty());
+}
+
+#[tokio::test]
+async fn risk_composes_with_the_other_filters() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+    let scope = overslash_db::OrgScope::new(org_id, pool.clone());
+
+    scope
+        .log_audit_tagged(
+            tagged_entry(org_id, "action.executed"),
+            &tags(&["service:metabase", "risk:write"]),
+        )
+        .await
+        .unwrap();
+    scope
+        .log_audit_tagged(
+            tagged_entry(org_id, "action.executed"),
+            &tags(&["service:github", "risk:write"]),
+        )
+        .await
+        .unwrap();
+
+    let rows = scope
+        .query_audit_log(AuditFilter {
+            risks: Some(vec!["write".into()]),
+            tags: Some(tags(&["service:metabase"])),
+            ..filter(org_id)
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].tags.contains(&"service:metabase".to_string()));
+}
+
+#[tokio::test]
+async fn risk_is_org_scoped() {
+    let pool = common::test_pool().await;
+    let a = insert_org(&pool).await;
+    let b = insert_org(&pool).await;
+
+    overslash_db::OrgScope::new(a, pool.clone())
+        .log_audit_tagged(tagged_entry(a, "action.executed"), &tags(&["risk:delete"]))
+        .await
+        .unwrap();
+
+    let rows = overslash_db::OrgScope::new(b, pool.clone())
+        .query_audit_log(AuditFilter {
+            risks: Some(vec!["delete".into()]),
+            ..filter(b)
+        })
+        .await
+        .unwrap();
+    assert!(rows.is_empty());
+}
+
 #[tokio::test]
 async fn tag_contains_matches_any_single_tag() {
     let pool = common::test_pool().await;

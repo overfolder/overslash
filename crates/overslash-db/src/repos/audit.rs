@@ -33,6 +33,11 @@ pub struct AuditRow {
     /// resolves to the human the audit table's User column shows. Falls back to
     /// the actor's own name when the actor is a user (their `owner_id` is NULL).
     pub owner_user_name: Option<String>,
+    /// Effective risk of the gated call — `read`, `write` or `delete` — read
+    /// off the `risk:` tag at write time. `None` for events outside the
+    /// action/approval path, and for rows written before migration 104 when
+    /// the tag did not yet exist.
+    pub risk: Option<String>,
 }
 
 pub struct AuditEntry<'a> {
@@ -86,6 +91,15 @@ pub(crate) async fn log_tagged(
     // Both names come out NULL when there is no actor or the identity is gone,
     // which is what the LEFT JOIN they replace produced. See D59 for why the
     // row keeps the *historical* name.
+    //
+    // `risk` is read back out of the tags rather than passed in. It is the same
+    // value either way — `call_tags` mints the `risk:` tag from the effective
+    // risk — but derived here it cannot drift from the tag, and the replay and
+    // expiry paths (which act on an approval minted hours earlier and hold no
+    // live `Risk`) get the classification their approver actually saw. NULL for
+    // the untagged control-plane sites, which is the boundary `tags` already
+    // draws.
+    let risk = overslash_core::tags::risk_of(tags).map(|r| r.to_string());
     sqlx::query!(
         "WITH actor AS (
              SELECT i.name AS actor_name,
@@ -95,8 +109,8 @@ pub(crate) async fn log_tagged(
                       ON owner.id = i.owner_id AND owner.org_id = i.org_id
               WHERE i.id = $2 AND i.org_id = $1
          )
-         INSERT INTO audit_log (org_id, identity_id, action, resource_type, resource_id, detail, description, ip_address, impersonated_by_identity_id, tags, actor_name, owner_user_name)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+         INSERT INTO audit_log (org_id, identity_id, action, resource_type, resource_id, detail, description, ip_address, impersonated_by_identity_id, tags, risk, actor_name, owner_user_name)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
                 (SELECT actor_name FROM actor),
                 (SELECT owner_user_name FROM actor)",
         entry.org_id,
@@ -109,6 +123,7 @@ pub(crate) async fn log_tagged(
         entry.ip_address,
         impersonated_by_identity_id,
         tags,
+        risk,
     )
     .execute(pool)
     .await?;
@@ -187,6 +202,18 @@ pub struct AuditFilter {
     /// Substring (case-insensitive) against any one tag. Powers `tag ~`, which
     /// is how you find `table:warehouse/orders` without knowing the db label.
     pub tag_contains: Option<String>,
+    /// Allowed values of `audit_log.risk` (`a.risk = ANY($n)`).
+    ///
+    /// **OR**, where `tags` ANDs — and the difference is not an inconsistency.
+    /// Tags narrow along independent axes, so requiring all of them is what a
+    /// user means. Risk is a single axis with mutually exclusive values, so an
+    /// AND would always be empty.
+    ///
+    /// Ordered questions arrive here too: `?risk_min=write` and the search
+    /// bar's `risk >= write` are expanded to their set by the handler, so this
+    /// one predicate serves `=`, `!=` and `>=` alike and the `read < write <
+    /// delete` ladder stays defined only in `Risk::at_least`.
+    pub risks: Option<Vec<String>>,
     pub limit: i64,
     /// Keyset cursor: return rows strictly older than `(before, before_id)` in
     /// `(created_at DESC, id DESC)` order. `before_id` breaks ties between rows
@@ -262,6 +289,7 @@ pub(crate) async fn query_filtered(
     let kinds = filter.identity_kinds.as_deref();
     let tags = filter.tags.as_deref();
     let tag_like = filter.tag_contains.as_deref().map(|q| format!("%{q}%"));
+    let risks = filter.risks.as_deref();
     // No join. `identities` used to be LEFT JOINed twice to reach the actor's
     // name and their owner's; both are columns on the row since migration 110.
     // What remains of the identity lookup — kind and ownership — moved into
@@ -270,7 +298,7 @@ pub(crate) async fn query_filtered(
     // of the 2.5 s a no-match search used to take, paid once per candidate row.
     sqlx::query_as!(
         AuditRow,
-        "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at, a.impersonated_by_identity_id, a.tags, a.actor_name, a.owner_user_name
+        "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at, a.impersonated_by_identity_id, a.tags, a.actor_name, a.owner_user_name, a.risk
          FROM audit_log a
          WHERE a.org_id = $1
            AND ($2::text IS NULL OR a.action = $2)
@@ -335,6 +363,11 @@ pub(crate) async fn query_filtered(
            -- the other ILIKE filters.
            AND ($24::text IS NULL
                 OR EXISTS (SELECT 1 FROM unnest(a.tags) t WHERE t ILIKE $24))
+           -- Served by idx_audit_log_org_risk, which is partial on
+           -- `risk IS NOT NULL`. `= ANY` of non-NULL values can never want the
+           -- excluded rows, so the partial index still covers every query that
+           -- reaches this conjunct.
+           AND ($28::text[] IS NULL OR a.risk = ANY($28))
            -- Keyset cursor, in two conjuncts on purpose. The first is a plain
            -- range bound idx_audit_log_org_created_id serves as a starting
            -- point; a row-comparison `(created_at, id) < ($26, $27)` is not
@@ -382,6 +415,7 @@ pub(crate) async fn query_filtered(
         q_prune,
         filter.before,
         filter.before_id,
+        risks,
     )
     .fetch_all(pool)
     .await
