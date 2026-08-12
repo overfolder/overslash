@@ -72,6 +72,9 @@ pub fn parse_template_parts(
         // Parts-based CRUD has no `hidden` input — the flag lives in the
         // stored OpenAPI doc and is honored wherever that doc is compiled.
         hidden: false,
+        // Same for the icon, except the implicit rule still applies: a
+        // parts-built definition whose key matches a shipped asset gets it.
+        icon: crate::service_icon::ServiceIcon::implicit_for_key(key),
         auth,
         // Likewise no `secrets` input: credential slots live in the stored
         // OpenAPI doc. An auth entry whose template names an undeclared slot

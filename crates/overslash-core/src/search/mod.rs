@@ -177,6 +177,7 @@ mod tests {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![ServiceAuth::Secret {
                 template: None,
                 slots: Vec::new(),

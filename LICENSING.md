@@ -10,12 +10,14 @@ repository are released under different licenses.
 |------|---------|-------|
 | `/` (everything except the exceptions below) | **Elastic License 2.0** | Source available. Free to use, self-host, modify, and use commercially — except you may not offer Overslash as a hosted/managed service to third parties. |
 | `services/*.yaml` | **MIT** | Service registry definitions for third-party APIs. Freely reusable, including in proprietary or competing products. |
+| `assets/service-icons/` | **No licence granted** | Third-party trademarks, included to identify the vendor products our service templates integrate with. Overspiral S.L. does not own them and cannot sublicense them — see [`assets/service-icons/NOTICE.md`](assets/service-icons/NOTICE.md). |
 | SDKs / client libraries | *To be determined* | We expect to release SDKs under a more permissive license (likely Apache-2.0 or MIT). This will be settled before the first SDK release. |
 
 Full license texts:
 
 - Elastic License 2.0 — see [`LICENSE`](LICENSE)
 - MIT (service YAMLs) — see [`services/LICENSE`](services/LICENSE)
+- Trademark notice (service icons) — see [`assets/service-icons/NOTICE.md`](assets/service-icons/NOTICE.md)
 
 ## What you can do under the Elastic License 2.0
 
@@ -47,6 +49,10 @@ a commercial license.
   when these definitions can flow freely between projects.
 - The **SDKs** will be permissively licensed so customers can embed them in
   any application without legal review.
+- The **service icons** are carved out of both licences because they are marks we
+  do not own. They are shipped under nominative use — identifying the vendor
+  product a template integrates with — and no licence to them travels with this
+  repository.
 
 ## Contributing
 

@@ -9,6 +9,9 @@ openapi: 3.1.0
 info:
   title: GitHub (Legacy OAuth)
   key: github_legacy_oauth
+  # The only shipped template whose key does not match its asset: it reuses
+  # GitHub's mark rather than shipping a second copy under another name.
+  icon: builtin:github
   category: Development
   x-overslash-hidden: true
 servers:

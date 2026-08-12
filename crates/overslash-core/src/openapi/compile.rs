@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use crate::service_icon::ServiceIcon;
 use crate::template_validation::ValidationIssue;
 use crate::types::{Runtime, ServiceAction, ServiceDefinition};
 
@@ -78,6 +79,40 @@ pub fn compile_service(
             false
         }
     };
+
+    // Catalog icon. Warnings, not errors, for the same reason as `hidden`
+    // above: `ServiceRegistry::load_from_dir` skips a whole file when compile
+    // fails, and refusing to load a service over a malformed logo is strictly
+    // the worse failure.
+    //
+    // An absent or unusable value falls through to the implicit rule: a
+    // template whose key matches a shipped asset gets `builtin:<key>` for
+    // free. Resolving it here rather than at response time is what lets a
+    // derived layer inherit it — `apply_delta` keys off the *layer's* name, so
+    // a later lookup would find no asset and silently drop the base's icon.
+    let authored_icon = match info.and_then(|i| i.get("x-overslash-icon")) {
+        None => None,
+        Some(Value::String(raw)) => match ServiceIcon::try_from(raw.clone()) {
+            Ok(icon) => Some(icon),
+            Err(e) => {
+                warnings.push(ValidationIssue::new(
+                    "openapi_invalid",
+                    format!("x-overslash-icon: {e}"),
+                    "info.x-overslash-icon",
+                ));
+                None
+            }
+        },
+        Some(other) => {
+            warnings.push(ValidationIssue::new(
+                "openapi_invalid",
+                format!("x-overslash-icon must be a string (got {other})"),
+                "info.x-overslash-icon",
+            ));
+            None
+        }
+    };
+    let icon = authored_icon.or_else(|| ServiceIcon::implicit_for_key(&key));
 
     // Service-wide upstream timeout default. Warnings, not errors: an
     // unparseable value here would otherwise refuse to load a whole template
@@ -230,6 +265,7 @@ pub fn compile_service(
             hosts,
             category,
             hidden,
+            icon,
             auth,
             secrets,
             config,
@@ -251,8 +287,108 @@ pub fn compile_service(
 mod tests {
     use super::*;
     use crate::openapi::normalize_aliases;
+    use crate::service_icon::ServiceIcon;
     use crate::types::{McpAuth, Risk, Runtime, ServiceAuth};
     use serde_json::json;
+
+    // --- icon ---------------------------------------------------------
+
+    fn compile_icon(
+        info_extra: serde_json::Value,
+        key: &str,
+    ) -> (Option<ServiceIcon>, Vec<String>) {
+        let mut info = json!({"title": "Test", "x-overslash-key": key});
+        if let (Some(dst), Some(src)) = (info.as_object_mut(), info_extra.as_object()) {
+            for (k, v) in src {
+                dst.insert(k.clone(), v.clone());
+            }
+        }
+        let mut v = json!({"openapi": "3.1.0", "info": info, "paths": {}});
+        assert!(normalize_aliases(&mut v).is_empty());
+        let (def, warnings) = compile_service(&v).unwrap();
+        (def.icon, warnings.into_iter().map(|w| w.code).collect())
+    }
+
+    #[test]
+    fn icon_accepts_both_authored_forms() {
+        let (icon, warnings) = compile_icon(json!({"icon": "builtin:github"}), "anything");
+        assert_eq!(
+            icon,
+            Some(ServiceIcon::Builtin {
+                slug: "github".into()
+            })
+        );
+        assert!(warnings.is_empty());
+
+        let (icon, _) = compile_icon(json!({"icon": "https://cdn.example.com/a.svg"}), "anything");
+        assert_eq!(
+            icon,
+            Some(ServiceIcon::Remote {
+                url: "https://cdn.example.com/a.svg".into()
+            })
+        );
+    }
+
+    #[test]
+    fn icon_is_implicit_when_the_key_matches_a_shipped_asset() {
+        // The common case: the shipped templates declare no `icon:` at all.
+        let (icon, warnings) = compile_icon(json!({}), "github");
+        assert_eq!(
+            icon,
+            Some(ServiceIcon::Builtin {
+                slug: "github".into()
+            })
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn icon_is_absent_when_nothing_matches() {
+        let (icon, warnings) = compile_icon(json!({}), "no_such_service");
+        assert_eq!(icon, None);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn authored_icon_beats_the_implicit_one() {
+        // Precedence runs the useful way round: a template keyed `github` that
+        // deliberately names another icon keeps the one it named.
+        let (icon, _) = compile_icon(
+            json!({"icon": "https://cdn.example.com/fork.svg"}),
+            "github",
+        );
+        assert_eq!(
+            icon,
+            Some(ServiceIcon::Remote {
+                url: "https://cdn.example.com/fork.svg".into()
+            })
+        );
+    }
+
+    #[test]
+    fn malformed_icon_warns_and_still_compiles() {
+        // A whole template must not fail to load over a typo'd logo — the
+        // registry skips any file that fails to compile.
+        let (icon, warnings) = compile_icon(json!({"icon": 42}), "no_such_service");
+        assert_eq!(icon, None);
+        assert_eq!(warnings, vec!["openapi_invalid"]);
+
+        let (icon, warnings) = compile_icon(json!({"icon": "  "}), "no_such_service");
+        assert_eq!(icon, None);
+        assert_eq!(warnings, vec!["openapi_invalid"]);
+    }
+
+    #[test]
+    fn malformed_icon_falls_through_to_the_implicit_one() {
+        let (icon, warnings) = compile_icon(json!({"icon": ""}), "github");
+        assert_eq!(
+            icon,
+            Some(ServiceIcon::Builtin {
+                slug: "github".into()
+            })
+        );
+        assert_eq!(warnings, vec!["openapi_invalid"]);
+    }
 
     #[test]
     fn compile_non_object_root_errors() {

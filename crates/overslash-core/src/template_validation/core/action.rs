@@ -726,6 +726,7 @@ mod tests {
             hosts: vec![],
             category: Some("platform".into()),
             hidden: false,
+            icon: None,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Platform,

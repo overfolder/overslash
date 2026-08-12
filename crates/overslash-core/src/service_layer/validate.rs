@@ -24,6 +24,13 @@ pub fn validate_delta(
 ) -> ValidationReport {
     let mut issues = Issues::default();
 
+    // `display_name` and `description` need no checking — they are inert
+    // strings. `icon` is not: it is the one delta field that becomes a URL the
+    // operator's browser loads, so the standalone path's https-only rule has to
+    // hold here too or the derived-layer write path is an unvalidated back door
+    // into it.
+    crate::template_validation::check_service_icon(delta.icon.as_ref(), "icon", &mut issues);
+
     // The base's FULL keyset (there is no hidden-vs-visible split once compiled;
     // every base action key is off-limits for an extension).
     let base_keys: HashSet<&str> = base.actions.keys().map(String::as_str).collect();
@@ -177,6 +184,37 @@ mod tests {
     use crate::service_layer::{ActionPatch, ExtensionAction, Extensions, InstanceDefaults};
     use crate::types::Risk;
     use std::collections::HashMap;
+
+    #[test]
+    fn validate_rejects_a_non_https_delta_icon() {
+        // The derived-layer write path must not be a way around the standalone
+        // path's https-only rule.
+        let base = base_with(&[("a", Risk::Read)]);
+        for raw in ["javascript:alert(1)", "http://example.com/a.svg"] {
+            let delta = Delta {
+                icon: Some(crate::service_icon::ServiceIcon::try_from(raw.to_string()).unwrap()),
+                ..Default::default()
+            };
+            let report = validate_delta(&delta, &base, false);
+            assert!(!report.valid, "{raw} should be rejected");
+            assert!(report.errors.iter().any(|e| e.code == "invalid_icon"));
+        }
+    }
+
+    #[test]
+    fn validate_accepts_an_https_delta_icon() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            icon: Some(
+                crate::service_icon::ServiceIcon::try_from(
+                    "https://cdn.acme.test/logo.svg".to_string(),
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        assert!(validate_delta(&delta, &base, false).valid);
+    }
 
     #[test]
     fn validate_rejects_risk_clamp_down() {

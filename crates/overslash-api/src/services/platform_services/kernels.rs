@@ -147,9 +147,16 @@ pub async fn kernel_list_services(
                 };
                 derive_credentials_status(tpl, scopes, &row.credentials, row.secret_name.as_deref())
             });
+            let icon_url = template.and_then(|tpl| {
+                crate::services::icon_url::resolve_icon_url(
+                    tpl.icon.as_ref(),
+                    &ctx.config.public_url,
+                )
+            });
             let groups = groups_by_service.remove(&row.id).unwrap_or_default();
             let mut summary = row_to_summary(row, groups);
             summary.credentials_status = credentials_status;
+            summary.icon_url = icon_url;
             summary
         })
         .collect();
@@ -189,8 +196,17 @@ pub async fn kernel_get_service(
     let credentials_status =
         compute_credentials_status(&ctx.db, &ctx.registry, &scope, &row, row.owner_identity_id)
             .await;
+    let icon_url = resolve_instance_icon_url(
+        &ctx.db,
+        &ctx.registry,
+        &row,
+        row.owner_identity_id,
+        &ctx.config.public_url,
+    )
+    .await;
     let mut detail = row_to_detail(row);
     detail.credentials_status = credentials_status;
+    detail.icon_url = icon_url;
     Ok(detail)
 }
 

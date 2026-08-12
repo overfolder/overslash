@@ -14,6 +14,7 @@ pub mod permissions;
 pub mod registry;
 pub mod search;
 pub mod secret_injection;
+pub mod service_icon;
 pub mod service_layer;
 pub mod sql_policy;
 pub mod tags;

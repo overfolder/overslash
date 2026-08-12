@@ -871,13 +871,14 @@ Templates live in a three-tier registry:
 
 ### Template Definition
 
-Templates are authored as OpenAPI 3.1 documents. The AI-gateway-specific fields that OpenAPI cannot express natively live under the `x-overslash-*` vendor-extension namespace: `risk`, `scope_param`, `resolve`, `aliases`, `provider`, `default_secret_name`, `sql-field`, `sql-database`. For authoring ergonomics, the same keys may also be written without the prefix (just `risk:`, `scope_param:`, etc.) — the backend normalizes aliases to their canonical `x-overslash-*` form on load and before persist. Ambiguous documents (both forms present on the same object) are rejected with a stable `ambiguous_alias` error.
+Templates are authored as OpenAPI 3.1 documents. The AI-gateway-specific fields that OpenAPI cannot express natively live under the `x-overslash-*` vendor-extension namespace: `risk`, `scope_param`, `resolve`, `aliases`, `provider`, `default_secret_name`, `sql-field`, `sql-database`, `icon`. For authoring ergonomics, the same keys may also be written without the prefix (just `risk:`, `scope_param:`, etc.) — the backend normalizes aliases to their canonical `x-overslash-*` form on load and before persist. Ambiguous documents (both forms present on the same object) are rejected with a stable `ambiguous_alias` error.
 
 ```yaml
 openapi: 3.1.0
 info:
   title: Google Calendar
   key: google_calendar              # alias for x-overslash-key
+                                    # icon: implicit — `google_calendar.svg` is shipped
 servers:
   - url: https://www.googleapis.com
 components:
@@ -934,6 +935,7 @@ paths:
 - **`x-overslash-default_secret_name` / `default_secret_name:`** — on an `apiKey` or `http` security scheme, the canonical secret name for auto-wiring. Templates are expected to declare **either** an OAuth scheme **or** an apiKey/http scheme with this field — OAuth templates don't fall back to a secret.
 - **`x-overslash-timeout_ms` / `timeout_ms:`** — on an operation (or MCP tool), how long that action is expected to need upstream, in milliseconds. A **default, not a cap**: it encodes knowledge about the upstream ("Metabase aggregations are slow"), and the org and deployment maxima still clamp it. Omitted, the action inherits the service default, then the org default, then the deployment default. A value that is present but not a positive integer is a template *error*, not a silent fallback. See §8 for the full cascade.
 - **`x-overslash-default_timeout_ms` / `default_timeout_ms:`** — under `info`, the same thing one rung less specific: the timeout every action of this service inherits unless it declares its own. The one-line answer to "this whole upstream is slow".
+- **`x-overslash-icon` / `icon:`** — under `info`, the mark the dashboard shows for this service. Two forms: `builtin:<name>`, an asset Overslash ships and serves at `/icons/<name>.svg`, and an `https://` URL hosted elsewhere. **Usually omitted**: a template whose key matches a shipped asset resolves to `builtin:<key>` implicitly, which is why the shipped templates declare nothing. Explicit values are for the two cases the convention can't express — a key that deliberately differs from the asset it reuses (`github_legacy_oauth`), or a remote URL. Resolved server-side and surfaced as an absolute `icon_url` on the template and service-instance responses; a template with nothing renderable omits the field, and the dashboard falls back to a letter tile. Only `https://` ever reaches a browser — `http:`, `data:` and `javascript:` are template *errors*, checked both at write time and again when the response is built. Overslash never fetches a remote icon (that would be an SSRF vector and a boot-time network dependency), so there is no size or format validation of one. `${VAR}` expansion applies like anywhere else, which is how a self-hoster points the set at their own CDN. Icons are deliberately **not** on `/v1/search`: it fans out up to 100 rows per (instance × action) and the field would cost an agent's context window for something no model can render.
 - **Platform-namespace actions** — `x-overslash-platform_actions` (alias `platform_actions:`) at the top level declares permission anchors with no HTTP binding (e.g. the `overslash` meta service's admin actions).
 
 ### OAuth Scopes

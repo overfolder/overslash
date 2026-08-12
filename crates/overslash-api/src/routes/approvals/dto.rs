@@ -148,6 +148,7 @@ mod risk_tests {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             actions,
             runtime: Runtime::Http,

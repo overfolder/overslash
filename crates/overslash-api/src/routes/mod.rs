@@ -14,6 +14,7 @@ pub mod events;
 pub mod executions;
 pub mod groups;
 pub mod health;
+pub mod icons;
 pub mod identities;
 pub mod mcp;
 pub mod oauth;

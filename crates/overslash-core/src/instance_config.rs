@@ -182,6 +182,7 @@ mod tests {
             hosts: vec!["api.example.com".into()],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             secrets: vec![],
             actions: HashMap::from([("a".to_string(), action)]),

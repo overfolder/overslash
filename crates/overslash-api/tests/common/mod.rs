@@ -747,6 +747,7 @@ where
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::icons::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::executions::router())

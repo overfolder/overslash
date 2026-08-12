@@ -24,6 +24,7 @@ use overslash_core::template_validation::{
 };
 use overslash_core::types::{ActionParam, DeclaredRisk, ScopeParamRef, ServiceDefinition};
 
+use crate::services::icon_url::resolve_icon_url;
 use crate::services::platform_services::{ScopeCoverage, ScopeKnowledge, action_scope_coverage};
 use crate::services::platform_templates::{
     self, MAX_TEMPLATE_YAML_BYTES, delete_active_template_inner, kernel_import_template,
@@ -290,6 +291,7 @@ async fn db_row_to_detail(
         description: def.description.clone().filter(|s| !s.is_empty()),
         category: def.category.clone().filter(|s| !s.is_empty()),
         hosts: def.hosts.clone(),
+        icon_url: resolve_icon_url(def.icon.as_ref(), &state.config.public_url),
         auth,
         secrets: def.all_slots(),
         openapi: openapi_yaml,
@@ -436,6 +438,7 @@ struct RowSummary {
     hosts: Vec<String>,
     action_count: usize,
     hidden: bool,
+    icon: Option<overslash_core::service_icon::ServiceIcon>,
     warnings: usize,
 }
 
@@ -454,6 +457,7 @@ async fn resolved_summary(
                 hosts: d.hosts,
                 action_count: d.actions.len(),
                 hidden: d.hidden,
+                icon: d.icon,
                 warnings: r.warnings.len(),
             }
         }
@@ -465,6 +469,10 @@ async fn resolved_summary(
             hosts: t.hosts.clone(),
             action_count: 0,
             hidden: false,
+            // The denormalized columns carry no icon, and the letter tile is a
+            // more honest rendering of "this template does not resolve" than a
+            // mark implying it does.
+            icon: None,
             warnings: 0,
         },
     }

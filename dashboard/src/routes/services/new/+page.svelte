@@ -22,6 +22,7 @@
 	} from '$lib/types';
 	import { listSecrets } from '$lib/api/secrets';
 	import { connectViaPopup, PopupBlockedError } from '$lib/oauth-connect';
+	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import TemplateCard from '$lib/components/services/TemplateCard.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
@@ -577,6 +578,7 @@
 					<p class="muted">Loading…</p>
 				{:else if selectedDetail}
 					<div class="preview-head">
+						<ServiceIcon src={selectedDetail.icon_url} name={selectedDetail.display_name} size={28} />
 						<h2>{selectedDetail.display_name}</h2>
 						<StatusBadge variant={selectedDetail.tier} />
 						<a

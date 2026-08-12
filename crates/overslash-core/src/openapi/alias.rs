@@ -78,6 +78,10 @@ pub(super) const INFO_ALIASES: &[Alias] = &[
         canonical: "x-overslash-hidden",
     },
     Alias {
+        alias: "icon",
+        canonical: "x-overslash-icon",
+    },
+    Alias {
         alias: "default_timeout_ms",
         canonical: "x-overslash-default_timeout_ms",
     },
@@ -342,7 +346,8 @@ mod tests {
     #[test]
     fn rewrites_alias_on_info() {
         let mut v = doc(json!({
-            "info": {"key": "slack", "category": "chat", "hidden": true, "title": "Slack"}
+            "info": {"key": "slack", "category": "chat", "hidden": true, "title": "Slack",
+                     "icon": "builtin:slack"}
         }));
         let issues = normalize_aliases(&mut v);
         assert!(issues.is_empty(), "{issues:?}");
@@ -350,8 +355,23 @@ mod tests {
         assert_eq!(info["x-overslash-key"], "slack");
         assert_eq!(info["x-overslash-category"], "chat");
         assert_eq!(info["x-overslash-hidden"], true);
+        assert_eq!(info["x-overslash-icon"], "builtin:slack");
         assert!(!info.contains_key("key"));
         assert!(!info.contains_key("hidden"));
+        assert!(!info.contains_key("icon"));
+    }
+
+    #[test]
+    fn both_icon_spellings_on_one_info_is_ambiguous() {
+        let mut v = doc(json!({
+            "info": {"title": "Slack", "icon": "builtin:slack",
+                     "x-overslash-icon": "https://example.com/a.svg"}
+        }));
+        let issues = normalize_aliases(&mut v);
+        assert!(
+            issues.iter().any(|i| i.code == "ambiguous_alias"),
+            "{issues:?}"
+        );
     }
 
     /// The unprefixed spelling must work on an MCP tool's params, not just at

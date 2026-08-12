@@ -31,6 +31,7 @@
 		TemplateDetail
 	} from '$lib/types';
 	import { listSecrets } from '$lib/api/secrets';
+	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConnectionAvatar from '$lib/components/connections/ConnectionAvatar.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
@@ -734,17 +735,20 @@
 		<p class="muted">Service not found.</p>
 	{:else}
 		<header class="head">
-			<div>
-				<h1>{svc.name}</h1>
-				<div class="sub">
-					<span class="mono">{svc.template_key}</span>
-					<StatusBadge variant={svc.template_source as 'global' | 'org' | 'user'} />
-					<StatusBadge variant={svc.status} />
-					{#if svc.credentials_status === 'needs_reconnect'}
-						<StatusBadge variant="needs-reconnect" label="needs reconnection" />
-					{:else if svc.credentials_status === 'partially_degraded'}
-						<StatusBadge variant="partially-degraded" label="partial scopes" />
-					{/if}
+			<div class="title-block">
+				<ServiceIcon src={svc.icon_url} name={svc.name} size={40} />
+				<div>
+					<h1>{svc.name}</h1>
+					<div class="sub">
+						<span class="mono">{svc.template_key}</span>
+						<StatusBadge variant={svc.template_source as 'global' | 'org' | 'user'} />
+						<StatusBadge variant={svc.status} />
+						{#if svc.credentials_status === 'needs_reconnect'}
+							<StatusBadge variant="needs-reconnect" label="needs reconnection" />
+						{:else if svc.credentials_status === 'partially_degraded'}
+							<StatusBadge variant="partially-degraded" label="partial scopes" />
+						{/if}
+					</div>
 				</div>
 			</div>
 			<div class="head-actions">
@@ -1270,6 +1274,12 @@
 		color: var(--color-text-muted);
 		text-decoration: none;
 		margin-bottom: 0.5rem;
+	}
+	.title-block {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		min-width: 0;
 	}
 	.head {
 		display: flex;
