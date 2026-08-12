@@ -1,0 +1,174 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH claimed AS (\n             SELECT id FROM executions\n              WHERE status = 'pending'\n                AND request IS NOT NULL\n                AND expires_at > now()\n              ORDER BY created_at\n              LIMIT $3\n              FOR UPDATE SKIP LOCKED\n         )\n         UPDATE executions e\n            SET status = 'executing',\n                worker_id = $1,\n                started_at = now(),\n                lease_expires_at = now() + make_interval(secs => $2)\n           FROM claimed c\n          WHERE e.id = c.id\n         RETURNING e.id, e.org_id, e.identity_id, e.approval_id,\n                   e.request AS \"request!\", e.service_key, e.service_instance_id,\n                   e.attempts, e.tags, e.render_verbose, e.template_key,\n                   e.description, e.client_ip",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "approval_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "approval_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "request!",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "request"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "service_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "service_key"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "service_instance_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "service_instance_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "tags",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "tags"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "render_verbose",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "render_verbose"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "template_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "template_key"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "client_ip",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "client_ip"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Float8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "c9f46d68e5bab020e4797196a0d632b5edfcddfcd904fc1522a638551d3f85e9"
+}

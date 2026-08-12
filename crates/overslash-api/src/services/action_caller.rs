@@ -193,6 +193,42 @@ pub enum AuditSource {
         approval_id: Uuid,
         execution_id: Uuid,
     },
+    /// Run off the request path by the async worker. There may be no approval
+    /// — a call can be async without ever having been gated — so only the
+    /// execution id is stamped.
+    Async {
+        execution_id: Uuid,
+    },
+}
+
+impl AuditSource {
+    /// Stamp the cross-reference keys that let an `action.executed` row be
+    /// traced back to whatever is tracking the call.
+    ///
+    /// Centralised because the buffered path, the error path, the streamed
+    /// path, and `stored_call` all need identical key names, and a fourth
+    /// hand-rolled copy is how they would drift.
+    pub fn stamp_refs(&self, detail: &mut serde_json::Value) {
+        let Some(obj) = detail.as_object_mut() else {
+            return;
+        };
+        match *self {
+            AuditSource::Direct => {}
+            AuditSource::Replay {
+                approval_id,
+                execution_id,
+            } => {
+                obj.insert(
+                    "replayed_from_approval".to_string(),
+                    serde_json::json!(approval_id),
+                );
+                obj.insert("execution_id".to_string(), serde_json::json!(execution_id));
+            }
+            AuditSource::Async { execution_id } => {
+                obj.insert("execution_id".to_string(), serde_json::json!(execution_id));
+            }
+        }
+    }
 }
 
 pub struct CallContext<'a> {
@@ -481,20 +517,7 @@ pub async fn call_action_request(
             .expect("audit_detail is a json object")
             .insert("filter".to_string(), filter_audit);
     }
-    if let AuditSource::Replay {
-        approval_id,
-        execution_id,
-    } = ctx.audit_source
-    {
-        let obj = audit_detail
-            .as_object_mut()
-            .expect("audit_detail is a json object");
-        obj.insert(
-            "replayed_from_approval".to_string(),
-            serde_json::json!(approval_id),
-        );
-        obj.insert("execution_id".to_string(), serde_json::json!(execution_id));
-    }
+    ctx.audit_source.stamp_refs(&mut audit_detail);
 
     let _ = OrgScope::new(ctx.scope.org_id(), ctx.state.db.clone())
         .log_audit(AuditEntry {
@@ -580,20 +603,7 @@ async fn log_transport_error_audit(
         "service": ctx.service_key,
         "action": ctx.action_key,
     });
-    if let AuditSource::Replay {
-        approval_id,
-        execution_id,
-    } = ctx.audit_source
-    {
-        let obj = audit_detail
-            .as_object_mut()
-            .expect("audit_detail is a json object");
-        obj.insert(
-            "replayed_from_approval".to_string(),
-            serde_json::json!(approval_id),
-        );
-        obj.insert("execution_id".to_string(), serde_json::json!(execution_id));
-    }
+    ctx.audit_source.stamp_refs(&mut audit_detail);
 
     let _ = OrgScope::new(ctx.scope.org_id(), ctx.state.db.clone())
         .log_audit(AuditEntry {
@@ -637,20 +647,7 @@ async fn write_stream_audit(
                 serde_json::json!({ "skipped": "streamed" }),
             );
     }
-    if let AuditSource::Replay {
-        approval_id,
-        execution_id,
-    } = ctx.audit_source
-    {
-        let obj = audit_detail
-            .as_object_mut()
-            .expect("audit_detail is a json object");
-        obj.insert(
-            "replayed_from_approval".to_string(),
-            serde_json::json!(approval_id),
-        );
-        obj.insert("execution_id".to_string(), serde_json::json!(execution_id));
-    }
+    ctx.audit_source.stamp_refs(&mut audit_detail);
 
     let _ = OrgScope::new(ctx.scope.org_id(), ctx.state.db.clone())
         .log_audit(AuditEntry {

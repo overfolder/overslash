@@ -15,10 +15,7 @@ use crate::{
     AppState,
     error::AppError,
     extractors::{AuthContext, ClientIp},
-    services::{
-        action_caller::{StoredCallRequest, StoredMcpCall, StoredPlatformCall},
-        call_timeout::CallTimeout,
-    },
+    services::call_timeout::CallTimeout,
 };
 use overslash_core::{
     permissions::{PermissionKey, suggest_tiers},
@@ -122,57 +119,22 @@ pub(super) async fn enforce_permission_chain(
                 let (response_action_detail, action_detail_truncated, action_detail_size_bytes) =
                     crate::routes::approvals::render_action_detail(redacted_detail.as_ref());
 
-                // Raw replay payload (full ActionRequest + side-channel fields)
-                // stored separately from action_detail so the replay at
-                // POST /v1/approvals/{id}/call reproduces the agent's
+                // Raw replay payload (full ActionRequest + side-channel
+                // fields) stored separately from action_detail so the replay
+                // at POST /v1/approvals/{id}/call reproduces the agent's
                 // original request faithfully — including jq `filter` and
                 // `prefer_stream` — even when `action_detail` has been
                 // redacted via x-overslash-redact for reviewer display.
                 //
-                // MCP-runtime approvals get a different shape (StoredMcpCall)
-                // disambiguated at parse time by the top-level `tool` key.
-                // Platform-runtime gets StoredPlatformCall, disambiguated by
-                // an explicit top-level `runtime: "platform"` marker.
-                let replay_payload = if let Some(pt) = meta.platform_target.as_ref() {
-                    serde_json::to_value(StoredPlatformCall {
-                        runtime: "platform".into(),
-                        service: meta.service_scope.as_ref().map(|s| s.service_key.clone()),
-                        action: pt.action_key.clone(),
-                        params: pt.params.clone(),
-                    })
-                    .ok()
-                } else if let Some(target) = meta.mcp_target.as_ref() {
-                    serde_json::to_value(StoredMcpCall {
-                        url: target.url.clone(),
-                        auth: target.auth.clone(),
-                        tool: target.tool.clone(),
-                        arguments: target.arguments.clone(),
-                    })
-                    .ok()
-                } else {
-                    // `action_req` is credential-free (the live OAuth header
-                    // rides on `auth_header`, which has no Serialize impl).
-                    // Record the service/instance the credential resolved
-                    // from — exactly when one resolved — so the replay path
-                    // re-mints a fresh token instead of persisting this one.
-                    let (replay_service_key, replay_instance_id) = if auth_header_present {
-                        (
-                            meta.service_scope.as_ref().map(|s| s.service_key.clone()),
-                            meta.instance_id,
-                        )
-                    } else {
-                        (None, None)
-                    };
-                    serde_json::to_value(StoredCallRequest::new(
-                        action_req.clone(),
-                        req.filter.clone(),
-                        req.prefer_stream.unwrap_or(false),
-                        replay_service_key,
-                        replay_instance_id,
-                        Some(call_timeout.ms()),
-                    ))
-                    .ok()
-                };
+                // Shared with the async fork in `call`, so a gated async call
+                // and a direct one provably store the same thing.
+                let replay_payload = super::replay_payload::build(
+                    meta,
+                    req,
+                    action_req,
+                    auth_header_present,
+                    call_timeout,
+                );
 
                 // The same tag set the execution will inherit and the audit
                 // rows will carry — minted once, here, so an approval can

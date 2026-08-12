@@ -389,6 +389,9 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         // Hoisted out of the task: it is constant for the process lifetime, and
         // reading it inside the `async move` would drag the whole `Config` in.
         let orphan_grace = state.config.orphan_execution_grace_secs();
+        let async_cfg = state.config.async_execution.clone();
+        let async_queue_ttl = state.config.execution_pending_ttl_secs as i64;
+        let async_wall = state.config.async_orphan_grace_secs();
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
@@ -416,6 +419,34 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     "orphan_execution_reap",
                     system.expire_orphaned_executions(orphan_grace),
                     |n| tracing::info!("Reaped {n} orphaned executing executions"),
+                )
+                .await;
+                // Async rows are excluded from the reap above (`request IS NULL`)
+                // because a worker-run job may legitimately run for many
+                // minutes while heartbeating. Liveness for those is the lease,
+                // not `started_at`, so they get their own three sweeps.
+                //
+                // Requeue and exhaust are disjoint by construction (`<` vs
+                // `>=` on attempts), so the order here does not matter.
+                instrumented_step(
+                    "async_lease_requeue",
+                    system.requeue_expired_async_leases(async_cfg.max_attempts, async_queue_ttl),
+                    |n| tracing::info!("Requeued {n} async executions with expired leases"),
+                )
+                .await;
+                instrumented_step(
+                    "async_attempts_exhausted",
+                    system.fail_exhausted_async_executions(async_cfg.max_attempts),
+                    |n| tracing::info!("Failed {n} async executions that ran out of attempts"),
+                )
+                .await;
+                // Backstop for a worker alive enough to heartbeat but wedged on
+                // an upstream that never answers — without this it would hold
+                // its lease forever and neither sweep above would see the row.
+                instrumented_step(
+                    "async_wall_clock",
+                    system.fail_async_executions_over_wall(async_wall),
+                    |n| tracing::info!("Failed {n} async executions past the wall clock"),
                 )
                 .await;
                 instrumented_step("subagent_archive", system.archive_idle_subagents(), |n| {
@@ -514,6 +545,23 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             });
         }
 
+        // Async execution worker. Spawned only when the flag is on, so a
+        // flag-off deployment installs neither the worker nor a signal
+        // handler and behaves bit-identically to before this feature.
+        //
+        // The signal handler exists solely so the worker can hand its leases
+        // back before Cloud Run's SIGKILL — it is deliberately not wired into
+        // `axum::serve(...).with_graceful_shutdown(...)`; see
+        // `services::shutdown` for why draining HTTP would be worse than
+        // useless here.
+        if state.config.async_execution.enabled {
+            services::shutdown::install_signal_handler();
+            tokio::spawn(services::async_executor::run(
+                state.clone(),
+                background_db.clone(),
+            ));
+        }
+
         // DB pool stats poller — emits gauge every 30s. Deliberately reports
         // the *request-handler* pool (`state.db`), the one whose saturation
         // drops user-facing requests; the background pool is small and bounded
@@ -575,6 +623,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::permissions::router())
         .merge(routes::actions::router())
         .merge(routes::approvals::router())
+        .merge(routes::executions::router())
         .merge(routes::audit::router())
         .merge(routes::webhooks::router())
         .merge(routes::search::router())

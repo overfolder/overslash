@@ -114,8 +114,8 @@ pub(super) async fn dispatch_read(
             // `get_events`, which forward straight to `/v1/approvals...` and
             // never reach the gate; those three are read-only by construction
             // (GET, no kernel).
-            "list_pending" | "get_result" | "get_events" | "list_services" | "get_service"
-            | "list_templates" | "get_template" => {
+            "list_pending" | "get_result" | "get_execution" | "get_events" | "list_services"
+            | "get_service" | "list_templates" | "get_template" => {
                 dispatch_overslash_platform(state, bearer, action, args, Some("read")).await
             }
             other => Err(format!(
@@ -143,6 +143,7 @@ pub(super) async fn dispatch_read(
     insert_deliver(&mut body, args);
     insert_timeout_ms(&mut body, args);
     insert_filter(&mut body, args);
+    insert_execution_mode(&mut body, args);
     forward(
         state,
         bearer,
@@ -198,6 +199,16 @@ fn insert_filter(body: &mut serde_json::Map<String, Value>, args: &Value) {
         None => f.clone(),
     };
     body.insert("filter".into(), value);
+}
+
+/// Forward the caller's `execution` mode, when they set one.
+///
+/// Absent stays absent rather than defaulting to `"sync"`: the API
+/// distinguishes the two so a future org-level default has somewhere to land.
+fn insert_execution_mode(body: &mut serde_json::Map<String, Value>, args: &Value) {
+    if let Some(m) = args.get("execution").filter(|v| !v.is_null()) {
+        body.insert("execution".into(), m.clone());
+    }
 }
 
 /// Read the caller-supplied `verbose: bool` tool argument, defaulting to
@@ -257,6 +268,7 @@ pub(super) async fn dispatch_call(
     insert_deliver(&mut body, args);
     insert_timeout_ms(&mut body, args);
     insert_filter(&mut body, args);
+    insert_execution_mode(&mut body, args);
     forward(
         state,
         bearer,
@@ -327,6 +339,24 @@ async fn dispatch_overslash_platform(
                 .and_then(Value::as_str)
                 .ok_or_else(|| "cancel_pending requires params.approval_id".to_string())?;
             let path = format!("/v1/approvals/{}/cancel", urlencoding::encode(id));
+            forward(state, bearer, Method::POST, &path, None).await
+        }
+        // Async executions are addressed by their own id, not an approval's —
+        // a direct async call has no approval to name.
+        "get_execution" => {
+            let id = params
+                .and_then(|p| p.get("execution_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| "get_execution requires params.execution_id".to_string())?;
+            let path = format!("/v1/executions/{}", urlencoding::encode(id));
+            forward(state, bearer, Method::GET, &path, None).await
+        }
+        "cancel_execution" => {
+            let id = params
+                .and_then(|p| p.get("execution_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| "cancel_execution requires params.execution_id".to_string())?;
+            let path = format!("/v1/executions/{}/cancel", urlencoding::encode(id));
             forward(state, bearer, Method::POST, &path, None).await
         }
         // Bridged platform kernels — forward through `/v1/actions/call` so the

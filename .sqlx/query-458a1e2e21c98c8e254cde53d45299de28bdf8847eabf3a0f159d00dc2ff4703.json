@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE executions\n            SET status = 'failed',\n                error = $3,\n                completed_at = now()\n          WHERE id = $1\n            AND org_id = $2\n            AND status = 'executing'\n          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags",
+  "query": "SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at, tags, identity_id, (request IS NOT NULL) AS \"has_request!\", service_key, service_instance_id, lease_expires_at, worker_id, attempts, cancel_requested\n         FROM executions\n         WHERE org_id = $1 AND approval_id = ANY($2)",
   "describe": {
     "columns": [
       {
@@ -178,33 +178,123 @@
             "name": "tags"
           }
         }
+      },
+      {
+        "ordinal": 16,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "has_request!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 18,
+        "name": "service_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "service_key"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "service_instance_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "service_instance_id"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "lease_expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "lease_expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "worker_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "worker_id"
+          }
+        }
+      },
+      {
+        "ordinal": 22,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 23,
+        "name": "cancel_requested",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "cancel_requested"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text"
+        "UuidArray"
       ]
     },
     "nullable": [
       false,
-      false,
-      false,
-      false,
-      false,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
       true,
       false,
       false,
+      false,
       true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      null,
+      true,
+      true,
+      true,
+      true,
+      false,
       false
     ]
   },
-  "hash": "8969e69392c46d9d41a709e40be89e4e363bfc43337b71f375e8928a627e682b"
+  "hash": "458a1e2e21c98c8e254cde53d45299de28bdf8847eabf3a0f159d00dc2ff4703"
 }

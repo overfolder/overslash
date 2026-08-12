@@ -92,8 +92,9 @@ pub struct Config {
     pub call_timeout_ms: u64,
     /// Hard ceiling on any resolved per-call timeout — the synchronous budget.
     ///
-    /// Sized to sit just under the deployment's own request cap (Cloud Run and
-    /// the load balancer both cut at 120s), so a call fails with our 504 and a
+    /// Sized to sit just under the deployment's own request cap (Cloud Run cuts
+    /// at 120s; the HTTPS LB sets no timeout, because serverless-NEG backends
+    /// reject `timeout_sec`), so a call fails with our 504 and a
     /// real audit row rather than an opaque proxy timeout. It is a *config*
     /// knob rather than a constant precisely because a self-hosted deploy
     /// behind no such proxy has no reason to inherit our 120s.
@@ -106,6 +107,8 @@ pub struct Config {
     /// timeout bounds time-to-first-byte; this bounds the gap between chunks,
     /// so a stalled transfer still dies while a slow-but-live one does not.
     pub call_stream_idle_timeout_ms: u64,
+    /// Async execution. See [`AsyncExecutionConfig`].
+    pub async_execution: AsyncExecutionConfig,
     pub services_dir: String,
     pub google_auth_client_id: Option<String>,
     pub google_auth_client_secret: Option<String>,
@@ -302,6 +305,63 @@ pub struct PlatformCredential {
     pub value: String,
 }
 
+/// Async (non-blocking) action execution — see DECISIONS D62.
+///
+/// Nested rather than five flat `Config` fields on purpose. Every `Config`
+/// field has to be repeated in the test builder and in ~14 test fixtures that
+/// list fields explicitly, so five flat knobs would be ~75 mechanical edits and
+/// every future async knob another 15. One nested field costs one line each.
+#[derive(Clone, Debug)]
+pub struct AsyncExecutionConfig {
+    /// `ASYNC_EXECUTION_ENABLED`. Off means `execution: "async"` is rejected at
+    /// the boundary and no worker or signal handler is spawned, so a
+    /// flag-off deployment behaves exactly as it did before this feature.
+    pub enabled: bool,
+    /// `ASYNC_CALL_TIMEOUT_MAX_MS`. The deployment ceiling for an async call,
+    /// passed to the same `call_timeout::resolve` the sync path uses.
+    ///
+    /// Much larger than `call_timeout_max_ms` because that number exists to sit
+    /// under a proxy's request cap, and no proxy is counting an async call. The
+    /// binding constraints instead are instance lifetime (Cloud Run may recycle
+    /// at any time) and retry economics (`max_attempts` defaults to 1, so a lost
+    /// job is a failed job).
+    pub call_timeout_max_ms: u64,
+    /// `ASYNC_WORKER_CONCURRENCY`. Jobs one replica runs at once.
+    ///
+    /// Default 2 is a *connection* budget, not a throughput guess: the request
+    /// pool (25) plus the background pool (6) is 31 per instance, and with
+    /// `max_instances = 3` that is 93 against a Postgres ceiling around 97.
+    /// Raising this requires raising `DB_BACKGROUND_MAX_CONNECTIONS` by the
+    /// same amount, and 3 x (DB_MAX_CONNECTIONS + DB_BACKGROUND_MAX_CONNECTIONS)
+    /// must stay under that ceiling.
+    pub worker_concurrency: usize,
+    /// `ASYNC_LEASE_TTL_SECS`. How long a claim stays valid without a
+    /// heartbeat. Independent of job duration — the heartbeat is what keeps a
+    /// long job alive — so this only needs to tolerate a GC pause or a slow
+    /// database, not a slow upstream.
+    pub lease_ttl_secs: u64,
+    /// `ASYNC_MAX_ATTEMPTS`. Attempts before a row that keeps losing its lease
+    /// is failed outright.
+    ///
+    /// Defaults to **1**: an action call is not idempotent and there is no
+    /// idempotency-key concept, so a POST that already reached the upstream
+    /// must not be replayed because a worker died. Operators who know their
+    /// actions are safe to retry raise it.
+    pub max_attempts: i32,
+}
+
+impl Default for AsyncExecutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            call_timeout_max_ms: 900_000,
+            worker_concurrency: 2,
+            lease_ttl_secs: 60,
+            max_attempts: 1,
+        }
+    }
+}
+
 /// Slack added to [`Config::call_timeout_max_ms`] to get the replay wall.
 ///
 /// Covers what the replay future does *after* the upstream answers — secret
@@ -326,6 +386,33 @@ impl Config {
     /// it already would have, so anything still `executing` lost its process.
     pub fn orphan_execution_grace_secs(&self) -> i64 {
         self.replay_wall_clock().as_secs() as i64 + 60
+    }
+
+    /// How often a worker renews its lease. Derived as a third of the TTL, so
+    /// a job gets three chances to renew before it is presumed dead — and so
+    /// the two can never be configured into contradiction.
+    ///
+    /// This interval also bounds cancel latency: the heartbeat's
+    /// `RETURNING cancel_requested` *is* the cancel poll, deliberately, so
+    /// "I still own this row" and "I should stop" are one atomic observation.
+    pub fn async_heartbeat_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs((self.async_execution.lease_ttl_secs / 3).max(1))
+    }
+
+    /// Outer wall-clock guard for one async job. Mirrors [`Self::replay_wall_clock`]:
+    /// the largest budget the resolver can hand out, plus slack for the work
+    /// after the upstream answers.
+    pub fn async_wall_clock(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            self.async_execution.call_timeout_max_ms + REPLAY_WALL_SLACK_MS,
+        )
+    }
+
+    /// Grace before the sweeper fails an async row that is still `executing`
+    /// past its wall. One minute past, on the same reasoning as
+    /// [`Self::orphan_execution_grace_secs`].
+    pub fn async_orphan_grace_secs(&self) -> i64 {
+        self.async_wall_clock().as_secs() as i64 + 60
     }
 
     /// Build the [`Keyring`](overslash_core::crypto::Keyring) used by every
@@ -748,6 +835,7 @@ mod tests {
 
     fn empty_test_config() -> Config {
         Config {
+            async_execution: Default::default(),
             call_stream_idle_timeout_ms: 30_000,
             call_timeout_max_ms: 110_000,
             call_timeout_ms: 30_000,

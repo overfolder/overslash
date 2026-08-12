@@ -94,3 +94,73 @@ impl OrgScope {
         crate::repos::execution::mark_viewed(self.db(), self.org_id(), id).await
     }
 }
+
+impl OrgScope {
+    /// Queue a direct async call — one with no approval behind it.
+    pub async fn create_async_execution(
+        &self,
+        input: crate::repos::execution::AsyncExecutionInput<'_>,
+    ) -> Result<ExecutionRow, sqlx::Error> {
+        crate::repos::execution::create_async_direct(self.db(), input).await
+    }
+
+    /// Queue an approved gated call that must run async. Returns
+    /// `RowNotFound` for a legacy approval with no stored payload, which the
+    /// caller treats as "fall back to a synchronous pending row".
+    pub async fn create_pending_execution_async(
+        &self,
+        approval_id: Uuid,
+        remember: bool,
+        remember_keys: Option<&[String]>,
+        remember_rule_ttl: Option<OffsetDateTime>,
+        expires_at: OffsetDateTime,
+    ) -> Result<ExecutionRow, sqlx::Error> {
+        crate::repos::execution::create_pending_async_from_approval(
+            self.db(),
+            approval_id,
+            self.org_id(),
+            remember,
+            remember_keys,
+            remember_rule_ttl,
+            expires_at,
+        )
+        .await
+    }
+
+    /// Request cancellation of an async row. Immediate from `pending`,
+    /// cooperative from `executing`. `None` when already terminal.
+    pub async fn request_execution_cancel(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ExecutionRow>, sqlx::Error> {
+        crate::repos::execution::request_cancel(self.db(), self.org_id(), id).await
+    }
+
+    /// Point read by execution id.
+    pub async fn get_execution(&self, id: Uuid) -> Result<Option<ExecutionRow>, sqlx::Error> {
+        crate::repos::execution::find_by_id(self.db(), self.org_id(), id).await
+    }
+}
+
+impl OrgScope {
+    /// List executions for `identity_id`, or for its whole subtree.
+    pub async fn list_executions_for_identity(
+        &self,
+        identity_id: Uuid,
+        subtree: bool,
+        status: Option<&str>,
+        origin: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ExecutionRow>, sqlx::Error> {
+        crate::repos::execution::list_for_identity(
+            self.db(),
+            self.org_id(),
+            identity_id,
+            subtree,
+            status,
+            origin,
+            limit,
+        )
+        .await
+    }
+}

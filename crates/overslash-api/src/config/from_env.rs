@@ -74,9 +74,10 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .filter(|n| *n > 0)
                 .unwrap_or(30_000),
-            // Just under the 120s both Cloud Run and the load balancer cut at,
-            // so we return our own 504 with an audit row rather than letting a
-            // proxy drop the connection anonymously.
+            // Just under the 120s Cloud Run cuts at, so we return our own 504
+            // with an audit row rather than letting the proxy drop the
+            // connection anonymously. (The HTTPS LB sets no timeout of its
+            // own — serverless-NEG backends reject `timeout_sec`.)
             call_timeout_max_ms: env::var("CALL_TIMEOUT_MAX_MS")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -87,6 +88,32 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .filter(|n| *n > 0)
                 .unwrap_or(30_000),
+            async_execution: crate::config::AsyncExecutionConfig {
+                enabled: env::var("ASYNC_EXECUTION_ENABLED")
+                    .ok()
+                    .map(|v| matches!(v.as_str(), "true" | "1" | "yes"))
+                    .unwrap_or(false),
+                call_timeout_max_ms: env::var("ASYNC_CALL_TIMEOUT_MAX_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(900_000),
+                worker_concurrency: env::var("ASYNC_WORKER_CONCURRENCY")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(2),
+                lease_ttl_secs: env::var("ASYNC_LEASE_TTL_SECS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(60),
+                max_attempts: env::var("ASYNC_MAX_ATTEMPTS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(1),
+            },
             services_dir: env::var("SERVICES_DIR").unwrap_or_else(|_| "services".into()),
             google_auth_client_id: env::var("GOOGLE_AUTH_CLIENT_ID").ok(),
             google_auth_client_secret: env::var("GOOGLE_AUTH_CLIENT_SECRET").ok(),

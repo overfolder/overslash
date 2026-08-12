@@ -1,9 +1,15 @@
 //! HTTP-runtime replay — the `ReplayPayload::Http` branch of
 //! `execute_claimed_approval`.
+//!
+//! The dialling itself lives in [`crate::services::stored_call`], shared with
+//! the async worker. What stays here is the half that is genuinely
+//! approval-specific: owning the `executions` row and turning an outcome into
+//! the tuple the metrics / audit / webhook tail consumes.
 
 use super::*;
 
 use crate::services::call_timeout::CallTimeout;
+use crate::services::stored_call::{self, StoredCallCtx, StoredOutcome};
 
 use super::replay::fail_and_return;
 
@@ -30,115 +36,67 @@ pub(super) async fn replay_http(
     replay_timeout: std::time::Duration,
     replay_tpl: &str,
 ) -> Result<(ExecutionRow, bool, bool, Option<serde_json::Value>)> {
-    // Replay payloads are credential-free: when the original call
-    // carried an OAuth header, only the service/instance it resolved
-    // from was stored. Re-resolve a fresh token against the
-    // requester's identity now — the stored request never holds one,
-    // and the original token could have expired while the approval
-    // sat pending. Pre-fix rows have no `service_key` and replay
-    // their baked-in headers as-is.
-    let auth_header = match stored.service_key.as_deref() {
-        Some(service_key) => {
-            match crate::routes::actions::resolve_replay_auth_header(
-                state,
-                ext,
-                scope,
-                approval.identity_id,
-                service_key,
-                stored.instance_id,
-            )
-            .await
-            {
-                Ok(h) => Some(h),
-                Err(e) => {
-                    let msg = format!("replay auth re-resolution failed: {e}");
-                    return fail_and_return(scope, execution_id, &msg, e).await;
-                }
-            }
-        }
-        None => None,
-    };
-
-    // ── Replay with timeout. Streaming is forced off — the reviewer's
-    // connection isn't the original caller's.
-    let call_ctx = CallContext {
+    let ctx = StoredCallCtx {
         state,
+        ext,
         scope,
+        org_id: scope.org_id(),
         identity_id: approval.identity_id, // requester identity for audit/rate-limit
         ip,
         description: Some(approval.action_summary.as_str()),
-        service_key: None,
-        action_key: None,
-        filter: stored.filter.clone(),
-        prefer_stream: false,
+        tags: &approval.tags,
         audit_source: AuditSource::Replay {
             approval_id: id,
             execution_id,
         },
         audit_body_mode,
-        timeout: call_timeout,
+        timeout: Some(call_timeout),
+        wall: replay_timeout,
+        metrics_tpl: replay_tpl,
     };
 
-    let outcome = tokio::time::timeout(
-        replay_timeout,
-        action_caller::call_action_request(call_ctx, &stored.action, auth_header.as_ref()),
+    finalize(
+        scope,
+        claimed,
+        execution_id,
+        stored_call::run_stored(ctx, ReplayPayload::Http(stored)).await,
     )
-    .await;
+    .await
+}
 
+/// Turn a [`StoredOutcome`] into the replay tuple, writing the terminal
+/// execution row. Shared by all three runtime branches so the row can only
+/// reach a terminal state one way.
+pub(super) async fn finalize(
+    scope: &OrgScope,
+    claimed: ExecutionRow,
+    execution_id: Uuid,
+    outcome: StoredOutcome,
+) -> Result<(ExecutionRow, bool, bool, Option<serde_json::Value>)> {
     Ok(match outcome {
-        Ok(Ok(CallOutcome::Buffered { result, .. })) => {
-            // Upstream actually responded — count it, same as the
-            // inline buffered path. Transport failures land in the
-            // Ok(Err(..)) arm below and record nothing here.
-            overslash_metrics::actions::record_upstream_response(
-                replay_tpl,
-                "http",
-                overslash_metrics::actions::status_class(result.status_code),
-            );
-            let mut result_json = serde_json::to_value(&result)
-                .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
-            if stored.prefer_stream
-                && let Some(obj) = result_json.as_object_mut()
-            {
-                obj.insert("streamed_originally".into(), serde_json::Value::Bool(true));
-            }
-            let summary = serde_json::json!({
-                "status_code": result.status_code,
-                "duration_ms": result.duration_ms,
-            });
-            let upstream_errored = result.status_code >= 500;
+        StoredOutcome::Executed {
+            result,
+            upstream_errored,
+            summary,
+        } => {
             let finalised = scope
-                .finalize_execution_executed(execution_id, &result_json)
+                .finalize_execution_executed(execution_id, &result)
                 .await?
                 .unwrap_or(claimed);
             (finalised, true, upstream_errored, Some(summary))
         }
-        Ok(Ok(CallOutcome::Streamed(_))) => {
-            // Defensive: replay forces prefer_stream=false so this variant is
-            // unreachable in practice. Record as failed rather than silently
-            // dropping the response.
-            let msg = "replay unexpectedly produced a streaming response";
+        StoredOutcome::Failed { message } => {
             let finalised = scope
-                .finalize_execution_failed(execution_id, msg)
+                .finalize_execution_failed(execution_id, &message)
                 .await?
                 .unwrap_or(claimed);
             (finalised, false, false, None)
         }
-        Ok(Err(app_err)) => {
-            let msg = app_err.to_string();
-            let finalised = scope
-                .finalize_execution_failed(execution_id, &msg)
-                .await?
-                .unwrap_or(claimed);
-            (finalised, false, false, None)
-        }
-        Err(_elapsed) => {
-            let msg = "replay_timeout";
-            let finalised = scope
-                .finalize_execution_failed(execution_id, msg)
-                .await?
-                .unwrap_or(claimed);
-            (finalised, false, false, None)
+        // Credential re-resolution failed: mark the row and surface the error
+        // to the HTTP caller, which is what `/approvals/{id}/call` has always
+        // done for this class.
+        StoredOutcome::Rejected { message, error } => {
+            return fail_and_return(scope, execution_id, &message, error).await;
         }
     })
 }

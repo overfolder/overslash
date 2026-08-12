@@ -210,6 +210,7 @@ fn build_shared_router(state: AppState) -> axum::Router {
         .merge(routes::actions::router())
         .merge(routes::actions::validate_router())
         .merge(routes::approvals::router())
+        .merge(routes::executions::router())
         .merge(routes::audit::router())
         .merge(routes::webhooks::router())
         .merge(routes::services::router())
@@ -281,6 +282,7 @@ fn build_shared_state(registry: Arc<SharedRouterRegistry>, addr: SocketAddr) -> 
 
 fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
     overslash_api::config::Config {
+        async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,

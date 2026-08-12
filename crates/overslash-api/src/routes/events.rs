@@ -93,8 +93,11 @@ async fn events_stream(
     Query(query): Query<StreamQuery>,
 ) -> Result<Response> {
     let topics = parse_topics(query.topics.as_deref()).map_err(|unknown| {
+        // Derived from `Topic::ALL`, not spelled out: a hardcoded list is
+        // exactly how this message fell behind the topic set before.
         AppError::BadRequest(format!(
-            "unknown topic '{unknown}': expected any of 'approvals', 'connections', 'secrets'"
+            "unknown topic '{unknown}': expected any of {}",
+            crate::services::events::types::topic_names()
         ))
     })?;
 

@@ -96,3 +96,5 @@ alert_email       = "alert@overslash.com"
 
 read_oauth_credentials_from_env = false
 
+# Async (non-blocking) action calls. Off until validated on dev.
+enable_async_execution = false

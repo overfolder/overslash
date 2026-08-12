@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions SET created_at = now() - make_interval(secs => $2) WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "43eaa2f08d31924cdc641e14470067c46c70ab4075aaece3b4c014904e6a9f90"
+}

@@ -50,17 +50,21 @@ use overslash_core::{
 };
 
 mod approval_detail;
+mod async_accept;
 mod auth;
 mod auth_envelopes;
 mod auth_resolve;
 mod auth_scopes;
 mod call;
+mod call_mcp;
 mod deferred;
 mod dto;
 mod errors;
 mod filter_apply;
+mod flags;
 mod mcp_resolve;
 mod permission_gate;
+mod replay_payload;
 mod resolve;
 mod resolve_encode;
 mod resolve_metadata;
@@ -460,7 +464,7 @@ fn render_action_result(result: &ActionResult, verbose: Option<bool>) -> serde_j
 /// error on every failure path, so a full disk cannot turn a successful call
 /// into a 500. The envelope then carries the unstored hint, which is exactly
 /// the pre-D57 behaviour.
-async fn render_stored(
+pub(in crate::routes::actions) async fn render_stored(
     state: &AppState,
     ext: &axum::http::Extensions,
     result: &ActionResult,

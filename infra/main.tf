@@ -160,6 +160,7 @@ module "cloud_run" {
   enable_dev_auth           = var.enable_dev_auth
   enable_live_map           = var.enable_live_map
   enable_magic_link         = var.enable_magic_link
+  enable_async_execution    = var.enable_async_execution
   extra_api_domain_mappings = var.extra_api_domain_mappings
 
   overslash_env               = var.env

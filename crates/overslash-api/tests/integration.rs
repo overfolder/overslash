@@ -23,6 +23,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
 
     let config = overslash_api::config::Config {
         call_result_max_bytes: 1024 * 1024,
+        async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -1762,6 +1763,7 @@ async fn test_service_registry_api() {
     // Start API with real service registry loaded
     let config = overslash_api::config::Config {
         call_result_max_bytes: 1024 * 1024,
+        async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -2801,6 +2803,7 @@ async fn start_api_with_registry(
 
     let config = overslash_api::config::Config {
         call_result_max_bytes: 1024 * 1024,
+        async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,

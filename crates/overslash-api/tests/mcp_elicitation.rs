@@ -1147,6 +1147,7 @@ async fn await_completion_returns_cancelled_on_timeout() {
 /// signing key as `start_api`, so JWTs minted here are accepted there.
 async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
     let config = overslash_api::config::Config {
+        async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,

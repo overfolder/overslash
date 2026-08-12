@@ -228,6 +228,12 @@ pub(super) async fn tools_list_response(
                     "filter": {
                         "type": "string",
                         "description": "A jq expression applied to the response body server-side, so only what it selects enters your context. Use it to project the fields you need out of a list endpoint (e.g. `[.data[] | {id, name}]`) instead of pulling every field of every row. Note it narrows what you *receive*, not what the upstream *sends*: a response that exceeds the gateway's size cap fails before the filter runs, so pair it with the action's own paging/limit parameters. Cannot be combined with `deliver: \"url\"`. Only takes effect on fresh calls (service + action)."
+                    },
+                    "execution": {
+                        "type": "string",
+                        "enum": ["sync", "async"],
+                        "default": "sync",
+                        "description": "Whether to wait for the result. `sync` (default) returns the upstream response in this tool result, bounded by the deployment's request cap. `async` accepts the call and returns immediately with `status: \"accepted\"` and an `execution_id`; the call runs in the background and you fetch the outcome with `overslash_read` `get_execution`, polling until its status is terminal. Use it for work that takes longer than a tool call should block on — a large export, a slow analytics query, a batch job — and in particular when a synchronous call was rejected for exceeding the timeout ceiling. Not available with prefer_stream, deliver: \"url\", return_url, platform actions, or actions that return binary. Only takes effect on fresh calls (service + action); ignored when approval_id is set."
                     }
                 },
                 "additionalProperties": false

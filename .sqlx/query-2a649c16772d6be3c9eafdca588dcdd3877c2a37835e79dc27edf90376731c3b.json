@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO executions (approval_id, org_id, identity_id, status, expires_at, created_at)\n             VALUES ($1, $2, $3, 'executed', now() + interval '1 hour', now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2a649c16772d6be3c9eafdca588dcdd3877c2a37835e79dc27edf90376731c3b"
+}

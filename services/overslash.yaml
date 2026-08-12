@@ -106,6 +106,24 @@ platform_actions:
       requesting agent or any resolver with write access may cancel.
     risk: write
 
+  get_execution:
+    description: >
+      Fetch the outcome of an async action call — one made with
+      execution: "async". Requires params.execution_id (string), which came
+      back in the accepted response. Returns the status
+      (pending | executing | executed | failed | cancelled | expired), the
+      result body, error, and http_status_code. Poll this until the status is
+      terminal. Reading here is also what marks the output as read.
+    risk: read
+  cancel_execution:
+    description: >
+      Cancel an async action call. Requires params.execution_id (string).
+      A call that has not started yet is cancelled outright; one already in
+      flight stops being waited on, but the upstream request has already been
+      sent and cannot be recalled — cancelling means you will not get the
+      result, not that nothing happened.
+    risk: write
+
   ping:
     description: "Ping the platform runtime (no-op health check)"
     risk: read

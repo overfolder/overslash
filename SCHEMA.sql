@@ -93,6 +93,8 @@ CREATE TABLE public.approvals (
     disclosed_fields jsonb,
     replay_payload jsonb,
     tags text[] DEFAULT '{}'::text[] NOT NULL,
+    execution_mode text DEFAULT 'sync'::text NOT NULL,
+    CONSTRAINT approvals_execution_mode_check CHECK ((execution_mode = ANY (ARRAY['sync'::text, 'async'::text]))),
     CONSTRAINT approvals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'allowed'::text, 'denied'::text, 'expired'::text])))
 );
 
@@ -362,7 +364,7 @@ ALTER SEQUENCE public.events_id_seq OWNED BY public.events.id;
 
 CREATE TABLE public.executions (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
-    approval_id uuid NOT NULL,
+    approval_id uuid,
     org_id uuid NOT NULL,
     status text NOT NULL,
     remember boolean DEFAULT false NOT NULL,
@@ -377,6 +379,20 @@ CREATE TABLE public.executions (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     result_viewed_at timestamp with time zone,
     tags text[] DEFAULT '{}'::text[] NOT NULL,
+    identity_id uuid NOT NULL,
+    request jsonb,
+    service_key text,
+    service_instance_id uuid,
+    lease_expires_at timestamp with time zone,
+    worker_id text,
+    attempts integer DEFAULT 0 NOT NULL,
+    cancel_requested boolean DEFAULT false NOT NULL,
+    render_verbose boolean,
+    template_key text,
+    description text,
+    client_ip text,
+    CONSTRAINT executions_attempts_nonneg CHECK ((attempts >= 0)),
+    CONSTRAINT executions_has_origin CHECK (((approval_id IS NOT NULL) OR (request IS NOT NULL))),
     CONSTRAINT executions_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'executing'::text, 'executed'::text, 'failed'::text, 'cancelled'::text, 'expired'::text])))
 );
 
@@ -1633,7 +1649,28 @@ CREATE INDEX idx_connections_provider ON public.connections USING btree (org_id,
 -- Name: idx_executions_approval_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_executions_approval_id ON public.executions USING btree (approval_id);
+CREATE UNIQUE INDEX idx_executions_approval_id ON public.executions USING btree (approval_id) WHERE (approval_id IS NOT NULL);
+
+
+--
+-- Name: idx_executions_async_lease; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_async_lease ON public.executions USING btree (lease_expires_at) WHERE ((status = 'executing'::text) AND (request IS NOT NULL));
+
+
+--
+-- Name: idx_executions_async_queue; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_async_queue ON public.executions USING btree (created_at) WHERE ((status = 'pending'::text) AND (request IS NOT NULL));
+
+
+--
+-- Name: idx_executions_identity_recent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_identity_recent ON public.executions USING btree (org_id, identity_id, created_at DESC);
 
 
 --

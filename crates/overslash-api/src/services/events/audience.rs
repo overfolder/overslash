@@ -48,6 +48,23 @@ fn merge(into: &mut Vec<Uuid>, ids: impl IntoIterator<Item = Uuid>) {
 /// keeps seeing what its sub-agents are doing. Bubbling usually places the
 /// resolver on the requester's own chain, so in practice the two collapse into
 /// one list.
+/// Executions: identical to [`for_approval`], and deliberately delegating to
+/// it rather than restating the rule.
+///
+/// An async execution may have no approval, in which case `resolver_id` is
+/// `None` and the audience is just the requester's chain — which is correct,
+/// because with no gate there was never a resolver with a claim on the result.
+/// When there *was* an approval, whoever approved it has a legitimate interest
+/// in how it turned out, so their chain comes along exactly as it does for the
+/// approval's own events.
+pub async fn for_execution(
+    scope: &OrgScope,
+    requester_id: Uuid,
+    resolver_id: Option<Uuid>,
+) -> Vec<Uuid> {
+    for_approval(scope, requester_id, resolver_id).await
+}
+
 pub async fn for_approval(
     scope: &OrgScope,
     requester_id: Uuid,

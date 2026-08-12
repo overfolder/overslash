@@ -16,7 +16,7 @@ use crate::{
     extractors::{AuthContext, CallerTransport, ClientIp, ReqExt},
     services::{
         audit_capture::{self, AuditResponseBodyMode},
-        call_timeout, group_ceiling, http_caller, mcp_caller,
+        call_timeout, group_ceiling, http_caller,
         response_filter::{self},
     },
 };
@@ -54,13 +54,10 @@ pub(super) async fn call_action_impl(
     // Reject filter + streaming up front — silently dropping the filter
     // could let an agent think it's getting a small slice and instead
     // pipe a multi-MB stream into its context window.
-    if req.prefer_stream.unwrap_or(false) && req.filter.is_some() {
-        return Err(AppError::BadRequest(
-            "filter cannot be combined with prefer_stream".into(),
-        ));
-    }
-
-    let deliver_url = deferred::validate_flags(&req)?;
+    let super::flags::RequestFlags {
+        deliver_url,
+        is_async,
+    } = super::flags::validate_request(&req)?;
 
     // Validate filter syntax before any upstream call so a malformed
     // expression is a clean 400 — not a wasted upstream quota burn.
@@ -98,6 +95,12 @@ pub(super) async fn call_action_impl(
     // the template / instance from the DB.
     let (pre_meta, pre_resolved_mode_c) =
         resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
+    // Rejections that only become visible once the template is known — a
+    // platform action has nothing to defer, and a binary body would be
+    // corrupted on its way into the row. Above argument coercion for the same
+    // reason the argument gate sits above the permission walk: the cheapest
+    // structurally-impossible answer first.
+    super::flags::validate_resolved(&req, pre_resolved_mode_c.as_ref())?;
     // Rewrite template-declared parameter aliases (e.g. `to` → `recipient`) to
     // their canonical names first, so defaults, coercion, validation, the
     // approval replay payload, and resolution all see canonical keys only.
@@ -416,169 +419,51 @@ pub(super) async fn call_action_impl(
     // metrics wrapper in `mod.rs` applies to `record_execution`.
     let upstream_tpl = super::bounded_template_key(&state.registry, req.service.as_deref());
 
-    // ── MCP dispatch fork ────────────────────────────────────────────
-    // Mcp-runtime services skip the HTTP executor: no URL templating, no
-    // secret injection into headers, no streaming path. The executor owns
-    // header resolution through mcp_auth::resolve_headers.
-    if let Some(mcp_target) = meta.mcp_target.as_ref() {
-        let mut result = match mcp_caller::invoke(
+    // ── Async fork ───────────────────────────────────────────────────
+    // Everything above is validation, resolution, and authorisation; the forks
+    // below are the only code that dials anything. Sitting exactly between them
+    // is what makes "async runs the same call, just not on this connection"
+    // structurally true — and why this is a field on CallRequest, not a second
+    // endpoint. See `async_accept` and DECISIONS D62.
+    if is_async {
+        return super::async_accept::accept(
             &state,
+            &ext,
             &scope,
-            &mcp_target.url,
-            &mcp_target.auth,
-            &mcp_target.tool,
-            &mcp_target.arguments,
-            mcp_target.auth_header.as_ref(),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(invoke_err) => {
-                // Transport / JSON-RPC failures used to bubble out with no
-                // audit trail at all. Record the attempt with a secret-safe
-                // error summary before propagating; pre-flight failures
-                // (header resolution, SSRF guard) carry no summary and keep
-                // the old no-row behavior.
-                if let Some(error_detail) = invoke_err.audit {
-                    let _ = scope
-                        .clone()
-                        .log_audit_tagged(
-                            AuditEntry {
-                                org_id: auth.org_id,
-                                identity_id: Some(identity_id),
-                                action: "action.executed",
-                                resource_type: req.service.as_deref(),
-                                resource_id: None,
-                                detail: serde_json::json!({
-                                    "runtime": "mcp",
-                                    "tool": mcp_target.tool,
-                                    "arguments": mcp_target.arguments,
-                                    "url": mcp_target.url,
-                                    "is_error": true,
-                                    "error": error_detail,
-                                    "service": req.service,
-                                    "action": req.action,
-                                }),
-                                description: meta.description.as_deref(),
-                                ip_address: ip.0.as_deref(),
-                            },
-                            &tags::with_outcome(call_tags.clone(), true),
-                        )
-                        .await;
-                }
-                return Err(invoke_err.app);
-            }
-        };
-
-        // Build the shared MCP audit shape, then layer on inline-only
-        // fields (service/action/disclosed). Replay uses the same helper
-        // from approvals.rs to keep the two surfaces from drifting.
-        let (is_error, mut audit_detail) = mcp_caller::build_audit_detail(
-            &result,
-            &mcp_target.tool,
-            &mcp_target.url,
-            &mcp_target.arguments,
-        );
-        // An MCP tool has no upstream size cap to dodge, but it has the same
-        // context budget as an HTTP one — a `list` tool returning 500 rows is
-        // the same problem. Applied after the audit shape is built so the
-        // org-gated `response` capture still records what the tool returned,
-        // not what the caller chose to look at.
-        let filter_audit = filter_apply::apply_to(&state, &req, &mut result).await;
-        filter_apply::record(&mut audit_detail, filter_audit);
-        // Transport + JSON-RPC succeeded (failures short-circuit above via
-        // AppError::BadGateway and record nothing here); the tool's in-band
-        // error flag is the only "upstream status" MCP has.
-        overslash_metrics::actions::record_upstream_response(
+            &auth,
+            identity_id,
+            &req,
+            &meta,
+            &action_req,
+            auth_header.is_some(),
+            call_timeout,
+            &call_tags,
+            ip.0.as_deref(),
             &upstream_tpl,
-            "mcp",
-            if is_error { "error" } else { "2xx" },
-        );
-        {
-            let obj = audit_detail
-                .as_object_mut()
-                .expect("audit_detail is a json object");
-            obj.insert("service".into(), serde_json::json!(req.service));
-            obj.insert("action".into(), serde_json::json!(req.action));
-            // Org-gated response capture: for MCP the "body" is the stable
-            // result envelope (runtime/tool/structured/content/is_error).
-            if audit_capture::should_capture(audit_body_mode, is_error) {
-                obj.insert(
-                    "response".into(),
-                    audit_capture::capture_body(
-                        &result.body,
-                        Some("application/json"),
-                        state.config.audit_response_body_max_bytes,
-                    ),
-                );
-            }
-        }
-
-        // Disclosure + redaction: MCP actions can declare the same
-        // `disclose` / `redact` blocks HTTP actions do. compute_approval_detail
-        // has an MCP branch that builds a tool/arguments projection; we
-        // reuse it here so both audit and approval surfaces stay consistent.
-        let filter_timeout = std::time::Duration::from_millis(state.config.filter_timeout_ms);
-        let (disclosed_fields, _redacted_detail) =
-            compute_approval_detail(&meta, &action_req, filter_timeout).await;
-
-        if !disclosed_fields.is_empty() {
-            audit_detail
-                .as_object_mut()
-                .expect("audit detail is a json object")
-                .insert(
-                    "disclosed".into(),
-                    serde_json::to_value(&disclosed_fields).unwrap_or_default(),
-                );
-        }
-
-        let _ = scope
-            .clone()
-            .log_audit_tagged(
-                AuditEntry {
-                    org_id: auth.org_id,
-                    identity_id: Some(identity_id),
-                    action: "action.executed",
-                    resource_type: req.service.as_deref(),
-                    resource_id: None,
-                    detail: audit_detail,
-                    description: meta.description.as_deref(),
-                    ip_address: ip.0.as_deref(),
-                },
-                &tags::with_outcome(call_tags.clone(), is_error),
-            )
-            .await;
-
-        // Deferred delivery. See `deferred::swap_in_mcp_download` for why a
-        // failed tool result is never minted from.
-        if deliver_url && !is_error {
-            deferred::swap_in_mcp_download(
-                &state,
-                &ext,
-                &mut result,
-                auth.org_id,
-                identity_id,
-                mcp_target,
-                &meta,
-                &req,
-            )
-            .await?;
-        }
-
-        let rendered = render_stored(&state, &ext, &result, &req, auth.org_id, identity_id).await;
-        let mut resp = (
-            StatusCode::OK,
-            Json(CallResponse::Called {
-                result: rendered,
-                action_description: meta.description,
-                is_error,
-            }),
         )
-            .into_response();
-        if is_error {
-            resp.extensions_mut().insert(UpstreamErrored);
-        }
-        return Ok(resp);
+        .await;
+    }
+
+    // ── MCP dispatch fork ────────────────────────────────────────────
+    // A whole runtime branch that returns its own response; see `call_mcp`.
+    if let Some(mcp_target) = meta.mcp_target.as_ref() {
+        return super::call_mcp::dispatch(
+            &state,
+            &ext,
+            &scope,
+            &auth,
+            identity_id,
+            &req,
+            &meta,
+            mcp_target,
+            &action_req,
+            ip.0.as_deref(),
+            call_tags,
+            &upstream_tpl,
+            audit_body_mode,
+            deliver_url,
+        )
+        .await;
     }
 
     // ── Platform dispatch fork ───────────────────────────────────────

@@ -109,6 +109,7 @@ async fn read_billing(pool: &PgPool, org_id: Uuid) -> (String, Option<OffsetDate
 // banner-only test can drive the rate-limit middleware in isolation.
 async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
     let config = overslash_api::config::Config {
+        async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
