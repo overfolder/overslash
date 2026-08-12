@@ -30,6 +30,15 @@ struct Fixture {
 
 /// Create an approval, allow it, run it, and mint a same-org stranger.
 async fn fixture(pool: sqlx::PgPool) -> Fixture {
+    fixture_triggered_by(pool, true).await
+}
+
+/// `requester_triggers` decides who dispatches the approved call, and with it
+/// whether the result starts marked read: a requester-triggered `/call` hands
+/// the body straight back and stamps it (see `replay.rs`), while a
+/// resolver-triggered one deliberately does not — the agent still has not seen
+/// it. Tests about the unread surface need the latter.
+async fn fixture_triggered_by(pool: sqlx::PgPool, requester_triggers: bool) -> Fixture {
     common::allow_loopback_ssrf();
     let mock = common::start_mock().await;
     let (addr, client) = common::start_api(pool).await;
@@ -88,12 +97,14 @@ async fn fixture(pool: sqlx::PgPool) -> Fixture {
         .send()
         .await
         .unwrap();
+    let trigger_key = if requester_triggers {
+        requester_key.clone()
+    } else {
+        admin_key.clone()
+    };
     client
         .post(format!("{base}/v1/approvals/{approval_id}/call"))
-        .header(
-            common::auth(&requester_key).0,
-            common::auth(&requester_key).1,
-        )
+        .header(common::auth(&trigger_key).0, common::auth(&trigger_key).1)
         .send()
         .await
         .unwrap();
@@ -297,4 +308,50 @@ async fn cancelling_a_sync_execution_points_at_the_approval_endpoint() {
         !text.contains("no longer in a cancellable state"),
         "a sync row must not be reported as uncancellable: {text}"
     );
+}
+
+/// The first requester read reports `output_read: true`, and a supervisor's
+/// read does not stamp it on the agent's behalf.
+///
+/// `GET /v1/executions/{id}` stamps `result_viewed_at` and must then describe
+/// the row as it now is. Reporting the pre-stamp value would leave a client
+/// showing "unread" for something the server already considers read — and would
+/// disagree with `/v1/approvals/{id}/execution`, which re-fetches. Two
+/// endpoints serving the same DTO answering differently makes the field
+/// unusable.
+#[tokio::test]
+async fn reading_an_execution_reports_it_as_read() {
+    let pool = common::test_pool().await;
+    // Resolver-triggered, so the result starts genuinely unread — a
+    // requester-triggered `/call` would have stamped it already.
+    let f = fixture_triggered_by(pool, false).await;
+
+    let (_, approval) = get(
+        &f,
+        &format!("/v1/approvals/{}", f.approval_id),
+        &f.requester_key,
+    )
+    .await;
+    let exec_id = approval["execution"]["id"].as_str().unwrap();
+
+    // An admin looking at the result must not clear the agent's unread flag —
+    // that surface exists to show the agent has not collected its output.
+    let (status, body) = get(&f, &format!("/v1/executions/{exec_id}"), &f.admin_key).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["output_read"], false,
+        "a supervisor read must not mark the output read: {body}"
+    );
+
+    // The requester's own first read both stamps and reports it.
+    let (status, body) = get(&f, &format!("/v1/executions/{exec_id}"), &f.requester_key).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["output_read"], true,
+        "the read that stamped it must report it as read: {body}"
+    );
+
+    // And it stays read.
+    let (_, body) = get(&f, &format!("/v1/executions/{exec_id}"), &f.requester_key).await;
+    assert_eq!(body["output_read"], true);
 }

@@ -173,9 +173,23 @@ async fn get_execution(
         return Err(execution_access::forbidden());
     }
 
-    if acl.identity_id == Some(row.identity_id) {
-        let _ = scope.mark_execution_viewed(row.id).await;
-    }
+    // Re-read when the stamp actually lands, so `output_read` describes the row
+    // as it now is rather than as it was a statement ago. Without this the
+    // first read reports `false` while the server considers it read — and, more
+    // to the point, disagrees with `/v1/approvals/{id}/execution`, which
+    // re-fetches. Two endpoints serving the same DTO must not answer
+    // differently, or the field is not usable by a client at all.
+    //
+    // `mark_execution_viewed` returns true only on the transition, so the extra
+    // point read costs nothing on every subsequent call.
+    let row = if acl.identity_id == Some(row.identity_id) {
+        match scope.mark_execution_viewed(row.id).await {
+            Ok(true) => scope.get_execution(id).await?.unwrap_or(row),
+            _ => row,
+        }
+    } else {
+        row
+    };
     Ok(Json(ExecutionDetail::from_row(row)))
 }
 
