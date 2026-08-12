@@ -29,7 +29,7 @@ pub mod job;
 
 use std::sync::Arc;
 
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 
 use overslash_db::scopes::SystemScope;
 use sqlx::PgPool;
@@ -79,6 +79,19 @@ pub fn worker_id() -> &'static str {
 /// test resolver cleared, makes `Extensions::default()` correct by
 /// construction everywhere.
 pub async fn run(state: AppState, background_db: PgPool) {
+    run_with_shutdown(state, background_db, crate::services::shutdown::subscribe()).await
+}
+
+/// The loop proper, with its shutdown signal injected.
+///
+/// Separate from [`run`] for the same reason `job::execute` takes one: a test
+/// can drive the shutdown path with its own channel instead of tripping a
+/// `OnceLock` that every other test in the binary would then observe.
+pub async fn run_with_shutdown(
+    state: AppState,
+    background_db: PgPool,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let cfg = state.config.async_execution.clone();
 
     let mut worker_state = state.clone();
@@ -87,13 +100,22 @@ pub async fn run(state: AppState, background_db: PgPool) {
 
     let system = SystemScope::new_internal(background_db.clone());
     let sem = Arc::new(Semaphore::new(cfg.worker_concurrency));
-    let mut shutdown = crate::services::shutdown::subscribe();
 
     tracing::info!(
         worker_id = worker_id(),
         concurrency = cfg.worker_concurrency,
         "async execution worker started"
     );
+
+    // `changed()` only fires on a *transition*, and `subscribe()` marks the
+    // current value seen — so a signal that arrived before this loop subscribed
+    // would never be observed and the worker would keep claiming straight
+    // through the shutdown it was supposed to stop for. Same reasoning as the
+    // pre-check in `job::execute`; the loop needs it too.
+    if *shutdown.borrow_and_update() {
+        tracing::info!("async worker started during shutdown; not claiming");
+        return;
+    }
 
     loop {
         tokio::select! {

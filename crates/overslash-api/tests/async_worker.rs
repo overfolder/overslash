@@ -497,3 +497,39 @@ async fn an_approval_backed_execution_notifies_its_resolver() {
         "the approver who gated this call must be in the audience: {audience:?}"
     );
 }
+
+/// A worker that starts after the shutdown signal must not claim anything.
+///
+/// `changed()` fires only on a *transition* and `subscribe()` marks the current
+/// value seen, so a signal that landed before the loop subscribed would never
+/// be observed — the worker would keep claiming straight through the shutdown
+/// it exists to stop for, and ride to SIGKILL with unreleased leases.
+///
+/// This is the symmetric case of the pre-check in `job::execute`: the same bug
+/// one level up, and it survived the first fix because that fix was applied to
+/// the instance rather than to the pattern.
+#[tokio::test]
+async fn a_worker_starting_during_shutdown_claims_nothing() {
+    let pool = common::test_pool().await;
+    let (org_id, identity_id) = seed_identity(&pool).await;
+
+    let id = queue_async(&pool, org_id, identity_id).await;
+    let state = common::make_app_state(pool.clone()).await;
+
+    // Already shutting down before the loop ever subscribes.
+    let (_tx, rx) = tokio::sync::watch::channel(true);
+
+    // Must return promptly rather than spinning: the tick is 2s, so anything
+    // that observed the signal correctly is back well inside this budget.
+    let ran = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        overslash_api::services::async_executor::run_with_shutdown(state, pool.clone(), rx),
+    )
+    .await;
+    assert!(ran.is_ok(), "worker ignored a shutdown that preceded it");
+
+    // And the queued row is untouched — never claimed, so never at risk of
+    // being abandoned mid-flight by the imminent SIGKILL.
+    assert_eq!(status_of(&pool, id).await, "pending");
+    assert_eq!(attempts_of(&pool, id).await, 0);
+}
