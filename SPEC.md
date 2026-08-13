@@ -1220,6 +1220,27 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 | `yaml_parse` | YAML source could not be parsed (wrapped serde_yaml error) |
 | `schema_error` | JSON input (CRUD path) for `auth` or `actions` is structurally malformed |
 | `risk_method_mismatch` *(warning)* | read-only HTTP method (GET/HEAD/OPTIONS) is annotated with `risk: write` or `risk: delete` |
+| `unknown_extension` *(warning)* | an `x-overslash-*` key nothing in the gateway reads — a typo, or a name that only ever existed in a design doc |
+| `misplaced_extension` *(warning)* | a real extension at a position whose extractor does not read it (e.g. `x-overslash-download` on an HTTP operation — it is MCP-only) |
+| `unprefixed_alias_ignored` *(warning)* | the bare spelling of an extension at a position the alias normalizer does not rewrite (e.g. `secrets:` under `components`) |
+| `unknown_template_key` *(warning)* | an unrecognized non-`x-` key at a position whose fields are enumerated (this is what catches `response_type:` on an operation) |
+
+**Keys nothing reads (D67).** The four warnings above come from
+`openapi::lint_extensions`, which runs on the alias-normalized document at every
+entry point. They are **warnings on every path, never errors**: an error at
+registry load would *skip* the template, and a missing service is worse than an
+ignored field, while an error on update would make an already-active stored
+template un-saveable. `shipped_services_lint_clean` is what keeps a shipped
+template from regressing, and `template_resolve` re-reports them against the
+stored document so a row written before the lint existed becomes visible.
+
+Position is authoritative, not just spelling: `openapi::ext` records which
+position reads each extension, and every extractor reads through it. Positions
+whose sibling keys are vocabulary Overslash does not own — request-body and MCP
+tool-input schema properties, a pasted `discovered_tools` snapshot, a
+platform-action param, an unrecognized security-scheme `type` — are open-world
+for bare keys, so a payload field genuinely named `risk` or `template` is never
+reported. Foreign vendor extensions (`x-amazon-*`, `x-ms-*`) are always ignored.
 
 **Grammar notes.** `[optional segment]` in descriptions is **flat only** — nested `[` inside `[...]` is rejected. A `{param}` placeholder inside a description or `[...]` segment must reference a param defined on the same action. The runtime interpolator in `overslash-core::description` uses the same shared grammar primitives (`overslash-core::description_grammar`) as the linter, so "runtime accepts it but linter doesn't" drift is not possible.
 

@@ -19,6 +19,8 @@ use serde_json::{Map, Value};
 use crate::template_validation::ValidationIssue;
 use crate::types::{DisclosureField, DownloadAuth, DownloadSpec, ScopeParams};
 
+use super::ext::{self, Ext, Pos};
+
 mod actions;
 mod auth;
 mod mcp;
@@ -291,8 +293,8 @@ fn parse_redact(v: Option<&Value>, base: &str, issues: &mut Vec<ValidationIssue>
 /// service instance. Read from the same four param shapes `parse_aliases`
 /// covers (operation params, body properties, platform params, lowered input
 /// schemas), so the vocabulary means the same thing wherever it is authored.
-fn parse_instance_config(obj: Option<&Map<String, Value>>) -> bool {
-    obj.and_then(|o| o.get("x-overslash-instance-config"))
+fn parse_instance_config(obj: Option<&Map<String, Value>>, pos: Pos) -> bool {
+    obj.and_then(|o| ext::get(o, pos, Ext::InstanceConfig))
         .and_then(Value::as_bool)
         .unwrap_or(false)
 }
@@ -304,20 +306,23 @@ fn parse_instance_config(obj: Option<&Map<String, Value>>) -> bool {
 /// same four param shapes `parse_aliases` covers; cross-param rules (one sql
 /// param per action, string type, path shape, inert sql-database) are
 /// checked by template validation, not here.
-fn parse_sql_policy(obj: Option<&Map<String, Value>>) -> (Option<String>, Option<String>) {
+fn parse_sql_policy(
+    obj: Option<&Map<String, Value>>,
+    pos: Pos,
+) -> (Option<String>, Option<String>) {
     let sql_field = obj
-        .and_then(|o| o.get("x-overslash-sql-field"))
+        .and_then(|o| ext::get(o, pos, Ext::SqlField))
         .and_then(Value::as_str)
         .map(str::to_string);
     let sql_database = obj
-        .and_then(|o| o.get("x-overslash-sql-database"))
+        .and_then(|o| ext::get(o, pos, Ext::SqlDatabase))
         .and_then(Value::as_str)
         .map(str::to_string);
     (sql_field, sql_database)
 }
 
-fn parse_aliases(obj: Option<&Map<String, Value>>, name: &str) -> Vec<String> {
-    obj.and_then(|o| o.get("x-overslash-aliases"))
+fn parse_aliases(obj: Option<&Map<String, Value>>, name: &str, pos: Pos) -> Vec<String> {
+    obj.and_then(|o| ext::get(o, pos, Ext::Aliases))
         .and_then(Value::as_array)
         .map(|a| {
             // Dedup within one param's list (order-preserving): `[to, to]` is
@@ -345,7 +350,7 @@ mod tests {
     #[test]
     fn parse_aliases_dedups_within_one_param() {
         let obj = json!({ "x-overslash-aliases": ["to", "to", "dest", "to"] });
-        let aliases = parse_aliases(obj.as_object(), "recipient");
+        let aliases = parse_aliases(obj.as_object(), "recipient", Pos::Parameter);
         assert_eq!(aliases, vec!["to".to_string(), "dest".to_string()]);
     }
 
@@ -354,7 +359,7 @@ mod tests {
         let obj = json!({
             "x-overslash-aliases": ["to", "", "  ", "recipient", 7, "dest"]
         });
-        let aliases = parse_aliases(obj.as_object(), "recipient");
+        let aliases = parse_aliases(obj.as_object(), "recipient", Pos::Parameter);
         // Blank, whitespace-only, the canonical name itself, and non-strings
         // are dropped.
         assert_eq!(aliases, vec!["to".to_string(), "dest".to_string()]);

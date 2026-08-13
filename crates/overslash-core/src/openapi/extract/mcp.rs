@@ -9,6 +9,7 @@ use crate::types::{
     ActionParam, DeclaredRisk, McpAuth, McpSpec, ParamLocation, ServiceAction, ServiceDefinition,
 };
 
+use super::super::ext::{self, Ext, Pos};
 use super::{
     parse_aliases, parse_disclose, parse_download, parse_instance_config, parse_redact,
     parse_resolver, parse_scope_params, parse_sql_policy, parse_timeout_ms,
@@ -19,7 +20,7 @@ use super::{
 /// Lower the `x-overslash-mcp` block into a typed `McpSpec`.
 pub(crate) fn extract_mcp_spec(root: &Map<String, Value>) -> Result<McpSpec, Vec<ValidationIssue>> {
     let mut errors = Vec::new();
-    let Some(mcp_obj) = root.get("x-overslash-mcp").and_then(Value::as_object) else {
+    let Some(mcp_obj) = ext::get(root, Pos::Root, Ext::Mcp).and_then(Value::as_object) else {
         errors.push(ValidationIssue::new(
             "mcp_missing",
             "runtime is `mcp` but x-overslash-mcp block is absent",
@@ -150,7 +151,7 @@ pub(crate) fn extract_mcp_actions(
     warnings: &mut Vec<ValidationIssue>,
 ) -> Result<(), Vec<ValidationIssue>> {
     let mut errors = Vec::new();
-    let mcp_obj = match root.get("x-overslash-mcp").and_then(Value::as_object) {
+    let mcp_obj = match ext::get(root, Pos::Root, Ext::Mcp).and_then(Value::as_object) {
         Some(o) => o,
         None => return Ok(()),
     };
@@ -265,7 +266,7 @@ fn lower_mcp_tool(
 ) -> Option<ServiceAction> {
     let base = format!("x-overslash-mcp.tools[{name}]");
 
-    let risk = match obj.get("x-overslash-risk").and_then(Value::as_str) {
+    let risk = match ext::get(obj, Pos::McpTool, Ext::Risk).and_then(Value::as_str) {
         Some("read") | None => DeclaredRisk::Read,
         Some("write") => DeclaredRisk::Write,
         Some("delete") => DeclaredRisk::Delete,
@@ -276,9 +277,10 @@ fn lower_mcp_tool(
             errors.push(ValidationIssue::new(
                 "invalid_risk",
                 format!(
-                    "x-overslash-risk must be one of read/write/delete/dynamic (got {other:?})"
+                    "{} must be one of read/write/delete/dynamic (got {other:?})",
+                    Ext::Risk.key()
                 ),
-                format!("{base}.x-overslash-risk"),
+                format!("{base}.{}", Ext::Risk.key()),
             ));
             return None;
         }
@@ -289,7 +291,8 @@ fn lower_mcp_tool(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let scope_param = match parse_scope_params(obj.get("x-overslash-scope_param"), &base) {
+    let scope_param = match parse_scope_params(ext::get(obj, Pos::McpTool, Ext::ScopeParam), &base)
+    {
         Ok(sp) => sp,
         Err(issue) => {
             errors.push(issue);
@@ -316,12 +319,12 @@ fn lower_mcp_tool(
         .map(|s| lower_input_schema(s, &base, errors))
         .unwrap_or_default();
 
-    let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, errors);
-    let redact = parse_redact(obj.get("x-overslash-redact"), &base, errors);
-    let download = parse_download(obj.get("x-overslash-download"), &base, errors);
+    let disclose = parse_disclose(ext::get(obj, Pos::McpTool, Ext::Disclose), &base, errors);
+    let redact = parse_redact(ext::get(obj, Pos::McpTool, Ext::Redact), &base, errors);
+    let download = parse_download(ext::get(obj, Pos::McpTool, Ext::Download), &base, errors);
     let timeout_ms = parse_timeout_ms(
-        obj.get("x-overslash-timeout_ms"),
-        "x-overslash-timeout_ms",
+        ext::get(obj, Pos::McpTool, Ext::TimeoutMs),
+        Ext::TimeoutMs.key(),
         &base,
         errors,
     );
@@ -433,13 +436,13 @@ pub(crate) fn lower_input_schema(
                 .collect()
         });
         let default = po.get("default").cloned();
-        let aliases = parse_aliases(Some(po), name);
-        let instance_config = parse_instance_config(Some(po));
-        let (sql_field, sql_database) = parse_sql_policy(Some(po));
+        let aliases = parse_aliases(Some(po), name, Pos::McpToolProperty);
+        let instance_config = parse_instance_config(Some(po), Pos::McpToolProperty);
+        let (sql_field, sql_database) = parse_sql_policy(Some(po), Pos::McpToolProperty);
         // MCP params carry resolvers too — an MCP resolver names a sibling
         // `risk: read` tool rather than a GET path, but the declaration and
         // the projection are the same shape the HTTP path parses.
-        let resolve = po.get("x-overslash-resolve").and_then(|v| {
+        let resolve = ext::get(po, Pos::McpToolProperty, Ext::Resolve).and_then(|v| {
             parse_resolver(v, &format!("{base}.input_schema.properties.{name}"), issues)
         });
         out.insert(

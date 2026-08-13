@@ -79,6 +79,124 @@ async fn validate_accepts_valid_yaml() {
     assert!(body["errors"].as_array().unwrap().is_empty());
 }
 
+/// The extension lint reaches the endpoint the editor polls, as *warnings* —
+/// the document still saves, but nothing it declares is silently dropped.
+///
+/// Both findings here are the motivating shapes from #539: `response_type` is a
+/// real concept in a position nothing reads, and `x-overslash-download` is
+/// MCP-only and inert on an HTTP operation.
+#[tokio::test]
+async fn validate_reports_ignored_declarations_as_warnings_not_errors() {
+    let pool = common::test_pool().await;
+    let (base, client, admin_key) = bootstrap(pool).await;
+
+    let yaml = r#"
+openapi: 3.1.0
+info:
+  title: Svc
+  key: lint-warn-svc
+servers:
+  - url: https://api.example.com
+paths:
+  /export:
+    get:
+      operationId: export_rows
+      summary: Export rows
+      risk: read
+      response_type: binary
+      x-overslash-download:
+        url: .url
+      x-overslash-disclsoe:
+        - label: Rows
+          filter: .rows
+"#;
+
+    let resp = client
+        .post(format!("{base}/v1/templates/validate"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .header("content-type", "application/yaml")
+        .body(yaml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+
+    // Warnings never affect validity: a key nothing reads must not block a save.
+    assert_eq!(body["valid"], true, "body: {body}");
+    assert!(
+        body["errors"].as_array().unwrap().is_empty(),
+        "body: {body}"
+    );
+
+    let warnings = body["warnings"].as_array().unwrap();
+    let by_path = |p: &str| {
+        warnings
+            .iter()
+            .find(|w| w["path"] == p)
+            .unwrap_or_else(|| panic!("no warning at {p}; warnings: {warnings:?}"))
+    };
+
+    assert_eq!(
+        by_path("paths./export.get.response_type")["code"],
+        "unknown_template_key"
+    );
+    assert_eq!(
+        by_path("paths./export.get.x-overslash-download")["code"],
+        "misplaced_extension"
+    );
+    let typo = by_path("paths./export.get.x-overslash-disclsoe");
+    assert_eq!(typo["code"], "unknown_extension");
+    assert!(
+        typo["message"]
+            .as_str()
+            .unwrap()
+            .contains("did you mean `x-overslash-disclose`?"),
+        "should suggest the real name: {typo}"
+    );
+}
+
+/// A template carrying an ignored key still persists — the lint must not have
+/// quietly become a create-time gate.
+#[tokio::test]
+async fn create_succeeds_despite_ignored_declarations() {
+    let pool = common::test_pool().await;
+    let (base, client, admin_key) = bootstrap(pool).await;
+
+    let key = format!("lint-ok-{}", &Uuid::new_v4().to_string()[..8]);
+    let yaml = format!(
+        r#"
+openapi: 3.1.0
+info:
+  title: Lint OK
+  key: {key}
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      operationId: list_items
+      summary: List items
+      risk: read
+      response_type: json
+"#
+    );
+
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"openapi": yaml}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "an ignored key must not block a save: {}",
+        resp.text().await.unwrap()
+    );
+}
+
 #[tokio::test]
 async fn validate_reports_yaml_parse_error_as_issue_not_400() {
     let pool = common::test_pool().await;

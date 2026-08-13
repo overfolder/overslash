@@ -106,6 +106,17 @@ pub async fn resolve(
                         ))
                     },
                 )?;
+                // Lint the stored document, not just the compiled definition.
+                // This is the only place a template that was written *before* the
+                // lint existed is ever looked at, so it is what makes the
+                // affected population visible: the findings ride the resolution
+                // report that the catalog already badges. Warnings only — a
+                // stored row must not stop resolving over a key nothing reads.
+                //
+                // Standalone layers only. A derived layer's stray keys are
+                // reported by `validate_delta` at write time; repeating them on
+                // every fold of every layer in a chain would be noise.
+                warnings.extend(openapi::lint_extensions(&doc));
                 let (def, _w) = openapi::compile_service(&doc).map_err(|errs| {
                     AppError::Internal(format!(
                         "stored openapi for '{}' failed to compile: {errs:?}",

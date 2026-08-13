@@ -65,7 +65,7 @@ impl fmt::Display for Risk {
 /// caller supplies" (D42/D43).
 ///
 /// `dynamic` is only accepted by template validation on an action that
-/// nominates an `x-overslash-sql` param, because without a nominated field
+/// nominates an `x-overslash-sql-field` param, because without a nominated field
 /// there is nothing to classify. At call time a dynamic action starts from
 /// [`base_risk`](Self::base_risk) (`read`) and the classifier's verdict is
 /// merged in as a floor — a build without the `sql_policy` feature classifies

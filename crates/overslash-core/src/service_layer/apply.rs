@@ -118,7 +118,10 @@ pub fn apply_delta(
     }
     if !delta.extensions.actions.is_empty() {
         match compile_extension_actions(base, &delta.extensions) {
-            Ok(compiled) => {
+            // Lint warnings are dropped at fold time: `validate_delta` already
+            // reported them to the author at write time, and repeating them on
+            // every resolve of every derived layer would be noise.
+            Ok((compiled, _lint_warnings)) => {
                 for (key, action) in compiled {
                     if base.actions.contains_key(&key) {
                         // Runtime collision: the base action wins; the extension
