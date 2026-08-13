@@ -306,6 +306,59 @@ async fn hybrid_is_refused_when_the_deployment_flag_is_off() {
     assert!(body.to_string().contains("hybrid"), "{body}");
 }
 
+/// The terminal event must classify the row the same way the REST surface does.
+///
+/// These are two different readers of one row — a webhook/SSE subscriber and a
+/// poller — and the event payload derived `origin` from `approval_id` alone
+/// while `ExecutionDetail` had learned about `triggered_by`, so a hybrid row
+/// announced itself as `async_call` and then reported `hybrid` when fetched.
+/// Both now go through `repos::execution::origin_of`.
+#[tokio::test]
+async fn the_completion_event_and_the_api_agree_on_origin() {
+    let pool = common::test_pool().await;
+    let mock = common::start_mock().await;
+    let (base, client, key, _admin, org_id) = setup(pool.clone(), 30_000).await;
+
+    let (status, body) = call(
+        &base,
+        &client,
+        &key,
+        hybrid_call(&format!("http://{mock}/slow?ms=0")),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let exec_id = body["execution_id"].as_str().unwrap().to_string();
+
+    let (_, detail) = get_execution(&base, &client, &key, &exec_id).await;
+    assert_eq!(detail["origin"], "hybrid");
+
+    // The event is emitted from the job, so give it a beat to land.
+    let mut payload = Value::Null;
+    for _ in 0..40 {
+        let found = sqlx::query_scalar!(
+            "SELECT payload FROM events
+              WHERE org_id = $1 AND payload->>'execution_id' = $2
+              ORDER BY id DESC LIMIT 1",
+            org_id,
+            exec_id
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        if let Some(p) = found {
+            payload = p;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(
+        payload["origin"], "hybrid",
+        "the event must not call it an async_call: {payload}"
+    );
+    assert_eq!(payload["origin"], detail["origin"]);
+}
+
 /// `origin` separates hybrid from `async_call`, and the list filter accepts the
 /// value the detail endpoint emits. A server that reports a value its own
 /// filter rejects is the same bug wearing a different hat.

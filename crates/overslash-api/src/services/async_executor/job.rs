@@ -586,7 +586,12 @@ async fn finish(
             payload: serde_json::json!({
                 "execution_id": claim.id,
                 "status": status,
-                "origin": if claim.approval_id.is_some() { "approval" } else { "async_call" },
+                // Shared with `ExecutionDetail.origin` so a subscriber and a
+                // poller never disagree about the same row.
+                "origin": overslash_db::repos::execution::origin_of(
+                    claim.approval_id,
+                    finalised.triggered_by.as_deref(),
+                ),
                 "approval_id": claim.approval_id,
                 "identity_id": claim.identity_id,
                 "error": error,

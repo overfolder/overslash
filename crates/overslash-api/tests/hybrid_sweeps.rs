@@ -198,6 +198,54 @@ async fn release_cannot_return_a_hybrid_row_to_pending() {
     assert_eq!(status, "executing", "and must leave it exactly as it was");
 }
 
+/// The wall-clock backstop **does** reach a hybrid row, and that is deliberate.
+///
+/// The two *reclaim* sweeps are guarded because they set `pending`, which
+/// `claim_async_batch` takes — that is the re-dial this design forbids. This one
+/// sets `failed`, which is terminal and safe, and it is the only thing that can
+/// reap a hybrid job that is alive enough to heartbeat but wedged on an upstream
+/// (such a job has no expired lease, so `fail_expired_hybrid_leases` cannot see
+/// it either). Guarding it too would leave that row `executing` forever.
+///
+/// It cannot fire early on a healthy call: the sweep runs at
+/// `async_wall_clock() + 60` = 965s, while a hybrid job's own timeout fires at
+/// `async_wall_clock()` = 905s and its budget is capped at 900s.
+#[tokio::test]
+async fn the_wall_clock_backstop_still_reaches_a_wedged_hybrid_job() {
+    let pool = common::test_pool().await;
+    let (org_id, identity_id) = seed_identity(&pool).await;
+    let id = start_hybrid(&pool, org_id, identity_id, "wedged-replica").await;
+
+    // Alive: the lease is still valid, so neither lease sweep can see it.
+    // Only the wall clock, which keys on `started_at`, can.
+    sqlx::query!(
+        "UPDATE executions SET started_at = now() - interval '30 minutes' WHERE id = $1",
+        id
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    SystemScope::new_internal(pool.clone())
+        .fail_expired_hybrid_leases()
+        .await
+        .unwrap();
+    assert_eq!(
+        row(&pool, id).await.0,
+        "executing",
+        "a live lease is invisible to the lease sweep, which is the point"
+    );
+
+    SystemScope::new_internal(pool.clone())
+        .fail_async_executions_over_wall(965)
+        .await
+        .unwrap();
+
+    let (status, error, _) = row(&pool, id).await;
+    assert_eq!(status, "failed", "the backstop must still reach it");
+    assert_eq!(error.as_deref(), Some("async_wall_clock"));
+}
+
 /// Three sweep families now share one table. Each pair has to be shown disjoint
 /// by predicate, or one family silently starts eating another's rows.
 #[tokio::test]

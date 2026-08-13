@@ -318,6 +318,23 @@ pub(crate) async fn expire_orphaned_executing(
 // claimed by a process that outlives any request and that Cloud Run may recycle
 // mid-call, so ownership has to be a renewable fact in the row.
 
+/// How an execution row came to exist: `approval` | `async_call` | `hybrid`.
+///
+/// Derived, not stored — but derived in exactly one place. It is read by the
+/// REST surface (`ExecutionDetail.origin`) and by the terminal `execution.*`
+/// event payload, and those two describing the same row differently is a
+/// reporting bug a reader cannot resolve. The `origin=` list filter matches
+/// this function's classification.
+pub fn origin_of(approval_id: Option<Uuid>, triggered_by: Option<&str>) -> &'static str {
+    match (approval_id.is_some(), triggered_by) {
+        // A *gated* hybrid call is queued exactly as a gated async one is, so
+        // it reports `approval`; the mode it asked for lives on the approval.
+        (true, _) => "approval",
+        (false, Some("hybrid")) => "hybrid",
+        (false, _) => "async_call",
+    }
+}
+
 /// What a worker needs to run one claimed row.
 ///
 /// Deliberately narrower than [`ExecutionRow`]: this is the only place

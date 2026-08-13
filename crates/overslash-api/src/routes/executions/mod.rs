@@ -75,13 +75,8 @@ fn is_zero(n: &i32) -> bool {
 
 impl ExecutionDetail {
     fn from_row(row: ExecutionRow) -> Self {
-        let origin = match (row.approval_id.is_some(), row.triggered_by.as_deref()) {
-            // A *gated* hybrid call is queued like an async one, so it reports
-            // `approval` — the mode it was asked for lives on the approval.
-            (true, _) => "approval",
-            (false, Some("hybrid")) => "hybrid",
-            (false, _) => "async_call",
-        };
+        let origin =
+            overslash_db::repos::execution::origin_of(row.approval_id, row.triggered_by.as_deref());
         let identity_id = row.identity_id;
         let approval_id = row.approval_id;
         let tags = row.tags.clone();
