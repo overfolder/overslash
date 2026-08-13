@@ -318,7 +318,7 @@ export interface ApprovalResponse {
 	 *  queued for the async worker. Stamped from the original call's
 	 *  `execution` mode, so a reviewer can be told — before approving — that
 	 *  this one will not produce a result on the page. */
-	execution_mode: 'sync' | 'async';
+	execution_mode: 'sync' | 'async' | 'hybrid';
 	/** Suggested delay before the first poll, ms. Present only on the response
 	 *  to POST /v1/approvals/{id}/call that queued the replay. */
 	poll_after_ms?: number;
@@ -361,7 +361,7 @@ export interface ExecutionSummary {
 	 *  the requesting agent's identity has `auto_call_on_approve` enabled
 	 *  (default true). Applies uniformly to MCP, REST, and white-label
 	 *  agents. */
-	triggered_by?: 'agent' | 'user' | 'auto' | 'async';
+	triggered_by?: 'agent' | 'user' | 'auto' | 'async' | 'hybrid';
 	/** This execution runs on the async worker, not on a request. It changes
 	 *  what `pending` means: "queued, nothing to trigger" rather than
 	 *  "approved, waiting for the agent". Absent on every synchronous row. */
@@ -397,9 +397,14 @@ export interface ExecutionSummary {
  */
 export interface ExecutionDetail extends ExecutionSummary {
 	/** `approval` when this execution came from a gated call, `async_call`
-	 *  when the caller asked for `execution: "async"` directly. Derived from
-	 *  whether `approval_id` is set — it is not a stored column. */
-	origin: 'approval' | 'async_call';
+	 *  when the caller asked for `execution: "async"` directly, `hybrid` when
+	 *  it started on the caller's connection and outran the handoff. Derived
+	 *  from `approval_id` and `triggered_by` — it is not a stored column.
+	 *
+	 *  `hybrid` is distinct from `async_call` because on a non-terminal row the
+	 *  two mean opposite things: queued-and-not-started versus already-running
+	 *  on a connection that may be gone. */
+	origin: 'approval' | 'async_call' | 'hybrid';
 	/** The identity whose call this is. */
 	identity_id: string;
 	/** Present only for `origin: "approval"`. */

@@ -1,0 +1,184 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO executions\n             (org_id, identity_id, status, request, service_key, service_instance_id,\n              tags, render_verbose, template_key, description, client_ip, expires_at,\n              triggered_by, worker_id, started_at, lease_expires_at)\n         VALUES ($1, $2, 'executing', $3, $4, $5, $6, $7, $8, $9, $10, $11,\n                 'hybrid', $12, now(), now() + make_interval(secs => $13))\n         RETURNING id, org_id, identity_id, approval_id,\n                   request AS \"request!\", service_key, service_instance_id,\n                   attempts, tags, render_verbose, template_key,\n                   description, client_ip",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "approval_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "approval_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "request!",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "request"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "service_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "service_key"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "service_instance_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "service_instance_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "tags",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "tags"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "render_verbose",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "render_verbose"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "template_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "template_key"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "client_ip",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "client_ip"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Jsonb",
+        "Text",
+        "Uuid",
+        "TextArray",
+        "Bool",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "4ae5fa958b116e72f746286711ea9127720e4662650b0a9244e995f94347de2b"
+}

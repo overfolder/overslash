@@ -1011,6 +1011,26 @@ export type CallResponse =
        * envelope, or upstream HTTP >= 400) even though the call executed.
        * Optional for wire-compat with older API builds. */
       is_error?: boolean;
+      /** Present only for an `execution: "hybrid"` call that finished before
+       * its handoff. A correlation handle on an already-terminal row, never a
+       * signal to poll — a `called` envelope always carries the result. */
+      execution_id?: string;
+    }
+  | {
+      /** The call was accepted but not completed: either `execution: "async"`,
+       * or an `execution: "hybrid"` call that outran its handoff. Poll
+       * `GET /v1/executions/{execution_id}` for the outcome.
+       *
+       * Shares HTTP 202 with `pending_approval`, so branch on `status` and
+       * never on the status code alone. */
+      status: 'accepted';
+      execution_id: string;
+      /** Dashboard deep link for a human — not the poll URL. */
+      execution_url: string;
+      action_description: string | null;
+      expires_at: string;
+      timeout_ms: number;
+      poll_after_ms: number;
     }
   | {
       status: 'pending_approval';

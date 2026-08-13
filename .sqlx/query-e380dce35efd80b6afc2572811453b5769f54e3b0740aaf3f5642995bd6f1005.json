@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions\n            SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE 'failed' END,\n                error = CASE WHEN cancel_requested THEN 'cancelled'\n                             ELSE 'hybrid_instance_lost' END,\n                worker_id = NULL,\n                lease_expires_at = NULL,\n                completed_at = now()\n          WHERE status = 'executing'\n            AND request IS NOT NULL\n            AND triggered_by = 'hybrid'\n            AND lease_expires_at < now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "e380dce35efd80b6afc2572811453b5769f54e3b0740aaf3f5642995bd6f1005"
+}

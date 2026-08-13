@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions\n            SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE 'pending' END,\n                attempts = attempts + 1,\n                worker_id = NULL,\n                started_at = NULL,\n                lease_expires_at = NULL,\n                completed_at = CASE WHEN cancel_requested THEN now() ELSE NULL END,\n                error = CASE WHEN cancel_requested THEN 'cancelled' ELSE NULL END,\n                expires_at = GREATEST(expires_at, now() + make_interval(secs => $2))\n          WHERE status = 'executing'\n            AND request IS NOT NULL\n            AND triggered_by IS DISTINCT FROM 'hybrid'\n            AND lease_expires_at < now()\n            AND attempts + 1 < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dfc55c6d65373876e4728bbc22d86c265ef71e865a135a7b190fca82dab8c5a8"
+}

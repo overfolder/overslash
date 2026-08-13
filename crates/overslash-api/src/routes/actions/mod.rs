@@ -62,6 +62,7 @@ mod dto;
 mod errors;
 mod filter_apply;
 mod flags;
+mod hybrid;
 mod mcp_resolve;
 mod permission_gate;
 mod replay_payload;

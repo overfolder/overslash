@@ -19,6 +19,42 @@ use crate::services::audit_capture::AuditResponseBodyMode;
 use crate::services::events::{self, EventDraft, EventType};
 use crate::services::stored_call::{self, StoredCallCtx, StoredOutcome};
 
+/// How this job was started, and what it owes when it ends.
+///
+/// Three differences from a queued claim, all of them consequences of one
+/// fact: a hybrid row was dialled from a request path, so its upstream has
+/// already been sent the request and it must run **at most once**.
+pub enum JobMode {
+    /// Claimed off the queue. May be released back to `pending` at shutdown for
+    /// another replica to pick up.
+    Queued,
+    /// Started on a request path. Never releases, never requeues, and reports
+    /// its outcome back to the connection that started it for as long as that
+    /// connection is still listening.
+    Hybrid {
+        observer: Option<tokio::sync::oneshot::Sender<InlineOutcome>>,
+    },
+}
+
+/// What the waiting connection is told, when it is still there to hear it.
+///
+/// Only the terminal-with-an-answer cases are modelled. Every other ending —
+/// cancelled, lease lost, shutdown — simply drops the sender, and the
+/// connection reads the resulting `RecvError` as "this is off-connection now,
+/// answer 202 and let the caller poll". One less state to keep in sync with the
+/// row, and it is also the behaviour on a panic.
+pub enum InlineOutcome {
+    Executed {
+        result: Box<overslash_core::types::ActionResult>,
+        is_error: bool,
+        upstream_errored: bool,
+    },
+    Failed {
+        message: String,
+        error: Option<Box<crate::error::AppError>>,
+    },
+}
+
 /// Wrapper that always releases its permit, whatever the job does.
 pub(super) async fn run_claim(
     state: AppState,
@@ -27,7 +63,15 @@ pub(super) async fn run_claim(
     _permit: OwnedSemaphorePermit,
 ) {
     let id = claim.id;
-    if let Err(e) = execute(state, db, claim, crate::services::shutdown::subscribe()).await {
+    if let Err(e) = execute(
+        state,
+        db,
+        claim,
+        crate::services::shutdown::subscribe(),
+        JobMode::Queued,
+    )
+    .await
+    {
         tracing::error!("async execution {id} failed unexpectedly: {e}");
     }
 }
@@ -42,7 +86,14 @@ pub async fn execute(
     db: PgPool,
     claim: AsyncClaim,
     mut shutdown: watch::Receiver<bool>,
+    mode: JobMode,
 ) -> anyhow::Result<()> {
+    // Split up front so the select arms below can move the sender without
+    // moving the mode, and so every `is_hybrid` branch reads as one question.
+    let (is_hybrid, mut observer) = match mode {
+        JobMode::Queued => (false, None),
+        JobMode::Hybrid { observer } => (true, observer),
+    };
     let ext = axum::http::Extensions::default();
     let system = SystemScope::new_internal(db.clone());
     let scope = system.scope_for_org(claim.org_id);
@@ -169,7 +220,15 @@ pub async fn execute(
     // `borrow_and_update` also marks the current value seen, which is what
     // makes the `changed()` arm below fire only on a genuine transition.
     if *shutdown.borrow_and_update() {
-        release_at_shutdown(&state, &system, &claim, worker_id).await;
+        stop_at_shutdown(
+            &state,
+            &system,
+            approval.as_ref(),
+            &claim,
+            worker_id,
+            is_hybrid,
+        )
+        .await;
         return Ok(());
     }
 
@@ -181,7 +240,7 @@ pub async fn execute(
         // case is handled by the pre-check above.
         _ = shutdown.changed() => {
             // Dropping the upstream future cancels the in-flight request.
-            release_at_shutdown(&state, &system, &claim, worker_id).await;
+            stop_at_shutdown(&state, &system, approval.as_ref(), &claim, worker_id, is_hybrid).await;
             return Ok(());
         }
         stop = heartbeat_until_stop(&system, claim.id, worker_id, state.config.async_execution.lease_ttl_secs as i64, heartbeat_every) => {
@@ -227,6 +286,54 @@ pub async fn execute(
     )
     .await;
 
+    // Hoisted above the inline report because that report *moves* `outcome`
+    // (`AppError` is not `Clone`, and the whole point of carrying it is to hand
+    // the waiting connection the same typed envelope the synchronous path would
+    // have produced). The approval tail needs only these three values, so it
+    // takes them now and lets the outcome go.
+    let (succeeded, upstream_errored, result_summary) = match &outcome {
+        StoredOutcome::Executed {
+            upstream_errored,
+            summary,
+            ..
+        } => (true, *upstream_errored, Some(summary.clone())),
+        StoredOutcome::Failed { .. } | StoredOutcome::Rejected { .. } => (false, false, None),
+    };
+
+    // Report to the waiting connection, if there still is one.
+    //
+    // **After** `finish`, never before: the connection turns this into a 200,
+    // and it must not be able to answer for a row the database has not
+    // accepted. A lost lease (`finalised == None`) therefore reports nothing —
+    // the sender drops, the connection answers 202, and the caller reads
+    // whatever the row's real owner wrote.
+    //
+    // `send` is fire-and-forget. Its `Err` only means the receiver is gone,
+    // which is the ordinary handoff case, and this job must finish either way.
+    if let (Some(tx), Some(_)) = (observer.take(), finalised.as_ref()) {
+        let inline = match outcome {
+            StoredOutcome::Executed {
+                typed,
+                is_error,
+                upstream_errored,
+                ..
+            } => InlineOutcome::Executed {
+                result: Box::new(typed),
+                is_error,
+                upstream_errored,
+            },
+            StoredOutcome::Failed { message, error } => InlineOutcome::Failed { message, error },
+            // A credential that could not be re-minted is a caller-facing
+            // error, not an upstream one — and unlike the worker, a hybrid call
+            // that has not handed off yet still has a caller to tell.
+            StoredOutcome::Rejected { message, error } => InlineOutcome::Failed {
+                message,
+                error: Some(Box::new(error)),
+            },
+        };
+        let _ = tx.send(inline);
+    }
+
     // An approved call owes the same things whichever trigger ran it: the
     // "Allow & Remember" rules, the cascade they unblock, the
     // `approval.executed` audit row, and the approval webhook. Running the same
@@ -236,16 +343,8 @@ pub async fn execute(
     // `finalised` is `None` when the lease was lost between finishing and
     // finalizing — the row belongs to someone else, so this worker must not
     // write rules on its behalf either.
-    if let (Some(approval), Some(finalised)) = (approval.as_ref(), finalised.as_ref()) {
-        let (succeeded, upstream_errored, result_summary) = match &outcome {
-            StoredOutcome::Executed {
-                upstream_errored,
-                summary,
-                ..
-            } => (true, *upstream_errored, Some(summary.clone())),
-            StoredOutcome::Failed { .. } | StoredOutcome::Rejected { .. } => (false, false, None),
-        };
-        if let Err(e) =
+    if let (Some(approval), Some(finalised)) = (approval.as_ref(), finalised.as_ref())
+        && let Err(e) =
             crate::routes::approvals::run_approval_tail(crate::routes::approvals::ApprovalTail {
                 state: &state,
                 ext: &ext,
@@ -267,33 +366,60 @@ pub async fn execute(
                 elapsed,
             })
             .await
-        {
-            tracing::warn!(
-                approval_id = %approval.id,
-                execution_id = %claim.id,
-                "approval tail failed after an async replay: {e}"
-            );
-        }
+    {
+        tracing::warn!(
+            approval_id = %approval.id,
+            execution_id = %claim.id,
+            "approval tail failed after an async replay: {e}"
+        );
     }
     Ok(())
 }
 
-/// Hand a claimed row back to the queue at shutdown, without charging an
-/// attempt.
+/// End a job at shutdown, the way its mode requires.
 ///
+/// A **queued** row is handed back to the queue without charging an attempt.
 /// `attempts` counts leases *lost*, not claims, precisely so this is free: a
 /// row released here is picked up by another replica within a tick, whereas
 /// letting the lease expire would cost ~60s and — at the default
 /// `max_attempts = 1` — fail the job outright instead of retrying it.
-///
 /// `expires_at` is pushed out at the same time so `expire_stale` cannot sweep
 /// the row before anyone can take it.
-async fn release_at_shutdown(
+///
+/// A **hybrid** row must not take that path. Releasing sets `status = 'pending'`,
+/// which is exactly what `claim_async_batch` takes — so a replica shutting down
+/// mid-call would hand a live upstream request to another replica to send
+/// again. It is failed instead. `worker_lost` is honest about what is and is not
+/// known: the in-flight future is dropped, so the request may or may not have
+/// landed, the same class of truth as a cancellation.
+///
+/// `release_async` also carries its own `triggered_by IS DISTINCT FROM 'hybrid'`
+/// guard, so this branch is belt to that suspenders — SIGKILL beats a graceful
+/// shutdown often enough that the predicate has to be the real defence.
+async fn stop_at_shutdown(
     state: &AppState,
     system: &SystemScope,
+    approval: Option<&overslash_db::repos::approval::ApprovalRow>,
     claim: &AsyncClaim,
     worker_id: &str,
+    is_hybrid: bool,
 ) {
+    if is_hybrid {
+        tracing::info!(
+            execution_id = %claim.id,
+            "hybrid execution interrupted by shutdown; failing rather than requeueing"
+        );
+        finish(
+            state,
+            system,
+            approval,
+            claim,
+            worker_id,
+            AsyncOutcome::Failed("worker_lost"),
+        )
+        .await;
+        return;
+    }
     match system
         .release_async_execution(
             claim.id,
@@ -460,7 +586,12 @@ async fn finish(
             payload: serde_json::json!({
                 "execution_id": claim.id,
                 "status": status,
-                "origin": if claim.approval_id.is_some() { "approval" } else { "async_call" },
+                // Shared with `ExecutionDetail.origin` so a subscriber and a
+                // poller never disagree about the same row.
+                "origin": overslash_db::repos::execution::origin_of(
+                    claim.approval_id,
+                    finalised.triggered_by.as_deref(),
+                ),
                 "approval_id": claim.approval_id,
                 "identity_id": claim.identity_id,
                 "error": error,

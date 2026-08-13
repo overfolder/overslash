@@ -103,6 +103,10 @@
 							<a href="/approvals/{detail.approval_id}">Approved call</a>
 						{:else if detail.origin === 'approval'}
 							Approved call
+						{:else if detail.origin === 'hybrid'}
+							<!-- Started inline and outran its handoff, so the caller already
+							     holds a 202 and is polling this row. -->
+							Handed-off hybrid call
 						{:else}
 							Direct async call
 						{/if}

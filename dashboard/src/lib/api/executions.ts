@@ -15,7 +15,7 @@ export interface ExecutionQuery {
 	/** `mine` (default) or `subtree` — the caller plus their descendants. */
 	scope?: 'mine' | 'subtree';
 	status?: string;
-	origin?: 'approval' | 'async_call';
+	origin?: 'approval' | 'async_call' | 'hybrid';
 	limit?: number;
 }
 

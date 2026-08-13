@@ -249,9 +249,15 @@ impl Fixture {
             .expect("the queued row must be claimable");
         let state = common::make_app_state(self.pool.clone()).await;
         let (_tx, rx) = tokio::sync::watch::channel(false);
-        overslash_api::services::async_executor::job::execute(state, self.pool.clone(), claim, rx)
-            .await
-            .unwrap();
+        overslash_api::services::async_executor::job::execute(
+            state,
+            self.pool.clone(),
+            claim,
+            rx,
+            overslash_api::services::async_executor::job::JobMode::Queued,
+        )
+        .await
+        .unwrap();
     }
 
     async fn audit_count(&self, action: &str) -> i64 {
@@ -736,6 +742,7 @@ async fn a_worker_announces_the_cancellation_it_observes() {
         fx.pool.clone(),
         claim,
         rx,
+        overslash_api::services::async_executor::job::JobMode::Queued,
     ));
 
     let resp = fx
