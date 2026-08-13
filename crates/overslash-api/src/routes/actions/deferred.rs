@@ -270,6 +270,7 @@ pub(super) async fn mint_http_download(
             result: render_action_result(&result, d.req.verbose),
             action_description: d.meta.description.clone(),
             is_error: false,
+            execution_id: None,
         }),
     )
         .into_response())

@@ -191,6 +191,7 @@ pub(super) async fn dispatch(
             result: rendered,
             action_description: meta.description.clone(),
             is_error,
+            execution_id: None,
         }),
     )
         .into_response();

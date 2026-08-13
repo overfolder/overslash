@@ -16,16 +16,20 @@ use crate::error::AppError;
 
 use super::dto::{CallRequest, Delivery, ExecutionMode, ResolvedModeC};
 
-/// Whether this call defers its body, and whether it runs off the request path.
+/// Whether this call defers its body, and how it runs relative to the request
+/// path.
 pub(super) struct RequestFlags {
     pub(super) deliver_url: bool,
-    pub(super) is_async: bool,
+    /// Defaulted to [`ExecutionMode::Sync`] here rather than left an `Option`,
+    /// so every downstream branch asks the mode a question instead of
+    /// re-deriving "absent means sync".
+    pub(super) mode: ExecutionMode,
 }
 
 /// Request-only combinations, checked before any resolution.
 pub(super) fn validate_request(req: &CallRequest) -> Result<RequestFlags, AppError> {
     let deliver_url = req.deliver.is_some_and(Delivery::is_url);
-    let is_async = req.execution.is_some_and(ExecutionMode::is_async);
+    let mode = req.execution.unwrap_or_default();
     let prefer_stream = req.prefer_stream.unwrap_or(false);
 
     // A filter narrows the body this response carries; streaming means there is
@@ -52,38 +56,58 @@ pub(super) fn validate_request(req: &CallRequest) -> Result<RequestFlags, AppErr
         ));
     }
 
-    if is_async {
+    // Keyed on `is_deferred`, not on the variant: a hybrid call may leave this
+    // connection, and a flag that is incoherent once it does is incoherent
+    // whether or not the race happens to be won. Refusing on the possibility
+    // is what keeps "hybrid answers `called` or `accepted`" true — a mode that
+    // silently dropped `prefer_stream` on handoff would be a third behaviour.
+    if mode.is_deferred() {
+        let m = mode.label();
         if prefer_stream {
-            return Err(AppError::BadRequest(
-                "prefer_stream cannot be combined with execution: \"async\" — \
-                 prefer_stream streams the bytes on this response, and an async \
-                 call has no response to stream onto"
-                    .into(),
-            ));
+            return Err(AppError::BadRequest(format!(
+                "prefer_stream cannot be combined with execution: \"{m}\" — \
+                 prefer_stream streams the bytes on this response, and a call \
+                 that may leave this connection has no response to stream onto"
+            )));
         }
         if deliver_url {
-            return Err(AppError::BadRequest(
-                "deliver: \"url\" cannot be combined with execution: \"async\" — \
+            return Err(AppError::BadRequest(format!(
+                "deliver: \"url\" cannot be combined with execution: \"{m}\" — \
                  the download token would start expiring before the call runs; \
-                 poll GET /v1/executions/{id} and read the body from the \
+                 poll GET /v1/executions/{{id}} and read the body from the \
                  execution instead"
-                    .into(),
-            ));
+            )));
         }
         if req.return_url.is_some() {
-            return Err(AppError::BadRequest(
-                "return_url cannot be combined with execution: \"async\" — \
+            return Err(AppError::BadRequest(format!(
+                "return_url cannot be combined with execution: \"{m}\" — \
                  return_url redirects the caller after a reactive auth flow, \
-                 and an async call has no caller waiting to be redirected"
-                    .into(),
-            ));
+                 and a call that may leave this connection has no caller \
+                 waiting to be redirected"
+            )));
         }
     }
 
-    Ok(RequestFlags {
-        deliver_url,
-        is_async,
-    })
+    // Naming the knob without the mode it belongs to is a 400 rather than a
+    // silently ignored field: `deny_unknown_fields` means a caller who set it
+    // believes it is doing something.
+    if req.handoff_after_ms.is_some() && !mode.is_hybrid() {
+        return Err(AppError::BadRequest(
+            "handoff_after_ms is only valid with execution: \"hybrid\" — it is \
+             how long that mode holds the connection before answering 202, and \
+             no other mode has a handoff to schedule"
+                .into(),
+        ));
+    }
+    if req.handoff_after_ms == Some(0) {
+        return Err(AppError::BadRequest(
+            "handoff_after_ms must be greater than 0 — a zero handoff is \
+             execution: \"async\" with extra bookkeeping; ask for that instead"
+                .into(),
+        ));
+    }
+
+    Ok(RequestFlags { deliver_url, mode })
 }
 
 /// Combinations that only become visible once the action template resolves.
@@ -98,16 +122,20 @@ pub(super) fn validate_resolved(
     // `ResolvedModeC` carries the service definition and the instance binding,
     // not the key that selected the action.
     let action_key = req.action.as_deref().unwrap_or_default();
-    if !req.execution.is_some_and(ExecutionMode::is_async) {
+    let Some(m) = req
+        .execution
+        .filter(|e| e.is_deferred())
+        .map(ExecutionMode::label)
+    else {
         return Ok(());
-    }
+    };
     let Some(resolved) = resolved else {
         return Ok(());
     };
 
     if resolved.svc.runtime == overslash_core::types::service::Runtime::Platform {
         return Err(AppError::BadRequest(format!(
-            "service '{}' has runtime=platform; execution: \"async\" is not supported — \
+            "service '{}' has runtime=platform; execution: \"{m}\" is not supported — \
              platform actions run in-process and return immediately, so there is \
              nothing to defer",
             resolved.svc.key
@@ -122,7 +150,7 @@ pub(super) fn validate_resolved(
         && action.response_type.as_deref() == Some("binary")
     {
         return Err(AppError::BadRequest(format!(
-            "action '{}' on service '{}' returns binary; execution: \"async\" is not \
+            "action '{}' on service '{}' returns binary; execution: \"{m}\" is not \
              supported — the bytes would be buffered into the execution row and \
              corrupted. Call it synchronously with deliver: \"url\".",
             action_key, resolved.svc.key

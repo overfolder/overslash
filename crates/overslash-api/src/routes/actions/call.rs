@@ -54,20 +54,21 @@ pub(super) async fn call_action_impl(
     // Reject filter + streaming up front — silently dropping the filter
     // could let an agent think it's getting a small slice and instead
     // pipe a multi-MB stream into its context window.
-    let super::flags::RequestFlags {
-        deliver_url,
-        is_async,
-    } = super::flags::validate_request(&req)?;
+    let super::flags::RequestFlags { deliver_url, mode } = super::flags::validate_request(&req)?;
 
     // Refused here, above the permission gate, rather than only at the async
     // fork below it. The fork sits *under* the gate, so on a flag-off
     // deployment a gated async call would otherwise file an approval stamped
     // `async` that no worker will ever drain — and its caller would never learn
     // async was refused.
-    if is_async && !state.config.async_execution.enabled {
-        return Err(AppError::BadRequest(
-            "execution: \"async\" is not enabled on this deployment".into(),
-        ));
+    // Hybrid rides the same flag: it needs the executions row, the sweeps and
+    // the poll surface async brought, and a saturated hybrid fork degrades onto
+    // the async queue — which nothing drains with the flag off.
+    if mode.is_deferred() && !state.config.async_execution.enabled {
+        return Err(AppError::BadRequest(format!(
+            "execution: \"{}\" is not enabled on this deployment",
+            mode.label()
+        )));
     }
 
     // Validate filter syntax before any upstream call so a malformed
@@ -395,7 +396,11 @@ pub(super) async fn call_action_impl(
         // errors on a per-call value above the ceiling, and the worker's
         // `reclamp_stored` only ever clamps down — so a budget refused here can
         // never be recovered later, on the direct path or through an approval.
-        if is_async {
+        // Hybrid takes the async ceiling too: after a handoff there is no
+        // connection, so the sync ceiling's premise — sit under the proxy's
+        // request cap — no longer holds. Safe because a hybrid *connection* is
+        // bounded by the handoff, never by this budget.
+        if mode.is_deferred() {
             state.config.async_execution.call_timeout_max_ms
         } else {
             state.config.call_timeout_max_ms
@@ -428,7 +433,7 @@ pub(super) async fn call_action_impl(
         effective,
         pre_meta.needs_gate,
         skip_layer2,
-        is_async,
+        mode,
         call_timeout,
     )
     .await?
@@ -447,7 +452,7 @@ pub(super) async fn call_action_impl(
     // is what makes "async runs the same call, just not on this connection"
     // structurally true — and why this is a field on CallRequest, not a second
     // endpoint. See `async_accept` and DECISIONS D62.
-    if is_async {
+    if mode.is_async() {
         return super::async_accept::accept(
             &state,
             &ext,
@@ -552,6 +557,7 @@ pub(super) async fn call_action_impl(
                 // Platform handlers run in-process: failures surface as
                 // `AppError`, so a Called envelope is always a success.
                 is_error: false,
+                execution_id: None,
             }),
         )
             .into_response());
@@ -891,6 +897,7 @@ pub(super) async fn call_action_impl(
             result: rendered,
             action_description: meta.description,
             is_error: upstream_error,
+            execution_id: None,
         }),
     )
         .into_response();

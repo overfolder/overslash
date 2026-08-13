@@ -283,6 +283,7 @@ fn build_shared_state(registry: Arc<SharedRouterRegistry>, addr: SocketAddr) -> 
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: Some(registry),
+        background_db: None,
     }
 }
 
