@@ -1167,34 +1167,39 @@ mod classified {
         let (base, client, agent_key, _admin, _ident) =
             setup(pool, mock, "write", false, Some(DBS)).await;
 
-        let sql = "WITH d AS (DELETE FROM public.rental RETURNING *) SELECT * FROM d";
-        let validate: Value = client
-            .post(format!("{base}/v1/actions/validate"))
-            .header(auth(&agent_key).0, auth(&agent_key).1)
-            .json(&json!({
-                "service": "metabase",
-                "action": "run_query",
-                "params": { "database": 1, "query": sql },
-            }))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(
-            validate["permission"]["status"].as_str(),
-            Some("would_require_approval"),
-            "{validate:?}"
-        );
-        let validate_keys = validate["permission"]["uncovered_keys"].clone();
+        for sql in [
+            "WITH d AS (DELETE FROM public.rental RETURNING *) SELECT * FROM d",
+            // D69: the dry-run path screens functions too, sentinel and all.
+            "SELECT nextval('public.film_id_seq') FROM public.film",
+        ] {
+            let validate: Value = client
+                .post(format!("{base}/v1/actions/validate"))
+                .header(auth(&agent_key).0, auth(&agent_key).1)
+                .json(&json!({
+                    "service": "metabase",
+                    "action": "run_query",
+                    "params": { "database": 1, "query": sql },
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(
+                validate["permission"]["status"].as_str(),
+                Some("would_require_approval"),
+                "{validate:?}"
+            );
+            let validate_keys = validate["permission"]["uncovered_keys"].clone();
 
-        let call = run_query(&base, &client, &agent_key, sql, json!({})).await;
-        assert_eq!(call["status"].as_str(), Some("pending_approval"));
-        assert_eq!(
-            call["permission_keys"], validate_keys,
-            "validate and call must derive identical keys"
-        );
+            let call = run_query(&base, &client, &agent_key, sql, json!({})).await;
+            assert_eq!(call["status"].as_str(), Some("pending_approval"), "{sql}");
+            assert_eq!(
+                call["permission_keys"], validate_keys,
+                "validate and call must derive identical keys for {sql}"
+            );
+        }
     }
 
     /// The classifier's facts survive as metadata tags on the approval row.
@@ -1276,6 +1281,166 @@ mod classified {
         .await
         .unwrap();
         assert_eq!(audit, tags, "approval and its audit row must not drift");
+    }
+
+    // ── D69 function screening ────────────────────────────────────────
+
+    /// The named case: `pg_sleep` is VOLATILE, so a volatility rule alone
+    /// would refuse it — but it sleeps in the caller's own backend and
+    /// changes nothing, so it is on the carve-out list and the call sails
+    /// through a read ceiling on an ordinary table grant.
+    #[tokio::test]
+    async fn pg_sleep_stays_read() {
+        let pool = common::test_pool().await;
+        let (mock, seen) = start_mock_metabase().await;
+        let (base, client, agent_key, admin_key, ident) =
+            setup(pool, mock, "read", false, Some(DBS)).await;
+        add_rule(
+            &base,
+            &client,
+            &admin_key,
+            &ident,
+            "metabase:run_query:table=pagila/public.*",
+            "allow",
+        )
+        .await;
+
+        let resp = run_query(
+            &base,
+            &client,
+            &agent_key,
+            "SELECT pg_sleep(1), count(*) FROM public.film",
+            json!({}),
+        )
+        .await;
+        assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+        assert!(!seen.lock().unwrap().is_empty(), "it reached Metabase");
+    }
+
+    /// `nextval` is volatile *and* advances a sequence, so it elevates a
+    /// `dynamic` action to write — and because a function may reach relations
+    /// the parse tree never names, the call also loses its claim to have
+    /// enumerated them: the uncovered key is the all-tables sentinel, not
+    /// `public.film`, even though the parser did see `public.film`.
+    #[tokio::test]
+    async fn unsafe_function_elevates_and_falls_back_to_the_sentinel() {
+        let pool = common::test_pool().await;
+        let (mock, seen) = start_mock_metabase().await;
+        let (base, client, agent_key, admin_key, ident) =
+            setup(pool.clone(), mock, "write", false, Some(DBS)).await;
+        add_rule(
+            &base,
+            &client,
+            &admin_key,
+            &ident,
+            "metabase:run_query:table=pagila/*",
+            "allow",
+        )
+        .await;
+
+        let resp = run_query(
+            &base,
+            &client,
+            &agent_key,
+            "SELECT nextval('public.film_id_seq') FROM public.film",
+            json!({}),
+        )
+        .await;
+        assert_eq!(
+            resp["status"].as_str(),
+            Some("pending_approval"),
+            "{resp:?}"
+        );
+        let keys: Vec<&str> = resp["permission_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(keys, vec!["metabase:run_query:table_mut=pagila/*"]);
+        assert_eq!(resp["risk"].as_str(), Some("med"));
+        // The mock still sees the disclosure's database lookup; what must
+        // never appear upstream is the query itself.
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .all(|r| r.body["native"]["query"].is_null()),
+            "the query must not reach Metabase"
+        );
+
+        let tags: Vec<String> =
+            sqlx::query_scalar("SELECT tags FROM approvals ORDER BY created_at DESC LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(tags.contains(&"sql:write".to_string()), "{tags:?}");
+        assert!(
+            tags.contains(&"sql_reason:unsafe_function".to_string()),
+            "{tags:?}"
+        );
+        assert!(
+            tags.contains(&"sql_exhaustive:false".to_string()),
+            "{tags:?}"
+        );
+        // The name is caller-controlled, so it stays out of the tag index —
+        // but the audit *record* must name it, or `sql_reason:unsafe_function`
+        // is a dead end and nobody can decide what to put in `safe_functions`.
+        assert!(tags.iter().all(|t| !t.contains("nextval")), "{tags:?}");
+
+        let detail: Value = sqlx::query_scalar(
+            "SELECT detail FROM audit_log WHERE action = 'approval.created' \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            detail["sql"]["write_reason"].as_str(),
+            Some("unsafe_function"),
+            "{detail:?}"
+        );
+        assert_eq!(
+            detail["sql"]["reason_detail"].as_str(),
+            Some("nextval"),
+            "the record must name the function the tag cannot: {detail:?}"
+        );
+    }
+
+    /// The escape hatch. The same query the shipped list refuses classifies
+    /// read once the database's `safe_functions` vouches for the function —
+    /// an operator unblocks their PostGIS or their in-house UDF with a config
+    /// edit, not a release. Deliberately per database: vouching on the
+    /// reporting replica says nothing about production.
+    #[tokio::test]
+    async fn config_vouching_makes_the_same_query_read() {
+        let pool = common::test_pool().await;
+        let (mock, _seen) = start_mock_metabase().await;
+        let dbs = r#"{"1": {"dialect": "postgres", "label": "pagila",
+                           "safe_functions": ["nextval"]}}"#;
+        let (base, client, agent_key, admin_key, ident) =
+            setup(pool, mock, "read", false, Some(dbs)).await;
+        add_rule(
+            &base,
+            &client,
+            &admin_key,
+            &ident,
+            "metabase:run_query:table=pagila/public.*",
+            "allow",
+        )
+        .await;
+
+        let resp = run_query(
+            &base,
+            &client,
+            &agent_key,
+            "SELECT nextval('public.film_id_seq') FROM public.film",
+            json!({}),
+        )
+        .await;
+        // Read ceiling cleared *and* only the table key needed: vouching
+        // restores exhaustiveness too, so no sentinel is demanded.
+        assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
     }
 
     /// An executed read tags the audit row, including the outcome the

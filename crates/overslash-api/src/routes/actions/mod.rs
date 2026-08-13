@@ -632,6 +632,9 @@ async fn evaluate_sql_policy(
         .and_then(|e| e.label.clone())
         .or(db_key)
         .unwrap_or_else(|| "unknown".to_string());
+    // D69: functions this database vouches for on top of the shipped safe
+    // list. An unresolvable database has none, which is the fail-closed side.
+    let extra_safe = entry.map(|e| e.safe_functions).unwrap_or_default();
 
     // ── Locate and classify the SQL. ──
     let sql_field = sql_param.sql_field.as_deref().unwrap_or_default();
@@ -648,7 +651,7 @@ async fn evaluate_sql_policy(
         }
     } else {
         match sql_policy::extract_sql(sql_param_name, sql_field, params) {
-            Some(sql) => sql_policy::analyze(sql),
+            Some(sql) => sql_policy::analyze(sql, &extra_safe),
             // Present but not a string at the nominated path — validate_args
             // should have rejected it; refuse to guess.
             None => SqlAnalysis {
