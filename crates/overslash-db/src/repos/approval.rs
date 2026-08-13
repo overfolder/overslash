@@ -39,11 +39,20 @@ pub struct ApprovalRow {
 }
 
 impl ApprovalRow {
-    /// True when the gated call asked for `execution: "async"`, so an approved
-    /// replay is queued for the worker instead of dialled on the connection
-    /// that triggered it.
+    /// True when the gated call asked to run off the connection that triggers
+    /// its replay — `async` or `hybrid` — so an approved replay is queued for
+    /// the worker instead of dialled inline.
+    ///
+    /// `hybrid` collapses into `async` *here and nowhere else*. Its handoff
+    /// race is a property of the original caller's connection; a replay is
+    /// triggered either by a resolver's browser or by `spawn_auto_call`, which
+    /// has no connection at all. Racing one trigger and queueing the other
+    /// would make the same approval behave differently depending on which one
+    /// fired — the failure the branch-in-one-helper shape was written to
+    /// prevent. `execution_mode` still stores `'hybrid'`, so the approval card
+    /// can report which mode was asked for.
     pub fn is_async(&self) -> bool {
-        self.execution_mode == "async"
+        matches!(self.execution_mode.as_str(), "async" | "hybrid")
     }
 }
 

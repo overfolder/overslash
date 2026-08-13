@@ -125,6 +125,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -1883,6 +1884,7 @@ async fn test_service_registry_api() {
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -2921,6 +2923,7 @@ async fn start_api_with_registry(
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()

@@ -78,6 +78,7 @@ pub(super) async fn finalize(
             result,
             upstream_errored,
             summary,
+            ..
         } => {
             let finalised = scope
                 .finalize_execution_executed(execution_id, &result)
@@ -85,7 +86,7 @@ pub(super) async fn finalize(
                 .unwrap_or(claimed);
             (finalised, true, upstream_errored, Some(summary))
         }
-        StoredOutcome::Failed { message } => {
+        StoredOutcome::Failed { message, .. } => {
             let finalised = scope
                 .finalize_execution_failed(execution_id, &message)
                 .await?

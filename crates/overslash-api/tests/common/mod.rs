@@ -741,6 +741,7 @@ where
         event_bus: event_bus.clone(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -947,6 +948,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -1110,6 +1112,7 @@ pub async fn start_api_with_auth_providers(
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -1693,6 +1696,7 @@ where
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -1859,6 +1863,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -1997,6 +2002,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -2327,5 +2333,6 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     }
 }

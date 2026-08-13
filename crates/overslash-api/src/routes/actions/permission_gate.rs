@@ -63,11 +63,11 @@ pub(super) async fn enforce_permission_chain(
     effective: Risk,
     needs_gate: bool,
     skip_layer2: bool,
-    // Whether the caller asked for `execution: "async"`. Passed in already
-    // validated rather than re-derived from `req` here, so the flag that drives
-    // the async rejections in `flags::validate_request` and the one stamped on
-    // the approval can never disagree.
-    is_async: bool,
+    // How the caller asked for this call to run. Passed in already validated
+    // rather than re-derived from `req` here, so the mode that drives the
+    // refusals in `flags::validate_request` and the one stamped on the approval
+    // can never disagree.
+    mode: super::dto::ExecutionMode,
     // The D56-resolved timeout for this call, stored on the approval so a
     // later replay reproduces the budget the caller actually asked for.
     call_timeout: CallTimeout,
@@ -168,10 +168,17 @@ pub(super) async fn enforce_permission_chain(
                         token: &token,
                         expires_at,
                         tags: &tags,
-                        // The gate fires above the async fork, so this is the
-                        // only record that the caller wanted this call run off
-                        // the request path. Both replay triggers read it back.
-                        execution_mode: if is_async { "async" } else { "sync" },
+                        // The gate fires above the async and hybrid forks, so
+                        // this is the only record that the caller wanted this
+                        // call run off the request path. Both replay triggers
+                        // read it back.
+                        //
+                        // `hybrid` is stored as itself rather than folded into
+                        // `async`, even though both triggers treat it the same
+                        // (see `ApprovalRow::is_async`): the approval card
+                        // should be able to say which mode was asked for, and a
+                        // lossy stamp cannot be un-lost later.
+                        execution_mode: mode.label(),
                     })
                     .await?;
 

@@ -212,7 +212,7 @@ pub async fn execute(
     let elapsed = started.elapsed();
     let terminal = match &outcome {
         StoredOutcome::Executed { result, .. } => AsyncOutcome::Executed(result),
-        StoredOutcome::Failed { message } => AsyncOutcome::Failed(message),
+        StoredOutcome::Failed { message, .. } => AsyncOutcome::Failed(message),
         // A worker has no caller to surface a rejection to, so a credential
         // that could not be re-minted is simply a failed row.
         StoredOutcome::Rejected { message, .. } => AsyncOutcome::Failed(message),

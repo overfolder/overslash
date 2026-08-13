@@ -68,6 +68,17 @@ pub(super) struct CallRequest {
     #[serde(default)]
     pub(super) execution: Option<ExecutionMode>,
 
+    /// How long a `execution: "hybrid"` call may hold the connection before
+    /// answering 202, in milliseconds. Only meaningful with that mode; naming
+    /// it under any other is a 400 rather than a silently ignored field.
+    ///
+    /// Refused rather than clamped when it exceeds `HYBRID_HANDOFF_MAX_MS` or
+    /// the call's own resolved budget — the same split `timeout_ms` makes,
+    /// and for the same reason: unlike a deployment default, there is a caller
+    /// present who asked explicitly.
+    #[serde(default)]
+    pub(super) handoff_after_ms: Option<u64>,
+
     /// How long this call may wait on the upstream, in milliseconds.
     ///
     /// The most specific rung of the D56 cascade: it beats the action
@@ -154,16 +165,51 @@ impl Delivery {
 /// bounded by the deployment's request cap. `Async` accepts the call, persists
 /// it, and hands back an execution id to poll — the only way a call can outlive
 /// the caller's connection. See DECISIONS D62.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(super) enum ExecutionMode {
+    #[default]
     Sync,
     Async,
+    /// Starts like `Sync` and finishes like `Async`: the job runs off the
+    /// connection from the first byte, and the connection waits on it for
+    /// `handoff_after_ms`. Beat the window and the caller gets the ordinary
+    /// `Called` envelope; miss it and the caller gets `Accepted` and polls.
+    ///
+    /// Both shapes are predictable from the request alone, which is the bar
+    /// D56 set when it refused to *auto*-promote an over-ceiling call: the
+    /// surprise it ruled out was a response shape that changed based on a
+    /// number in a template the caller never saw. See DECISIONS D68.
+    Hybrid,
 }
 
 impl ExecutionMode {
     pub(super) fn is_async(self) -> bool {
         matches!(self, ExecutionMode::Async)
+    }
+
+    pub(super) fn is_hybrid(self) -> bool {
+        matches!(self, ExecutionMode::Hybrid)
+    }
+
+    /// Runs off the caller's connection — always (`Async`) or possibly
+    /// (`Hybrid`).
+    ///
+    /// Every refusal in [`super::flags`] keys off this rather than on the
+    /// variant, so the two deferred modes cannot drift into different answers
+    /// for the same flag combination.
+    pub(super) fn is_deferred(self) -> bool {
+        !matches!(self, ExecutionMode::Sync)
+    }
+
+    /// Wire spelling, for error text that has to name the mode the caller
+    /// actually asked for.
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            ExecutionMode::Sync => "sync",
+            ExecutionMode::Async => "async",
+            ExecutionMode::Hybrid => "hybrid",
+        }
     }
 }
 
@@ -185,6 +231,18 @@ pub(super) enum CallResponse {
         /// `action.executed` audit entry so callers (dashboard Try It, MCP
         /// clients) can flag the result without parsing the body.
         is_error: bool,
+        /// The `executions` row this call ran on. Present only for
+        /// `execution: "hybrid"` calls that finished before the handoff — no
+        /// other mode writes a row it can answer from.
+        ///
+        /// A correlation handle on an **already-terminal** row, never a signal
+        /// to poll: `status` remains the sole discriminator, and a `called`
+        /// envelope always carries the result inline. It is here because the
+        /// row is written either way, and withholding the id would leave a row
+        /// surfacing in `GET /v1/executions` that the caller has no way to tie
+        /// back to the answer it is holding.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        execution_id: Option<Uuid>,
     },
     #[serde(rename = "pending_approval")]
     PendingApproval {
@@ -255,11 +313,15 @@ pub(super) enum CallResponse {
     #[serde(rename = "accepted")]
     Accepted {
         execution_id: Uuid,
-        /// Absolute poll URL, built the same way `approval_url` is.
+        /// Dashboard deep link for a human, built the same way `approval_url`
+        /// is. **Not** the poll URL — that is `GET /v1/executions/{id}`, which
+        /// a client composes from `execution_id`.
         execution_url: String,
         action_description: Option<String>,
-        /// RFC 3339. After this the row is swept to `expired` and the call
-        /// will never run.
+        /// RFC 3339. For a queued call, the point after which the row is swept
+        /// to `expired` and the call will never run. For a hybrid call that
+        /// handed off, the call is already running and this is the point after
+        /// which it is given up on.
         expires_at: String,
         /// The D56-resolved budget the worker will run under. Echoed so a
         /// caller knows how long to keep polling rather than guessing from a

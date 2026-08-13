@@ -113,6 +113,21 @@ impl Config {
                     .and_then(|s| s.parse().ok())
                     .filter(|n| *n > 0)
                     .unwrap_or(1),
+                hybrid_handoff_ms: env::var("HYBRID_HANDOFF_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(5_000),
+                hybrid_handoff_max_ms: env::var("HYBRID_HANDOFF_MAX_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(30_000),
+                hybrid_max_inflight: env::var("HYBRID_MAX_INFLIGHT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(32),
             },
             services_dir: env::var("SERVICES_DIR").unwrap_or_else(|_| "services".into()),
             google_auth_client_id: env::var("GOOGLE_AUTH_CLIENT_ID").ok(),

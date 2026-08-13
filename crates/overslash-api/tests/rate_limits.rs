@@ -795,6 +795,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     }
 }
 

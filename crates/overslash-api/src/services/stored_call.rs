@@ -78,14 +78,40 @@ impl StoredCallCtx<'_> {
 pub enum StoredOutcome {
     Executed {
         result: serde_json::Value,
+        /// The same response, still typed.
+        ///
+        /// Read only by the hybrid inline branch, and the reason it exists:
+        /// it lets a hybrid 200 be produced by the exact `render_stored` call
+        /// the synchronous path makes, rather than by re-parsing `result`. A
+        /// round trip through the JSON would not survive — `run_platform`
+        /// stamps a `runtime` key into it and `run_mcp` produces the MCP
+        /// shape, both deliberately, for the *row*.
+        typed: overslash_core::types::ActionResult,
         /// The upstream itself reported a failure (5xx, or an MCP tool
         /// `is_error`). The *call* still ran, so this is not `Failed`.
         upstream_errored: bool,
+        /// Envelope-level `is_error`: HTTP >= 400, the MCP in-band flag, or
+        /// `false` for platform.
+        ///
+        /// Deliberately *not* `upstream_errored`, which is the >= 500 rule the
+        /// `UpstreamErrored` metrics marker uses. Collapsing the two would
+        /// silently mis-report every HTTP 4xx and every MCP tool error, whose
+        /// `status_code` does not encode the in-band flag.
+        is_error: bool,
         summary: serde_json::Value,
     },
     /// The call did not complete: transport failure, timeout, or an executor
     /// error. The message is safe to store on the row.
-    Failed { message: String },
+    Failed {
+        message: String,
+        /// The typed error, where there was one.
+        ///
+        /// A worker only ever stores `message`, but a hybrid call that fails
+        /// *before* its handoff still has a caller waiting, and that caller
+        /// should get the status and envelope the synchronous path would have
+        /// given it rather than a flattened 500.
+        error: Option<Box<AppError>>,
+    },
     /// The call never started because its credential could not be re-minted.
     /// Kept distinct from `Failed` because the replay path surfaces this to
     /// its HTTP caller as an error response, while a worker just fails the row.
@@ -109,6 +135,7 @@ async fn run_http(ctx: StoredCallCtx<'_>, stored: StoredCallRequest) -> StoredOu
     let Some(timeout) = ctx.timeout else {
         return StoredOutcome::Failed {
             message: "internal: stored HTTP call has no resolved timeout".into(),
+            error: None,
         };
     };
 
@@ -181,11 +208,13 @@ async fn run_http(ctx: StoredCallCtx<'_>, stored: StoredCallRequest) -> StoredOu
             }
             StoredOutcome::Executed {
                 upstream_errored: result.status_code >= 500,
+                is_error: result.status_code >= 400,
                 summary: serde_json::json!({
                     "status_code": result.status_code,
                     "duration_ms": result.duration_ms,
                 }),
                 result: result_json,
+                typed: result,
             }
         }
         Ok(Ok(CallOutcome::Streamed(_))) => {
@@ -194,13 +223,16 @@ async fn run_http(ctx: StoredCallCtx<'_>, stored: StoredCallRequest) -> StoredOu
             // silently dropping the response.
             StoredOutcome::Failed {
                 message: "replay unexpectedly produced a streaming response".into(),
+                error: None,
             }
         }
         Ok(Err(app_err)) => StoredOutcome::Failed {
             message: app_err.to_string(),
+            error: Some(Box::new(app_err)),
         },
         Err(_elapsed) => StoredOutcome::Failed {
             message: "replay_timeout".into(),
+            error: None,
         },
     }
 }
@@ -315,13 +347,18 @@ async fn run_mcp(ctx: StoredCallCtx<'_>, call: StoredMcpCall) -> StoredOutcome {
                 )
                 .await;
             StoredOutcome::Executed {
-                result: result_json,
-                upstream_errored: is_error,
                 summary: serde_json::json!({
                     "runtime": "mcp",
                     "tool": call.tool,
                     "duration_ms": result.duration_ms,
                 }),
+                result: result_json,
+                typed: result,
+                // For MCP the two predicates coincide: the tool's in-band flag
+                // is the only failure signal, since transport failures land in
+                // the `Ok(Err(..))` arm below.
+                upstream_errored: is_error,
+                is_error,
             }
         }
         Ok(Err(invoke_err)) => {
@@ -357,10 +394,12 @@ async fn run_mcp(ctx: StoredCallCtx<'_>, call: StoredMcpCall) -> StoredOutcome {
             }
             StoredOutcome::Failed {
                 message: invoke_err.app.to_string(),
+                error: Some(Box::new(invoke_err.app)),
             }
         }
         Err(_elapsed) => StoredOutcome::Failed {
             message: "replay_timeout".into(),
+            error: None,
         },
     }
 }
@@ -437,9 +476,12 @@ async fn run_platform(ctx: StoredCallCtx<'_>, call: StoredPlatformCall) -> Store
                 .await;
             StoredOutcome::Executed {
                 result: result_json,
+                typed: result,
                 // Platform dispatch is in-process — there is no upstream to
-                // report on.
+                // report on, and a handler failure surfaces as an `AppError`
+                // rather than a `Called` envelope.
                 upstream_errored: false,
+                is_error: false,
                 summary: serde_json::json!({
                     "runtime": "platform",
                     "action": &call.action,
@@ -448,9 +490,11 @@ async fn run_platform(ctx: StoredCallCtx<'_>, call: StoredPlatformCall) -> Store
         }
         Ok(Err(app_err)) => StoredOutcome::Failed {
             message: app_err.to_string(),
+            error: Some(Box::new(app_err)),
         },
         Err(_elapsed) => StoredOutcome::Failed {
             message: "replay_timeout".into(),
+            error: None,
         },
     }
 }

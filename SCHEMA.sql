@@ -94,7 +94,7 @@ CREATE TABLE public.approvals (
     replay_payload jsonb,
     tags text[] DEFAULT '{}'::text[] NOT NULL,
     execution_mode text DEFAULT 'sync'::text NOT NULL,
-    CONSTRAINT approvals_execution_mode_check CHECK ((execution_mode = ANY (ARRAY['sync'::text, 'async'::text]))),
+    CONSTRAINT approvals_execution_mode_check CHECK ((execution_mode = ANY (ARRAY['sync'::text, 'async'::text, 'hybrid'::text]))),
     CONSTRAINT approvals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'allowed'::text, 'denied'::text, 'expired'::text])))
 );
 

@@ -376,6 +376,30 @@ pub struct AsyncExecutionConfig {
     /// must not be replayed because a worker died. Operators who know their
     /// actions are safe to retry raise it.
     pub max_attempts: i32,
+    /// `HYBRID_HANDOFF_MS`. How long a `execution: "hybrid"` call waits on the
+    /// connection before answering 202 and letting the job finish off it.
+    ///
+    /// A deployment default, so it is *clamped* against the call's own budget
+    /// rather than refused — see `services::hybrid::resolve_handoff`. A caller
+    /// who names `handoff_after_ms` explicitly gets a 400 instead, which is the
+    /// same split `timeout_ms` already makes between a template default and a
+    /// number a caller asked for.
+    pub hybrid_handoff_ms: u64,
+    /// `HYBRID_HANDOFF_MAX_MS`. Ceiling on a caller-supplied `handoff_after_ms`.
+    ///
+    /// Well under `call_timeout_max_ms`: a handoff longer than the synchronous
+    /// connection ceiling cannot fire before the proxy cuts the connection, so
+    /// permitting one would only produce a 504 where the caller asked for a 202.
+    pub hybrid_handoff_max_ms: u64,
+    /// `HYBRID_MAX_INFLIGHT`. Hybrid jobs one replica runs at once.
+    ///
+    /// A hybrid call spawns its job from the *request* path, so unlike the
+    /// worker loop nothing else bounds it — N concurrent requests would be N
+    /// detached tasks against the same background pool `worker_concurrency` is
+    /// sized for. Over this, a hybrid call is accepted onto the ordinary async
+    /// queue instead: same envelope, same poll URL, no shape change the caller
+    /// can observe.
+    pub hybrid_max_inflight: usize,
 }
 
 impl Default for AsyncExecutionConfig {
@@ -386,6 +410,9 @@ impl Default for AsyncExecutionConfig {
             worker_concurrency: 2,
             lease_ttl_secs: 60,
             max_attempts: 1,
+            hybrid_handoff_ms: 5_000,
+            hybrid_handoff_max_ms: 30_000,
+            hybrid_max_inflight: 32,
         }
     }
 }
