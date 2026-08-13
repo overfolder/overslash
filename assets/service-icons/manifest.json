@@ -37,6 +37,11 @@
     "google_keep": { "source": "simple-icons:googlekeep" },
     "google_tasks": { "source": "simple-icons:googletasks" },
     "hubspot": { "source": "simple-icons:hubspot" },
+    "http": {
+      "source": "local:globe.svg",
+      "owner": "Overspiral S.L.",
+      "note": "Generic globe glyph authored by us. Mode A is not a vendor — this stands for \"any URL you supply\", which is what the pseudo-service is."
+    },
     "linkedin": {
       "source": "pending",
       "owner": "LinkedIn Corporation (Microsoft)",

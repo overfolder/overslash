@@ -60,6 +60,13 @@ pub(super) const BUILTIN_ICONS: &[(&str, &[u8])] = &[
         )),
     ),
     (
+        "http",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/service-icons/http.svg"
+        )),
+    ),
+    (
         "hubspot",
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
