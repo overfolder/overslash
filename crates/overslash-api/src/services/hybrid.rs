@@ -133,4 +133,41 @@ mod tests {
         let d = resolve_handoff(Some(200_000), &wide, 600_000, 110_000).unwrap();
         assert_eq!(d, Duration::from_millis(110_000));
     }
+
+    /// The wall-clock sweep must always sit *past* the largest budget the
+    /// resolver can hand out, for every value of `ASYNC_CALL_TIMEOUT_MAX_MS`.
+    ///
+    /// `fail_async_over_wall` deliberately carries no `triggered_by` guard —
+    /// unlike the two reclaim sweeps, which must exclude hybrid because they
+    /// set `pending` and that is the re-dial hybrid forbids. This one sets
+    /// `failed`, which is terminal and safe, and it is the only thing that can
+    /// reap a hybrid job alive enough to heartbeat but wedged on an upstream
+    /// (no expired lease, so `fail_expired_hybrid_leases` cannot see it).
+    ///
+    /// What makes that safe is arithmetic rather than an operator's care: the
+    /// wall is *derived from* the same knob that caps the budget, so raising
+    /// the cap raises the wall by the same amount plus the grace. There is no
+    /// configuration in which a healthy job outlives its own wall. This test
+    /// is what keeps that true if either formula is ever edited apart.
+    #[test]
+    fn the_async_wall_always_outlives_the_largest_budget() {
+        for max_ms in [1_000_u64, 30_000, 110_000, 900_000, 3_600_000, 86_400_000] {
+            let mut cfg = crate::config::tests::empty_test_config();
+            cfg.async_execution.call_timeout_max_ms = max_ms;
+
+            let budget_secs = max_ms as i64 / 1_000;
+            let sweep_secs = cfg.async_orphan_grace_secs();
+
+            assert!(
+                sweep_secs > budget_secs,
+                "at ASYNC_CALL_TIMEOUT_MAX_MS={max_ms} the sweep fires at {sweep_secs}s                  but a job may legitimately run {budget_secs}s"
+            );
+            // And the job's own timeout must fire first, so the sweep only ever
+            // reaches a row whose own guard failed.
+            assert!(
+                cfg.async_wall_clock().as_secs() as i64 <= sweep_secs,
+                "the in-process wall must not outlast the sweep at max_ms={max_ms}"
+            );
+        }
+    }
 }
