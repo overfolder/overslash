@@ -220,4 +220,61 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{name}");
         }
     }
+
+    /// The cloud dashboard is served from `app.` while this route lives on
+    /// `api.`, and `config.public_url` — which `resolve_icon_url` builds on —
+    /// is the *app* origin there, so every `icon_url` lands on the dashboard
+    /// host. That host only serves what `vercel.json` explicitly proxies, so
+    /// without a rewrite every icon 404s to `text/html` and silently degrades
+    /// to a letter tile. It shipped exactly that way once.
+    ///
+    /// The invariant: wherever `/health` is proxied, `/icons` must be too —
+    /// same host condition, same destination origin.
+    #[test]
+    fn every_health_rewrite_has_a_matching_icons_rewrite() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dashboard/vercel.json");
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read vercel.json"))
+                .expect("vercel.json is valid JSON");
+        let rewrites = cfg["rewrites"].as_array().expect("rewrites array");
+
+        // Key a block by its host condition (None = the catch-all block).
+        let host_of = |r: &serde_json::Value| r["has"][0]["value"].as_str().map(str::to_string);
+        let origin_of = |r: &serde_json::Value| {
+            r["destination"]
+                .as_str()
+                .unwrap_or_default()
+                .split("/health")
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        };
+
+        let health: Vec<_> = rewrites
+            .iter()
+            .filter(|r| r["source"] == "/health")
+            .collect();
+        assert!(
+            !health.is_empty(),
+            "no /health rewrites found — did the file move?"
+        );
+
+        for h in health {
+            let host = host_of(h);
+            let origin = origin_of(h);
+            let found = rewrites.iter().any(|r| {
+                r["source"] == "/icons/:path*"
+                    && host_of(r) == host
+                    && r["destination"]
+                        .as_str()
+                        .is_some_and(|d| d == format!("{origin}/icons/:path*"))
+            });
+            assert!(
+                found,
+                "vercel.json proxies /health for host {host:?} to {origin} but not /icons/:path* — \
+                 icons will 404 to the SPA on that origin"
+            );
+        }
+    }
 }
