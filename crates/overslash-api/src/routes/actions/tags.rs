@@ -162,7 +162,7 @@ pub(super) fn sql_audit_block(sp: &SqlPolicyOutcome) -> serde_json::Value {
         "write_reason": a.write_reason.as_ref().map(|r| r.tag()),
         "reason_detail": a.write_reason.as_ref().and_then(|r| match r {
             WriteReason::UnsupportedDialect(s) | WriteReason::ParseError(s)
-            | WriteReason::Statement(s) => Some(s.clone()),
+            | WriteReason::Statement(s) | WriteReason::UnsafeFunction(s) => Some(s.clone()),
             WriteReason::MultiStatement(n) => Some(n.to_string()),
             _ => None,
         }),

@@ -22,7 +22,9 @@
 //!
 //! Tags are a *search index*, not a record. They deliberately flatten away
 //! detail — [`crate::sql_policy::WriteReason::ParseError`]'s message, the
-//! exact statement node — which keeps its home in `audit_log.detail`.
+//! offending function names of
+//! [`crate::sql_policy::WriteReason::UnsafeFunction`], the exact statement
+//! node — which keeps its home in `audit_log.detail`.
 
 use crate::sql_policy::{SqlAnalysis, SqlClass, WriteReason};
 
@@ -289,6 +291,24 @@ mod tests {
         );
         assert!(tags.contains(&"sql_reason:parse_error".to_string()));
         assert!(tags.iter().all(|t| !t.contains("slect")));
+    }
+
+    /// Same treatment as `ParseError`, for the same reason: the offending
+    /// function names are caller-controlled and unbounded, so they would turn
+    /// the tag index into a cardinality bomb. `sql_reason` is enough to find
+    /// the rows; the names live in `detail`.
+    #[test]
+    fn unsafe_function_names_stay_out_of_the_index() {
+        let tags = sql_tags(
+            "wh",
+            &analysis(
+                SqlClass::Write,
+                Some(WriteReason::UnsafeFunction("nextval, my_udf".into())),
+            ),
+        );
+        assert!(tags.contains(&"sql_reason:unsafe_function".to_string()));
+        assert!(tags.iter().all(|t| !t.contains("nextval")));
+        assert!(tags.iter().all(|t| !t.contains("my_udf")));
     }
 
     #[test]

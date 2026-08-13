@@ -41,12 +41,21 @@ components:
   # parse dialect + the human label used in audit rows and permission keys
   # (`metabase:run_query:table={label}/{schema}.{table}`). Unlisted ids
   # fail closed to postgres with the raw id as label.
+  #
+  # D69: an entry may also carry `safe_functions` — the extension and
+  # in-house function names this database vouches for, on top of the shipped
+  # pg_catalog safe list. Without it a SELECT calling, say, a PostGIS `st_*`
+  # classifies write; per database on purpose, since vouching on a reporting
+  # replica says nothing about production.
   x-overslash-config:
     sql_databases:
       label: SQL databases
       description: >-
         JSON object mapping Metabase database ids to their SQL policy entry,
-        e.g. {"5": {"dialect": "postgres", "label": "reveni-prod"}}.
+        e.g. {"5": {"dialect": "postgres", "label": "reveni-prod",
+        "safe_functions": ["st_area", "unaccent"]}}. `safe_functions` is
+        optional and lets queries calling those functions still classify
+        read.
       required: false
 paths:
   /api/database:

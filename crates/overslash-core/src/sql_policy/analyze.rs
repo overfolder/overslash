@@ -45,8 +45,11 @@ pub fn extract_sql<'a>(
 }
 
 /// Classify `sql`, fail-closed. See the module docs for the guarantees.
+///
+/// `extra_safe` is the nominated database's `safe_functions` config (D69) —
+/// function names the operator vouches for on top of the shipped safe list.
 #[cfg(not(feature = "sql_policy"))]
-pub fn analyze(_sql: &str) -> SqlAnalysis {
+pub fn analyze(_sql: &str, _extra_safe: &[String]) -> SqlAnalysis {
     SqlAnalysis::write(
         WriteReason::Unavailable,
         Vec::new(),
@@ -57,229 +60,12 @@ pub fn analyze(_sql: &str) -> SqlAnalysis {
 }
 
 /// Classify `sql`, fail-closed. See the module docs for the guarantees.
+///
+/// `extra_safe` is the nominated database's `safe_functions` config (D69) —
+/// function names the operator vouches for on top of the shipped safe list.
 #[cfg(feature = "sql_policy")]
-pub fn analyze(sql: &str) -> SqlAnalysis {
-    imp::analyze(sql)
-}
-
-#[cfg(feature = "sql_policy")]
-mod imp {
-    use crate::sql_policy::types::{SqlAnalysis, SqlClass, WriteReason};
-    use pg_query::NodeRef;
-    use pg_query::protobuf::node::Node as NodeEnum;
-
-    pub(super) fn analyze(sql: &str) -> SqlAnalysis {
-        let result = match pg_query::parse(sql) {
-            Ok(r) => r,
-            Err(e) => {
-                return SqlAnalysis::write(
-                    WriteReason::ParseError(e.to_string()),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    false,
-                );
-            }
-        };
-
-        // Everything below reads the same collections. The parser tags each
-        // referenced relation with its context; select-context relations are
-        // reads, DML/DDL-context relations are mutation targets (the D43
-        // `table=` / `table_mut=` split). A relation in both contexts
-        // (`INSERT INTO a SELECT * FROM a`) lands in both lists.
-        let read_tables = dedup(result.select_tables());
-        let mut_tables = dedup(
-            result
-                .dml_tables()
-                .into_iter()
-                .chain(result.ddl_tables())
-                .collect(),
-        );
-        let walk = walk_tree(&result);
-        let columns = walk.columns;
-        let exhaustive = !walk.opaque;
-
-        let stmts: Vec<&NodeEnum> = result
-            .protobuf
-            .stmts
-            .iter()
-            .filter_map(|raw| raw.stmt.as_ref().and_then(|n| n.node.as_ref()))
-            .collect();
-
-        if stmts.is_empty() {
-            return SqlAnalysis::write(
-                WriteReason::EmptyInput,
-                read_tables,
-                mut_tables,
-                columns,
-                true,
-            );
-        }
-        if stmts.len() > 1 {
-            return SqlAnalysis::write(
-                WriteReason::MultiStatement(stmts.len()),
-                read_tables,
-                mut_tables,
-                columns,
-                exhaustive,
-            );
-        }
-
-        let top = stmts[0];
-        if !matches!(top, NodeEnum::SelectStmt(_)) {
-            return SqlAnalysis::write(
-                WriteReason::Statement(node_variant_name(top)),
-                read_tables,
-                mut_tables,
-                columns,
-                exhaustive,
-            );
-        }
-
-        // Top-level SELECT. Refuse the shapes that write through it, in
-        // order of least-surprising diagnosis.
-        if walk.nested_dml || !mut_tables.is_empty() {
-            return SqlAnalysis::write(
-                WriteReason::WritableCte,
-                read_tables,
-                mut_tables,
-                columns,
-                exhaustive,
-            );
-        }
-        if walk.select_into {
-            return SqlAnalysis::write(
-                WriteReason::SelectInto,
-                read_tables,
-                mut_tables,
-                columns,
-                exhaustive,
-            );
-        }
-        if walk.row_locking {
-            return SqlAnalysis::write(
-                WriteReason::RowLocking,
-                read_tables,
-                mut_tables,
-                columns,
-                exhaustive,
-            );
-        }
-
-        SqlAnalysis {
-            class: SqlClass::Read,
-            write_reason: None,
-            read_tables,
-            mut_tables,
-            columns,
-            tables_exhaustive: exhaustive,
-        }
-    }
-
-    struct WalkFacts {
-        columns: Vec<String>,
-        /// Insert/Update/Delete/Merge anywhere in the tree (top-level DML is
-        /// caught earlier by the statement match; this flags CTE/sub-select
-        /// DML under a SELECT).
-        nested_dml: bool,
-        select_into: bool,
-        row_locking: bool,
-        /// DO/CALL/EXECUTE bodies reference relations the parse tree cannot
-        /// enumerate.
-        opaque: bool,
-    }
-
-    /// One deep traversal collecting everything the classifier needs. Uses
-    /// the crate's own `nodes()` iterator (the traversal behind `tables()`),
-    /// plus direct field checks on each `SelectStmt` for the clauses the
-    /// iterator may not surface as nodes (`into_clause`, `locking_clause`).
-    fn walk_tree(result: &pg_query::ParseResult) -> WalkFacts {
-        let mut facts = WalkFacts {
-            columns: Vec::new(),
-            nested_dml: false,
-            select_into: false,
-            row_locking: false,
-            opaque: false,
-        };
-        let mut seen_cols = std::collections::HashSet::new();
-
-        for (node, _depth, _context, _has_filter) in result.protobuf.nodes() {
-            match node {
-                NodeRef::ColumnRef(c) => {
-                    let ident = c
-                        .fields
-                        .last()
-                        .and_then(|f| f.node.as_ref())
-                        .map(|n| match n {
-                            NodeEnum::String(s) => s.sval.clone(),
-                            NodeEnum::AStar(_) => "*".to_string(),
-                            other => format!("{other:?}"),
-                        });
-                    if let Some(ident) = ident
-                        && seen_cols.insert(ident.clone())
-                    {
-                        facts.columns.push(ident);
-                    }
-                }
-                NodeRef::InsertStmt(_)
-                | NodeRef::UpdateStmt(_)
-                | NodeRef::DeleteStmt(_)
-                | NodeRef::MergeStmt(_) => facts.nested_dml = true,
-                NodeRef::SelectStmt(s) => {
-                    if s.into_clause.is_some() {
-                        facts.select_into = true;
-                    }
-                    if !s.locking_clause.is_empty() {
-                        facts.row_locking = true;
-                    }
-                }
-                NodeRef::DoStmt(_) | NodeRef::CallStmt(_) | NodeRef::ExecuteStmt(_) => {
-                    facts.opaque = true;
-                }
-                _ => {}
-            }
-        }
-
-        // `nodes()` yields nested nodes; make sure the *top-level* statements
-        // themselves are also inspected (the iterator's root set differs by
-        // crate version — belt and suspenders, it dedups via the flags).
-        for raw in &result.protobuf.stmts {
-            match raw.stmt.as_ref().and_then(|n| n.node.as_ref()) {
-                Some(NodeEnum::SelectStmt(s)) => {
-                    if s.into_clause.is_some() {
-                        facts.select_into = true;
-                    }
-                    if !s.locking_clause.is_empty() {
-                        facts.row_locking = true;
-                    }
-                }
-                Some(NodeEnum::DoStmt(_) | NodeEnum::CallStmt(_) | NodeEnum::ExecuteStmt(_)) => {
-                    facts.opaque = true;
-                }
-                _ => {}
-            }
-        }
-
-        facts
-    }
-
-    /// The protobuf variant name of a statement node (`"InsertStmt"`, …),
-    /// used only for audit strings.
-    fn node_variant_name(node: &NodeEnum) -> String {
-        let dbg = format!("{node:?}");
-        dbg.split(['(', ' '])
-            .next()
-            .unwrap_or("Unknown")
-            .to_string()
-    }
-
-    fn dedup(items: Vec<String>) -> Vec<String> {
-        let mut seen = std::collections::HashSet::new();
-        items
-            .into_iter()
-            .filter(|t| seen.insert(t.clone()))
-            .collect()
-    }
+pub fn analyze(sql: &str, extra_safe: &[String]) -> SqlAnalysis {
+    super::walk::analyze(sql, extra_safe)
 }
 
 #[cfg(all(test, not(feature = "sql_policy")))]
@@ -290,7 +76,7 @@ mod stub_tests {
     #[test]
     fn analyze_without_feature_fails_closed() {
         assert!(!available());
-        let a = analyze("SELECT 1");
+        let a = analyze("SELECT 1", &[]);
         assert_eq!(a.class, SqlClass::Write);
         assert_eq!(a.write_reason, Some(WriteReason::Unavailable));
         assert!(a.read_tables.is_empty());
@@ -422,12 +208,100 @@ mod tests {
                 Some(&["orders"]),
                 Some(&[]),
             ),
-            // Documented limitation: volatile functions classify read.
+            // --- D69 function screening ---
             (
-                "volatile function",
-                "SELECT nextval('order_seq')",
+                "safe catalog functions",
+                "SELECT count(*), lower(name), date_trunc('month', created_at) \
+                 FROM public.orders",
+                Read,
+                Some(&["public.orders"]),
+                Some(&[]),
+            ),
+            (
+                // Volatile, and the reason the carve-out list exists: it
+                // sleeps in the caller's own backend and touches nothing.
+                "pg_sleep is safe",
+                "SELECT pg_sleep(5)",
                 Read,
                 Some(&[]),
+                Some(&[]),
+            ),
+            (
+                "pg_catalog qualification is stripped",
+                "SELECT pg_catalog.lower(name) FROM customers",
+                Read,
+                Some(&["customers"]),
+                Some(&[]),
+            ),
+            (
+                // Volatile like pg_sleep, but it advances a sequence.
+                "nextval mutates",
+                "SELECT nextval('order_seq')",
+                Write("unsafe_function"),
+                Some(&[]),
+                Some(&[]),
+            ),
+            (
+                "filesystem read",
+                "SELECT pg_read_file('/etc/passwd')",
+                Write("unsafe_function"),
+                Some(&[]),
+                Some(&[]),
+            ),
+            (
+                // Reaches another database entirely; no table key could
+                // describe it.
+                "dblink in a range function",
+                "SELECT * FROM dblink('h', 'SELECT 1') AS t(a int)",
+                Write("unsafe_function"),
+                Some(&[]),
+                Some(&[]),
+            ),
+            (
+                "session state mutation",
+                "SELECT set_config('work_mem', '1GB', false)",
+                Write("unsafe_function"),
+                Some(&[]),
+                Some(&[]),
+            ),
+            (
+                // Volatile: it runs the SQL it is handed.
+                "query_to_xml executes sql",
+                "SELECT query_to_xml('DELETE FROM t', true, true, '')",
+                Write("unsafe_function"),
+                Some(&[]),
+                Some(&[]),
+            ),
+            (
+                // STABLE, so volatility alone would admit it — but it reads a
+                // relation named at runtime, which the table lists cannot see.
+                "table_to_xml reads an unnamed relation",
+                "SELECT table_to_xml('secrets'::regclass, true, true, '')",
+                Write("unsafe_function"),
+                Some(&[]),
+                Some(&[]),
+            ),
+            (
+                "user-defined function",
+                "SELECT my_udf(id) FROM orders",
+                Write("unsafe_function"),
+                Some(&["orders"]),
+                Some(&[]),
+            ),
+            (
+                // Qualified outside pg_catalog: somebody's own `count`.
+                "schema-qualified shadow",
+                "SELECT public.count(id) FROM orders",
+                Write("unsafe_function"),
+                Some(&["orders"]),
+                Some(&[]),
+            ),
+            (
+                // Quoted, so the lexer keeps the case — a different function.
+                "quoted uppercase is a different function",
+                r#"SELECT "COUNT"(id) FROM orders"#,
+                Write("unsafe_function"),
+                Some(&["orders"]),
                 Some(&[]),
             ),
             (
@@ -702,7 +576,7 @@ mod tests {
         ];
 
         for (name, sql, expect, read_tables, mut_tables) in cases {
-            let a = analyze(sql);
+            let a = analyze(sql, &[]);
             match expect {
                 Read => {
                     assert_eq!(
@@ -740,13 +614,13 @@ mod tests {
 
     #[test]
     fn columns_surface_star_as_literal() {
-        let a = analyze("SELECT * FROM orders");
+        let a = analyze("SELECT * FROM orders", &[]);
         assert_eq!(a.columns, vec!["*"]);
 
-        let a = analyze("SELECT t.* FROM orders t");
+        let a = analyze("SELECT t.* FROM orders t", &[]);
         assert_eq!(a.columns, vec!["*"]);
 
-        let a = analyze("SELECT id, o.total FROM orders o WHERE region = 'eu'");
+        let a = analyze("SELECT id, o.total FROM orders o WHERE region = 'eu'", &[]);
         let mut cols = a.columns.clone();
         cols.sort();
         assert_eq!(cols, vec!["id", "region", "total"]);
@@ -754,12 +628,12 @@ mod tests {
 
     #[test]
     fn statement_write_reason_names_the_node() {
-        let a = analyze("INSERT INTO orders (id) VALUES (1)");
+        let a = analyze("INSERT INTO orders (id) VALUES (1)", &[]);
         assert_eq!(
             a.write_reason,
             Some(WriteReason::Statement("InsertStmt".into()))
         );
-        let a = analyze("EXPLAIN SELECT 1");
+        let a = analyze("EXPLAIN SELECT 1", &[]);
         assert_eq!(
             a.write_reason,
             Some(WriteReason::Statement("ExplainStmt".into()))
@@ -772,16 +646,54 @@ mod tests {
             "DO $$ BEGIN DELETE FROM orders; END $$",
             "CALL do_maintenance()",
         ] {
-            let a = analyze(sql);
+            let a = analyze(sql, &[]);
             assert!(
                 !a.tables_exhaustive,
                 "{sql}: DO/CALL bodies cannot be enumerated"
             );
         }
         // A parse failure is never exhaustive either.
-        assert!(!analyze("SELEC 1").tables_exhaustive);
+        assert!(!analyze("SELEC 1", &[]).tables_exhaustive);
         // A plain read is.
-        assert!(analyze("SELECT id FROM orders").tables_exhaustive);
+        assert!(analyze("SELECT id FROM orders", &[]).tables_exhaustive);
+    }
+
+    /// An unsafe function may reach relations the parse tree never names —
+    /// a UDF body, a `dblink` host, the sequence behind `nextval` — so the
+    /// call loses its claim to have enumerated them and mints the all-tables
+    /// sentinel key. The relations it *did* name still get reported.
+    #[test]
+    fn an_unsafe_function_drops_exhaustiveness() {
+        let a = analyze("SELECT my_udf(id) FROM public.orders", &[]);
+        assert_eq!(a.class, SqlClass::Write);
+        assert!(!a.tables_exhaustive);
+        assert_eq!(a.read_tables, vec!["public.orders"]);
+        assert!(a.mut_tables.is_empty());
+
+        // A safe read keeps it.
+        assert!(analyze("SELECT count(*) FROM public.orders", &[]).tables_exhaustive);
+    }
+
+    #[test]
+    fn config_vouching_makes_a_query_read_again() {
+        let sql = "SELECT st_area(geom), unaccent(name) FROM parcels";
+        assert_eq!(analyze(sql, &[]).class, SqlClass::Write);
+
+        let extra = vec!["st_area".to_string(), "unaccent".to_string()];
+        let a = analyze(sql, &extra);
+        assert_eq!(a.class, SqlClass::Read, "{:?}", a.write_reason);
+        assert!(a.tables_exhaustive);
+    }
+
+    #[test]
+    fn the_reason_names_the_offenders_and_only_the_offenders() {
+        // `count` is safe and must not be named; the two unsafe ones are,
+        // deduped and in source order.
+        let a = analyze("SELECT count(*), f_one(x), f_two(y), f_one(z) FROM t", &[]);
+        assert_eq!(
+            a.write_reason,
+            Some(WriteReason::UnsafeFunction("f_one, f_two".into()))
+        );
     }
 
     #[test]
