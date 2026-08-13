@@ -24,8 +24,13 @@ export interface MapNode {
 	/** 1–2 characters inside the ball. */
 	mono: string;
 	/** The identity's IdP avatar, when it has one. Drawn in place of `mono`;
-	 *  agents and services have none and keep the monogram. */
+	 *  agents have none and keep the monogram. */
 	picture?: string;
+	/** A service's catalog mark (`icon_url`), when its template resolves one.
+	 *  Kept separate from `picture` because the two want opposite treatments:
+	 *  a face is cropped to fill the circle, a brand logo must not be, and it
+	 *  needs a light ground the dark theme's ball does not give it. */
+	icon?: string;
 	/** Parent in the identity tree — the agent, for a subagent. */
 	parent?: string;
 	/** The owner *user*, for anything below one. */
@@ -158,6 +163,7 @@ function serviceNodes(services: ServiceInstanceSummary[], extraIds: string[]): M
 		kind: 'service' as const,
 		label: s.name,
 		mono: mono(s.name, 2),
+		icon: s.icon_url ?? undefined,
 		status: s.status
 	}));
 	// Added only once traffic has actually used them — a permanent "raw http"

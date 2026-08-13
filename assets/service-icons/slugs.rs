@@ -11,6 +11,7 @@ pub const BUILTIN_ICON_SLUGS: &[&str] = &[
     "google_drive",
     "google_keep",
     "google_tasks",
+    "http",
     "hubspot",
     "metabase",
     "notion",

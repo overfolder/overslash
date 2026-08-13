@@ -34,6 +34,7 @@ data only — **not** the trademarks it depicts. See simple-icons'
 | `google_drive.svg` | Google Drive | simple-icons 16.28.0 (`googledrive`) | https://developers.google.com/drive/web/branding |
 | `google_keep.svg` | Google Keep | simple-icons 16.28.0 (`googlekeep`) | https://about.google/brand-resource-center/logos-list/ |
 | `google_tasks.svg` | Google Tasks | simple-icons 16.28.0 (`googletasks`) | https://about.google/brand-resource-center |
+| `http.svg` | Overspiral S.L. | local/globe.svg | — |
 | `hubspot.svg` | HubSpot | simple-icons 16.28.0 (`hubspot`) | https://www.hubspot.com/style-guide |
 | `metabase.svg` | Metabase | simple-icons 16.28.0 (`metabase`) | https://www.metabase.com |
 | `notion.svg` | Notion | simple-icons 16.28.0 (`notion`) | https://www.notion.so |

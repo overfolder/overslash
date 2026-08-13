@@ -301,7 +301,20 @@
 									src={n.picture}
 									alt=""
 									referrerpolicy="no-referrer"
+									draggable="false"
 									onerror={() => n.picture && brokenPictures.push(n.picture)}
+								/>
+							{:else if n.icon && !brokenPictures.includes(n.icon)}
+								<!-- A service's catalog mark. Same grid cell and the same
+								     broken-src list as an avatar, but contained rather than
+								     cropped and on its own light ground — see .lm-ball-icon. -->
+								<img
+									class="lm-ball-icon"
+									src={n.icon}
+									alt=""
+									referrerpolicy="no-referrer"
+									draggable="false"
+									onerror={() => n.icon && brokenPictures.push(n.icon)}
 								/>
 							{/if}
 							{#if badge}

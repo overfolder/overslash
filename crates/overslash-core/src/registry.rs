@@ -1,3 +1,4 @@
+use crate::service_icon::ServiceIcon;
 use std::collections::HashMap;
 #[cfg(feature = "yaml")]
 use std::path::Path;
@@ -42,9 +43,11 @@ fn http_pseudo_service() -> ServiceDefinition {
         hosts: Vec::new(),
         category: Some("Platform".to_string()),
         hidden: false,
-        // Mode A is not a vendor — the dashboard's letter tile is the honest
-        // rendering.
-        icon: None,
+        // Set explicitly rather than left to the implicit rule: this
+        // definition is built here in Rust and never passes through
+        // `compile_service`, which is where `implicit_for_key` runs. A globe
+        // rather than a vendor mark — Mode A stands for "any URL you supply".
+        icon: ServiceIcon::implicit_for_key(HTTP_PSEUDO_SERVICE),
         auth: Vec::new(),
         secrets: Vec::new(),
         config: Vec::new(),
@@ -534,9 +537,6 @@ paths:
 
         for def in reg.all() {
             let key = def.key.as_str();
-            if key == HTTP_PSEUDO_SERVICE {
-                continue;
-            }
             match &def.icon {
                 None => assert!(
                     EXPECTED_WITHOUT_ICON.contains(&key),
