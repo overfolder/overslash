@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT ON (b.agent_identity_id)\n                b.agent_identity_id,\n                c.client_name,\n                c.client_info,\n                c.software_id\n           FROM mcp_client_agent_bindings b\n           JOIN oauth_mcp_clients c ON c.client_id = b.client_id\n          WHERE b.agent_identity_id = ANY($1) AND b.org_id = $2\n          ORDER BY b.agent_identity_id, b.updated_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "agent_identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "agent_identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "client_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_mcp_clients",
+            "name": "client_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "client_info",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "oauth_mcp_clients",
+            "name": "client_info"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "software_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_mcp_clients",
+            "name": "software_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "64b6e30ba332a2ae95406cc99cbcbffd2f75ea2f7fdd9683101131fb97ded8bc"
+}

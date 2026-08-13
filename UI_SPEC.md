@@ -405,6 +405,14 @@ Left panel: **Agent tree**. Right panel: **Detail view** for the selected node.
 
 The tree stays clean — each row shows: name, status indicator, and pending approval badge count if any. Selecting a node populates the detail panel.
 
+### Agent marks
+
+An agent renders as **the logo of the MCP client bound to it, over three colours hashed from its own id** — `AgentAvatar.svelte`, drawn where a user identity's row shows its status dot. The two halves answer different questions and both are needed: the logo says *what kind of client this is* and is shared by every agent running on it, so a team of five Claude Code agents would otherwise be five identical rows; the stripe says *which agent this is*.
+
+The mark is the client's, not the agent's, so there is no picker and nothing to choose — an agent whose client we ship no mark for, and one with no MCP binding at all (the API-key case), both fall back to a **generic bot glyph** rather than to a gap. The tile itself is `ServiceIcon.svelte`, so it inherits the letter-tile-underneath behaviour and the fixed light ground described under Services.
+
+The stripe is three equal segments taken from the last nine bytes of `sha256(agent id)`, one byte per channel. It is `aria-hidden` — decoration, with the name and the client label carrying the meaning — and carries a hairline inset border, because raw hash colours can land arbitrarily close to the page background in either theme. Sizes: 20px in the agent tree, 32px in the detail header, 16px in the audit log's Agent column, and on the Live Map's balls.
+
 ### Agent tree (left panel)
 
 ```
@@ -980,7 +988,7 @@ A single nav item covering both **service templates** (API blueprints) and **ser
 
 **Service marks** are rendered by `ServiceIcon.svelte` wherever a service or template is named: the instances table (20px), the catalog card (32px), the service detail header (40px), the template editor breadcrumb (20px) and the new-service preview (28px). It takes the `icon_url` the API resolved and draws the existing `ServiceTile` monogram **underneath** it — not as an `{:else}` — for the same reason `Avatar` does: a third-party host that hangs fires neither `load` nor `error`, so a branch would leave an empty square for as long as that takes. A service with no icon, or one whose image fails, is therefore always a letter tile and never a gap. The image sits on a fixed light ground in both themes, because a brand mark carries its own colours (several of the shipped ones are near-black) and cannot be restyled — it is served cross-origin and rendered in an `<img>`.
 
-The **Live Map** draws the same mark on its service balls, from the same `icon_url`, but through `.lm-ball-icon` rather than this component: a ball is a circle sized for a face, so the mark is `contain`ed rather than cropped and inset with clearspace so it does not touch the rim. It keeps the light ground for the same reason, which matters more there — the map canvas is dark in both themes. A service whose template resolves no mark keeps its monogram, and agents have neither an avatar nor an icon so they always do.
+The **Live Map** draws the same mark on its service balls, from the same `icon_url`, but through `.lm-ball-icon` rather than this component: a ball is a circle sized for a face, so the mark is `contain`ed rather than cropped and inset with clearspace so it does not touch the rim. It keeps the light ground for the same reason, which matters more there — the map canvas is dark in both themes. A service whose template resolves no mark keeps its monogram; an agent draws its MCP client mark here too (see **Agent marks** below).
 
 Every image inside a ball is inert to pointer input (`draggable="false"` plus `pointer-events: none`). A ball is the node's drag handle, and without that the browser's native image drag wins the gesture — you drag a translucent copy of the picture out of the page instead of moving the node. Monograms never had the problem because `.lm-node-in` is already `user-select: none`.
 

@@ -10,10 +10,40 @@
     "                       metadata is read from the package and folded into NOTICE.md",
     "  local:<file>         copied from assets/service-icons/local/<file>; requires `owner`",
     "  pending              no asset shipped. The template falls back to the letter tile.",
-    "                       Requires `owner`, `guidelines` and `note` so the gap is legible."
+    "                       Requires `owner`, `guidelines` and `note` so the gap is legible.",
+    "",
+    "`client_*` keys are not service templates: they are MCP client marks, used to give an",
+    "agent the icon of the client it is bound to (see DECISIONS.md D68). The prefix keeps them",
+    "out of the implicit `builtin:<template key>` rule, so a service template keyed `cursor`",
+    "could never silently inherit the Cursor client mark. `client_unknown` is the generic bot",
+    "every unrecognised client falls back to."
   ],
   "simple_icons_version": "16.28.0",
   "icons": {
+    "client_chatgpt": {
+      "source": "pending",
+      "owner": "OpenAI, L.L.C.",
+      "guidelines": "https://openai.com/brand/",
+      "note": "No OpenAI mark in simple-icons. Source from the vendor brand page before shipping."
+    },
+    "client_claude": { "source": "simple-icons:claude" },
+    "client_cline": { "source": "simple-icons:cline" },
+    "client_copilot": { "source": "simple-icons:githubcopilot" },
+    "client_cursor": { "source": "simple-icons:cursor" },
+    "client_gemini": { "source": "simple-icons:googlegemini" },
+    "client_unknown": {
+      "source": "local:bot.svg",
+      "owner": "Overspiral S.L.",
+      "note": "Generic bot glyph authored by us. Not a vendor mark. The fallback for an agent whose MCP client we do not recognise, or that has no MCP binding at all."
+    },
+    "client_vscode": {
+      "source": "pending",
+      "owner": "Microsoft Corporation",
+      "guidelines": "https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks",
+      "note": "No Microsoft marks in simple-icons. Source from the vendor brand page before shipping."
+    },
+    "client_windsurf": { "source": "simple-icons:windsurf" },
+    "client_zed": { "source": "simple-icons:zedindustries" },
     "deepwiki": {
       "source": "local:book.svg",
       "owner": "Overspiral S.L.",

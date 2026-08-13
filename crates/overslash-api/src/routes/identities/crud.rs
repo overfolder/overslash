@@ -39,6 +39,7 @@ pub(super) struct UpdateIdentityRequest {
 }
 
 pub(super) async fn update_identity(
+    State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -156,7 +157,8 @@ pub(super) async fn update_identity(
         })
         .await;
 
-    Ok(Json(updated.into()))
+    let ctx = IdentityIconCtx::for_one(&state, &scope, &updated).await?;
+    Ok(Json(IdentityResponse::from_row(updated, &ctx)))
 }
 
 pub(super) async fn delete_identity(
@@ -427,7 +429,8 @@ pub(super) async fn create_identity(
         })
         .await;
 
-    Ok(Json(row.into()))
+    let ctx = IdentityIconCtx::for_one(&state, &scope, &row).await?;
+    Ok(Json(IdentityResponse::from_row(row, &ctx)))
 }
 
 /// Query params for the identity-listing endpoints. Archived rows are excluded
@@ -440,6 +443,7 @@ pub(super) struct ListIdentitiesQuery {
 }
 
 pub(super) async fn list_identities(
+    State(state): State<AppState>,
     _: crate::extractors::OrgAcl,
     scope: OrgScope,
     Query(q): Query<ListIdentitiesQuery>,
@@ -448,10 +452,18 @@ pub(super) async fn list_identities(
     if !q.include_archived {
         rows.retain(|r| r.archived_at.is_none());
     }
-    Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
+    // Built after the archived filter, so the client lookup covers exactly the
+    // rows being returned.
+    let ctx = IdentityIconCtx::build(&state, &scope, &rows).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| IdentityResponse::from_row(r, &ctx))
+            .collect(),
+    ))
 }
 
 pub(super) async fn list_children(
+    State(state): State<AppState>,
     scope: OrgScope,
     Path(id): Path<Uuid>,
     Query(q): Query<ListIdentitiesQuery>,
@@ -465,10 +477,16 @@ pub(super) async fn list_children(
     if !q.include_archived {
         rows.retain(|r| r.archived_at.is_none());
     }
-    Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
+    let ctx = IdentityIconCtx::build(&state, &scope, &rows).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| IdentityResponse::from_row(r, &ctx))
+            .collect(),
+    ))
 }
 
 pub(super) async fn get_chain(
+    State(state): State<AppState>,
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
@@ -477,5 +495,10 @@ pub(super) async fn get_chain(
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     let rows = scope.get_identity_ancestor_chain(id).await?;
-    Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
+    let ctx = IdentityIconCtx::build(&state, &scope, &rows).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| IdentityResponse::from_row(r, &ctx))
+            .collect(),
+    ))
 }

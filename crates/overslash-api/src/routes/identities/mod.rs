@@ -14,13 +14,16 @@ use uuid::Uuid;
 use overslash_db::OrgScope;
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::identity::{ARCHIVED_REASON_MANUAL, RestoreOutcome};
+use overslash_db::repos::mcp_client_agent_binding::AgentClientRow;
 
 use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, ClientIp, ReqExt, WriteAcl},
+    services::agent_icon,
 };
+use std::collections::HashMap;
 
 mod crud;
 mod lifecycle;
@@ -103,10 +106,92 @@ pub(super) struct IdentityResponse {
     archived_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     archived_reason: Option<String>,
+    /// The mark for this agent: the logo of the MCP client it is bound to, or
+    /// the generic bot when we do not recognise the client (or there is no
+    /// binding). Absent for `user` identities, which render `picture` instead,
+    /// and on the rare build where even the bot glyph is missing. See D70.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon_url: Option<String>,
+    /// Three `#rrggbb` colours derived from this agent's id, rendered as a bar
+    /// under the icon. Two agents on the same client share a logo and are told
+    /// apart by this. Absent for `user` identities.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon_stripe: Option<[String; agent_icon::STRIPE_SEGMENTS]>,
+    /// What the bound MCP client calls itself, for a tooltip — e.g.
+    /// `Claude Code`. Absent when the agent has no MCP binding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp_client_label: Option<String>,
 }
 
-impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
-    fn from(r: overslash_db::repos::identity::IdentityRow) -> Self {
+/// True for the identity kinds that get a client mark. Users render their IdP
+/// `picture` instead, and have no MCP client to speak of.
+fn wears_an_agent_icon(kind: &str) -> bool {
+    kind == "agent" || kind == "sub_agent"
+}
+
+/// Everything [`IdentityResponse`] needs to resolve an agent's icon, gathered
+/// once for a whole response rather than once per row.
+///
+/// This is a parameter rather than something `IdentityResponse` looks up for
+/// itself so that the cost is visible and batched: the agents tree renders
+/// every identity in an org, and a per-row lookup would be a query per row.
+///
+/// It replaced a plain `From<IdentityRow>` impl deliberately. With `From`, an
+/// endpoint that forgot to enrich still compiled and still returned valid
+/// JSON — it just quietly rendered every agent as the generic bot. Threading
+/// the context through the constructor makes that omission a compile error.
+pub(super) struct IdentityIconCtx {
+    public_url: String,
+    clients: HashMap<Uuid, AgentClientRow>,
+}
+
+impl IdentityIconCtx {
+    /// Resolve the MCP client of every agent among `rows`, in one round trip.
+    pub(super) async fn build(
+        state: &AppState,
+        scope: &OrgScope,
+        rows: &[overslash_db::repos::identity::IdentityRow],
+    ) -> Result<Self> {
+        let agent_ids: Vec<Uuid> = rows
+            .iter()
+            .filter(|r| wears_an_agent_icon(&r.kind))
+            .map(|r| r.id)
+            .collect();
+        // Skip the query outright for an all-users response (the Members page).
+        let clients = if agent_ids.is_empty() {
+            HashMap::new()
+        } else {
+            overslash_db::repos::mcp_client_agent_binding::clients_for_agents(
+                scope.db(),
+                scope.org_id(),
+                &agent_ids,
+            )
+            .await?
+            .into_iter()
+            .map(|c| (c.agent_identity_id, c))
+            .collect()
+        };
+        Ok(Self {
+            public_url: state.config.public_url.clone(),
+            clients,
+        })
+    }
+
+    /// The context for a response carrying exactly one identity.
+    pub(super) async fn for_one(
+        state: &AppState,
+        scope: &OrgScope,
+        row: &overslash_db::repos::identity::IdentityRow,
+    ) -> Result<Self> {
+        Self::build(state, scope, std::slice::from_ref(row)).await
+    }
+}
+
+impl IdentityResponse {
+    pub(super) fn from_row(
+        r: overslash_db::repos::identity::IdentityRow,
+        ctx: &IdentityIconCtx,
+    ) -> Self {
         let provider = r
             .metadata
             .get("provider")
@@ -123,6 +208,31 @@ impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
             .and_then(|v| v.as_str())
             .map(str::to_owned);
         let pending = r.kind == "user" && r.external_id.is_none() && r.user_id.is_none();
+        // A user identity has an IdP `picture` and no MCP client, so it gets
+        // neither half of the agent mark.
+        let (icon_url, icon_stripe, mcp_client_label) = if wears_an_agent_icon(&r.kind) {
+            let client = ctx.clients.get(&r.id);
+            // `clientInfo.name` from the `initialize` handshake — see
+            // routes/mcp/initialize.rs, which persists the whole object.
+            let info_name = client
+                .and_then(|c| c.client_info.as_ref())
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str());
+            let client_name = client.and_then(|c| c.client_name.as_deref());
+            let software_id = client.and_then(|c| c.software_id.as_deref());
+            (
+                agent_icon::icon_url_for_client(
+                    info_name,
+                    client_name,
+                    software_id,
+                    &ctx.public_url,
+                ),
+                Some(agent_icon::stripe_for(r.id)),
+                info_name.or(client_name).map(str::to_owned),
+            )
+        } else {
+            (None, None, None)
+        };
         Self {
             id: r.id,
             org_id: r.org_id,
@@ -144,6 +254,9 @@ impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
             last_active_at: fmt_time(r.last_active_at),
             archived_at: r.archived_at.map(fmt_time),
             archived_reason: r.archived_reason,
+            icon_url,
+            icon_stripe,
+            mcp_client_label,
         }
     }
 }

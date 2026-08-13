@@ -204,6 +204,7 @@ pub(super) struct PatchAutoCallOnApproveRequest {
 }
 
 pub(super) async fn patch_auto_call_on_approve(
+    State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -249,7 +250,8 @@ pub(super) async fn patch_auto_call_on_approve(
         .get_identity(id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-    Ok(Json(row.into()))
+    let ctx = IdentityIconCtx::for_one(&state, &scope, &row).await?;
+    Ok(Json(IdentityResponse::from_row(row, &ctx)))
 }
 
 pub(super) async fn disconnect_mcp_connection(

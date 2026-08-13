@@ -1,4 +1,5 @@
 pub mod action_caller;
+pub mod agent_icon;
 pub mod approval_expiry;
 pub mod async_executor;
 pub mod audit_capture;

@@ -11,6 +11,7 @@
 //! below (`autotests = false` in Cargo.toml means cargo will not pick it up
 //! on its own).
 
+mod agent_icons;
 mod common;
 
 mod account_invitations;

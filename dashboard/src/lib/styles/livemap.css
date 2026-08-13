@@ -125,17 +125,33 @@
 	object-fit: cover;
 	background: var(--color-surface);
 }
-/* A service's catalog mark, not a face: `contain` because cropping a logo to
-   fill the circle clips it, and a fixed light ground because the marks carry
-   their own colours — several of the shipped ones are near-black and would
-   vanish into the dark theme's ball, and they cannot be restyled from here
-   (served cross-origin in an `<img>`). The padding is the clearspace a square
-   mark needs to sit inside a circle without touching the rim. */
+/* A brand mark — a service's catalog icon or an agent's MCP client — not a
+   face: `contain` because cropping a logo to fill the circle clips it, and a
+   fixed light ground because the marks carry their own colours — several of
+   the shipped ones are near-black and would vanish into the dark theme's ball,
+   and they cannot be restyled from here (served cross-origin in an `<img>`).
+   The padding is the clearspace a square mark needs to sit inside a circle
+   without touching the rim. */
 .lm-ball-icon {
 	object-fit: contain;
 	background: #f6f6f8;
 	padding: 18%;
 	box-sizing: border-box;
+}
+/* An agent's three hash colours, between ball and caption. Two agents on the
+   same client share a mark and are told apart by this. */
+.lm-stripe {
+	display: flex;
+	width: 30px;
+	height: 3px;
+	margin-top: -2px;
+	border-radius: 2px;
+	overflow: hidden;
+	box-shadow: inset 0 0 0 1px var(--color-border);
+}
+.lm-stripe span {
+	flex: 1 1 0;
+	min-width: 0;
 }
 .lm-cap {
 	max-width: 132px;

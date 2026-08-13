@@ -26,6 +26,14 @@ data only — **not** the trademarks it depicts. See simple-icons'
 
 | File | Mark owner | Source | Brand guidelines |
 |------|-----------|--------|------------------|
+| `client_claude.svg` | Claude | simple-icons 16.28.0 (`claude`) | https://claude.ai |
+| `client_cline.svg` | Cline | simple-icons 16.28.0 (`cline`) | https://cline.bot/assets/branding/logos/cline-wordmark-black.svg |
+| `client_copilot.svg` | GitHub Copilot | simple-icons 16.28.0 (`githubcopilot`) | https://primer.style/foundations/icons/copilot-24 |
+| `client_cursor.svg` | Cursor | simple-icons 16.28.0 (`cursor`) | https://cursor.com/brand |
+| `client_gemini.svg` | Google Gemini | simple-icons 16.28.0 (`googlegemini`) | https://gemini.google.com |
+| `client_unknown.svg` | Overspiral S.L. | local/bot.svg | — |
+| `client_windsurf.svg` | Windsurf | simple-icons 16.28.0 (`windsurf`) | https://windsurf.com/brand |
+| `client_zed.svg` | Zed Industries | simple-icons 16.28.0 (`zedindustries`) | https://github.com/zed-industries/zed/blob/ccc939124fa2f366b3029926447fd0a0c46a85c7/assets/icons/logo_96.svg |
 | `deepwiki.svg` | Overspiral S.L. | local/book.svg | — |
 | `email.svg` | Overspiral S.L. | local/envelope.svg | — |
 | `github.svg` | GitHub | simple-icons 16.28.0 (`github`) | https://github.com/logos |
@@ -54,6 +62,8 @@ that as a signal when sourcing them.
 
 | Template | Mark owner | Brand guidelines | Status |
 |----------|-----------|------------------|--------|
+| `client_chatgpt` | OpenAI, L.L.C. | https://openai.com/brand/ | No OpenAI mark in simple-icons. Source from the vendor brand page before shipping. |
+| `client_vscode` | Microsoft Corporation | https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks | No Microsoft marks in simple-icons. Source from the vendor brand page before shipping. |
 | `eventbrite` | Eventbrite, Inc. | https://www.eventbrite.com/l/for-press/ | No simple-icons entry. Source from the vendor brand page before shipping. |
 | `linkedin` | LinkedIn Corporation (Microsoft) | https://brand.linkedin.com/ | Removed from simple-icons at the brand's request. Source from the vendor brand page before shipping. |
 | `outlook` | Microsoft Corporation | https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks | No Microsoft marks in simple-icons. Source from the vendor brand page before shipping. |
