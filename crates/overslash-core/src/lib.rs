@@ -8,6 +8,7 @@ pub mod email;
 pub mod embeddings;
 pub mod identity_path;
 pub mod instance_config;
+pub mod mcp_client_icon;
 pub mod openapi;
 pub mod param_resolver;
 pub mod permissions;

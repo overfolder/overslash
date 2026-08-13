@@ -1125,6 +1125,20 @@ export interface Identity {
    */
   auto_call_on_approve?: boolean;
   /**
+   * The agent's mark: the logo of the MCP client it is bound to, or the
+   * generic bot when the client is unrecognised or absent. Resolved by the
+   * API (absolute URL). Not sent for `user` identities, which have `picture`.
+   */
+  icon_url?: string | null;
+  /**
+   * Three `#rrggbb` colours hashed from the agent's id, rendered as a bar
+   * under the icon so two agents on the same client stay distinguishable.
+   * Not sent for `user` identities.
+   */
+  icon_stripe?: string[] | null;
+  /** What the bound MCP client calls itself, e.g. `Claude Code`. */
+  mcp_client_label?: string | null;
+  /**
    * `true` for a `user` identity that was pre-created (invited or
    * impersonation-provisioned) but has never completed a sign-in
    * (`external_id IS NULL`). Drives the Members-page "pending" badge.

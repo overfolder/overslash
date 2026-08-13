@@ -8,6 +8,7 @@
 //! docs/design/mcp-enrollment-org-scoping.md). Lookups on the authorize
 //! fast path are therefore org-scoped.
 
+use serde_json::Value;
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -68,6 +69,55 @@ pub async fn get_by_agent_identity(
         agent_identity_id,
     )
     .fetch_optional(pool)
+    .await
+}
+
+/// The MCP client behind an agent, flattened to just the fields that identify
+/// which product it is. Used to pick the agent's icon; see
+/// `overslash_core::mcp_client_icon`.
+#[derive(Debug, sqlx::FromRow)]
+pub struct AgentClientRow {
+    pub agent_identity_id: Uuid,
+    pub client_name: Option<String>,
+    pub client_info: Option<Value>,
+    pub software_id: Option<String>,
+}
+
+/// The bound client for each of `agent_ids`, in one round trip.
+///
+/// The batched sibling of [`get_by_agent_identity`], and it must agree with it
+/// on *which* binding wins when an agent has several: `DISTINCT ON` with a
+/// matching `ORDER BY` reproduces that function's `ORDER BY updated_at DESC
+/// LIMIT 1` per agent.
+///
+/// Exists because the agents tree renders every identity in an org at once, and
+/// per-agent lookups would be a query per row. Agents with no binding — the
+/// API-key case — are simply absent from the map, and the caller falls back to
+/// the generic bot.
+///
+/// The join is inner: a binding whose client row has been deleted carries no
+/// information about which product it was, so it is indistinguishable from no
+/// binding and is treated as such.
+pub async fn clients_for_agents(
+    pool: &PgPool,
+    org_id: Uuid,
+    agent_ids: &[Uuid],
+) -> Result<Vec<AgentClientRow>, sqlx::Error> {
+    sqlx::query_as!(
+        AgentClientRow,
+        "SELECT DISTINCT ON (b.agent_identity_id)
+                b.agent_identity_id,
+                c.client_name,
+                c.client_info,
+                c.software_id
+           FROM mcp_client_agent_bindings b
+           JOIN oauth_mcp_clients c ON c.client_id = b.client_id
+          WHERE b.agent_identity_id = ANY($1) AND b.org_id = $2
+          ORDER BY b.agent_identity_id, b.updated_at DESC",
+        agent_ids,
+        org_id,
+    )
+    .fetch_all(pool)
     .await
 }
 

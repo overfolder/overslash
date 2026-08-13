@@ -1,5 +1,6 @@
 <script lang="ts">
 	import IdentityPath from '$lib/components/IdentityPath.svelte';
+	import AgentAvatar from '$lib/components/AgentAvatar.svelte';
 	import { identityUnits, formatIdentityPath } from '$lib/identityPath';
 	import {
 		makeIdentityFormatter,
@@ -31,8 +32,17 @@
 		/** Identity id of the logged-in user, so their own rows show a "Me" pill. */
 		currentUserId?: string | null;
 		/** Org identities keyed by id, so a path unit can be labelled by email
-		 *  rather than by the display name frozen into the SPIFFE path. */
-		identityById?: Map<string, IdentityLike & { id: string }>;
+		 *  rather than by the display name frozen into the SPIFFE path — and so
+		 *  an agent unit can carry its client mark. */
+		identityById?: Map<
+			string,
+			IdentityLike & {
+				id: string;
+				icon_url?: string | null;
+				icon_stripe?: string[] | null;
+				mcp_client_label?: string | null;
+			}
+		>;
 		/** Identity label formatter pre-bound to the org's allowed domains.
 		 *  Defaults to none so the row renders standalone. */
 		fmt?: IdentityFormatter;
@@ -77,6 +87,10 @@
 	// `names.actor` follows the leaf for an agent row and the user unit for a
 	// human acting directly, so a renamed user is reported too; comparing
 	// against the leaf alone would never fire for them.
+	// The leaf actor's mark, resolved by id against the same identities map the
+	// labels use. A leaf outside the fetched set (or a legacy row with no
+	// aligned ids) simply has no icon, and the link renders alone as before.
+	const leafIcon = $derived(units.leaf?.id ? identityById.get(units.leaf.id) : null);
 	const names = $derived(recordedNames(entry, units));
 	const renamedSince = $derived(names.actor.renamed);
 	const leafLabel = $derived(names.actor.label);
@@ -272,6 +286,15 @@
 	</td>
 	<td class="identity">
 		{#if units.leaf}
+			{#if leafIcon?.icon_url}
+				<AgentAvatar
+					name={leafLabel ?? units.leaf.name}
+					iconUrl={leafIcon.icon_url}
+					stripe={leafIcon.icon_stripe}
+					clientLabel={leafIcon.mcp_client_label}
+					size={16}
+				/>
+			{/if}
 			<a
 				class="identity-link"
 				class:renamed={renamedSince}
@@ -556,6 +579,13 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	/* The mark is an inline-level column (tile over stripe) dropped into a cell
+	   that is otherwise inline text and trailing badges. Centring it on the text
+	   box keeps the row from growing a ragged baseline. */
+	.identity :global(.agent-avatar) {
+		vertical-align: middle;
+		margin-right: 5px;
 	}
 	.identity-link {
 		color: var(--color-text);

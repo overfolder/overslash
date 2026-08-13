@@ -21,6 +21,7 @@
 	import { session, ApiError, type ApprovalResponse } from '$lib/session';
 	import { makeIdentityFormatter, providerLabel } from '$lib/identityDisplay';
 	import Avatar from '$lib/components/Avatar.svelte';
+	import AgentAvatar from '$lib/components/AgentAvatar.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import ApprovalRow from '$lib/components/approval/ApprovalRow.svelte';
@@ -691,7 +692,17 @@
 				</button>
 				<!-- Header -->
 				<div class="detail-header">
-					<span class="status-dot active"></span>
+					{#if selected.kind === 'user'}
+						<span class="status-dot active"></span>
+					{:else}
+						<AgentAvatar
+							name={selected.name}
+							iconUrl={selected.icon_url}
+							stripe={selected.icon_stripe}
+							clientLabel={selected.mcp_client_label}
+							size={32}
+						/>
+					{/if}
 					<h2 class="detail-name" title={sel.title}>
 						{selected.kind === 'user' ? sel.primary : `agent:${selected.name}`}
 					</h2>
@@ -1007,7 +1018,17 @@
 				</button>
 			{/if}
 		</span>
-		<span class="status-dot" class:active={node.kind !== 'user' || true}></span>
+		{#if node.kind === 'user'}
+			<span class="status-dot active"></span>
+		{:else}
+			<AgentAvatar
+				name={node.name}
+				iconUrl={node.icon_url}
+				stripe={node.icon_stripe}
+				clientLabel={node.mcp_client_label}
+				size={20}
+			/>
+		{/if}
 		<span class="tree-label" title={label.title}>{label.primary}</span>
 		{#if node.id === meIdentityId}
 			<span class="tree-you">(you)</span>

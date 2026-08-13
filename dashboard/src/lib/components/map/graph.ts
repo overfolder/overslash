@@ -24,13 +24,17 @@ export interface MapNode {
 	/** 1–2 characters inside the ball. */
 	mono: string;
 	/** The identity's IdP avatar, when it has one. Drawn in place of `mono`;
-	 *  agents have none and keep the monogram. */
+	 *  only *users* have one — an agent draws `icon` instead. */
 	picture?: string;
-	/** A service's catalog mark (`icon_url`), when its template resolves one.
-	 *  Kept separate from `picture` because the two want opposite treatments:
-	 *  a face is cropped to fill the circle, a brand logo must not be, and it
-	 *  needs a light ground the dark theme's ball does not give it. */
+	/** The node's brand mark: a service's catalog icon, or an agent's MCP
+	 *  client mark (`/icons/client_*.svg`). Kept separate from `picture`
+	 *  because the two want opposite treatments: a face is cropped to fill the
+	 *  circle, a brand logo must not be, and it needs a light ground the dark
+	 *  theme's ball does not give it. */
 	icon?: string;
+	/** An agent's three hash colours, drawn as a bar between ball and caption
+	 *  so siblings sharing a client stay distinguishable. */
+	stripe?: string[];
 	/** Parent in the identity tree — the agent, for a subagent. */
 	parent?: string;
 	/** The owner *user*, for anything below one. */
@@ -150,6 +154,8 @@ function identityNodes(identities: Identity[]): MapNode[] {
 			// almost always undefined — but the column is on every identity,
 			// so read it rather than assume.
 			picture: i.picture ?? undefined,
+			icon: i.icon_url ?? undefined,
+			stripe: i.icon_stripe ?? undefined,
 			parent: i.parent_id ?? undefined,
 			owner,
 			sub: childCount.get(i.id) ?? 0

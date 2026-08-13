@@ -305,9 +305,10 @@
 									onerror={() => n.picture && brokenPictures.push(n.picture)}
 								/>
 							{:else if n.icon && !brokenPictures.includes(n.icon)}
-								<!-- A service's catalog mark. Same grid cell and the same
-								     broken-src list as an avatar, but contained rather than
-								     cropped and on its own light ground — see .lm-ball-icon. -->
+								<!-- A brand mark: a service's catalog icon, or an agent's
+								     MCP client. Same grid cell and the same broken-src list
+								     as an avatar, but contained rather than cropped and on
+								     its own light ground — see .lm-ball-icon. -->
 								<img
 									class="lm-ball-icon"
 									src={n.icon}
@@ -339,6 +340,13 @@
 								>
 							{/if}
 						</div>
+						{#if n.stripe}
+							<div class="lm-stripe" aria-hidden="true">
+								{#each n.stripe as colour, i (i)}
+									<span style:background={colour}></span>
+								{/each}
+							</div>
+						{/if}
 						<div class="lm-cap">{n.label}</div>
 					</div>
 				</div>

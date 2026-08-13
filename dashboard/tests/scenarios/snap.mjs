@@ -48,15 +48,25 @@ export async function makeSnapper(session, outDir = resolve('screenshots')) {
 
 	/** @param {{ viewport?: ViewportSize, theme?: ColorScheme }} [opts] */
 	async function newPage(opts = {}) {
+		const dark = opts.theme === 'dark';
 		const ctx = await browser.newContext({
-			viewport: opts.viewport ?? { width: 1280, height: 800 }
+			viewport: opts.viewport ?? { width: 1280, height: 800 },
+			// `initialTheme()` in `$lib/stores/shell` falls back to
+			// `prefers-color-scheme` when nothing is stored, so this alone
+			// already produces a dark render. Belt to the braces below.
+			colorScheme: dark ? 'dark' : 'light'
 		});
 		await attachToContext(ctx, session);
 		const page = await ctx.newPage();
-		if (opts.theme === 'dark') {
+		if (dark) {
+			// Seed the *store's* key, not `data-theme`. The theme is a
+			// `persisted` store reading `localStorage.ovs_theme`; it writes
+			// `data-theme` itself on hydration, so setting that attribute here
+			// was silently overwritten a tick later and every "dark" screenshot
+			// in this repo came out light.
 			await page.addInitScript(() => {
 				try {
-					document.documentElement.dataset.theme = 'dark';
+					localStorage.setItem('ovs_theme', JSON.stringify('dark'));
 				} catch {}
 			});
 		}
