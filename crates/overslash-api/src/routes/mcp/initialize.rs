@@ -231,9 +231,13 @@ pub(super) async fn tools_list_response(
                     },
                     "execution": {
                         "type": "string",
-                        "enum": ["sync", "async"],
+                        "enum": ["sync", "async", "hybrid"],
                         "default": "sync",
-                        "description": "Whether to wait for the result. `sync` (default) returns the upstream response in this tool result, bounded by the deployment's request cap. `async` accepts the call and returns immediately with `status: \"accepted\"` and an `execution_id`; the call runs in the background and you fetch the outcome with `overslash_read` `get_execution`, polling until its status is terminal. Use it for work that takes longer than a tool call should block on — a large export, a slow analytics query, a batch job — and in particular when a synchronous call was rejected for exceeding the timeout ceiling. Not available with prefer_stream, deliver: \"url\", return_url, platform actions, or actions that return binary. Only takes effect on fresh calls (service + action); ignored when approval_id is set — but it is remembered: if the call is gated, triggering the approval later queues it instead of running it inline."
+                        "description": "Whether to wait for the result. `sync` (default) returns the upstream response in this tool result, bounded by the deployment's request cap. `hybrid` starts the call off this request and waits on it briefly: if it finishes in time you get the ordinary result inline, and if it does not you get `status: \"accepted\"` and an `execution_id` instead — so handle both shapes. Prefer `hybrid` over `async` when most calls are fast and only the tail is slow, since it costs no extra round trip in the common case. `async` accepts the call and returns immediately with `status: \"accepted\"` and an `execution_id`; the call runs in the background and you fetch the outcome with `overslash_read` `get_execution`, polling until its status is terminal. Use it for work that takes longer than a tool call should block on — a large export, a slow analytics query, a batch job — and in particular when a synchronous call was rejected for exceeding the timeout ceiling. Not available with prefer_stream, deliver: \"url\", return_url, platform actions, or actions that return binary. Only takes effect on fresh calls (service + action); ignored when approval_id is set — but it is remembered: if the call is gated, triggering the approval later queues it instead of running it inline."
+                    },
+                    "handoff_after_ms": {
+                        "type": "integer",
+                        "description": "Only with `execution: \"hybrid\"`. How long the call may hold this request before answering `accepted`, in milliseconds. Omit to use the deployment default. Must be less than the call's `timeout_ms`; asking for more than the deployment's maximum is an error rather than being silently lowered."
                     }
                 },
                 "additionalProperties": false

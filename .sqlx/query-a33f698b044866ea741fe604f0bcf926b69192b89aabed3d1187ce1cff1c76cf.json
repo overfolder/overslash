@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions SET lease_expires_at = now() - interval '5 minutes' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a33f698b044866ea741fe604f0bcf926b69192b89aabed3d1187ce1cff1c76cf"
+}

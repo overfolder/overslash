@@ -295,6 +295,17 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     |n| tracing::info!("Failed {n} async executions past the wall clock"),
                 )
                 .await;
+                // Hybrid rows are excluded from both reclaim sweeps above, so
+                // this is the only thing that reaches one whose replica died
+                // mid-call. It fails rather than requeues: the upstream already
+                // received the request, and an action call has no idempotency
+                // key to make a second send safe.
+                instrumented_step(
+                    "hybrid_lease_lost",
+                    system.fail_expired_hybrid_leases(),
+                    |n| tracing::info!("Failed {n} hybrid executions whose replica died"),
+                )
+                .await;
                 instrumented_step("subagent_archive", system.archive_idle_subagents(), |n| {
                     tracing::info!("Archived {n} idle sub-agent identities")
                 })

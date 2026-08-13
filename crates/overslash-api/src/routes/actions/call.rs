@@ -452,6 +452,34 @@ pub(super) async fn call_action_impl(
     // is what makes "async runs the same call, just not on this connection"
     // structurally true — and why this is a field on CallRequest, not a second
     // endpoint. See `async_accept` and DECISIONS D62.
+    if mode.is_hybrid() {
+        // Resolved here rather than beside the D56 budget above because it is
+        // bounded *by* that budget, and only this branch has an opinion on it.
+        let handoff = crate::services::hybrid::resolve_handoff(
+            req.handoff_after_ms,
+            &state.config.async_execution,
+            call_timeout.ms(),
+            state.config.call_timeout_max_ms,
+        )?;
+        return super::hybrid::start(
+            &state,
+            &ext,
+            &scope,
+            &auth,
+            identity_id,
+            &req,
+            &meta,
+            &action_req,
+            auth_header.is_some(),
+            call_timeout,
+            handoff,
+            &call_tags,
+            ip.0.as_deref(),
+            &upstream_tpl,
+        )
+        .await;
+    }
+
     if mode.is_async() {
         return super::async_accept::accept(
             &state,

@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT status, worker_id, lease_expires_at, triggered_by, attempts,\n                (request IS NOT NULL) AS \"has_request!\"\n           FROM executions WHERE id = $1 AND org_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "worker_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "worker_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "lease_expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "lease_expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "triggered_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "triggered_by"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "executions",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "has_request!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "7b809b1abe4e41969f890a77a1fb48b29d0a3d51ee2dde88d86c078ac0d40292"
+}

@@ -114,7 +114,8 @@
 			<h2>No executions yet</h2>
 			<p>
 				A call made with <code>execution: "async"</code> is accepted immediately and runs in the
-				background. It will appear here as soon as it is queued.
+				background. A call made with <code>execution: "hybrid"</code> appears here too, once it
+				runs long enough to leave the connection that started it.
 			</p>
 		</div>
 	{:else}
@@ -140,7 +141,13 @@
 								{/if}
 							</td>
 							<td><span class="mono">{r.service ?? '—'}</span></td>
-							<td class="muted-text">{r.origin === 'approval' ? 'Approved' : 'Direct'}</td>
+							<td class="muted-text"
+							>{r.origin === 'approval'
+								? 'Approved'
+								: r.origin === 'hybrid'
+									? 'Handed off'
+									: 'Direct'}</td
+						>
 							<td class="muted-text">{r.started_at ? formatTime(r.started_at) : '—'}</td>
 							<td class="muted-text">{r.completed_at ? formatTime(r.completed_at) : '—'}</td>
 							<td class="chev">›</td>

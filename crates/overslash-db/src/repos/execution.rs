@@ -420,6 +420,60 @@ pub(crate) async fn create_async_direct(
     .await
 }
 
+/// Create the row for a hybrid call *already claimed by this process*.
+///
+/// [`create_async_direct`] and [`claim_async_batch`] fused into one statement,
+/// and it has to be one: a hybrid row that existed as `pending` for even a
+/// statement's width could be claimed by a worker on another replica and
+/// dialled a second time. Inserting at `status = 'executing'` under this
+/// process's lease makes the row durable from before the first byte goes out
+/// and unstealable in the same breath.
+///
+/// `triggered_by = 'hybrid'` is the discriminator every sweep reads. It is set
+/// here and never rewritten — nothing in this module updates `triggered_by` on
+/// an async row — so "this row began on a connection" stays true for the row's
+/// whole life. That is what lets the reclaim sweeps say
+/// `triggered_by IS DISTINCT FROM 'hybrid'` and be provably right.
+///
+/// Returns the [`AsyncClaim`] directly rather than an `ExecutionRow`: the
+/// caller's next move is to hand it to the job runner, and a second query to
+/// re-read the payload it just wrote would be pure waste.
+pub(crate) async fn create_hybrid_claimed(
+    pool: &PgPool,
+    input: AsyncExecutionInput<'_>,
+    worker_id: &str,
+    lease_ttl_secs: i64,
+) -> Result<AsyncClaim, sqlx::Error> {
+    sqlx::query_as!(
+        AsyncClaim,
+        "INSERT INTO executions
+             (org_id, identity_id, status, request, service_key, service_instance_id,
+              tags, render_verbose, template_key, description, client_ip, expires_at,
+              triggered_by, worker_id, started_at, lease_expires_at)
+         VALUES ($1, $2, 'executing', $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                 'hybrid', $12, now(), now() + make_interval(secs => $13))
+         RETURNING id, org_id, identity_id, approval_id,
+                   request AS \"request!\", service_key, service_instance_id,
+                   attempts, tags, render_verbose, template_key,
+                   description, client_ip",
+        input.org_id,
+        input.identity_id,
+        input.request,
+        input.service_key,
+        input.service_instance_id,
+        input.tags,
+        input.render_verbose,
+        input.template_key,
+        input.description,
+        input.client_ip,
+        input.expires_at,
+        worker_id,
+        lease_ttl_secs as f64,
+    )
+    .fetch_one(pool)
+    .await
+}
+
 /// Hand an approved gated call to the async worker: stamp the approval's stored
 /// payload onto its pending execution row so the claim loop can take it.
 ///
@@ -575,7 +629,8 @@ pub(crate) async fn release_async(
                 started_at = NULL,
                 lease_expires_at = NULL,
                 expires_at = GREATEST(expires_at, now() + make_interval(secs => $3))
-          WHERE id = $1 AND worker_id = $2 AND status = 'executing'",
+          WHERE id = $1 AND worker_id = $2 AND status = 'executing'
+            AND triggered_by IS DISTINCT FROM 'hybrid'",
         id,
         worker_id,
         queue_ttl_secs as f64,
@@ -628,6 +683,16 @@ pub(crate) async fn finalize_async(
 ///
 /// Disjoint from [`fail_exhausted_async`] by construction (`<` vs `>=`), so the
 /// order the two run in within a tick does not matter.
+///
+/// Hybrid rows are excluded from *both* arms, and from [`release_async`], so
+/// that `pending` is unreachable for them: `claim_async_batch` takes
+/// `pending AND request IS NOT NULL`, and a hybrid row was already dialled from
+/// a request path. Re-queueing one would re-send a side effect that has already
+/// happened, and an action call carries no idempotency key. Excluding both arms
+/// rather than one matters — at the default `max_attempts = 1` a hybrid row
+/// would land in the exhaust arm and be *accidentally* right, then start being
+/// re-dialled the moment an operator raised the knob. They are failed by
+/// [`fail_expired_hybrid_leases`] instead.
 pub(crate) async fn requeue_expired_leases(
     pool: &PgPool,
     max_attempts: i32,
@@ -645,6 +710,7 @@ pub(crate) async fn requeue_expired_leases(
                 expires_at = GREATEST(expires_at, now() + make_interval(secs => $2))
           WHERE status = 'executing'
             AND request IS NOT NULL
+            AND triggered_by IS DISTINCT FROM 'hybrid'
             AND lease_expires_at < now()
             AND attempts + 1 < $1",
         max_attempts,
@@ -670,9 +736,42 @@ pub(crate) async fn fail_exhausted_async(
                 completed_at = now()
           WHERE status = 'executing'
             AND request IS NOT NULL
+            AND triggered_by IS DISTINCT FROM 'hybrid'
             AND lease_expires_at < now()
             AND attempts + 1 >= $1",
         max_attempts,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Fail hybrid rows whose lease expired: the replica running the call on a
+/// connection died.
+///
+/// Deliberately not a third arm of the two sweeps above. Those are disjoint by
+/// arithmetic on `attempts`, and folding an orthogonal condition into either
+/// would make its name a lie and its `error` a `CASE`. `attempts` is not
+/// consulted at all here: a hybrid call is mid-flight against an upstream by
+/// definition, so there is no attempt left to spend — only a result that will
+/// never arrive.
+///
+/// The distinct `error` earns its keep. `lease_lost` tells a polling caller "a
+/// worker died, it may be retried"; `hybrid_instance_lost` tells them "the
+/// process holding your call is gone and nothing will retry it."
+pub(crate) async fn fail_expired_hybrid_leases(pool: &PgPool) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE executions
+            SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE 'failed' END,
+                error = CASE WHEN cancel_requested THEN 'cancelled'
+                             ELSE 'hybrid_instance_lost' END,
+                worker_id = NULL,
+                lease_expires_at = NULL,
+                completed_at = now()
+          WHERE status = 'executing'
+            AND request IS NOT NULL
+            AND triggered_by = 'hybrid'
+            AND lease_expires_at < now()",
     )
     .execute(pool)
     .await?;
@@ -763,9 +862,9 @@ pub(crate) async fn list_for_identity(
     identity_id: Uuid,
     subtree: bool,
     status: Option<&str>,
-    // `approval` | `async_call`, or `None` for both. Filtered here rather than
-    // by the caller: applied after `LIMIT` it would silently short a page,
-    // returning fewer rows than asked for while more matched.
+    // `approval` | `async_call` | `hybrid`, or `None` for all. Filtered here
+    // rather than by the caller: applied after `LIMIT` it would silently short a
+    // page, returning fewer rows than asked for while more matched.
     origin: Option<&str>,
     limit: i64,
 ) -> Result<Vec<ExecutionRow>, sqlx::Error> {
@@ -784,7 +883,10 @@ pub(crate) async fn list_for_identity(
             AND ($4::text IS NULL OR status = $4)
             AND ($5::text IS NULL
                  OR ($5 = 'approval' AND approval_id IS NOT NULL)
-                 OR ($5 = 'async_call' AND approval_id IS NULL))
+                 OR ($5 = 'async_call' AND approval_id IS NULL
+                                       AND triggered_by IS DISTINCT FROM 'hybrid')
+                 OR ($5 = 'hybrid' AND approval_id IS NULL
+                                   AND triggered_by = 'hybrid'))
           ORDER BY created_at DESC
           LIMIT $6",
         org_id,

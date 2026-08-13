@@ -450,6 +450,7 @@ async fn a_job_releases_its_lease_when_shutdown_is_already_signalled() {
         pool.clone(),
         claims.into_iter().next().unwrap(),
         rx,
+        overslash_api::services::async_executor::job::JobMode::Queued,
     )
     .await
     .unwrap();
@@ -521,9 +522,15 @@ async fn an_approval_backed_execution_notifies_its_resolver() {
 
     let state = common::make_app_state(pool.clone()).await;
     let (_tx, rx) = tokio::sync::watch::channel(false);
-    overslash_api::services::async_executor::job::execute(state, pool.clone(), claim, rx)
-        .await
-        .unwrap();
+    overslash_api::services::async_executor::job::execute(
+        state,
+        pool.clone(),
+        claim,
+        rx,
+        overslash_api::services::async_executor::job::JobMode::Queued,
+    )
+    .await
+    .unwrap();
 
     // `emit` is fire-and-forget, so give the insert a moment to land.
     for _ in 0..40 {

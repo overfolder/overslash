@@ -77,6 +77,12 @@ impl SystemScope {
             .await
     }
 
+    /// Fail hybrid rows whose replica died mid-call. Never requeues: the
+    /// upstream already received the request.
+    pub async fn fail_expired_hybrid_leases(&self) -> Result<u64, sqlx::Error> {
+        crate::repos::execution::fail_expired_hybrid_leases(self.db()).await
+    }
+
     /// Fail async rows that have exhausted their attempts.
     pub async fn fail_exhausted_async_executions(
         &self,

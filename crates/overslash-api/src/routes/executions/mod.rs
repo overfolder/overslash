@@ -46,7 +46,13 @@ pub fn router() -> Router<AppState> {
 struct ExecutionDetail {
     #[serde(flatten)]
     summary: ExecutionSummary,
-    /// Derived from whether an approval is attached; not a stored column.
+    /// Derived from the approval link and `triggered_by`; not a stored column.
+    ///
+    /// `hybrid` is kept distinct from `async_call` because the two say opposite
+    /// things about a row that is not yet terminal: `async_call` means "queued,
+    /// not started, a worker will take it", and `hybrid` means "already
+    /// running, on a connection that may be gone". A caller deciding whether a
+    /// non-terminal row is stuck needs to tell them apart.
     origin: &'static str,
     identity_id: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,10 +75,12 @@ fn is_zero(n: &i32) -> bool {
 
 impl ExecutionDetail {
     fn from_row(row: ExecutionRow) -> Self {
-        let origin = if row.approval_id.is_some() {
-            "approval"
-        } else {
-            "async_call"
+        let origin = match (row.approval_id.is_some(), row.triggered_by.as_deref()) {
+            // A *gated* hybrid call is queued like an async one, so it reports
+            // `approval` — the mode it was asked for lives on the approval.
+            (true, _) => "approval",
+            (false, Some("hybrid")) => "hybrid",
+            (false, _) => "async_call",
         };
         let identity_id = row.identity_id;
         let approval_id = row.approval_id;
@@ -133,9 +141,10 @@ async fn list_executions(
     if let Some(other) = q.origin.as_deref()
         && other != "approval"
         && other != "async_call"
+        && other != "hybrid"
     {
         return Err(AppError::BadRequest(format!(
-            "invalid origin '{other}': expected 'approval' or 'async_call'"
+            "invalid origin '{other}': expected 'approval', 'async_call' or 'hybrid'"
         )));
     }
 

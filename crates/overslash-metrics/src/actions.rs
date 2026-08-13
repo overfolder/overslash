@@ -78,6 +78,40 @@ pub fn record_upstream_response(template_key: &str, mode: &str, status_class: &s
     .increment(1);
 }
 
+/// One `execution: "hybrid"` call, by which branch answered the connection.
+///
+/// Labels:
+/// * `template_key` — registry-bounded service key, same rules as
+///   [`record_execution`].
+/// * `outcome` — `"inline"` (beat the handoff, answered `called`),
+///   `"inline_failed"` (failed before the handoff, answered with an error),
+///   `"handed_off"` (answered `accepted`, job still running), or
+///   `"queued_saturated"` (the in-flight cap was reached, so the call went onto
+///   the ordinary async queue instead).
+///
+/// Deliberately *not* a new value on [`record_execution`]'s `mode`, which is the
+/// call *shape* (`action`/`verb`/`replay`). A hybrid call keeps its shape there;
+/// this is a separate question about the same call.
+pub fn record_hybrid_outcome(template_key: &str, outcome: &str) {
+    counter!(
+        "overslash_hybrid_calls_total",
+        "template_key" => template_key.to_string(),
+        "outcome" => outcome.to_string(),
+    )
+    .increment(1);
+}
+
+/// How long a handed-off hybrid call held its connection before answering 202.
+///
+/// Separate from `overslash_action_execution_duration_seconds` on purpose:
+/// folding handed-off calls into that histogram fills it with samples clustered
+/// at the configured handoff, so its p99 becomes a reading of the deployment's
+/// own config rather than of its upstreams. This series is what
+/// `HYBRID_HANDOFF_MS` is actually tuned against.
+pub fn record_hybrid_handoff_seconds(elapsed: Duration) {
+    histogram!("overslash_hybrid_handoff_seconds").record(elapsed.as_secs_f64());
+}
+
 /// Map a numeric HTTP status to its class label (`"2xx"`, `"4xx"`, etc).
 pub fn status_class(code: u16) -> &'static str {
     match code {

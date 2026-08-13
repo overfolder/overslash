@@ -104,6 +104,18 @@ impl OrgScope {
         crate::repos::execution::create_async_direct(self.db(), input).await
     }
 
+    /// Create the row for a hybrid call, already claimed by this process so no
+    /// worker on another replica can dial it a second time.
+    pub async fn create_hybrid_execution(
+        &self,
+        input: crate::repos::execution::AsyncExecutionInput<'_>,
+        worker_id: &str,
+        lease_ttl_secs: i64,
+    ) -> Result<crate::repos::execution::AsyncClaim, sqlx::Error> {
+        crate::repos::execution::create_hybrid_claimed(self.db(), input, worker_id, lease_ttl_secs)
+            .await
+    }
+
     /// Hand an approved gated call to the async worker. `None` when the row is
     /// no longer enqueueable — see `enqueue_from_approval`; the "approval
     /// predates `replay_payload`" case is what falls back to the inline replay.
