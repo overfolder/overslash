@@ -50,6 +50,61 @@ pub async fn update_profile(
     .await
 }
 
+/// Refresh the display name of a user identity that has never signed in,
+/// returning the previous name when a row actually changed.
+///
+/// Every part of the `WHERE` is load-bearing:
+/// - `external_id IS NULL` — the row is still a pre-created member. Once a
+///   human has signed in, the IdP profile owns the name (see `update_profile`,
+///   which the login path calls) and header traffic must not fight it.
+/// - `is_org_admin = false` — an admin's pending row is deliberately not
+///   renameable this way; the blast radius of getting it wrong is larger and
+///   the value of getting it right is smaller.
+/// - `name <> $3` — this runs on the auth hot path. Steady-state traffic that
+///   keeps sending the same name must not write a row per request.
+///
+/// The old name is read under the row lock before the update so the caller can
+/// audit the transition; reading it back from a `RETURNING` subquery would see
+/// the value we just wrote.
+pub async fn rename_if_unadopted(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+    name: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let previous = sqlx::query_scalar!(
+        "SELECT name FROM identities
+         WHERE id = $1 AND org_id = $2 AND kind = 'user'
+           AND external_id IS NULL AND is_org_admin = false
+           AND archived_at IS NULL AND name <> $3
+         FOR UPDATE",
+        id,
+        org_id,
+        name,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some(previous) = previous else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+
+    sqlx::query!(
+        "UPDATE identities SET name = $3, updated_at = now()
+         WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+        name,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Some(previous))
+}
+
 /// Toggle the `is_org_admin` flag on a User identity. The DB CHECK constraint
 /// rejects the call if `id` is not a User. Also keeps the `Admins` system group
 /// membership in sync so the group-grant ACL path stays consistent with the

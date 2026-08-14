@@ -68,6 +68,7 @@ mod hubspot;
 mod hybrid_call;
 mod hybrid_sweeps;
 mod identity_archive;
+mod identity_email;
 mod identity_hierarchy;
 mod identity_idle_cleanup;
 mod identity_remove_user;

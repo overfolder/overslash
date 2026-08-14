@@ -49,6 +49,11 @@ pub struct MoveTo {
 #[derive(Debug, Default)]
 pub struct PatchIdentity<'a> {
     pub name: Option<&'a str>,
+    /// Already normalised + duplicate-checked by the caller. Only ever set for
+    /// a `user` identity that has never signed in — `apply_patch` re-checks the
+    /// latter under the row lock and refuses with
+    /// [`ApplyPatchOutcome::EmailLocked`] if a sign-in beat it there.
+    pub email: Option<&'a str>,
     pub move_to: Option<MoveTo>,
     pub inherit_permissions: Option<bool>,
 }
@@ -62,6 +67,9 @@ pub enum ApplyPatchOutcome {
     NotFound,
     ParentNotFound,
     Cycle,
+    /// An `email` patch was requested for an identity that has since been
+    /// adopted by a sign-in. Its address is the IdP's to change, not ours.
+    EmailLocked,
 }
 
 /// Apply rename + move + inherit toggle in a single transaction so the
@@ -100,9 +108,10 @@ pub(crate) async fn apply_patch(
         .await?;
     }
 
-    // Re-read the moved row's depth under the lock.
+    // Re-read the moved row's depth under the lock — and its `external_id`,
+    // which decides whether an email patch is still allowed to land.
     let current = sqlx::query!(
-        "SELECT depth FROM identities WHERE id = $1 AND org_id = $2",
+        "SELECT depth, external_id FROM identities WHERE id = $1 AND org_id = $2",
         id,
         org_id,
     )
@@ -111,6 +120,21 @@ pub(crate) async fn apply_patch(
     let Some(current) = current else {
         return Ok(ApplyPatchOutcome::NotFound);
     };
+
+    if let Some(email) = patch.email {
+        if current.external_id.is_some() {
+            return Ok(ApplyPatchOutcome::EmailLocked);
+        }
+        sqlx::query!(
+            "UPDATE identities SET email = lower($3), updated_at = now()
+             WHERE id = $1 AND org_id = $2",
+            id,
+            org_id,
+            email,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
 
     if let Some(name) = patch.name {
         sqlx::query!(

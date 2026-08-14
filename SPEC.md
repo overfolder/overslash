@@ -251,6 +251,25 @@ Auto-created identities are unprivileged by construction: user identities are ba
 
 A path deeper than 8 agent segments, a malformed root (neither UUID nor email), or an empty segment is a `400`; an archived target is `403`; the header without the `impersonate` scope is `403`. This is the primary integration surface for white-label backends (e.g. Overfolder) that act on their users' behalf without pre-syncing Overslash UUIDs.
 
+#### `X-Overslash-As-Name`
+
+The target path says *who*; it cannot say what they are called. An email identifies a person, so without help a provisioned user is labelled from their email local-part — `alice@acme.com` becomes a member named `alice`, and that is what the org sees in its members list, on approval cards, and in `audit_log.actor_name`. The companion `X-Overslash-As-Name` header carries the real one. Agents need no equivalent: for them the path segment already *is* the name.
+
+| Header value | Meaning |
+|---|---|
+| `Alice Smith` | taken literally |
+| `UTF-8''Jos%C3%A9%20%C3%81lvarez` | RFC 8187 `ext-value`, percent-decoded — the form `Content-Disposition`'s `filename*` uses |
+
+The encoded form is not decoration. A header value is a byte string: `fetch` isomorphic-encodes it and throws above U+00FF, so a browser or Node client cannot put `José` in a header at all. Decoding *every* value unconditionally was the alternative and would quietly mangle a name like `50% Club`, so decoding is opt-in via the prefix. The one value the literal form cannot carry is a name that itself begins `UTF-8''`; exactly one prefix is consumed, so a client sends such a name through the encoded form like any other (the SDK does this automatically).
+
+The name applies to the **user root** only, and only ever in a direction that cannot overwrite something better:
+
+- The root is being provisioned now → it is created with this name instead of the derived one.
+- The root exists but has never signed in (`external_id IS NULL`) and is not an org admin → the name is refreshed, and the change is audited as `identity.updated`. Re-sending an unchanged name writes nothing; this runs on the auth path of every request.
+- The root has signed in → ignored. The IdP owns the name from adoption onward.
+
+The refresh is applied **after** the ACL cap, so a caller who turns out not to be allowed to act as the target cannot leave a rename behind on the way to its `403`. A value that is empty, over 128 characters, carries a control character, or fails to decode is a `400` — never a silent truncation. The header without `X-Overslash-As` is a `400`; aimed at a UUID that names an agent, also a `400`, since dropping it silently would let a caller believe a rename happened.
+
 ### Members are identities; invites are pre-created members
 
 A person "belongs to an org" iff there is a `kind='user'` identity for them in that org. There is exactly one such identity per person per org, and it is created by any of three paths — an admin invite, name-based impersonation, or a first SSO sign-in — that all converge on the same row:
@@ -262,6 +281,8 @@ A person "belongs to an org" iff there is a `kind='user'` identity for them in t
 **Impersonation-provisioning is an admission decision.** A pre-created identity satisfies `require_invite_admission` regardless of which admin-authorized path created it — an explicit invite or name-based impersonation. This is not a bypass: the `impersonate` scope is admin-minted, and the provisioned row is *already* a full member (Everyone + Myself groups) the moment it is created, before any login. Refusing to adopt it at sign-in would not unmake the member; it would only stop the real human from ever logging into an account that is already theirs. Because adoption is the moment a pre-created identity becomes a human-usable login, it emits an `identity.adopted` audit row carrying `provisioned_by` (`invite` vs `impersonation`), so an org can tell the two admission paths apart after the fact.
 
 (The former `org_invites` table was folded into `identities` by migration 103; the `/v1/org-invites` API keeps its wire shape as a projection over user identities.)
+
+`POST /v1/identities` and `PATCH /v1/identities/{id}` accept an `email` beside `name`, so the third path — an admin creating the member directly — can also pair identifier and name in one request. `/v1/org-invites` remains the "…and tell them" path: it derives the name from the address and sends the notification. The same invariants apply wherever the row is created: one live identity per email in an org (a duplicate is a `409`), `email` is `user`-only (`400` otherwise), and it may only be **changed** while `external_id IS NULL` — after a sign-in the address is what decides which human can claim the account, so it belongs to the IdP, not to an admin (`409`). That last guard is re-checked under `FOR UPDATE` inside the patch transaction, so a sign-in racing the patch cannot slip past it.
 
 ---
 

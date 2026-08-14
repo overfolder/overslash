@@ -103,7 +103,11 @@ new OverslashClient({ auth: { transport: myHostProxy } })              // browse
 `X-Overslash-As`: `client.as('alice@acme.com/support-agent')` returns a derived
 client that sets the header on every request, which is SPEC §4's designated
 integration surface for white-label backends and provisions identities on first
-use.
+use. A second argument carries the person's display name —
+`client.as('alice@acme.com', 'Alice Smith')` — which the path itself cannot
+express: without it a provisioned user is labelled from their email local-part.
+The SDK picks the encoding, since a non-ASCII name cannot go in a header
+literally (`fetch` throws above U+00FF); see SPEC §4 for the wire form.
 
 **`{ transport }`** is the mode that works today from a browser with no backend
 changes. The host supplies a function; the SDK hands it a

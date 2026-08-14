@@ -34,8 +34,65 @@ pub(super) async fn whoami(
 #[derive(Deserialize)]
 pub(super) struct UpdateIdentityRequest {
     name: Option<String>,
+    /// Only meaningful for `user` identities, and only while they have never
+    /// signed in. See `resolve_email_patch` for why.
+    email: Option<String>,
     parent_id: Option<Uuid>,
     inherit_permissions: Option<bool>,
+}
+
+/// Validate an email destined for a `user` identity: well-formed, not already
+/// taken by another live member of the org. Returns the normalised (lowercased)
+/// address.
+///
+/// The duplicate check is the same invariant `POST /v1/org-invites` enforces —
+/// one human, one identity per org — applied here so the invariant does not
+/// depend on which endpoint happened to create the row. `self_id` exempts the
+/// row being patched, so re-sending an unchanged address is not a conflict.
+async fn validate_member_email(
+    scope: &OrgScope,
+    raw: &str,
+    self_id: Option<Uuid>,
+) -> Result<String> {
+    let email = validate_email(raw)?;
+    if let Some(existing) = scope.find_user_identity_by_email_in_org(&email).await?
+        && Some(existing.id) != self_id
+    {
+        return Err(AppError::Conflict(format!(
+            "a member or pending invite for '{email}' already exists"
+        )));
+    }
+    Ok(email)
+}
+
+/// Decide whether an `email` patch may be applied to `target`.
+///
+/// Two refusals, both about who owns the address. It is not a label: the
+/// OAuth callback adopts a pre-created identity *by verified email*, so the
+/// address decides which human can claim the account. Rewriting it on a member
+/// who has already signed in would silently repoint that claim, and an agent
+/// has no sign-in to repoint at all.
+async fn resolve_email_patch(
+    scope: &OrgScope,
+    target: &overslash_db::repos::identity::IdentityRow,
+    raw: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if target.kind != "user" {
+        return Err(AppError::BadRequest(
+            "only user identities carry an email".into(),
+        ));
+    }
+    if target.external_id.is_some() {
+        return Err(AppError::Conflict(
+            "this member has signed in; their email is owned by their identity provider".into(),
+        ));
+    }
+    Ok(Some(
+        validate_member_email(scope, raw, Some(target.id)).await?,
+    ))
 }
 
 pub(super) async fn update_identity(
@@ -67,6 +124,8 @@ pub(super) async fn update_identity(
     } else {
         None
     };
+
+    let email = resolve_email_patch(&scope, &target, req.email.as_deref()).await?;
 
     // Resolve owner ids from the target's kind. Parent kind is validated
     // here for a clean error message; the parent's `depth` and the cycle
@@ -118,6 +177,7 @@ pub(super) async fn update_identity(
             id,
             overslash_db::repos::identity::PatchIdentity {
                 name: trimmed_name,
+                email: email.as_deref(),
                 move_to,
                 inherit_permissions: req.inherit_permissions,
             },
@@ -138,6 +198,14 @@ pub(super) async fn update_identity(
                 "cannot move identity under one of its descendants".into(),
             ));
         }
+        // The route checked this against its pre-transaction read; this is the
+        // same guard re-run under `FOR UPDATE`, so a sign-in racing the patch
+        // cannot slip an email rewrite past it.
+        ApplyPatchOutcome::EmailLocked => {
+            return Err(AppError::Conflict(
+                "this member has signed in; their email is owned by their identity provider".into(),
+            ));
+        }
     };
 
     let _ = scope
@@ -149,6 +217,7 @@ pub(super) async fn update_identity(
             resource_id: Some(id),
             detail: serde_json::json!({
                 "name": req.name,
+                "email": email,
                 "parent_id": req.parent_id,
                 "inherit_permissions": req.inherit_permissions,
             }),
@@ -288,6 +357,13 @@ async fn remove_user_from_org(
 pub(super) struct CreateIdentityRequest {
     name: String,
     kind: IdentityKind,
+    /// Optional, `user` only. Creating a user identity *with* an email makes
+    /// it a pre-created member the login path can adopt by email — the same
+    /// row `POST /v1/org-invites` produces, minus the notification email and
+    /// the admin-role handling. Supplying it here is how a caller says "this
+    /// is alice@acme.com **and** she is called Alice Smith", which the invite
+    /// endpoint cannot express (it derives the name from the address).
+    email: Option<String>,
     external_id: Option<String>,
     parent_id: Option<Uuid>,
     /// Optional. Only meaningful for `agent` / `sub_agent`. When set, the
@@ -342,6 +418,12 @@ pub(super) async fn create_identity(
     let auth = acl;
     let kind_str = req.kind.as_str();
 
+    if req.email.is_some() && req.kind != IdentityKind::User {
+        return Err(AppError::BadRequest(
+            "only user identities carry an email".into(),
+        ));
+    }
+
     let row = match req.kind {
         IdentityKind::User => {
             if req.parent_id.is_some() {
@@ -349,9 +431,25 @@ pub(super) async fn create_identity(
                     "user identities cannot have a parent".into(),
                 ));
             }
-            scope
-                .create_identity(&req.name, kind_str, req.external_id.as_deref())
-                .await?
+            match req.email.as_deref() {
+                Some(raw) => {
+                    let email = validate_member_email(&scope, raw, None).await?;
+                    scope
+                        .create_identity_with_email(
+                            &req.name,
+                            kind_str,
+                            req.external_id.as_deref(),
+                            Some(&email),
+                            serde_json::json!({}),
+                        )
+                        .await?
+                }
+                None => {
+                    scope
+                        .create_identity(&req.name, kind_str, req.external_id.as_deref())
+                        .await?
+                }
+            }
         }
         IdentityKind::Agent => {
             let parent_id = req.parent_id.ok_or_else(|| {
@@ -421,6 +519,7 @@ pub(super) async fn create_identity(
             detail: serde_json::json!({
                 "name": &row.name,
                 "kind": &row.kind,
+                "email": &row.email,
                 "parent_id": row.parent_id,
                 "depth": row.depth,
             }),
