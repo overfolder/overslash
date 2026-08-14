@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.8.0](https://github.com/overfolder/overslash/compare/v0.7.0...v0.8.0) (2026-08-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **actions:** execution result bodies are no longer readable org-wide. A caller who is not the requester, not above them in the chain with write access, and not an org admin now gets 403 from `/v1/approvals/{id}/execution` and `result_redacted: true` (with no body) from the approval detail and list.
+
+### Features
+
+* **actions:** a truncated result is stored and re-fetchable behind a URL ([#547](https://github.com/overfolder/overslash/issues/547)) ([1a25374](https://github.com/overfolder/overslash/commit/1a25374d7b6df6a3d7b5625e8ada63528dc6e6e5))
+* **actions:** an action can declare the mode a call defaults to, and the caller still outranks it ([#563](https://github.com/overfolder/overslash/issues/563)) ([0b3ae9f](https://github.com/overfolder/overslash/commit/0b3ae9f8230fed1adf12d00985c498f506d81aa0))
+* **actions:** async (non-blocking) action calls (D60) ([#546](https://github.com/overfolder/overslash/issues/546)) ([4a4cbf6](https://github.com/overfolder/overslash/commit/4a4cbf608dca2c3978e8dc542aa56664eefa9eb9))
+* **actions:** cache display-param resolvers on a bounded-staleness window (D64) ([#548](https://github.com/overfolder/overslash/issues/548)) ([76a68a1](https://github.com/overfolder/overslash/commit/76a68a16a9e1a2d6f5bb55808da7cdffd3b0c9cd))
+* **actions:** deferred downloads via capability URLs (deliver: "url") ([#512](https://github.com/overfolder/overslash/issues/512)) ([4955529](https://github.com/overfolder/overslash/commit/495552975575aadd50113ff2ac339813841c46b4))
+* **actions:** execution: "hybrid" — the connection waits on the call, it does not own it (D68) ([#557](https://github.com/overfolder/overslash/issues/557)) ([bec6cc4](https://github.com/overfolder/overslash/commit/bec6cc4b8680cc6002005f819748b3ac9a397e92))
+* **actions:** gated async — an approved call runs on the worker, not the connection (D66) ([#553](https://github.com/overfolder/overslash/issues/553)) ([dd03842](https://github.com/overfolder/overslash/commit/dd038427459430f4dfa20558b9716c428e807ba9))
+* **actions:** give list-heavy actions a middle gear, and mint the retry into the 502 (D57) ([#543](https://github.com/overfolder/overslash/issues/543)) ([5fdd844](https://github.com/overfolder/overslash/commit/5fdd844bf1e22833f0b32293d6a657a26e00d6aa))
+* **actions:** layered call timeouts, and bound the unbounded call path (D56) ([#535](https://github.com/overfolder/overslash/issues/535)) ([b87d0d6](https://github.com/overfolder/overslash/commit/b87d0d62e7c45c08194809c7f338c91b94e9450c))
+* **agents:** an agent wears its MCP client's mark, and a stripe of its own ([#560](https://github.com/overfolder/overslash/issues/560)) ([589311a](https://github.com/overfolder/overslash/commit/589311a4f1272fc0138099182738934484415873))
+* **dashboard:** label audit-log actors by email ([#517](https://github.com/overfolder/overslash/issues/517)) ([1cd48bb](https://github.com/overfolder/overslash/commit/1cd48bb6dc172be3535759b774097b230c2dfb20))
+* **dashboard:** label user identities by email, not IdP display name ([#513](https://github.com/overfolder/overslash/issues/513)) ([9bf6bd0](https://github.com/overfolder/overslash/commit/9bf6bd085e403e2351b7b3550622238309614f96))
+* **dashboard:** show the OAuth profile pictures we already fetch ([#549](https://github.com/overfolder/overslash/issues/549)) ([4d927c4](https://github.com/overfolder/overslash/commit/4d927c4b0df817678b760e1c0b9dc0bb76d0b850))
+* **events:** approval expiry stops being invisible, and the sweep stays bounded ([#544](https://github.com/overfolder/overslash/issues/544)) ([9fc835d](https://github.com/overfolder/overslash/commit/9fc835d0632b4c017391de08d2faf890888369c7))
+* **groups:** auto-approval is a level, not a boolean (D53) ([#522](https://github.com/overfolder/overslash/issues/522)) ([b4893dd](https://github.com/overfolder/overslash/commit/b4893ddd542ab0b9a50590cff2c4cca07e22df7d))
+* **identity:** an identifier says who, a name says what to call them ([#562](https://github.com/overfolder/overslash/issues/562)) ([b87fef9](https://github.com/overfolder/overslash/commit/b87fef99094df18d47c903a286672d93c80bd83e))
+* **invitations:** pending-invitations section in the dashboard sidebar ([#514](https://github.com/overfolder/overslash/issues/514)) ([24dd988](https://github.com/overfolder/overslash/commit/24dd9887e91e63d435012af8de2b9e8fc660054d))
+* **map:** Live Map, on a gated per-call event topic (D57) ([#542](https://github.com/overfolder/overslash/issues/542)) ([23f90b1](https://github.com/overfolder/overslash/commit/23f90b1d887cac3caa3050252e4ca5a57f2d20ae))
+* **map:** service nodes draw their catalog mark, and a ball image no longer steals the drag ([#558](https://github.com/overfolder/overslash/issues/558)) ([9ac09d3](https://github.com/overfolder/overslash/commit/9ac09d37a67db6daa2d8bdcee9d9c89217181c04))
+* **metabase:** resolve database ids to names in disclosures ([#532](https://github.com/overfolder/overslash/issues/532)) ([0b301d0](https://github.com/overfolder/overslash/commit/0b301d0c04d88abc3474faefe2dfc43709beef0b))
+* **resolvers:** resolve MCP params to readable names, canonicalize scope keys (D55) ([#534](https://github.com/overfolder/overslash/issues/534)) ([507ce0e](https://github.com/overfolder/overslash/commit/507ce0ea8e0882d2380f0db309bd0dcfee9ce695))
+* **search:** every search term is a composable bubble ([#533](https://github.com/overfolder/overslash/issues/533)) ([419f2cb](https://github.com/overfolder/overslash/commit/419f2cb8cc3de9a5647acb937c61a246d03de007))
+* **services:** org-level instances must name a group the creator is in ([#521](https://github.com/overfolder/overslash/issues/521)) ([90bd275](https://github.com/overfolder/overslash/commit/90bd275fabbab55e32005b43259a3c27c20eb674))
+* **services:** service templates carry an icon, and we self-host the built-in set ([#550](https://github.com/overfolder/overslash/issues/550)) ([8ba19bf](https://github.com/overfolder/overslash/commit/8ba19bfd926dd86f90e3b71e7cf5d0f8f7955b5a))
+* **sql-policy:** a SELECT is a read only while every function it calls is one (D69) ([#559](https://github.com/overfolder/overslash/issues/559)) ([470e261](https://github.com/overfolder/overslash/commit/470e261b17d30eddf4ef220a04cffdf5c5e6e3cb))
+* **templates:** lint keys the compiler ignores, at template compile (D67) ([#554](https://github.com/overfolder/overslash/issues/554)) ([753364d](https://github.com/overfolder/overslash/commit/753364dd91f6f2743d6d775163a7f13ca63e061d))
+
+
+### Bug Fixes
+
+* **actions:** an unconfigured instance says which field, not 401-from-upstream (D60) ([#545](https://github.com/overfolder/overslash/issues/545)) ([c99c5c6](https://github.com/overfolder/overslash/commit/c99c5c6f288c2829d608413c577d3ecefe842d2e))
+* **agents:** one name per concept in metabase, and a size hint that fits the caller ([#540](https://github.com/overfolder/overslash/issues/540)) ([bb07c76](https://github.com/overfolder/overslash/commit/bb07c76cfe5bd4e5ac111dc519fe46652524cd15))
+* **audit:** record auto_approve_level on service-create group grants ([#531](https://github.com/overfolder/overslash/issues/531)) ([2a402ad](https://github.com/overfolder/overslash/commit/2a402ad97c92a1e605d09559cd928c781483a6c7))
+* **auth:** honor Overslash-managed sign-in in the MCP authorize bounce ([#516](https://github.com/overfolder/overslash/issues/516)) ([a2af377](https://github.com/overfolder/overslash/commit/a2af377fc014a7458118fc3759457c30912aee26))
+* **build:** compile the SQL policy parser into the container image ([#519](https://github.com/overfolder/overslash/issues/519)) ([47e0505](https://github.com/overfolder/overslash/commit/47e0505032d3b74d182abb6e2bf81dfcb3781a14))
+* **build:** keep the API build on E2_HIGHCPU_8 ([#527](https://github.com/overfolder/overslash/issues/527)) ([945570a](https://github.com/overfolder/overslash/commit/945570a83d4858d8d6c2c97e4a1a0cadd52b200f))
+* **build:** stop Kaniko OOM-killing the API image build ([#526](https://github.com/overfolder/overslash/issues/526)) ([c3fa6e0](https://github.com/overfolder/overslash/commit/c3fa6e0d1f5c51c6ccf499e55445910f5804d5b4))
+* **dashboard:** keep the audit User cell on one line ([#520](https://github.com/overfolder/overslash/issues/520)) ([086a34b](https://github.com/overfolder/overslash/commit/086a34bd33b0ad3a44984caa7848e53f80c1906e))
+* **disclosure:** jq error text stops quoting the values redaction hides (D65) ([#552](https://github.com/overfolder/overslash/issues/552)) ([4ae9fb6](https://github.com/overfolder/overslash/commit/4ae9fb626e1e8919c1efce2f86b97c678585d587)), closes [#538](https://github.com/overfolder/overslash/issues/538)
+* **infra:** drop timeout_sec from the serverless-NEG backend service ([#528](https://github.com/overfolder/overslash/issues/528)) ([46995b3](https://github.com/overfolder/overslash/commit/46995b3b13948b84a95a97218d5d6b2744946b62))
+* **services:** proxy /icons from the app origin, so cloud icons resolve ([#555](https://github.com/overfolder/overslash/issues/555)) ([2c0c2da](https://github.com/overfolder/overslash/commit/2c0c2dac27339d8a25701ea0119bde09d34c0cd2))
+
 ## [0.7.0](https://github.com/overfolder/overslash/compare/v0.6.0...v0.7.0) (2026-08-02)
 
 
