@@ -456,7 +456,7 @@ fn render_action_result(result: &ActionResult, verbose: Option<bool>) -> serde_j
 /// [`render_action_result`], plus: when the compact view actually dropped
 /// something, store the full result and hand back a URL to it.
 ///
-/// This is the whole of D57 at the call path. The condition is deliberately
+/// This is the whole of D61 at the call path. The condition is deliberately
 /// narrow — a verbose render loses nothing, and a compact render that fit
 /// loses nothing either, so neither writes a row. Only a caller who asked for
 /// compact *and* got less than the upstream sent has anything to re-fetch.
@@ -464,7 +464,7 @@ fn render_action_result(result: &ActionResult, verbose: Option<bool>) -> serde_j
 /// Storage is best-effort: [`call_result::store`] returns `None` rather than an
 /// error on every failure path, so a full disk cannot turn a successful call
 /// into a 500. The envelope then carries the unstored hint, which is exactly
-/// the pre-D57 behaviour.
+/// the pre-D61 behaviour.
 pub(in crate::routes::actions) async fn render_stored(
     state: &AppState,
     ext: &axum::http::Extensions,
