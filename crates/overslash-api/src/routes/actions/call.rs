@@ -54,7 +54,11 @@ pub(super) async fn call_action_impl(
     // Reject filter + streaming up front — silently dropping the filter
     // could let an agent think it's getting a small slice and instead
     // pipe a multi-MB stream into its context window.
-    let super::flags::RequestFlags { deliver_url, mode } = super::flags::validate_request(&req)?;
+    let super::flags::RequestFlags {
+        deliver_url,
+        mode: requested_mode,
+        blockers: request_blockers,
+    } = super::flags::validate_request(&req)?;
 
     // Refused here, above the permission gate, rather than only at the async
     // fork below it. The fork sits *under* the gate, so on a flag-off
@@ -64,10 +68,16 @@ pub(super) async fn call_action_impl(
     // Hybrid rides the same flag: it needs the executions row, the sweeps and
     // the poll surface async brought, and a saturated hybrid fork degrades onto
     // the async queue — which nothing drains with the flag off.
-    if mode.is_deferred() && !state.config.async_execution.enabled {
+    // Caller-named only. A template's own `wait-mode` is not refused here — it
+    // is simply never adopted, via `Blockers::async_disabled` below. Refusing
+    // it would let one template take every call to an action down on a
+    // deployment that never opted into async at all.
+    if let Some(m) = requested_mode.filter(|m| m.is_deferred())
+        && !state.config.async_execution.enabled
+    {
         return Err(AppError::BadRequest(format!(
             "execution: \"{}\" is not enabled on this deployment",
-            mode.label()
+            m.label()
         )));
     }
 
@@ -112,7 +122,8 @@ pub(super) async fn call_action_impl(
     // corrupted on its way into the row. Above argument coercion for the same
     // reason the argument gate sits above the permission walk: the cheapest
     // structurally-impossible answer first.
-    super::flags::validate_resolved(&req, pre_resolved_mode_c.as_ref())?;
+    let resolved_blockers = super::flags::validate_resolved(&req, pre_resolved_mode_c.as_ref())?;
+
     // Rewrite template-declared parameter aliases (e.g. `to` → `recipient`) to
     // their canonical names first, so defaults, coercion, validation, the
     // approval replay payload, and resolution all see canonical keys only.
@@ -219,6 +230,45 @@ pub(super) async fn call_action_impl(
         request: action_req,
         auth_header,
     } = resolved;
+
+    // ── The execution-mode cascade ──────────────────────────────────
+    //
+    // Rung 1 is the request, rung 2 the action template, and the floor is
+    // synchronous. Folded *here* — below resolution, above everything that
+    // reads a mode — because the template rung arrives on `meta` and does not
+    // exist until the action does, and because four things downstream branch
+    // on the answer: the per-mode D56 ceiling, the approval stamp, and the two
+    // dispatch forks. Nothing between `validate_request` and this line reads a
+    // mode, which is what makes the move down safe.
+    let wait = crate::services::wait_mode::resolve(
+        requested_mode,
+        meta.action_wait_mode,
+        crate::services::wait_mode::Blockers {
+            platform_runtime: resolved_blockers.platform_runtime,
+            binary_response: resolved_blockers.binary_response,
+            async_disabled: !state.config.async_execution.enabled,
+            ..request_blockers
+        },
+    );
+    let mode = wait.mode();
+    if let (Some(dropped), Some(reason)) = (wait.demoted_from(), wait.blocked_by()) {
+        // Silent to the caller, never silent to us: this is the one path where
+        // a template says one thing and the gateway does another, so it has to
+        // be greppable and countable. See D-NEXT on why it is not a 400.
+        tracing::info!(
+            service = req.service.as_deref().unwrap_or("-"),
+            action = req.action.as_deref().unwrap_or("-"),
+            declared = dropped.label(),
+            blocked_by = reason,
+            "action wait-mode demoted to sync",
+        );
+        overslash_metrics::actions::record_wait_mode_demotion(reason);
+    }
+    super::flags::validate_effective(&req, mode)?;
+    // Only carried when the request did not name the mode: the two deferred
+    // envelopes report it, and a caller that asked for async does not need
+    // telling where async came from.
+    let mode_source = wait.is_derived().then(|| wait.source().label());
 
     // Caller-asserted risk gate (MCP `overslash_read`): reject before any
     // permission/approval work if the resolved action mutates. The declared
@@ -457,6 +507,7 @@ pub(super) async fn call_action_impl(
         // bounded *by* that budget, and only this branch has an opinion on it.
         let handoff = crate::services::hybrid::resolve_handoff(
             req.handoff_after_ms,
+            meta.action_handoff_after_ms,
             &state.config.async_execution,
             call_timeout.ms(),
             state.config.call_timeout_max_ms,
@@ -476,6 +527,7 @@ pub(super) async fn call_action_impl(
             &call_tags,
             ip.0.as_deref(),
             &upstream_tpl,
+            mode_source,
         )
         .await;
     }
@@ -495,6 +547,7 @@ pub(super) async fn call_action_impl(
             &call_tags,
             ip.0.as_deref(),
             &upstream_tpl,
+            mode_source,
         )
         .await;
     }

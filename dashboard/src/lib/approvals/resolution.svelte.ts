@@ -54,8 +54,18 @@ export function createResolution(
 	 * trigger, and the wait can legitimately run for minutes.
 	 */
 	const executionQueued = $derived(execution?.queued === true);
-	/** The gated call asked for `execution: "async"` — true before it is approved. */
-	const willRunInBackground = $derived(current.execution_mode === 'async');
+	/**
+	 * The gated call asked for a deferred mode — true before it is approved.
+	 *
+	 * Both `async` and `hybrid` count, because a gated call of either kind is
+	 * queued identically: `hybrid` races a connection that an approval replay
+	 * does not have, so `ApprovalRow::is_async` matches both server-side. This
+	 * used to test `=== 'async'` alone, which left a gated hybrid approval
+	 * silently claiming it would run inline and then not doing so.
+	 */
+	const willRunInBackground = $derived(
+		current.execution_mode === 'async' || current.execution_mode === 'hybrid'
+	);
 
 	/**
 	 * Pull the authoritative approval and adopt it. Shared by the fallback poll

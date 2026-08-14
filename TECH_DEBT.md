@@ -352,3 +352,20 @@ naming one per call — e.g. a per-position extractor trait whose implementation
 list is the matrix. That is a much larger refactor of `openapi::extract` than
 D67 warranted, and the payoff is bounded: the entries are cited, and a phantom
 position only costs a missed warning, never a false one.
+
+## `/v1/actions/validate` never ran the deferred-flag gate it claims to
+
+`flags::validate_resolved` carried a doc comment reading "Called from both
+`/call` and `/validate`, so the dry-run can never green-light a shape the real
+call refuses." Only `/call` has ever called it. The comment is now accurate
+rather than aspirational, but the gap it described is real: `/v1/actions/validate`
+will report a call as valid when `execution: "async"` against a
+`runtime: platform` service or a binary-returning action is a 400 on the real
+path.
+
+Closing it is a behaviour change to an endpoint whose whole contract is
+"answer without side effects", and it adds 400s where callers currently get a
+verdict — so it wants its own decision rather than riding along with the
+wait-mode rung, which is what surfaced it. Low harm in the meantime: the shapes
+it misses are all refused a moment later by the call the dry-run was preparing
+for.

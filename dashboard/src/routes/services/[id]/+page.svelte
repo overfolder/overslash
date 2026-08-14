@@ -1189,6 +1189,11 @@
 									>
 									<td>
 										{#if a.disabled}<span class="pill pill-muted">hidden</span>{/if}
+										{#if a.wait_mode && a.wait_mode !== 'sync'}<span
+											class="pill pill-defer"
+											title="This action declares execution: &quot;{a.wait_mode}&quot;. A call that names no execution mode of its own may answer 202 accepted with an execution to poll, rather than the result. Pass execution: &quot;sync&quot; to insist on the answer inline."
+											>{a.wait_mode}</span
+										>{/if}
 									</td>
 								</tr>
 							{/each}
@@ -1218,7 +1223,12 @@
 											title={a.risk === 'dynamic'
 												? 'Classified per call: the SQL is parsed — read-only SELECTs run as read, anything else routes to approval'
 												: undefined}>{a.risk}</span
-										></td
+										>
+										{#if a.wait_mode && a.wait_mode !== 'sync'}<span
+											class="pill pill-defer"
+											title="This action declares execution: &quot;{a.wait_mode}&quot;. A call that names no execution mode of its own may answer 202 accepted with an execution to poll, rather than the result. Pass execution: &quot;sync&quot; to insist on the answer inline."
+											>{a.wait_mode}</span
+										>{/if}</td
 									>
 								</tr>
 							{/each}
@@ -1413,6 +1423,15 @@
 		background: rgba(120, 120, 120, 0.12);
 		color: var(--color-text-muted);
 		border-color: rgba(120, 120, 120, 0.25);
+	}
+	/* Not a warning — a declaration. The action is telling the caller its
+	   result may arrive out of band, which is a property worth spotting in a
+	   list, not a problem to fix. */
+	.pill-defer {
+		background: rgba(90, 140, 220, 0.12);
+		color: var(--color-text-muted);
+		border-color: rgba(90, 140, 220, 0.35);
+		margin-left: 0.35rem;
 	}
 	.actions {
 		display: flex;

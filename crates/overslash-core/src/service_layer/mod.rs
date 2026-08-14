@@ -157,6 +157,8 @@ pub(crate) mod fixtures {
 
     pub(crate) fn action(risk: Risk) -> ServiceAction {
         ServiceAction {
+            wait_mode: None,
+            handoff_after_ms: None,
             timeout_ms: None,
             method: "GET".into(),
             path: "/x".into(),

@@ -291,7 +291,7 @@ mod tests {
     use super::*;
     use crate::openapi::normalize_aliases;
     use crate::service_icon::ServiceIcon;
-    use crate::types::{McpAuth, Risk, Runtime, ServiceAuth};
+    use crate::types::{ExecutionMode, McpAuth, Risk, Runtime, ServiceAuth};
     use serde_json::json;
 
     // --- icon ---------------------------------------------------------
@@ -861,6 +861,60 @@ mod tests {
         // at call time, so the action rung must stay empty here or it would
         // shadow a per-call override.
         assert_eq!(svc.actions["fast"].timeout_ms, None);
+    }
+
+    /// The wait-mode rung has to survive the same unprefixed authoring
+    /// spelling `timeout_ms` does, and for a sharper reason: this one decides
+    /// a *response shape*, so an alias that silently no-ops leaves the author
+    /// believing an action defers when every call to it still rides the
+    /// synchronous ceiling into a 504.
+    #[test]
+    fn compile_wait_mode_through_the_unprefixed_aliases() {
+        let mut doc = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Slow", "key": "slow"},
+            "servers": [{"url": "https://slow.example"}],
+            "paths": {
+                "/fast": {"get": {"operationId": "fast", "description": "quick"}},
+                "/slow": {"get": {
+                    "operationId": "slow", "description": "aggregation",
+                    "wait-mode": "hybrid", "handoff_after_ms": 2000
+                }},
+                "/batch": {"post": {
+                    "operationId": "batch", "description": "long import",
+                    "x-overslash-wait-mode": "async"
+                }}
+            }
+        });
+        crate::openapi::normalize_aliases(&mut doc);
+        let (svc, warnings) = compile_service(&doc).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(svc.actions["slow"].wait_mode, Some(ExecutionMode::Hybrid));
+        assert_eq!(svc.actions["slow"].handoff_after_ms, Some(2_000));
+        assert_eq!(svc.actions["batch"].wait_mode, Some(ExecutionMode::Async));
+        // Absent, never defaulted to `Sync` here: the API distinguishes "this
+        // template has no opinion" from "this template says sync", and only
+        // the former lets a future rung land underneath it.
+        assert_eq!(svc.actions["fast"].wait_mode, None);
+        assert_eq!(svc.actions["fast"].handoff_after_ms, None);
+    }
+
+    /// A misspelled mode falls back to synchronous — the historical behaviour
+    /// — and says so, rather than removing the action. D67's leniency: a stray
+    /// value must not be able to take a service down.
+    #[test]
+    fn an_unrecognized_wait_mode_is_an_authoring_error_not_a_dropped_action() {
+        let doc = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://t.example"}],
+            "paths": {"/x": {"get": {
+                "operationId": "x", "description": "d",
+                "x-overslash-wait-mode": "deferred"
+            }}}
+        });
+        let err = compile_service(&doc).unwrap_err();
+        assert!(err.iter().any(|i| i.code == "invalid_wait_mode"), "{err:?}");
     }
 
     #[test]

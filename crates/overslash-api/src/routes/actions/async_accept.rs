@@ -41,6 +41,10 @@ pub(super) async fn accept(
     call_tags: &[String],
     ip: Option<&str>,
     upstream_tpl: &str,
+    // Which rung of the wait-mode cascade produced `async` — `None` when the
+    // caller named it. Carried this far because the envelope and the audit row
+    // are the only two places a template-driven mode becomes visible.
+    mode_source: Option<&'static str>,
 ) -> Result<Response> {
     if !state.config.async_execution.enabled {
         return Err(AppError::BadRequest(
@@ -100,6 +104,8 @@ pub(super) async fn accept(
                     "service": req.service,
                     "action": req.action,
                     "timeout_ms": call_timeout.ms(),
+                    "execution_mode": "async",
+                    "execution_mode_source": mode_source,
                 }),
                 description: meta.description.as_deref(),
                 ip_address: ip,
@@ -123,6 +129,7 @@ pub(super) async fn accept(
             expires_at: crate::routes::util::fmt_time(exec.expires_at),
             timeout_ms: call_timeout.ms(),
             poll_after_ms: crate::routes::approvals::POLL_AFTER_MS,
+            execution_mode_source: mode_source,
         }),
     )
         .into_response())

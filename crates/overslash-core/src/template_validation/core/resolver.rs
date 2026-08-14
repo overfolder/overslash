@@ -625,6 +625,8 @@ mod tests {
         params: HashMap<String, crate::types::ActionParam>,
     ) -> ServiceAction {
         ServiceAction {
+            wait_mode: None,
+            handoff_after_ms: None,
             timeout_ms: None,
             method: String::new(),
             path: String::new(),

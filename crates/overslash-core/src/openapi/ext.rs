@@ -37,8 +37,8 @@ pub(super) const PREFIX: &str = "x-overslash-";
 /// One `x-overslash-*` extension key.
 ///
 /// Names that appear in design docs but have no reader are deliberately absent
-/// — `transform`, `execution`, `fixed-params`, `map`, `arg_map`, `body-path`,
-/// `sql`, `default-scopes`. So are the HTTP header names that share the prefix
+/// — `transform`, `fixed-params`, `map`, `arg_map`, `body-path`, `sql`,
+/// `default-scopes`. So are the HTTP header names that share the prefix
 /// (`x-overslash-as`, `-transport`, `-signature`, `-idp-variant`): they are
 /// request metadata, never document keys, and writing one into a template is a
 /// mistake the lint should name.
@@ -65,6 +65,8 @@ pub enum Ext {
     Disclose,
     Redact,
     TimeoutMs,
+    WaitMode,
+    HandoffAfterMs,
     Download,
     // Parameters, body properties, tool properties, platform-action params
     Resolve,
@@ -102,6 +104,8 @@ impl Ext {
             Ext::Disclose => "x-overslash-disclose",
             Ext::Redact => "x-overslash-redact",
             Ext::TimeoutMs => "x-overslash-timeout_ms",
+            Ext::WaitMode => "x-overslash-wait-mode",
+            Ext::HandoffAfterMs => "x-overslash-handoff_after_ms",
             Ext::Download => "x-overslash-download",
             Ext::Resolve => "x-overslash-resolve",
             Ext::Aliases => "x-overslash-aliases",
@@ -153,6 +157,8 @@ pub(super) const ALL: &[Ext] = &[
     Ext::Disclose,
     Ext::Redact,
     Ext::TimeoutMs,
+    Ext::WaitMode,
+    Ext::HandoffAfterMs,
     Ext::Download,
     Ext::Resolve,
     Ext::Aliases,
@@ -308,6 +314,22 @@ pub(super) const READS: &[(Ext, &[Pos])] = &[
         Ext::TimeoutMs,
         &[Pos::Operation, Pos::McpTool, Pos::McpToolDiscovered],
     ),
+    // actions.rs · mcp.rs. The D62/D68 execution mode as a template *default*,
+    // read wherever an action is authored. NOT on a platform action:
+    // `validate_resolved` refuses every deferred mode on `runtime: platform`,
+    // so the key would normalize there (OPERATION_ALIASES) and then decide
+    // nothing — the same asymmetry `disclose` / `redact` / `timeout_ms` carry
+    // one entry up, and for a sharper reason: here the reader exists but its
+    // answer is discarded downstream, which is exactly the no-op the lint is
+    // for.
+    (
+        Ext::WaitMode,
+        &[Pos::Operation, Pos::McpTool, Pos::McpToolDiscovered],
+    ),
+    (
+        Ext::HandoffAfterMs,
+        &[Pos::Operation, Pos::McpTool, Pos::McpToolDiscovered],
+    ),
     // mcp.rs:319. MCP-only by design: an HTTP action that returns bytes already
     // is its own download, since `deliver: "url"` mints a token from the
     // resolved request (see the comment at actions.rs:160).
@@ -423,7 +445,7 @@ mod tests {
     fn every_variant_is_in_all() {
         // `ALL` drives name resolution and did-you-mean suggestions, so a
         // variant missing from it is invisible to the lint.
-        assert_eq!(ALL.len(), 28, "ALL has drifted from the enum");
+        assert_eq!(ALL.len(), 30, "ALL has drifted from the enum");
         let mut keys: Vec<&str> = ALL.iter().map(|e| e.key()).collect();
         keys.sort_unstable();
         let before = keys.len();
@@ -479,6 +501,9 @@ mod tests {
             Pos::SecurityScheme(SchemeKind::ApiKey)
         ));
         assert!(!reads_at(Ext::Disclose, Pos::PlatformAction));
+        assert!(!reads_at(Ext::WaitMode, Pos::PlatformAction));
+        assert!(!reads_at(Ext::HandoffAfterMs, Pos::PlatformAction));
+        assert!(reads_at(Ext::WaitMode, Pos::Operation));
         assert!(!reads_at(Ext::Resolve, Pos::PlatformActionParam));
         assert!(reads_at(Ext::Aliases, Pos::PlatformActionParam));
     }

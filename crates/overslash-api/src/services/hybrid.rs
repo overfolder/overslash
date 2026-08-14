@@ -30,8 +30,17 @@ const MIN_HANDOFF_MS: u64 = 100;
 /// `budget_ms` is the D56-resolved call timeout — taken as a plain number
 /// rather than a [`super::call_timeout::CallTimeout`] because that is all this
 /// needs, and it keeps the rules unit-testable without building one.
+///
+/// `template_ms` is `x-overslash-handoff_after_ms` on the resolved action. It
+/// sits between the two existing rungs and takes the *deployment* side of the
+/// split, not the caller's: the template author is not present to act on a
+/// 400, and an out-of-range value there would otherwise refuse every hybrid
+/// call to that action. A template that knows its upstream usually answers in
+/// two seconds is the case this rung exists for — waiting the deployment's
+/// five is latency nobody chose.
 pub fn resolve_handoff(
     per_call_ms: Option<u64>,
+    template_ms: Option<u64>,
     cfg: &AsyncExecutionConfig,
     budget_ms: u64,
     sync_ceiling_ms: u64,
@@ -62,14 +71,22 @@ pub fn resolve_handoff(
             }
             asked
         }
-        // Deployment default: clamped, never refused.
+        // Template, then deployment default: clamped, never refused.
         //
         // Clamping to the budget is correct rather than degenerate. A call
         // whose own timeout is shorter than the deployment's handoff cannot
         // outrun it, so the timer never wins and the call always answers
         // `called` or an error — which is exactly what a short-budget call
         // should do.
-        None => cfg.hybrid_handoff_ms.min(budget_ms),
+        //
+        // The floor applies to the template rung too, and by `max` rather than
+        // by refusal: a template asking for a 10ms handoff is asking for
+        // `execution: "async"` under another name, and the honest answer to
+        // an absent author is the nearest legal value, not a dead action.
+        None => template_ms
+            .map(|ms| ms.clamp(MIN_HANDOFF_MS, cfg.hybrid_handoff_max_ms))
+            .unwrap_or(cfg.hybrid_handoff_ms)
+            .min(budget_ms),
     };
 
     // A handoff longer than the synchronous connection ceiling cannot fire
@@ -92,19 +109,19 @@ mod tests {
 
     #[test]
     fn the_deployment_default_applies_when_the_caller_says_nothing() {
-        let d = resolve_handoff(None, &cfg(), 600_000, 110_000).unwrap();
+        let d = resolve_handoff(None, None, &cfg(), 600_000, 110_000).unwrap();
         assert_eq!(d, Duration::from_millis(5_000));
     }
 
     #[test]
     fn a_caller_value_within_the_ceiling_is_honoured() {
-        let d = resolve_handoff(Some(12_000), &cfg(), 600_000, 110_000).unwrap();
+        let d = resolve_handoff(Some(12_000), None, &cfg(), 600_000, 110_000).unwrap();
         assert_eq!(d, Duration::from_millis(12_000));
     }
 
     #[test]
     fn a_caller_value_above_the_maximum_is_refused_not_clamped() {
-        let err = resolve_handoff(Some(45_000), &cfg(), 600_000, 110_000).unwrap_err();
+        let err = resolve_handoff(Some(45_000), None, &cfg(), 600_000, 110_000).unwrap_err();
         assert!(err.to_string().contains("exceeds the maximum"), "{err}");
     }
 
@@ -112,7 +129,7 @@ mod tests {
     fn a_caller_value_at_or_past_the_budget_is_refused() {
         // Equal is refused too: a handoff that fires exactly as the call times
         // out is a coin flip between two response shapes.
-        let err = resolve_handoff(Some(9_000), &cfg(), 9_000, 110_000).unwrap_err();
+        let err = resolve_handoff(Some(9_000), None, &cfg(), 9_000, 110_000).unwrap_err();
         assert!(err.to_string().contains("not less than"), "{err}");
     }
 
@@ -120,7 +137,38 @@ mod tests {
     fn a_deployment_default_past_the_budget_is_clamped_instead() {
         // The same relationship the test above refuses, but from a default the
         // caller never saw — so it narrows silently rather than 400s.
-        let d = resolve_handoff(None, &cfg(), 2_000, 110_000).unwrap();
+        let d = resolve_handoff(None, None, &cfg(), 2_000, 110_000).unwrap();
+        assert_eq!(d, Duration::from_millis(2_000));
+    }
+
+    #[test]
+    fn the_template_rung_beats_the_deployment_default() {
+        let d = resolve_handoff(None, Some(2_000), &cfg(), 600_000, 110_000).unwrap();
+        assert_eq!(d, Duration::from_millis(2_000));
+    }
+
+    #[test]
+    fn a_caller_value_beats_the_template_rung() {
+        let d = resolve_handoff(Some(12_000), Some(2_000), &cfg(), 600_000, 110_000).unwrap();
+        assert_eq!(d, Duration::from_millis(12_000));
+    }
+
+    #[test]
+    fn a_template_value_out_of_range_is_clamped_not_refused() {
+        // Both directions. The caller-supplied twins of these two are 400s;
+        // the template author is not present to act on one, and refusing would
+        // take every hybrid call to the action down over a number that was
+        // inert before the key existed.
+        let d = resolve_handoff(None, Some(45_000), &cfg(), 600_000, 110_000).unwrap();
+        assert_eq!(d, Duration::from_millis(30_000), "above the maximum");
+        let d = resolve_handoff(None, Some(10), &cfg(), 600_000, 110_000).unwrap();
+        assert_eq!(d, Duration::from_millis(MIN_HANDOFF_MS), "below the floor");
+    }
+
+    #[test]
+    fn a_template_value_past_the_budget_is_clamped_to_it() {
+        // The caller-supplied twin is the "not less than" refusal above.
+        let d = resolve_handoff(None, Some(20_000), &cfg(), 2_000, 110_000).unwrap();
         assert_eq!(d, Duration::from_millis(2_000));
     }
 
@@ -130,7 +178,7 @@ mod tests {
             hybrid_handoff_max_ms: 300_000,
             ..cfg()
         };
-        let d = resolve_handoff(Some(200_000), &wide, 600_000, 110_000).unwrap();
+        let d = resolve_handoff(Some(200_000), None, &wide, 600_000, 110_000).unwrap();
         assert_eq!(d, Duration::from_millis(110_000));
     }
 

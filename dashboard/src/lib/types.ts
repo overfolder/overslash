@@ -541,6 +541,10 @@ export interface ActionSummary {
   output_schema?: unknown;
   /** Admin-hidden tool; the dashboard renders a "hidden" pill. */
   disabled?: boolean;
+  /** `x-overslash-wait-mode`: the execution mode a call defaults to when the
+   *  caller names none. Absent for almost every action — present only where
+   *  the template declares that a call may not answer inline. */
+  wait_mode?: 'sync' | 'async' | 'hybrid';
 }
 
 export type ServiceRuntime = 'http' | 'mcp';
