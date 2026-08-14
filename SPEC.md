@@ -260,7 +260,7 @@ The target path says *who*; it cannot say what they are called. An email identif
 | `Alice Smith` | taken literally |
 | `UTF-8''Jos%C3%A9%20%C3%81lvarez` | RFC 8187 `ext-value`, percent-decoded — the form `Content-Disposition`'s `filename*` uses |
 
-The encoded form is not decoration. A header value is a byte string: `fetch` isomorphic-encodes it and throws above U+00FF, so a browser or Node client cannot put `José` in a header at all. Decoding *every* value unconditionally was the alternative and would quietly mangle a name like `50% Club`, so decoding is opt-in via the prefix.
+The encoded form is not decoration. A header value is a byte string: `fetch` isomorphic-encodes it and throws above U+00FF, so a browser or Node client cannot put `José` in a header at all. Decoding *every* value unconditionally was the alternative and would quietly mangle a name like `50% Club`, so decoding is opt-in via the prefix. The one value the literal form cannot carry is a name that itself begins `UTF-8''`; exactly one prefix is consumed, so a client sends such a name through the encoded form like any other (the SDK does this automatically).
 
 The name applies to the **user root** only, and only ever in a direction that cannot overwrite something better:
 

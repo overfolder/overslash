@@ -218,6 +218,11 @@ impl std::error::Error for DisplayNameError {}
 /// `fetch` client isomorphic-encodes header values and throws above U+00FF,
 /// so it cannot put `José` in a header at all — while percent-decoding
 /// *every* value unconditionally would quietly mangle `50% Club`.
+///
+/// The cost of the prefix is that a literal name beginning `UTF-8''` cannot be
+/// sent bare — it would arrive stripped of its own prefix. Exactly one prefix
+/// is consumed, so an encoder makes such a name survive by encoding it like
+/// any other; the SDK does this.
 pub fn parse_display_name(raw: &str) -> Result<std::borrow::Cow<'_, str>, DisplayNameError> {
     let trimmed = raw.trim();
 
@@ -428,6 +433,18 @@ mod display_name_tests {
         // No decoding happens without the prefix, so a literal % survives.
         assert_eq!(parse_display_name("50% Club").unwrap(), "50% Club");
         assert_eq!(parse_display_name("a%ZZb").unwrap(), "a%ZZb");
+    }
+
+    /// The prefix is the one thing a literal value cannot carry: a name that
+    /// starts with it *is* the encoded form as far as this parser can tell.
+    /// An encoder must therefore escape such a name rather than send it bare —
+    /// stripping exactly one prefix is what makes that round-trip.
+    #[test]
+    fn one_prefix_is_stripped_so_an_escaped_literal_survives() {
+        assert_eq!(
+            parse_display_name("UTF-8''UTF-8''Alice").unwrap(),
+            "UTF-8''Alice"
+        );
     }
 
     #[test]

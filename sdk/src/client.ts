@@ -223,9 +223,17 @@ export class OverslashClient {
  * RFC 8187 `ext-value` form — the one `Content-Disposition`'s `filename*` uses
  * — carries it as ASCII instead. Plain ASCII names go over the wire as-is, so a
  * name containing a literal `%` is never mistaken for an escape.
+ *
+ * The second condition is what keeps that reversible. A literal name that
+ * itself begins `UTF-8''` would be read back as the encoded form and arrive
+ * stripped of its own prefix, so it takes the encoded path too — where the
+ * server strips exactly one prefix and hands back what was sent. Absurd as a
+ * name, but the encoder has to be injective into what the parser accepts, or
+ * some input is silently corrupted rather than rejected.
  */
 function encodeDisplayName(name: string): string {
-  return /^[\x20-\x7e]*$/.test(name) ? name : `UTF-8''${encodeURIComponent(name)}`;
+  const isPlainAscii = /^[\x20-\x7e]*$/.test(name) && !/^utf-8''/i.test(name);
+  return isPlainAscii ? name : `UTF-8''${encodeURIComponent(name)}`;
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };

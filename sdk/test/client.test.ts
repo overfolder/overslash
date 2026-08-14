@@ -78,6 +78,17 @@ describe('OverslashClient', () => {
     expect(requests[0]?.headers['x-overslash-as-name']).toBe("UTF-8''Jos%C3%A9%20%C3%81lvarez");
   });
 
+  it('escapes a display name that would read back as the encoded form', async () => {
+    const { transport, requests } = mockTransport([{ body: [] }]);
+    const client = new OverslashClient({ auth: { transport } });
+
+    // Absurd as a name, but sent literally the server would strip the prefix
+    // and store "Alice" — encoding is what makes the round-trip total.
+    await client.as('alice@acme.com', "UTF-8''Alice").approvals.list();
+
+    expect(requests[0]?.headers['x-overslash-as-name']).toBe("UTF-8''UTF-8''Alice");
+  });
+
   it('omits the name header when no name is given, and never leaks it to the parent', async () => {
     const { transport, requests } = mockTransport([{ body: [] }, { body: [] }]);
     const client = new OverslashClient({ auth: { transport }, as: 'root@acme.com' });
