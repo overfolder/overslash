@@ -157,7 +157,7 @@ async fn master_key_rotation_end_to_end() {
     );
 }
 
-/// A stored call result (D57) is encrypted, and therefore must also be
+/// A stored call result (D61) is encrypted, and therefore must also be
 /// *rotatable*. An encrypted column that never joins `key_rotation::TARGETS`
 /// looks safe and silently pins one key forever — the failure mode this test
 /// exists to make loud.

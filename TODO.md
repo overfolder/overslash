@@ -90,7 +90,7 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 
 - [ ] **Approval visibility scoping** — `GET /v1/approvals?scope=actionable` vs `?scope=mine` (Phase 3 carry-over).
 - [ ] **Webhook payload**: include `gap_identity` and `can_be_handled_by` on approval events (Phase 3 carry-over).
-- [ ] **Live Map follow-ups** (D57, dev-gated behind `OVERSLASH_LIVE_MAP`):
+- [ ] **Live Map follow-ups** (D58, dev-gated behind `OVERSLASH_LIVE_MAP`):
   - Structural agent→service edges from permission rules. Today they only
     appear once traffic reveals them, because `GET /v1/permissions` is
     per-identity and deriving them up front would cost one request per agent.

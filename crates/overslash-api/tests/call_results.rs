@@ -1,4 +1,4 @@
-//! D57 — a truncated compact result is stored and re-fetchable behind a URL.
+//! D61 — a truncated compact result is stored and re-fetchable behind a URL.
 //!
 //! The motivating report: an agent driving Metabase got a 254-row result
 //! rendered as 10 rows plus `…+244 more items`, then re-ran a 30-second query

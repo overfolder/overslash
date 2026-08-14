@@ -346,7 +346,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     |n| tracing::info!("Expired {n} download_tokens"),
                 )
                 .await;
-                // Stored results for truncated compact renders (D57). Ordering
+                // Stored results for truncated compact renders (D61). Ordering
                 // against the sweep above is irrelevant: the FK from
                 // `download_tokens.call_result_id` cascades, so pruning a
                 // result reaps the token pointing at it either way.

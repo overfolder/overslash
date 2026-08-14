@@ -1,3 +1,5 @@
+<!-- decision-numbering:vocabulary -->
+
 # Domain Docs
 
 How the engineering skills should consume this repo's domain documentation when exploring the codebase.
@@ -19,8 +21,8 @@ If `CONTEXT.md` doesn't exist yet, **proceed silently**. Don't flag its absence;
 
 Use the existing two-tier convention — don't introduce a `docs/adr/` directory.
 
-- **Short decision** ("we chose X over Y because Z," fits in ~5 lines): append a new `D<N>` entry to `DECISIONS.md` following the existing format (Date / Decision / Rationale). Number it sequentially.
-- **Long-form decision** (alternatives explored, tradeoffs discussed, multiple subsystems involved): write a new file under `docs/design/<slug>.md`, then add a row to `docs/design/INDEX.md` with an appropriate Status. If the design doc produces a binding choice, also add a one-line `D<N>` entry to `DECISIONS.md` that points at the design doc — that's the existing pattern (see D2 → `nango-integration.md`).
+- **Short decision** ("we chose X over Y because Z," fits in ~5 lines): append a new entry to `DECISIONS.md` following the existing format (Date / Decision / Rationale). **Never pick the number** — write the heading as `## D-NEXT:` and refer to the decision as `D-NEXT` everywhere else in the same PR (code comments, `STATUS.md`, `TODO.md`, Terraform descriptions). A number chosen while the PR is open is invalidated by every decision that merges first; `.github/workflows/allocate-decision.yml` stamps the real one across the whole repo once the PR reaches `dev`. See [docs/runbooks/decision-numbering.md](../runbooks/decision-numbering.md).
+- **Long-form decision** (alternatives explored, tradeoffs discussed, multiple subsystems involved): write a new file under `docs/design/<slug>.md`, then add a row to `docs/design/INDEX.md` with an appropriate Status. If the design doc produces a binding choice, also add a one-line `D-NEXT` entry to `DECISIONS.md` that points at the design doc — that's the existing pattern (see D2 → `nango-integration.md`).
 
 When a previously-settled decision changes:
 - Update its `D<N>` entry in `DECISIONS.md` (or add a new one that supersedes it, with a pointer).
