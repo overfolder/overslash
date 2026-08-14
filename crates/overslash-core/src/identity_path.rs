@@ -153,6 +153,136 @@ pub fn parse_target_path(raw: &str) -> Result<TargetPath<'_>, TargetPathError> {
     })
 }
 
+/// Maximum length, in characters, of a display name supplied via
+/// `X-Overslash-As-Name`. Long enough for any real human or agent label and
+/// short enough that a header cannot stuff the members list.
+pub const MAX_DISPLAY_NAME_CHARS: usize = 128;
+
+/// The RFC 8187 `ext-value` charset prefix this parser accepts. Matched
+/// case-insensitively — RFC 8187 says the charset token is case-insensitive.
+const UTF8_EXT_PREFIX: &str = "utf-8''";
+
+/// Why a display name supplied via `X-Overslash-As-Name` was refused.
+/// Rendered verbatim into the 400.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DisplayNameError {
+    /// Empty, or only whitespace.
+    Empty,
+    /// More than [`MAX_DISPLAY_NAME_CHARS`] characters. Deliberately an error
+    /// rather than a truncation: silently storing half a name is worse than
+    /// telling the caller its name did not fit.
+    TooLong,
+    /// A control character survived decoding.
+    ControlCharacter,
+    /// A `%` in the `UTF-8''` form was not followed by two hex digits.
+    BadEscape,
+    /// The decoded bytes are not valid UTF-8.
+    NotUtf8,
+}
+
+impl std::fmt::Display for DisplayNameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("display name is empty"),
+            Self::TooLong => write!(
+                f,
+                "display name is longer than {MAX_DISPLAY_NAME_CHARS} characters"
+            ),
+            Self::ControlCharacter => f.write_str("display name contains a control character"),
+            Self::BadEscape => {
+                f.write_str("display name has a % that is not followed by two hex digits")
+            }
+            Self::NotUtf8 => f.write_str("display name does not decode to valid UTF-8"),
+        }
+    }
+}
+
+impl std::error::Error for DisplayNameError {}
+
+/// Parse an `X-Overslash-As-Name` value into the display name it carries.
+///
+/// Two accepted forms. A bare value is taken literally; a value prefixed
+/// `UTF-8''` is the RFC 8187 `ext-value` form used by `Content-Disposition`'s
+/// `filename*`, percent-decoded here:
+///
+/// ```
+/// use overslash_core::identity_path::parse_display_name;
+///
+/// assert_eq!(parse_display_name("Alice Smith").unwrap(), "Alice Smith");
+/// assert_eq!(parse_display_name("UTF-8''Jos%C3%A9").unwrap(), "José");
+/// // A literal % is safe precisely because decoding is opt-in.
+/// assert_eq!(parse_display_name("50% Club").unwrap(), "50% Club");
+/// ```
+///
+/// The prefix exists because the alternatives do not work end to end: a JS
+/// `fetch` client isomorphic-encodes header values and throws above U+00FF,
+/// so it cannot put `José` in a header at all — while percent-decoding
+/// *every* value unconditionally would quietly mangle `50% Club`.
+pub fn parse_display_name(raw: &str) -> Result<std::borrow::Cow<'_, str>, DisplayNameError> {
+    let trimmed = raw.trim();
+
+    // Compare as bytes, never `&trimmed[..7]`: a byte slice cannot land
+    // mid-codepoint. Once the ASCII prefix matches, index 7 is a boundary.
+    let has_prefix = trimmed
+        .as_bytes()
+        .get(..UTF8_EXT_PREFIX.len())
+        .is_some_and(|p| p.eq_ignore_ascii_case(UTF8_EXT_PREFIX.as_bytes()));
+
+    let decoded: std::borrow::Cow<'_, str> = if has_prefix {
+        // Trim again: the encoded form may decode to padded whitespace.
+        let s = percent_decode_utf8(&trimmed[UTF8_EXT_PREFIX.len()..])?;
+        std::borrow::Cow::Owned(s.trim().to_owned())
+    } else {
+        std::borrow::Cow::Borrowed(trimmed)
+    };
+
+    if decoded.is_empty() {
+        return Err(DisplayNameError::Empty);
+    }
+    if decoded.chars().any(char::is_control) {
+        return Err(DisplayNameError::ControlCharacter);
+    }
+    if decoded.chars().count() > MAX_DISPLAY_NAME_CHARS {
+        return Err(DisplayNameError::TooLong);
+    }
+    Ok(decoded)
+}
+
+/// Strict percent-decoding: every `%` must introduce two hex digits, and the
+/// resulting bytes must be UTF-8. Deliberately stricter than the usual
+/// permissive decoders, which pass a malformed `%ZZ` through untouched — for
+/// a value we are about to persist as someone's name, a caller that meant to
+/// encode and got it wrong should hear about it.
+fn percent_decode_utf8(s: &str) -> Result<String, DisplayNameError> {
+    fn hex(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = bytes.get(i + 1).copied().and_then(hex);
+            let lo = bytes.get(i + 2).copied().and_then(hex);
+            match (hi, lo) {
+                (Some(hi), Some(lo)) => out.push(hi * 16 + lo),
+                _ => return Err(DisplayNameError::BadEscape),
+            }
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| DisplayNameError::NotUtf8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +415,94 @@ mod tests {
     fn preserves_non_ascii_agent_names() {
         let t = parse_target_path("alice@acme.com/café/naïve").unwrap();
         assert_eq!(t.agents, vec!["café", "naïve"]);
+    }
+}
+#[cfg(test)]
+mod display_name_tests {
+    use super::*;
+
+    #[test]
+    fn takes_a_bare_value_literally() {
+        assert_eq!(parse_display_name("Alice Smith").unwrap(), "Alice Smith");
+        assert_eq!(parse_display_name("  Alice  ").unwrap(), "Alice");
+        // No decoding happens without the prefix, so a literal % survives.
+        assert_eq!(parse_display_name("50% Club").unwrap(), "50% Club");
+        assert_eq!(parse_display_name("a%ZZb").unwrap(), "a%ZZb");
+    }
+
+    #[test]
+    fn decodes_the_rfc8187_form() {
+        assert_eq!(
+            parse_display_name("UTF-8''Jos%C3%A9%20%C3%81lvarez").unwrap(),
+            "José Álvarez"
+        );
+        // The charset token is case-insensitive.
+        assert_eq!(parse_display_name("utf-8''Ren%C3%A9").unwrap(), "René");
+        // Unreserved characters need no escaping in the encoded form either.
+        assert_eq!(parse_display_name("UTF-8''Alice").unwrap(), "Alice");
+    }
+
+    #[test]
+    fn rejects_a_malformed_escape() {
+        assert_eq!(
+            parse_display_name("UTF-8''a%ZZb"),
+            Err(DisplayNameError::BadEscape)
+        );
+        assert_eq!(
+            parse_display_name("UTF-8''trailing%"),
+            Err(DisplayNameError::BadEscape)
+        );
+        assert_eq!(
+            parse_display_name("UTF-8''short%A"),
+            Err(DisplayNameError::BadEscape)
+        );
+    }
+
+    #[test]
+    fn rejects_bytes_that_are_not_utf8() {
+        assert_eq!(
+            parse_display_name("UTF-8''%FF%FE"),
+            Err(DisplayNameError::NotUtf8)
+        );
+    }
+
+    #[test]
+    fn rejects_empty_and_whitespace_only() {
+        assert_eq!(parse_display_name(""), Err(DisplayNameError::Empty));
+        assert_eq!(parse_display_name("   "), Err(DisplayNameError::Empty));
+        assert_eq!(parse_display_name("UTF-8''"), Err(DisplayNameError::Empty));
+        assert_eq!(
+            parse_display_name("UTF-8''%20%20"),
+            Err(DisplayNameError::Empty)
+        );
+    }
+
+    #[test]
+    fn rejects_control_characters() {
+        assert_eq!(
+            parse_display_name("UTF-8''Alice%09Smith"),
+            Err(DisplayNameError::ControlCharacter)
+        );
+        assert_eq!(
+            parse_display_name("UTF-8''Alice%00"),
+            Err(DisplayNameError::ControlCharacter)
+        );
+    }
+
+    #[test]
+    fn rejects_an_over_long_name() {
+        let ok = "a".repeat(MAX_DISPLAY_NAME_CHARS);
+        assert_eq!(parse_display_name(&ok).unwrap(), ok);
+
+        let too_long = "a".repeat(MAX_DISPLAY_NAME_CHARS + 1);
+        assert_eq!(
+            parse_display_name(&too_long),
+            Err(DisplayNameError::TooLong)
+        );
+
+        // The cap counts characters, not bytes — a multi-byte name that fits
+        // must not be refused for being fat.
+        let wide = "é".repeat(MAX_DISPLAY_NAME_CHARS);
+        assert_eq!(parse_display_name(&wide).unwrap(), wide);
     }
 }

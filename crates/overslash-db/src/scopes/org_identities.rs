@@ -208,6 +208,17 @@ impl OrgScope {
         identity::update_profile(self.db(), self.org_id(), id, name, metadata).await
     }
 
+    /// Refresh the display name of a user identity in this org that has never
+    /// signed in. Returns the previous name when a row changed, `None` when the
+    /// row was adopted, an admin, archived, or already carried this name.
+    pub async fn rename_unadopted_user_identity(
+        &self,
+        id: Uuid,
+        name: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        identity::rename_if_unadopted(self.db(), self.org_id(), id, name).await
+    }
+
     /// Toggle `inherit_permissions` on an identity in this org.
     pub async fn set_identity_inherit_permissions(
         &self,

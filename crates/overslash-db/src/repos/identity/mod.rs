@@ -45,7 +45,8 @@ pub use membership::{
     set_org_member_admin,
 };
 pub use profile::{
-    set_auto_call_on_approve, set_external_id, set_inherit_permissions, set_user_id, update_profile,
+    rename_if_unadopted, set_auto_call_on_approve, set_external_id, set_inherit_permissions,
+    set_user_id, update_profile,
 };
 pub use provision::{get_or_create_child, get_or_create_user_by_email};
 pub use tree::{ApplyPatchOutcome, DeleteLeafOutcome, MoveTo, PatchIdentity};

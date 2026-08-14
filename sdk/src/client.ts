@@ -53,6 +53,15 @@ export interface OverslashClientOptions {
    * validate or overwrite it.
    */
   as?: string;
+  /**
+   * `X-Overslash-As-Name` — the display name of the user named by `as`. Only
+   * the *root* user takes one: an agent path segment already is its own name.
+   *
+   * Without it a user provisioned on first use is labelled from their email
+   * local-part (`alice@acme.com` becomes `alice`), which is what the org then
+   * sees in its members list and audit log. Ignored unless `as` is set.
+   */
+  asName?: string;
   /** Injected for tests and for hosts that wrap `fetch`. Defaults to global. */
   fetch?: FetchLike;
   /** Appended to `X-Overslash-Client` for server-side attribution. */
@@ -76,6 +85,7 @@ export class OverslashClient {
 
   private readonly transport: Transport;
   private readonly impersonate?: string;
+  private readonly impersonateName?: string;
   private readonly clientLabel: string;
   /** Set only in `{ token }` mode, where a 401 is worth one silent retry. */
   private readonly refreshToken?: () => Promise<string>;
@@ -85,6 +95,7 @@ export class OverslashClient {
     this.transport = transport;
     this.refreshToken = refreshToken;
     this.impersonate = options.as;
+    this.impersonateName = options.asName;
     this.clientLabel = options.userAgent
       ? `overslash-sdk/${SDK_VERSION} ${options.userAgent}`
       : `overslash-sdk/${SDK_VERSION}`;
@@ -101,10 +112,15 @@ export class OverslashClient {
   /**
    * A client that acts as another identity. Cheap — it shares this client's
    * transport, so a per-request `as` costs nothing but an object.
+   *
+   * Pass `name` when you know what the person is called: a user provisioned by
+   * this call is created with it rather than a label guessed from their email,
+   * and one who has never signed in has theirs corrected. Ignored for agent
+   * segments, whose name is the path.
    */
-  as(identity: string): OverslashClient {
+  as(identity: string, name?: string): OverslashClient {
     const derived = Object.create(OverslashClient.prototype) as Mutable<OverslashClient>;
-    Object.assign(derived, this, { impersonate: identity });
+    Object.assign(derived, this, { impersonate: identity, impersonateName: name });
     // The resources close over their client, so they must be rebuilt to see
     // the new identity rather than the one they were constructed with.
     derived.approvals = new ApprovalsResource(derived as OverslashClient);
@@ -189,9 +205,27 @@ export class OverslashClient {
       'x-overslash-client': this.clientLabel,
       ...extra,
     };
-    if (this.impersonate) headers['x-overslash-as'] = this.impersonate;
+    if (this.impersonate) {
+      headers['x-overslash-as'] = this.impersonate;
+      if (this.impersonateName) {
+        headers['x-overslash-as-name'] = encodeDisplayName(this.impersonateName);
+      }
+    }
     return headers;
   }
+}
+
+/**
+ * Encode a display name for `X-Overslash-As-Name`.
+ *
+ * A header value is a byte string: `fetch` isomorphic-encodes it and throws on
+ * any code point above U+00FF, so `José` cannot be sent literally at all. The
+ * RFC 8187 `ext-value` form — the one `Content-Disposition`'s `filename*` uses
+ * — carries it as ASCII instead. Plain ASCII names go over the wire as-is, so a
+ * name containing a literal `%` is never mistaken for an escape.
+ */
+function encodeDisplayName(name: string): string {
+  return /^[\x20-\x7e]*$/.test(name) ? name : `UTF-8''${encodeURIComponent(name)}`;
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };

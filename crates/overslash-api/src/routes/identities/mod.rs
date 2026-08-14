@@ -16,7 +16,7 @@ use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::identity::{ARCHIVED_REASON_MANUAL, RestoreOutcome};
 use overslash_db::repos::mcp_client_agent_binding::AgentClientRow;
 
-use super::util::fmt_time;
+use super::util::{fmt_time, validate_email};
 use crate::{
     AppState,
     error::{AppError, Result},

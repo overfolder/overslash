@@ -354,7 +354,7 @@ impl FromRequestParts<AppState> for AuthContext {
         });
 
         // X-Overslash-As: identity substitution for keys with "impersonate" scope.
-        // Copy the value out to an owned String so the immutable borrow of
+        // Copy the values out to owned Strings so the immutable borrow of
         // `parts.headers` ends before the `ClientIp` extractor takes `&mut`.
         let has_impersonate_scope = key_row.scopes.iter().any(|s| s == "impersonate");
         let as_value = match parts.headers.get("x-overslash-as") {
@@ -362,6 +362,33 @@ impl FromRequestParts<AppState> for AuthContext {
                 raw.to_str()
                     .map_err(|_| AppError::BadRequest("x-overslash-as is not valid UTF-8".into()))?
                     .to_owned(),
+            ),
+            None => None,
+        };
+        // Read the companion name header as raw bytes, not `to_str()`: that
+        // helper rejects everything outside visible ASCII, which is exactly the
+        // half of the world this header exists to carry. The `UTF-8''` form
+        // handles clients that cannot put those bytes on the wire at all.
+        let as_name_raw = match parts.headers.get("x-overslash-as-name") {
+            Some(raw) => Some(
+                std::str::from_utf8(raw.as_bytes())
+                    .map_err(|_| {
+                        AppError::BadRequest("x-overslash-as-name is not valid UTF-8".into())
+                    })?
+                    .to_owned(),
+            ),
+            None => None,
+        };
+        if as_name_raw.is_some() && as_value.is_none() {
+            return Err(AppError::BadRequest(
+                "x-overslash-as-name requires x-overslash-as".into(),
+            ));
+        }
+        let as_name = match as_name_raw.as_deref() {
+            Some(raw) => Some(
+                overslash_core::identity_path::parse_display_name(raw)
+                    .map_err(|e| AppError::BadRequest(format!("x-overslash-as-name: {e}")))?
+                    .into_owned(),
             ),
             None => None,
         };
@@ -377,9 +404,10 @@ impl FromRequestParts<AppState> for AuthContext {
                     .await
                     .ok()
                     .and_then(|c| c.0);
-                let target_id = crate::impersonation::resolve_target(
+                let target = crate::impersonation::resolve_target(
                     &tmp_scope,
                     &raw,
+                    as_name.as_deref(),
                     key_row.identity_id,
                     client_ip.as_deref(),
                 )
@@ -391,7 +419,7 @@ impl FromRequestParts<AppState> for AuthContext {
                 // final effective identity regardless of how it was named.
                 let caller_access =
                     resolve_identity_access(&tmp_scope, key_row.identity_id).await?;
-                let target_access = resolve_identity_access(&tmp_scope, target_id).await?;
+                let target_access = resolve_identity_access(&tmp_scope, target.identity_id).await?;
                 if target_access > caller_access {
                     return Err(AppError::Forbidden(
                         "impersonation target has higher access level than the key's identity"
@@ -399,7 +427,20 @@ impl FromRequestParts<AppState> for AuthContext {
                     ));
                 }
 
-                (Some(target_id), Some(key_row.identity_id))
+                // Only now — past the cap — may a name land on a row this
+                // request did not create.
+                if let (Some(root_id), Some(name)) = (target.renameable_root, as_name.as_deref()) {
+                    crate::impersonation::apply_display_name(
+                        &tmp_scope,
+                        root_id,
+                        name,
+                        key_row.identity_id,
+                        client_ip.as_deref(),
+                    )
+                    .await?;
+                }
+
+                (Some(target.identity_id), Some(key_row.identity_id))
             }
             Some(_) => {
                 // Header present but key lacks "impersonate" scope — reject explicitly.

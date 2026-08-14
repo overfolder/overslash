@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT name FROM identities\n         WHERE id = $1 AND org_id = $2 AND kind = 'user'\n           AND external_id IS NULL AND is_org_admin = false\n           AND archived_at IS NULL AND name <> $3\n         FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "86c944fe94484c9fb5189a53c0fb714bcf0c6cf84be7e6729f193208a45d077f"
+}

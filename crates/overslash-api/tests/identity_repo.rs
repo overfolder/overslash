@@ -221,6 +221,7 @@ async fn apply_patch_atomic_combination() {
             henry.id,
             PatchIdentity {
                 name: Some("henry2"),
+                email: None,
                 move_to: Some(MoveTo {
                     parent_id: bob.id,
                     new_owner_id: bob.id,
