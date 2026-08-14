@@ -29,6 +29,7 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 
 - **Default branch**: `master`
 - **PR target**: `dev` — PRs go to `dev`, then `dev` merges to `master` for releases
+- **Decision numbers never go in commit subjects or PR titles.** A new decision is written `## D-NEXT:` and allocated on merge, so at authoring time there is no number to cite. The follow-up `chore(docs): allocate D<n> (#<pr>)` commit is the mapping from decision to PR. See [docs/runbooks/decision-numbering.md](docs/runbooks/decision-numbering.md).
 
 ## Key Concepts
 
@@ -84,4 +85,6 @@ Canonical names used verbatim: `needs-triage`, `needs-info`, `ready-for-agent`, 
 
 ### Domain docs
 
-Two-tier: `DECISIONS.md` (short numbered decisions) + `docs/design/` (long-form, indexed by `docs/design/INDEX.md` with Status). No `docs/adr/`. See `docs/agents/domain.md`.
+Two-tier: `DECISIONS.md` (short numbered decisions) + `docs/design/` (long-form, indexed by `docs/design/INDEX.md` with Status). No `docs/adr/`. New decisions are authored as `D-NEXT` and numbered at merge. See `docs/agents/domain.md`.
+
+<!-- decision-numbering:vocabulary -->

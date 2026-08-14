@@ -1,0 +1,100 @@
+name: Allocate decision number
+
+# Stamps the real number onto a decision that landed on `dev` as a placeholder.
+#
+# Decision numbers used to be picked while the PR was open, which is days
+# before they are valid: every decision that merged first invalidated the
+# guess. #546 renumbered three times and still shipped a subject naming the
+# wrong decision; #542's renumber reached DECISIONS.md and none of the five
+# other files that cited it. Allocating here removes the race — there is
+# nothing left to renumber, because nothing carried a number until now.
+#
+# IMPORTANT: pushing straight to `dev` needs the RELEASE_PLEASE_TOKEN secret —
+# the same fine-grained PAT `release-please.yml` and `sync-dev.yml` use. The
+# `dev` ruleset requires a pull request and allows squash merges only; the
+# repository-admin role is a bypass actor, so the PAT works exactly as long as
+# its owner is an admin. If the token lapses this job fails loudly on the push,
+# the placeholder stays on `dev`, and the STRICT_ALLOCATED lint blocks the
+# release to `master` until someone runs `make allocate-decision` by hand.
+#
+# decision-numbering:vocabulary
+
+on:
+  push:
+    branches: [dev]
+    # Sound because scripts/check-decisions.sh rejects a placeholder reference
+    # that has no matching heading in DECISIONS.md — so a push carrying
+    # references can never skip this filter.
+    paths: ['DECISIONS.md']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+# Two decisions merging back to back must not race for the same number. With
+# the group serialized and cancellation off, the second run starts only after
+# the first has pushed, so it reads the new maximum and sees exactly one
+# remaining placeholder.
+concurrency:
+  group: allocate-decision
+  cancel-in-progress: false
+
+jobs:
+  allocate:
+    name: Allocate the next decision number
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `dev`, deliberately not `github.sha`: the point is to read the
+          # newest allocated number, including one a run moments earlier just
+          # pushed. fetch-depth 0 so the -S search below can find the commit
+          # that introduced the placeholder.
+          ref: dev
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+
+      - name: Configure committer
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Allocate
+        run: |
+          set -euo pipefail
+          . scripts/lib/decisions.sh
+
+          if ! grep -q "^## $DECISION_PLACEHOLDER:" "$DECISIONS_FILE"; then
+            echo "No unallocated decision on dev — nothing to do."
+            exit 0
+          fi
+
+          # Attribute the allocation to the PR that introduced the placeholder,
+          # not to whatever happens to be dev's tip. Read it before rewriting.
+          pr=$(git log -1 --format=%s -S"## $DECISION_PLACEHOLDER:" -- "$DECISIONS_FILE" \
+               | sed -n 's/.*(#\([0-9][0-9]*\)).*/\1/p')
+
+          bash scripts/allocate-decision.sh
+
+          if git diff --quiet; then
+            echo "::error::allocator reported success but changed nothing"
+            exit 1
+          fi
+
+          n=$(max_decision)
+          subject="chore(docs): allocate D${n}"
+          [ -n "$pr" ] && subject="${subject} (#${pr})"
+
+          git add -A
+          git commit -m "$subject" -m \
+            "Allocated by .github/workflows/allocate-decision.yml. The authoring PR wrote ${DECISION_PLACEHOLDER}; this commit is the mapping from D${n} to the PR that decided it."
+
+          # A concurrent push is expected to be rare (the concurrency group
+          # serializes this job), but dev also takes ordinary merges. The
+          # rewrite only touches the placeholder, so a rebase is always clean.
+          if ! git push origin HEAD:dev; then
+            git pull --rebase origin dev
+            git push origin HEAD:dev
+          fi
+
+          echo "Allocated D${n}."
