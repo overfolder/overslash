@@ -218,10 +218,13 @@ already had its effect. Unavoidable without idempotency keys, and the reason
 - **`NOTIFY`-driven wake-up.** Deferred. The `LISTEN` bridge already exists in
   `services/events/bus.rs`, so enqueue could wake the worker instantly instead
   of waiting up to one 2s tick. Not worth the coupling for v1.
-- **`execution` on `overslash_read`.** Deferred. The canonical async case (a
-  slow analytics query) is read-class, but that tool has its own required-args
-  schema and body-builder, so it is a second forwarder plus a second schema
-  plus tests.
+- **`execution` on `overslash_read`.** ~~Deferred~~ — **shipped** with the
+  action wait-mode rung (DECISIONS D-NEXT). The forwarder was never the
+  blocker: `dispatch_read` already called `insert_execution_mode`, so only the
+  schema was missing, and the tool's `additionalProperties: false` is what made
+  the omission binding. It stopped being optional once an *action* could
+  declare `hybrid`: without the key a read-class agent had no way to refuse a
+  202 on a tool whose contract is "return the data".
 - **A dashboard trigger for a queued call.** Not needed and deliberately absent:
   a queued row has nothing to trigger, so the approval page and the queue row
   drop "Call now" rather than offering a button whose only outcome is a 409.

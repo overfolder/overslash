@@ -88,8 +88,7 @@ async fn setup(pool: sqlx::PgPool, enabled: bool) -> (String, Client, String) {
             .insert("127.0.0.1".to_string(), override_base);
     })
     .await;
-    let (_org, _ident, agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_org, _ident, agent_key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
 
     let yaml = TEMPLATE_YAML.replace("HOST_PLACEHOLDER", &mock.to_string());
     let create: Value = client
@@ -286,7 +285,10 @@ async fn a_conflicting_flag_demotes_the_template_but_still_refuses_the_caller() 
         }),
     )
     .await;
-    assert_eq!(status, 400, "the caller-named twin is still refused: {body}");
+    assert_eq!(
+        status, 400,
+        "the caller-named twin is still refused: {body}"
+    );
     assert!(
         body["error"]
             .as_str()
@@ -325,9 +327,15 @@ async fn a_binary_action_declaring_hybrid_runs_synchronously_instead_of_failing(
         json!({"service": "waiter", "action": "blob", "execution": "hybrid"}),
     )
     .await;
-    assert_eq!(status, 400, "the caller-named twin is still refused: {body}");
+    assert_eq!(
+        status, 400,
+        "the caller-named twin is still refused: {body}"
+    );
     assert!(
-        body["error"].as_str().unwrap_or_default().contains("binary"),
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("binary"),
         "{body}"
     );
 }
@@ -362,7 +370,10 @@ async fn a_flag_off_deployment_ignores_the_template_rung_rather_than_failing() {
         json!({"service": "waiter", "action": "deferred", "execution": "async"}),
     )
     .await;
-    assert_eq!(status, 400, "the caller-named twin is still refused: {body}");
+    assert_eq!(
+        status, 400,
+        "the caller-named twin is still refused: {body}"
+    );
     assert!(
         body["error"]
             .as_str()

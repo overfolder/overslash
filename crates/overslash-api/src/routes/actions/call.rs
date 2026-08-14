@@ -254,7 +254,7 @@ pub(super) async fn call_action_impl(
     if let (Some(dropped), Some(reason)) = (wait.demoted_from(), wait.blocked_by()) {
         // Silent to the caller, never silent to us: this is the one path where
         // a template says one thing and the gateway does another, so it has to
-        // be greppable and countable. See DECISIONS on why it is not a 400.
+        // be greppable and countable. See D-NEXT on why it is not a 400.
         tracing::info!(
             service = req.service.as_deref().unwrap_or("-"),
             action = req.action.as_deref().unwrap_or("-"),

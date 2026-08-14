@@ -819,6 +819,33 @@ Exceeding the budget returns **504** with `{error: "upstream_timeout", timeout_m
 
 `CALL_TIMEOUT_MAX_MS` is the **synchronous** ceiling and is sized to sit under the deployment's own request cap (Cloud Run and the load balancer both cut at 120s). Work that legitimately runs longer is not served by raising it.
 
+#### Execution mode (`execution`)
+
+Whether the caller waits on its connection for the upstream. Three values, and the response shape follows from the resolved one:
+
+| value | what the caller gets |
+|-------|----------------------|
+| `sync` | the upstream body on this response, bounded by the deployment's request cap. The historical behaviour. |
+| `async` | **202** `{"status": "accepted", execution_id, execution_url, expires_at, timeout_ms, poll_after_ms}`. The call is persisted and dialled off the request path; poll `GET /v1/executions/{id}` or subscribe to the `executions` topic. |
+| `hybrid` | the job runs off the connection from the first byte and the connection waits on it for `handoff_after_ms`. Beat the window and the caller gets the ordinary `called` envelope (with an `execution_id` correlating it to the row); miss it and the caller gets the `accepted` envelope above. |
+
+`async` and `hybrid` both require `ASYNC_EXECUTION_ENABLED`. Each is a **400** in combination with `prefer_stream`, `deliver: "url"`, `return_url`, a `runtime: platform` service, or an action returning binary; `filter` and `verbose` are allowed. A *gated* call returns the ordinary `pending_approval` envelope rather than a 202 — the mode is stamped on the approval and honoured when the replay is triggered.
+
+Two rungs decide it, most specific first:
+
+| rung | source | where it lives |
+|------|--------|----------------|
+| 1 | this call | `execution` on the request body (and on the `overslash_call` / `overslash_read` MCP tools) |
+| 2 | this action | `x-overslash-wait-mode` on the operation or MCP tool |
+
+Anything unresolved is `sync`. The caller wins in **both** directions — `execution: "sync"` against an action declaring `hybrid` runs synchronously — so the template key is a default and never a cap. There is no service, org, or deployment rung.
+
+A template default that cannot be honoured is **silently demoted to `sync`** rather than refused: the six conditions above (and `ASYNC_EXECUTION_ENABLED` being off) each drop rung 2, while a caller naming the same mode against the same condition still gets the 400. Same asymmetry as `timeout_ms`, for the same reason — the caller is present and can act on an error, and a template value that 400s every call in the org is a strictly worse failure than one that quietly runs synchronously. A demotion is counted (`overslash_wait_mode_demoted_total{reason}`) and logged, since every affected call still returns 200 and the author would otherwise never learn.
+
+When the mode did **not** come from the request, the `accepted` envelope carries `execution_mode_source` (`action_template`) — so an agent receiving a 202 it did not ask for can tell a standing declaration from a one-off. It is absent when the caller named the mode.
+
+`x-overslash-handoff_after_ms` on the action supplies the hybrid handoff when the request does not. It is **clamped** to `[100ms, HYBRID_HANDOFF_MAX_MS]` and to the call's own budget rather than refused — again the template-versus-caller split, since a caller-supplied value out of range is a 400.
+
 **Streaming is bounded differently.** For `prefer_stream: true` the resolved timeout bounds **time to first byte** only; the transfer itself is bounded by a per-chunk idle timeout (`CALL_STREAM_IDLE_TIMEOUT_MS`, default 30000). A total deadline over a streamed body would mean "your 900MB export fails at exactly 90s", and would fire *after* the audit row recorded a 200 and the response headers were flushed — handing the client a silently truncated body.
 
 **Replays** reuse the timeout resolved when the call was first made (stored on the approval), re-clamped against the org's *current* maximum — so tightening the ceiling binds retroactively rather than being outranked by a stale approval. Approvals created before this shipped carry no budget and replay at the deployment default.
@@ -957,6 +984,8 @@ paths:
 - **`x-overslash-provider` / `provider:`** — on an `oauth2` security scheme, the symbolic OAuth provider name (`google`, `slack`, `github`, ...). Decoupled from OAuth URLs so the gateway can resolve credentials independently.
 - **`x-overslash-default_secret_name` / `default_secret_name:`** — on an `apiKey` or `http` security scheme, the canonical secret name for auto-wiring. Templates are expected to declare **either** an OAuth scheme **or** an apiKey/http scheme with this field — OAuth templates don't fall back to a secret.
 - **`x-overslash-timeout_ms` / `timeout_ms:`** — on an operation (or MCP tool), how long that action is expected to need upstream, in milliseconds. A **default, not a cap**: it encodes knowledge about the upstream ("Metabase aggregations are slow"), and the org and deployment maxima still clamp it. Omitted, the action inherits the service default, then the org default, then the deployment default. A value that is present but not a positive integer is a template *error*, not a silent fallback. See §8 for the full cascade.
+- **`x-overslash-wait-mode` / `wait-mode:`** — on an operation (or MCP tool), the execution mode a call to it defaults to when the caller names no `execution` of its own: `sync` (the default everywhere), `async`, or `hybrid`. A **default, not a cap** — the request field wins in both directions, so a caller can always insist on `sync`. Declaring a deferred mode changes the *response shape* of a call that never asked for one, so it is for actions that genuinely cannot answer inside the synchronous ceiling; the alternative for those is a 504. Where the mode cannot be honoured (`prefer_stream`, `deliver: "url"`, `return_url`, `runtime: platform`, a binary response, or async disabled) the declaration is dropped and the call runs synchronously rather than failing. An unrecognized value is a template *error* and falls back to synchronous. See §8.
+- **`x-overslash-handoff_after_ms` / `handoff_after_ms:`** — on an operation (or MCP tool), how long a *hybrid* call to it holds the connection before answering 202. Clamped to the deployment maximum and to the call's own budget, never refused. Inert under any other resolved mode. See §8.
 - **`x-overslash-default_timeout_ms` / `default_timeout_ms:`** — under `info`, the same thing one rung less specific: the timeout every action of this service inherits unless it declares its own. The one-line answer to "this whole upstream is slow".
 - **`x-overslash-icon` / `icon:`** — under `info`, the mark the dashboard shows for this service. Two forms: `builtin:<name>`, an asset Overslash ships and serves at `/icons/<name>.svg`, and an `https://` URL hosted elsewhere. **Usually omitted**: a template whose key matches a shipped asset resolves to `builtin:<key>` implicitly, which is why the shipped templates declare nothing. Explicit values are for the two cases the convention can't express — a key that deliberately differs from the asset it reuses (`github_legacy_oauth`), or a remote URL. Resolved server-side and surfaced as an absolute `icon_url` on the template and service-instance responses; a template with nothing renderable omits the field, and the dashboard falls back to a letter tile. Only `https://` ever reaches a browser — `http:`, `data:` and `javascript:` are template *errors*, checked both at write time and again when the response is built. Overslash never fetches a remote icon (that would be an SSRF vector and a boot-time network dependency), so there is no size or format validation of one. `${VAR}` expansion applies like anywhere else, which is how a self-hoster points the set at their own CDN. Icons are deliberately **not** on `/v1/search`: it fans out up to 100 rows per (instance × action) and the field would cost an agent's context window for something no model can render.
 - **Platform-namespace actions** — `x-overslash-platform_actions` (alias `platform_actions:`) at the top level declares permission anchors with no HTTP binding (e.g. the `overslash` meta service's admin actions).

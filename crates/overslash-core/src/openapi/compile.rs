@@ -914,10 +914,7 @@ mod tests {
             }}}
         });
         let err = compile_service(&doc).unwrap_err();
-        assert!(
-            err.iter().any(|i| i.code == "invalid_wait_mode"),
-            "{err:?}"
-        );
+        assert!(err.iter().any(|i| i.code == "invalid_wait_mode"), "{err:?}");
     }
 
     #[test]
