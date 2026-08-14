@@ -211,7 +211,7 @@ External-execution services are templates that explicitly opt out of upstream ex
 `x-overslash-execution: external` on `info` (alias `execution: external`):
 
 > **The name is still free, deliberately.** The action wait-mode rung
-> (DECISIONS D-NEXT) wanted `x-overslash-execution` for a per-operation
+> (DECISIONS D73) wanted `x-overslash-execution` for a per-operation
 > "sync / async / hybrid" default and was renamed to `x-overslash-wait-mode`
 > rather than take it. Two keys sharing a name at different positions is a
 > distinction `openapi::ext`'s `READS` matrix can express but no template

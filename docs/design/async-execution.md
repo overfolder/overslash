@@ -219,7 +219,7 @@ already had its effect. Unavoidable without idempotency keys, and the reason
   `services/events/bus.rs`, so enqueue could wake the worker instantly instead
   of waiting up to one 2s tick. Not worth the coupling for v1.
 - **`execution` on `overslash_read`.** ~~Deferred~~ — **shipped** with the
-  action wait-mode rung (DECISIONS D-NEXT). The forwarder was never the
+  action wait-mode rung (DECISIONS D73). The forwarder was never the
   blocker: `dispatch_read` already called `insert_execution_mode`, so only the
   schema was missing, and the tool's `additionalProperties: false` is what made
   the omission binding. It stopped being optional once an *action* could

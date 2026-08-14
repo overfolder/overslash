@@ -1,4 +1,4 @@
-// Real-stack screenshots for the action wait-mode rung (D-NEXT): an action
+// Real-stack screenshots for the action wait-mode rung (D73): an action
 // declaring the execution mode a call falls back to when the caller names none.
 //
 // Two surfaces, both new:
