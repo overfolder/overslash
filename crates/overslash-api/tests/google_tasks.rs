@@ -80,6 +80,7 @@ async fn setup_with_connection(scopes: &[&str]) -> (String, reqwest::Client, Str
             token_expires_at: Some(future_time),
             scopes: Some(&scope_vec),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc.id),
         })
         .await

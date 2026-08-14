@@ -10,7 +10,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{AppState, error::AppError};
 use overslash_core::types::{AuthHeader, InjectAs, SecretRef};
 
-use super::auth::ResolvedAuth;
+use super::auth::{MissingCredentials, ResolvedAuth};
 use super::auth_envelopes::{oauth_error_to_app_error, oauth_error_to_app_error_or_continue};
 
 /// Auto-resolve auth for a service. Uses the identity's OAuth connection when the
@@ -179,13 +179,28 @@ pub(crate) async fn resolve_service_auth(
     Ok(ResolvedAuth::none())
 }
 
+/// A live MCP bearer plus the identity of the connection that minted it.
+///
+/// The header is the credential; the other two name the *principal*. They ride
+/// together because the connection row is already in hand when the token
+/// resolves — re-loading it later to answer "which account is this?" would be
+/// a second query for something we just had. `principal` is the connection's
+/// `account_email`, mirroring [`ResolvedAuth::principal`] on the HTTP path.
+pub(crate) struct McpBearer {
+    pub header: AuthHeader,
+    pub connection_id: Uuid,
+    pub principal: Option<String>,
+}
+
 /// Resolve a live OAuth bearer for an MCP-runtime service whose `mcp.auth`
 /// declares `{ kind: oauth, provider }`. Mirrors the OAuth arm of
 /// [`resolve_service_auth`] but for the single provider named in the MCP
 /// block and always as `Authorization: Bearer <token>` (MCP servers take the
 /// token in that header). Returns:
-/// - `Ok(Some(header))` — a connection exists and a token resolved (refreshed
-///   via the org/BYOC client if the access token had expired).
+/// - `Ok(Some(bearer))` — a connection exists and a token resolved (refreshed
+///   via the org/BYOC client if the access token had expired). The connection
+///   it resolved *through* rides along on [`McpBearer`]: callers need to name
+///   the principal without re-loading the row.
 /// - `Ok(None)` — no connection for `provider` yet. The caller decides: the
 ///   inline resolver mints an auth URL and gates; replay fails the execution.
 /// - `Err(_)` — reauth required (refresh failed / no refresh token) mapped to
@@ -204,7 +219,7 @@ pub(crate) async fn resolve_mcp_oauth_bearer(
     instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
     provider: &str,
     return_url_hint: Option<&str>,
-) -> Result<Option<AuthHeader>, AppError> {
+) -> Result<Option<McpBearer>, AppError> {
     let org_id = scope.org_id();
     let enc_key = state
         .config
@@ -247,9 +262,13 @@ pub(crate) async fn resolve_mcp_oauth_bearer(
     )
     .await
     {
-        Ok(access_token) => Ok(Some(AuthHeader {
-            name: "Authorization".to_string(),
-            value: format!("Bearer {access_token}"),
+        Ok(access_token) => Ok(Some(McpBearer {
+            header: AuthHeader {
+                name: "Authorization".to_string(),
+                value: format!("Bearer {access_token}"),
+            },
+            connection_id: conn.id,
+            principal: conn.account_email.clone(),
         })),
         Err(e) => {
             // RefreshFailed / NoRefreshToken → `ReauthRequired` (gated URL);
@@ -434,22 +453,21 @@ pub(crate) async fn resolve_instance_auth(
                             token_injection,
                             ..
                         } = service_auth
+                            && *provider == conn.provider_key
                         {
-                            if *provider == conn.provider_key {
-                                let value = match &token_injection.prefix {
-                                    Some(p) => format!("{p}{access_token}"),
-                                    None => access_token,
-                                };
-                                let auth_header =
-                                    token_injection.header_name.as_ref().map(|header_name| {
-                                        AuthHeader {
-                                            name: header_name.clone(),
-                                            value,
-                                        }
-                                    });
-                                return Ok(ResolvedAuth::oauth(auth_header)
-                                    .with_principal(conn.account_email.clone()));
-                            }
+                            let value = match &token_injection.prefix {
+                                Some(p) => format!("{p}{access_token}"),
+                                None => access_token,
+                            };
+                            let auth_header =
+                                token_injection.header_name.as_ref().map(|header_name| {
+                                    AuthHeader {
+                                        name: header_name.clone(),
+                                        value,
+                                    }
+                                });
+                            return Ok(ResolvedAuth::oauth(auth_header)
+                                .with_principal(conn.account_email.clone()));
                         }
                     }
                     // No matching auth config found, carry as Bearer by default
@@ -497,7 +515,7 @@ pub(crate) async fn resolve_instance_auth(
     // through; instances with empty `credentials` keep the historical
     // behaviour exactly (steps 2 and 3).
     let mut secret_refs: Vec<SecretRef> = Vec::new();
-    let mut instance_secret_missing = false;
+    let mut missing = MissingCredentials::default();
     // Where this instance's traffic lands — the same derivation the executor
     // uses, so the platform-credential host check below can't disagree with the
     // URL actually dialled. Only consulted for the platform rung.
@@ -579,7 +597,7 @@ pub(crate) async fn resolve_instance_auth(
                             // the caller to bind the credential.
                             None => {
                                 if !slot.optional {
-                                    instance_secret_missing = true;
+                                    missing.add_slot(&slot.key);
                                 }
                                 scheme_unresolved = true;
                                 break;
@@ -595,7 +613,7 @@ pub(crate) async fn resolve_instance_auth(
             // partially-authenticated request downstream.
             if name.is_empty() {
                 if !slot.optional {
-                    instance_secret_missing = true;
+                    missing.add_slot(&slot.key);
                 }
                 scheme_unresolved = true;
                 break;
@@ -629,7 +647,7 @@ pub(crate) async fn resolve_instance_auth(
                 // that reads downstream as a wrong password rather than as
                 // missing configuration.
                 None if var.required => {
-                    instance_secret_missing = true;
+                    missing.add_config(&var.key);
                     scheme_unresolved = true;
                     break;
                 }
@@ -662,7 +680,7 @@ pub(crate) async fn resolve_instance_auth(
     // available. A missing instance-source secret falls through to the
     // auto-resolve / `needs_authentication` path below (matching the historical
     // single-apiKey behaviour: an unbound instance was never partially injected).
-    if !instance_secret_missing && !secret_refs.is_empty() {
+    if missing.is_empty() && !secret_refs.is_empty() {
         return Ok(ResolvedAuth::secrets_only(secret_refs));
     }
 
@@ -684,7 +702,7 @@ pub(crate) async fn resolve_instance_auth(
         return Ok(ResolvedAuth::none());
     }
 
-    resolve_service_auth(
+    let fallback = resolve_service_auth(
         state,
         ext,
         scope,
@@ -693,5 +711,16 @@ pub(crate) async fn resolve_instance_auth(
         explicit_secrets,
         return_url_hint,
     )
-    .await
+    .await?;
+
+    // The fallback only knows OAuth and the env-backed OAuth *client* cascade.
+    // For a secret-backed template it resolves nothing, and without the
+    // diagnosis above the caller would have no way to tell "this template needs
+    // no credentials" from "this instance never got configured" — and would
+    // dial upstream unauthenticated. Carry the missing keys forward so the gate
+    // in `resolve.rs` can name them.
+    if missing.is_empty() || fallback.oauth_injected || !fallback.secrets.is_empty() {
+        return Ok(fallback);
+    }
+    Ok(fallback.with_missing(missing))
 }

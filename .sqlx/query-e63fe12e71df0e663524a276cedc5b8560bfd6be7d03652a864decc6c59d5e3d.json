@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT payload, audience FROM events\n             WHERE org_id = $1 AND type = $2 ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "payload",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "audience",
+        "type_info": "UuidArray",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "audience"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "e63fe12e71df0e663524a276cedc5b8560bfd6be7d03652a864decc6c59d5e3d"
+}

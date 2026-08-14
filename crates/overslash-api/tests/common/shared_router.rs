@@ -127,6 +127,11 @@ pub async fn start_api_shared(pool: PgPool) -> (SocketAddr, Client, ResourceGuar
         // its resources on guard drop, which a long-lived stream would outlive;
         // event-stream tests use `start_api_with_event_stream` instead.
         event_bus: overslash_api::services::events::EventBus::new(),
+        // Per-test resolver cache, for the same reason as the bus: the cache is
+        // keyed on org + owner + credential, and the org id is shared, so a
+        // process-wide store would let one test's resolved display names answer
+        // another test's lookup.
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
     };
     harness.registry.register(id, resources);
 
@@ -210,6 +215,7 @@ fn build_shared_router(state: AppState) -> axum::Router {
         .merge(routes::actions::router())
         .merge(routes::actions::validate_router())
         .merge(routes::approvals::router())
+        .merge(routes::executions::router())
         .merge(routes::audit::router())
         .merge(routes::webhooks::router())
         .merge(routes::services::router())
@@ -275,12 +281,18 @@ fn build_shared_state(registry: Arc<SharedRouterRegistry>, addr: SocketAddr) -> 
         platform_registry: Arc::new(overslash_api::services::platform_registry::build_registry()),
         mailer: Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: Some(registry),
+        background_db: None,
     }
 }
 
 fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
     overslash_api::config::Config {
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -288,6 +300,7 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -308,10 +321,18 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
+        call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,

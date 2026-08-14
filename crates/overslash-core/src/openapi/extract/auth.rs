@@ -7,6 +7,7 @@ use crate::credential_template::TemplateReads;
 use crate::template_validation::ValidationIssue;
 use crate::types::{ConfigVar, CredentialTemplate, SecretSlot, ServiceAuth};
 
+use super::super::ext::{self, Ext, Pos, SchemeKind};
 use super::schemes::{extract_api_key, extract_http_auth, extract_oauth2};
 
 // ── securitySchemes → Vec<ServiceAuth> ───────────────────────────────
@@ -124,17 +125,17 @@ pub(crate) fn extract_auth(
             optional,
             ..
         } = auth
+            && read.iter().any(|s| s == scheme)
+            && !slots.iter().any(|s| &s.key == scheme)
         {
-            if read.iter().any(|s| s == scheme) && !slots.iter().any(|s| &s.key == scheme) {
-                slots.push(SecretSlot {
-                    key: scheme.clone(),
-                    label: label.clone(),
-                    description: description.clone(),
-                    default_secret_name: default_secret_name.clone(),
-                    source: *secret_source,
-                    optional: *optional,
-                });
-            }
+            slots.push(SecretSlot {
+                key: scheme.clone(),
+                label: label.clone(),
+                description: description.clone(),
+                default_secret_name: default_secret_name.clone(),
+                source: *secret_source,
+                optional: *optional,
+            });
         }
     }
 
@@ -210,7 +211,7 @@ pub(crate) fn extract_auth(
 fn extract_config_vars(components: Option<&Value>) -> Result<Vec<ConfigVar>, Vec<ValidationIssue>> {
     let Some(map) = components
         .and_then(Value::as_object)
-        .and_then(|c| c.get("x-overslash-config"))
+        .and_then(|c| ext::get(c, Pos::Components, Ext::Config))
     else {
         return Ok(Vec::new());
     };
@@ -283,7 +284,7 @@ fn extract_secret_slots(
 ) -> Result<Vec<SecretSlot>, Vec<ValidationIssue>> {
     let Some(map) = components
         .and_then(Value::as_object)
-        .and_then(|c| c.get("x-overslash-secrets"))
+        .and_then(|c| ext::get(c, Pos::Components, Ext::Secrets))
     else {
         return Ok(Vec::new());
     };
@@ -369,9 +370,12 @@ pub(super) fn extract_template(
             path,
         )]
     };
-    let path = format!("{base}.x-overslash-template");
+    let path = format!("{base}.{}", Ext::Template.key());
 
-    let Some(raw) = obj.get("x-overslash-template") else {
+    // `extract_api_key` is the only caller: on an `http` scheme the injection
+    // template is generated rather than authored, which is why
+    // `Pos::SecurityScheme(Http)` does not read this key.
+    let Some(raw) = ext::get(obj, Pos::SecurityScheme(SchemeKind::ApiKey), Ext::Template) else {
         return Ok((
             None,
             TemplateReads {

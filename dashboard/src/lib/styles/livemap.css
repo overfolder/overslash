@@ -1,0 +1,581 @@
+/* Live Map — radial ball graph with translucent overlays.
+ *
+ * Ported from the design project's `livemap.css`. Two deltas from the
+ * prototype: the approval popover and its `ovs-btn` markup are gone (the
+ * dashboard has no kit.css), and agents and subagents share one size, so
+ * `--lm-sub` folds into `--lm-agent` and the dashed border is what tells a
+ * subagent apart.
+ *
+ * Not scoped to a component: `sim.ts` toggles `is-running` / `is-waiting` /
+ * `is-leaving` on nodes imperatively every frame, and Svelte's scoping hashes
+ * only reach classes it can see in the template. */
+
+.lm-root {
+	position: relative;
+	flex: 1;
+	display: flex;
+	min-height: 0;
+	background: var(--color-bg);
+}
+.lm-stage {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+	cursor: grab;
+	container-type: inline-size;
+	touch-action: none;
+}
+.lm-stage.is-panning {
+	cursor: grabbing;
+}
+.lm-stage canvas {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+.lm-layer {
+	position: absolute;
+	top: 0;
+	left: 0;
+	transform-origin: 0 0;
+	will-change: transform;
+}
+
+/* ---- ball nodes ---- */
+.lm-node {
+	position: absolute;
+	top: 0;
+	left: 0;
+	will-change: transform;
+}
+.lm-node-in {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 5px;
+	transform: translate(-50%, -50%);
+	cursor: grab;
+	user-select: none;
+	transition:
+		opacity 0.3s ease,
+		translate 0.3s ease;
+	animation: lm-in 0.12s ease;
+}
+@keyframes lm-in {
+	from {
+		opacity: 0;
+		translate: 0 5px;
+	}
+	to {
+		opacity: 1;
+		translate: 0 0;
+	}
+}
+.lm-node.is-leaving .lm-node-in {
+	opacity: 0;
+	translate: 0 -18px;
+}
+.lm-node-in:active {
+	cursor: grabbing;
+}
+.lm-ball {
+	display: grid;
+	place-items: center;
+	border-radius: 50%;
+	background: var(--color-surface);
+	border: 1px solid var(--neutral-300);
+	color: var(--color-text-heading);
+	box-shadow: var(--shadow-sm);
+	font-family: var(--font-mono);
+	font-weight: 500;
+	transition:
+		border-color 0.12s,
+		box-shadow 0.12s,
+		background 0.12s;
+}
+/* Monogram and avatar occupy the same grid cell (`.lm-ball` is a grid), so
+   the avatar covers the monogram once it decodes and the monogram shows
+   whenever it does not — including while a slow host is still thinking.
+   Sized to the ball's content box, so the ball's own border and the
+   running/waiting rings still read around the avatar. */
+.lm-ball-mono,
+.lm-ball-img,
+.lm-ball-icon {
+	grid-area: 1 / 1;
+}
+.lm-ball-img,
+.lm-ball-icon {
+	width: 100%;
+	height: 100%;
+	border-radius: 50%;
+	display: block;
+	/* A ball is a drag handle. Without this the browser's native image drag
+	   wins over the node's own pointer handling and you end up dragging a
+	   ghost of the picture out of the page instead of moving the node — the
+	   `draggable="false"` in the markup covers the attribute path, these two
+	   cover WebKit and any stray hit-test. Monograms never had the problem:
+	   `.lm-node-in` is already `user-select: none`. */
+	-webkit-user-drag: none;
+	pointer-events: none;
+}
+.lm-ball-img {
+	object-fit: cover;
+	background: var(--color-surface);
+}
+/* A brand mark — a service's catalog icon or an agent's MCP client — not a
+   face: `contain` because cropping a logo to fill the circle clips it, and a
+   fixed light ground because the marks carry their own colours — several of
+   the shipped ones are near-black and would vanish into the dark theme's ball,
+   and they cannot be restyled from here (served cross-origin in an `<img>`).
+   The padding is the clearspace a square mark needs to sit inside a circle
+   without touching the rim. */
+.lm-ball-icon {
+	object-fit: contain;
+	background: #f6f6f8;
+	padding: 18%;
+	box-sizing: border-box;
+}
+/* An agent's three hash colours, between ball and caption. Two agents on the
+   same client share a mark and are told apart by this. */
+.lm-stripe {
+	display: flex;
+	width: 30px;
+	height: 3px;
+	margin-top: -2px;
+	border-radius: 2px;
+	overflow: hidden;
+	box-shadow: inset 0 0 0 1px var(--color-border);
+}
+.lm-stripe span {
+	flex: 1 1 0;
+	min-width: 0;
+}
+.lm-cap {
+	max-width: 132px;
+	padding: 2px 6px;
+	border-radius: var(--radius-sm);
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	font-family: var(--font-mono);
+	font-size: 10px;
+	line-height: 14px;
+	color: var(--color-text-secondary);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	text-align: center;
+}
+
+.lm-node.k-user .lm-ball {
+	width: var(--lm-user, 60px);
+	height: var(--lm-user, 60px);
+	font-size: calc(var(--lm-user, 60px) * 0.32);
+	background: var(--neutral-200);
+	border-color: var(--neutral-400);
+	box-shadow:
+		inset 0 0 0 2px var(--color-surface),
+		inset 0 0 0 3px var(--neutral-300);
+}
+.lm-node.k-user .lm-cap {
+	color: var(--color-text-secondary);
+	font-family: var(--font-sans);
+	font-weight: 500;
+	font-size: 11px;
+}
+.lm-node.k-agent .lm-ball,
+.lm-node.k-subagent .lm-ball {
+	width: var(--lm-agent, 40px);
+	height: var(--lm-agent, 40px);
+	font-size: calc(var(--lm-agent, 40px) * 0.33);
+}
+/* Same size as an agent — the dashed rim is the distinction. */
+.lm-node.k-subagent .lm-ball {
+	border-style: dashed;
+}
+.lm-node.k-subagent .lm-cap {
+	font-size: 9px;
+	opacity: 0.85;
+}
+.lm-node.k-service .lm-ball {
+	width: var(--lm-svc, 42px);
+	height: var(--lm-svc, 42px);
+	border-radius: calc(var(--lm-svc, 42px) * 0.28);
+	font-size: 13px;
+	letter-spacing: 0.02em;
+	color: var(--color-text-heading);
+}
+.lm-node.k-service .lm-cap {
+	font-family: var(--font-sans);
+	font-weight: 600;
+	font-size: 11px;
+	color: var(--color-text-secondary);
+}
+.lm-node.k-org .lm-ball {
+	width: calc(var(--lm-user, 60px) * 1.24);
+	height: calc(var(--lm-user, 60px) * 1.24);
+	border-style: dashed;
+	font-size: 12px;
+}
+
+/* states */
+.lm-node.is-running .lm-ball {
+	border-color: var(--color-primary);
+	box-shadow:
+		0 0 0 4px var(--color-primary-bg),
+		0 0 18px -2px var(--color-primary);
+	color: var(--color-primary);
+}
+.lm-node.is-waiting .lm-ball {
+	border-color: var(--color-warning);
+	box-shadow: 0 0 0 4px color-mix(in oklch, var(--color-warning) 18%, transparent);
+	color: var(--color-warning);
+}
+.lm-node.is-waiting .lm-cap {
+	color: var(--color-warning);
+}
+.lm-node.is-dim {
+	opacity: 0.16;
+}
+.lm-node.is-hit .lm-ball {
+	border-color: var(--color-primary);
+	box-shadow: 0 0 0 5px var(--color-primary-bg);
+}
+.lm-badge {
+	position: absolute;
+	top: -4px;
+	right: -8px;
+	min-width: 16px;
+	height: 16px;
+	padding: 0 4px;
+	box-sizing: border-box;
+	border: 0;
+	border-radius: var(--radius-pill);
+	background: var(--color-primary);
+	color: #fff;
+	font-family: var(--font-mono);
+	font-size: 9px;
+	line-height: 16px;
+	text-align: center;
+	cursor: pointer;
+}
+.lm-badge:hover {
+	background: var(--color-primary-hover);
+}
+.lm-caret-btn {
+	position: absolute;
+	bottom: -2px;
+	left: -8px;
+	width: 15px;
+	height: 15px;
+	display: grid;
+	place-items: center;
+	border: 1px solid var(--color-border);
+	border-radius: 50%;
+	background: var(--color-surface);
+	color: var(--color-text-muted);
+	font-size: 6px;
+	cursor: pointer;
+	padding: 0;
+}
+.lm-caret-btn:hover {
+	color: var(--color-text);
+	border-color: var(--color-text-muted);
+}
+
+/* ---- floating overlays ---- */
+.lm-panel {
+	position: absolute;
+	z-index: 12;
+	background: color-mix(in oklch, var(--color-surface) 78%, transparent);
+	backdrop-filter: blur(8px);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-md);
+}
+.lm-tl {
+	top: 16px;
+	left: 16px;
+	padding: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	width: 252px;
+}
+.lm-search {
+	position: relative;
+	display: flex;
+	align-items: center;
+}
+.lm-search input {
+	width: 100%;
+	height: 30px;
+	box-sizing: border-box;
+	padding: 0 26px 0 10px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-bg);
+	color: var(--color-text);
+	font-family: var(--font-mono);
+	font-size: 12px;
+}
+.lm-search input::placeholder {
+	color: var(--color-text-placeholder);
+	font-family: var(--font-sans);
+}
+.lm-search-clear {
+	position: absolute;
+	right: 5px;
+	border: 0;
+	background: none;
+	color: var(--color-text-muted);
+	cursor: pointer;
+	font-size: 10px;
+}
+.lm-toggles {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 5px;
+}
+.lm-chip {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	height: 24px;
+	padding: 0 8px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: transparent;
+	color: var(--color-text-secondary);
+	font: var(--text-label-sm);
+	cursor: pointer;
+	transition:
+		background 0.1s,
+		color 0.1s;
+}
+.lm-chip:hover {
+	background: rgba(0, 0, 0, 0.04);
+	color: var(--color-text);
+}
+.lm-chip em {
+	font-style: normal;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	color: var(--color-text-placeholder);
+}
+.lm-chip .lm-caret {
+	font-size: 7px;
+	color: var(--color-text-muted);
+}
+.lm-chip.is-off {
+	color: var(--color-text-placeholder);
+}
+.lm-chip.is-on-primary {
+	border-color: var(--color-primary);
+	color: var(--color-primary);
+	background: var(--color-primary-bg);
+}
+
+.lm-zoom {
+	bottom: 16px;
+	right: 16px;
+	display: flex;
+	align-items: center;
+	overflow: hidden;
+}
+.lm-zoom button {
+	width: 32px;
+	height: 32px;
+	border: 0;
+	background: transparent;
+	color: var(--color-text-secondary);
+	cursor: pointer;
+	font-size: 14px;
+}
+.lm-zoom button:hover {
+	background: rgba(0, 0, 0, 0.05);
+	color: var(--color-text);
+}
+.lm-zoom span {
+	min-width: 44px;
+	text-align: center;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--color-text-muted);
+	border-left: 1px solid var(--color-border);
+	border-right: 1px solid var(--color-border);
+	height: 32px;
+	line-height: 32px;
+}
+
+.lm-legend {
+	bottom: 16px;
+	left: 16px;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 7px 11px;
+	font: var(--text-body-sm);
+	color: var(--color-text-muted);
+	pointer-events: none;
+}
+.lm-legend span {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+}
+.lm-legend i {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+}
+@container (max-width: 620px) {
+	.lm-legend {
+		display: none;
+	}
+}
+
+/* Connection state, mirroring the approvals queue's "live" chip. */
+.lm-live {
+	top: 16px;
+	right: 16px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	font: var(--text-label-sm);
+	color: var(--color-text-muted);
+}
+.lm-live i {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--color-success);
+}
+.lm-live.is-down i {
+	background: var(--color-text-placeholder);
+}
+
+/* ---- tooltip ---- */
+.lm-tip {
+	position: absolute;
+	z-index: 20;
+	min-width: 200px;
+	max-width: 290px;
+	padding: 10px 12px;
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-lg);
+	pointer-events: none;
+}
+.lm-tip-id {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	color: var(--color-text-heading);
+	word-break: break-all;
+}
+.lm-tip-sub {
+	font: var(--text-body-sm);
+	color: var(--color-text-muted);
+	margin-top: 3px;
+}
+.lm-tip-rows {
+	margin-top: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	padding-top: 8px;
+	border-top: 1px solid var(--color-border-subtle);
+}
+.lm-tip-row {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--color-text-secondary);
+}
+.lm-tip-row.is-muted {
+	opacity: 0.6;
+}
+.lm-tip-row i {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex: none;
+	background: var(--color-primary);
+}
+.lm-tip-row.is-wait i {
+	background: var(--color-warning);
+}
+
+.lm-empty {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	font: var(--text-body-sm);
+	color: var(--color-text-muted);
+	pointer-events: none;
+}
+
+@media (max-width: 768px) {
+	.lm-tl {
+		width: 200px;
+	}
+}
+
+/* Dark: lift the balls off the near-black page. Written twice because the
+   dashboard has three theme states — an explicit `data-theme`, and the
+   default "follow the system" one that stamps no attribute at all. */
+[data-theme='dark'] .lm-ball {
+	background: var(--neutral-100);
+	border-color: var(--neutral-400);
+}
+[data-theme='dark'] .lm-node.k-user .lm-ball {
+	background: var(--neutral-200);
+	border-color: var(--neutral-500);
+	box-shadow:
+		inset 0 0 0 2px var(--neutral-50),
+		inset 0 0 0 3px var(--neutral-400);
+}
+[data-theme='dark'] .lm-cap {
+	background: var(--neutral-100);
+	border-color: var(--neutral-300);
+}
+[data-theme='dark'] .lm-caret-btn {
+	background: var(--neutral-200);
+	border-color: var(--neutral-400);
+}
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme='light']) .lm-ball {
+		background: var(--neutral-100);
+		border-color: var(--neutral-400);
+	}
+	:root:not([data-theme='light']) .lm-node.k-user .lm-ball {
+		background: var(--neutral-200);
+		border-color: var(--neutral-500);
+		box-shadow:
+			inset 0 0 0 2px var(--neutral-50),
+			inset 0 0 0 3px var(--neutral-400);
+	}
+	:root:not([data-theme='light']) .lm-cap {
+		background: var(--neutral-100);
+		border-color: var(--neutral-300);
+	}
+	:root:not([data-theme='light']) .lm-caret-btn {
+		background: var(--neutral-200);
+		border-color: var(--neutral-400);
+	}
+	:root:not([data-theme='light']) .lm-chip:hover,
+	:root:not([data-theme='light']) .lm-zoom button:hover {
+		background: rgba(255, 255, 255, 0.06);
+	}
+}
+[data-theme='dark'] .lm-chip:hover,
+[data-theme='dark'] .lm-zoom button:hover {
+	background: rgba(255, 255, 255, 0.06);
+}

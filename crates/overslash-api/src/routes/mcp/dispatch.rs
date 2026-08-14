@@ -114,8 +114,8 @@ pub(super) async fn dispatch_read(
             // `get_events`, which forward straight to `/v1/approvals...` and
             // never reach the gate; those three are read-only by construction
             // (GET, no kernel).
-            "list_pending" | "get_result" | "get_events" | "list_services" | "get_service"
-            | "list_templates" | "get_template" => {
+            "list_pending" | "get_result" | "get_execution" | "get_events" | "list_services"
+            | "get_service" | "list_templates" | "get_template" => {
                 dispatch_overslash_platform(state, bearer, action, args, Some("read")).await
             }
             other => Err(format!(
@@ -140,6 +140,10 @@ pub(super) async fn dispatch_read(
     // `verbose` flag when supplied; otherwise stamp `false` so the inner
     // handler picks compact.
     body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
+    insert_deliver(&mut body, args);
+    insert_timeout_ms(&mut body, args);
+    insert_filter(&mut body, args);
+    insert_execution_mode(&mut body, args);
     forward(
         state,
         bearer,
@@ -148,6 +152,78 @@ pub(super) async fn dispatch_read(
         Some(Value::Object(body)),
     )
     .await
+}
+
+/// Forward the caller's `deliver` tool argument when they set one.
+///
+/// Omitted rather than defaulted: the action handler already treats an absent
+/// `deliver` as inline, and stamping an explicit value here would mean any
+/// future default lived in two places. Unknown strings are passed through so
+/// the handler's own deserializer produces the error, rather than this layer
+/// silently swallowing a typo into inline delivery — which would put a video
+/// in the model's context, the exact outcome the flag exists to prevent.
+fn insert_deliver(body: &mut serde_json::Map<String, Value>, args: &Value) {
+    if let Some(d) = args.get("deliver").filter(|v| !v.is_null()) {
+        body.insert("deliver".into(), d.clone());
+    }
+}
+
+/// Forward a caller-supplied `timeout_ms` when there is one.
+///
+/// Same discipline as [`insert_deliver`]: pass it through untouched and let
+/// the inner `CallRequest` deserializer and the D56 resolver produce the
+/// error. Validating here would mean duplicating the org-ceiling logic in a
+/// place that has no org row.
+fn insert_timeout_ms(body: &mut serde_json::Map<String, Value>, args: &Value) {
+    if let Some(t) = args.get("timeout_ms").filter(|v| !v.is_null()) {
+        body.insert("timeout_ms".into(), t.clone());
+    }
+}
+
+/// Forward the caller's `filter` tool argument when they set one.
+///
+/// The tool schema takes a bare jq expression, because that is what an agent
+/// can write without knowing our wire format; `CallRequest.filter` is the
+/// tagged `{lang, expr}` object. A string is lifted into that object here.
+/// Anything else is passed through untouched for the same reason
+/// [`insert_deliver`] passes unknown strings through: the action handler's
+/// deserializer produces a real error, where swallowing it at this layer
+/// would let a caller believe it had narrowed a response it then receives
+/// whole.
+fn insert_filter(body: &mut serde_json::Map<String, Value>, args: &Value) {
+    let Some(f) = args.get("filter").filter(|v| !v.is_null()) else {
+        return;
+    };
+    let value = match f.as_str() {
+        Some(expr) => serde_json::json!({ "lang": "jq", "expr": expr }),
+        None => f.clone(),
+    };
+    body.insert("filter".into(), value);
+}
+
+/// Forward the caller's `execution` mode, when they set one.
+///
+/// Absent stays absent rather than defaulting to `"sync"`: the API
+/// distinguishes the two, and that distinction is now load-bearing rather than
+/// forward-looking — an omitted mode is what lets the action's own
+/// `x-overslash-wait-mode` apply, and sending `"sync"` here would silently
+/// suppress it for every MCP caller.
+fn insert_execution_mode(body: &mut serde_json::Map<String, Value>, args: &Value) {
+    if let Some(m) = args.get("execution").filter(|v| !v.is_null()) {
+        body.insert("execution".into(), m.clone());
+    }
+}
+
+/// Forward the caller's hybrid handoff window, when they set one.
+///
+/// Declared in `overslash_call`'s input schema since hybrid shipped, and never
+/// forwarded — an agent that set it got the deployment default and no error,
+/// because the schema is `additionalProperties: false` and so the value was
+/// dropped here rather than rejected by the API.
+fn insert_handoff_after_ms(body: &mut serde_json::Map<String, Value>, args: &Value) {
+    if let Some(ms) = args.get("handoff_after_ms").filter(|v| !v.is_null()) {
+        body.insert("handoff_after_ms".into(), ms.clone());
+    }
 }
 
 /// Read the caller-supplied `verbose: bool` tool argument, defaulting to
@@ -204,6 +280,11 @@ pub(super) async fn dispatch_call(
     // Same rationale as `dispatch_read`: MCP forwards `verbose: false` by
     // default so the LLM consumer gets the compact shape.
     body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
+    insert_deliver(&mut body, args);
+    insert_timeout_ms(&mut body, args);
+    insert_filter(&mut body, args);
+    insert_execution_mode(&mut body, args);
+    insert_handoff_after_ms(&mut body, args);
     forward(
         state,
         bearer,
@@ -274,6 +355,24 @@ async fn dispatch_overslash_platform(
                 .and_then(Value::as_str)
                 .ok_or_else(|| "cancel_pending requires params.approval_id".to_string())?;
             let path = format!("/v1/approvals/{}/cancel", urlencoding::encode(id));
+            forward(state, bearer, Method::POST, &path, None).await
+        }
+        // Async executions are addressed by their own id, not an approval's —
+        // a direct async call has no approval to name.
+        "get_execution" => {
+            let id = params
+                .and_then(|p| p.get("execution_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| "get_execution requires params.execution_id".to_string())?;
+            let path = format!("/v1/executions/{}", urlencoding::encode(id));
+            forward(state, bearer, Method::GET, &path, None).await
+        }
+        "cancel_execution" => {
+            let id = params
+                .and_then(|p| p.get("execution_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| "cancel_execution requires params.execution_id".to_string())?;
+            let path = format!("/v1/executions/{}/cancel", urlencoding::encode(id));
             forward(state, bearer, Method::POST, &path, None).await
         }
         // Bridged platform kernels — forward through `/v1/actions/call` so the
@@ -538,5 +637,113 @@ mod tests {
         let mut args = Value::Null;
         normalize_stringified_params(&mut args);
         assert_eq!(args, Value::Null);
+    }
+
+    #[test]
+    fn timeout_ms_is_forwarded_when_supplied() {
+        let mut body = serde_json::Map::new();
+        insert_timeout_ms(&mut body, &serde_json::json!({"timeout_ms": 90_000}));
+        assert_eq!(body.get("timeout_ms"), Some(&serde_json::json!(90_000)));
+    }
+
+    #[test]
+    fn an_absent_or_null_timeout_ms_is_not_stamped() {
+        // The inner `CallRequest` uses `#[serde(deny_unknown_fields)]` and a
+        // plain `Option`, so stamping a key the caller never sent would turn
+        // "no opinion" into an explicit null and skip the cascade.
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"timeout_ms": null}),
+        ] {
+            let mut body = serde_json::Map::new();
+            insert_timeout_ms(&mut body, &args);
+            assert!(body.is_empty(), "nothing should be stamped for {args}");
+        }
+    }
+
+    /// A bad value is forwarded verbatim rather than validated here — the
+    /// resolver owns the org ceiling, and this layer has no org row to check
+    /// it against. Guards against someone "helpfully" adding a local check
+    /// that would drift from the real one.
+    #[test]
+    fn an_invalid_timeout_ms_is_passed_through_for_the_resolver_to_reject() {
+        let mut body = serde_json::Map::new();
+        insert_timeout_ms(&mut body, &serde_json::json!({"timeout_ms": "30s"}));
+        assert_eq!(body.get("timeout_ms"), Some(&serde_json::json!("30s")));
+    }
+
+    /// The tool schema takes a bare jq string because that is what an agent
+    /// can write without knowing our wire format. `CallRequest.filter` is the
+    /// tagged object, so the lift has to happen here or every MCP filter is a
+    /// 400.
+    #[test]
+    fn a_bare_filter_string_is_lifted_into_the_tagged_object() {
+        let mut body = serde_json::Map::new();
+        insert_filter(
+            &mut body,
+            &serde_json::json!({"filter": "[.data[] | {id}]"}),
+        );
+        assert_eq!(
+            body.get("filter"),
+            Some(&serde_json::json!({"lang": "jq", "expr": "[.data[] | {id}]"}))
+        );
+    }
+
+    #[test]
+    fn an_absent_or_null_filter_is_not_stamped() {
+        // `CallRequest` is `deny_unknown_fields` with a plain `Option`, so
+        // stamping a key the caller never sent turns "no filter" into an
+        // explicit null.
+        for args in [serde_json::json!({}), serde_json::json!({"filter": null})] {
+            let mut body = serde_json::Map::new();
+            insert_filter(&mut body, &args);
+            assert!(body.is_empty(), "nothing should be stamped for {args}");
+        }
+    }
+
+    /// A caller that already knows the wire shape gets it through untouched,
+    /// and a malformed one is forwarded for the action handler's deserializer
+    /// to reject. Swallowing it here would let a caller believe it had
+    /// narrowed a response it then receives whole.
+    #[test]
+    fn a_non_string_filter_is_passed_through_for_the_handler_to_judge() {
+        for raw in [
+            serde_json::json!({"lang": "jq", "expr": ".id"}),
+            serde_json::json!({"lang": "jsonpath", "expr": "$.id"}),
+            serde_json::json!(42),
+        ] {
+            let mut body = serde_json::Map::new();
+            insert_filter(&mut body, &serde_json::json!({"filter": raw.clone()}));
+            assert_eq!(body.get("filter"), Some(&raw));
+        }
+    }
+
+    /// `overslash_call` has declared this key since hybrid shipped and never
+    /// forwarded it, so an agent that set it silently got the deployment
+    /// default. The schema is `additionalProperties: false`, which is what
+    /// made the drop invisible: a well-behaved client had no way to discover
+    /// the key was inert.
+    #[test]
+    fn the_hybrid_handoff_window_reaches_the_action_handler() {
+        let mut body = serde_json::Map::new();
+        insert_handoff_after_ms(&mut body, &serde_json::json!({"handoff_after_ms": 2500}));
+        assert_eq!(body.get("handoff_after_ms"), Some(&serde_json::json!(2500)));
+    }
+
+    #[test]
+    fn an_absent_execution_mode_stays_absent() {
+        // Load-bearing since the action template became rung 2: stamping
+        // `"sync"` for a caller who said nothing would suppress every
+        // action's own `x-overslash-wait-mode` on the entire MCP surface.
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"execution": null}),
+            serde_json::json!({"handoff_after_ms": null}),
+        ] {
+            let mut body = serde_json::Map::new();
+            insert_execution_mode(&mut body, &args);
+            insert_handoff_after_ms(&mut body, &args);
+            assert!(body.is_empty(), "nothing should be stamped for {args}");
+        }
     }
 }

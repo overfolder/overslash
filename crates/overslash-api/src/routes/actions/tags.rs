@@ -144,6 +144,35 @@ pub(super) fn call_tags(
     clamp(tags)
 }
 
+/// The `sql` audit block for one evaluated policy outcome: the DB label, the
+/// classification, which fail-closed rule fired (for writes), and the relations
+/// and columns the statement referenced. The raw query itself travels via the
+/// template's `disclose` filters.
+///
+/// This is the *record*; the metadata tags minted alongside it are the search
+/// index. The two differ on purpose — `reason_detail` carries the unbounded
+/// payload (a parse error's message, the parse-node name) that `write_reason`'s
+/// short tag flattens away and that a tag has no business holding.
+pub(super) fn sql_audit_block(sp: &SqlPolicyOutcome) -> serde_json::Value {
+    use overslash_core::sql_policy::WriteReason;
+    let a = &sp.analysis;
+    serde_json::json!({
+        "db": sp.db_label,
+        "classified": sp.floor.to_string(),
+        "write_reason": a.write_reason.as_ref().map(|r| r.tag()),
+        "reason_detail": a.write_reason.as_ref().and_then(|r| match r {
+            WriteReason::UnsupportedDialect(s) | WriteReason::ParseError(s)
+            | WriteReason::Statement(s) | WriteReason::UnsafeFunction(s) => Some(s.clone()),
+            WriteReason::MultiStatement(n) => Some(n.to_string()),
+            _ => None,
+        }),
+        "read_tables": a.read_tables,
+        "mut_tables": a.mut_tables,
+        "columns": a.columns,
+        "tables_exhaustive": a.tables_exhaustive,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,13 +180,20 @@ mod tests {
 
     fn meta(scope: Option<ServiceScope>, binding: BindingFacts) -> ResolvedMeta {
         ResolvedMeta {
+            action_timeout_ms: None,
+            action_wait_mode: None,
+            action_handoff_after_ms: None,
+            service_timeout_ms: None,
             description: None,
             service_scope: scope,
             risk: None,
             disclose: Vec::new(),
             redact: Vec::new(),
+            oauth_injected: false,
+            download: None,
             params: Default::default(),
             resolved: Default::default(),
+            canonical: Default::default(),
             mcp_target: None,
             platform_target: None,
             instance_id: None,

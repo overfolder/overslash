@@ -18,6 +18,10 @@ pub struct ConnectionRow {
     /// token response.
     pub scopes: Option<Vec<String>>,
     pub account_email: Option<String>,
+    /// Provider-hosted avatar URL for the linked account, when the provider's
+    /// userinfo response named one. Hotlinked by the dashboard, never fetched
+    /// server-side — see migration 113.
+    pub account_picture: Option<String>,
     pub byoc_credential_id: Option<Uuid>,
     pub is_default: bool,
     /// When true, this connection is preserved (never auto-deleted) when a
@@ -44,6 +48,7 @@ pub struct CreateConnection<'a> {
     /// `None` stores SQL NULL — "scopes unknown" (see [`ConnectionRow::scopes`]).
     pub scopes: Option<&'a [String]>,
     pub account_email: Option<&'a str>,
+    pub account_picture: Option<&'a str>,
     pub byoc_credential_id: Option<Uuid>,
 }
 
@@ -74,16 +79,17 @@ where
     sqlx::query_as!(
         ConnectionRow,
         "INSERT INTO connections (org_id, identity_id, provider_key, encrypted_access_token,
-         encrypted_refresh_token, token_expires_at, scopes, account_email, byoc_credential_id,
-         is_default)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+         encrypted_refresh_token, token_expires_at, scopes, account_email, account_picture,
+         byoc_credential_id, is_default)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                  NOT EXISTS (
                      SELECT 1 FROM connections
                      WHERE identity_id = $2 AND provider_key = $3 AND is_default
                  ))
          RETURNING id, org_id, identity_id, provider_key, encrypted_access_token,
                    encrypted_refresh_token, token_expires_at, scopes, account_email,
-                   byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at",
+                   account_picture, byoc_credential_id, is_default, keep, reauth_required,
+                   created_at, updated_at",
         input.org_id,
         input.identity_id,
         input.provider_key,
@@ -92,6 +98,7 @@ where
         input.token_expires_at,
         input.scopes as Option<&[String]>,
         input.account_email,
+        input.account_picture,
         input.byoc_credential_id,
     )
     .fetch_one(executor)
@@ -121,7 +128,8 @@ pub(crate) async fn find_for_import(
         // (migration 083) as non-`Option` and panics on a NULL. See `get_by_id`.
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at
+                account_email, account_picture, byoc_credential_id, is_default, keep, reauth_required,
+                created_at, updated_at
          FROM connections
          WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3
            AND ($4::text IS NULL OR account_email IS NOT DISTINCT FROM $4)
@@ -151,7 +159,8 @@ pub(crate) async fn get_by_id(
         // explicitly. See `scopes/user_connections.rs` (its JOIN sidesteps this).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at
+                account_email, account_picture, byoc_credential_id, is_default, keep, reauth_required,
+                created_at, updated_at
          FROM connections WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -173,7 +182,8 @@ pub(crate) async fn list_all_in_org(
         // `scopes AS "scopes?"`: force the nullable override (see `get_by_id`).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at
+                account_email, account_picture, byoc_credential_id, is_default, keep, reauth_required,
+                created_at, updated_at
          FROM connections WHERE org_id = $1 ORDER BY created_at DESC",
         org_id,
     )
@@ -242,10 +252,11 @@ pub(crate) async fn mark_reauth_by_byoc(
 /// invalidated by provider semantics when re-authorizing) and the granted
 /// scope set — without minting a new row, which would orphan any services
 /// already pointing at the existing `connection_id`.
-/// Update tokens, scopes, and optionally account_email in place, scoped to an
-/// org. `account_email` is only written when `Some` — passing `None` leaves
-/// the existing value intact, so a transient userinfo-endpoint failure on an
-/// upgrade callback doesn't clobber an already-populated label.
+/// Update tokens, scopes, and optionally the account label and avatar in
+/// place, scoped to an org. `account_email` and `account_picture` are only
+/// written when `Some` — passing `None` leaves the existing value intact, so a
+/// transient userinfo-endpoint failure on an upgrade callback doesn't clobber
+/// an already-populated label or avatar.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn update_tokens_and_scopes(
     pool: &PgPool,
@@ -256,12 +267,14 @@ pub(crate) async fn update_tokens_and_scopes(
     token_expires_at: Option<OffsetDateTime>,
     scopes: Option<&[String]>,
     account_email: Option<&str>,
+    account_picture: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "UPDATE connections SET encrypted_access_token = $3,
          encrypted_refresh_token = COALESCE($4, encrypted_refresh_token),
          token_expires_at = $5, scopes = $6,
          account_email = COALESCE($7, account_email),
+         account_picture = COALESCE($8, account_picture),
          reauth_required = false, updated_at = now()
          WHERE id = $1 AND org_id = $2",
         id,
@@ -271,6 +284,7 @@ pub(crate) async fn update_tokens_and_scopes(
         token_expires_at,
         scopes as Option<&[String]>,
         account_email,
+        account_picture,
     )
     .execute(pool)
     .await?;
@@ -297,7 +311,8 @@ pub(crate) async fn get_by_ids(
         // `scopes AS "scopes?"`: force the nullable override (see `get_by_id`).
         "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
                 encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
-                account_email, byoc_credential_id, is_default, keep, reauth_required, created_at, updated_at
+                account_email, account_picture, byoc_credential_id, is_default, keep, reauth_required,
+                created_at, updated_at
          FROM connections WHERE org_id = $1 AND id = ANY($2)",
         org_id,
         ids,

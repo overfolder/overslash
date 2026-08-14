@@ -157,10 +157,12 @@ pub async fn walk(
 /// Deny-only sweep of the requester's chain: does any non-inheriting level
 /// (including the user root) carry a deny rule matching one of `keys`?
 ///
-/// Exists for the D42 read-bypass interaction: `auto_approve_reads` skips
-/// the full [`walk`] for read-classified calls, but a deny rule is
-/// documented as overriding every allow mechanism — including that bypass —
-/// so SQL-classified calls run this sweep even when Layer 2 is skipped.
+/// Exists for the D42/D53 auto-approve interaction: a grant's
+/// `auto_approve_level` skips the full [`walk`] for any call at or below that
+/// rung, but a deny rule is documented as overriding every allow mechanism —
+/// including that bypass — so SQL-classified calls run this sweep even when
+/// Layer 2 is skipped. This is what keeps `table_mut=` denies binding against
+/// a write-level auto-approval.
 /// All keys passed here are deny-screen only; no allow coverage is checked.
 pub async fn denied_anywhere(
     scope: &OrgScope,

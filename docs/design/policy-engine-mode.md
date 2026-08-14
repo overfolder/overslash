@@ -210,6 +210,14 @@ External-execution services are templates that explicitly opt out of upstream ex
 
 `x-overslash-execution: external` on `info` (alias `execution: external`):
 
+> **The name is still free, deliberately.** The action wait-mode rung
+> (DECISIONS D73) wanted `x-overslash-execution` for a per-operation
+> "sync / async / hybrid" default and was renamed to `x-overslash-wait-mode`
+> rather than take it. Two keys sharing a name at different positions is a
+> distinction `openapi::ext`'s `READS` matrix can express but no template
+> author would reliably read, and this doc had the prior claim.
+
+
 ```yaml
 openapi: 3.1.0
 info:
@@ -301,7 +309,7 @@ The naming/shadowing model from §9 (*Services (Instances)*) carries over unchan
 
 LLM agents calling these via `overslash_call` (the MCP tool that wraps `actions/call`) see `status: "decided"` exactly like any caller of `actions/call`. The MCP tool description for `overslash_call` documents the `decided` variant alongside `executed` and `pending_approval` — it's not a failure mode, it's the natural answer for actions whose execution is external.
 
-Group ceilings apply unchanged — an external service still requires a group grant on the owner-user, the same way a gateway service does. `auto_approve_reads` works on `risk: read` external actions identically.
+Group ceilings apply unchanged — an external service still requires a group grant on the owner-user, the same way a gateway service does. `auto_approve_level` works on external actions identically, rung for rung.
 
 ### Validation rules — explicit list
 

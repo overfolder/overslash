@@ -7,12 +7,15 @@
 	import { compareBy, type SortDir } from '$lib/sort';
 	import { relativeTime, absoluteTime } from '$lib/utils/time';
 	import SearchBar, {
+		emptySearch,
+		filterTerms,
+		matchesAllText,
 		type SearchKey,
 		type SearchValue
 	} from '$lib/components/SearchBar.svelte';
 	import SortableHeader from '$lib/components/SortableHeader.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import ProviderTile from '$lib/components/connections/ProviderTile.svelte';
+	import ConnectionAvatar from '$lib/components/connections/ConnectionAvatar.svelte';
 	import ConnectAccountModal from '$lib/components/connections/ConnectAccountModal.svelte';
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[] } } =
@@ -52,7 +55,7 @@
 	}
 
 	// -- search --
-	let search = $state<SearchValue>({ expressions: [], freeText: '' });
+	let search = $state<SearchValue>(emptySearch());
 	const searchKeys = $derived<SearchKey[]>([
 		{
 			name: 'provider',
@@ -72,7 +75,7 @@
 	]);
 
 	function matches(c: ConnectionSummary, sv: SearchValue): boolean {
-		for (const expr of sv.expressions) {
+		for (const expr of filterTerms(sv)) {
 			if (expr.key === 'provider') {
 				const v = expr.value.toLowerCase();
 				const pk = c.provider_key.toLowerCase();
@@ -87,14 +90,10 @@
 				if (expr.op === '~' && !acct.includes(v)) return false;
 			}
 		}
-		const q = sv.freeText.trim().toLowerCase();
-		if (q) {
-			const hay = [c.account_email ?? '', c.provider_key, displayName(c.provider_key)]
-				.join(' ')
-				.toLowerCase();
-			if (!hay.includes(q)) return false;
-		}
-		return true;
+		return matchesAllText(
+			[c.account_email ?? '', c.provider_key, displayName(c.provider_key)],
+			sv
+		);
 	}
 
 	const filtered = $derived(connections.filter((c) => matches(c, search)));
@@ -279,7 +278,13 @@
 						>
 							<td data-label="Provider">
 								<span class="cell-provider">
-									<ProviderTile provider={c.provider_key} size={22} label={displayName(c.provider_key)} />
+									<ConnectionAvatar
+										provider={c.provider_key}
+										accountEmail={c.account_email}
+										picture={c.account_picture}
+										size={28}
+										label={displayName(c.provider_key)}
+									/>
 									<span class="provider-name">{displayName(c.provider_key)}</span>
 								</span>
 							</td>

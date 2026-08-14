@@ -7,10 +7,11 @@ use serde_json::{Map, Value};
 use crate::template_validation::ValidationIssue;
 use crate::types::{ActionParam, DeclaredRisk, ParamLocation, Risk, ServiceAction};
 
+use super::super::ext::{self, Ext, Pos};
 use super::params::{collect_body_parameters, collect_parameters, parse_request_body};
 use super::{
     parse_aliases, parse_disclose, parse_instance_config, parse_redact, parse_scope_params,
-    parse_sql_policy,
+    parse_sql_policy, parse_timeout_ms, parse_wait_mode,
 };
 
 // ── paths.*.* → ServiceAction ────────────────────────────────────────
@@ -82,40 +83,46 @@ pub(crate) fn extract_http_action(
         .or_else(|| summary.clone())
         .unwrap_or_default();
 
-    let risk = match op.get("x-overslash-risk").and_then(Value::as_str) {
+    let risk = match ext::get(op, Pos::Operation, Ext::Risk).and_then(Value::as_str) {
         Some("read") => DeclaredRisk::Read,
         Some("write") => DeclaredRisk::Write,
         Some("delete") => DeclaredRisk::Delete,
         // Classified per call from the SQL the caller supplies (D42);
-        // validation rejects it on actions with no `x-overslash-sql` param.
+        // validation rejects it on actions with no `x-overslash-sql-field` param.
         Some("dynamic") => DeclaredRisk::Dynamic,
         Some(other) => {
             return Err(vec![ValidationIssue::new(
                 "invalid_risk",
                 format!(
-                    "x-overslash-risk must be one of read/write/delete/dynamic (got {other:?})"
+                    "{} must be one of read/write/delete/dynamic (got {other:?})",
+                    Ext::Risk.key()
                 ),
-                format!("{base}.x-overslash-risk"),
+                format!("{base}.{}", Ext::Risk.key()),
             )]);
         }
         None => Risk::from_http_method(method).into(),
     };
 
-    let scope_param =
-        parse_scope_params(op.get("x-overslash-scope_param"), &base).map_err(|e| vec![e])?;
+    let scope_param = parse_scope_params(ext::get(op, Pos::Operation, Ext::ScopeParam), &base)
+        .map_err(|e| vec![e])?;
 
     let response_type = detect_response_type(op);
 
     // Merge path-level parameters with operation-level parameters. Operation-
     // level entries win on name collision (OpenAPI rule).
+    //
+    // `param_errors` is the same sink `disclose_errors` becomes below; it is
+    // declared up here because parameter lowering is the first thing that can
+    // report an issue (a malformed `cache_ttl` on a resolver).
+    let mut param_errors: Vec<ValidationIssue> = Vec::new();
     let mut params: HashMap<String, ActionParam> = HashMap::new();
     if let Some(arr) = path_level_params.and_then(Value::as_array) {
-        collect_parameters(arr, &mut params);
+        collect_parameters(arr, &mut params, &base, &mut param_errors);
     }
     if let Some(arr) = op.get("parameters").and_then(Value::as_array) {
-        collect_parameters(arr, &mut params);
+        collect_parameters(arr, &mut params, &base, &mut param_errors);
     }
-    collect_body_parameters(op.get("requestBody"), &mut params);
+    collect_body_parameters(op.get("requestBody"), &mut params, &base, &mut param_errors);
     let request_body = parse_request_body(op.get("requestBody"));
 
     // Per-action OAuth scopes. The operation's own `security` key, when present
@@ -128,9 +135,35 @@ pub(crate) fn extract_http_action(
         .map(scopes_from_security)
         .unwrap_or_default();
 
-    let mut disclose_errors = Vec::new();
-    let disclose = parse_disclose(op.get("x-overslash-disclose"), &base, &mut disclose_errors);
-    let redact = parse_redact(op.get("x-overslash-redact"), &base, &mut disclose_errors);
+    let mut disclose_errors = param_errors;
+    let disclose = parse_disclose(
+        ext::get(op, Pos::Operation, Ext::Disclose),
+        &base,
+        &mut disclose_errors,
+    );
+    let redact = parse_redact(
+        ext::get(op, Pos::Operation, Ext::Redact),
+        &base,
+        &mut disclose_errors,
+    );
+    let timeout_ms = parse_timeout_ms(
+        ext::get(op, Pos::Operation, Ext::TimeoutMs),
+        Ext::TimeoutMs.key(),
+        &base,
+        &mut disclose_errors,
+    );
+    let wait_mode = parse_wait_mode(
+        ext::get(op, Pos::Operation, Ext::WaitMode),
+        Ext::WaitMode.key(),
+        &base,
+        &mut disclose_errors,
+    );
+    let handoff_after_ms = parse_timeout_ms(
+        ext::get(op, Pos::Operation, Ext::HandoffAfterMs),
+        Ext::HandoffAfterMs.key(),
+        &base,
+        &mut disclose_errors,
+    );
     if !disclose_errors.is_empty() {
         return Err(disclose_errors);
     }
@@ -144,16 +177,20 @@ pub(crate) fn extract_http_action(
             summary,
             risk,
             response_type,
+            timeout_ms,
+            wait_mode,
+            handoff_after_ms,
             params,
             scope_param,
             required_scopes,
-            permission: None,
             disclose,
             redact,
-            mcp_tool: None,
-            output_schema: None,
-            disabled: false,
             request_body,
+            // Everything else defaults. Notably `download`: an HTTP action that
+            // returns bytes already *is* its own download, since `deliver:
+            // "url"` mints a token from the resolved request. Only MCP, whose
+            // result merely points at the object, needs the declaration.
+            ..Default::default()
         },
     );
 
@@ -164,7 +201,7 @@ pub(crate) fn extract_platform_action(
     action_key: &str,
     op: &Map<String, Value>,
 ) -> Result<ServiceAction, Vec<ValidationIssue>> {
-    let base = format!("x-overslash-platform_actions.{action_key}");
+    let base = format!("{}.{action_key}", Ext::PlatformActions.key());
 
     let description = op
         .get("description")
@@ -173,7 +210,7 @@ pub(crate) fn extract_platform_action(
         .unwrap_or("")
         .to_string();
 
-    let risk = match op.get("x-overslash-risk").and_then(Value::as_str) {
+    let risk = match ext::get(op, Pos::PlatformAction, Ext::Risk).and_then(Value::as_str) {
         Some("read") | None => DeclaredRisk::Read,
         Some("write") => DeclaredRisk::Write,
         Some("delete") => DeclaredRisk::Delete,
@@ -182,8 +219,11 @@ pub(crate) fn extract_platform_action(
         Some(other) => {
             return Err(vec![ValidationIssue::new(
                 "invalid_risk",
-                format!("x-overslash-risk must be one of read/write/delete (got {other:?})"),
-                format!("{base}.x-overslash-risk"),
+                format!(
+                    "{} must be one of read/write/delete (got {other:?})",
+                    Ext::Risk.key()
+                ),
+                format!("{base}.{}", Ext::Risk.key()),
             )]);
         }
     };
@@ -199,29 +239,21 @@ pub(crate) fn extract_platform_action(
         .and_then(Value::as_str)
         .map(str::to_string);
 
-    let scope_param =
-        parse_scope_params(op.get("x-overslash-scope_param"), &base).map_err(|e| vec![e])?;
+    let scope_param = parse_scope_params(ext::get(op, Pos::PlatformAction, Ext::ScopeParam), &base)
+        .map_err(|e| vec![e])?;
 
     Ok(ServiceAction {
-        method: String::new(),
-        path: String::new(),
         description,
-        summary: None,
         risk,
-        response_type: None,
         params,
         scope_param,
-        required_scopes: Vec::new(),
         permission,
-        // Platform actions don't have outbound HTTP payloads — disclosure
-        // and redaction are no-ops for them.
-        disclose: Vec::new(),
-        redact: Vec::new(),
-        mcp_tool: None,
-        output_schema: None,
-        disabled: false,
-        // Platform actions are dispatched in-process, never over HTTP.
-        request_body: None,
+        // Everything else defaults. Platform actions are dispatched in-process
+        // and never over HTTP, so there is no outbound payload to disclose or
+        // redact, no request body, no download — and no upstream to time out,
+        // which is why `timeout_ms` stays `None` here rather than being
+        // readable from the template.
+        ..Default::default()
     })
 }
 
@@ -247,9 +279,9 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let aliases = parse_aliases(Some(obj), name);
-            let instance_config = parse_instance_config(Some(obj));
-            let (sql_field, sql_database) = parse_sql_policy(Some(obj));
+            let aliases = parse_aliases(Some(obj), name, Pos::PlatformActionParam);
+            let instance_config = parse_instance_config(Some(obj), Pos::PlatformActionParam);
+            let (sql_field, sql_database) = parse_sql_policy(Some(obj), Pos::PlatformActionParam);
             Some((
                 name.clone(),
                 ActionParam {

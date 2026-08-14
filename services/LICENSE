@@ -27,3 +27,7 @@ service registry YAML files describing third-party APIs (endpoints, scopes,
 parameters, action descriptions). It does **not** apply to the rest of the
 Overslash repository, which is licensed under the Elastic License 2.0. See
 `/LICENSE` and `/LICENSING.md` at the repository root for details.
+
+It also does **not** apply to `/assets/service-icons/`, which holds trademarks
+owned by third parties. No licence to those marks is granted by this file or any
+other in this repository — see `/assets/service-icons/NOTICE.md`.

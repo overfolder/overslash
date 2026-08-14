@@ -8,14 +8,16 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use crate::service_icon::ServiceIcon;
 use crate::template_validation::ValidationIssue;
 use crate::types::{Runtime, ServiceAction, ServiceDefinition};
 
 use super::alias::HTTP_METHODS;
+use super::ext::{self, Ext, Pos};
 use super::extract;
 use super::extract::{
     extract_auth, extract_hosts, extract_http_action, extract_mcp_actions, extract_mcp_spec,
-    extract_platform_action,
+    extract_platform_action, parse_timeout_ms,
 };
 
 /// Lower a normalized OpenAPI document into a [`ServiceDefinition`].
@@ -43,7 +45,7 @@ pub fn compile_service(
     let info = root.get("info").and_then(Value::as_object);
 
     let key = info
-        .and_then(|i| i.get("x-overslash-key"))
+        .and_then(|i| ext::get(i, Pos::Info, Ext::Key))
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
@@ -60,11 +62,11 @@ pub fn compile_service(
         .map(str::to_string);
 
     let category = info
-        .and_then(|i| i.get("x-overslash-category"))
+        .and_then(|i| ext::get(i, Pos::Info, Ext::Category))
         .and_then(Value::as_str)
         .map(str::to_string);
 
-    let hidden = match info.and_then(|i| i.get("x-overslash-hidden")) {
+    let hidden = match info.and_then(|i| ext::get(i, Pos::Info, Ext::Hidden)) {
         None => false,
         Some(Value::Bool(b)) => *b,
         Some(other) => {
@@ -72,12 +74,56 @@ pub fn compile_service(
             // and fall back to visible so the mistake is observable.
             warnings.push(ValidationIssue::new(
                 "openapi_invalid",
-                format!("x-overslash-hidden must be a boolean (got {other})"),
-                "info.x-overslash-hidden",
+                format!("{} must be a boolean (got {other})", Ext::Hidden.key()),
+                format!("info.{}", Ext::Hidden.key()),
             ));
             false
         }
     };
+
+    // Catalog icon. Warnings, not errors, for the same reason as `hidden`
+    // above: `ServiceRegistry::load_from_dir` skips a whole file when compile
+    // fails, and refusing to load a service over a malformed logo is strictly
+    // the worse failure.
+    //
+    // An absent or unusable value falls through to the implicit rule: a
+    // template whose key matches a shipped asset gets `builtin:<key>` for
+    // free. Resolving it here rather than at response time is what lets a
+    // derived layer inherit it — `apply_delta` keys off the *layer's* name, so
+    // a later lookup would find no asset and silently drop the base's icon.
+    let authored_icon = match info.and_then(|i| ext::get(i, Pos::Info, Ext::Icon)) {
+        None => None,
+        Some(Value::String(raw)) => match ServiceIcon::try_from(raw.clone()) {
+            Ok(icon) => Some(icon),
+            Err(e) => {
+                warnings.push(ValidationIssue::new(
+                    "openapi_invalid",
+                    format!("{}: {e}", Ext::Icon.key()),
+                    format!("info.{}", Ext::Icon.key()),
+                ));
+                None
+            }
+        },
+        Some(other) => {
+            warnings.push(ValidationIssue::new(
+                "openapi_invalid",
+                format!("{} must be a string (got {other})", Ext::Icon.key()),
+                format!("info.{}", Ext::Icon.key()),
+            ));
+            None
+        }
+    };
+    let icon = authored_icon.or_else(|| ServiceIcon::implicit_for_key(&key));
+
+    // Service-wide upstream timeout default. Warnings, not errors: an
+    // unparseable value here would otherwise refuse to load a whole template
+    // over one slow-upstream hint.
+    let default_timeout_ms = parse_timeout_ms(
+        info.and_then(|i| ext::get(i, Pos::Info, Ext::DefaultTimeoutMs)),
+        Ext::DefaultTimeoutMs.key(),
+        "info",
+        &mut warnings,
+    );
 
     let hosts = extract_hosts(root.get("servers"));
 
@@ -128,16 +174,15 @@ pub fn compile_service(
         }
     }
 
-    if let Some(platform) = root
-        .get("x-overslash-platform_actions")
-        .and_then(Value::as_object)
+    if let Some(platform) =
+        ext::get(root, Pos::Root, Ext::PlatformActions).and_then(Value::as_object)
     {
         for (action_key, action) in platform {
             let Some(obj) = action.as_object() else {
                 errors.push(ValidationIssue::new(
                     "openapi_invalid",
                     "platform action must be an object",
-                    format!("x-overslash-platform_actions.{action_key}"),
+                    format!("{}.{action_key}", Ext::PlatformActions.key()),
                 ));
                 continue;
             };
@@ -152,15 +197,18 @@ pub fn compile_service(
 
     // MCP runtime branch: populate McpSpec + per-tool actions from the
     // x-overslash-mcp block (merging discovered_tools[] + tools[]).
-    let runtime = match root.get("x-overslash-runtime").and_then(Value::as_str) {
+    let runtime = match ext::get(root, Pos::Root, Ext::Runtime).and_then(Value::as_str) {
         Some("mcp") => Runtime::Mcp,
         Some("platform") => Runtime::Platform,
         Some("http") | None => Runtime::Http,
         Some(other) => {
             errors.push(ValidationIssue::new(
                 "openapi_invalid",
-                format!("x-overslash-runtime must be `http`, `mcp`, or `platform` (got {other:?})"),
-                "x-overslash-runtime",
+                format!(
+                    "{} must be `http`, `mcp`, or `platform` (got {other:?})",
+                    Ext::Runtime.key()
+                ),
+                Ext::Runtime.key(),
             ));
             Runtime::Http
         }
@@ -220,10 +268,12 @@ pub fn compile_service(
             hosts,
             category,
             hidden,
+            icon,
             auth,
             secrets,
             config,
             actions,
+            default_timeout_ms,
             runtime,
             mcp,
             // Only the fold sets these; a shipped template expresses its
@@ -240,8 +290,108 @@ pub fn compile_service(
 mod tests {
     use super::*;
     use crate::openapi::normalize_aliases;
-    use crate::types::{McpAuth, Risk, Runtime, ServiceAuth};
+    use crate::service_icon::ServiceIcon;
+    use crate::types::{ExecutionMode, McpAuth, Risk, Runtime, ServiceAuth};
     use serde_json::json;
+
+    // --- icon ---------------------------------------------------------
+
+    fn compile_icon(
+        info_extra: serde_json::Value,
+        key: &str,
+    ) -> (Option<ServiceIcon>, Vec<String>) {
+        let mut info = json!({"title": "Test", "x-overslash-key": key});
+        if let (Some(dst), Some(src)) = (info.as_object_mut(), info_extra.as_object()) {
+            for (k, v) in src {
+                dst.insert(k.clone(), v.clone());
+            }
+        }
+        let mut v = json!({"openapi": "3.1.0", "info": info, "paths": {}});
+        assert!(normalize_aliases(&mut v).is_empty());
+        let (def, warnings) = compile_service(&v).unwrap();
+        (def.icon, warnings.into_iter().map(|w| w.code).collect())
+    }
+
+    #[test]
+    fn icon_accepts_both_authored_forms() {
+        let (icon, warnings) = compile_icon(json!({"icon": "builtin:github"}), "anything");
+        assert_eq!(
+            icon,
+            Some(ServiceIcon::Builtin {
+                slug: "github".into()
+            })
+        );
+        assert!(warnings.is_empty());
+
+        let (icon, _) = compile_icon(json!({"icon": "https://cdn.example.com/a.svg"}), "anything");
+        assert_eq!(
+            icon,
+            Some(ServiceIcon::Remote {
+                url: "https://cdn.example.com/a.svg".into()
+            })
+        );
+    }
+
+    #[test]
+    fn icon_is_implicit_when_the_key_matches_a_shipped_asset() {
+        // The common case: the shipped templates declare no `icon:` at all.
+        let (icon, warnings) = compile_icon(json!({}), "github");
+        assert_eq!(
+            icon,
+            Some(ServiceIcon::Builtin {
+                slug: "github".into()
+            })
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn icon_is_absent_when_nothing_matches() {
+        let (icon, warnings) = compile_icon(json!({}), "no_such_service");
+        assert_eq!(icon, None);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn authored_icon_beats_the_implicit_one() {
+        // Precedence runs the useful way round: a template keyed `github` that
+        // deliberately names another icon keeps the one it named.
+        let (icon, _) = compile_icon(
+            json!({"icon": "https://cdn.example.com/fork.svg"}),
+            "github",
+        );
+        assert_eq!(
+            icon,
+            Some(ServiceIcon::Remote {
+                url: "https://cdn.example.com/fork.svg".into()
+            })
+        );
+    }
+
+    #[test]
+    fn malformed_icon_warns_and_still_compiles() {
+        // A whole template must not fail to load over a typo'd logo — the
+        // registry skips any file that fails to compile.
+        let (icon, warnings) = compile_icon(json!({"icon": 42}), "no_such_service");
+        assert_eq!(icon, None);
+        assert_eq!(warnings, vec!["openapi_invalid"]);
+
+        let (icon, warnings) = compile_icon(json!({"icon": "  "}), "no_such_service");
+        assert_eq!(icon, None);
+        assert_eq!(warnings, vec!["openapi_invalid"]);
+    }
+
+    #[test]
+    fn malformed_icon_falls_through_to_the_implicit_one() {
+        let (icon, warnings) = compile_icon(json!({"icon": ""}), "github");
+        assert_eq!(
+            icon,
+            Some(ServiceIcon::Builtin {
+                slug: "github".into()
+            })
+        );
+        assert_eq!(warnings, vec!["openapi_invalid"]);
+    }
 
     #[test]
     fn compile_non_object_root_errors() {
@@ -680,5 +830,110 @@ mod tests {
         let m = &svc.actions["manage_members"];
         assert!(m.method.is_empty());
         assert_eq!(m.risk, Risk::Delete);
+    }
+
+    /// The unprefixed authoring spellings must reach the compiled struct —
+    /// a template author writes `timeout_ms:`, never the canonical form, so
+    /// an alias that silently no-ops would leave them staring at timeouts
+    /// they believed they had already raised.
+    #[test]
+    fn compile_timeout_defaults_through_the_unprefixed_aliases() {
+        let mut doc = json!({
+            "openapi": "3.1.0",
+            "info": {
+                "title": "Slow", "key": "slow", "default_timeout_ms": 60000
+            },
+            "servers": [{"url": "https://slow.example"}],
+            "paths": {
+                "/fast": {"get": {"operationId": "fast", "description": "quick"}},
+                "/slow": {"get": {
+                    "operationId": "slow", "description": "aggregation",
+                    "timeout_ms": 90000
+                }}
+            }
+        });
+        crate::openapi::normalize_aliases(&mut doc);
+        let (svc, warnings) = compile_service(&doc).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(svc.default_timeout_ms, Some(60_000));
+        assert_eq!(svc.actions["slow"].timeout_ms, Some(90_000));
+        // Absent, not defaulted to the service value: the cascade is resolved
+        // at call time, so the action rung must stay empty here or it would
+        // shadow a per-call override.
+        assert_eq!(svc.actions["fast"].timeout_ms, None);
+    }
+
+    /// The wait-mode rung has to survive the same unprefixed authoring
+    /// spelling `timeout_ms` does, and for a sharper reason: this one decides
+    /// a *response shape*, so an alias that silently no-ops leaves the author
+    /// believing an action defers when every call to it still rides the
+    /// synchronous ceiling into a 504.
+    #[test]
+    fn compile_wait_mode_through_the_unprefixed_aliases() {
+        let mut doc = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Slow", "key": "slow"},
+            "servers": [{"url": "https://slow.example"}],
+            "paths": {
+                "/fast": {"get": {"operationId": "fast", "description": "quick"}},
+                "/slow": {"get": {
+                    "operationId": "slow", "description": "aggregation",
+                    "wait-mode": "hybrid", "handoff_after_ms": 2000
+                }},
+                "/batch": {"post": {
+                    "operationId": "batch", "description": "long import",
+                    "x-overslash-wait-mode": "async"
+                }}
+            }
+        });
+        crate::openapi::normalize_aliases(&mut doc);
+        let (svc, warnings) = compile_service(&doc).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(svc.actions["slow"].wait_mode, Some(ExecutionMode::Hybrid));
+        assert_eq!(svc.actions["slow"].handoff_after_ms, Some(2_000));
+        assert_eq!(svc.actions["batch"].wait_mode, Some(ExecutionMode::Async));
+        // Absent, never defaulted to `Sync` here: the API distinguishes "this
+        // template has no opinion" from "this template says sync", and only
+        // the former lets a future rung land underneath it.
+        assert_eq!(svc.actions["fast"].wait_mode, None);
+        assert_eq!(svc.actions["fast"].handoff_after_ms, None);
+    }
+
+    /// A misspelled mode falls back to synchronous — the historical behaviour
+    /// — and says so, rather than removing the action. D67's leniency: a stray
+    /// value must not be able to take a service down.
+    #[test]
+    fn an_unrecognized_wait_mode_is_an_authoring_error_not_a_dropped_action() {
+        let doc = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://t.example"}],
+            "paths": {"/x": {"get": {
+                "operationId": "x", "description": "d",
+                "x-overslash-wait-mode": "deferred"
+            }}}
+        });
+        let err = compile_service(&doc).unwrap_err();
+        assert!(err.iter().any(|i| i.code == "invalid_wait_mode"), "{err:?}");
+    }
+
+    #[test]
+    fn a_non_positive_timeout_is_an_authoring_error_not_a_silent_fallback() {
+        let doc = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://t.example"}],
+            "paths": {"/x": {"get": {
+                "operationId": "x", "description": "d",
+                "x-overslash-timeout_ms": "30s"
+            }}}
+        });
+        let err = compile_service(&doc).expect_err("string timeout rejected");
+        assert!(
+            err.iter()
+                .any(|e| e.code == "invalid_timeout"
+                    && e.path == "paths./x.get.x-overslash-timeout_ms"),
+            "{err:?}"
+        );
     }
 }

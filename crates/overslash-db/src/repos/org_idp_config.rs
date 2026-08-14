@@ -83,10 +83,13 @@ pub async fn get_by_org_and_provider(
     .await
 }
 
-pub(crate) async fn list_by_org(
-    pool: &PgPool,
-    org_id: Uuid,
-) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
+/// Every IdP config for an org, enabled or not, `is_default` included.
+/// Public because `overslash_api::services::org_signin` builds the org's
+/// sign-in provider list from this before there's any session or `OrgScope`
+/// — `/auth/providers` and the `/oauth/authorize` bounce both run pre-auth.
+/// Disabled rows matter there too: a row claims its provider key whether or
+/// not it is switched on.
+pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
         "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
@@ -94,41 +97,6 @@ pub(crate) async fn list_by_org(
         org_id,
     )
     .fetch_all(pool)
-    .await
-}
-
-/// List enabled IdP configs for an org. Public because `/oauth/authorize`
-/// (in the API crate) needs to fall back to the login picker when no
-/// default IdP is set, and that runs before there's any session/scope.
-pub async fn list_enabled_by_org(
-    pool: &PgPool,
-    org_id: Uuid,
-) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
-    sqlx::query_as!(
-        OrgIdpConfigRow,
-        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
-         FROM org_idp_configs WHERE org_id = $1 AND enabled = true ORDER BY created_at",
-        org_id,
-    )
-    .fetch_all(pool)
-    .await
-}
-
-/// Fetch the org's designated default IdP, if one is set and enabled.
-/// `/oauth/authorize` on a corp subdomain uses this to pick the IdP for the
-/// unauthenticated bounce. Public because that lookup happens before
-/// session/`OrgScope` is established.
-pub async fn get_default_by_org(
-    pool: &PgPool,
-    org_id: Uuid,
-) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
-    sqlx::query_as!(
-        OrgIdpConfigRow,
-        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
-         FROM org_idp_configs WHERE org_id = $1 AND is_default = true AND enabled = true",
-        org_id,
-    )
-    .fetch_optional(pool)
     .await
 }
 

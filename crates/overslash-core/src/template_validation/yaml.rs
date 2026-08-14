@@ -13,7 +13,7 @@ use crate::openapi;
 use crate::template_vars::{self, Vars};
 use crate::types::ServiceDefinition;
 
-use super::{Issues, ValidationReport, core::validate_service_definition};
+use super::{Issues, ValidationIssue, ValidationReport, core::validate_service_definition};
 
 /// Expand `${VAR}` references into a **copy** of the document, for compiling.
 ///
@@ -28,6 +28,34 @@ fn expanded_for_compile(
     let mut copy = doc.clone();
     template_vars::expand(&mut copy, vars)?;
     Ok(copy)
+}
+
+/// Alias-normalize `doc` in place, then run every check that operates on the raw
+/// *document* rather than the compiled definition: duplicate `operationId`s
+/// (errors) and the extension lint (warnings).
+///
+/// One function rather than three copies, because the last source-level check to
+/// arrive — `check_duplicate_operation_ids` — had to be added to each entry point
+/// by hand, and a fourth landing in two of the three would be invisible.
+///
+/// Returns `(errors, warnings)`. The lint deliberately produces only warnings:
+/// see [`crate::openapi::lint`].
+fn normalize_and_lint_source(
+    doc: &mut serde_json::Value,
+) -> (Vec<ValidationIssue>, Vec<ValidationIssue>) {
+    let mut errors = openapi::normalize_aliases(doc);
+
+    // An ambiguous or unparseable document makes the lint's position map
+    // unreliable, and its findings would only bury the real error.
+    if !errors.is_empty() {
+        return (errors, Vec::new());
+    }
+
+    let mut dup = Issues::default();
+    check_duplicate_operation_ids(doc, &mut dup);
+    errors.extend(dup.finish().errors);
+
+    (errors, openapi::lint_extensions(doc))
 }
 
 /// Parse OpenAPI YAML source and validate the resulting service definition.
@@ -56,24 +84,16 @@ pub fn validate_template_yaml(source: &str, vars: &Vars) -> ValidationReport {
         }
     };
 
-    let ns_issues = openapi::normalize_aliases(&mut doc);
-    if !ns_issues.is_empty() {
+    // Source-level checks: alias ambiguity and duplicate operationIds (errors),
+    // and the extension lint (warnings). OpenAPI allows the same operationId in
+    // different operations, but that is a collision for our action-key model.
+    let (src_errors, lint_warnings) = normalize_and_lint_source(&mut doc);
+    if !src_errors.is_empty() {
         let mut issues = Issues::default();
-        for i in ns_issues {
+        for i in src_errors {
             issues.err(i.code, i.message, i.path);
         }
         return issues.finish();
-    }
-
-    // Duplicate-operationId detection across all paths/methods. OpenAPI
-    // allows the same operationId in different operations but that's a
-    // collision for our action-key model — surface it as
-    // `duplicate_operation_id`.
-    let mut dup_issues = Issues::default();
-    check_duplicate_operation_ids(&doc, &mut dup_issues);
-    let dup_report = dup_issues.finish();
-    if !dup_report.valid {
-        return dup_report;
     }
 
     let compile_doc = match expanded_for_compile(&doc, vars) {
@@ -98,7 +118,9 @@ pub fn validate_template_yaml(source: &str, vars: &Vars) -> ValidationReport {
         }
     };
 
-    validate_service_definition(&def, &[])
+    let mut report = validate_service_definition(&def, &[]);
+    report.warnings.extend(lint_warnings);
+    report
 }
 
 /// Parse + alias-normalize + compile + validate an OpenAPI YAML source for
@@ -129,19 +151,18 @@ pub fn parse_normalize_compile_yaml(
         }
     };
 
-    let alias_issues = openapi::normalize_aliases(&mut doc);
-    if !alias_issues.is_empty() {
-        for i in alias_issues {
+    // Lint findings are deliberately dropped on this path: it returns only the
+    // compiled pair on success, and its callers (template create/update) have
+    // nowhere to put a warning — `TemplateDetail` carries no warnings field. The
+    // author has already seen them, because the editor polls
+    // `validate_template_yaml` on every keystroke, and `template_resolve`
+    // re-reports them against the stored row. A decision, not an oversight.
+    let (src_errors, _lint_warnings) = normalize_and_lint_source(&mut doc);
+    if !src_errors.is_empty() {
+        for i in src_errors {
             issues.err(i.code, i.message, i.path);
         }
         return Err(issues.finish());
-    }
-
-    let mut dup_issues = Issues::default();
-    check_duplicate_operation_ids(&doc, &mut dup_issues);
-    let dup_report = dup_issues.finish();
-    if !dup_report.valid {
-        return Err(dup_report);
     }
 
     let compile_doc = match expanded_for_compile(&doc, vars) {
@@ -196,18 +217,11 @@ pub fn prepare_draft_from_value(
 ) {
     let mut issues = Issues::default();
 
-    let alias_issues = crate::openapi::normalize_aliases(&mut doc);
-    for i in alias_issues {
+    let (src_errors, lint_warnings) = normalize_and_lint_source(&mut doc);
+    for i in src_errors {
         issues.err(i.code, i.message, i.path);
     }
-
-    let mut dup_issues = Issues::default();
-    check_duplicate_operation_ids(&doc, &mut dup_issues);
-    let dup_report = dup_issues.finish();
-    for e in dup_report.errors {
-        issues.err(e.code, e.message, e.path);
-    }
-    for w in dup_report.warnings {
+    for w in lint_warnings {
         issues.warn(w.code, w.message, w.path);
     }
 
@@ -418,14 +432,131 @@ paths:
             let report = validate_template_yaml(&content, &crate::template_vars::Vars::for_tests());
             assert!(
                 report.valid,
-                "shipped template {path:?} failed validation: {:?}",
-                report.errors
+                "shipped template {path:?} failed validation: errors {:?}, warnings {:?}",
+                report.errors, report.warnings
             );
             checked += 1;
         }
         assert!(
             checked > 0,
             "no shipped templates found in {services_dir:?}"
+        );
+    }
+
+    /// Every shipped template must declare nothing the compiler ignores.
+    ///
+    /// This is where the extension lint's leniency is paid for. Findings are
+    /// warnings everywhere at runtime — an error at `registry::load_from_dir`
+    /// would *skip* the template, and a missing service is worse than an ignored
+    /// field — so `report.valid` cannot hold this line and a test has to. It is
+    /// the one-level-down analogue of `shipped_services_have_no_silent_skips`:
+    /// that test catches a template that vanishes, this one catches a template
+    /// that loads and quietly does less than it says.
+    ///
+    /// Filtered by `LINT_CODES` rather than asserting `warnings.is_empty()`, so an
+    /// unrelated warning appearing elsewhere in the validator cannot silently
+    /// disarm the gate — or noisily break it.
+    #[test]
+    fn shipped_services_lint_clean() {
+        let services_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let mut checked = 0;
+        let mut findings: Vec<(String, String, String, String)> = Vec::new();
+        for entry in std::fs::read_dir(&services_dir).unwrap() {
+            let path = entry.unwrap().path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext != "yaml" && ext != "yml" {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).unwrap();
+            let report = validate_template_yaml(&content, &crate::template_vars::Vars::for_tests());
+            let file = path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("?")
+                .to_string();
+            for w in report
+                .warnings
+                .iter()
+                .filter(|w| crate::openapi::LINT_CODES.contains(&w.code.as_str()))
+            {
+                findings.push((
+                    file.clone(),
+                    w.code.clone(),
+                    w.path.clone(),
+                    w.message.clone(),
+                ));
+            }
+            checked += 1;
+        }
+        assert!(
+            checked > 0,
+            "no shipped templates found in {services_dir:?}"
+        );
+        assert!(
+            findings.is_empty(),
+            "shipped templates declare {} key(s) nothing reads:\n{}",
+            findings.len(),
+            findings
+                .iter()
+                .map(|(f, c, p, m)| format!("  {f}: [{c}] {p} — {m}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+
+    /// The dashboard's seed skeleton for a new template, read out of the Svelte
+    /// source so the two cannot drift.
+    ///
+    /// It shipped `x-overslash-prefix` — removed by D35 and rejected outright by
+    /// `extract_api_key` — which means the default scaffold could not be saved at
+    /// all. Nothing tested it, because it lived in a string literal in a
+    /// component.
+    #[test]
+    fn scaffold_skeleton_is_valid_and_lint_clean() {
+        let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("dashboard/src/routes/services/templates/new/+page.svelte");
+        let src =
+            std::fs::read_to_string(&page).unwrap_or_else(|e| panic!("cannot read {page:?}: {e}"));
+        let body = src
+            .split_once("// SCAFFOLD-SKELETON-START")
+            .and_then(|(_, rest)| rest.split_once("// SCAFFOLD-SKELETON-END"))
+            .map(|(inner, _)| inner)
+            .unwrap_or_else(|| {
+                panic!("scaffold markers missing from {page:?}; keep them around the skeleton")
+            });
+        let yaml = body
+            .split_once('`')
+            .and_then(|(_, rest)| rest.rsplit_once('`'))
+            .map(|(inner, _)| inner)
+            .expect("skeleton is a backtick template literal");
+        assert!(
+            yaml.contains("openapi: 3.1.0"),
+            "extracted the wrong slice: {yaml:?}"
+        );
+
+        let report = validate_template_yaml(yaml, &crate::template_vars::Vars::for_tests());
+        assert!(
+            report.valid,
+            "the new-template scaffold does not validate: {:?}",
+            report.errors
+        );
+        let lint: Vec<_> = report
+            .warnings
+            .iter()
+            .filter(|w| crate::openapi::LINT_CODES.contains(&w.code.as_str()))
+            .collect();
+        assert!(
+            lint.is_empty(),
+            "the new-template scaffold hands the author keys nothing reads: {lint:?}"
         );
     }
 }

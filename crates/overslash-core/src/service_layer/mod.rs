@@ -60,10 +60,15 @@ pub use validate::validate_delta;
 /// assembling a synthetic OpenAPI doc and running it through the normal
 /// compile pipeline. Reuses all shipped-template extraction so an extension
 /// lowers exactly like a first-class action.
+/// The compiled extension actions plus any extension-lint warnings, whose
+/// dot-paths address the *delta* the author wrote rather than the synthetic
+/// document assembled to compile it.
+type CompiledExtensions = (HashMap<String, ServiceAction>, Vec<ValidationIssue>);
+
 fn compile_extension_actions(
     base: &ServiceDefinition,
     ext: &Extensions,
-) -> Result<HashMap<String, ServiceAction>, Vec<ValidationIssue>> {
+) -> Result<CompiledExtensions, Vec<ValidationIssue>> {
     // servers = base hosts ∪ extension hosts, so extension operations resolve
     // a host the compiler accepts.
     let mut host_urls: Vec<Value> = Vec::new();
@@ -71,12 +76,18 @@ fn compile_extension_actions(
         host_urls.push(serde_json::json!({ "url": format!("https://{h}") }));
     }
 
+    // The synthetic document addresses an operation as `paths.{path}.{method}`,
+    // which is not a location in the delta the author is editing. Remember which
+    // action key each one came from so a lint finding can point at
+    // `extensions.actions.{key}.operation` instead.
+    let mut synthetic_to_key: HashMap<String, String> = HashMap::new();
     let mut paths = serde_json::Map::new();
     for (key, action) in &ext.actions {
         let mut operation = action.operation.as_object().cloned().unwrap_or_default();
         // The action key is the operationId (used as the action key by the compiler).
         operation.insert("operationId".to_string(), Value::String(key.clone()));
         let method = action.method.to_lowercase();
+        synthetic_to_key.insert(format!("paths.{}.{}", action.path, method), key.clone());
         let path_item = paths
             .entry(action.path.clone())
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -96,8 +107,34 @@ fn compile_extension_actions(
     if !ns_issues.is_empty() {
         return Err(ns_issues);
     }
+    let warnings = crate::openapi::lint_extensions(&doc)
+        .into_iter()
+        .map(|mut w| {
+            w.path = rewrite_synthetic_path(&w.path, &synthetic_to_key);
+            w
+        })
+        .collect();
     let (def, _warnings) = crate::openapi::compile_service(&doc)?;
-    Ok(def.actions)
+    Ok((def.actions, warnings))
+}
+
+/// Re-root a finding's dot-path from the synthetic `paths.{path}.{method}…` onto
+/// `extensions.actions.{key}.operation…`, so it names something the author can
+/// find in the delta they submitted.
+fn rewrite_synthetic_path(path: &str, synthetic_to_key: &HashMap<String, String>) -> String {
+    // Longest prefix first: two actions may share a path and differ only by
+    // method, and `paths./x.post` must not match as a prefix of `paths./x.posted`.
+    let mut prefixes: Vec<&String> = synthetic_to_key.keys().collect();
+    prefixes.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    for prefix in prefixes {
+        let key = &synthetic_to_key[prefix];
+        if let Some(rest) = path.strip_prefix(prefix.as_str())
+            && (rest.is_empty() || rest.starts_with('.'))
+        {
+            return format!("extensions.actions.{key}.operation{rest}");
+        }
+    }
+    path.to_string()
 }
 
 /// Normalize a layer's default endpoint at fold time: trailing `/` trimmed, so
@@ -120,6 +157,9 @@ pub(crate) mod fixtures {
 
     pub(crate) fn action(risk: Risk) -> ServiceAction {
         ServiceAction {
+            wait_mode: None,
+            handoff_after_ms: None,
+            timeout_ms: None,
             method: "GET".into(),
             path: "/x".into(),
             description: "x".into(),
@@ -136,6 +176,7 @@ pub(crate) mod fixtures {
             output_schema: None,
             disabled: false,
             request_body: None,
+            download: None,
         }
     }
 
@@ -145,6 +186,7 @@ pub(crate) mod fixtures {
             actions.insert((*k).to_string(), action(*r));
         }
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "github".into(),
@@ -153,6 +195,9 @@ pub(crate) mod fixtures {
             hosts: vec!["api.github.com".into()],
             category: Some("Dev".into()),
             hidden: false,
+            // Mirrors what `compile_service` produces for this key: the
+            // implicit `builtin:github`, not a declared one.
+            icon: crate::service_icon::ServiceIcon::implicit_for_key("github"),
             auth: vec![],
             actions,
             runtime: Runtime::Http,

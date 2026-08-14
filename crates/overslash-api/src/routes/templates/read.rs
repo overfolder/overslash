@@ -27,6 +27,7 @@ pub(super) async fn list_templates(
             hosts: svc.hosts.clone(),
             action_count: svc.actions.len(),
             tier: "global".into(),
+            icon_url: resolve_icon_url(svc.icon.as_ref(), &state.config.public_url),
             hidden: svc.hidden,
             extends: None,
             warnings: 0,
@@ -54,6 +55,7 @@ pub(super) async fn list_templates(
             hosts: s.hosts,
             action_count: s.action_count,
             tier: tier.into(),
+            icon_url: resolve_icon_url(s.icon.as_ref(), &state.config.public_url),
             hidden: s.hidden,
             extends: t.extends,
             warnings: s.warnings,
@@ -118,6 +120,7 @@ pub(super) async fn search_templates(
             hosts: svc.hosts.clone(),
             action_count: svc.actions.len(),
             tier: "global".into(),
+            icon_url: resolve_icon_url(svc.icon.as_ref(), &state.config.public_url),
             hidden: svc.hidden,
             extends: None,
             warnings: 0,
@@ -156,6 +159,7 @@ pub(super) async fn search_templates(
                 hosts: s.hosts,
                 action_count: s.action_count,
                 tier: tier.into(),
+                icon_url: resolve_icon_url(s.icon.as_ref(), &state.config.public_url),
                 hidden: s.hidden,
                 extends: t.extends,
                 warnings: s.warnings,
@@ -180,13 +184,12 @@ pub(super) async fn get_template(
             org_repo::get_allow_user_templates(state.db(&ext), auth.org_id)
                 .await?
                 .unwrap_or(false);
-        if user_templates_allowed {
-            if let Some(t) =
+        if user_templates_allowed
+            && let Some(t) =
                 service_template::get_by_key(state.db(&ext), auth.org_id, Some(identity_id), &key)
                     .await?
-            {
-                return Ok(Json(db_row_to_detail(&state, &ext, t, "user").await?));
-            }
+        {
+            return Ok(Json(db_row_to_detail(&state, &ext, t, "user").await?));
         }
     }
 
@@ -225,6 +228,7 @@ pub(super) async fn get_template(
         description: svc.description.clone(),
         category: svc.category.clone(),
         hosts: svc.hosts.clone(),
+        icon_url: resolve_icon_url(svc.icon.as_ref(), &state.config.public_url),
         auth,
         secrets: svc.all_slots(),
         openapi: openapi_yaml,

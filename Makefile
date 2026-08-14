@@ -1,11 +1,12 @@
-.PHONY: local local-db local-down dev dev-api dev-dashboard down net test check line-count fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
+.PHONY: local local-db local-down dev dev-api dev-dashboard down net test check line-count check-decisions allocate-decision fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean \
        dashboard-static web-build web build install \
        logs logs-deploy \
        shortener-dev shortener-down shortener-deploy \
        deploy db-shell \
-       e2e e2e-up e2e-down mail-up mail-down
+       e2e e2e-up e2e-down mail-up mail-down \
+       service-icons check-service-icons
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 ENGINE := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null || echo docker)
@@ -245,8 +246,8 @@ worktree-clean:
 test:
 	cargo test --workspace
 
-# CI check: line counts + fmt + clippy + test
-check: line-count
+# CI check: line counts + decision numbering + fmt + clippy + test
+check: line-count check-decisions
 	cargo fmt --check
 	cargo clippy --workspace -- -D warnings
 	cargo test --workspace
@@ -254,6 +255,15 @@ check: line-count
 # Every .rs under crates/*/src must stay under 1000 lines (mirrors CI).
 line-count:
 	bash scripts/check-line-counts.sh
+
+# Decision numbers are unique, contiguous, and allocated at merge (mirrors CI).
+check-decisions:
+	bash scripts/check-decisions.sh
+
+# Stamp the real number onto a decision authored as a placeholder. Normally the
+# allocate-decision workflow does this on dev; run it by hand when that fails.
+allocate-decision:
+	bash scripts/allocate-decision.sh
 
 # Format
 fmt:
@@ -275,6 +285,17 @@ new-migration:
 # Regenerate SCHEMA.sql
 schema:
 	pg_dump --schema-only --no-owner --no-acl --schema=public --exclude-table=_sqlx_migrations "$${DATABASE_URL}" > SCHEMA.sql
+
+# Regenerate the built-in service icons from assets/service-icons/manifest.json
+service-icons:
+	cd dashboard && npm ci --include=dev
+	node scripts/gen-service-icons.mjs
+
+# Verify the committed icon set matches the manifest
+check-service-icons:
+	@node scripts/gen-service-icons.mjs >/dev/null
+	@git diff --quiet --exit-code assets/service-icons || \
+		{ echo "assets/service-icons is stale — run 'make service-icons'"; exit 1; }
 
 # Regenerate sqlx offline caches
 sqlx-prepare:

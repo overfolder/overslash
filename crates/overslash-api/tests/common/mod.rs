@@ -4,6 +4,7 @@
 #![allow(clippy::disallowed_methods)]
 
 pub mod shared_router;
+pub mod sse;
 pub use shared_router::{ResourceGuard, start_api_shared};
 
 use std::collections::HashMap;
@@ -629,6 +630,10 @@ where
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut config = overslash_api::config::Config {
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(), // unused, we pass pool directly
@@ -636,6 +641,7 @@ where
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -656,10 +662,18 @@ where
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
+        call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
@@ -725,7 +739,9 @@ where
         ),
         mailer,
         event_bus: event_bus.clone(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -738,8 +754,11 @@ where
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::icons::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
+        .merge(overslash_api::routes::executions::router())
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
@@ -753,6 +772,7 @@ where
         .merge(overslash_api::routes::events::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
+        .merge(overslash_api::routes::account_invitations::router())
         .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
@@ -826,6 +846,10 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let config = overslash_api::config::Config {
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -833,6 +857,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -853,10 +878,18 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
+        call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
@@ -913,7 +946,9 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -926,8 +961,10 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
+        .merge(overslash_api::routes::executions::router())
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
@@ -940,6 +977,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::events::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
+        .merge(overslash_api::routes::account_invitations::router())
         .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
@@ -969,6 +1007,10 @@ pub async fn start_api_with_auth_providers(
     public_url: &str,
 ) -> (String, Client) {
     let config = overslash_api::config::Config {
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -976,6 +1018,7 @@ pub async fn start_api_with_auth_providers(
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -996,10 +1039,18 @@ pub async fn start_api_with_auth_providers(
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
+        call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
@@ -1059,7 +1110,9 @@ pub async fn start_api_with_auth_providers(
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -1072,8 +1125,10 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
+        .merge(overslash_api::routes::executions::router())
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
@@ -1084,6 +1139,7 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
+        .merge(overslash_api::routes::account_invitations::router())
         .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .with_state(state);
@@ -1280,6 +1336,40 @@ pub fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
 }
 
+/// Test helper: the org's Everyone group id. Every user identity in the org is
+/// a member of it (see `bootstrap_org`), which makes it the obvious group to
+/// satisfy the create-time grant requirement on an org-level service.
+pub async fn everyone_group_id(base: &str, client: &Client, key: &str) -> Uuid {
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {key}"))
+        .send()
+        .await
+        .expect("list groups")
+        .json()
+        .await
+        .expect("groups json");
+    groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .and_then(|g| g["id"].as_str())
+        .expect("Everyone group must exist after bootstrap")
+        .parse()
+        .expect("group id is a uuid")
+}
+
+/// The `groups` payload for an org-level `POST /v1/services`: admin access via
+/// Everyone. An org-level instance must name at least one group the caller
+/// belongs to, so every org-level create in the suite carries this.
+pub async fn everyone_grant(base: &str, client: &Client, key: &str) -> Value {
+    let group_id = everyone_group_id(base, client, key).await;
+    json!([{
+        "group_id": group_id.to_string(),
+        "access_level": "admin",
+        "auto_approve_reads": true,
+    }])
+}
+
 /// Test helper: ensure an org-level instance for `template_key` exists, then
 /// grant Everyone admin access on it so any user-identity in the org clears
 /// Layer 1 for that service. Idempotent — safe to call repeatedly. Returns
@@ -1300,6 +1390,9 @@ pub async fn grant_service_to_everyone(
             "template_key": template_key,
             "name": template_key,
             "user_level": false,
+            // Org-level instances must name a group the caller belongs to.
+            // The explicit grant below is then a 409 no-op on this path.
+            "groups": everyone_grant(base, client, admin_key).await,
             "status": "active",
         }))
         .send()
@@ -1485,12 +1578,12 @@ where
         overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"), vars)
             .unwrap_or_default();
 
-    if let Some((service_key, new_host)) = host_override {
-        if let Some(svc) = registry.get(service_key) {
-            let mut svc = svc.clone();
-            svc.hosts = vec![new_host];
-            registry.insert(svc);
-        }
+    if let Some((service_key, new_host)) = host_override
+        && let Some(svc) = registry.get(service_key)
+    {
+        let mut svc = svc.clone();
+        svc.hosts = vec![new_host];
+        registry.insert(svc);
     }
 
     // Bind first so `public_url` matches the real bound address — the MCP
@@ -1500,6 +1593,10 @@ where
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut config = overslash_api::config::Config {
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -1507,6 +1604,7 @@ where
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: enc_key_hex,
         secrets_encryption_key_previous: None,
@@ -1527,10 +1625,18 @@ where
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
+        call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
@@ -1588,7 +1694,9 @@ where
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -1601,8 +1709,10 @@ where
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
+        .merge(overslash_api::routes::executions::router())
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
@@ -1613,6 +1723,7 @@ where
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
+        .merge(overslash_api::routes::account_invitations::router())
         .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
@@ -1650,6 +1761,10 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
     .unwrap_or_default();
 
     let config = overslash_api::config::Config {
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -1657,6 +1772,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -1677,10 +1793,18 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
+        call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
@@ -1737,7 +1861,9 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -1753,6 +1879,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::search::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::auth::router())
@@ -1767,7 +1894,16 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
 
 /// Start API with a custom max response body size (for testing size limits).
 pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (SocketAddr, Client) {
+    // Bind first so `public_url` is the address the server actually answers on.
+    // Deferred downloads mint absolute URLs off `public_url`; a placeholder here
+    // produces a descriptor pointing at a port nothing is listening to.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let config = overslash_api::config::Config {
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -1775,6 +1911,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -1789,16 +1926,24 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
+        public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         magic_link_enabled: true,
         max_response_body_bytes: max_bytes,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
+        call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
@@ -1855,7 +2000,9 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -1868,8 +2015,10 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
+        .merge(overslash_api::routes::executions::router())
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
@@ -1880,6 +2029,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_invites::router())
+        .merge(overslash_api::routes::account_invitations::router())
         .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
@@ -1893,8 +2043,6 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     (addr, Client::new())
@@ -2071,4 +2219,120 @@ pub async fn seed_oauth_flow_with_scopes(
     .await
     .unwrap();
     flow_id
+}
+
+/// Build a bare [`overslash_api::AppState`] around `pool`.
+///
+/// For tests that exercise a service or middleware directly rather than over
+/// HTTP, where `start_api*` would be a whole router too many. Deliberately
+/// minimal: no registry, embeddings disabled, `NoopMailer`, and
+/// `test_resources: None` so `state.db(&Extensions::default())` resolves to
+/// `pool` rather than a shared bootstrap pool.
+pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
+    let config = overslash_api::config::Config {
+        call_result_max_bytes: 1024 * 1024,
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        db_max_connections: 5,
+        db_min_connections: 1,
+        db_acquire_timeout_secs: 10,
+        events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
+        db_background_max_connections: 2,
+        secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
+        signing_key: "cd".repeat(32),
+        approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
+        services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        github_auth_client_id: None,
+        github_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
+        magic_link_enabled: true,
+        max_response_body_bytes: 5_242_880,
+        audit_response_body_max_bytes: 65_536,
+        filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
+        dashboard_url: "/".into(),
+        dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
+        redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
+        default_rate_limit: 1000,
+        default_rate_window_secs: 60,
+        allow_org_creation: true,
+        trial_default_duration_days: 30,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        platform_credential: None,
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
+    };
+    // Hand out a 1ms TTL so each test can flip the DB column and immediately
+    // observe the new state without waiting on cache expiry. Tests that want
+    // to verify the cache itself call `invalidate()` explicitly.
+    let free_unlimited_cache = Arc::new(
+        overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+            std::time::Duration::from_millis(1),
+        ),
+    );
+    overslash_api::AppState {
+        db: pool,
+        config,
+        http_client: reqwest::Client::new(),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        rate_limiter: Arc::new(overslash_api::services::rate_limit::InMemoryRateLimitStore::new()),
+        rate_limit_cache: Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
+        free_unlimited_cache,
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        test_resources: None,
+        background_db: None,
+    }
 }

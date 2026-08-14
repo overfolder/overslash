@@ -109,6 +109,10 @@ async fn read_billing(pool: &PgPool, org_id: Uuid) -> (String, Option<OffsetDate
 // banner-only test can drive the rate-limit middleware in isolation.
 async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
     let config = overslash_api::config::Config {
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -116,6 +120,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -136,10 +141,18 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
+        call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 1000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
@@ -190,7 +203,9 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     }
 }
 

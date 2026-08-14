@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT audience FROM events WHERE org_id = $1 ORDER BY id DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "audience",
+        "type_info": "UuidArray",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "audience"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "49b17683c1351478e6761e40c3855665ebcc82c436b8c871417616deecbd97af"
+}

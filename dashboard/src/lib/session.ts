@@ -6,6 +6,10 @@
  * Auth relies on the `oss_session` HttpOnly cookie set by the backend.
  */
 
+// Type-only, so the `$lib/api/account` → `$lib/session` import cycle is erased
+// at build time rather than becoming a runtime one.
+import type { PendingInvitation } from '$lib/api/account';
+
 export class ApiError extends Error {
 	constructor(
 		public status: number,
@@ -184,6 +188,11 @@ export interface MeIdentity {
 	user_id?: string | null;
 	personal_org_id?: string | null;
 	memberships?: MembershipSummary[];
+	/** Pending invitations from orgs the caller has *not* joined yet, keyed
+	 *  on their IdP-verified email. Embedded here so the sidebar needs no
+	 *  extra round trip; also served on its own by
+	 *  `GET /v1/account/invitations`. */
+	invitations?: PendingInvitation[];
 	/** Instance-admin-managed trial summary for the org-wide banner. `null`
 	 *  for non-trial orgs. Enforcement is banner-only — informational. */
 	trial?: TrialSummary | null;
@@ -305,6 +314,14 @@ export interface ApprovalResponse {
 	 *  declared no disclose entries. */
 	disclosed_fields: DisclosedField[] | null;
 	status: string;
+	/** Whether an approved replay runs on the connection that triggers it or is
+	 *  queued for the async worker. Stamped from the original call's
+	 *  `execution` mode, so a reviewer can be told — before approving — that
+	 *  this one will not produce a result on the page. */
+	execution_mode: 'sync' | 'async' | 'hybrid';
+	/** Suggested delay before the first poll, ms. Present only on the response
+	 *  to POST /v1/approvals/{id}/call that queued the replay. */
+	poll_after_ms?: number;
 	token: string;
 	expires_at: string;
 	created_at: string;
@@ -344,7 +361,11 @@ export interface ExecutionSummary {
 	 *  the requesting agent's identity has `auto_call_on_approve` enabled
 	 *  (default true). Applies uniformly to MCP, REST, and white-label
 	 *  agents. */
-	triggered_by?: 'agent' | 'user' | 'auto';
+	triggered_by?: 'agent' | 'user' | 'auto' | 'async' | 'hybrid';
+	/** This execution runs on the async worker, not on a request. It changes
+	 *  what `pending` means: "queued, nothing to trigger" rather than
+	 *  "approved, waiting for the agent". Absent on every synchronous row. */
+	queued?: boolean;
 	started_at?: string;
 	completed_at?: string;
 	expires_at: string;
@@ -358,7 +379,52 @@ export interface ExecutionSummary {
 	 *  for the first time. Drives the "called but output unread" surface
 	 *  on the dashboard's pending-calls list. */
 	output_read: boolean;
+	/** True when policy hid the body because the viewer is not the requester,
+	 *  not in their chain, and not an org admin. `result` and `error` are
+	 *  omitted in that case — render "hidden", not "empty", or it reads as a
+	 *  bug rather than as policy. */
+	result_redacted?: boolean;
 }
+
+/**
+ * Mirrors crates/overslash-api/src/routes/executions/dto.rs `ExecutionDetail`.
+ *
+ * The standalone execution resource. `ExecutionSummary` is the shape nested
+ * inside an approval and deliberately drops the fields that only matter when
+ * an execution is addressed on its own, so this extends rather than replaces
+ * it — the Rust side `#[serde(flatten)]`s the same struct, so the two cannot
+ * describe a column differently.
+ */
+export interface ExecutionDetail extends ExecutionSummary {
+	/** `approval` when this execution came from a gated call, `async_call`
+	 *  when the caller asked for `execution: "async"` directly, `hybrid` when
+	 *  it started on the caller's connection and outran the handoff. Derived
+	 *  from `approval_id` and `triggered_by` — it is not a stored column.
+	 *
+	 *  `hybrid` is distinct from `async_call` because on a non-terminal row the
+	 *  two mean opposite things: queued-and-not-started versus already-running
+	 *  on a connection that may be gone. */
+	origin: 'approval' | 'async_call' | 'hybrid';
+	/** The identity whose call this is. */
+	identity_id: string;
+	/** Present only for `origin: "approval"`. */
+	approval_id?: string;
+	tags: string[];
+	service?: string;
+	action?: string;
+	/** Attempts that ended by losing a worker lease. Non-zero means the job
+	 *  was interrupted at least once — usually a Cloud Run scale-in. */
+	attempts?: number;
+	/** A cancel has been requested but the worker has not yet observed it.
+	 *  Cancelling stops Overslash waiting; it does not recall the upstream. */
+	cancel_requested?: boolean;
+}
+
+/** List rows never carry `result` — fetching the body is also what marks it
+ *  read, so a list that inlined it would let a reader scrape results without
+ *  ever acknowledging them. The server always sets `result_redacted` on list
+ *  rows for the same reason. */
+export type ExecutionListItem = Omit<ExecutionDetail, 'result'>;
 
 export interface ResolveApprovalRequest {
 	resolution: 'allow' | 'deny' | 'allow_remember' | 'bubble_up';

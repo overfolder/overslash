@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions SET started_at = now() - interval '30 minutes' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "aa26b938af2a5a5b7aeacb9b59bbfd671f39aa4a8296284ecbb373c1f713cb1d"
+}

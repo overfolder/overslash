@@ -3,6 +3,7 @@
 	import { ApiError } from '$lib/session';
 	import { updateTemplate, deleteTemplate } from '$lib/api/services';
 	import type { TemplateDetail } from '$lib/types';
+	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 
@@ -80,6 +81,7 @@
 				<a href="/services" class="back">Services</a>
 				<span class="sep">/</span>
 				<span>Template Editor:</span>
+				<ServiceIcon src={template.icon_url} name={template.display_name} size={20} />
 				<span class="name">{template.display_name}</span>
 				<StatusBadge variant={template.tier} />
 				{#if template.hidden}

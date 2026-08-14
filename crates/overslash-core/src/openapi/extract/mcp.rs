@@ -9,9 +9,10 @@ use crate::types::{
     ActionParam, DeclaredRisk, McpAuth, McpSpec, ParamLocation, ServiceAction, ServiceDefinition,
 };
 
+use super::super::ext::{self, Ext, Pos};
 use super::{
-    parse_aliases, parse_disclose, parse_instance_config, parse_redact, parse_scope_params,
-    parse_sql_policy,
+    parse_aliases, parse_disclose, parse_download, parse_instance_config, parse_redact,
+    parse_resolver, parse_scope_params, parse_sql_policy, parse_timeout_ms, parse_wait_mode,
 };
 
 // ── x-overslash-mcp → McpSpec + ServiceActions ───────────────────────
@@ -19,7 +20,7 @@ use super::{
 /// Lower the `x-overslash-mcp` block into a typed `McpSpec`.
 pub(crate) fn extract_mcp_spec(root: &Map<String, Value>) -> Result<McpSpec, Vec<ValidationIssue>> {
     let mut errors = Vec::new();
-    let Some(mcp_obj) = root.get("x-overslash-mcp").and_then(Value::as_object) else {
+    let Some(mcp_obj) = ext::get(root, Pos::Root, Ext::Mcp).and_then(Value::as_object) else {
         errors.push(ValidationIssue::new(
             "mcp_missing",
             "runtime is `mcp` but x-overslash-mcp block is absent",
@@ -150,7 +151,7 @@ pub(crate) fn extract_mcp_actions(
     warnings: &mut Vec<ValidationIssue>,
 ) -> Result<(), Vec<ValidationIssue>> {
     let mut errors = Vec::new();
-    let mcp_obj = match root.get("x-overslash-mcp").and_then(Value::as_object) {
+    let mcp_obj = match ext::get(root, Pos::Root, Ext::Mcp).and_then(Value::as_object) {
         Some(o) => o,
         None => return Ok(()),
     };
@@ -265,7 +266,7 @@ fn lower_mcp_tool(
 ) -> Option<ServiceAction> {
     let base = format!("x-overslash-mcp.tools[{name}]");
 
-    let risk = match obj.get("x-overslash-risk").and_then(Value::as_str) {
+    let risk = match ext::get(obj, Pos::McpTool, Ext::Risk).and_then(Value::as_str) {
         Some("read") | None => DeclaredRisk::Read,
         Some("write") => DeclaredRisk::Write,
         Some("delete") => DeclaredRisk::Delete,
@@ -276,9 +277,10 @@ fn lower_mcp_tool(
             errors.push(ValidationIssue::new(
                 "invalid_risk",
                 format!(
-                    "x-overslash-risk must be one of read/write/delete/dynamic (got {other:?})"
+                    "{} must be one of read/write/delete/dynamic (got {other:?})",
+                    Ext::Risk.key()
                 ),
-                format!("{base}.x-overslash-risk"),
+                format!("{base}.{}", Ext::Risk.key()),
             ));
             return None;
         }
@@ -289,7 +291,8 @@ fn lower_mcp_tool(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let scope_param = match parse_scope_params(obj.get("x-overslash-scope_param"), &base) {
+    let scope_param = match parse_scope_params(ext::get(obj, Pos::McpTool, Ext::ScopeParam), &base)
+    {
         Ok(sp) => sp,
         Err(issue) => {
             errors.push(issue);
@@ -312,10 +315,31 @@ fn lower_mcp_tool(
         ));
         return None;
     }
-    let params = input_schema.map(lower_input_schema).unwrap_or_default();
+    let params = input_schema
+        .map(|s| lower_input_schema(s, &base, errors))
+        .unwrap_or_default();
 
-    let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, errors);
-    let redact = parse_redact(obj.get("x-overslash-redact"), &base, errors);
+    let disclose = parse_disclose(ext::get(obj, Pos::McpTool, Ext::Disclose), &base, errors);
+    let redact = parse_redact(ext::get(obj, Pos::McpTool, Ext::Redact), &base, errors);
+    let download = parse_download(ext::get(obj, Pos::McpTool, Ext::Download), &base, errors);
+    let timeout_ms = parse_timeout_ms(
+        ext::get(obj, Pos::McpTool, Ext::TimeoutMs),
+        Ext::TimeoutMs.key(),
+        &base,
+        errors,
+    );
+    let wait_mode = parse_wait_mode(
+        ext::get(obj, Pos::McpTool, Ext::WaitMode),
+        Ext::WaitMode.key(),
+        &base,
+        errors,
+    );
+    let handoff_after_ms = parse_timeout_ms(
+        ext::get(obj, Pos::McpTool, Ext::HandoffAfterMs),
+        Ext::HandoffAfterMs.key(),
+        &base,
+        errors,
+    );
 
     // The upstream MCP tool name defaults to the action key, but may be
     // overridden with `mcp_tool` when the server's tool name isn't a valid
@@ -330,24 +354,23 @@ fn lower_mcp_tool(
         .unwrap_or_else(|| name.to_string());
 
     Some(ServiceAction {
-        method: String::new(),
-        path: String::new(),
         description,
-        summary: None,
         risk,
-        response_type: None,
+        timeout_ms,
+        wait_mode,
+        handoff_after_ms,
         params,
         scope_param,
-        required_scopes: Vec::new(),
-        permission: None,
         disclose,
         redact,
         mcp_tool: Some(mcp_tool),
         output_schema,
         disabled,
-        // MCP tool calls are framed by the MCP client (which sets its own
-        // JSON-RPC content type), never routed through `resolve`.
-        request_body: None,
+        download,
+        // Everything else defaults — notably `request_body`, since MCP tool
+        // calls are framed by the MCP client (which sets its own JSON-RPC
+        // content type) and never routed through `resolve`.
+        ..Default::default()
     })
 }
 
@@ -389,7 +412,11 @@ pub fn overlay_discovered_tools(def: &mut ServiceDefinition, discovered: &[Value
 /// into the subset of `ActionParam` shape Overslash understands. Unsupported
 /// constructs (oneOf, nested object properties) are silently ignored — they
 /// remain in the raw `output_schema` / `input_schema` for agent consumption.
-pub(crate) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam> {
+pub(crate) fn lower_input_schema(
+    schema: &Value,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> HashMap<String, ActionParam> {
     let mut out = HashMap::new();
     let Some(obj) = schema.as_object() else {
         return out;
@@ -423,9 +450,15 @@ pub(crate) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
                 .collect()
         });
         let default = po.get("default").cloned();
-        let aliases = parse_aliases(Some(po), name);
-        let instance_config = parse_instance_config(Some(po));
-        let (sql_field, sql_database) = parse_sql_policy(Some(po));
+        let aliases = parse_aliases(Some(po), name, Pos::McpToolProperty);
+        let instance_config = parse_instance_config(Some(po), Pos::McpToolProperty);
+        let (sql_field, sql_database) = parse_sql_policy(Some(po), Pos::McpToolProperty);
+        // MCP params carry resolvers too — an MCP resolver names a sibling
+        // `risk: read` tool rather than a GET path, but the declaration and
+        // the projection are the same shape the HTTP path parses.
+        let resolve = ext::get(po, Pos::McpToolProperty, Ext::Resolve).and_then(|v| {
+            parse_resolver(v, &format!("{base}.input_schema.properties.{name}"), issues)
+        });
         out.insert(
             name.clone(),
             ActionParam {
@@ -434,7 +467,7 @@ pub(crate) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
                 description,
                 enum_values,
                 default,
-                resolve: None,
+                resolve,
                 aliases,
                 location: ParamLocation::Body,
                 instance_config,
@@ -461,10 +494,92 @@ mod tests {
             },
             "required": ["recipient"]
         });
-        let params = lower_input_schema(&schema);
+        let params = lower_input_schema(&schema, "tools.t", &mut Vec::new());
         let mut aliases = params["recipient"].aliases.clone();
         aliases.sort();
         assert_eq!(aliases, vec!["dest".to_string(), "to".to_string()]);
         assert!(params["text"].aliases.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn lower(tool: serde_json::Value) -> (Option<ServiceAction>, Vec<ValidationIssue>) {
+        let mut errors = Vec::new();
+        let action = lower_mcp_tool(
+            "download_media",
+            tool.as_object().unwrap(),
+            true,
+            &mut errors,
+        );
+        (action, errors)
+    }
+
+    #[test]
+    fn download_block_lowers_onto_the_action() {
+        let (action, errors) = lower(json!({
+            "name": "download_media",
+            "x-overslash-download": {
+                "url": ".structured.media_path",
+                "mime": ".structured.mime",
+                "size": ".structured.size",
+                "filename": ".structured.filename",
+                "auth": "inherit"
+            }
+        }));
+        assert!(errors.is_empty(), "{errors:?}");
+        let d = action.unwrap().download.expect("download spec");
+        assert_eq!(d.url, ".structured.media_path");
+        assert_eq!(d.mime.as_deref(), Some(".structured.mime"));
+        assert_eq!(d.auth, crate::types::DownloadAuth::Inherit);
+    }
+
+    #[test]
+    fn auth_defaults_to_inherit_and_metadata_filters_are_optional() {
+        let (action, errors) = lower(json!({
+            "name": "download_media",
+            "x-overslash-download": { "url": ".structured.href" }
+        }));
+        assert!(errors.is_empty(), "{errors:?}");
+        let d = action.unwrap().download.expect("download spec");
+        assert_eq!(d.auth, crate::types::DownloadAuth::Inherit);
+        assert!(d.mime.is_none() && d.size.is_none() && d.filename.is_none());
+    }
+
+    #[test]
+    fn a_block_without_url_is_an_error_not_a_partial_spec() {
+        // A download with no location isn't a weaker download, it's nothing —
+        // and silently dropping it would make `deliver: "url"` fail later with
+        // a confusing "action declares no download" instead of here.
+        let (_, errors) = lower(json!({
+            "name": "download_media",
+            "x-overslash-download": { "mime": ".structured.mime" }
+        }));
+        assert!(
+            errors.iter().any(|e| e.code == "download_malformed"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_auth_mode_is_rejected() {
+        let (_, errors) = lower(json!({
+            "name": "download_media",
+            "x-overslash-download": { "url": ".x", "auth": "basic" }
+        }));
+        assert!(
+            errors.iter().any(|e| e.code == "download_malformed"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn absent_block_leaves_download_none() {
+        let (action, errors) = lower(json!({ "name": "download_media" }));
+        assert!(errors.is_empty());
+        assert!(action.unwrap().download.is_none());
     }
 }

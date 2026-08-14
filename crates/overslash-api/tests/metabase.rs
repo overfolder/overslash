@@ -52,24 +52,42 @@ async fn start_mock_metabase() -> (SocketAddr, SeenLog) {
             .unwrap_or_default();
         let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         let path = parts.uri.path().to_string();
+        let api_key = parts
+            .headers
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
         seen.lock().unwrap().push(Seen {
             method: parts.method.to_string(),
             path: path.clone(),
-            api_key: parts
-                .headers
-                .get("x-api-key")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string),
+            api_key: api_key.clone(),
             body,
         });
         let payload = if path == "/api/database" {
             json!({ "data": [ { "id": 1, "name": "pagila", "engine": "postgres" } ] })
+        } else if path == "/api/database/1" {
+            // What the `database` display resolver reads. Only db 1 exists —
+            // any other id 404s, which is how the fallback-to-raw-id path is
+            // exercised.
+            //
+            // Auth is enforced here on purpose: a real Metabase 401s an
+            // unauthenticated GET, and the resolver's credential arrives by a
+            // different route than the action's (secret refs are only
+            // materialized at send time). Answering regardless would let that
+            // gap pass unnoticed.
+            if api_key.is_none() {
+                return (axum::http::StatusCode::UNAUTHORIZED, axum::Json(json!({})))
+                    .into_response();
+            }
+            json!({ "id": 1, "name": "pagila", "engine": "postgres" })
+        } else if path.starts_with("/api/database/") && !path.ends_with("/metadata") {
+            return (axum::http::StatusCode::NOT_FOUND, axum::Json(json!({}))).into_response();
         } else if path == "/api/dataset" {
             json!({ "status": "completed", "data": { "rows": [[1]], "cols": [{"name": "n"}] } })
         } else {
             json!({ "ok": true })
         };
-        axum::Json(payload)
+        axum::Json(payload).into_response()
     }
 
     let app = Router::new()
@@ -131,11 +149,19 @@ async fn setup_against(
         .unwrap();
     assert!(put.status().is_success(), "secret put: {}", put.status());
 
+    // The instance carries the caller-chosen Everyone grant from the start —
+    // an org-level instance can't be created without naming a group.
+    let everyone_id = common::everyone_group_id(&base, &client, &admin_key).await;
     let mut body = json!({
         "template_key": "metabase",
         "name": "metabase",
         "url": upstream_url,
         "user_level": false,
+        "groups": [{
+            "group_id": everyone_id.to_string(),
+            "access_level": access_level,
+            "auto_approve_reads": auto_approve_reads,
+        }],
         "status": "active",
         "credentials": { "token": "metabase_api_key" },
     });
@@ -152,37 +178,7 @@ async fn setup_against(
         .json()
         .await
         .unwrap();
-    let svc_id = svc["id"]
-        .as_str()
-        .expect("service create failed")
-        .to_string();
-
-    let groups: Vec<Value> = client
-        .get(format!("{base}/v1/groups"))
-        .header(auth(&admin_key).0, auth(&admin_key).1)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let everyone_id = groups
-        .iter()
-        .find(|g| g["system_kind"].as_str() == Some("everyone"))
-        .and_then(|g| g["id"].as_str())
-        .expect("Everyone group exists");
-    let grant = client
-        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
-        .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({
-            "service_instance_id": svc_id,
-            "access_level": access_level,
-            "auto_approve_reads": auto_approve_reads,
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert!(grant.status().is_success(), "grant: {}", grant.status());
+    svc["id"].as_str().expect("service create failed");
 
     (base, client, agent_key, admin_key, ident_id.to_string())
 }
@@ -268,11 +264,82 @@ async fn metabase_template_ships() {
         ("list_cards", DeclaredRisk::Read),
         ("run_card", DeclaredRisk::Read),
         ("search", DeclaredRisk::Read),
+        ("popular_items", DeclaredRisk::Read),
+        ("recents", DeclaredRisk::Read),
         ("run_query", DeclaredRisk::Dynamic),
         ("export_query", DeclaredRisk::Dynamic),
     ] {
         assert_eq!(svc.actions[action].risk, want, "{action}");
     }
+
+    // ── The middle gear ──────────────────────────────────────────────
+    //
+    // An agent asked "which cards are popular" and the only gears were
+    // `run_card` (one card by id) and `list_cards` (all 2,033 of them). The
+    // template now has to keep offering something in between.
+    let search = &svc.actions["search"];
+    assert_eq!(
+        search.params["limit"].default,
+        Some(serde_json::json!(50)),
+        "search's page size must carry a default — an omitted `limit` is \
+         exactly how the unbounded call gets made"
+    );
+    assert!(search.params.contains_key("offset"), "search must page");
+    // `models` names its members in prose rather than an `enum:` on purpose:
+    // it takes a comma-separated list and `validate_input` matches an enum
+    // against the whole value, so enum'ing it would reject "card,dashboard".
+    assert!(
+        search.params["models"].enum_values.is_none(),
+        "an enum on a comma-separated param rejects the multi-value usage"
+    );
+    assert!(
+        search.params["models"].description.contains("card"),
+        "models must still name its members somewhere the model can read"
+    );
+
+    // `GET /api/card` genuinely has nothing to paginate with upstream, so the
+    // fix there is honesty plus the two params that do exist.
+    let cards = &svc.actions["list_cards"];
+    assert!(
+        cards.params["f"]
+            .enum_values
+            .as_ref()
+            .is_some_and(|e| e.iter().any(|v| v == "mine")),
+        "list_cards `f` must be enum'd, not prose"
+    );
+    assert!(cards.params.contains_key("model_id"));
+    for needle in ["search", "popular_items"] {
+        assert!(
+            cards.description.contains(needle),
+            "list_cards must redirect to the narrower call — `description` is \
+             still the only string about an action that reliably reaches the \
+             model. Missing {needle} in: {}",
+            cards.description
+        );
+    }
+
+    // `recents` is per-user and `popular_items` is instance-wide; conflating
+    // them answers the wrong question, so the contract is pinned.
+    assert!(
+        svc.actions["popular_items"].params.is_empty(),
+        "popular_items takes no parameters"
+    );
+    let ctx = &svc.actions["recents"].params["context"];
+    assert!(ctx.required, "recents needs a context");
+    assert_eq!(
+        ctx.enum_values,
+        Some(vec!["views".to_string(), "selections".to_string()])
+    );
+
+    // The export is binary. It used to say so with a `response_type:` key
+    // nothing reads — the compiler derives it from `responses` — so the
+    // "use prefer_stream" hint never fired and a large xlsx was buffered
+    // against the size cap.
+    assert_eq!(
+        svc.actions["export_query"].response_type.as_deref(),
+        Some("binary"),
+        "export_query must compile to a binary response type"
+    );
 
     let query = &svc.actions["run_query"].params["query"];
     assert_eq!(query.sql_field.as_deref(), Some("native.query"));
@@ -297,6 +364,188 @@ async fn metabase_template_ships() {
     assert_eq!(
         export_q.sql_database.as_deref(),
         Some(".query.database | tostring")
+    );
+
+    // Display resolvers parse off both body properties. They're spelled
+    // canonically in the YAML because alias normalization never walks
+    // requestBody schema properties — if someone "tidies" them to the
+    // unprefixed `resolve:` form they'd be silently dropped, and this is
+    // what notices.
+    let db_resolve = svc.actions["run_query"].params["database"]
+        .resolve
+        .as_ref()
+        .expect("run_query.database declares a display resolver");
+    assert_eq!(db_resolve.get.as_deref(), Some("/api/database/{database}"));
+    assert_eq!(db_resolve.pick.as_deref(), Some("name"));
+    let export_resolve = export_q
+        .resolve
+        .as_ref()
+        .expect("export_query.query declares a display resolver");
+    assert_eq!(
+        export_resolve.get.as_deref(),
+        Some("/api/database/{query.database}")
+    );
+    assert_eq!(export_resolve.pick.as_deref(), Some("name"));
+}
+
+/// Pull one labelled entry out of a `disclosed` array.
+fn disclosed_value<'a>(disclosed: &'a [Value], label: &str) -> Option<&'a str> {
+    disclosed
+        .iter()
+        .find(|d| d["label"].as_str() == Some(label))?["value"]
+        .as_str()
+}
+
+/// The reason this template carries resolvers at all: an approval reviewer
+/// reading "Database: 4" learns nothing about whether the statement is aimed
+/// at production. The disclosure names the database instead.
+#[tokio::test]
+async fn database_disclosure_carries_the_resolved_name() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    // A write statement so both build tiers land on the same surface: with
+    // the parser it classifies write, without it `risk: dynamic` fails closed
+    // to write anyway. That surface is the point — the approval payload is
+    // what a human reads before deciding.
+    let resp = run_query(
+        &base,
+        &client,
+        &agent_key,
+        "DELETE FROM public.film",
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        resp["status"].as_str(),
+        Some("pending_approval"),
+        "{resp:?}"
+    );
+
+    let disclosed = resp["disclosed_fields"]
+        .as_array()
+        .cloned()
+        .expect("inline disclosed_fields present");
+    assert_eq!(
+        disclosed_value(&disclosed, "Database"),
+        Some("pagila"),
+        "expected the resolved Metabase name, got: {disclosed:?}"
+    );
+    assert_eq!(
+        disclosed_value(&disclosed, "SQL"),
+        Some("DELETE FROM public.film"),
+        "{disclosed:?}"
+    );
+    // The same display name reaches the approval title.
+    assert_eq!(
+        resp["action_description"].as_str(),
+        Some("Run SQL on database 'pagila' (Metabase)"),
+        "{resp:?}"
+    );
+
+    // The resolver GET is authenticated exactly the way the action is.
+    let seen = seen.lock().unwrap();
+    let resolve = seen
+        .iter()
+        .find(|r| r.path == "/api/database/1")
+        .expect("resolver GET fired");
+    assert_eq!(resolve.method, "GET");
+    assert_eq!(resolve.api_key.as_deref(), Some("mb_test_key_123"));
+}
+
+/// export_query nests the id at `query.database`, so the resolver URL only
+/// builds if the placeholder substituter descends into the object param.
+#[tokio::test]
+async fn export_query_resolver_reaches_the_nested_database_id() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "export_query",
+            "params": {
+                "export_format": "csv",
+                "query": {
+                    "database": 1,
+                    "type": "native",
+                    "native": { "query": "DELETE FROM public.film" },
+                },
+            },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp["status"].as_str(),
+        Some("pending_approval"),
+        "{resp:?}"
+    );
+
+    let disclosed = resp["disclosed_fields"]
+        .as_array()
+        .cloned()
+        .expect("inline disclosed_fields present");
+    assert_eq!(
+        disclosed_value(&disclosed, "Database"),
+        Some("pagila"),
+        "dotted placeholder should have reached params.query.database, got: {disclosed:?}"
+    );
+    assert_eq!(disclosed_value(&disclosed, "Format"), Some("csv"));
+
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter().any(|r| r.path == "/api/database/1"),
+        "resolver GET should have hit the un-nested id, saw: {:?}",
+        seen.iter().map(|r| &r.path).collect::<Vec<_>>()
+    );
+}
+
+/// Resolution is best-effort: a lookup that fails must not blank the field or
+/// fail the call — the filter's `// (.params.database | tostring)` arm puts
+/// the raw id back.
+#[tokio::test]
+async fn unresolvable_database_falls_back_to_the_raw_id() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    // Only db 1 exists on the mock; 99 404s.
+    let resp = run_query(
+        &base,
+        &client,
+        &agent_key,
+        "DELETE FROM public.film",
+        json!({ "params": { "database": 99, "query": "DELETE FROM public.film" } }),
+    )
+    .await;
+    assert_eq!(
+        resp["status"].as_str(),
+        Some("pending_approval"),
+        "{resp:?}"
+    );
+
+    let disclosed = resp["disclosed_fields"]
+        .as_array()
+        .cloned()
+        .expect("inline disclosed_fields present");
+    assert_eq!(
+        disclosed_value(&disclosed, "Database"),
+        Some("99"),
+        "failed resolution should surface the raw id, got: {disclosed:?}"
+    );
+    // …and the title degrades to the id rather than rendering an empty quote.
+    assert_eq!(
+        resp["action_description"].as_str(),
+        Some("Run SQL on database 99 (Metabase)"),
+        "{resp:?}"
     );
 }
 
@@ -394,6 +643,203 @@ async fn dynamic_without_parser_executes_under_sentinel_grant() {
     assert_eq!(req.api_key.as_deref(), Some("mb_test_key_123"));
 }
 
+// ─── parameter aliases ────────────────────────────────────────────────────
+//
+// Metabase names one concept two ways: `/api/database/{database_id}/metadata`
+// takes `database_id`, the dataset API's body field is `database`. Both
+// spellings stay wire-true and each action accepts the other as an alias, so
+// an agent that carries the name across actions is not sent back for a second
+// round trip. What these pin is that the alias is a *front door only* — it is
+// rewritten to canonical before anything downstream (resolution, disclosure,
+// permission keys, the outgoing body) can see it.
+
+/// The alias reaches the gateway; only the canonical name reaches Metabase.
+#[cfg(not(feature = "sql_policy"))]
+#[tokio::test]
+async fn run_query_accepts_database_id_without_leaking_it_upstream() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, admin_key, ident) = setup(pool, mock, "admin", false, None).await;
+    add_rule(
+        &base,
+        &client,
+        &admin_key,
+        &ident,
+        "metabase:run_query:table_mut=1/*",
+        "allow",
+    )
+    .await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "run_query",
+            // `database_id`, the spelling get_database_schema uses.
+            "params": { "database_id": 1, "query": "SELECT 1" },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+    // Byte-identical to what the canonical spelling produces
+    // (`dynamic_without_parser_executes_under_sentinel_grant`): Metabase's
+    // dataset API only knows `database`, so an alias that reached the wire
+    // would be a silently dropped field, not a rename.
+    let seen = seen.lock().unwrap();
+    let req = seen.last().unwrap();
+    assert_eq!(req.path, "/api/dataset");
+    assert_eq!(
+        req.body,
+        json!({ "database": 1, "type": "native", "native": { "query": "SELECT 1" } })
+    );
+}
+
+/// The mirror direction: the path param answers to the body field's name.
+#[tokio::test]
+async fn get_database_schema_accepts_database() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "get_database_schema",
+            // `database`, the spelling run_query uses.
+            "params": { "database": 1 },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+    // The alias has to resolve before URL substitution or the placeholder
+    // `{database_id}` would have nothing to bind and the path would be wrong.
+    let seen = seen.lock().unwrap();
+    let req = seen.last().expect("mock saw the request");
+    assert_eq!(req.method, "GET");
+    assert_eq!(req.path, "/api/database/1/metadata");
+}
+
+/// `search` takes `q`; Metabase's own MCP server calls the same argument
+/// `query`. Accepting both costs nothing and removes a guess.
+#[tokio::test]
+async fn search_accepts_query_as_an_alias_for_q() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    let resp: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "search",
+            "params": { "query": "orders" },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // `q` is `required: true`, so reaching the upstream at all is the
+    // assertion: an unaliased `query` would have been rejected as an unknown
+    // argument with `q` still missing.
+    assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+    let seen = seen.lock().unwrap();
+    let req = seen.last().expect("mock saw the request");
+    assert_eq!(req.path, "/api/search");
+}
+
+/// Aliasing is not the same as switching validation off — a name that is
+/// neither canonical nor declared as an alias is still rejected, with the
+/// suggestion still pointing somewhere useful.
+#[tokio::test]
+async fn an_undeclared_name_is_still_an_unknown_argument() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "get_database_schema",
+            "params": { "databaseId": 1 },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "expected a rejection, got {resp:?}");
+    let body: Value = resp.json().await.unwrap();
+    let msg = serde_json::to_string(&body).unwrap();
+    assert!(msg.contains("databaseId"), "{msg}");
+}
+
+/// The alias cannot move what a human approves or what a grant is matched
+/// against: both spellings produce the same disclosure and the same title.
+#[tokio::test]
+async fn the_alias_does_not_move_the_disclosure_or_the_title() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    // A write so both build tiers land on the approval surface — with the
+    // parser it classifies write, without it `risk: dynamic` fails closed.
+    let resp: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "metabase",
+            "action": "run_query",
+            "params": { "database_id": 1, "query": "DELETE FROM public.film" },
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp["status"].as_str(),
+        Some("pending_approval"),
+        "{resp:?}"
+    );
+
+    let disclosed = resp["disclosed_fields"]
+        .as_array()
+        .cloned()
+        .expect("inline disclosed_fields present");
+    // Identical to `database_disclosure_carries_the_resolved_name`, which
+    // sends the canonical spelling. The `x-overslash-resolve` and
+    // `disclose` filters both read `.database`; if the alias survived past
+    // `apply_aliases` they would find nothing and fall back to the raw id.
+    assert_eq!(
+        disclosed_value(&disclosed, "Database"),
+        Some("pagila"),
+        "{disclosed:?}"
+    );
+    assert_eq!(
+        resp["action_description"].as_str(),
+        Some("Run SQL on database 'pagila' (Metabase)"),
+        "{resp:?}"
+    );
+}
+
 // ─── sql_policy tier (cargo test -p overslash-api --features sql_policy) ───
 
 #[cfg(feature = "sql_policy")]
@@ -436,6 +882,70 @@ mod classified {
         assert_eq!(
             req.body["native"]["query"].as_str(),
             Some("SELECT title FROM public.film")
+        );
+    }
+
+    /// The split is deliberate and load-bearing: the disclosure names the
+    /// database from a live lookup so a reviewer can judge the blast radius,
+    /// while `sql.db` and the permission keys stay on the operator-pinned
+    /// `sql_databases` label (here absent, so the raw id). A grant keyed on a
+    /// name an upstream admin can rename — or that silently reverts to the id
+    /// when a 3s lookup times out — is a grant that breaks or aliases without
+    /// anyone touching Overslash. If someone "unifies" these, this fails.
+    #[tokio::test]
+    async fn disclosure_names_the_database_while_keys_keep_the_id() {
+        let pool = common::test_pool().await;
+        let (mock, _seen) = start_mock_metabase().await;
+        // No sql_databases config → db_label falls back to the raw db key.
+        let (base, client, agent_key, admin_key, ident) =
+            setup(pool, mock, "read", false, None).await;
+        add_rule(
+            &base,
+            &client,
+            &admin_key,
+            &ident,
+            "metabase:run_query:table=1/public.*",
+            "allow",
+        )
+        .await;
+
+        let resp = run_query(
+            &base,
+            &client,
+            &agent_key,
+            "SELECT title FROM public.film",
+            json!({}),
+        )
+        .await;
+        assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+        let audit: Vec<Value> = client
+            .get(format!("{base}/v1/audit?limit=50"))
+            .header(auth(&admin_key).0, auth(&admin_key).1)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let executed = audit
+            .iter()
+            .find(|e| e["action"].as_str() == Some("action.executed"))
+            .expect("action.executed audit row present");
+
+        let disclosed = executed["detail"]["disclosed"]
+            .as_array()
+            .expect("disclosed present");
+        assert_eq!(
+            disclosed_value(disclosed, "Database"),
+            Some("pagila"),
+            "display side names the database, got: {disclosed:?}"
+        );
+        assert_eq!(
+            executed["detail"]["sql"]["db"].as_str(),
+            Some("1"),
+            "policy side keeps the raw id: {:?}",
+            executed["detail"]["sql"]
         );
     }
 
@@ -657,34 +1167,39 @@ mod classified {
         let (base, client, agent_key, _admin, _ident) =
             setup(pool, mock, "write", false, Some(DBS)).await;
 
-        let sql = "WITH d AS (DELETE FROM public.rental RETURNING *) SELECT * FROM d";
-        let validate: Value = client
-            .post(format!("{base}/v1/actions/validate"))
-            .header(auth(&agent_key).0, auth(&agent_key).1)
-            .json(&json!({
-                "service": "metabase",
-                "action": "run_query",
-                "params": { "database": 1, "query": sql },
-            }))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(
-            validate["permission"]["status"].as_str(),
-            Some("would_require_approval"),
-            "{validate:?}"
-        );
-        let validate_keys = validate["permission"]["uncovered_keys"].clone();
+        for sql in [
+            "WITH d AS (DELETE FROM public.rental RETURNING *) SELECT * FROM d",
+            // D69: the dry-run path screens functions too, sentinel and all.
+            "SELECT nextval('public.film_id_seq') FROM public.film",
+        ] {
+            let validate: Value = client
+                .post(format!("{base}/v1/actions/validate"))
+                .header(auth(&agent_key).0, auth(&agent_key).1)
+                .json(&json!({
+                    "service": "metabase",
+                    "action": "run_query",
+                    "params": { "database": 1, "query": sql },
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(
+                validate["permission"]["status"].as_str(),
+                Some("would_require_approval"),
+                "{validate:?}"
+            );
+            let validate_keys = validate["permission"]["uncovered_keys"].clone();
 
-        let call = run_query(&base, &client, &agent_key, sql, json!({})).await;
-        assert_eq!(call["status"].as_str(), Some("pending_approval"));
-        assert_eq!(
-            call["permission_keys"], validate_keys,
-            "validate and call must derive identical keys"
-        );
+            let call = run_query(&base, &client, &agent_key, sql, json!({})).await;
+            assert_eq!(call["status"].as_str(), Some("pending_approval"), "{sql}");
+            assert_eq!(
+                call["permission_keys"], validate_keys,
+                "validate and call must derive identical keys for {sql}"
+            );
+        }
     }
 
     /// The classifier's facts survive as metadata tags on the approval row.
@@ -766,6 +1281,166 @@ mod classified {
         .await
         .unwrap();
         assert_eq!(audit, tags, "approval and its audit row must not drift");
+    }
+
+    // ── D69 function screening ────────────────────────────────────────
+
+    /// The named case: `pg_sleep` is VOLATILE, so a volatility rule alone
+    /// would refuse it — but it sleeps in the caller's own backend and
+    /// changes nothing, so it is on the carve-out list and the call sails
+    /// through a read ceiling on an ordinary table grant.
+    #[tokio::test]
+    async fn pg_sleep_stays_read() {
+        let pool = common::test_pool().await;
+        let (mock, seen) = start_mock_metabase().await;
+        let (base, client, agent_key, admin_key, ident) =
+            setup(pool, mock, "read", false, Some(DBS)).await;
+        add_rule(
+            &base,
+            &client,
+            &admin_key,
+            &ident,
+            "metabase:run_query:table=pagila/public.*",
+            "allow",
+        )
+        .await;
+
+        let resp = run_query(
+            &base,
+            &client,
+            &agent_key,
+            "SELECT pg_sleep(1), count(*) FROM public.film",
+            json!({}),
+        )
+        .await;
+        assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+        assert!(!seen.lock().unwrap().is_empty(), "it reached Metabase");
+    }
+
+    /// `nextval` is volatile *and* advances a sequence, so it elevates a
+    /// `dynamic` action to write — and because a function may reach relations
+    /// the parse tree never names, the call also loses its claim to have
+    /// enumerated them: the uncovered key is the all-tables sentinel, not
+    /// `public.film`, even though the parser did see `public.film`.
+    #[tokio::test]
+    async fn unsafe_function_elevates_and_falls_back_to_the_sentinel() {
+        let pool = common::test_pool().await;
+        let (mock, seen) = start_mock_metabase().await;
+        let (base, client, agent_key, admin_key, ident) =
+            setup(pool.clone(), mock, "write", false, Some(DBS)).await;
+        add_rule(
+            &base,
+            &client,
+            &admin_key,
+            &ident,
+            "metabase:run_query:table=pagila/*",
+            "allow",
+        )
+        .await;
+
+        let resp = run_query(
+            &base,
+            &client,
+            &agent_key,
+            "SELECT nextval('public.film_id_seq') FROM public.film",
+            json!({}),
+        )
+        .await;
+        assert_eq!(
+            resp["status"].as_str(),
+            Some("pending_approval"),
+            "{resp:?}"
+        );
+        let keys: Vec<&str> = resp["permission_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(keys, vec!["metabase:run_query:table_mut=pagila/*"]);
+        assert_eq!(resp["risk"].as_str(), Some("med"));
+        // The mock still sees the disclosure's database lookup; what must
+        // never appear upstream is the query itself.
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .all(|r| r.body["native"]["query"].is_null()),
+            "the query must not reach Metabase"
+        );
+
+        let tags: Vec<String> =
+            sqlx::query_scalar("SELECT tags FROM approvals ORDER BY created_at DESC LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(tags.contains(&"sql:write".to_string()), "{tags:?}");
+        assert!(
+            tags.contains(&"sql_reason:unsafe_function".to_string()),
+            "{tags:?}"
+        );
+        assert!(
+            tags.contains(&"sql_exhaustive:false".to_string()),
+            "{tags:?}"
+        );
+        // The name is caller-controlled, so it stays out of the tag index —
+        // but the audit *record* must name it, or `sql_reason:unsafe_function`
+        // is a dead end and nobody can decide what to put in `safe_functions`.
+        assert!(tags.iter().all(|t| !t.contains("nextval")), "{tags:?}");
+
+        let detail: Value = sqlx::query_scalar(
+            "SELECT detail FROM audit_log WHERE action = 'approval.created' \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            detail["sql"]["write_reason"].as_str(),
+            Some("unsafe_function"),
+            "{detail:?}"
+        );
+        assert_eq!(
+            detail["sql"]["reason_detail"].as_str(),
+            Some("nextval"),
+            "the record must name the function the tag cannot: {detail:?}"
+        );
+    }
+
+    /// The escape hatch. The same query the shipped list refuses classifies
+    /// read once the database's `safe_functions` vouches for the function —
+    /// an operator unblocks their PostGIS or their in-house UDF with a config
+    /// edit, not a release. Deliberately per database: vouching on the
+    /// reporting replica says nothing about production.
+    #[tokio::test]
+    async fn config_vouching_makes_the_same_query_read() {
+        let pool = common::test_pool().await;
+        let (mock, _seen) = start_mock_metabase().await;
+        let dbs = r#"{"1": {"dialect": "postgres", "label": "pagila",
+                           "safe_functions": ["nextval"]}}"#;
+        let (base, client, agent_key, admin_key, ident) =
+            setup(pool, mock, "read", false, Some(dbs)).await;
+        add_rule(
+            &base,
+            &client,
+            &admin_key,
+            &ident,
+            "metabase:run_query:table=pagila/public.*",
+            "allow",
+        )
+        .await;
+
+        let resp = run_query(
+            &base,
+            &client,
+            &agent_key,
+            "SELECT nextval('public.film_id_seq') FROM public.film",
+            json!({}),
+        )
+        .await;
+        // Read ceiling cleared *and* only the table key needed: vouching
+        // restores exhaustiveness too, so no sentinel is demanded.
+        assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
     }
 
     /// An executed read tags the audit row, including the outcome the
@@ -1208,6 +1883,7 @@ async fn metabase_without_a_url_variable_requires_one_per_instance() {
             "template_key": "metabase",
             "name": "mb-no-url",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
             "credentials": { "token": "metabase_api_key" },
         }))
@@ -1230,6 +1906,7 @@ async fn metabase_without_a_url_variable_requires_one_per_instance() {
             "name": "mb-with-url",
             "url": "https://mb.example.com",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
             "credentials": { "token": "metabase_api_key" },
         }))
@@ -1280,6 +1957,7 @@ async fn metabase_with_a_url_variable_needs_no_per_instance_url() {
             "template_key": "metabase",
             "name": "mb-default",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
             "credentials": { "token": "metabase_api_key" },
         }))
@@ -1326,6 +2004,7 @@ async fn host_less_metabase_is_not_a_raw_http_escape_hatch() {
             "name": "metabase",
             "url": "https://mb.example.com",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
             "credentials": { "token": "metabase_api_key" },
         }))

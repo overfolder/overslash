@@ -11,12 +11,14 @@ use crate::types::{Runtime, ServiceDefinition};
 mod action;
 mod auth;
 mod mcp;
-mod service_shape;
+mod resolver;
+pub(crate) mod service_shape;
 mod sql_policy;
 
 use action::{check_action, check_platform_action};
 use auth::check_auth;
 use mcp::check_mcp;
+use resolver::check_resolver_targets;
 use service_shape::check_service_shape;
 
 /// Validate a parsed [`ServiceDefinition`].
@@ -37,6 +39,7 @@ pub fn validate_service_definition(
     }
     check_mcp(def, &mut issues);
     check_duplicate_action_keys(raw_action_keys, &mut issues);
+    check_resolver_targets(def, &mut issues);
 
     // Iterate actions in a deterministic order so test assertions can match
     // on issue order when needed.
@@ -81,6 +84,7 @@ mod tests {
 
     pub(super) fn minimal_valid() -> ServiceDefinition {
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "svc".into(),
@@ -89,6 +93,7 @@ mod tests {
             hosts: vec!["api.example.com".into()],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![ServiceAuth::Secret {
                 template: None,
                 slots: Vec::new(),
@@ -111,6 +116,9 @@ mod tests {
                 m.insert(
                     "list".into(),
                     ServiceAction {
+                        wait_mode: None,
+                        handoff_after_ms: None,
+                        timeout_ms: None,
                         method: "GET".into(),
                         path: "/items".into(),
                         description: "List items".into(),
@@ -127,6 +135,7 @@ mod tests {
                         output_schema: None,
                         disabled: false,
                         request_body: None,
+                        download: None,
                     },
                 );
                 m
@@ -183,6 +192,9 @@ mod tests {
         actions.insert(
             "search".into(),
             ServiceAction {
+                wait_mode: None,
+                handoff_after_ms: None,
+                timeout_ms: None,
                 method: String::new(),
                 path: String::new(),
                 description: "Search {team}".into(),
@@ -218,9 +230,11 @@ mod tests {
                 output_schema: None,
                 disabled: false,
                 request_body: None,
+                download: None,
             },
         );
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "linear_mcp".into(),
@@ -229,6 +243,7 @@ mod tests {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             actions,
             runtime: Runtime::Mcp,

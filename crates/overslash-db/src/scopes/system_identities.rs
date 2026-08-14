@@ -4,6 +4,9 @@
 //! `SystemScope`. They back:
 //! - the login bootstrap path, where the org is not yet known
 //!   (`find_user_identity_by_email`),
+//! - the invitee-side account routes, which answer "which orgs invited *me*"
+//!   before the caller is a member of any of them
+//!   (`list_pending_invitations_for_email`),
 //! - the idle-cleanup background loops in `overslash-api::lib::run`
 //!   (`archive_idle_subagents`, `purge_archived_subagents`).
 
@@ -19,6 +22,17 @@ impl SystemScope {
         email: &str,
     ) -> Result<Option<IdentityRow>, sqlx::Error> {
         identity::find_user_by_email_global(self.db(), email).await
+    }
+
+    /// List every pending invitation addressed to `email`, across all orgs.
+    /// Reserved for the invitee-side account routes: the caller must first
+    /// prove the email belongs to the session (via the `users` row), because
+    /// this deliberately reaches outside any org the caller is a member of.
+    pub async fn list_pending_invitations_for_email(
+        &self,
+        email: &str,
+    ) -> Result<Vec<IdentityRow>, sqlx::Error> {
+        identity::list_pending_invites_by_email(self.db(), email).await
     }
 
     /// Cross-org sweep: archive sub-agents whose `last_active_at` is past

@@ -239,12 +239,16 @@ async fn create_user_service_auto_grants_admin_to_self_group() {
         .find(|g| g["service_instance_id"].as_str() == Some(&svc_id.to_string()))
         .expect("grant on alpha must exist");
     assert_eq!(grant["access_level"], "admin");
+    // The auto-grant's auto-approval sits at `read` on purpose. Raising it to
+    // match the admin ceiling would hand every agent unattended writes and
+    // deletes on everything its owner owns — an opt-in, never a default.
+    assert_eq!(grant["auto_approve_level"], "read");
     assert_eq!(grant["auto_approve_reads"], true);
 }
 
 /// Owner of a Myself group can PATCH a grant on it without admin auth —
-/// same authority gate the add/remove paths use, so toggling
-/// auto_approve_reads from the dashboard works for regular users on their
+/// same authority gate the add/remove paths use, so changing
+/// `auto_approve_level` from the dashboard works for regular users on their
 /// own self-group, not just for org admins.
 #[tokio::test]
 async fn owner_can_patch_self_grant() {
@@ -262,20 +266,21 @@ async fn owner_can_patch_self_grant() {
         .find(|g| g["service_instance_id"].as_str() == Some(&svc_id.to_string()))
         .expect("auto-grant exists");
     let grant_id = grant["id"].as_str().unwrap().to_string();
-    // The auto-grant created by service creation is admin + auto_approve=true.
-    assert_eq!(grant["auto_approve_reads"], true);
+    // The auto-grant created by service creation is admin + read-level
+    // auto-approval.
+    assert_eq!(grant["auto_approve_level"], "read");
 
     let resp = client
         .patch(format!("{base}/v1/groups/{self_id}/grants/{grant_id}"))
         .header("Authorization", format!("Bearer {user_key}"))
-        .json(&json!({"auto_approve_reads": false}))
+        .json(&json!({"auto_approve_level": "none"}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
     let patched: Value = resp.json().await.unwrap();
     assert_eq!(patched["id"].as_str().unwrap(), grant_id);
-    assert_eq!(patched["auto_approve_reads"], false);
+    assert_eq!(patched["auto_approve_level"], "none");
     assert_eq!(patched["access_level"], "admin");
 }
 
@@ -529,5 +534,252 @@ async fn agent_read_on_owners_service_skips_layer_2() {
     assert_eq!(
         count, 0,
         "no permission_rules row should be created by a read-bypass call"
+    );
+}
+
+/// Register a template with both a read and a write action, then create a
+/// user-level instance from it. `minimal_openapi` only carries a read op, and
+/// the auto-approve ladder is only interesting above that rung.
+///
+/// The instance binds a real vault secret. That is scaffolding, not the
+/// subject: an instance whose required slot is unbound is now refused at
+/// resolution with `needs_authentication` (D60) before the permission gate
+/// runs, so leaving it unbound would make these tests assert on the credential
+/// gate rather than on the auto-approve ladder they exist for.
+async fn create_user_service_with_write(
+    base: &str,
+    admin_key: &str,
+    user_key: &str,
+    name: &str,
+) -> Uuid {
+    let client = reqwest::Client::new();
+    // The auth scheme is load-bearing: `needs_gate` is estimated from
+    // "does this call inject a credential", so a template with no auth and no
+    // secrets never reaches Layer 2 at all and the ladder would be untestable.
+    let openapi = format!(
+        r#"openapi: 3.1.0
+info:
+  title: {name}
+  key: {name}
+servers:
+  - url: https://{name}.example.com
+components:
+  securitySchemes:
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-template:
+        lang: jq
+        expr: '"Bearer " + .token'
+      default_secret_name: svc_token
+paths:
+  /items:
+    get:
+      operationId: list_items
+      summary: List items
+      risk: read
+    post:
+      operationId: create_item
+      summary: Create item
+      risk: write
+"#
+    );
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"openapi": openapi, "user_level": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "template register failed: {:?}",
+        resp.text().await
+    );
+
+    // Seed the secret the scheme names, so the only way this instance can fail
+    // is the dead upstream host — which is what these tests already tolerate.
+    let resp = client
+        .put(format!("{base}/v1/secrets/svc_token"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({ "value": "svc-token-value" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "seeding svc_token failed: {:?}",
+        resp.text().await
+    );
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({
+            "template_key": name,
+            "name": name,
+            "user_level": true,
+            "status": "active",
+            "secret_name": "svc_token",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "create user service failed: {:?}",
+        resp.text().await
+    );
+    let svc: Value = resp.json().await.unwrap();
+    svc["id"].as_str().unwrap().parse().unwrap()
+}
+
+/// The auto-approve ladder gates which risks skip Layer 2.
+///
+/// The Myself grant's default (`admin` access, `read` auto-approval) leaves a
+/// write in the approval queue — that's the pre-existing behaviour, and the
+/// reason raising the level had to be opt-in. Moving auto-approval up to
+/// `write` frees the same call with no approval and no permission rule.
+#[tokio::test]
+async fn auto_approve_level_gates_the_write_bypass() {
+    let (base, pool, admin_key, user_id, user_key, agent_id, agent_key) =
+        setup_org_with_user_and_agent().await;
+    let client = reqwest::Client::new();
+
+    let svc_id = create_user_service_with_write(&base, &admin_key, &user_key, "laddered").await;
+    let myself = find_self_group(&base, &user_key, user_id).await;
+    let self_id = myself["id"].as_str().unwrap();
+    let grants = list_self_grants(&base, &user_key, self_id).await;
+    let grant = grants
+        .iter()
+        .find(|g| g["service_instance_id"].as_str() == Some(&svc_id.to_string()))
+        .expect("auto-grant exists");
+    assert_eq!(grant["access_level"], "admin");
+    assert_eq!(grant["auto_approve_level"], "read");
+    let grant_id = grant["id"].as_str().unwrap().to_string();
+
+    let call_write = || {
+        client
+            .post(format!("{base}/v1/actions/call"))
+            .header("Authorization", format!("Bearer {agent_key}"))
+            .json(&json!({
+                "service": "laddered",
+                "action": "create_item",
+                "params": {}
+            }))
+            .send()
+    };
+
+    // Read-level auto-approval: the write still needs a human.
+    let body: Value = call_write().await.unwrap().json().await.unwrap();
+    assert_eq!(
+        body["status"].as_str(),
+        Some("pending_approval"),
+        "a write under read-level auto-approval must file an approval (body={body})"
+    );
+
+    // Raise auto-approval to `write` — still under the admin ceiling.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{self_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"auto_approve_level": "write"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+
+    // Same call now bypasses Layer 2. The upstream is a dead host, so the
+    // request may fail at execution — the gating decision is what matters.
+    let resp = call_write().await.unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_ne!(
+        body["status"].as_str(),
+        Some("pending_approval"),
+        "write-level auto-approval must skip the approval queue (status={status}, body={body})"
+    );
+
+    // And the bypass leaves the agent's rule list clean, same as reads.
+    let count: i64 =
+        sqlx::query("SELECT COUNT(*) AS c FROM permission_rules WHERE identity_id = $1")
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("c");
+    assert_eq!(
+        count, 0,
+        "an auto-approved call should never write a permission_rules row"
+    );
+}
+
+/// A deny rule still wins over a write-level auto-approval. D42 documented
+/// "a deny overrides every allow mechanism" while relying on writes never
+/// taking the bypass at all; now that they can, the deny sweep is the only
+/// thing holding that contract up.
+#[tokio::test]
+async fn deny_rule_beats_write_level_auto_approve() {
+    let (base, _pool, admin_key, user_id, user_key, agent_id, agent_key) =
+        setup_org_with_user_and_agent().await;
+    let client = reqwest::Client::new();
+
+    let svc_id = create_user_service_with_write(&base, &admin_key, &user_key, "denied-svc").await;
+    let myself = find_self_group(&base, &user_key, user_id).await;
+    let self_id = myself["id"].as_str().unwrap();
+    let grants = list_self_grants(&base, &user_key, self_id).await;
+    let grant_id = grants
+        .iter()
+        .find(|g| g["service_instance_id"].as_str() == Some(&svc_id.to_string()))
+        .expect("auto-grant exists")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .patch(format!("{base}/v1/groups/{self_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"auto_approve_level": "write"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Deny the write on the agent itself.
+    let resp = client
+        .post(format!("{base}/v1/permissions"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "identity_id": agent_id,
+            "action_pattern": "denied-svc:create_item:*",
+            "effect": "deny",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "creating the deny rule failed: {:?}",
+        resp.text().await
+    );
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "denied-svc",
+            "action": "create_item",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        status, 403,
+        "a deny rule must override the auto-approve bypass (body={body})"
     );
 }

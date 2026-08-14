@@ -45,6 +45,15 @@ pub(crate) struct ResolvedMcp {
     /// `Bearer`/`None` auth, where the header is derived from the vault at
     /// send time.
     pub oauth_header: Option<AuthHeader>,
+    /// The connection the OAuth bearer was minted from. `None` on
+    /// `Bearer`/`None` auth, which authenticate from the vault and have no
+    /// connection row. Not a credential — it names *which* principal, which is
+    /// what the `connection:` metadata tag and the resolver cache key need.
+    pub connection_id: Option<Uuid>,
+    /// The account this call authenticates *as* — the connection's
+    /// `account_email`. Mirrors [`ResolvedAuth::principal`] on the HTTP path,
+    /// and is what the `connection:` metadata tag records.
+    pub principal: Option<String>,
 }
 
 /// Resolve the connection an instance's OAuth actions actually execute against.
@@ -126,6 +135,8 @@ pub(crate) async fn resolve_effective_mcp(
     // Auth: Bearer picks the effective secret_name (instance wins); OAuth
     // resolves a live bearer now, gating when no connection exists yet.
     let mut oauth_header: Option<AuthHeader> = None;
+    let mut connection_id: Option<Uuid> = None;
+    let mut principal: Option<String> = None;
     let auth = match &mcp.auth {
         McpAuth::None => McpAuth::None,
         McpAuth::Bearer {
@@ -164,7 +175,11 @@ pub(crate) async fn resolve_effective_mcp(
             )
             .await?
             {
-                Some(header) => oauth_header = Some(header),
+                Some(bearer) => {
+                    oauth_header = Some(bearer.header);
+                    connection_id = Some(bearer.connection_id);
+                    principal = bearer.principal;
+                }
                 None => {
                     // No connection yet — mint a gated auth URL and hand the
                     // caller a `needs_authentication` envelope, mirroring the
@@ -189,6 +204,8 @@ pub(crate) async fn resolve_effective_mcp(
                         required_scopes: scopes.clone(),
                         account_email: None,
                         headless: false,
+                        missing_credentials: Vec::new(),
+                        hint_url: None,
                     });
                 }
             }
@@ -203,5 +220,7 @@ pub(crate) async fn resolve_effective_mcp(
         url,
         auth,
         oauth_header,
+        connection_id,
+        principal,
     })
 }

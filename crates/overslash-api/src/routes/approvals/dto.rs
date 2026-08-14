@@ -117,6 +117,9 @@ mod risk_tests {
         actions.insert(
             action.into(),
             ServiceAction {
+                wait_mode: None,
+                handoff_after_ms: None,
+                timeout_ms: None,
                 method: "GET".into(),
                 path: "/".into(),
                 description: String::new(),
@@ -133,10 +136,12 @@ mod risk_tests {
                 output_schema: None,
                 disabled: false,
                 request_body: None,
+                download: None,
             },
         );
         let mut registry = ServiceRegistry::default();
         registry.insert(ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: key.into(),
@@ -145,6 +150,7 @@ mod risk_tests {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             actions,
             runtime: Runtime::Http,

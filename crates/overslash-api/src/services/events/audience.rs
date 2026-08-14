@@ -48,6 +48,23 @@ fn merge(into: &mut Vec<Uuid>, ids: impl IntoIterator<Item = Uuid>) {
 /// keeps seeing what its sub-agents are doing. Bubbling usually places the
 /// resolver on the requester's own chain, so in practice the two collapse into
 /// one list.
+/// Executions: identical to [`for_approval`], and deliberately delegating to
+/// it rather than restating the rule.
+///
+/// An async execution may have no approval, in which case `resolver_id` is
+/// `None` and the audience is just the requester's chain — which is correct,
+/// because with no gate there was never a resolver with a claim on the result.
+/// When there *was* an approval, whoever approved it has a legitimate interest
+/// in how it turned out, so their chain comes along exactly as it does for the
+/// approval's own events.
+pub async fn for_execution(
+    scope: &OrgScope,
+    requester_id: Uuid,
+    resolver_id: Option<Uuid>,
+) -> Vec<Uuid> {
+    for_approval(scope, requester_id, resolver_id).await
+}
+
 pub async fn for_approval(
     scope: &OrgScope,
     requester_id: Uuid,
@@ -115,4 +132,16 @@ pub async fn for_secret_request(
         merge(&mut audience, chain(scope, target_identity_id).await);
     }
     audience
+}
+
+/// Actions: the actor's chain, and nothing else.
+///
+/// A parent keeps seeing what its sub-agents call, which is what makes the
+/// Live Map show an owner-user their whole fleet. A sibling chain sees
+/// nothing. Org admins bypass the array in the delivery predicate, so the same
+/// stream is an org-wide operator view for them and a personal one for
+/// everyone else — no second ACL, and no view wider than what
+/// `GET /v1/audit` already discloses to the same caller.
+pub async fn for_action(scope: &OrgScope, actor_id: Uuid) -> Vec<Uuid> {
+    chain(scope, actor_id).await
 }

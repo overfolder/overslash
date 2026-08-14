@@ -32,32 +32,32 @@ use crate::common::{bootstrap_org_identity, start_api_with_registry};
 // independently-rotatable password (vault secret). The expected header is
 // unchanged from when this was ONE `user:pass` secret, and from when it was
 // two — that identity is the point: only where each half comes from changed.
-const MAILBOX_USER: &str = "user@example.com";
-const MAILBOX_PASS: &str = "app-password";
+pub(crate) const MAILBOX_USER: &str = "user@example.com";
+pub(crate) const MAILBOX_PASS: &str = "app-password";
 // base64("user@example.com:app-password"), STANDARD alphabet.
 const MAILBOX_BASIC: &str = "Basic dXNlckBleGFtcGxlLmNvbTphcHAtcGFzc3dvcmQ=";
-const GATEWAY_KEY: &str = "gw-secret-key";
+pub(crate) const GATEWAY_KEY: &str = "gw-secret-key";
 
 #[derive(Clone, Default)]
-struct Captured {
-    path: String,
-    authorization: Option<String>,
-    mailbox_auth: Option<String>,
+pub(crate) struct Captured {
+    pub(crate) path: String,
+    pub(crate) authorization: Option<String>,
+    pub(crate) mailbox_auth: Option<String>,
     /// The mailbox endpoint headers. Absent unless the instance pinned them
     /// via `config` (or the caller passed them) — overfwd otherwise falls back
     /// to autoconfig.
-    imap: Option<String>,
-    smtp: Option<String>,
-    content_type: Option<String>,
-    body: Value,
+    pub(crate) imap: Option<String>,
+    pub(crate) smtp: Option<String>,
+    pub(crate) content_type: Option<String>,
+    pub(crate) body: Value,
 }
 
-type Sink = Arc<Mutex<Vec<Captured>>>;
+pub(crate) type Sink = Arc<Mutex<Vec<Captured>>>;
 
 /// In-process stand-in for a deployed overfwd gateway. Records the two auth
 /// headers, the path, and the JSON body of every request, then returns a
 /// minimal overfwd-shaped success.
-async fn start_mock_overfwd() -> (String, Sink) {
+pub(crate) async fn start_mock_overfwd() -> (String, Sink) {
     common::allow_loopback_ssrf();
     let sink: Sink = Arc::new(Mutex::new(Vec::new()));
 
@@ -102,7 +102,7 @@ async fn start_mock_overfwd() -> (String, Sink) {
 /// an `email` instance pointed at `gateway_url` with the mailbox login set, and
 /// grant it to Everyone (admin + auto-approve reads).
 /// Returns `(base, agent_key)`.
-async fn setup_email_instance(
+pub(crate) async fn setup_email_instance(
     pool: sqlx::PgPool,
     gateway_url: &str,
     bind_mailbox: bool,
@@ -139,7 +139,7 @@ async fn setup_email_instance(
 /// Generalized variant: seed arbitrary org secrets and create the `email`
 /// instance from a caller-supplied body (so tests can exercise the per-scheme
 /// `credentials` map). Returns `(base, agent_key, admin_key, create_response)`.
-async fn setup_email_instance_custom(
+pub(crate) async fn setup_email_instance_custom(
     pool: sqlx::PgPool,
     secrets: &[(&str, &str)],
     body: Value,
@@ -230,6 +230,14 @@ where
             "secret {name} create failed: {}",
             resp.status()
         );
+    }
+
+    // Org-level instances must name a group the caller belongs to at create
+    // time. Callers hand us a body built before the API is up, so fill it in
+    // here rather than making every one of them resolve Everyone first.
+    let mut body = body;
+    if body.get("user_level") == Some(&Value::Bool(false)) && body.get("groups").is_none() {
+        body["groups"] = common::everyone_grant(&base, &client, &admin_key).await;
     }
 
     let instance: Value = client
@@ -454,6 +462,7 @@ paths:
             "name": "optbody",
             "url": gateway_url,
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()
@@ -617,6 +626,15 @@ async fn email_unbound_mailbox_never_injects_gateway_key_alone() {
             req.authorization
         );
     }
+    // Stronger, and what makes the loop above non-vacuous: an unconfigured
+    // instance is now caught before dialling out at all, so nothing reaches the
+    // gateway. The typed envelope this returns instead is asserted in
+    // `instance_credentials_envelope.rs`; here we only pin that a regression
+    // reintroducing the unauthenticated call would fail.
+    assert!(
+        sink.lock().unwrap().is_empty(),
+        "an unconfigured instance must not reach the gateway at all"
+    );
 }
 
 /// The config half of the same contract: the password is bound but the
@@ -677,6 +695,12 @@ async fn email_missing_required_config_never_sends_a_truncated_credential() {
             req.authorization
         );
     }
+    // As above: the call is refused before it is dialled, so the loop is only
+    // a backstop. See `instance_credentials_envelope.rs` for the envelope.
+    assert!(
+        sink.lock().unwrap().is_empty(),
+        "a missing required config value must not reach the gateway at all"
+    );
 }
 
 #[tokio::test]
@@ -887,6 +911,7 @@ async fn email_create_rejects_unknown_credential_slot() {
             "template_key": "email",
             "name": "email",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "credentials": { "gatway": "typo_key" },
         }))
         .send()
@@ -921,6 +946,7 @@ async fn email_scalar_secret_name_folds_into_the_sole_mailbox_slot() {
             "template_key": "email",
             "name": "email",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "secret_name": "mailbox_credential",
         }))
         .send()
@@ -955,6 +981,7 @@ async fn email_rejects_binding_the_username_as_a_credential() {
             "template_key": "email",
             "name": "email",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "credentials": { "mailbox_user": "mailbox_user", "mailbox_pass": "mailbox_pass" },
         }))
         .send()

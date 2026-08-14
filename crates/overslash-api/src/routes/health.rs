@@ -18,11 +18,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Cap on the error text echoed into an unauthenticated response body, so a
 /// sqlx error can't spill a full connection string to the public internet.
 ///
-/// Note this cap is about *accidental* disclosure. The `version` / `commit`
-/// fields below are deliberate: they identify the build to uptime monitors and
-/// to anyone diagnosing a deploy, and they reveal nothing an attacker couldn't
-/// infer from behaviour. `GET /v1/version` reports the same two values (also
-/// unauthenticated, for the same reason) without the database probe.
+/// Note this cap is about *accidental* disclosure. The `version` / `commit` /
+/// `sql_policy` fields below are deliberate: they identify the build to uptime
+/// monitors and to anyone diagnosing a deploy, and they reveal nothing an
+/// attacker couldn't infer from behaviour. `GET /v1/version` reports the same
+/// values (also unauthenticated, for the same reason) without the database
+/// probe.
 const MAX_ERROR_LEN: usize = 200;
 
 pub fn router() -> Router<AppState> {
@@ -87,8 +88,6 @@ fn truncate(s: &str) -> String {
     }
     // Walk down to a char boundary at or below the byte cap — slicing
     // mid-codepoint would panic on a multi-byte error message.
-    // (`str::floor_char_boundary` does exactly this but is stable only since
-    // 1.91, above this workspace's 1.85 MSRV.)
     let mut end = MAX_ERROR_LEN;
     while !s.is_char_boundary(end) {
         end -= 1;
@@ -114,6 +113,7 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
         "status": "ok",
         "version": info.version,
         "commit": info.commit,
+        "sql_policy": overslash_core::sql_policy::available(),
     });
     probe.extend(&mut body);
     Json(body)
@@ -136,6 +136,7 @@ async fn ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         "status": status,
         "version": info.version,
         "commit": info.commit,
+        "sql_policy": overslash_core::sql_policy::available(),
     });
     probe.extend(&mut body);
     (code, Json(body))

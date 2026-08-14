@@ -230,4 +230,17 @@ async fn test_filter_does_not_rescue_oversized_upstream() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["error"], "response_too_large");
     assert_eq!(body["limit_bytes"], 1024);
+    // The filter still cannot rescue the call — but since D57 the caller is
+    // handed a working URL rather than only being told which flag to retry
+    // with. The URL serves the raw body: the filter never ran, so there is
+    // nothing filtered to serve, and the hint says so.
+    assert!(
+        body["download_url"].as_str().is_some(),
+        "a filtered call that blew the cap still gets a minted retry: {body}"
+    );
+    assert!(
+        body["hint"].as_str().unwrap().contains("unfiltered"),
+        "the hint must say the URL is not filtered, got: {}",
+        body["hint"]
+    );
 }

@@ -34,8 +34,8 @@ pub(super) const ROOT_ALIASES: &[Alias] = &[
 ];
 
 /// MCP tool-level aliases. Tools are shaped like operations, so the same
-/// `risk:` / `scope_param:` / `disclose:` / `redact:` unprefixed forms
-/// apply. Other tool fields (`name`, `description`, `input_schema`,
+/// `risk:` / `scope_param:` / `disclose:` / `redact:` / `wait-mode:`
+/// unprefixed forms apply. Other tool fields (`name`, `description`, `input_schema`,
 /// `output_schema`, `disabled`) are plain JSON and not rewritten.
 pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
     Alias {
@@ -54,6 +54,22 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
         alias: "redact",
         canonical: "x-overslash-redact",
     },
+    Alias {
+        alias: "download",
+        canonical: "x-overslash-download",
+    },
+    Alias {
+        alias: "timeout_ms",
+        canonical: "x-overslash-timeout_ms",
+    },
+    Alias {
+        alias: "wait-mode",
+        canonical: "x-overslash-wait-mode",
+    },
+    Alias {
+        alias: "handoff_after_ms",
+        canonical: "x-overslash-handoff_after_ms",
+    },
 ];
 
 pub(super) const INFO_ALIASES: &[Alias] = &[
@@ -68,6 +84,14 @@ pub(super) const INFO_ALIASES: &[Alias] = &[
     Alias {
         alias: "hidden",
         canonical: "x-overslash-hidden",
+    },
+    Alias {
+        alias: "icon",
+        canonical: "x-overslash-icon",
+    },
+    Alias {
+        alias: "default_timeout_ms",
+        canonical: "x-overslash-default_timeout_ms",
     },
 ];
 
@@ -87,6 +111,18 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
     Alias {
         alias: "redact",
         canonical: "x-overslash-redact",
+    },
+    Alias {
+        alias: "timeout_ms",
+        canonical: "x-overslash-timeout_ms",
+    },
+    Alias {
+        alias: "wait-mode",
+        canonical: "x-overslash-wait-mode",
+    },
+    Alias {
+        alias: "handoff_after_ms",
+        canonical: "x-overslash-handoff_after_ms",
     },
 ];
 
@@ -118,7 +154,7 @@ pub(super) const OAUTH2_SEC_ALIASES: &[Alias] = &[Alias {
     canonical: "x-overslash-provider",
 }];
 
-pub(super) const APIKEY_HTTP_SEC_ALIASES: &[Alias] = &[
+pub(super) const APIKEY_SEC_ALIASES: &[Alias] = &[
     Alias {
         alias: "default_secret_name",
         canonical: "x-overslash-default_secret_name",
@@ -134,6 +170,24 @@ pub(super) const APIKEY_HTTP_SEC_ALIASES: &[Alias] = &[
     Alias {
         alias: "optional",
         canonical: "x-overslash-optional",
+    },
+    Alias {
+        alias: "label",
+        canonical: "x-overslash-label",
+    },
+];
+
+/// A `type: http` scheme shares only two of the `apiKey` keys. `extract_http_
+/// auth` generates its injection template, hardcodes `secret_source` to
+/// `Instance` and `optional` to `false`, so normalizing `template:` /
+/// `secret_source:` / `optional:` here only ever produced a canonical key that
+/// nothing then read — the normalizer disagreeing with the reader set. The
+/// tables are split so it cannot, and `lint` reports those three on an `http`
+/// scheme as misplaced instead.
+pub(super) const HTTP_SEC_ALIASES: &[Alias] = &[
+    Alias {
+        alias: "default_secret_name",
+        canonical: "x-overslash-default_secret_name",
     },
     Alias {
         alias: "label",
@@ -200,6 +254,50 @@ pub(super) fn normalize_parameters_in(
     }
 }
 
+/// Normalize parameter aliases on an operation's request-body schema
+/// properties.
+///
+/// `extract::params::collect_body_parameters` reads the canonical parameter
+/// extensions off exactly these objects, but the alias walk never reached them —
+/// so `resolve:` in a request body was authored, ignored, and indistinguishable
+/// from working. That is the same defect D55 fixed for an MCP tool's
+/// `input_schema`, and this is the HTTP twin of that walk.
+///
+/// Only the top-level `properties` of the body schema are visited, matching the
+/// depth `collect_body_parameters` reads; a nested property is not a parameter,
+/// and `lint` reports an extension buried in one as misplaced.
+pub(super) fn normalize_body_properties_in(
+    op: &mut Map<String, Value>,
+    op_base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let Some(content) = op
+        .get_mut("requestBody")
+        .and_then(Value::as_object_mut)
+        .and_then(|body| body.get_mut("content"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    for (media_type, media) in content.iter_mut() {
+        let Some(props) = media
+            .as_object_mut()
+            .and_then(|m| m.get_mut("schema"))
+            .and_then(Value::as_object_mut)
+            .and_then(|schema| schema.get_mut("properties"))
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        for (name, prop) in props.iter_mut() {
+            let Value::Object(pm) = prop else { continue };
+            let base =
+                format!("{op_base}.requestBody.content.{media_type}.schema.properties.{name}");
+            rewrite_aliases(pm, PARAMETER_ALIASES, &base, issues);
+        }
+    }
+}
+
 /// Walk the document and rewrite every alias key under its supported context
 /// to its canonical `x-overslash-*` form. Returns issues for any ambiguous
 /// objects that carry both forms at once.
@@ -231,28 +329,27 @@ pub fn normalize_aliases(v: &mut Value) -> Vec<ValidationIssue> {
                 let op_base = format!("paths.{path_key}.{method}");
                 rewrite_aliases(op, OPERATION_ALIASES, &op_base, &mut issues);
                 normalize_parameters_in(op, &op_base, &mut issues);
+                normalize_body_properties_in(op, &op_base, &mut issues);
             }
         }
     }
 
-    if let Some(comps) = root.get_mut("components").and_then(Value::as_object_mut) {
-        if let Some(schemes) = comps
+    if let Some(comps) = root.get_mut("components").and_then(Value::as_object_mut)
+        && let Some(schemes) = comps
             .get_mut("securitySchemes")
             .and_then(Value::as_object_mut)
-        {
-            for (name, scheme) in schemes.iter_mut() {
-                let Value::Object(obj) = scheme else {
-                    continue;
-                };
-                let base = format!("components.securitySchemes.{name}");
-                let ty = obj.get("type").and_then(Value::as_str).unwrap_or("");
-                match ty {
-                    "oauth2" => rewrite_aliases(obj, OAUTH2_SEC_ALIASES, &base, &mut issues),
-                    "apiKey" | "http" => {
-                        rewrite_aliases(obj, APIKEY_HTTP_SEC_ALIASES, &base, &mut issues)
-                    }
-                    _ => {}
-                }
+    {
+        for (name, scheme) in schemes.iter_mut() {
+            let Value::Object(obj) = scheme else {
+                continue;
+            };
+            let base = format!("components.securitySchemes.{name}");
+            let ty = obj.get("type").and_then(Value::as_str).unwrap_or("");
+            match ty {
+                "oauth2" => rewrite_aliases(obj, OAUTH2_SEC_ALIASES, &base, &mut issues),
+                "apiKey" => rewrite_aliases(obj, APIKEY_SEC_ALIASES, &base, &mut issues),
+                "http" => rewrite_aliases(obj, HTTP_SEC_ALIASES, &base, &mut issues),
+                _ => {}
             }
         }
     }
@@ -287,6 +384,26 @@ pub fn normalize_aliases(v: &mut Value) -> Vec<ValidationIssue> {
                     };
                     let base = format!("x-overslash-mcp.{field}[{i}]");
                     rewrite_aliases(obj, MCP_TOOL_ALIASES, &base, &mut issues);
+
+                    // A tool's params live in its JSON-Schema `input_schema`,
+                    // and carry the same parameter-level extensions an HTTP
+                    // `parameters[]` entry does (`resolve`, `aliases`,
+                    // `instance-config`, …). Without this walk the unprefixed
+                    // spelling is silently ignored on MCP tools alone — an
+                    // author writes `resolve:` next to an already-unprefixed
+                    // `risk:` and gets a no-op.
+                    if let Some(props) = obj
+                        .get_mut("input_schema")
+                        .and_then(Value::as_object_mut)
+                        .and_then(|schema| schema.get_mut("properties"))
+                        .and_then(Value::as_object_mut)
+                    {
+                        for (name, prop) in props.iter_mut() {
+                            let Value::Object(pm) = prop else { continue };
+                            let base = format!("{base}.input_schema.properties.{name}");
+                            rewrite_aliases(pm, PARAMETER_ALIASES, &base, &mut issues);
+                        }
+                    }
                 }
             }
         }
@@ -307,7 +424,8 @@ mod tests {
     #[test]
     fn rewrites_alias_on_info() {
         let mut v = doc(json!({
-            "info": {"key": "slack", "category": "chat", "hidden": true, "title": "Slack"}
+            "info": {"key": "slack", "category": "chat", "hidden": true, "title": "Slack",
+                     "icon": "builtin:slack"}
         }));
         let issues = normalize_aliases(&mut v);
         assert!(issues.is_empty(), "{issues:?}");
@@ -315,8 +433,55 @@ mod tests {
         assert_eq!(info["x-overslash-key"], "slack");
         assert_eq!(info["x-overslash-category"], "chat");
         assert_eq!(info["x-overslash-hidden"], true);
+        assert_eq!(info["x-overslash-icon"], "builtin:slack");
         assert!(!info.contains_key("key"));
         assert!(!info.contains_key("hidden"));
+        assert!(!info.contains_key("icon"));
+    }
+
+    #[test]
+    fn both_icon_spellings_on_one_info_is_ambiguous() {
+        let mut v = doc(json!({
+            "info": {"title": "Slack", "icon": "builtin:slack",
+                     "x-overslash-icon": "https://example.com/a.svg"}
+        }));
+        let issues = normalize_aliases(&mut v);
+        assert!(
+            issues.iter().any(|i| i.code == "ambiguous_alias"),
+            "{issues:?}"
+        );
+    }
+
+    /// The unprefixed spelling must work on an MCP tool's params, not just at
+    /// the tool level — otherwise `resolve:` next to an unprefixed `risk:`
+    /// reads as authored but silently does nothing.
+    #[test]
+    fn rewrites_param_aliases_inside_mcp_input_schema() {
+        let mut v = doc(json!({
+            "x-overslash-mcp": {"tools": [{
+                "name": "send_message",
+                "risk": "write",
+                "input_schema": {"type": "object", "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "resolve": {"tool": "resolve_jid", "pick": "name"},
+                        "aliases": ["to"]
+                    }
+                }}
+            }]}
+        }));
+        let issues = normalize_aliases(&mut v);
+        assert!(issues.is_empty(), "{issues:?}");
+        let prop = &v["x-overslash-mcp"]["tools"][0]["input_schema"]["properties"]["recipient"];
+        assert_eq!(prop["x-overslash-resolve"]["tool"], "resolve_jid");
+        assert_eq!(prop["x-overslash-aliases"][0], "to");
+        assert!(prop.as_object().unwrap().get("resolve").is_none());
+        assert!(prop.as_object().unwrap().get("aliases").is_none());
+        // The tool level still normalizes as before.
+        assert_eq!(
+            v["x-overslash-mcp"]["tools"][0]["x-overslash-risk"],
+            "write"
+        );
     }
 
     #[test]
@@ -378,6 +543,78 @@ mod tests {
         let p0 = &v["paths"]["/send"]["post"]["parameters"][0];
         assert_eq!(p0["x-overslash-aliases"], json!(["to", "dest"]));
         assert!(p0.get("aliases").is_none());
+    }
+
+    /// The HTTP twin of `rewrites_param_aliases_inside_mcp_input_schema`: a body
+    /// property carries the same parameter extensions a `parameters[]` entry
+    /// does, and the unprefixed spelling used to be a silent no-op there.
+    #[test]
+    fn rewrites_param_aliases_inside_request_body_properties() {
+        let mut v = doc(json!({
+            "paths": {"/send": {"post": {
+                "operationId": "send",
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {"to": {
+                        "type": "string",
+                        "resolve": {"get": "/u/{to}", "pick": "name"},
+                        "aliases": ["recipient"],
+                        "instance-config": true
+                    }}
+                }}}}
+            }}}
+        }));
+        let issues = normalize_aliases(&mut v);
+        assert!(issues.is_empty(), "{issues:?}");
+        let prop = &v["paths"]["/send"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+            ["properties"]["to"];
+        assert_eq!(prop["x-overslash-resolve"]["pick"], "name");
+        assert_eq!(prop["x-overslash-aliases"][0], "recipient");
+        assert_eq!(prop["x-overslash-instance-config"], true);
+        assert!(prop.as_object().unwrap().get("resolve").is_none());
+    }
+
+    #[test]
+    fn rejects_ambiguous_request_body_property_resolve() {
+        let mut v = doc(json!({
+            "paths": {"/send": {"post": {
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "properties": {"to": {
+                        "resolve": {"pick": "name"},
+                        "x-overslash-resolve": {"pick": "name"}
+                    }}
+                }}}}
+            }}}
+        }));
+        let issues = normalize_aliases(&mut v);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == "ambiguous_alias"
+                    && i.path.ends_with("schema.properties.to.resolve")),
+            "{issues:?}"
+        );
+    }
+
+    /// A nested property is not a parameter — `collect_body_parameters` reads
+    /// only the top level, so the walk must stop there too.
+    #[test]
+    fn does_not_rewrite_nested_body_property_aliases() {
+        let mut v = doc(json!({
+            "paths": {"/send": {"post": {
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "properties": {"outer": {
+                        "type": "object",
+                        "properties": {"inner": {"resolve": {"pick": "name"}}}
+                    }}
+                }}}}
+            }}}
+        }));
+        assert!(normalize_aliases(&mut v).is_empty());
+        let inner = &v["paths"]["/send"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+            ["properties"]["outer"]["properties"]["inner"];
+        assert!(inner.get("resolve").is_some(), "nested must be left alone");
+        assert!(inner.get("x-overslash-resolve").is_none());
     }
 
     #[test]

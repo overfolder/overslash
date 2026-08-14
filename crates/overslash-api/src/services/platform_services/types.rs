@@ -25,6 +25,13 @@ pub struct CreateServiceInput {
     #[serde(default = "default_status")]
     pub status: String,
     pub user_level: Option<bool>,
+    /// Group grants to attach at creation time. Required (non-empty) when the
+    /// instance is org-level (`user_level: false`): an org-level instance with
+    /// no grant is unreachable by anyone, since the group ceiling is the only
+    /// path to a service nobody owns. On the user-level path these are
+    /// optional extras — the Myself auto-grant already covers the owner.
+    #[serde(default)]
+    pub groups: Vec<CreateServiceGroupGrant>,
     #[serde(default)]
     pub on_behalf_of: Option<Uuid>,
     /// Suppress the default auto-connect behavior for OAuth-backed
@@ -52,8 +59,33 @@ pub struct CreateServiceInput {
     pub connect_return_url: Option<String>,
 }
 
+/// One `groups[]` entry on [`CreateServiceInput`] — the create-time twin of
+/// `AddGrantRequest` on `POST /v1/groups/{id}/grants`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct CreateServiceGroupGrant {
+    pub group_id: Uuid,
+    /// `read` | `write` | `admin`. Defaults to `write`: `admin` is what the
+    /// Myself auto-grant hands a single owner, and is too broad to hand a
+    /// shared group silently.
+    #[serde(default = "default_grant_access_level")]
+    pub access_level: String,
+    /// `none` | `read` | `write` | `admin`, bounded by `access_level` (D53).
+    /// Defaults to `none`: a shared group gets no unattended calls unless the
+    /// creator asks for them by name.
+    #[serde(default)]
+    pub auto_approve_level: Option<String>,
+    /// DEPRECATED alias for `auto_approve_level`: `true` => `"read"`.
+    /// Ignored when `auto_approve_level` is present.
+    #[serde(default)]
+    pub auto_approve_reads: Option<bool>,
+}
+
 fn default_status() -> String {
     "active".into()
+}
+
+fn default_grant_access_level() -> String {
+    "write".into()
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -97,6 +129,12 @@ pub struct ServiceInstanceSummary {
     pub template_key: String,
     pub status: String,
     pub is_system: bool,
+    /// Absolute URL of the template's catalog icon. Instances deliberately
+    /// have no icon of their own — an instance is a binding of a template to a
+    /// credential, and two Gmail instances are both Gmail. Omitted when the
+    /// template resolves to nothing renderable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_identity_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,6 +170,10 @@ pub struct ServiceGroupRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_kind: Option<String>,
     pub access_level: String,
+    /// `"none" | "read" | "write" | "admin"` — how far up the ladder actions
+    /// on this service skip Layer 2 for members of this group.
+    pub auto_approve_level: String,
+    /// DEPRECATED — `auto_approve_level != "none"`.
     pub auto_approve_reads: bool,
 }
 
@@ -143,6 +185,7 @@ impl From<ServiceGroupRow> for ServiceGroupRef {
             group_name: r.group_name,
             system_kind: r.system_kind,
             access_level: r.access_level,
+            auto_approve_level: r.auto_approve_level,
             auto_approve_reads: r.auto_approve_reads,
         }
     }
@@ -157,6 +200,12 @@ pub struct ServiceInstanceDetail {
     pub name: String,
     pub template_source: String,
     pub template_key: String,
+    /// Absolute URL of the template's catalog icon. Instances deliberately
+    /// have no icon of their own — an instance is a binding of a template to a
+    /// credential, and two Gmail instances are both Gmail. Omitted when the
+    /// template resolves to nothing renderable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub template_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]

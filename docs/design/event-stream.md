@@ -45,7 +45,7 @@ compatibility surface from day one, which is why it is versioned.
 ### Wire contract (v1)
 
 ```
-GET /v1/events/stream?topics=approvals,connections,secrets
+GET /v1/events/stream?topics=approvals,connections,secrets,activity
 Authorization: Bearer <osk_… | mcp jwt>      (or the oss_session cookie)
 Last-Event-ID: <cursor>                      (sent automatically by EventSource)
 
@@ -148,6 +148,63 @@ interleaving would let a third party delay the second event on the stream).
 the item needs to know as much as the one gaining it, and after a hand-up the
 previous resolver may no longer sit on the new resolver's chain.
 
+Every way an approval can *end* is one event, `approval.resolved`, distinguished
+by `status`: `allowed` and `denied` from a human verdict, `allowed` again from
+the cascade, and `expired` from the background sweep. A second type would buy a
+subscriber nothing — anything watching for "how did my request end" is already
+watching `approval.resolved` — and would cost every existing consumer a new case
+to handle. Expiry sets `resolved_by: "system"` and carries no `execution`,
+because nothing ran.
+
+The expiry sweep is cross-org and bulk, so returning rows to emit from is where
+it could have stopped being bounded. Three things keep it in hand: the
+`RETURNING` projection is a narrow `ExpiredApproval` (the audience pair, the
+summary and the tags — never the jsonb columns, one of which is the whole
+replayable request body), the statement takes a `LIMIT`, and the tick drains a
+capped number of batches before yielding, logging when it hits that ceiling. A
+larger backlog costs a subscriber nothing but a minute: the approvals were
+already past `expires_at` and unusable.
+
+The `LIMIT` lives inside a **`MATERIALIZED` CTE**, and that detail is worth
+knowing before anyone rewrites the statement. The obvious spelling —
+`WHERE id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)` — makes the bound a
+property of the *plan*: add any further qual to the outer table and the planner
+may pick a nested-loop semi-join with the subquery on the inner side, rescanning
+and re-`LIMIT`ing it per outer row, which updates and returns more rows than
+asked for. That was observed, not theorised. A `MATERIALIZED` CTE is an explicit
+optimization fence evaluated exactly once, so the bound holds regardless of
+statistics.
+
+### The `activity` topic
+
+`action.called` and `action.completed` bracket every call through
+`POST /v1/actions/call`. They exist for the Live Map, and they are the first
+events on the gateway's **hottest path** — one durable `events` row each, per
+call, where every other event here is emitted once per operator action. So
+emission is gated on `OVERSLASH_LIVE_MAP` (`config.live_map_enabled`), which is
+set on dev and in `scripts/e2e-up.sh` and never in production, and reported to
+clients as `live_map` on `GET /v1/version`.
+
+The **topic string stays valid either way**. A client asking for `activity` on a
+deployment with the flag off gets silence, not a 400 — a subscription that
+succeeds or fails depending on an env var would be a worse contract than one
+that is simply quiet.
+
+Both are emitted from `routes/actions/mod.rs::call_action`, the wrapper that
+already brackets the request for metrics, rather than from the four terminal
+sites inside `call_action_impl`. That wrapper owns the outcome taxonomy —
+including the `UpstreamErrored` marker that tells an upstream's 500 riding
+behind an outer 200 apart from Overslash's own failure — and `action.completed`
+reports exactly it (`called | denied | rejected | failed | upstream_error`)
+alongside `duration_ms`.
+
+The pair is **not ordered**. The two events bracket the upstream call, so
+[`emit_all`] cannot span them and each `emit` spawns its own task; the inserts
+race and `completed` can carry the lower cursor. That is why they share a
+`call_id` minted in the wrapper rather than being paired by arrival order, and
+why the dashboard treats a `completed` for an unknown `call_id` as a packet
+already on its return leg instead of dropping the call.
+
 ### Visibility
 
 `audience` is the access-control decision, resolved once by the code path that
@@ -164,6 +221,7 @@ The rules mirror the corresponding read endpoints:
 | `approval.*` | `chain(requester) ∪ chain(current_resolver)` | Requester covers `?scope=mine`; resolver covers `?scope=assigned`; the resolver's *ancestors* are exactly `?scope=actionable`, since an identity can act iff the resolver is itself or a descendant. The requester's ancestors come along so a parent keeps seeing its sub-agents' traffic. |
 | `connection.*` | `chain(owner) ∪ {actor}` | **Not** the owner's descendants. Sub-agents *use* an owner-level connection via `on_behalf_of` but cannot list or manage it, and an event stream must never be wider than the read model it reflects. |
 | `secret_request.*` | `chain(requested_by) ∪ chain(target)` | The requesting agent is the one blocked on the secret. The target's chain covers the owner-user whose vault slot is written. Whoever pastes the value is anonymous and gains nothing by doing so. |
+| `action.*` | `chain(actor)` | The Live Map's feed. A parent keeps seeing what its sub-agents call; a sibling chain sees nothing. Org admins bypass the array, which is what makes one stream an org-wide operator view and a personal one for everyone else. Discloses no more than `GET /v1/audit` already shows the same caller. |
 
 Delivery applies one predicate, in two places:
 
@@ -262,7 +320,10 @@ where the client cannot trust its own state, and it is handled in one place.
 
 The approvals queue now reconciles on any approval event with a 300 ms debounced
 refetch of both lists, so an approval raised by an agent — or resolved in another
-tab or by a colleague — appears without a navigation. The "live" chip is finally
+tab, by a colleague, or by the expiry sweep — appears or disappears without a
+navigation. Expiry needed no client change to land there: the refetch reads
+`scope=assigned`, which is `status = 'pending'` only, so an expired approval
+leaves the queue on the strength of the event alone. The "live" chip is finally
 connected to the connection state it always implied, and shows a muted
 "auto-refresh" when the stream is down.
 
@@ -279,6 +340,16 @@ everything); topic filtering and a 400 for an unknown topic; the per-identity
 connection cap returning 429; webhook/stream payload parity read from the
 delivery row; the token-leak assertion; and 401 without credentials.
 
+`crates/overslash-api/tests/approval_expiry_events.rs` covers the expiry sweep's
+half of the contract: the `approval.resolved` payload and its
+`status: "expired"`, delivery to a live subscriber and to a webhook subscriber,
+the audience being the requester and resolver chains and nothing wider, the
+`LIMIT` bounding one statement, the drain loop crossing batches and stopping at
+its per-tick ceiling with the remainder left for the next one, two orgs swept
+together staying apart, a live approval surviving, a second sweep re-emitting
+nothing, and the audit row. The SSE reader those tests share with
+`events_stream.rs` lives in `tests/common/sse.rs`.
+
 Unit tests cover the delivery predicate in isolation (org mismatch, audience
 membership, admin bypass, topic filter), `Last-Event-ID` parsing, topic parsing,
 and the connection-cap accounting including the rollback when the org slot is
@@ -286,10 +357,6 @@ taken but the identity cap then rejects.
 
 ## Deferred
 
-- **Approval expiry emits nothing.** `expire_stale_approvals` is a bulk
-  cross-org `UPDATE` with no per-row context, so emitting per-approval events
-  would mean restructuring it to return rows and walk chains per org. Tracked in
-  TECH_DEBT.md.
 - **The `services` topic.** SPEC.md §7 implies service-lifecycle notifications
   (`pending_credentials → active`), but no `service.*` event exists on any
   transport yet. It slots in as one more `EventType` variant.

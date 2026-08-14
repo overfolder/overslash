@@ -1,12 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+use super::execution::ExecutionMode;
 use super::risk::DeclaredRisk;
 use super::scope::ScopeParams;
 
 /// An action within a service (maps to an HTTP request template).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Default` is derived so construction sites can spread `..Default::default()`
+/// rather than restating every field. Without it, adding one optional field
+/// means touching every fixture in the workspace.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServiceAction {
     #[serde(default)]
     pub method: String,
@@ -39,6 +44,50 @@ pub struct ServiceAction {
     /// When "binary", callers should use `prefer_stream: true` to avoid buffering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_type: Option<String>,
+    /// `x-overslash-timeout_ms`: how long this specific action is expected to
+    /// need upstream, in milliseconds. A *default*, not a cap — it says
+    /// "Metabase aggregations are slow", and the org and deployment maxima
+    /// still clamp it. `None` falls through to the service default, then the
+    /// org default, then the deployment default.
+    ///
+    /// Always the most specific default that survives the layer fold: an org
+    /// `ActionPatch` overwrites this value in place, so by the time a caller
+    /// reads it there is no separate "org per-action" layer left to consult.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// `x-overslash-wait-mode`: the execution mode a call to this action falls
+    /// back to when the caller names no `execution` of its own.
+    ///
+    /// A *default*, not a cap, and the same shape as
+    /// [`timeout_ms`](Self::timeout_ms) one field up: the template author is
+    /// the one party who knows this upstream takes four minutes, and before
+    /// this there was no way to say so — the caller who did not know either
+    /// simply rode into a 504 at the synchronous ceiling.
+    ///
+    /// Weaker than `timeout_ms` in one direction on purpose. A conflicting
+    /// request flag (`prefer_stream`, `deliver: "url"`, `return_url`) or a
+    /// template that cannot defer at all (`runtime: platform`, a binary
+    /// response) **demotes this to sync silently** rather than refusing the
+    /// call. The caller who names `execution` explicitly still gets the 400:
+    /// that caller is present and can act on it, while a mistyped template
+    /// value that 400s every call in the org is strictly worse than one that
+    /// quietly runs synchronously — D56's asymmetry, applied to a mode
+    /// instead of a number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_mode: Option<ExecutionMode>,
+    /// `x-overslash-handoff_after_ms`: how long a *hybrid* call to this action
+    /// holds the connection before answering 202.
+    ///
+    /// Clamped to the deployment maximum and to the call's own budget, never
+    /// refused — this is a template default, and the same reasoning as
+    /// [`wait_mode`](Self::wait_mode) applies. Only a caller-supplied
+    /// `handoff_after_ms` out of range is a 400.
+    ///
+    /// Meaningful only when the resolved mode is hybrid. Under any other mode
+    /// it is inert rather than an error, because the resolved mode depends on
+    /// the request and a template cannot know it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_after_ms: Option<u64>,
     #[serde(default)]
     pub params: HashMap<String, ActionParam>,
     /// Which params provide the `{arg}` segment in permission keys, and under
@@ -95,6 +144,64 @@ pub struct ServiceAction {
     /// before it ever looks at the body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_body: Option<RequestBodySpec>,
+    /// `x-overslash-download`: this action's *result* points at a downloadable
+    /// object rather than carrying it. Only meaningful for MCP actions — an
+    /// HTTP action that returns bytes already *is* its own download, so
+    /// `deliver: "url"` mints a token straight from the resolved request and
+    /// needs no declaration.
+    ///
+    /// MCP has no such request to replay: the tool returns a descriptor
+    /// (`{media_path, mime, size, …}`) and the bytes live behind a second,
+    /// undeclared endpoint. These jq filters are how a template says *which*
+    /// field of that descriptor is the object and what it looks like.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download: Option<DownloadSpec>,
+}
+
+/// How to turn an MCP tool result into a downloadable object.
+///
+/// Every field is a jq expression over the same `{runtime, tool, structured,
+/// content, is_error}` envelope `mcp_caller` builds, so filters address
+/// `.structured.*` the way `disclose` filters address `.arguments.*`.
+///
+/// Only [`url`](Self::url) is required; the rest are metadata the caller sees
+/// on the minted descriptor and never affect what bytes come back.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadSpec {
+    /// jq expression yielding the object's location. A relative result (`/media/abc`)
+    /// resolves against the resolved MCP instance URL's origin — the bytes live on
+    /// the same host that served the tool call. An absolute `http(s)://` result is
+    /// used verbatim.
+    pub url: String,
+    /// jq expression yielding the MIME type, surfaced on the descriptor and sent
+    /// as a fallback `Content-Type` when the upstream omits one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    /// jq expression yielding the byte length. Advisory only — it tells the
+    /// caller how big the fetch will be before committing to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    /// jq expression yielding a suggested filename.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    /// Which credential the deferred fetch presents. See [`DownloadAuth`].
+    #[serde(default)]
+    pub auth: DownloadAuth,
+}
+
+/// Which credential a deferred download presents to the upstream host.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DownloadAuth {
+    /// Re-resolve the service instance's credential at fetch time and send it.
+    /// The default, and the only correct choice when the byte route sits behind
+    /// the same auth as the MCP endpoint.
+    #[default]
+    Inherit,
+    /// Send nothing — the URL is already self-authorizing (a pre-signed CDN
+    /// link). Declaring this on a route that *does* need credentials produces a
+    /// 401 at fetch time, not a leak.
+    None,
 }
 
 impl ServiceAction {
@@ -164,14 +271,74 @@ pub struct DisclosureField {
 
 /// Describes how to resolve an opaque ID into a human-readable display name.
 ///
-/// The resolver makes a GET request to the same service host (reusing existing auth)
-/// and extracts a value from the JSON response using a dot-path.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Two runtimes, one shape. An HTTP action names a `get` path, fetched with a
+/// GET against the same service host reusing existing auth; an MCP action
+/// names a `tool` on the same service plus the `args` to call it with. Either
+/// way the JSON response is projected through `pick` (a single dot-path) or
+/// `display` (a `{dot.path}` template with `[optional]` segments).
+///
+/// `scope` additionally names the dot-path whose value canonicalizes the
+/// permission key. Without it a WhatsApp grant is minted against whichever
+/// opaque address the agent happened to use — `recipient=2391...@lid` one
+/// call, `recipient=34600...@s.whatsapp.net` the next, for the same human.
+/// With it both collapse to `recipient=+34600123456`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParamResolver {
-    /// GET endpoint path with `{param}` placeholders, e.g. `/calendar/v3/calendars/{calendarId}`.
-    pub get: String,
-    /// Dot-separated path into the JSON response, e.g. `summary` or `owner.login`.
-    pub pick: String,
+    /// HTTP runtime: GET endpoint path with `{param}` placeholders, e.g.
+    /// `/calendar/v3/calendars/{calendarId}`. Mutually exclusive with `tool`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub get: Option<String>,
+    /// MCP runtime: the name of a `risk: read` tool on the same service.
+    /// Mutually exclusive with `get`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// MCP runtime: arguments for `tool`. Values may contain `{param}`
+    /// placeholders naming params of the action being called.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub args: BTreeMap<String, String>,
+    /// Dot-separated path into the JSON response, e.g. `summary` or
+    /// `owner.login`. Shorthand for a single-placeholder `display`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pick: Option<String>,
+    /// Display template over response dot-paths, e.g. `{name}[ ({phone})]`.
+    /// Mutually exclusive with `pick`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
+    /// Dot-path whose value replaces the raw argument when deriving the
+    /// permission key. The value sent upstream is never rewritten — this
+    /// renames the permission, it does not retarget the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// How long this resolver's answer may be reused, in seconds. Overrides
+    /// the deployment default; `Some(0)` opts out of caching entirely.
+    ///
+    /// A default, not a cap — the deployment's ceiling still clamps it, and
+    /// tighter still when `scope` is set, because a cached `scope` value
+    /// decides which *grant* matches while the request keeps the caller's raw
+    /// argument. The template author is the one who knows whether the mapping
+    /// is immutable (`me` → your own address) or something the provider can
+    /// re-point under you (a JID → a phone number).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl: Option<u64>,
+}
+
+impl ParamResolver {
+    /// The display projection, with the `pick` shorthand normalized into the
+    /// `display` template form so callers only handle one shape. `None` when
+    /// the template declares neither — a malformed resolver that
+    /// `template_validation` reports rather than silently half-running.
+    pub fn display_template(&self) -> Option<String> {
+        match (&self.display, &self.pick) {
+            (Some(display), _) => Some(display.clone()),
+            (None, Some(pick)) => Some(format!("{{{pick}}}")),
+            (None, None) => None,
+        }
+    }
+
+    /// Whether exactly one runtime target is declared.
+    pub fn has_one_target(&self) -> bool {
+        self.get.is_some() != self.tool.is_some()
+    }
 }
 
 /// Where a parameter is sent on the wire, mirroring the OpenAPI `in:` field.

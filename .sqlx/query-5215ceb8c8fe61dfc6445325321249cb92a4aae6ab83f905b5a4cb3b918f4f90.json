@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions\n            SET status = 'failed',\n                error = 'orphaned',\n                completed_at = now()\n          WHERE status = 'executing'\n            -- Async rows are governed by lease liveness, not by `started_at`:\n            -- a worker-run job may legitimately run for many minutes while\n            -- heartbeating. Excluding them here is what keeps this sweep's\n            -- meaning unchanged -- an approval replay whose request died --\n            -- rather than merely untouched.\n            AND request IS NULL\n            AND started_at IS NOT NULL\n            AND started_at < now() - make_interval(secs => $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5215ceb8c8fe61dfc6445325321249cb92a4aae6ab83f905b5a4cb3b918f4f90"
+}

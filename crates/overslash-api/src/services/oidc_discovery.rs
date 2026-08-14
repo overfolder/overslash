@@ -107,12 +107,12 @@ fn validate_issuer_url(issuer_url: &str) -> Result<(), OidcDiscoveryError> {
     }
 
     // Block requests to IP addresses that point to internal networks
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if ip.is_loopback() || ip.is_unspecified() || is_private_ip(ip) || is_link_local(ip) {
-            return Err(OidcDiscoveryError::InvalidUrl(
-                "issuer URL must not point to internal/private addresses".into(),
-            ));
-        }
+    if let Ok(ip) = host.parse::<IpAddr>()
+        && (ip.is_loopback() || ip.is_unspecified() || is_private_ip(ip) || is_link_local(ip))
+    {
+        return Err(OidcDiscoveryError::InvalidUrl(
+            "issuer URL must not point to internal/private addresses".into(),
+        ));
     }
 
     // Block known cloud metadata hostnames

@@ -75,10 +75,40 @@ pub struct Config {
     /// Seconds a pending execution row (`executions.status='pending'`) lives
     /// before the sweeper marks it `expired`. Default 900 (15 minutes).
     pub execution_pending_ttl_secs: u64,
-    /// Upper bound on how long the synchronous replay inside
-    /// `POST /v1/approvals/{id}/call` may wait for the upstream call.
-    /// Beyond this the row is finalised as `failed` with `error='replay_timeout'`.
+    /// Floor for the outer wall-clock guard on the synchronous replay inside
+    /// `POST /v1/approvals/{id}/call`. Beyond the wall the row is finalised as
+    /// `failed` with `error='replay_timeout'`.
+    ///
+    /// Since D56 this is no longer the timeout a caller feels — that is
+    /// resolved per call by [`crate::services::call_timeout`]. This is the
+    /// crash-recovery backstop that also covers the DB work, filtering, and
+    /// finalisation *after* the upstream returns, so it must never sit below
+    /// the largest per-call timeout the resolver can hand out. Read it through
+    /// [`Config::replay_wall_clock`], never directly.
     pub execution_replay_timeout_secs: u64,
+    /// Default upstream timeout, in milliseconds, for an action call that
+    /// names no timeout of its own and whose template and org say nothing.
+    /// The bottom rung of the D56 cascade.
+    pub call_timeout_ms: u64,
+    /// Hard ceiling on any resolved per-call timeout — the synchronous budget.
+    ///
+    /// Sized to sit just under the deployment's own request cap (Cloud Run cuts
+    /// at 120s; the HTTPS LB sets no timeout, because serverless-NEG backends
+    /// reject `timeout_sec`), so a call fails with our 504 and a
+    /// real audit row rather than an opaque proxy timeout. It is a *config*
+    /// knob rather than a constant precisely because a self-hosted deploy
+    /// behind no such proxy has no reason to inherit our 120s.
+    pub call_timeout_max_ms: u64,
+    /// Per-chunk idle timeout for streamed response bodies.
+    ///
+    /// Streaming deliberately does not take the resolved call timeout as a
+    /// total deadline — that would mean "your 900MB export fails at exactly
+    /// 90s", which is the opposite of what streaming is for. The resolved
+    /// timeout bounds time-to-first-byte; this bounds the gap between chunks,
+    /// so a stalled transfer still dies while a slow-but-live one does not.
+    pub call_stream_idle_timeout_ms: u64,
+    /// Async execution. See [`AsyncExecutionConfig`].
+    pub async_execution: AsyncExecutionConfig,
     pub services_dir: String,
     pub google_auth_client_id: Option<String>,
     pub google_auth_client_secret: Option<String>,
@@ -86,6 +116,12 @@ pub struct Config {
     pub github_auth_client_secret: Option<String>,
     pub public_url: String,
     pub dev_auth_enabled: bool,
+    /// Live Map (`/map` in the dashboard) and the per-call `action.*` events
+    /// that feed it. Off unless `OVERSLASH_LIVE_MAP` is set, because emission
+    /// costs one durable `events` row per action call — the hottest path in
+    /// the system. Reported on `GET /v1/version` so the dashboard knows
+    /// whether to offer the view at all.
+    pub live_map_enabled: bool,
     /// Passwordless email magic-link login. Default-on: it needs no external
     /// IdP credentials, so it's the working login on a fresh self-hosted
     /// deploy. Set `MAGIC_LINK_ENABLED=false` to disable (e.g. an org that
@@ -99,6 +135,26 @@ pub struct Config {
     /// already-decoded body string, not the wire size.
     pub audit_response_body_max_bytes: usize,
     pub filter_timeout_ms: u64,
+    /// Lifetime of a deferred-download capability token (`deliver: "url"`).
+    ///
+    /// The token travels in an action result — which for an agent means it
+    /// lands in a context window and possibly a transcript — so the window in
+    /// which a leaked URL is useful is exactly this. Kept short by default;
+    /// long enough that an agent can hand the URL to a shell and let a large
+    /// file finish transferring, including a retry or two.
+    pub download_token_ttl_secs: i64,
+    /// Ceiling on the plaintext size of a stored call result.
+    ///
+    /// A truncated compact render stores the full `ActionResult` so the same
+    /// bytes can be delivered again without re-running upstream. That store is
+    /// bounded well under `max_response_body_bytes`: 5 MB per cropped call is
+    /// heavy write amplification for a "let me look again" cache, and a payload
+    /// that large wants `deliver: "url"` up front anyway. Over the cap nothing
+    /// is stored and the caller is told why — a *partial* stored copy would be
+    /// worse than none, since the agent would fetch it and believe it complete.
+    ///
+    /// `0` disables result storage entirely.
+    pub call_result_max_bytes: usize,
     pub dashboard_url: String,
     pub dashboard_origin: String,
     /// Additional CORS origins allowed *only* on MCP transport
@@ -110,6 +166,34 @@ pub struct Config {
     /// (`/v1/*` etc.). Default empty.
     pub mcp_extra_origins: String,
     pub redis_url: Option<String>,
+    // ── Display-param resolver cache (D64) ──────────────────────────
+    /// Default reuse window for a resolver's answer, in seconds. A resolver's
+    /// own `cache_ttl:` overrides it; `0` disables the cache entirely.
+    ///
+    /// Short on purpose. A cached `scope` value decides which *grant* matches
+    /// while the outgoing request still carries the caller's raw argument, so
+    /// the window is one of bounded-staleness authorization, not just latency.
+    /// Templates whose mapping is genuinely immutable opt *up*.
+    pub resolve_cache_ttl_secs: u64,
+    /// Reuse window for a resolver that *failed*, in seconds. Separate and
+    /// shorter: it stops a down provider costing every call the full resolver
+    /// timeout, without keeping approvals unreadable long after it recovers.
+    pub resolve_cache_negative_ttl_secs: u64,
+    /// Ceiling on the effective TTL for resolvers that declare `scope`. Policy,
+    /// not knowledge — a template author sets a default, a deployment sets the
+    /// cap, and the tighter of the two wins (cf. D56).
+    pub resolve_cache_scope_ttl_max_secs: u64,
+    /// Per-operation budget for the cache backend itself. Bounds a slow or
+    /// wedged Valkey well inside the 3s resolver budget; exceeding it is a
+    /// miss, never an error the caller sees.
+    pub resolve_cache_timeout_ms: u64,
+    /// Cap on the in-memory backend only. Resolver arguments are
+    /// caller-supplied, so an agent looping over distinct ids would otherwise
+    /// grow the map unboundedly between eviction sweeps.
+    pub resolve_cache_max_entries: usize,
+    /// Extra key-namespace segment. Empty in production; set it when two
+    /// deployments (or two test runs) share one Valkey.
+    pub resolve_cache_namespace: Option<String>,
     pub default_rate_limit: u32,
     pub default_rate_window_secs: u32,
     /// When `false`, `POST /v1/orgs` returns 403 and the dashboard hides the
@@ -249,7 +333,143 @@ pub struct PlatformCredential {
     pub value: String,
 }
 
+/// Async (non-blocking) action execution — see DECISIONS D62.
+///
+/// Nested rather than five flat `Config` fields on purpose. Every `Config`
+/// field has to be repeated in the test builder and in ~14 test fixtures that
+/// list fields explicitly, so five flat knobs would be ~75 mechanical edits and
+/// every future async knob another 15. One nested field costs one line each.
+#[derive(Clone, Debug)]
+pub struct AsyncExecutionConfig {
+    /// `ASYNC_EXECUTION_ENABLED`. Off means `execution: "async"` is rejected at
+    /// the boundary and no worker or signal handler is spawned, so a
+    /// flag-off deployment behaves exactly as it did before this feature.
+    pub enabled: bool,
+    /// `ASYNC_CALL_TIMEOUT_MAX_MS`. The deployment ceiling for an async call,
+    /// passed to the same `call_timeout::resolve` the sync path uses.
+    ///
+    /// Much larger than `call_timeout_max_ms` because that number exists to sit
+    /// under a proxy's request cap, and no proxy is counting an async call. The
+    /// binding constraints instead are instance lifetime (Cloud Run may recycle
+    /// at any time) and retry economics (`max_attempts` defaults to 1, so a lost
+    /// job is a failed job).
+    pub call_timeout_max_ms: u64,
+    /// `ASYNC_WORKER_CONCURRENCY`. Jobs one replica runs at once.
+    ///
+    /// Default 2 is a *connection* budget, not a throughput guess: the request
+    /// pool (25) plus the background pool (6) is 31 per instance, and with
+    /// `max_instances = 3` that is 93 against a Postgres ceiling around 97.
+    /// Raising this requires raising `DB_BACKGROUND_MAX_CONNECTIONS` by the
+    /// same amount, and 3 x (DB_MAX_CONNECTIONS + DB_BACKGROUND_MAX_CONNECTIONS)
+    /// must stay under that ceiling.
+    pub worker_concurrency: usize,
+    /// `ASYNC_LEASE_TTL_SECS`. How long a claim stays valid without a
+    /// heartbeat. Independent of job duration — the heartbeat is what keeps a
+    /// long job alive — so this only needs to tolerate a GC pause or a slow
+    /// database, not a slow upstream.
+    pub lease_ttl_secs: u64,
+    /// `ASYNC_MAX_ATTEMPTS`. Attempts before a row that keeps losing its lease
+    /// is failed outright.
+    ///
+    /// Defaults to **1**: an action call is not idempotent and there is no
+    /// idempotency-key concept, so a POST that already reached the upstream
+    /// must not be replayed because a worker died. Operators who know their
+    /// actions are safe to retry raise it.
+    pub max_attempts: i32,
+    /// `HYBRID_HANDOFF_MS`. How long a `execution: "hybrid"` call waits on the
+    /// connection before answering 202 and letting the job finish off it.
+    ///
+    /// A deployment default, so it is *clamped* against the call's own budget
+    /// rather than refused — see `services::hybrid::resolve_handoff`. A caller
+    /// who names `handoff_after_ms` explicitly gets a 400 instead, which is the
+    /// same split `timeout_ms` already makes between a template default and a
+    /// number a caller asked for.
+    pub hybrid_handoff_ms: u64,
+    /// `HYBRID_HANDOFF_MAX_MS`. Ceiling on a caller-supplied `handoff_after_ms`.
+    ///
+    /// Well under `call_timeout_max_ms`: a handoff longer than the synchronous
+    /// connection ceiling cannot fire before the proxy cuts the connection, so
+    /// permitting one would only produce a 504 where the caller asked for a 202.
+    pub hybrid_handoff_max_ms: u64,
+    /// `HYBRID_MAX_INFLIGHT`. Hybrid jobs one replica runs at once.
+    ///
+    /// A hybrid call spawns its job from the *request* path, so unlike the
+    /// worker loop nothing else bounds it — N concurrent requests would be N
+    /// detached tasks against the same background pool `worker_concurrency` is
+    /// sized for. Over this, a hybrid call is accepted onto the ordinary async
+    /// queue instead: same envelope, same poll URL, no shape change the caller
+    /// can observe.
+    pub hybrid_max_inflight: usize,
+}
+
+impl Default for AsyncExecutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            call_timeout_max_ms: 900_000,
+            worker_concurrency: 2,
+            lease_ttl_secs: 60,
+            max_attempts: 1,
+            hybrid_handoff_ms: 5_000,
+            hybrid_handoff_max_ms: 30_000,
+            hybrid_max_inflight: 32,
+        }
+    }
+}
+
+/// Slack added to [`Config::call_timeout_max_ms`] to get the replay wall.
+///
+/// Covers what the replay future does *after* the upstream answers — secret
+/// decryption, jq filtering, finalising the execution row — so the wall never
+/// fires on a call that merely used its full, legitimate budget.
+const REPLAY_WALL_SLACK_MS: u64 = 5_000;
+
 impl Config {
+    /// Outer wall-clock guard for `POST /v1/approvals/{id}/call`.
+    ///
+    /// Derived rather than configured, so a per-call timeout can never be
+    /// silently shadowed by the wall and an operator never has to bump two env
+    /// vars in lockstep. Always at least the largest timeout the D56 resolver
+    /// can return, plus slack for the post-call work.
+    pub fn replay_wall_clock(&self) -> std::time::Duration {
+        let floor_ms = self.call_timeout_max_ms + REPLAY_WALL_SLACK_MS;
+        std::time::Duration::from_millis((self.execution_replay_timeout_secs * 1_000).max(floor_ms))
+    }
+
+    /// Grace before the sweeper reclaims an `executing` execution row as
+    /// orphaned. One minute past the wall: if the wall had been going to fire,
+    /// it already would have, so anything still `executing` lost its process.
+    pub fn orphan_execution_grace_secs(&self) -> i64 {
+        self.replay_wall_clock().as_secs() as i64 + 60
+    }
+
+    /// How often a worker renews its lease. Derived as a third of the TTL, so
+    /// a job gets three chances to renew before it is presumed dead — and so
+    /// the two can never be configured into contradiction.
+    ///
+    /// This interval also bounds cancel latency: the heartbeat's
+    /// `RETURNING cancel_requested` *is* the cancel poll, deliberately, so
+    /// "I still own this row" and "I should stop" are one atomic observation.
+    pub fn async_heartbeat_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs((self.async_execution.lease_ttl_secs / 3).max(1))
+    }
+
+    /// Outer wall-clock guard for one async job. Mirrors [`Self::replay_wall_clock`]:
+    /// the largest budget the resolver can hand out, plus slack for the work
+    /// after the upstream answers.
+    pub fn async_wall_clock(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            self.async_execution.call_timeout_max_ms + REPLAY_WALL_SLACK_MS,
+        )
+    }
+
+    /// Grace before the sweeper fails an async row that is still `executing`
+    /// past its wall. One minute past, on the same reasoning as
+    /// [`Self::orphan_execution_grace_secs`].
+    pub fn async_orphan_grace_secs(&self) -> i64 {
+        self.async_wall_clock().as_secs() as i64 + 60
+    }
+
     /// Build the [`Keyring`](overslash_core::crypto::Keyring) used by every
     /// encrypt/decrypt call. Returns a single-key keyring at rest and a
     /// dual-key (active + previous) one during a rotation.
@@ -392,7 +612,7 @@ impl Config {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::parse::parse_platform_credential;
     use super::*;
     use std::env;
@@ -668,8 +888,14 @@ mod tests {
         assert_eq!(kr.previous_id(), None);
     }
 
-    fn empty_test_config() -> Config {
+    /// A `Config` with every field at a harmless value. `pub(crate)` so unit
+    /// tests in other modules can build one without restating ~100 fields.
+    pub(crate) fn empty_test_config() -> Config {
         Config {
+            async_execution: Default::default(),
+            call_stream_idle_timeout_ms: 30_000,
+            call_timeout_max_ms: 110_000,
+            call_timeout_ms: 30_000,
             host: "127.0.0.1".into(),
             port: 0,
             database_url: String::new(),
@@ -693,14 +919,23 @@ mod tests {
             github_auth_client_secret: None,
             public_url: "http://localhost:0".into(),
             dev_auth_enabled: false,
+            live_map_enabled: false,
             magic_link_enabled: true,
             max_response_body_bytes: 0,
             audit_response_body_max_bytes: 0,
             filter_timeout_ms: 0,
+            download_token_ttl_secs: 900,
+            call_result_max_bytes: 1024 * 1024,
             dashboard_url: "/".into(),
             dashboard_origin: "*".into(),
             mcp_extra_origins: String::new(),
             redis_url: None,
+            resolve_cache_ttl_secs: 300,
+            resolve_cache_negative_ttl_secs: 30,
+            resolve_cache_scope_ttl_max_secs: 300,
+            resolve_cache_timeout_ms: 100,
+            resolve_cache_max_entries: 10_000,
+            resolve_cache_namespace: None,
             default_rate_limit: 0,
             default_rate_window_secs: 0,
             allow_org_creation: true,

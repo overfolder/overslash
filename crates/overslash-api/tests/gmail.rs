@@ -133,6 +133,7 @@ async fn test_gmail_e2e() {
                 "https://www.googleapis.com/auth/gmail.metadata".to_string(),
             ]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc_id),
         })
         .await
@@ -538,6 +539,7 @@ async fn test_gmail_e2e() {
             token_expires_at: Some(expires_at),
             scopes: Some(&["https://www.googleapis.com/auth/gmail.compose".to_string()]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc_id),
         })
         .await
@@ -951,6 +953,7 @@ async fn test_gmail_array_query_param_expands_to_repeated_pairs() {
             token_expires_at: Some(future_time),
             scopes: Some(&["https://www.googleapis.com/auth/gmail.readonly".to_string()]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc.id),
         })
         .await

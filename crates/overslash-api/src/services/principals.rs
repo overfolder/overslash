@@ -89,25 +89,24 @@ pub async fn resolve_service_principals(
 
         // 2. Unbound OAuth instance: the owner-provider connection the exec path
         //    would pick.
-        if principal.is_none() {
-            if let (Some(owner), Some(provider)) =
+        if principal.is_none()
+            && let (Some(owner), Some(provider)) =
                 (r.owner_identity_id, template_oauth_provider(def))
-            {
-                let key = (owner, provider.to_string());
-                principal = match owner_provider_email.get(&key) {
-                    Some(cached) => cached.clone(),
-                    None => {
-                        let email = UserScope::new(scope.org_id(), owner, scope.db().clone())
-                            .find_my_connection_by_provider(provider)
-                            .await
-                            .ok()
-                            .flatten()
-                            .and_then(|c| c.account_email);
-                        owner_provider_email.insert(key, email.clone());
-                        email
-                    }
-                };
-            }
+        {
+            let key = (owner, provider.to_string());
+            principal = match owner_provider_email.get(&key) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let email = UserScope::new(scope.org_id(), owner, scope.db().clone())
+                        .find_my_connection_by_provider(provider)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|c| c.account_email);
+                    owner_provider_email.insert(key, email.clone());
+                    email
+                }
+            };
         }
 
         // 3. Secret-based instance: the identity-bearing config var.

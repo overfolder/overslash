@@ -1,172 +1,20 @@
 //! `GET /v1/events/stream` — the SSE event stream.
 //!
-//! These are the first tests in the suite to consume SSE over the wire. The
-//! existing client-side parser (`overslash-mcp-puppet/src/sse.rs`) deliberately
-//! ignores `id:` and `event:` because the MCP transport never emits them; this
-//! stream's whole resume contract is built on `id:`, so the tests carry their
-//! own field-aware parser below.
-//!
-//! They use `start_api_with_event_stream` rather than the shared router: a
-//! stream outlives the shared harness's per-test `ResourceGuard`, and live
-//! fan-out needs the Postgres `LISTEN` task that only this harness spawns.
+//! These are the first tests in the suite to consume SSE over the wire; the
+//! field-aware reader they need lives in `common::sse`, which also owns the
+//! `start_stream_api` harness (the shared router cannot serve a stream — see
+//! that module).
 
 use std::collections::HashMap;
 use std::time::Duration;
 
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::Value;
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::common;
-
-/// Connection ceiling used by these tests. Long enough to observe a live event,
-/// short enough that a test asserting "the server hangs up" finishes fast.
-const STREAM_SECS: u64 = 3;
-
-/// One parsed SSE frame. Keep-alive comments are dropped by the parser.
-#[derive(Debug, Clone)]
-struct Frame {
-    id: Option<String>,
-    event: Option<String>,
-    data: String,
-}
-
-impl Frame {
-    fn json(&self) -> Value {
-        serde_json::from_str(&self.data).expect("frame data is json")
-    }
-
-    /// The `data` of the wire envelope — what a webhook subscriber would get.
-    fn payload(&self) -> Value {
-        self.json()
-            .get("data")
-            .cloned()
-            .expect("envelope carries data")
-    }
-
-    fn cursor(&self) -> i64 {
-        self.id
-            .as_ref()
-            .expect("event frames carry an id")
-            .parse()
-            .expect("id is the numeric cursor")
-    }
-}
-
-/// Read an SSE response to completion, returning every frame. Bounded by
-/// `timeout` so a stream the server forgot to close fails the test instead of
-/// hanging it.
-async fn collect_frames(resp: reqwest::Response, timeout: Duration) -> Vec<Frame> {
-    assert!(
-        resp.headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default()
-            .starts_with("text/event-stream"),
-        "expected an SSE content-type, got {:?}",
-        resp.headers().get("content-type")
-    );
-
-    let mut frames = Vec::new();
-    let mut buf = String::new();
-    let mut body = resp.bytes_stream();
-
-    let read = async {
-        while let Some(chunk) = body.next().await {
-            let chunk = chunk.expect("stream chunk");
-            buf.push_str(&String::from_utf8_lossy(&chunk));
-            while let Some(split) = find_frame_boundary(&buf) {
-                let (raw, rest) = buf.split_at(split.0);
-                let remainder = rest[split.1..].to_string();
-                if let Some(frame) = parse_frame(raw) {
-                    frames.push(frame);
-                }
-                buf = remainder;
-            }
-        }
-    };
-    // A clean server-side close ends `read` on its own; the timeout is the
-    // backstop for a stream that never closes.
-    let _ = tokio::time::timeout(timeout, read).await;
-    frames
-}
-
-/// Byte offset of the next frame terminator and its length, handling both
-/// `\n\n` and `\r\n\r\n`.
-fn find_frame_boundary(buf: &str) -> Option<(usize, usize)> {
-    match (buf.find("\r\n\r\n"), buf.find("\n\n")) {
-        (Some(crlf), Some(lf)) if crlf <= lf => Some((crlf, 4)),
-        (_, Some(lf)) => Some((lf, 2)),
-        (Some(crlf), None) => Some((crlf, 4)),
-        (None, None) => None,
-    }
-}
-
-/// Parse one frame. Returns `None` for keep-alive comments and any block with
-/// no `data:` line.
-fn parse_frame(raw: &str) -> Option<Frame> {
-    let mut id = None;
-    let mut event = None;
-    let mut data: Vec<String> = Vec::new();
-
-    for line in raw.lines() {
-        let line = line.trim_end_matches('\r');
-        if line.is_empty() || line.starts_with(':') {
-            continue;
-        }
-        let Some((field, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.strip_prefix(' ').unwrap_or(value);
-        match field {
-            "id" => id = Some(value.to_string()),
-            "event" => event = Some(value.to_string()),
-            "data" => data.push(value.to_string()),
-            _ => {}
-        }
-    }
-
-    if data.is_empty() {
-        return None;
-    }
-    Some(Frame {
-        id,
-        event,
-        data: data.join("\n"),
-    })
-}
-
-/// Open a stream and read it to completion.
-async fn read_stream(
-    client: &Client,
-    base: &str,
-    key: &str,
-    query: &str,
-    last_event_id: Option<i64>,
-) -> Vec<Frame> {
-    let resp = open_stream(client, base, key, query, last_event_id).await;
-    assert_eq!(resp.status(), 200, "stream should open");
-    collect_frames(resp, Duration::from_secs(STREAM_SECS + 5)).await
-}
-
-async fn open_stream(
-    client: &Client,
-    base: &str,
-    key: &str,
-    query: &str,
-    last_event_id: Option<i64>,
-) -> reqwest::Response {
-    let mut req = client
-        .get(format!("{base}/v1/events/stream{query}"))
-        .header("Accept", "text/event-stream")
-        .header("Authorization", format!("Bearer {key}"));
-    if let Some(cursor) = last_event_id {
-        req = req.header("Last-Event-ID", cursor.to_string());
-    }
-    req.send().await.expect("stream request")
-}
+use crate::common::sse::start_stream_api as start;
+use crate::common::sse::{Frame, STREAM_SECS, open_stream, read_stream};
 
 /// Mint a secret request — the cheapest way to produce a real event, since it
 /// needs no permission-gate setup and its audience is the caller's own chain.
@@ -183,14 +31,6 @@ async fn mint_secret_request(client: &Client, base: &str, key: &str, name: &str)
         .as_str()
         .expect("request id")
         .to_string()
-}
-
-async fn start(pool: PgPool) -> (String, Client) {
-    let (addr, client) = common::start_api_with_event_stream(pool, |config| {
-        config.events_stream_max_connection_secs = STREAM_SECS;
-    })
-    .await;
-    (format!("http://{addr}"), client)
 }
 
 #[tokio::test]

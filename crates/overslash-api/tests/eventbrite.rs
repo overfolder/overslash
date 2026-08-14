@@ -83,6 +83,7 @@ async fn test_eventbrite_e2e() {
             token_expires_at: None,
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc_id),
         })
         .await

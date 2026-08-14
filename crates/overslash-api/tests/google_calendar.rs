@@ -144,6 +144,7 @@ async fn test_google_calendar_three_modes() {
             token_expires_at: Some(future_time),
             scopes: Some(&["https://www.googleapis.com/auth/calendar".to_string()]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc.id),
         })
         .await
@@ -453,6 +454,7 @@ async fn test_google_calendar_real_byoc() {
             token_expires_at: Some(expires_at),
             scopes: Some(&["https://www.googleapis.com/auth/calendar".to_string()]),
             account_email: Some("angel.overspiral@gmail.com"),
+            account_picture: None,
             byoc_credential_id: Some(byoc_id),
         })
         .await

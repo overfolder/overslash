@@ -109,15 +109,17 @@ pub(super) async fn compute_approval_detail(
     // ActionRequest has no url/method/body to inspect, so reviewers need
     // the tool name and arguments to see what the agent actually called.
     // Disclosure jq filters are still applied when declared — they operate
-    // on the MCP projection ({runtime, tool, arguments, service, action}).
-    // No `resolved` key here (or on the platform projection below): display
-    // param resolvers are HTTP-action-only, so `meta.resolved` is always
-    // empty for these shapes and the projections stay unchanged.
+    // on the MCP projection ({runtime, tool, arguments, resolved, service,
+    // action}), so `.resolved.recipient // .arguments.recipient` reads the
+    // same way as the HTTP shape's `.resolved.fileId // .params.fileId`.
+    // The platform projection below has no `resolved` key: platform actions
+    // make no outgoing call for a resolver to ride on.
     if let Some(target) = meta.mcp_target.as_ref() {
         let projection = serde_json::json!({
             "runtime": "mcp",
             "tool": &target.tool,
             "arguments": &target.arguments,
+            "resolved": &meta.resolved,
             "service": meta.service_scope.as_ref().map(|s| &s.service_key),
             "action": meta.service_scope.as_ref().map(|s| &s.action_key),
         });
@@ -185,6 +187,10 @@ mod tests {
 
     fn http_meta() -> ResolvedMeta {
         ResolvedMeta {
+            action_timeout_ms: None,
+            action_wait_mode: None,
+            action_handoff_after_ms: None,
+            service_timeout_ms: None,
             description: None,
             service_scope: Some(ServiceScope {
                 service_key: "github".into(),
@@ -195,8 +201,11 @@ mod tests {
             risk: None,
             disclose: Vec::new(),
             redact: Vec::new(),
+            oauth_injected: false,
+            download: None,
             params: HashMap::new(),
             resolved: HashMap::new(),
+            canonical: HashMap::new(),
             mcp_target: None,
             platform_target: None,
             instance_id: None,

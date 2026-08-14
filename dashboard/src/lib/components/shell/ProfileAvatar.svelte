@@ -1,22 +1,16 @@
 <script lang="ts">
+	import Avatar from '$lib/components/Avatar.svelte';
+
 	let {
 		name = '',
 		email = '',
+		picture = null,
 		showName = false
-	}: { name?: string; email?: string; showName?: boolean } = $props();
-
-	function initials(n: string, e: string): string {
-		const src = (n || e || '?').trim();
-		const parts = src.split(/\s+/).filter(Boolean);
-		if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-		return src.slice(0, 2).toUpperCase();
-	}
-
-	const ini = $derived(initials(name, email));
+	}: { name?: string; email?: string; picture?: string | null; showName?: boolean } = $props();
 </script>
 
 <a class="avatar-link" class:with-name={showName} href="/profile" title={name || email}>
-	<span class="avatar">{ini}</span>
+	<Avatar {name} {email} {picture} size={32} />
 	{#if showName}
 		<span class="name-block">
 			<span class="name">{name || email}</span>
@@ -37,19 +31,6 @@
 	}
 	.avatar-link:hover {
 		background: var(--color-neutral-100, var(--color-border));
-	}
-	.avatar {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 32px;
-		height: 32px;
-		border-radius: 50%;
-		background: var(--color-primary);
-		color: #fff;
-		font-size: 0.75rem;
-		font-weight: 600;
-		flex-shrink: 0;
 	}
 	.name-block {
 		display: flex;

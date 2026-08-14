@@ -35,9 +35,32 @@ async fn test_response_too_large() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["error"], "response_too_large");
     assert_eq!(body["limit_bytes"], 1024);
-    assert!(body["hint"].as_str().unwrap().contains("prefer_stream"));
-}
 
+    // D57: the retry is minted at the point of failure, so the caller does
+    // not have to construct a second round trip from the hint.
+    let url = body["download_url"]
+        .as_str()
+        .expect("a raw-HTTP call with no injected credential can always be minted");
+    assert!(
+        body["expires_at"].as_str().is_some_and(|e| !e.is_empty()),
+        "a capability URL without an expiry is not actionable, got: {body}"
+    );
+    let hint = body["hint"].as_str().unwrap();
+    assert!(
+        hint.contains("download_url"),
+        "the hint must point at the URL it just minted, got: {hint}"
+    );
+
+    // And it must actually work: the whole point is that the body the cap
+    // refused to buffer is still reachable, in full, without credentials.
+    let fetched = client.get(url).send().await.unwrap();
+    assert_eq!(fetched.status(), 200, "the minted URL must be redeemable");
+    assert_eq!(
+        fetched.bytes().await.unwrap().len(),
+        10240,
+        "the download must carry the full body, not the truncated prefix"
+    );
+}
 #[tokio::test]
 async fn test_prefer_stream_large_file() {
     let pool = common::test_pool().await;

@@ -209,28 +209,26 @@ impl McpClient {
         // its associated authorization server. Surface this as a structured
         // error so callers can mint a nested-OAuth flow rather than treating
         // it as a generic transport failure.
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            if let Some(www) = response
+        if status == reqwest::StatusCode::UNAUTHORIZED
+            && let Some(www) = response
                 .headers()
                 .get(reqwest::header::WWW_AUTHENTICATE)
                 .and_then(|v| v.to_str().ok())
-            {
-                if let Some(url) = parse_resource_metadata(www) {
-                    return Err(McpClientError::AuthRequired {
-                        resource_metadata_url: url,
-                    });
-                }
-            }
+            && let Some(url) = parse_resource_metadata(www)
+        {
+            return Err(McpClientError::AuthRequired {
+                resource_metadata_url: url,
+            });
         }
 
         // Short-circuit if Content-Length is already oversized. This stops us
         // buffering anything when a server advertises a huge payload upfront.
-        if let Some(len) = response.content_length() {
-            if len as usize > self.max_body_bytes {
-                return Err(McpClientError::ResponseTooLarge {
-                    limit_bytes: self.max_body_bytes,
-                });
-            }
+        if let Some(len) = response.content_length()
+            && len as usize > self.max_body_bytes
+        {
+            return Err(McpClientError::ResponseTooLarge {
+                limit_bytes: self.max_body_bytes,
+            });
         }
 
         // Stream + cap: the MCP spec places no ceiling on tool results, and

@@ -14,10 +14,14 @@
 //! - this module — `servers[].url` → `hosts`, plus the `x-overslash-*`
 //!   readers that more than one of the groups above needs.
 
+use std::str::FromStr;
+
 use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
-use crate::types::{DisclosureField, ScopeParams};
+use crate::types::{DisclosureField, DownloadAuth, DownloadSpec, ExecutionMode, ScopeParams};
+
+use super::ext::{self, Ext, Pos};
 
 mod actions;
 mod auth;
@@ -30,6 +34,7 @@ pub use mcp::overlay_discovered_tools;
 pub(super) use actions::{extract_http_action, extract_platform_action};
 pub(super) use auth::{CompiledCredentials, extract_auth};
 pub(super) use mcp::{extract_mcp_actions, extract_mcp_spec};
+use params::parse_resolver;
 
 /// Lower `x-overslash-scope_param` — a param name, a `param:label` pair, or a
 /// list of either — into [`ScopeParams`].
@@ -160,6 +165,127 @@ fn parse_disclose(
     out
 }
 
+/// Parse `x-overslash-download` — the declaration that an MCP tool's result
+/// *references* a downloadable object instead of carrying it.
+///
+/// `url` is mandatory; a block without it is malformed rather than
+/// partially-honored, because a download with no location is not a weaker
+/// download, it's nothing at all. The optional metadata filters are dropped
+/// individually when blank so one typo doesn't take the whole block down.
+fn parse_download(
+    v: Option<&Value>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<DownloadSpec> {
+    let v = v?;
+    let p = format!("{base}.x-overslash-download");
+    let Some(obj) = v.as_object() else {
+        issues.push(ValidationIssue::new(
+            "download_malformed",
+            "x-overslash-download must be an object with `url` and optional {mime, size, filename, auth}",
+            p,
+        ));
+        return None;
+    };
+    let url = match obj.get("url").and_then(Value::as_str) {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => {
+            issues.push(ValidationIssue::new(
+                "download_malformed",
+                "`url` must be a non-empty jq expression string",
+                format!("{p}.url"),
+            ));
+            return None;
+        }
+    };
+    // Blank/non-string metadata filters are simply absent — the descriptor
+    // just carries one less field.
+    let pick = |key: &str| {
+        obj.get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+    };
+    let auth = match obj.get("auth").and_then(Value::as_str) {
+        None | Some("inherit") => DownloadAuth::Inherit,
+        Some("none") => DownloadAuth::None,
+        Some(other) => {
+            issues.push(ValidationIssue::new(
+                "download_malformed",
+                format!("`auth` must be `inherit` or `none` (got {other:?})"),
+                format!("{p}.auth"),
+            ));
+            return None;
+        }
+    };
+    Some(DownloadSpec {
+        url,
+        mime: pick("mime"),
+        size: pick("size"),
+        filename: pick("filename"),
+        auth,
+    })
+}
+
+/// Read an `x-overslash-timeout_ms` (or `x-overslash-default_timeout_ms`) off an
+/// operation, MCP tool, or `info` object.
+///
+/// Strict: a value that is present but not a positive integer is an authoring
+/// error, not a "fall back to the default" — a template that says `timeout_ms:
+/// "30s"` means to raise the ceiling, and silently ignoring it would leave the
+/// author staring at timeouts they thought they had fixed.
+///
+/// `key` is the canonical extension name so the same parser serves the
+/// per-action and per-service spellings, and the issue pointer names the field
+/// the author actually wrote.
+pub(in crate::openapi) fn parse_timeout_ms(
+    v: Option<&Value>,
+    key: &str,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<u64> {
+    let v = v?;
+    match v.as_u64() {
+        Some(ms) if ms > 0 => Some(ms),
+        _ => {
+            issues.push(ValidationIssue::new(
+                "invalid_timeout",
+                format!("{key} must be a positive integer number of milliseconds"),
+                format!("{base}.{key}"),
+            ));
+            None
+        }
+    }
+}
+
+/// `x-overslash-wait-mode` → [`ExecutionMode`].
+///
+/// Shaped like [`parse_timeout_ms`] deliberately: an unrecognized value is a
+/// [`ValidationIssue`] and `None`, never a hard error. A template whose mode is
+/// misspelled falls back to synchronous — the historical behaviour — rather
+/// than removing the action, which is the same lenient direction D67 chose for
+/// the extension lint and for the same reason: a stray key must not be able to
+/// take a service down.
+pub(in crate::openapi) fn parse_wait_mode(
+    v: Option<&Value>,
+    key: &str,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<ExecutionMode> {
+    let v = v?;
+    match v.as_str().and_then(|s| ExecutionMode::from_str(s).ok()) {
+        Some(mode) => Some(mode),
+        None => {
+            issues.push(ValidationIssue::new(
+                "invalid_wait_mode",
+                format!("{key} must be one of \"sync\", \"async\", \"hybrid\""),
+                format!("{base}.{key}"),
+            ));
+            None
+        }
+    }
+}
+
 fn parse_redact(v: Option<&Value>, base: &str, issues: &mut Vec<ValidationIssue>) -> Vec<String> {
     let Some(v) = v else { return Vec::new() };
     let Some(arr) = v.as_array() else {
@@ -197,8 +323,8 @@ fn parse_redact(v: Option<&Value>, base: &str, issues: &mut Vec<ValidationIssue>
 /// service instance. Read from the same four param shapes `parse_aliases`
 /// covers (operation params, body properties, platform params, lowered input
 /// schemas), so the vocabulary means the same thing wherever it is authored.
-fn parse_instance_config(obj: Option<&Map<String, Value>>) -> bool {
-    obj.and_then(|o| o.get("x-overslash-instance-config"))
+fn parse_instance_config(obj: Option<&Map<String, Value>>, pos: Pos) -> bool {
+    obj.and_then(|o| ext::get(o, pos, Ext::InstanceConfig))
         .and_then(Value::as_bool)
         .unwrap_or(false)
 }
@@ -210,20 +336,23 @@ fn parse_instance_config(obj: Option<&Map<String, Value>>) -> bool {
 /// same four param shapes `parse_aliases` covers; cross-param rules (one sql
 /// param per action, string type, path shape, inert sql-database) are
 /// checked by template validation, not here.
-fn parse_sql_policy(obj: Option<&Map<String, Value>>) -> (Option<String>, Option<String>) {
+fn parse_sql_policy(
+    obj: Option<&Map<String, Value>>,
+    pos: Pos,
+) -> (Option<String>, Option<String>) {
     let sql_field = obj
-        .and_then(|o| o.get("x-overslash-sql-field"))
+        .and_then(|o| ext::get(o, pos, Ext::SqlField))
         .and_then(Value::as_str)
         .map(str::to_string);
     let sql_database = obj
-        .and_then(|o| o.get("x-overslash-sql-database"))
+        .and_then(|o| ext::get(o, pos, Ext::SqlDatabase))
         .and_then(Value::as_str)
         .map(str::to_string);
     (sql_field, sql_database)
 }
 
-fn parse_aliases(obj: Option<&Map<String, Value>>, name: &str) -> Vec<String> {
-    obj.and_then(|o| o.get("x-overslash-aliases"))
+fn parse_aliases(obj: Option<&Map<String, Value>>, name: &str, pos: Pos) -> Vec<String> {
+    obj.and_then(|o| ext::get(o, pos, Ext::Aliases))
         .and_then(Value::as_array)
         .map(|a| {
             // Dedup within one param's list (order-preserving): `[to, to]` is
@@ -251,7 +380,7 @@ mod tests {
     #[test]
     fn parse_aliases_dedups_within_one_param() {
         let obj = json!({ "x-overslash-aliases": ["to", "to", "dest", "to"] });
-        let aliases = parse_aliases(obj.as_object(), "recipient");
+        let aliases = parse_aliases(obj.as_object(), "recipient", Pos::Parameter);
         assert_eq!(aliases, vec!["to".to_string(), "dest".to_string()]);
     }
 
@@ -260,7 +389,7 @@ mod tests {
         let obj = json!({
             "x-overslash-aliases": ["to", "", "  ", "recipient", 7, "dest"]
         });
-        let aliases = parse_aliases(obj.as_object(), "recipient");
+        let aliases = parse_aliases(obj.as_object(), "recipient", Pos::Parameter);
         // Blank, whitespace-only, the canonical name itself, and non-strings
         // are dropped.
         assert_eq!(aliases, vec!["to".to_string(), "dest".to_string()]);

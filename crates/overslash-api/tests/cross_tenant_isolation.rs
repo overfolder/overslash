@@ -197,6 +197,7 @@ async fn create_org_service(
             "template_key": key_name,
             "name": key_name,
             "user_level": false,
+            "groups": common::everyone_grant(base, client, key).await,
         }))
         .send()
         .await

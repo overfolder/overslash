@@ -14,7 +14,8 @@
 	} from '$lib/api/groups';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import IdentityPickerModal from '$lib/components/groups/IdentityPickerModal.svelte';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import { makeIdentityFormatter, shortEmail } from '$lib/identityDisplay';
+	import AutoApproveSelect from '$lib/components/AutoApproveSelect.svelte';
 
 	const groupId = $derived($page.params.id as string);
 
@@ -35,7 +36,7 @@
 	// Add grant form
 	let newServiceId = $state('');
 	let newAccessLevel = $state('read');
-	let newAutoApprove = $state(false);
+	let newAutoApproveLevel = $state('none');
 	let addingGrant = $state(false);
 	let grantError = $state<string | null>(null);
 
@@ -56,6 +57,8 @@
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
+	const fmt = $derived(makeIdentityFormatter(allowedDomains));
 	const isSelfGroup = $derived(group?.system_kind === 'self');
 	const isAdminsGroup = $derived(group?.system_kind === 'admins');
 	const isEveryoneGroup = $derived(group?.system_kind === 'everyone');
@@ -108,12 +111,19 @@
 			: orgServices
 	);
 
-	function selfGroupLabel(g: typeof group): string {
-		if (!g) return '';
-		if (g.system_kind !== 'self') return g.name;
+	/** Label plus a hover title. The label may have the org's single allowed
+	 *  domain stripped off; `title` always carries the full address. */
+	function selfGroupLabel(g: typeof group): { text: string; title: string | undefined } {
+		if (!g) return { text: '', title: undefined };
+		if (g.system_kind !== 'self') return { text: g.name, title: undefined };
 		const ident = g.owner_identity_id ? identityById.get(g.owner_identity_id) : undefined;
-		const email = ident?.email ?? ident?.name;
-		return email ? `Myself (${email})` : 'Myself';
+		if (!ident?.email) {
+			return { text: ident?.name ? `Myself (${ident.name})` : 'Myself', title: undefined };
+		}
+		return {
+			text: `Myself (${shortEmail(ident.email, allowedDomains)})`,
+			title: `Myself (${ident.email})`
+		};
 	}
 
 	onMount(load);
@@ -184,12 +194,12 @@
 			const g = await groupsApi.addGrant(groupId, {
 				service_instance_id: newServiceId,
 				access_level: newAccessLevel,
-				auto_approve_reads: newAutoApprove
+				auto_approve_level: newAutoApproveLevel
 			});
 			grants = [...grants, g];
 			newServiceId = '';
 			newAccessLevel = 'read';
-			newAutoApprove = false;
+			newAutoApproveLevel = 'none';
 		} catch (e) {
 			grantError = apiErrText(e);
 		} finally {
@@ -230,11 +240,18 @@
 		}
 	}
 
-	async function toggleAutoApprove(grant: GroupGrant) {
+	/** Mirror the server's clamp in the add-grant form: lowering the ceiling
+	 *  drags an out-of-range auto-approve level down with it, so submitting
+	 *  can't produce a 400 the user didn't ask for. */
+	function clampNewAutoApprove() {
+		const rank: Record<string, number> = { none: 0, read: 1, write: 2, admin: 3 };
+		if (rank[newAutoApproveLevel] > rank[newAccessLevel]) newAutoApproveLevel = newAccessLevel;
+	}
+
+	async function changeAutoApproveLevel(grant: GroupGrant, auto_approve_level: string) {
+		if (auto_approve_level === grant.auto_approve_level) return;
 		try {
-			const fresh = await groupsApi.patchGrant(groupId, grant.id, {
-				auto_approve_reads: !grant.auto_approve_reads
-			});
+			const fresh = await groupsApi.patchGrant(groupId, grant.id, { auto_approve_level });
 			grants = grants.map((g) => (g.id === grant.id ? fresh : g));
 		} catch (e) {
 			grantError = apiErrText(e);
@@ -247,6 +264,8 @@
 	async function changeAccessLevel(grant: GroupGrant, access_level: string) {
 		if (access_level === grant.access_level) return;
 		try {
+			// Lowering the ceiling clamps `auto_approve_level` server-side, so
+			// the row has to come from the response — not a local patch.
 			const fresh = await groupsApi.patchGrant(groupId, grant.id, { access_level });
 			grants = grants.map((g) => (g.id === grant.id ? fresh : g));
 		} catch (e) {
@@ -298,8 +317,9 @@
 	{:else if error && !group}
 		<div class="state error">{error}</div>
 	{:else if group}
+		{@const heading = selfGroupLabel(group)}
 		<header class="header">
-			<h1>{selfGroupLabel(group)}</h1>
+			<h1 title={heading.title}>{heading.text}</h1>
 			{#if !group.is_system}
 				<button class="link-danger" onclick={() => (deleteOpen = true)}>Delete group</button>
 			{/if}
@@ -352,7 +372,7 @@
 						<tr>
 							<th>Service</th>
 							<th>Access level</th>
-							<th>Auto-approve reads</th>
+							<th>Auto-approve</th>
 							{#if canManageGrantRow}<th></th>{/if}
 						</tr>
 					</thead>
@@ -381,13 +401,13 @@
 								</td>
 								<td>
 									{#if !isSelfGroup || isSelfOwner}
-										<ToggleSwitch
-											checked={g.auto_approve_reads}
-											onchange={() => toggleAutoApprove(g)}
-											label="Auto-approve reads"
+										<AutoApproveSelect
+											value={g.auto_approve_level}
+											accessLevel={g.access_level}
+											onchange={(level) => changeAutoApproveLevel(g, level)}
 										/>
 									{:else}
-										{g.auto_approve_reads ? 'Yes' : 'No'}
+										{g.auto_approve_level}
 									{/if}
 								</td>
 								{#if canManageGrantRow}
@@ -409,18 +429,18 @@
 							<option value={s.id}>{s.name}</option>
 						{/each}
 					</select>
-					<select bind:value={newAccessLevel}>
+					<select bind:value={newAccessLevel} onchange={clampNewAutoApprove}>
 						<option value="read">read</option>
 						<option value="write">write</option>
 						<option value="admin">admin</option>
 					</select>
 					<span class="inline">
-						<ToggleSwitch
-							checked={newAutoApprove}
-							onchange={(v) => (newAutoApprove = v)}
-							labelledby="new-auto-approve-label"
+						<span id="new-auto-approve-label">Auto-approve</span>
+						<AutoApproveSelect
+							value={newAutoApproveLevel}
+							accessLevel={newAccessLevel}
+							onchange={(level) => (newAutoApproveLevel = level)}
 						/>
-						<span id="new-auto-approve-label">Auto-approve reads</span>
 					</span>
 					<button type="submit" class="btn btn-primary" disabled={addingGrant}>
 						{addingGrant ? 'Adding…' : 'Add grant'}
@@ -451,10 +471,11 @@
 				<ul class="members">
 					{#each memberIds as id (id)}
 						{@const ident = identityById.get(id)}
+						{@const d = ident ? fmt.format(ident) : null}
 						<li>
-							<span class="name">{ident?.name ?? id}</span>
-							{#if ident?.external_id}
-								<span class="ext">{ident.external_id}</span>
+							<span class="name" title={d?.title}>{d?.primary ?? id}</span>
+							{#if d?.secondary}
+								<span class="ext">{d.secondary}</span>
 							{/if}
 							{#if !isSelfGroup}
 								<button class="link-danger" onclick={() => removeMember(id)}>Remove</button>
@@ -470,6 +491,7 @@
 <IdentityPickerModal
 	open={pickerOpen}
 	{identities}
+	{allowedDomains}
 	excludeIds={memberIds}
 	onPick={pickMember}
 	onCancel={() => (pickerOpen = false)}

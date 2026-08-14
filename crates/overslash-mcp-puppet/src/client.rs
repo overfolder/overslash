@@ -62,17 +62,16 @@ impl ClientInner {
             "application/json"
         };
         h.insert(ACCEPT, HeaderValue::from_static(accept));
-        if let Auth::Bearer(token) = &self.auth {
-            if let Ok(v) = HeaderValue::from_str(&format!("Bearer {token}")) {
-                h.insert(AUTHORIZATION, v);
-            }
+        if let Auth::Bearer(token) = &self.auth
+            && let Ok(v) = HeaderValue::from_str(&format!("Bearer {token}"))
+        {
+            h.insert(AUTHORIZATION, v);
         }
-        if let Ok(guard) = self.session_id.lock() {
-            if let Some(sid) = guard.as_deref() {
-                if let Ok(v) = HeaderValue::from_str(sid) {
-                    h.insert(MCP_SESSION_HEADER, v);
-                }
-            }
+        if let Ok(guard) = self.session_id.lock()
+            && let Some(sid) = guard.as_deref()
+            && let Ok(v) = HeaderValue::from_str(sid)
+        {
+            h.insert(MCP_SESSION_HEADER, v);
         }
         h
     }
@@ -81,10 +80,9 @@ impl ClientInner {
         if let Some(sid) = resp_headers
             .get(MCP_SESSION_HEADER)
             .and_then(|v| v.to_str().ok())
+            && let Ok(mut guard) = self.session_id.lock()
         {
-            if let Ok(mut guard) = self.session_id.lock() {
-                *guard = Some(sid.to_string());
-            }
+            *guard = Some(sid.to_string());
         }
     }
 }
@@ -401,10 +399,10 @@ fn parse_final_jsonrpc(
 ) -> CallStep {
     // Best-effort id check — if the server returned a payload without id,
     // accept it; the SSE stream context already disambiguated.
-    if let Some(id) = body.get("id") {
-        if id != expected_id {
-            tracing::debug!(?id, ?expected_id, "puppet final response id mismatch");
-        }
+    if let Some(id) = body.get("id")
+        && id != expected_id
+    {
+        tracing::debug!(?id, ?expected_id, "puppet final response id mismatch");
     }
     let result = body.get("result").cloned();
     let error = body.get("error").map(|e| JsonRpcError {

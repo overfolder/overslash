@@ -13,10 +13,10 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::AppError,
-    extractors::{AuthContext, ClientIp, ReqExt},
+    extractors::{AuthContext, CallerTransport, ClientIp, ReqExt},
     services::{
         audit_capture::{self, AuditResponseBodyMode},
-        group_ceiling, http_caller, mcp_caller,
+        call_timeout, group_ceiling, http_caller,
         response_filter::{self},
     },
 };
@@ -26,6 +26,7 @@ use overslash_core::{
     types::{ResolvedActionRequest, service::Risk},
 };
 
+use super::upstream_error::{log_transport_error_audit, map_call_error};
 use super::*;
 use super::{approval_detail::*, resolve::*, service_resolve::*, validate::*};
 
@@ -40,35 +41,6 @@ use super::{approval_detail::*, resolve::*, service_resolve::*, validate::*};
 #[derive(Clone, Copy)]
 pub(crate) struct UpstreamErrored;
 
-/// The `sql` audit block for one evaluated policy outcome: the DB label, the
-/// classification, which fail-closed rule fired (for writes), and the relations
-/// and columns the statement referenced. The raw query itself travels via the
-/// template's `disclose` filters.
-///
-/// This is the *record*; the metadata tags minted alongside it are the search
-/// index. The two differ on purpose — `reason_detail` carries the unbounded
-/// payload (a parse error's message, the parse-node name) that `write_reason`'s
-/// short tag flattens away and that a tag has no business holding.
-pub(super) fn sql_audit_block(sp: &SqlPolicyOutcome) -> serde_json::Value {
-    use overslash_core::sql_policy::WriteReason;
-    let a = &sp.analysis;
-    serde_json::json!({
-        "db": sp.db_label,
-        "classified": sp.floor.to_string(),
-        "write_reason": a.write_reason.as_ref().map(|r| r.tag()),
-        "reason_detail": a.write_reason.as_ref().and_then(|r| match r {
-            WriteReason::UnsupportedDialect(s) | WriteReason::ParseError(s)
-            | WriteReason::Statement(s) => Some(s.clone()),
-            WriteReason::MultiStatement(n) => Some(n.to_string()),
-            _ => None,
-        }),
-        "read_tables": a.read_tables,
-        "mut_tables": a.mut_tables,
-        "columns": a.columns,
-        "tables_exhaustive": a.tables_exhaustive,
-    })
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn call_action_impl(
     State(state): State<AppState>,
@@ -76,15 +48,37 @@ pub(super) async fn call_action_impl(
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
+    transport: CallerTransport,
     Json(mut req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
     // Reject filter + streaming up front — silently dropping the filter
     // could let an agent think it's getting a small slice and instead
     // pipe a multi-MB stream into its context window.
-    if req.prefer_stream.unwrap_or(false) && req.filter.is_some() {
-        return Err(AppError::BadRequest(
-            "filter cannot be combined with prefer_stream".into(),
-        ));
+    let super::flags::RequestFlags {
+        deliver_url,
+        mode: requested_mode,
+        blockers: request_blockers,
+    } = super::flags::validate_request(&req)?;
+
+    // Refused here, above the permission gate, rather than only at the async
+    // fork below it. The fork sits *under* the gate, so on a flag-off
+    // deployment a gated async call would otherwise file an approval stamped
+    // `async` that no worker will ever drain — and its caller would never learn
+    // async was refused.
+    // Hybrid rides the same flag: it needs the executions row, the sweeps and
+    // the poll surface async brought, and a saturated hybrid fork degrades onto
+    // the async queue — which nothing drains with the flag off.
+    // Caller-named only. A template's own `wait-mode` is not refused here — it
+    // is simply never adopted, via `Blockers::async_disabled` below. Refusing
+    // it would let one template take every call to an action down on a
+    // deployment that never opted into async at all.
+    if let Some(m) = requested_mode.filter(|m| m.is_deferred())
+        && !state.config.async_execution.enabled
+    {
+        return Err(AppError::BadRequest(format!(
+            "execution: \"{}\" is not enabled on this deployment",
+            m.label()
+        )));
     }
 
     // Validate filter syntax before any upstream call so a malformed
@@ -123,6 +117,13 @@ pub(super) async fn call_action_impl(
     // the template / instance from the DB.
     let (pre_meta, pre_resolved_mode_c) =
         resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
+    // Rejections that only become visible once the template is known — a
+    // platform action has nothing to defer, and a binary body would be
+    // corrupted on its way into the row. Above argument coercion for the same
+    // reason the argument gate sits above the permission walk: the cheapest
+    // structurally-impossible answer first.
+    let resolved_blockers = super::flags::validate_resolved(&req, pre_resolved_mode_c.as_ref())?;
+
     // Rewrite template-declared parameter aliases (e.g. `to` → `recipient`) to
     // their canonical names first, so defaults, coercion, validation, the
     // approval replay payload, and resolution all see canonical keys only.
@@ -230,6 +231,45 @@ pub(super) async fn call_action_impl(
         auth_header,
     } = resolved;
 
+    // ── The execution-mode cascade ──────────────────────────────────
+    //
+    // Rung 1 is the request, rung 2 the action template, and the floor is
+    // synchronous. Folded *here* — below resolution, above everything that
+    // reads a mode — because the template rung arrives on `meta` and does not
+    // exist until the action does, and because four things downstream branch
+    // on the answer: the per-mode D56 ceiling, the approval stamp, and the two
+    // dispatch forks. Nothing between `validate_request` and this line reads a
+    // mode, which is what makes the move down safe.
+    let wait = crate::services::wait_mode::resolve(
+        requested_mode,
+        meta.action_wait_mode,
+        crate::services::wait_mode::Blockers {
+            platform_runtime: resolved_blockers.platform_runtime,
+            binary_response: resolved_blockers.binary_response,
+            async_disabled: !state.config.async_execution.enabled,
+            ..request_blockers
+        },
+    );
+    let mode = wait.mode();
+    if let (Some(dropped), Some(reason)) = (wait.demoted_from(), wait.blocked_by()) {
+        // Silent to the caller, never silent to us: this is the one path where
+        // a template says one thing and the gateway does another, so it has to
+        // be greppable and countable. See D73 on why it is not a 400.
+        tracing::info!(
+            service = req.service.as_deref().unwrap_or("-"),
+            action = req.action.as_deref().unwrap_or("-"),
+            declared = dropped.label(),
+            blocked_by = reason,
+            "action wait-mode demoted to sync",
+        );
+        overslash_metrics::actions::record_wait_mode_demotion(reason);
+    }
+    super::flags::validate_effective(&req, mode)?;
+    // Only carried when the request did not name the mode: the two deferred
+    // envelopes report it, and a caller that asked for async does not need
+    // telling where async came from.
+    let mode_source = wait.is_derived().then(|| wait.source().label());
+
     // Caller-asserted risk gate (MCP `overslash_read`): reject before any
     // permission/approval work if the resolved action mutates. The declared
     // risk (falling back to HTTP-method inference for verb / `http` shapes)
@@ -237,17 +277,18 @@ pub(super) async fn call_action_impl(
     // SELECT-only query passes as read here; a write-classified (or
     // unclassifiable) one is rejected. Same value as the ceiling check below.
     let effective = effective_risk(meta.risk, sql_policy.as_ref(), &action_req.method);
-    if let Some(required) = req.require_risk {
-        if required == Risk::Read && effective.is_mutating() {
-            let action_label = req
-                .action
-                .as_deref()
-                .or(req.service.as_deref())
-                .unwrap_or(&action_req.url);
-            return Err(AppError::BadRequest(format!(
-                "action '{action_label}' is risk={effective}; this entry point only permits risk=read actions. Use overslash_call instead."
-            )));
-        }
+    if let Some(required) = req.require_risk
+        && required == Risk::Read
+        && effective.is_mutating()
+    {
+        let action_label = req
+            .action
+            .as_deref()
+            .or(req.service.as_deref())
+            .unwrap_or(&action_req.url);
+        return Err(AppError::BadRequest(format!(
+            "action '{action_label}' is risk={effective}; this entry point only permits risk=read actions. Use overslash_call instead."
+        )));
     }
 
     // System-derived metadata tags for this call. Minted from the *resolved*
@@ -279,7 +320,7 @@ pub(super) async fn call_action_impl(
             &scope_meta.service_key,
             &scope_meta.action_key,
             &scope_meta.scope_param,
-            &req.params,
+            &canonical_scope_params(&req.params, &meta.canonical),
         )
     };
     // D42: per-table keys join (or, for the bare `:*` fallback, replace)
@@ -293,19 +334,20 @@ pub(super) async fn call_action_impl(
     // ── Layer 1: Group ceiling check ─────────────────────────────────
     //
     // Owner access to a service flows through the user's auto-managed Myself
-    // group grant (admin + auto_approve_reads = true by default), so every
-    // call runs through this same ceiling — including ones targeting a
+    // group grant (admin access, read-level auto-approval by default), so
+    // every call runs through this same ceiling — including ones targeting a
     // service owned by the caller's ceiling user.
     let ceiling_service = scope_meta.service_key.clone();
     // Same merged value as the `require_risk` gate: a write-classified SQL
-    // statement exceeds a read-only ceiling and forfeits `read_bypass`.
+    // statement is measured against the write rung of both ladders, so it
+    // can exceed a read-only ceiling and forfeit a read-only auto-approval.
     let ceiling_risk = effective;
 
     let ceiling = group_ceiling::load_ceiling(&scope, ceiling_user_id).await?;
 
-    // `read_bypass = true` means the matching grant has `auto_approve_reads`
-    // and the action is non-mutating — Layer 2 is skipped entirely (no
-    // permission rule is written, no approval is filed).
+    // `auto_approved = true` means a matching grant's `auto_approve_level`
+    // covers this action's risk — Layer 2 is skipped entirely (no permission
+    // rule is written, no approval is filed).
     let mut skip_layer2 = false;
 
     if ceiling.has_groups {
@@ -315,8 +357,8 @@ pub(super) async fn call_action_impl(
                     (StatusCode::FORBIDDEN, Json(CallResponse::Denied { reason })).into_response(),
                 );
             }
-            GroupCeilingResult::WithinCeiling { read_bypass } => {
-                if read_bypass && identity.kind != "user" {
+            GroupCeilingResult::WithinCeiling { auto_approved } => {
+                if auto_approved && identity.kind != "user" {
                     skip_layer2 = true;
                 }
             }
@@ -325,14 +367,25 @@ pub(super) async fn call_action_impl(
     }
     // has_groups == false → NoGroups → permissive (no ceiling enforced)
 
-    // D42: a deny rule overrides every allow mechanism — including the
-    // `auto_approve_reads` read bypass and the users-are-their-own-approvers
+    // D42/D53: a deny rule overrides every allow mechanism — including the
+    // `auto_approve_level` bypass and the users-are-their-own-approvers
     // rule, both of which skip the chain walk below. A SQL-classified call
     // therefore runs a deny-only sweep whenever the full walk won't: a
     // `column=…/ssn` or `column_star=…` deny (or a table deny) is a hard 403
     // no matter which fast path the call took.
+    //
+    // D53 widens the sweep to *any* mutating call that took the auto-approve
+    // bypass, SQL-classified or not. Before write-level auto-approval existed
+    // the bypass could only ever free reads, so the blast radius of skipping
+    // deny rules along with the rest of Layer 2 was small enough to live with
+    // outside the SQL tier. A grant that auto-approves writes changes that: a
+    // deny is often the *only* thing standing between an agent and a mutation
+    // an admin explicitly carved out. Reads keep the old zero-query fast path
+    // — that behaviour is unchanged and a read bypass was never intended to
+    // consult the chain.
     let walk_will_run = identity.kind != "user" && pre_meta.needs_gate && !skip_layer2;
-    if sql_policy.is_some() && !walk_will_run {
+    let auto_approved_mutation = skip_layer2 && ceiling_risk.is_mutating();
+    if (sql_policy.is_some() || auto_approved_mutation) && !walk_will_run {
         let mut screen: Vec<PermissionKey> = perm_keys.clone();
         screen.extend(deny_screen_keys.iter().cloned());
         if let Some(reason) =
@@ -343,6 +396,71 @@ pub(super) async fn call_action_impl(
             );
         }
     }
+
+    // Org-level call settings: audit capture mode plus the D56 timeout rungs.
+    // One PK lookup on the hot path — the org row isn't otherwise fetched
+    // here, and folding both consumers into one query keeps it at one.
+    //
+    // Both halves degrade rather than fail, for different reasons. Capture is
+    // best-effort observability (the audit write is itself fire-and-forget),
+    // so it falls back to Off. The timeouts fall back to *no org opinion*,
+    // which lands on the deployment default — never on "unbounded", which is
+    // the one outcome a failed read must not be able to produce.
+    let org_call_settings = match overslash_db::repos::org::get_call_settings(
+        state.db(&ext),
+        auth.org_id,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "org call settings read failed; using deployment defaults");
+            None
+        }
+    };
+    let audit_body_mode = org_call_settings
+        .as_ref()
+        .map(|s| AuditResponseBodyMode::parse_or_off(&s.audit_response_body_mode))
+        .unwrap_or(AuditResponseBodyMode::Off);
+
+    // Resolved once, here, before the MCP / HTTP / deferred forks — so every
+    // runtime gets the same number and the cascade lives in exactly one place.
+    let call_timeout = call_timeout::resolve(
+        call_timeout::TimeoutLayers {
+            per_call_ms: req.timeout_ms,
+            action_ms: meta.action_timeout_ms,
+            service_ms: meta.service_timeout_ms,
+            org_default_ms: org_call_settings
+                .as_ref()
+                .and_then(|s| s.call_timeout_ms)
+                .map(|v| v as u64),
+            org_max_ms: org_call_settings
+                .as_ref()
+                .and_then(|s| s.max_call_timeout_ms)
+                .map(|v| v as u64),
+        },
+        state.config.call_timeout_ms,
+        // Per-mode ceiling (D62). The synchronous maximum exists to sit under
+        // Cloud Run's request cap, and no proxy is counting for an async call.
+        // It has to be chosen *here* rather than at the fork below: `resolve`
+        // errors on a per-call value above the ceiling, and the worker's
+        // `reclamp_stored` only ever clamps down — so a budget refused here can
+        // never be recovered later, on the direct path or through an approval.
+        // Hybrid takes the async ceiling too: after a handoff there is no
+        // connection, so the sync ceiling's premise — sit under the proxy's
+        // request cap — no longer holds. Safe because a hybrid *connection* is
+        // bounded by the handoff, never by this budget.
+        if mode.is_deferred() {
+            state.config.async_execution.call_timeout_max_ms
+        } else {
+            state.config.call_timeout_max_ms
+        },
+    )
+    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    // Resolved *before* the gate on purpose: a call that gets gated stores
+    // this budget on the approval, so the eventual replay honours what the
+    // caller asked for instead of falling back to a deployment default.
 
     // Layer 2 (agents/sub-agents only): walk the ancestor chain and file an
     // approval at the first gap. `permission_gate` documents why the gate
@@ -365,6 +483,8 @@ pub(super) async fn call_action_impl(
         effective,
         pre_meta.needs_gate,
         skip_layer2,
+        mode,
+        call_timeout,
     )
     .await?
     {
@@ -376,166 +496,82 @@ pub(super) async fn call_action_impl(
     // metrics wrapper in `mod.rs` applies to `record_execution`.
     let upstream_tpl = super::bounded_template_key(&state.registry, req.service.as_deref());
 
-    // Org-level response-body capture mode for audit rows. One extra PK
-    // lookup on the hot path — the org row isn't otherwise fetched here.
-    // Capture is best-effort observability (the audit write itself is
-    // fire-and-forget), so any failure to resolve the mode — missing org
-    // (can't happen post-auth) or a transient DB error — degrades to Off
-    // rather than failing the caller's action.
-    let audit_body_mode = match overslash_db::repos::org::get_audit_response_body_mode(
-        state.db(&ext),
-        auth.org_id,
-    )
-    .await
-    {
-        Ok(mode) => mode
-            .map(|m| AuditResponseBodyMode::parse_or_off(&m))
-            .unwrap_or(AuditResponseBodyMode::Off),
-        Err(e) => {
-            tracing::warn!(error = %e, "audit_response_body_mode read failed; response capture disabled for this call");
-            AuditResponseBodyMode::Off
-        }
-    };
+    // ── Async fork ───────────────────────────────────────────────────
+    // Everything above is validation, resolution, and authorisation; the forks
+    // below are the only code that dials anything. Sitting exactly between them
+    // is what makes "async runs the same call, just not on this connection"
+    // structurally true — and why this is a field on CallRequest, not a second
+    // endpoint. See `async_accept` and DECISIONS D62.
+    if mode.is_hybrid() {
+        // Resolved here rather than beside the D56 budget above because it is
+        // bounded *by* that budget, and only this branch has an opinion on it.
+        let handoff = crate::services::hybrid::resolve_handoff(
+            req.handoff_after_ms,
+            meta.action_handoff_after_ms,
+            &state.config.async_execution,
+            call_timeout.ms(),
+            state.config.call_timeout_max_ms,
+        )?;
+        return super::hybrid::start(
+            &state,
+            &ext,
+            &scope,
+            &auth,
+            identity_id,
+            &req,
+            &meta,
+            &action_req,
+            auth_header.is_some(),
+            call_timeout,
+            handoff,
+            &call_tags,
+            ip.0.as_deref(),
+            &upstream_tpl,
+            mode_source,
+        )
+        .await;
+    }
+
+    if mode.is_async() {
+        return super::async_accept::accept(
+            &state,
+            &ext,
+            &scope,
+            &auth,
+            identity_id,
+            &req,
+            &meta,
+            &action_req,
+            auth_header.is_some(),
+            call_timeout,
+            &call_tags,
+            ip.0.as_deref(),
+            &upstream_tpl,
+            mode_source,
+        )
+        .await;
+    }
 
     // ── MCP dispatch fork ────────────────────────────────────────────
-    // Mcp-runtime services skip the HTTP executor: no URL templating, no
-    // secret injection into headers, no streaming path. The executor owns
-    // header resolution through mcp_auth::resolve_headers.
+    // A whole runtime branch that returns its own response; see `call_mcp`.
     if let Some(mcp_target) = meta.mcp_target.as_ref() {
-        let result = match mcp_caller::invoke(
+        return super::call_mcp::dispatch(
             &state,
+            &ext,
             &scope,
-            &mcp_target.url,
-            &mcp_target.auth,
-            &mcp_target.tool,
-            &mcp_target.arguments,
-            mcp_target.auth_header.as_ref(),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(invoke_err) => {
-                // Transport / JSON-RPC failures used to bubble out with no
-                // audit trail at all. Record the attempt with a secret-safe
-                // error summary before propagating; pre-flight failures
-                // (header resolution, SSRF guard) carry no summary and keep
-                // the old no-row behavior.
-                if let Some(error_detail) = invoke_err.audit {
-                    let _ = scope
-                        .clone()
-                        .log_audit_tagged(
-                            AuditEntry {
-                                org_id: auth.org_id,
-                                identity_id: Some(identity_id),
-                                action: "action.executed",
-                                resource_type: req.service.as_deref(),
-                                resource_id: None,
-                                detail: serde_json::json!({
-                                    "runtime": "mcp",
-                                    "tool": mcp_target.tool,
-                                    "arguments": mcp_target.arguments,
-                                    "url": mcp_target.url,
-                                    "is_error": true,
-                                    "error": error_detail,
-                                    "service": req.service,
-                                    "action": req.action,
-                                }),
-                                description: meta.description.as_deref(),
-                                ip_address: ip.0.as_deref(),
-                            },
-                            &tags::with_outcome(call_tags.clone(), true),
-                        )
-                        .await;
-                }
-                return Err(invoke_err.app);
-            }
-        };
-
-        // Build the shared MCP audit shape, then layer on inline-only
-        // fields (service/action/disclosed). Replay uses the same helper
-        // from approvals.rs to keep the two surfaces from drifting.
-        let (is_error, mut audit_detail) = mcp_caller::build_audit_detail(
-            &result,
-            &mcp_target.tool,
-            &mcp_target.url,
-            &mcp_target.arguments,
-        );
-        // Transport + JSON-RPC succeeded (failures short-circuit above via
-        // AppError::BadGateway and record nothing here); the tool's in-band
-        // error flag is the only "upstream status" MCP has.
-        overslash_metrics::actions::record_upstream_response(
+            &auth,
+            identity_id,
+            &req,
+            &meta,
+            mcp_target,
+            &action_req,
+            ip.0.as_deref(),
+            call_tags,
             &upstream_tpl,
-            "mcp",
-            if is_error { "error" } else { "2xx" },
-        );
-        {
-            let obj = audit_detail
-                .as_object_mut()
-                .expect("audit_detail is a json object");
-            obj.insert("service".into(), serde_json::json!(req.service));
-            obj.insert("action".into(), serde_json::json!(req.action));
-            // Org-gated response capture: for MCP the "body" is the stable
-            // result envelope (runtime/tool/structured/content/is_error).
-            if audit_capture::should_capture(audit_body_mode, is_error) {
-                obj.insert(
-                    "response".into(),
-                    audit_capture::capture_body(
-                        &result.body,
-                        Some("application/json"),
-                        state.config.audit_response_body_max_bytes,
-                    ),
-                );
-            }
-        }
-
-        // Disclosure + redaction: MCP actions can declare the same
-        // `disclose` / `redact` blocks HTTP actions do. compute_approval_detail
-        // has an MCP branch that builds a tool/arguments projection; we
-        // reuse it here so both audit and approval surfaces stay consistent.
-        let filter_timeout = std::time::Duration::from_millis(state.config.filter_timeout_ms);
-        let (disclosed_fields, _redacted_detail) =
-            compute_approval_detail(&meta, &action_req, filter_timeout).await;
-
-        if !disclosed_fields.is_empty() {
-            audit_detail
-                .as_object_mut()
-                .expect("audit detail is a json object")
-                .insert(
-                    "disclosed".into(),
-                    serde_json::to_value(&disclosed_fields).unwrap_or_default(),
-                );
-        }
-
-        let _ = scope
-            .clone()
-            .log_audit_tagged(
-                AuditEntry {
-                    org_id: auth.org_id,
-                    identity_id: Some(identity_id),
-                    action: "action.executed",
-                    resource_type: req.service.as_deref(),
-                    resource_id: None,
-                    detail: audit_detail,
-                    description: meta.description.as_deref(),
-                    ip_address: ip.0.as_deref(),
-                },
-                &tags::with_outcome(call_tags.clone(), is_error),
-            )
-            .await;
-
-        let mut resp = (
-            StatusCode::OK,
-            Json(CallResponse::Called {
-                result: render_action_result(&result, req.verbose),
-                action_description: meta.description,
-                is_error,
-            }),
+            audit_body_mode,
+            deliver_url,
         )
-            .into_response();
-        if is_error {
-            resp.extensions_mut().insert(UpstreamErrored);
-        }
-        return Ok(resp);
+        .await;
     }
 
     // ── Platform dispatch fork ───────────────────────────────────────
@@ -559,11 +595,23 @@ pub(super) async fn call_action_impl(
         )
         .await?;
 
-        let audit_detail = serde_json::json!({
+        let mut result = overslash_core::types::ActionResult {
+            status_code: 200,
+            body: serde_json::to_string(&value).unwrap_or_default(),
+            headers: std::collections::HashMap::new(),
+            duration_ms: 0,
+            filtered_body: None,
+        };
+        let mut audit_detail = serde_json::json!({
             "runtime": "platform",
             "action": req.action,
             "service": req.service,
         });
+        // Platform handlers answer from our own database, so there is no cap
+        // to dodge here either — but `list_pending` on a busy org is exactly
+        // the kind of response a caller wants to project down before reading.
+        let filter_audit = filter_apply::apply_to(&state, &req, &mut result).await;
+        filter_apply::record(&mut audit_detail, filter_audit);
         let _ = scope
             .clone()
             .log_audit_tagged(
@@ -581,24 +629,33 @@ pub(super) async fn call_action_impl(
             )
             .await;
 
-        let result = overslash_core::types::ActionResult {
-            status_code: 200,
-            body: serde_json::to_string(&value).unwrap_or_default(),
-            headers: std::collections::HashMap::new(),
-            duration_ms: 0,
-            filtered_body: None,
-        };
+        let rendered = render_stored(&state, &ext, &result, &req, auth.org_id, identity_id).await;
         return Ok((
             StatusCode::OK,
             Json(CallResponse::Called {
-                result: render_action_result(&result, req.verbose),
+                result: rendered,
                 action_description: meta.description,
                 // Platform handlers run in-process: failures surface as
                 // `AppError`, so a Called envelope is always a success.
                 is_error: false,
+                execution_id: None,
             }),
         )
             .into_response());
+    }
+
+    // ── Deferred delivery (HTTP runtime) ─────────────────────────────
+    // See `deferred::mint_http_download`.
+    if deliver_url {
+        let d = deferred::HttpDeferred {
+            auth: &auth,
+            req: &req,
+            meta: &meta,
+            identity_id,
+            ip: ip.0.as_deref(),
+            tags: &call_tags,
+        };
+        return deferred::mint_http_download(&state, &ext, &scope, &action_req, d).await;
     }
 
     // Resolve secrets and inject
@@ -621,18 +678,20 @@ pub(super) async fn call_action_impl(
 
     // Streaming proxy path
     if req.prefer_stream.unwrap_or(false) {
+        // Header phase only — see `http_caller`'s module docs on why a total
+        // deadline must not reach a streamed body.
         let upstream = match http_caller::call_streaming(
             &state.http_client,
             &action_req.method,
             &resolved_url,
             &resolved_headers,
             action_req.body.as_deref(),
+            call_timeout.duration(),
         )
         .await
         {
             Ok(upstream) => upstream,
             Err(e) => {
-                let e = http_caller::CallError::Request(e);
                 log_transport_error_audit(
                     &scope,
                     auth.org_id,
@@ -646,7 +705,14 @@ pub(super) async fn call_action_impl(
                     &tags::with_outcome(call_tags.clone(), true),
                 )
                 .await;
-                return Err(map_call_error(e));
+                // Streamed fork: never buffers, so never oversized — there is
+                // nothing to mint from.
+                return Err(map_call_error(
+                    e,
+                    call_timeout,
+                    transport.offers_prefer_stream(),
+                    None,
+                ));
             }
         };
 
@@ -658,7 +724,6 @@ pub(super) async fn call_action_impl(
             "http",
             overslash_metrics::actions::status_class(upstream_status.as_u16()),
         );
-        let upstream_headers = upstream.headers().clone();
         let content_length = upstream
             .headers()
             .get("content-length")
@@ -724,28 +789,13 @@ pub(super) async fn call_action_impl(
             )
             .await;
 
-        // Build streaming response — pipe upstream bytes through to caller
-        let stream = upstream.bytes_stream();
-        let body = axum::body::Body::from_stream(stream);
-
-        let mut response = Response::builder().status(upstream_status.as_u16());
-        // Forward safe upstream headers (content-type, content-length, content-disposition)
-        for (name, value) in upstream_headers.iter() {
-            let name_str = name.as_str();
-            match name_str {
-                "content-type"
-                | "content-length"
-                | "content-disposition"
-                | "etag"
-                | "last-modified"
-                | "cache-control" => {
-                    response = response.header(name, value);
-                }
-                _ => {}
-            }
-        }
-
-        let mut response = response.body(body).unwrap();
+        // Build streaming response — pipe upstream bytes through to caller.
+        // Shared with `GET /v1/downloads/{token}` so the forwarded-header
+        // allowlist can't drift between the inline and deferred paths.
+        let mut response = crate::services::deferred_download::stream_through(
+            upstream,
+            std::time::Duration::from_millis(state.config.call_stream_idle_timeout_ms),
+        );
         // Streamed 5xx passes the upstream status straight through, where
         // the metrics wrapper would otherwise classify it as Overslash's
         // own "failed". The marker keeps it attributed to the upstream.
@@ -763,6 +813,7 @@ pub(super) async fn call_action_impl(
         &resolved_headers,
         action_req.body.as_deref(),
         state.config.max_response_body_bytes,
+        call_timeout.duration(),
     )
     .await
     {
@@ -784,7 +835,39 @@ pub(super) async fn call_action_impl(
                 &tags::with_outcome(call_tags.clone(), true),
             )
             .await;
-            return Err(map_call_error(e));
+            // Mint the retry the hint would otherwise only name. This is
+            // best-effort by construction: `mint_http_descriptor` refuses
+            // OAuth-injected services and inline raw-HTTP credentials, and a
+            // mint that fails for any other reason must not replace the error
+            // the caller actually hit — so every failure collapses to `None`
+            // and the 502 goes out exactly as it did before.
+            let download = if matches!(e, http_caller::CallError::ResponseTooLarge { .. }) {
+                deferred::mint_http_descriptor(
+                    &state,
+                    &ext,
+                    &scope,
+                    &action_req,
+                    &deferred::HttpDeferred {
+                        auth: &auth,
+                        req: &req,
+                        meta: &meta,
+                        identity_id,
+                        ip: ip.0.as_deref(),
+                        tags: &call_tags,
+                    },
+                    deferred::MintCause::ResponseTooLarge,
+                )
+                .await
+                .ok()
+            } else {
+                None
+            };
+            return Err(map_call_error(
+                e,
+                call_timeout,
+                transport.offers_prefer_stream(),
+                download,
+            ));
         }
     };
     // Transport failures / oversized bodies bail above (with an error audit
@@ -796,20 +879,7 @@ pub(super) async fn call_action_impl(
         overslash_metrics::actions::status_class(result.status_code),
     );
 
-    // Apply the optional response filter (jq today). The original body is
-    // preserved on `result.body` either way; the filtered output goes on
-    // `result.filtered_body` (Some on both ok and error envelopes).
-    let filter_audit = if let Some(filter) = req.filter.clone() {
-        let lang = filter.lang().to_string();
-        let expr = filter.expr().to_string();
-        let timeout = std::time::Duration::from_millis(state.config.filter_timeout_ms);
-        let filtered = response_filter::apply(filter, result.body.clone(), timeout).await;
-        let audit = filter_audit_entry(&lang, &expr, &filtered);
-        result.filtered_body = Some(filtered);
-        Some(audit)
-    } else {
-        None
-    };
+    let filter_audit = filter_apply::apply_to(&state, &req, &mut result).await;
 
     let upstream_error = result.status_code >= 400;
     let mut audit_detail = serde_json::json!({
@@ -828,7 +898,7 @@ pub(super) async fn call_action_impl(
         audit_detail
             .as_object_mut()
             .expect("audit_detail is a json object")
-            .insert("sql".into(), sql_audit_block(sp));
+            .insert("sql".into(), tags::sql_audit_block(sp));
     }
     // Org-gated response capture (off / errors_only / all), truncated at
     // AUDIT_RESPONSE_BODY_MAX_BYTES.
@@ -845,12 +915,7 @@ pub(super) async fn call_action_impl(
                 ),
             );
     }
-    if let Some(filter_audit) = filter_audit {
-        audit_detail
-            .as_object_mut()
-            .expect("audit_detail is a json object")
-            .insert("filter".to_string(), filter_audit);
-    }
+    filter_apply::record(&mut audit_detail, filter_audit);
     let called_disclosed = compute_disclosure(
         &meta,
         &action_req,
@@ -891,28 +956,29 @@ pub(super) async fn call_action_impl(
     // makes the partner's agent loop forever — the recorded scopes pass the
     // scope-gate so it keeps retrying. Surface a typed `reauth_required`
     // instead so the loop breaks and the partner re-consents.
-    if super::auth::is_metadata_scope_denial(result.status_code, &result.body) {
-        if let Some(service_key) = req.service.as_deref() {
-            if let Some(err) = super::auth::metadata_scope_reauth_envelope(
-                &state,
-                &ext,
-                &scope,
-                ceiling_user_id,
-                service_key,
-            )
-            .await
-            {
-                return Err(err);
-            }
-        }
+    if super::auth::is_metadata_scope_denial(result.status_code, &result.body)
+        && let Some(service_key) = req.service.as_deref()
+        && let Some(err) = super::auth::metadata_scope_reauth_envelope(
+            &state,
+            &ext,
+            &scope,
+            ceiling_user_id,
+            service_key,
+        )
+        .await
+    {
+        return Err(err);
     }
+
+    let rendered = render_stored(&state, &ext, &result, &req, auth.org_id, identity_id).await;
 
     let mut resp = (
         StatusCode::OK,
         Json(CallResponse::Called {
-            result: render_action_result(&result, req.verbose),
+            result: rendered,
             action_description: meta.description,
             is_error: upstream_error,
+            execution_id: None,
         }),
     )
         .into_response();
@@ -924,66 +990,4 @@ pub(super) async fn call_action_impl(
         resp.extensions_mut().insert(UpstreamErrored);
     }
     Ok(resp)
-}
-
-/// Map a transport-level `CallError` to the client-facing `AppError`.
-/// Shared by the streamed and buffered forks so the error contract stays
-/// what it was before transport failures gained audit rows.
-fn map_call_error(e: http_caller::CallError) -> AppError {
-    match e {
-        http_caller::CallError::ResponseTooLarge {
-            content_length,
-            content_type,
-            limit_bytes,
-        } => AppError::ResponseTooLarge {
-            content_length,
-            content_type,
-            limit_bytes,
-        },
-        http_caller::CallError::Request(e) => AppError::Request(e),
-    }
-}
-
-/// Write the `action.executed` audit row for an HTTP call whose upstream
-/// never produced a response (DNS/connect/timeout, or a body over the
-/// buffering limit). No `status_code` — nothing arrived. `error_detail`
-/// comes from `audit_capture::scrub_transport_error`, so it never carries
-/// the resolved URL or injected secrets; `action_req.url` is the same
-/// secret-free template URL the success rows store.
-#[allow(clippy::too_many_arguments)]
-async fn log_transport_error_audit(
-    scope: &OrgScope,
-    org_id: Uuid,
-    identity_id: Uuid,
-    action_req: &overslash_core::types::ActionRequest,
-    service: Option<&str>,
-    action: Option<&str>,
-    error_detail: serde_json::Value,
-    description: Option<&str>,
-    ip: Option<&str>,
-    tags: &[String],
-) {
-    let _ = scope
-        .clone()
-        .log_audit_tagged(
-            AuditEntry {
-                org_id,
-                identity_id: Some(identity_id),
-                action: "action.executed",
-                resource_type: service,
-                resource_id: None,
-                detail: serde_json::json!({
-                    "method": action_req.method,
-                    "url": action_req.url,
-                    "is_error": true,
-                    "error": error_detail,
-                    "service": service,
-                    "action": action,
-                }),
-                description,
-                ip_address: ip,
-            },
-            tags,
-        )
-        .await;
 }

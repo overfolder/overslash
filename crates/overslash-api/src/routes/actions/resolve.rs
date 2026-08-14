@@ -21,6 +21,41 @@ use super::{
 
 pub(super) use super::resolve_metadata::resolve_action_metadata;
 
+/// Post-resolution gate for secret-backed templates.
+///
+/// When nothing at all was injected — no OAuth header, no secret — and the
+/// template needs a credential the instance never got, bail with a
+/// `needs_authentication` naming the fields instead of dialling upstream with
+/// an empty credential set and handing the caller the provider's opaque 401.
+///
+/// Runs in *both* call shapes. Its OAuth twin
+/// (`needs_authentication_for_service`) runs only in the action shape, because
+/// it needs a `ServiceAction` to read `required_scopes` from — a separate,
+/// pre-existing gap in the verb shape, not something this gate introduces.
+async fn gate_missing_credentials(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: Uuid,
+    svc: &overslash_core::types::ServiceDefinition,
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+    service_key: &str,
+    resolved_auth: &super::auth::ResolvedAuth,
+) -> Option<AppError> {
+    if resolved_auth.oauth_injected || !resolved_auth.secrets.is_empty() {
+        return None;
+    }
+    needs_credentials_for_service(
+        state,
+        ext,
+        org_id,
+        svc,
+        instance,
+        service_key,
+        resolved_auth.missing.as_ref(),
+    )
+    .await
+}
+
 /// Resolve a CallRequest into a concrete ActionRequest + metadata.
 /// Handles both SPEC §8 shapes (Service + action, Service + HTTP verb).
 /// Mode A raw HTTP rides on the verb shape against the synthetic `http`
@@ -115,7 +150,24 @@ pub(super) async fn resolve_request(
             .await?
         };
 
+        if let Some(err) = gate_missing_credentials(
+            state,
+            ext,
+            scope.org_id(),
+            &svc,
+            instance.as_ref(),
+            service_key,
+            &resolved_auth,
+        )
+        .await
+        {
+            return Err(err);
+        }
+
         let description = format!("{} {} ({})", raw_method, path, svc.display_name);
+
+        // Read before `resolved_auth` is consumed field-by-field below.
+        let oauth_injected = resolved_auth.oauth_injected;
 
         return Ok((
             ResolvedActionRequest {
@@ -129,6 +181,7 @@ pub(super) async fn resolve_request(
                 auth_header: resolved_auth.auth_header,
             },
             ResolvedMeta {
+                oauth_injected,
                 description: Some(description),
                 service_scope: Some(ServiceScope {
                     service_key: service_key.clone(),
@@ -142,8 +195,16 @@ pub(super) async fn resolve_request(
                 risk: None,
                 disclose: Vec::new(),
                 redact: Vec::new(),
+                // The verb shape names no action, so there is no action rung —
+                // but the service still knows whether its upstream is slow.
+                action_timeout_ms: None,
+                action_wait_mode: None,
+                action_handoff_after_ms: None,
+                service_timeout_ms: svc.default_timeout_ms,
+                download: None,
                 params: HashMap::new(),
                 resolved: HashMap::new(),
+                canonical: HashMap::new(),
                 mcp_target: None,
                 platform_target: None,
                 instance_id: instance.as_ref().map(|i| i.id),
@@ -246,6 +307,8 @@ pub(super) async fn resolve_request(
                 url: resolved_url,
                 auth: resolved_auth,
                 oauth_header: mcp_oauth_header,
+                connection_id: mcp_connection_id,
+                principal: mcp_principal,
             } = resolve_effective_mcp(
                 state,
                 ext,
@@ -267,16 +330,62 @@ pub(super) async fn resolve_request(
                 .clone()
                 .unwrap_or_else(|| action_key.clone());
             let arguments = serde_json::to_value(&req.params).unwrap_or(serde_json::Value::Null);
+
+            // Display-param resolution: dispatch each declared resolver as a
+            // read-only `tools/call` against this same instance, so an
+            // approval names the target instead of quoting an opaque handle.
+            // Best-effort — a slow or unreachable server degrades the
+            // approval's readability, it does not block the gate.
+            // Ask the cache before `resolve_display_params_mcp` gets anywhere
+            // near `build_client` — a full hit skips the vault reads and the
+            // blocking host resolution entirely. The fingerprint is the
+            // connection when OAuth named one, else the vault secret the
+            // Bearer arm resolved: two instances pointed at two different
+            // containers must never share an entry, and neither must two
+            // owners on the same instance.
+            let mcp_fingerprint = crate::services::resolve_cache::mcp_credential_fingerprint(
+                mcp_connection_id,
+                &resolved_auth,
+            );
+            let resolver_cache_scope = crate::services::resolve_cache::CacheScope {
+                org_id: scope.org_id(),
+                ceiling_user_id,
+                instance_id: instance.as_ref().map(|i| i.id),
+                credential_fingerprint: mcp_fingerprint,
+                service_key: service_key.to_string(),
+                runtime: "mcp",
+                namespace: state.config.resolve_cache_namespace.clone(),
+            };
+            let resolver_plan = crate::services::resolve_cache::plan(
+                state.resolve_cache(ext),
+                &state.config,
+                &resolver_cache_scope,
+                crate::services::resolve_cache::mcp_targets(&resolved_url, action, &req.params),
+            )
+            .await;
+
+            let resolved = crate::services::param_resolver::resolve_display_params_mcp(
+                state,
+                scope,
+                &resolved_url,
+                &resolved_auth,
+                mcp_oauth_header.as_ref(),
+                action,
+                &req.params,
+                state.resolve_cache(ext),
+                &resolver_plan,
+            )
+            .await;
+
             // Interpolate `{param}` placeholders in the action description
-            // using the caller's supplied params. Mirrors the HTTP path so
-            // approvals and audit rows name the actual target — e.g.
-            // "Search issues in team ENG" instead of "Search issues in team
-            // {team}". Resolvers don't apply (MCP has no HTTP parameter
-            // schema), so we pass an empty resolved map.
+            // using the caller's supplied params, preferring a resolved
+            // display name. Mirrors the HTTP path so approvals and audit rows
+            // name the actual target — e.g. "Search issues in team ENG"
+            // instead of "Search issues in team {team}".
             let interpolated = overslash_core::description::interpolate_description_with_resolved(
                 action.label_template(),
                 &req.params,
-                &std::collections::HashMap::new(),
+                &resolved.display,
             );
             let description = format!("{interpolated} ({})", svc.display_name);
             return Ok((
@@ -291,6 +400,9 @@ pub(super) async fn resolve_request(
                     auth_header: None,
                 },
                 ResolvedMeta {
+                    // MCP carries its own auth on `McpTarget`; this flag is the
+                    // HTTP executor's.
+                    oauth_injected: false,
                     description: Some(description),
                     service_scope: Some(ServiceScope {
                         service_key: service_key.clone(),
@@ -301,10 +413,14 @@ pub(super) async fn resolve_request(
                     risk: Some(action.risk),
                     disclose: action.disclose.clone(),
                     redact: action.redact.clone(),
+                    action_timeout_ms: action.timeout_ms,
+                    service_timeout_ms: svc.default_timeout_ms,
+                    action_wait_mode: action.wait_mode,
+                    action_handoff_after_ms: action.handoff_after_ms,
+                    download: action.download.clone(),
                     params: req.params.clone(),
-                    // Resolvers don't run for MCP (no HTTP parameter schema),
-                    // so the disclosure projection's `resolved` stays empty.
-                    resolved: HashMap::new(),
+                    resolved: resolved.display,
+                    canonical: resolved.canonical,
                     mcp_target: Some(McpTarget {
                         url: resolved_url,
                         auth: resolved_auth,
@@ -314,7 +430,7 @@ pub(super) async fn resolve_request(
                     }),
                     platform_target: None,
                     instance_id: None,
-                    binding: BindingFacts::new(instance.as_ref(), &svc, None),
+                    binding: BindingFacts::new(instance.as_ref(), &svc, mcp_principal),
                 },
             ));
         }
@@ -357,8 +473,18 @@ pub(super) async fn resolve_request(
                     risk: Some(action.risk),
                     disclose: Vec::new(),
                     redact: Vec::new(),
+                    // Platform actions dispatch in-process; nothing is dialed,
+                    // so there is no upstream to time out.
+                    action_timeout_ms: None,
+                    action_wait_mode: None,
+                    action_handoff_after_ms: None,
+                    service_timeout_ms: None,
+                    // Platform actions dispatch in-process; nothing is dialed.
+                    oauth_injected: false,
+                    download: None,
                     params: HashMap::new(),
                     resolved: HashMap::new(),
+                    canonical: HashMap::new(),
                     mcp_target: None,
                     platform_target: Some(PlatformTarget {
                         action_key: action_key.clone(),
@@ -486,10 +612,10 @@ pub(super) async fn resolve_request(
         // and only with the body — never on a bodyless GET, and never without
         // one. Template-chosen headers travel their own channel (`in: header`
         // params and `securitySchemes`), so the two never contend.
-        if body.is_some() {
-            if let Some(rb) = &action.request_body {
-                headers.insert("Content-Type".to_string(), rb.content_type.clone());
-            }
+        if body.is_some()
+            && let Some(rb) = &action.request_body
+        {
+            headers.insert("Content-Type".to_string(), rb.content_type.clone());
         }
         // Template-declared header params (`in: header`) are sent verbatim as
         // request headers. `apply_defaults` has already filled any that carry a
@@ -559,13 +685,14 @@ pub(super) async fn resolve_request(
         // forward to the user. Same envelope shape as the RefreshFailed
         // path so MCP clients only need one branch.
         //
-        // ApiKey-only templates aren't covered: there's no OAuth provider
-        // to mint a URL for, and the existing secret-not-found errors
-        // already give the operator a "set this secret" path. MCP-bearer
+        // ApiKey-only templates take the `gate_missing_credentials` fork
+        // right below: there's no OAuth provider to mint a URL for, so they
+        // get a dashboard hint naming the unset fields instead. MCP-bearer
         // templates take a different fork (the runtime check above) and
         // never reach this branch.
-        if !resolved_auth.oauth_injected && resolved_auth.secrets.is_empty() {
-            if let Some(err) = needs_authentication_for_service(
+        if !resolved_auth.oauth_injected
+            && resolved_auth.secrets.is_empty()
+            && let Some(err) = needs_authentication_for_service(
                 state,
                 ext,
                 scope.org_id(),
@@ -577,24 +704,126 @@ pub(super) async fn resolve_request(
                 return_url_hint,
             )
             .await?
-            {
-                return Err(err);
-            }
+        {
+            return Err(err);
+        }
+
+        // Secret-backed templates: no OAuth provider to mint a URL for, so the
+        // gate above declined. Name the unconfigured fields instead.
+        if let Some(err) = gate_missing_credentials(
+            state,
+            ext,
+            scope.org_id(),
+            &svc,
+            instance.as_ref(),
+            service_key,
+            &resolved_auth,
+        )
+        .await
+        {
+            return Err(err);
         }
 
         // Reuse the same base the action URL resolved to (instance override or
         // template host) so display-param GETs hit the same deployment.
         let resolver_base = base.clone();
-        // Display-param resolution makes authenticated GETs against the
-        // provider — merge the live auth header into a throwaway map for
-        // those calls only; it never lands on the ActionRequest itself.
-        let resolver_headers = {
-            let mut h = headers.clone();
-            if let Some(ah) = &resolved_auth.auth_header {
-                h.insert(ah.name.clone(), ah.value.clone());
-            }
-            h
+
+        // Ask the cache first (D64). This runs *before* the credential build
+        // below on purpose: a secret-backed resolver's headers cost a vault
+        // decrypt, and there is no reason to pay it for an answer we already
+        // hold.
+        let resolver_cache_scope = crate::services::resolve_cache::CacheScope {
+            org_id: scope.org_id(),
+            ceiling_user_id,
+            instance_id: instance.as_ref().map(|i| i.id),
+            credential_fingerprint: crate::services::resolve_cache::http_credential_fingerprint(
+                resolved_auth.principal.as_deref(),
+                &resolved_auth.secrets,
+                resolved_auth.oauth_injected || resolved_auth.auth_header.is_some(),
+            ),
+            service_key: service_key.to_string(),
+            runtime: "http",
+            namespace: state.config.resolve_cache_namespace.clone(),
         };
+        let resolver_plan = crate::services::resolve_cache::plan(
+            state.resolve_cache(ext),
+            &state.config,
+            &resolver_cache_scope,
+            crate::services::resolve_cache::http_targets(
+                &state.config,
+                &resolver_base,
+                action,
+                &req.params,
+            ),
+        )
+        .await;
+        // Display-param resolution makes authenticated GETs against the
+        // provider. Build the credential into a throwaway header map for
+        // those calls only; it never lands on the ActionRequest itself,
+        // which is persisted for approval replay.
+        //
+        // Both credential shapes have to be covered. OAuth arrives here
+        // already materialized as `auth_header`; a secret-backed template
+        // (apiKey schemes — Metabase's `x-api-key`) arrives as `SecretRef`s
+        // that only become a header at send time, so the same decrypt +
+        // inject the executor runs has to happen here too. Without it a
+        // secret-backed resolver GET goes out unauthenticated, the provider
+        // 401s, and resolution "fails" silently back to the raw id — the
+        // exact thing the resolver exists to avoid.
+        //
+        // Gated on the action actually declaring a resolver — and on the cache
+        // not having answered all of them — so the common case pays for no
+        // extra decrypt.
+        let resolver_headers =
+            if !resolver_plan.all_hit() && action.params.values().any(|p| p.resolve.is_some()) {
+                let mut h = headers.clone();
+                if let Some(ah) = &resolved_auth.auth_header {
+                    h.insert(ah.name.clone(), ah.value.clone());
+                }
+                if !resolved_auth.secrets.is_empty() {
+                    // A probe request carrying just the credential refs and the
+                    // headers so far. `inject_secrets` also does query-param
+                    // injection, but against this probe's empty URL — a
+                    // `in: query` credential therefore still does not reach
+                    // resolver GETs. No shipped template pairs one with a
+                    // resolver; when one does, the resolver URL has to be built
+                    // before injection rather than inside `resolve_display_params`.
+                    let probe = ActionRequest {
+                        method: "GET".to_string(),
+                        url: String::new(),
+                        headers: h.clone(),
+                        body: None,
+                        secrets: resolved_auth.secrets.clone(),
+                    };
+                    match crate::services::action_caller::resolve_credential_values(
+                        state,
+                        scope,
+                        Some(service_key),
+                        &probe,
+                    )
+                    .await
+                    .and_then(|values| {
+                        overslash_core::secret_injection::inject_secrets(&probe, &values)
+                            .map_err(|e| AppError::BadRequest(e.to_string()))
+                    }) {
+                        Ok((_url, injected)) => h = injected,
+                        // Best-effort, like resolution itself: the send path is
+                        // about to resolve the same credential and will report
+                        // the failure properly. Don't fail the call from the
+                        // display path.
+                        Err(e) => {
+                            tracing::warn!(
+                                service = %service_key,
+                                "display-resolver credential build failed ({e}); \
+                                 resolver GETs will be unauthenticated"
+                            );
+                        }
+                    }
+                }
+                h
+            } else {
+                headers.clone()
+            };
         let resolved = crate::services::param_resolver::resolve_display_params(
             &state.http_client,
             &state.config,
@@ -602,6 +831,8 @@ pub(super) async fn resolve_request(
             &resolver_headers,
             action,
             &req.params,
+            state.resolve_cache(ext),
+            &resolver_plan,
         )
         .await;
 
@@ -612,11 +843,13 @@ pub(super) async fn resolve_request(
         let interpolated = overslash_core::description::interpolate_description_with_resolved(
             action.label_template(),
             &req.params,
-            &resolved,
+            &resolved.display,
         );
         let description = format!("{interpolated} ({})", svc.display_name);
 
         let action_risk = action.risk;
+        // Read before `resolved_auth` is consumed field-by-field below.
+        let oauth_injected = resolved_auth.oauth_injected;
 
         return Ok((
             ResolvedActionRequest {
@@ -630,6 +863,7 @@ pub(super) async fn resolve_request(
                 auth_header: resolved_auth.auth_header,
             },
             ResolvedMeta {
+                oauth_injected,
                 description: Some(description),
                 service_scope: Some(ServiceScope {
                     service_key: service_key.clone(),
@@ -640,8 +874,14 @@ pub(super) async fn resolve_request(
                 risk: Some(action_risk),
                 disclose: action.disclose.clone(),
                 redact: action.redact.clone(),
+                action_timeout_ms: action.timeout_ms,
+                service_timeout_ms: svc.default_timeout_ms,
+                action_wait_mode: action.wait_mode,
+                action_handoff_after_ms: action.handoff_after_ms,
+                download: None,
                 params: req.params.clone(),
-                resolved,
+                resolved: resolved.display,
+                canonical: resolved.canonical,
                 mcp_target: None,
                 platform_target: None,
                 instance_id: instance.as_ref().map(|i| i.id),

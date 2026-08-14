@@ -1,7 +1,15 @@
 <script lang="ts">
 	import IdentityPath from '$lib/components/IdentityPath.svelte';
+	import AgentAvatar from '$lib/components/AgentAvatar.svelte';
 	import { identityUnits, formatIdentityPath } from '$lib/identityPath';
 	import {
+		makeIdentityFormatter,
+		type IdentityFormatter,
+		type IdentityLike
+	} from '$lib/identityDisplay';
+	import { formatBytes } from '$lib/approvals/format';
+	import {
+		recordedNames,
 		responseCapture,
 		transportError,
 		upstreamError,
@@ -14,6 +22,8 @@
 		expanded,
 		ontoggle,
 		currentUserId,
+		identityById = new Map(),
+		fmt = makeIdentityFormatter([]),
 		ontagclick
 	}: {
 		entry: AuditEntry;
@@ -21,6 +31,21 @@
 		ontoggle: () => void;
 		/** Identity id of the logged-in user, so their own rows show a "Me" pill. */
 		currentUserId?: string | null;
+		/** Org identities keyed by id, so a path unit can be labelled by email
+		 *  rather than by the display name frozen into the SPIFFE path — and so
+		 *  an agent unit can carry its client mark. */
+		identityById?: Map<
+			string,
+			IdentityLike & {
+				id: string;
+				icon_url?: string | null;
+				icon_stripe?: string[] | null;
+				mcp_client_label?: string | null;
+			}
+		>;
+		/** Identity label formatter pre-bound to the org's allowed domains.
+		 *  Defaults to none so the row renders standalone. */
+		fmt?: IdentityFormatter;
 		/** Narrow the search to a tag. Clicking a chip is the discovery path —
 		 *  nobody types `table:warehouse/public.orders` from memory. */
 		ontagclick?: (tag: string) => void;
@@ -33,6 +58,50 @@
 	// Match on identity id, not name: similarly-named users across the org are
 	// exactly the ambiguity this column split exists to resolve.
 	const isMe = $derived(!!currentUserId && units.user?.id === currentUserId);
+
+	// Users are labelled by (domain-stripped) email everywhere in the dashboard;
+	// the audit table is no exception. The path only carries the IdP display
+	// name, so resolve the unit's id against the org's identities and fall back
+	// to the path name when it doesn't resolve (identity outside the fetched
+	// set, or a legacy row with no aligned ids).
+	const userDisplay = $derived.by(() => {
+		const i = units.user?.id ? identityById.get(units.user.id) : null;
+		return i ? fmt.format(i) : null;
+	});
+	// Same rule applied per unit of the chain, for the Agent column's hover:
+	// `ada / henry / researcher`. Agents keep their names — `formatIdentity`
+	// short-circuits on non-user kinds.
+	const labelUnit = (id: string | null, name: string) => {
+		const i = id ? identityById.get(id) : null;
+		return i ? fmt.format(i).primary : name;
+	};
+	const chainTitle = $derived(
+		formatIdentityPath(entry.identity_path, entry.identity_path_ids, labelUnit)
+	);
+
+	// The row records its actors' names as of write time; the SPIFFE path carries
+	// their current ones. The table shows what was recorded — an operator who
+	// searches for a name they can see has to find the row — and the live chain
+	// stays one hover (or one expand) away. See D59.
+	//
+	// `names.actor` follows the leaf for an agent row and the user unit for a
+	// human acting directly, so a renamed user is reported too; comparing
+	// against the leaf alone would never fire for them.
+	// The leaf actor's mark, resolved by id against the same identities map the
+	// labels use. A leaf outside the fetched set (or a legacy row with no
+	// aligned ids) simply has no icon, and the link renders alone as before.
+	const leafIcon = $derived(units.leaf?.id ? identityById.get(units.leaf.id) : null);
+	const names = $derived(recordedNames(entry, units));
+	const renamedSince = $derived(names.actor.renamed);
+	const leafLabel = $derived(names.actor.label);
+	const leafTitle = $derived(
+		renamedSince ? `now ${names.actor.live} — ${chainTitle}` : chainTitle
+	);
+	// The User column normally renders an *email* resolved live by id, and an
+	// email does not move when a display name does — so it is only marked when
+	// it has fallen back to rendering the path's name, which is the value that
+	// actually changed.
+	const userNameIsLive = $derived(!userDisplay && names.user.renamed);
 
 	function relativeTime(iso: string): string {
 		const then = new Date(iso).getTime();
@@ -155,6 +224,24 @@
 	const response = $derived(responseCapture(entry));
 	const transportErr = $derived(transportError(entry));
 
+	// Deferred-download rows describe a file, not a payload. There is no body
+	// to preview (the bytes stream straight through), so the useful thing to
+	// show is what left and how often the capability was redeemed — a
+	// use_count well past 1 is the signal that a download URL leaked.
+	const download = $derived(downloadSummary(entry));
+
+	function downloadSummary(e: AuditEntry) {
+		if (e.action !== 'action.downloaded') return null;
+		const d = (e.detail ?? {}) as Record<string, unknown>;
+		return {
+			filename: typeof d.filename === 'string' ? d.filename : null,
+			mime: typeof d.mime === 'string' ? d.mime : null,
+			size: typeof d.size_bytes === 'number' ? d.size_bytes : null,
+			uses: typeof d.use_count === 'number' ? d.use_count : null
+		};
+	}
+
+
 	// Pretty-print the captured body when it parses as JSON; truncated
 	// captures usually don't, and fall back to the raw text.
 	function prettyBody(body: string): string {
@@ -173,32 +260,48 @@
 	onclick={ontoggle}
 >
 	<td class="ts" title={fullTime(entry.created_at)}>{relativeTime(entry.created_at)}</td>
-	<td class="identity">
+	<td class="identity user">
 		{#if units.user && isMe}
 			<a
 				class="me-pill"
 				href={units.user.href}
-				title={units.user.name}
+				title={userDisplay?.title ?? units.user.name}
 				onclick={(e) => e.stopPropagation()}
 			>Me</a>
 		{:else if units.user}
 			<a
 				class="identity-link"
+				class:renamed={userNameIsLive}
 				href={units.user.href}
+				title={userNameIsLive ? `recorded as ${names.user.recorded}` : userDisplay?.title}
 				onclick={(e) => e.stopPropagation()}
-			>{units.user.name}</a>
+			>{userDisplay?.primary ?? units.user.name}</a>
+		{:else if entry.owner_user_name}
+			<!-- No live chain (deleted identity): the recorded name is all the
+			     log has left, and it is exactly what it was written down for. -->
+			<span class="mono" title="name recorded at the time">{entry.owner_user_name}</span>
 		{:else}
 			<span class="muted">—</span>
 		{/if}
 	</td>
 	<td class="identity">
 		{#if units.leaf}
+			{#if leafIcon?.icon_url}
+				<AgentAvatar
+					name={leafLabel ?? units.leaf.name}
+					iconUrl={leafIcon.icon_url}
+					stripe={leafIcon.icon_stripe}
+					clientLabel={leafIcon.mcp_client_label}
+					size={16}
+				/>
+			{/if}
 			<a
 				class="identity-link"
+				class:renamed={renamedSince}
 				href={units.leaf.href}
-				title={formatIdentityPath(entry.identity_path)}
+				title={leafTitle}
 				onclick={(e) => e.stopPropagation()}
-			>{units.leaf.name}</a>
+			>{leafLabel}</a>
 		{:else if !entry.identity_path && entry.identity_id && entry.identity_name}
 			<!-- Chain unresolved: fall back to the bare leaf identity. -->
 			<a
@@ -288,6 +391,21 @@
 							>{entry.identity_name ?? entry.identity_id}</a>
 						</dd>
 					{/if}
+					{#if renamedSince}
+						<dt>Recorded as</dt>
+						<dd title="the name this identity had when the event was written">
+							{names.actor.recorded}
+						</dd>
+					{/if}
+					{#if names.actorIsAgent && names.user.renamed}
+						<!-- Only for agent rows: on a row where the human acted
+						     directly this is the same identity as the actor, and
+						     the line above has already said it. -->
+						<dt>Recorded user as</dt>
+						<dd title="the name the owning user had when the event was written">
+							{names.user.recorded}
+						</dd>
+					{/if}
 					{#if entry.impersonated_by_path}
 						<dt>Impersonated by</dt>
 						<dd class="impersonation-badge">
@@ -360,7 +478,25 @@
 						{/each}
 					</dl>
 				{/if}
-				{#if response}
+				{#if download}
+					<dl class="disclosed">
+						<dt>File</dt>
+						<dd class="mono">{download.filename ?? '—'}</dd>
+						{#if download.mime}
+							<dt>Type</dt>
+							<dd class="mono">{download.mime}</dd>
+						{/if}
+						{#if download.size !== null}
+							<dt>Size</dt>
+							<dd>{formatBytes(download.size)}</dd>
+						{/if}
+						{#if download.uses !== null}
+							<dt>Redemptions</dt>
+							<dd>{download.uses}</dd>
+						{/if}
+					</dl>
+				{/if}
+				{#if response && !download}
 					<div class="json-block">
 						<div class="json-label">
 							response body
@@ -434,6 +570,23 @@
 	.muted {
 		color: var(--color-text-muted);
 	}
+	/* Emails are longer than the display names this column used to hold, and
+	   `member+tag@example.com` wraps mid-token when left alone. Clip to one
+	   line — the `title` carries the full address. Only the User cell: the
+	   Agent cell trails badges (approver, `imp`) that must stay visible. */
+	.identity.user {
+		max-width: 220px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* The mark is an inline-level column (tile over stripe) dropped into a cell
+	   that is otherwise inline text and trailing badges. Centring it on the text
+	   box keeps the row from growing a ragged baseline. */
+	.identity :global(.agent-avatar) {
+		vertical-align: middle;
+		margin-right: 5px;
+	}
 	.identity-link {
 		color: var(--color-text);
 		text-decoration: none;
@@ -441,6 +594,14 @@
 		font-size: 0.85rem;
 		border-radius: 3px;
 		padding: 0 0.1rem;
+	}
+
+	/* The identity has been renamed since this row was written. Marked, not
+	   corrected: the recorded name is the one the log stands behind, and the
+	   current one is in the hover title and the expanded pane. */
+	.identity-link.renamed {
+		text-decoration: underline dotted;
+		text-underline-offset: 3px;
 	}
 	.identity-link:hover {
 		color: var(--color-primary);

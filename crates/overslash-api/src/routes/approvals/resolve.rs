@@ -192,7 +192,7 @@ pub(super) async fn resolve_approval(
         );
 
         return Ok(Json(
-            build_response(&scope, &state.registry, updated, auth.identity_id).await?,
+            build_response(&scope, &state.registry, updated, &auth).await?,
         ));
     }
 
@@ -428,25 +428,24 @@ pub(super) async fn resolve_approval(
     // Record who actually resolved it, separate from the approval's subject
     // (`identity_id` below). The audit read path enriches this into a
     // name/kind/path so the dashboard can render the approver distinctly.
-    if let Some(resolver) = auth.identity_id {
-        if let Some(obj) = audit_detail.as_object_mut() {
-            obj.insert(
-                "resolved_by_identity_id".into(),
-                serde_json::json!(resolver),
-            );
-        }
+    if let Some(resolver) = auth.identity_id
+        && let Some(obj) = audit_detail.as_object_mut()
+    {
+        obj.insert(
+            "resolved_by_identity_id".into(),
+            serde_json::json!(resolver),
+        );
     }
     if let ApprovalRelationship::SelfApproval =
         relationship.unwrap_or(ApprovalRelationship::NotInYourChain)
+        && let Some(obj) = audit_detail.as_object_mut()
     {
-        if let Some(obj) = audit_detail.as_object_mut() {
-            obj.insert(
-                "mcp_client_id".into(),
-                serde_json::Value::String(auth_ctx.mcp_client_id.clone().unwrap_or_default()),
-            );
-            if let Some(b) = self_approve_binding_id {
-                obj.insert("binding_id".into(), serde_json::json!(b));
-            }
+        obj.insert(
+            "mcp_client_id".into(),
+            serde_json::Value::String(auth_ctx.mcp_client_id.clone().unwrap_or_default()),
+        );
+        if let Some(b) = self_approve_binding_id {
+            obj.insert("binding_id".into(), serde_json::json!(b));
         }
     }
     let _ = scope

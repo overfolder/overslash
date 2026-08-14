@@ -63,12 +63,12 @@ try {
 	await seedGroupGrant(session, eng.id, {
 		serviceInstanceId: github.id,
 		accessLevel: 'admin',
-		autoApproveReads: true
+		autoApproveLevel: 'read'
 	});
 	await seedGroupGrant(session, eng.id, {
 		serviceInstanceId: slack.id,
 		accessLevel: 'write',
-		autoApproveReads: true
+		autoApproveLevel: 'read'
 	});
 
 	// Add the signed-in admin to the engineering group so member rows render.

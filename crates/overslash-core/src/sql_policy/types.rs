@@ -52,6 +52,10 @@ pub enum WriteReason {
     /// any depth: acquires row locks that block writers — the SELECT whose
     /// purpose is to precede a write.
     RowLocking,
+    /// The SELECT calls a function that is not on the safe list (D69).
+    /// Carries the offending names, capped and comma-joined — unbounded and
+    /// caller-controlled, so it stays in `detail`, never a tag.
+    UnsafeFunction(String),
 }
 
 impl WriteReason {
@@ -67,6 +71,7 @@ impl WriteReason {
             WriteReason::WritableCte => "writable_cte",
             WriteReason::SelectInto => "select_into",
             WriteReason::RowLocking => "row_locking",
+            WriteReason::UnsafeFunction(_) => "unsafe_function",
         }
     }
 }
@@ -94,10 +99,10 @@ pub struct SqlAnalysis {
     /// Order-preserving, deduped.
     pub columns: Vec<String>,
     /// `false` when the statement may touch relations not listed above
-    /// (parse failure, `DO`/`CALL`/`EXECUTE` bodies, feature off,
-    /// unsupported dialect). Callers must then emit the all-tables sentinel
-    /// permission key — mutation-shaped, because every such case also
-    /// classifies write.
+    /// (parse failure, `DO`/`CALL`/`EXECUTE` bodies, an unsafe function call,
+    /// feature off, unsupported dialect). Callers must then emit the
+    /// all-tables sentinel permission key — mutation-shaped, because every
+    /// such case also classifies write.
     pub tables_exhaustive: bool,
 }
 

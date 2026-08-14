@@ -14,8 +14,22 @@ export interface Group {
 	system_kind?: 'everyone' | 'admins' | 'self';
 	/** Set iff system_kind === 'self' — the user-identity this Myself group is for. */
 	owner_identity_id?: string;
+	/**
+	 * Whether the calling identity belongs to this group (resolved through
+	 * their ceiling user). Only present on the list endpoint. Creating an
+	 * org-level service requires a group where this is `true`.
+	 */
+	is_member?: boolean;
 	created_at: string;
 	updated_at: string;
+}
+
+/** One group grant as picked in the UI, before it is persisted. */
+export interface GroupGrantPick {
+	group_id: string;
+	access_level: 'read' | 'write' | 'admin';
+	/** Never above `access_level` — the API rejects the pair with a 400. */
+	auto_approve_level: 'none' | 'read' | 'write' | 'admin';
 }
 
 export interface CreateGroupRequest {
@@ -31,6 +45,8 @@ export interface GroupGrant {
 	service_instance_id: string;
 	service_name: string;
 	access_level: string; // "read" | "write" | "admin"
+	auto_approve_level: string; // "none" | "read" | "write" | "admin", <= access_level
+	/** @deprecated derived from `auto_approve_level !== 'none'`. */
 	auto_approve_reads: boolean;
 	created_at: string;
 }
@@ -38,12 +54,12 @@ export interface GroupGrant {
 export interface AddGrantRequest {
 	service_instance_id: string;
 	access_level: string;
-	auto_approve_reads?: boolean;
+	auto_approve_level?: string;
 }
 
 export interface PatchGrantRequest {
 	access_level?: string;
-	auto_approve_reads?: boolean;
+	auto_approve_level?: string;
 }
 
 export interface ServiceInstanceSummary {

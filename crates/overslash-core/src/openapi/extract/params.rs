@@ -4,13 +4,20 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 
+use crate::template_validation::ValidationIssue;
 use crate::types::{ActionParam, ParamLocation, ParamResolver, RequestBodySpec};
 
+use super::super::ext::{self, Ext, Pos};
 use super::{parse_aliases, parse_instance_config, parse_sql_policy};
 
 // ── parameters → HashMap<String, ActionParam> ────────────────────────
 
-pub(super) fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
+pub(super) fn collect_parameters(
+    arr: &[Value],
+    out: &mut HashMap<String, ActionParam>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
     for p in arr {
         let Some(obj) = p.as_object() else { continue };
         let Some(name) = obj.get("name").and_then(Value::as_str) else {
@@ -28,8 +35,9 @@ pub(super) fn collect_parameters(arr: &[Value], out: &mut HashMap<String, Action
         let schema = obj.get("schema").and_then(Value::as_object);
         let (param_type, enum_values, default) = schema_fields(schema);
 
-        let resolve = obj.get("x-overslash-resolve").and_then(parse_resolver);
-        let aliases = parse_aliases(Some(obj), name);
+        let resolve = ext::get(obj, Pos::Parameter, Ext::Resolve)
+            .and_then(|v| parse_resolver(v, &format!("{base}.parameters.{name}"), issues));
+        let aliases = parse_aliases(Some(obj), name, Pos::Parameter);
 
         let location = match obj.get("in").and_then(Value::as_str) {
             Some("query") => ParamLocation::Query,
@@ -38,8 +46,8 @@ pub(super) fn collect_parameters(arr: &[Value], out: &mut HashMap<String, Action
             _ => ParamLocation::Body,
         };
 
-        let instance_config = parse_instance_config(Some(obj));
-        let (sql_field, sql_database) = parse_sql_policy(Some(obj));
+        let instance_config = parse_instance_config(Some(obj), Pos::Parameter);
+        let (sql_field, sql_database) = parse_sql_policy(Some(obj), Pos::Parameter);
 
         out.insert(
             name.to_string(),
@@ -87,6 +95,8 @@ pub(super) fn parse_request_body(body: Option<&Value>) -> Option<RequestBodySpec
 pub(super) fn collect_body_parameters(
     body: Option<&Value>,
     out: &mut HashMap<String, ActionParam>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
 ) {
     let Some(b) = body.and_then(Value::as_object) else {
         return;
@@ -126,11 +136,11 @@ pub(super) fn collect_body_parameters(
             .unwrap_or("")
             .to_string();
         let resolve = pobj
-            .and_then(|o| o.get("x-overslash-resolve"))
-            .and_then(parse_resolver);
-        let aliases = parse_aliases(pobj, name);
-        let instance_config = parse_instance_config(pobj);
-        let (sql_field, sql_database) = parse_sql_policy(pobj);
+            .and_then(|o| ext::get(o, Pos::BodyProperty, Ext::Resolve))
+            .and_then(|v| parse_resolver(v, &format!("{base}.requestBody.{name}"), issues));
+        let aliases = parse_aliases(pobj, name, Pos::BodyProperty);
+        let instance_config = parse_instance_config(pobj, Pos::BodyProperty);
+        let (sql_field, sql_database) = parse_sql_policy(pobj, Pos::BodyProperty);
 
         out.insert(
             name.clone(),
@@ -174,11 +184,60 @@ fn schema_fields(
     (param_type, enum_values, default)
 }
 
-fn parse_resolver(v: &Value) -> Option<ParamResolver> {
+/// Lower an `x-overslash-resolve` block into a [`ParamResolver`].
+///
+/// Deliberately lenient: a block missing its target or its projection still
+/// lands on the action so `template_validation` can name the problem. Dropping
+/// it here — as this did while the shape was HTTP-only `{get, pick}` — turns a
+/// typo'd `resolve:` into a silent no-op that only shows up as an approval
+/// still quoting a raw ID.
+pub(super) fn parse_resolver(
+    v: &Value,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<ParamResolver> {
     let obj = v.as_object()?;
-    let get = obj.get("get").and_then(Value::as_str)?.to_string();
-    let pick = obj.get("pick").and_then(Value::as_str)?.to_string();
-    Some(ParamResolver { get, pick })
+    let text = |key: &str| obj.get(key).and_then(Value::as_str).map(str::to_string);
+    let args = obj
+        .get("args")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // `cache_ttl` is the one strict field in an otherwise lenient block, for
+    // the same reason `x-overslash-timeout_ms` is: `cache_ttl: "5m"` is an
+    // author asking for a specific reuse window, and silently ignoring it
+    // would leave them staring at upstream traffic they thought they had
+    // stopped. `0` is meaningful — it opts this resolver out of caching — so
+    // the check is "an integer", not "a positive integer".
+    let cache_ttl = match obj.get("cache_ttl") {
+        None => None,
+        Some(v) => match v.as_u64() {
+            Some(secs) => Some(secs),
+            None => {
+                issues.push(ValidationIssue::new(
+                    "invalid_resolver_cache_ttl",
+                    "cache_ttl must be a non-negative integer number of seconds".to_string(),
+                    format!("{base}.x-overslash-resolve.cache_ttl"),
+                ));
+                None
+            }
+        },
+    };
+
+    Some(ParamResolver {
+        get: text("get"),
+        tool: text("tool"),
+        args,
+        pick: text("pick"),
+        display: text("display"),
+        scope: text("scope"),
+        cache_ttl,
+    })
 }
 
 #[cfg(test)]
@@ -210,7 +269,7 @@ mod tests {
             }}}
         });
         let mut params = HashMap::new();
-        collect_body_parameters(Some(&body), &mut params);
+        collect_body_parameters(Some(&body), &mut params, "t", &mut Vec::new());
         assert_eq!(params["query"].sql_field.as_deref(), Some("native.query"));
         assert!(params["query"].sql_database.is_none());
         assert_eq!(
@@ -228,7 +287,7 @@ mod tests {
             "x-overslash-sql-field": "q"
         })];
         let mut params = HashMap::new();
-        collect_parameters(&arr, &mut params);
+        collect_parameters(&arr, &mut params, "t", &mut Vec::new());
         assert_eq!(params["q"].sql_field.as_deref(), Some("q"));
     }
 
@@ -377,8 +436,8 @@ mod tests {
             .resolve
             .as_ref()
             .unwrap();
-        assert_eq!(r.get, "/cal/{id}");
-        assert_eq!(r.pick, "summary");
+        assert_eq!(r.get.as_deref(), Some("/cal/{id}"));
+        assert_eq!(r.pick.as_deref(), Some("summary"));
     }
 
     #[test]
@@ -574,8 +633,12 @@ mod tests {
 
     // ── parse_resolver structural edge cases ──────────────────────────
 
+    /// A half-declared resolver is *kept*, not dropped, so the template
+    /// linter can name the missing half. Dropping it here — the behaviour
+    /// while this was HTTP-only `{get, pick}` — turned a typo into a silent
+    /// no-op whose only symptom was an approval still quoting a raw ID.
     #[test]
-    fn resolver_drops_entry_missing_get() {
+    fn resolver_missing_get_is_kept_for_the_linter() {
         let doc = json!({
             "info": {"title": "T", "x-overslash-key": "t"},
             "paths": {"/x/{id}": {"get": {
@@ -588,11 +651,23 @@ mod tests {
             }}}
         });
         let (svc, _) = compile_service(&doc).unwrap();
-        assert!(svc.actions["x"].params["id"].resolve.is_none());
+        let resolver = svc.actions["x"].params["id"]
+            .resolve
+            .as_ref()
+            .expect("resolver kept");
+        assert!(!resolver.has_one_target(), "no target declared");
+
+        let report = crate::template_validation::validate_service_definition(&svc, &[]);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.code == "invalid_resolver_target")
+        );
     }
 
     #[test]
-    fn resolver_drops_entry_missing_pick() {
+    fn resolver_missing_pick_is_kept_for_the_linter() {
         let doc = json!({
             "info": {"title": "T", "x-overslash-key": "t"},
             "paths": {"/x/{id}": {"get": {
@@ -605,6 +680,185 @@ mod tests {
             }}}
         });
         let (svc, _) = compile_service(&doc).unwrap();
-        assert!(svc.actions["x"].params["id"].resolve.is_none());
+        let resolver = svc.actions["x"].params["id"]
+            .resolve
+            .as_ref()
+            .expect("resolver kept");
+        assert!(resolver.display_template().is_none(), "no projection");
+
+        let report = crate::template_validation::validate_service_definition(&svc, &[]);
+        assert!(report.errors.iter().any(|e| e.code == "missing_field"));
+    }
+
+    /// The MCP shape parses from an `input_schema` property, the surface that
+    /// used to hardcode `resolve: None`.
+    #[test]
+    fn mcp_tool_param_parses_a_tool_resolver() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {},
+            "x-overslash-runtime": "mcp",
+            "x-overslash-mcp": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {"kind": "none"},
+                "tools": [
+                    {"name": "lookup", "risk": "read", "description": "Look up {jid}",
+                     "input_schema": {"type": "object", "properties": {"jid": {"type": "string"}},
+                                      "required": ["jid"]}},
+                    {"name": "send", "risk": "write", "description": "Send to {to}",
+                     "input_schema": {"type": "object", "properties": {"to": {
+                         "type": "string",
+                         "x-overslash-resolve": {
+                             "tool": "lookup",
+                             "args": {"jid": "{to}"},
+                             "display": "{name}[ ({phone})]",
+                             "scope": "phone"
+                         }}}, "required": ["to"]},
+                     "disclose": [{"label": "To", "filter": ".arguments.to"}]}
+                ]
+            }
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let resolver = svc.actions["send"].params["to"]
+            .resolve
+            .as_ref()
+            .expect("MCP param resolver parsed");
+        assert_eq!(resolver.tool.as_deref(), Some("lookup"));
+        assert_eq!(resolver.args.get("jid").map(String::as_str), Some("{to}"));
+        assert_eq!(
+            resolver.display_template().as_deref(),
+            Some("{name}[ ({phone})]")
+        );
+        assert_eq!(resolver.scope.as_deref(), Some("phone"));
+
+        let report = crate::template_validation::validate_service_definition(&svc, &[]);
+        assert!(report.errors.is_empty(), "unexpected: {:?}", report.errors);
+    }
+
+    /// `cache_ttl` has to survive **all three** lowering sites. A resolver key
+    /// that silently fails to reach one surface is the exact bug D55's
+    /// rationale describes (alias normalization stopping short of
+    /// `input_schema`), and the symptom would be invisible: the resolver keeps
+    /// working, it just never honours the window the author asked for.
+    #[test]
+    fn cache_ttl_survives_all_three_lowering_sites() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x/{id}": {"post": {
+                "operationId": "x",
+                "parameters": [{
+                    "name": "id", "in": "path", "required": true,
+                    "schema": {"type": "string"},
+                    "x-overslash-resolve": {"get": "/x/{id}", "pick": "name", "cache_ttl": 3600}
+                }],
+                "requestBody": {"required": true, "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {"other": {
+                        "type": "string",
+                        "x-overslash-resolve": {"get": "/y/{other}", "pick": "name", "cache_ttl": 7}
+                    }}
+                }}}}
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        // parameters[]
+        assert_eq!(
+            svc.actions["x"].params["id"]
+                .resolve
+                .as_ref()
+                .unwrap()
+                .cache_ttl,
+            Some(3600)
+        );
+        // requestBody properties
+        assert_eq!(
+            svc.actions["x"].params["other"]
+                .resolve
+                .as_ref()
+                .unwrap()
+                .cache_ttl,
+            Some(7)
+        );
+
+        // MCP input_schema properties
+        let mcp = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {},
+            "x-overslash-runtime": "mcp",
+            "x-overslash-mcp": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {"kind": "none"},
+                "tools": [
+                    {"name": "lookup", "risk": "read", "description": "Look up {jid}",
+                     "input_schema": {"type": "object", "properties": {"jid": {"type": "string"}},
+                                      "required": ["jid"]}},
+                    {"name": "send", "risk": "write", "description": "Send to {to}",
+                     "input_schema": {"type": "object", "properties": {"to": {
+                         "type": "string",
+                         "x-overslash-resolve": {
+                             "tool": "lookup", "args": {"jid": "{to}"},
+                             "pick": "name", "cache_ttl": 42
+                         }}}, "required": ["to"]}}
+                ]
+            }
+        });
+        let (svc, _) = compile_service(&mcp).unwrap();
+        assert_eq!(
+            svc.actions["send"].params["to"]
+                .resolve
+                .as_ref()
+                .unwrap()
+                .cache_ttl,
+            Some(42)
+        );
+    }
+
+    /// `0` is a real value — it opts this resolver out of caching — so the
+    /// strict parse must accept it rather than treating it as "unset".
+    #[test]
+    fn cache_ttl_zero_is_accepted_as_an_opt_out() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x/{id}": {"get": {
+                "operationId": "x",
+                "parameters": [{
+                    "name": "id", "in": "path", "required": true,
+                    "schema": {"type": "string"},
+                    "x-overslash-resolve": {"get": "/x/{id}", "pick": "name", "cache_ttl": 0}
+                }]
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert_eq!(
+            svc.actions["x"].params["id"]
+                .resolve
+                .as_ref()
+                .unwrap()
+                .cache_ttl,
+            Some(0)
+        );
+    }
+
+    /// A non-integer `cache_ttl` is an error, not a silent fallback — same
+    /// argument as `x-overslash-timeout_ms`: the author asked for a specific
+    /// window and would otherwise stare at traffic they thought they'd stopped.
+    #[test]
+    fn a_non_integer_cache_ttl_is_a_compile_error() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x/{id}": {"get": {
+                "operationId": "x",
+                "parameters": [{
+                    "name": "id", "in": "path", "required": true,
+                    "schema": {"type": "string"},
+                    "x-overslash-resolve": {"get": "/x/{id}", "pick": "name", "cache_ttl": "5m"}
+                }]
+            }}}
+        });
+        let err = compile_service(&doc).expect_err("non-integer cache_ttl rejected");
+        assert!(
+            err.iter().any(|e| e.code == "invalid_resolver_cache_ttl"),
+            "got: {err:?}"
+        );
     }
 }

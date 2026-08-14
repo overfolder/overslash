@@ -41,12 +41,21 @@ components:
   # parse dialect + the human label used in audit rows and permission keys
   # (`metabase:run_query:table={label}/{schema}.{table}`). Unlisted ids
   # fail closed to postgres with the raw id as label.
+  #
+  # D69: an entry may also carry `safe_functions` — the extension and
+  # in-house function names this database vouches for, on top of the shipped
+  # pg_catalog safe list. Without it a SELECT calling, say, a PostGIS `st_*`
+  # classifies write; per database on purpose, since vouching on a reporting
+  # replica says nothing about production.
   x-overslash-config:
     sql_databases:
       label: SQL databases
       description: >-
         JSON object mapping Metabase database ids to their SQL policy entry,
-        e.g. {"5": {"dialect": "postgres", "label": "reveni-prod"}}.
+        e.g. {"5": {"dialect": "postgres", "label": "reveni-prod",
+        "safe_functions": ["st_area", "unaccent"]}}. `safe_functions` is
+        optional and lets queries calling those functions still classify
+        read.
       required: false
 paths:
   /api/database:
@@ -72,6 +81,11 @@ paths:
           in: path
           required: true
           description: Metabase database id (from list_databases)
+          # `run_query` calls the same id `database`, because that is the field
+          # name Metabase's dataset API puts on the wire. Rather than rename
+          # either one away from its upstream spelling, each accepts the other
+          # as an alias, so one concept answers to one name across the service.
+          x-overslash-aliases: [database]
           schema:
             type: integer
   /api/card:
@@ -80,13 +94,43 @@ paths:
       summary: List saved questions
       risk: read
       description: >-
-        List saved questions (cards). Use the returned `id` with run_card.
+        List saved questions (cards), returning every match in a single
+        response. Metabase's endpoint offers no pagination, no sorting and no
+        field selection, so on an instance with a few thousand cards this is
+        tens of megabytes and will exceed the response size cap. Reach for it
+        only when you genuinely need the whole set. To find particular cards
+        use `search` with models=card, which pages via limit/offset; for the
+        most-viewed cards use `popular_items`. Params: f — which cards to
+        return, one of all (default), mine, bookmarked, archived, database,
+        table, using_model, using_segment; model_id — the id the filter
+        applies to, required when f is database, table, using_model or
+        using_segment. Use the returned `id` with run_card.
       parameters:
         - name: f
           in: query
-          description: "Optional filter: all, mine, archived (default all)"
+          description: >-
+            Which cards to return. `database`, `table`, `using_model` and
+            `using_segment` each need a matching `model_id`.
           schema:
             type: string
+            enum:
+              - all
+              - mine
+              - bookmarked
+              - archived
+              - database
+              - table
+              - using_model
+              - using_segment
+            default: all
+        - name: model_id
+          in: query
+          description: >-
+            Id the filter applies to — a database id for f=database, a table
+            id for f=table, a card id for f=using_model, a segment id for
+            f=using_segment. Ignored for the other filters.
+          schema:
+            type: integer
   /api/card/{card_id}/query:
     post:
       operationId: run_card
@@ -118,22 +162,102 @@ paths:
       summary: "Search Metabase for '{q}'"
       risk: read
       description: >-
-        Native Metabase search over cards, dashboards, tables, collections,
-        and databases.
+        Native Metabase search over cards, dashboards, tables, collections
+        and databases. This is the paginated way to enumerate content —
+        prefer it over list_cards, which has no page size at all. Metabase's
+        relevance ranking already weights view count, so the first page
+        approximates "the most-used things matching q"; for instance-wide
+        popularity with no search term, use `popular_items` instead. The
+        response carries `total` next to the page of results, so you can see
+        how much you have not fetched. Params: q — search term (required);
+        models — comma-separated type filter, any of card, dataset,
+        dashboard, table, collection, database, segment, metric, action,
+        indexed-entity; limit — page size, defaults to 50 when omitted;
+        offset — how many results to skip, for paging; archived — set true
+        to search archived content instead of active content.
       parameters:
         - name: q
           in: query
           required: true
           description: Search term
+          # Metabase's own MCP server names this argument `query`, and `q` is
+          # the kind of one-letter name a caller guesses wrong. Safe next to
+          # `run_query`/`export_query`, whose `query` carries SQL: aliases are
+          # per-action, and `apply_aliases` skips any alias that collides with
+          # a declared param, so a real `query` field always wins.
+          x-overslash-aliases: [query, search_term]
           schema:
             type: string
         - name: models
           in: query
+          # Deliberately not enum'd, despite naming its members. `models`
+          # takes a comma-separated *list*, and validate_input matches an
+          # enum against the whole value — so `enum:` here would reject
+          # "card,dashboard", the exact usage the param exists for. The
+          # members live in the description, which is what reaches the model.
           description: >-
-            Optional comma-separated type filter (card, dashboard, table,
-            collection, database)
+            Optional comma-separated type filter (card, dataset, dashboard,
+            table, collection, database, segment, metric). Omit to search
+            everything.
           schema:
             type: string
+        - name: limit
+          in: query
+          description: >-
+            Page size. Metabase applies 50 when limit and offset are both
+            omitted; pass it explicitly to keep the response small.
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          description: >-
+            How many results to skip before the page starts. Combine with
+            limit to walk the full result set; stop when offset + limit
+            reaches the `total` in the response.
+          schema:
+            type: integer
+        - name: archived
+          in: query
+          description: Search archived content instead of active content.
+          schema:
+            type: boolean
+  /api/activity/popular_items:
+    get:
+      operationId: popular_items
+      summary: List the most popular items
+      risk: read
+      description: >-
+        The most popular items on this Metabase instance — cards,
+        dashboards, tables and collections — ranked by total view count and
+        recency across all users, not just yours. This is the direct answer
+        to "which questions/dashboards do people actually use", and it costs
+        one small response rather than enumerating every card. Instance-wide
+        and takes no parameters. For the current user's own history use
+        `recents`.
+  /api/activity/recents:
+    get:
+      operationId: recents
+      summary: "List recently {context} items"
+      risk: read
+      description: >-
+        Items the *current user* (the identity behind this Metabase API key)
+        recently viewed or selected. Scoped to one user, so it answers "what
+        was I just looking at", not "what is popular" — use `popular_items`
+        for the instance-wide view. Params: context — required, either views
+        (things opened) or selections (things picked in a picker).
+      parameters:
+        - name: context
+          in: query
+          required: true
+          description: >-
+            Which recents to return: views (items opened) or selections
+            (items chosen from a picker).
+          schema:
+            type: string
+            enum:
+              - views
+              - selections
   /api/dataset:
     post:
       operationId: run_query
@@ -141,6 +265,10 @@ paths:
       # D42: classified per call — SELECT-only queries execute as reads
       # (gated per referenced table), anything else routes to approval.
       risk: dynamic
+      # Analytics aggregations routinely outrun the 30s deployment default;
+      # 30s was chosen for API-shaped calls, not for scans. A caller with a
+      # genuinely slow query can still raise this per call, up to the org max.
+      timeout_ms: 90000
       description: >-
         Run a native SQL query against a database and return up to ~2000
         rows. The statement is parsed by the gateway: single read-only
@@ -155,7 +283,7 @@ paths:
           filter: .params.query
           max_chars: 2000
         - label: Database
-          filter: .params.database | tostring
+          filter: .resolved.database // (.params.database | tostring)
       requestBody:
         required: true
         content:
@@ -167,7 +295,31 @@ paths:
                 database:
                   type: integer
                   description: Metabase database id (from list_databases)
+                  # The other half of the `database`/`database_id` pairing on
+                  # `get_database_schema`. Canonical `x-overslash-` spelling is
+                  # mandatory here for the same reason as the two extensions
+                  # below: the unprefixed `aliases:` shorthand is only
+                  # normalized on `parameters[]`, never on requestBody schema
+                  # properties. `export_query` gets no such alias on purpose —
+                  # its database id is nested inside the `query` object, and
+                  # only top-level properties are lowered into params, so there
+                  # is nothing there to hang an alias on.
+                  x-overslash-aliases: [database_id]
                   x-overslash-sql-database: .database | tostring
+                  # Turns the bare id into the database's own Metabase name for
+                  # the approval title and the `Database` disclosure — "4" tells
+                  # a reviewer nothing about whether a DELETE is aimed at
+                  # production. Display only: `sql.db` and the permission keys
+                  # stay on the operator-pinned `sql_databases` label, which an
+                  # upstream rename can't move out from under a grant.
+                  #
+                  # Canonical spelling, not the `resolve:` alias: alias
+                  # normalization only walks `parameters[]`, never requestBody
+                  # schema properties — same reason `x-overslash-sql-database`
+                  # is spelled out above.
+                  x-overslash-resolve:
+                    get: /api/database/{database}
+                    pick: name
                 query:
                   type: string
                   description: The SQL statement to run
@@ -183,6 +335,10 @@ paths:
       operationId: export_query
       summary: "Export SQL results as {export_format}"
       risk: dynamic
+      # Same query cost as run_query, plus serialising up to ~1M rows. Sits at
+      # the deployment ceiling because there is no useful budget beyond it —
+      # anything slower cannot survive the request cap in front of the API.
+      timeout_ms: 110000
       description: >-
         Run a native SQL query and return the full result set (up to ~1M
         rows) as csv, json, or xlsx — the payload comes back in the
@@ -196,11 +352,25 @@ paths:
           primary: true
           filter: .params.query.native.query
           max_chars: 2000
+        # Keyed by param name, and the resolver rides on `query` (see below),
+        # so the resolved name lands at `.resolved.query`.
         - label: Database
-          filter: .params.query.database | tostring
+          filter: .resolved.query // (.params.query.database | tostring)
         - label: Format
           filter: .params.export_format
-      response_type: binary
+      # `response_type:` is not read off an operation — the compiler derives it
+      # from `responses` (see openapi::extract::actions::detect_response_type),
+      # so the intent has to be spelled here to have any effect. Only
+      # octet-stream is listed: the real content type follows export_format,
+      # and naming application/json alongside it would derive "json" and
+      # mislabel the xlsx and csv cases.
+      responses:
+        "200":
+          description: >-
+            The exported result set. The content type follows export_format:
+            text/csv, application/json, or the xlsx spreadsheet type.
+          content:
+            application/octet-stream: {}
       parameters:
         - name: export_format
           in: path
@@ -228,3 +398,9 @@ paths:
                   # Extraction mode: the path descends into this object.
                   x-overslash-sql-field: query.native.query
                   x-overslash-sql-database: .query.database | tostring
+                  # The db id is nested inside this object, so the resolver
+                  # rides on the enclosing param and reaches the id by dotted
+                  # path. Same display-only contract as run_query.
+                  x-overslash-resolve:
+                    get: /api/database/{query.database}
+                    pick: name

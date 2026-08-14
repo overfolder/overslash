@@ -149,17 +149,24 @@ pub async fn kernel_import_connection(
 
     // Caller-supplied label wins; otherwise best-effort userinfo fetch (never
     // fails the import — an unlabeled connection is fine).
-    let account_email = match input
+    //
+    // That same round-trip is the only place an avatar could come from, so a
+    // caller that names the account gets no picture: paying for a request the
+    // label does not need would change who this path dials, and the UI falls
+    // back to initials either way.
+    let caller_label = input
         .account_email
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(e) => Some(e.to_string()),
-        None => oauth::fetch_account_email(&ctx.http_client, &provider, &input.access_token)
+        .filter(|s| !s.is_empty());
+    let fetched = match caller_label {
+        Some(_) => oauth::AccountProfile::default(),
+        None => oauth::fetch_account_profile(&ctx.http_client, &provider, &input.access_token)
             .await
-            .unwrap_or(None),
+            .unwrap_or_default(),
     };
+    let account_email = caller_label.map(str::to_string).or(fetched.email);
+    let account_picture = fetched.picture;
 
     let encrypted_access = crypto::encrypt(&enc_key, input.access_token.as_bytes())?;
     let encrypted_refresh = input
@@ -241,19 +248,19 @@ pub async fn kernel_import_connection(
         // that actually backs the wider grant.
         let import_has_fresh_refresh = encrypted_refresh.is_some();
         let existing_has_refresh = existing.encrypted_refresh_token.is_some();
-        if !import_has_fresh_refresh && existing_has_refresh {
-            if let Some(broadened) =
+        if !import_has_fresh_refresh
+            && existing_has_refresh
+            && let Some(broadened) =
                 scopes_broadened(existing.scopes.as_deref(), input.scopes.as_deref())
-            {
-                return Err(AppError::BadRequest(format!(
-                    "re-import broadens granted scopes ({broadened}) but carries no fresh \
+        {
+            return Err(AppError::BadRequest(format!(
+                "re-import broadens granted scopes ({broadened}) but carries no fresh \
                          refresh_token: the preserved refresh token was minted for the narrower \
                          grant and cannot self-refresh the wider scopes (it would silently \
                          downgrade the connection to metadata-only). Re-run the OAuth consent \
                          with prompt=consent so the provider issues a fresh refresh token for the \
                          wider grant, then re-import with it."
-                )));
-            }
+            )));
         }
 
         let updated = scope
@@ -264,6 +271,7 @@ pub async fn kernel_import_connection(
                 next_expires_at,
                 next_scopes.as_deref(),
                 account_email.as_deref(),
+                account_picture.as_deref(),
             )
             .await?;
         if !updated {
@@ -297,6 +305,7 @@ pub async fn kernel_import_connection(
                     token_expires_at: expires_at,
                     scopes: input.scopes.as_deref(),
                     account_email: account_email.as_deref(),
+                    account_picture: account_picture.as_deref(),
                     byoc_credential_id: byoc_id,
                 },
                 &input.pin_service_ids,

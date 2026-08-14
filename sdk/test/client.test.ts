@@ -58,6 +58,48 @@ describe('OverslashClient', () => {
     expect(requests[1]?.headers['x-overslash-as']).toBeUndefined();
   });
 
+  it('sends an ASCII display name literally, so a name with a % survives', async () => {
+    const { transport, requests } = mockTransport([{ body: [] }, { body: [] }]);
+    const client = new OverslashClient({ auth: { transport } });
+
+    await client.as('alice@acme.com', 'Alice Smith').approvals.list();
+    await client.as('bob@acme.com', '50% Club').approvals.list();
+
+    expect(requests[0]?.headers['x-overslash-as-name']).toBe('Alice Smith');
+    expect(requests[1]?.headers['x-overslash-as-name']).toBe('50% Club');
+  });
+
+  it('encodes a non-ASCII display name, which fetch could not send raw', async () => {
+    const { transport, requests } = mockTransport([{ body: [] }]);
+    const client = new OverslashClient({ auth: { transport } });
+
+    await client.as('jose@acme.com', 'José Álvarez').approvals.list();
+
+    expect(requests[0]?.headers['x-overslash-as-name']).toBe("UTF-8''Jos%C3%A9%20%C3%81lvarez");
+  });
+
+  it('escapes a display name that would read back as the encoded form', async () => {
+    const { transport, requests } = mockTransport([{ body: [] }]);
+    const client = new OverslashClient({ auth: { transport } });
+
+    // Absurd as a name, but sent literally the server would strip the prefix
+    // and store "Alice" — encoding is what makes the round-trip total.
+    await client.as('alice@acme.com', "UTF-8''Alice").approvals.list();
+
+    expect(requests[0]?.headers['x-overslash-as-name']).toBe("UTF-8''UTF-8''Alice");
+  });
+
+  it('omits the name header when no name is given, and never leaks it to the parent', async () => {
+    const { transport, requests } = mockTransport([{ body: [] }, { body: [] }]);
+    const client = new OverslashClient({ auth: { transport }, as: 'root@acme.com' });
+
+    await client.as('alice@acme.com', 'Alice Smith').approvals.list();
+    await client.approvals.list();
+
+    expect(requests[1]?.headers['x-overslash-as']).toBe('root@acme.com');
+    expect(requests[1]?.headers['x-overslash-as-name']).toBeUndefined();
+  });
+
   it('returns undefined for 204 instead of trying to parse an empty body', async () => {
     const { transport } = mockTransport([{ status: 204 }]);
     const client = new OverslashClient({ auth: { transport } });

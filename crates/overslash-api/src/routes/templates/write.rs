@@ -20,10 +20,10 @@ fn preserve_mcp_discovered_fields(old: &serde_json::Value, new: &mut serde_json:
         return;
     };
     for field in ["discovered_tools", "discovered_at"] {
-        if !new_mcp.contains_key(field) {
-            if let Some(v) = old_mcp.get(field) {
-                new_mcp.insert(field.into(), v.clone());
-            }
+        if !new_mcp.contains_key(field)
+            && let Some(v) = old_mcp.get(field)
+        {
+            new_mcp.insert(field.into(), v.clone());
         }
     }
 }
@@ -109,13 +109,10 @@ pub(super) async fn create_template(
     let row = service_template::create(state.db(&ext), &input)
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.constraint().is_some() {
-                    return AppError::Conflict(format!(
-                        "template key '{}' already exists",
-                        def.key
-                    ));
-                }
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.constraint().is_some()
+            {
+                return AppError::Conflict(format!("template key '{}' already exists", def.key));
             }
             AppError::Database(e)
         })?;
@@ -221,10 +218,10 @@ async fn create_derived_layer(
     let row = service_template::create(state.db(ext), &input)
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.constraint().is_some() {
-                    return AppError::Conflict(format!("template key '{key}' already exists"));
-                }
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.constraint().is_some()
+            {
+                return AppError::Conflict(format!("template key '{key}' already exists"));
             }
             AppError::Database(e)
         })?;

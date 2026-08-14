@@ -57,6 +57,42 @@ pub(super) struct CallRequest {
     #[serde(default)]
     pub(super) prefer_stream: Option<bool>,
 
+    /// Where the response body should go. See [`Delivery`].
+    #[serde(default)]
+    pub(super) deliver: Option<Delivery>,
+    /// Whether this call runs on the caller's connection. See [`ExecutionMode`].
+    ///
+    /// Load-bearing that this exists at all: `CallRequest` is
+    /// `deny_unknown_fields`, so without it the flag would be a 400 at
+    /// deserialization rather than a feature.
+    #[serde(default)]
+    pub(super) execution: Option<ExecutionMode>,
+
+    /// How long a `execution: "hybrid"` call may hold the connection before
+    /// answering 202, in milliseconds. Only meaningful with that mode; naming
+    /// it under any other is a 400 rather than a silently ignored field.
+    ///
+    /// Refused rather than clamped when it exceeds `HYBRID_HANDOFF_MAX_MS` or
+    /// the call's own resolved budget — the same split `timeout_ms` makes,
+    /// and for the same reason: unlike a deployment default, there is a caller
+    /// present who asked explicitly.
+    #[serde(default)]
+    pub(super) handoff_after_ms: Option<u64>,
+
+    /// How long this call may wait on the upstream, in milliseconds.
+    ///
+    /// The most specific rung of the D56 cascade: it beats the action
+    /// template, the service template, the org default, and the deployment
+    /// default. It does *not* beat the ceilings — asking for more than the
+    /// org (or deployment) maximum is a 400 rather than a silent clamp,
+    /// because unlike a template default there is a caller present who asked
+    /// explicitly and can act on the error.
+    ///
+    /// For `prefer_stream: true` this bounds time-to-first-byte only; the
+    /// transfer itself is bounded by a per-chunk idle timeout.
+    #[serde(default)]
+    pub(super) timeout_ms: Option<u64>,
+
     // Optional server-side filter applied to the upstream response body
     // (e.g., jq). Output is attached to `result.filtered_body`; the
     // original `body` is always preserved.
@@ -92,6 +128,41 @@ pub(super) struct CallRequest {
     pub(super) return_url: Option<String>,
 }
 
+/// Where a call's response body should be delivered.
+///
+/// Defaults to [`Inline`](Self::Inline) — minting a URL creates a live
+/// capability plus a row, and changes the response shape, so it has to be
+/// asked for. `response_type: "binary"` on an action does *not* silently flip
+/// this; it only sharpens the hint the caller sees when the buffered path
+/// refuses an oversized body.
+///
+/// Unlike `prefer_stream`, this is reachable from every surface — including
+/// MCP, where a URL is the only representation of a file that fits in a tool
+/// result at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum Delivery {
+    /// Body rides back in the `Called` envelope. The historical behavior.
+    Inline,
+    /// Mint a short-lived capability URL and return a descriptor instead. The
+    /// bytes are fetched later, out of band, by `GET /v1/downloads/{token}`.
+    Url,
+}
+
+impl Delivery {
+    pub(super) fn is_url(self) -> bool {
+        matches!(self, Delivery::Url)
+    }
+}
+
+/// Whether the caller waits on this connection for the upstream.
+///
+/// Re-exported from `overslash-core` rather than defined here: an action
+/// template can now name a mode of its own (`x-overslash-wait-mode`), so the
+/// template compiler needs the type too, and one enum is what keeps the
+/// request spelling and the template spelling from drifting.
+pub(super) use overslash_core::types::service::ExecutionMode;
+
 #[derive(Serialize)]
 #[serde(tag = "status")]
 pub(super) enum CallResponse {
@@ -110,6 +181,18 @@ pub(super) enum CallResponse {
         /// `action.executed` audit entry so callers (dashboard Try It, MCP
         /// clients) can flag the result without parsing the body.
         is_error: bool,
+        /// The `executions` row this call ran on. Present only for
+        /// `execution: "hybrid"` calls that finished before the handoff — no
+        /// other mode writes a row it can answer from.
+        ///
+        /// A correlation handle on an **already-terminal** row, never a signal
+        /// to poll: `status` remains the sole discriminator, and a `called`
+        /// envelope always carries the result inline. It is here because the
+        /// row is written either way, and withholding the id would leave a row
+        /// surfacing in `GET /v1/executions` that the caller has no way to tie
+        /// back to the answer it is holding.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        execution_id: Option<Uuid>,
     },
     #[serde(rename = "pending_approval")]
     PendingApproval {
@@ -169,6 +252,47 @@ pub(super) enum CallResponse {
     },
     #[serde(rename = "denied")]
     Denied { reason: String },
+    /// Async call accepted. The upstream has not been dialled yet — poll
+    /// `GET /v1/executions/{execution_id}` for the outcome, or subscribe to
+    /// the `executions` event topic.
+    ///
+    /// Note this shares its HTTP status (202) with `PendingApproval`. That is
+    /// deliberate — 202 is exact for both ("accepted, not completed") and
+    /// `status` is the documented discriminator everywhere else in this API —
+    /// but it means a client must branch on `status`, never on the code alone.
+    #[serde(rename = "accepted")]
+    Accepted {
+        execution_id: Uuid,
+        /// Dashboard deep link for a human, built the same way `approval_url`
+        /// is. **Not** the poll URL — that is `GET /v1/executions/{id}`, which
+        /// a client composes from `execution_id`.
+        execution_url: String,
+        action_description: Option<String>,
+        /// RFC 3339. For a queued call, the point after which the row is swept
+        /// to `expired` and the call will never run. For a hybrid call that
+        /// handed off, the call is already running and this is the point after
+        /// which it is given up on.
+        expires_at: String,
+        /// The D56-resolved budget the worker will run under. Echoed so a
+        /// caller knows how long to keep polling rather than guessing from a
+        /// deployment default it cannot see.
+        timeout_ms: u64,
+        /// Server-suggested delay before the first poll, in milliseconds.
+        poll_after_ms: u64,
+        /// Which rung of the wait-mode cascade chose this mode — present only
+        /// when it was *not* the request.
+        ///
+        /// Absent on every call whose caller named `execution`, which is why
+        /// it is skipped rather than always `"per_call"`: a caller that asked
+        /// for async does not need telling where async came from. It is here
+        /// for the other case, the one this field exists for — a 202 answering
+        /// a request that never mentioned a mode. Without it an agent has no
+        /// way to tell "this action defers by declaration" from "something
+        /// odd happened once", and would have to guess whether to expect the
+        /// same shape next time.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        execution_mode_source: Option<&'static str>,
+    },
 }
 
 /// Metadata from request resolution, used to derive the correct permission key type.
@@ -187,17 +311,57 @@ pub(super) struct ResolvedMeta {
     /// verb / `http`). Applied to the request projection before it's
     /// persisted as `approvals.action_detail`.
     pub(super) redact: Vec<String>,
+    /// `x-overslash-timeout_ms` on the resolved action, post-fold — an org
+    /// `ActionPatch` has already overwritten the shipped template's value, so
+    /// this single field carries both the template and org-per-action rungs.
+    /// `None` for verb / `http` shapes, which have no action to read.
+    pub(super) action_timeout_ms: Option<u64>,
+    /// `info.x-overslash-default_timeout_ms` on the resolved service, post-fold.
+    pub(super) service_timeout_ms: Option<u64>,
+    /// `x-overslash-wait-mode` on the resolved action — rung 2 of the
+    /// [`wait_mode`](crate::services::wait_mode) cascade, and the only rung
+    /// below the request.
+    ///
+    /// `None` for verb / `http` shapes, exactly like `action_timeout_ms`:
+    /// there is no action template to have an opinion, so those shapes are
+    /// synchronous unless the caller says otherwise.
+    pub(super) action_wait_mode: Option<overslash_core::types::service::ExecutionMode>,
+    /// `x-overslash-handoff_after_ms` on the resolved action. Read only when
+    /// the resolved mode is hybrid, and clamped rather than refused — see
+    /// [`crate::services::hybrid::resolve_handoff`].
+    pub(super) action_handoff_after_ms: Option<u64>,
+    /// `x-overslash-download` from the action template. MCP actions only —
+    /// it's how a tool result says "the bytes are over there". HTTP actions
+    /// are their own download and leave this `None`.
+    pub(super) download: Option<overslash_core::types::DownloadSpec>,
+    /// Whether this call authenticates via OAuth, mirroring
+    /// `ResolvedAuth::oauth_injected`.
+    ///
+    /// Deliberately *not* `auth_header.is_some()`: a template declaring a
+    /// query-param token injection resolves OAuth successfully but builds no
+    /// header, so the header check reads as "no credential" and would let a
+    /// deferred download mint a token the fetch cannot authenticate — a URL
+    /// that 401s later instead of an error now.
+    pub(super) oauth_injected: bool,
     /// Original resolved params (before url/body assembly), retained for the
     /// disclosure `.params.*` projection. Empty for verb / `http` shapes.
     pub(super) params: HashMap<String, serde_json::Value>,
     /// Display names from the template's `resolve` declarations (param name →
     /// human-readable string), feeding both description interpolation and the
-    /// disclosure `.resolved.*` projection. Populated for the HTTP action
-    /// shape only — resolvers are HTTP-only today, so verb / MCP / platform
-    /// shapes carry an empty map. Resolution happens once, at resolve time,
-    /// and rides here across execution: audit-write disclosure for a delete
-    /// action still names the object even though it's gone upstream.
+    /// disclosure `.resolved.*` projection. Populated for the HTTP and MCP
+    /// action shapes; verb / platform shapes carry an empty map. Resolution
+    /// happens once, at resolve time, and rides here across execution:
+    /// audit-write disclosure for a delete action still names the object even
+    /// though it's gone upstream.
     pub(super) resolved: HashMap<String, String>,
+    /// Canonical scope values from `resolve.scope` (param name → canonical
+    /// string), used *only* to derive the permission key.
+    ///
+    /// Separate from `resolved` because the two decide different things: a
+    /// display string is cosmetic, while this one selects which grants match.
+    /// The value sent upstream is never rewritten from here — canonicalization
+    /// renames the permission, it does not retarget the call.
+    pub(super) canonical: HashMap<String, String>,
     /// When the resolved service has `runtime: Mcp`, dispatch skips the HTTP
     /// executor and goes through `mcp_caller::invoke` with this payload.
     pub(super) mcp_target: Option<McpTarget>,

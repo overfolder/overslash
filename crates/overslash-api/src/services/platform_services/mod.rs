@@ -29,6 +29,7 @@ use super::platform_caller::PlatformCallContext;
 use crate::error::AppError;
 use crate::routes::util::fmt_time;
 
+mod group_grants;
 mod kernels;
 mod reconcile;
 mod rows;
@@ -42,12 +43,12 @@ pub use kernels::{
 pub use rows::{row_to_detail, row_to_summary};
 pub use status::{
     ScopeCoverage, ScopeKnowledge, action_scope_coverage, compute_credentials_status,
-    derive_credentials_status,
+    derive_credentials_status, resolve_instance_icon_url,
 };
 pub use templates::{resolve_template_definition, resolve_template_source};
 pub use types::{
-    ConnectBundle, CreateServiceInput, CredentialsStatus, GetServiceInput, ServiceGroupRef,
-    ServiceInstanceDetail, ServiceInstanceSummary, UpdateServiceInput,
+    ConnectBundle, CreateServiceGroupGrant, CreateServiceInput, CredentialsStatus, GetServiceInput,
+    ServiceGroupRef, ServiceInstanceDetail, ServiceInstanceSummary, UpdateServiceInput,
 };
 
 pub(crate) use status::resolve_effective_scopes;
@@ -72,6 +73,7 @@ mod test_fixtures {
 
     pub(super) fn mcp_bearer_template(default_secret: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "t".into(),
@@ -80,6 +82,7 @@ mod test_fixtures {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Mcp,
@@ -96,6 +99,7 @@ mod test_fixtures {
 
     pub(super) fn mcp_oauth_template(provider: &str, scopes: &[&str]) -> ServiceDefinition {
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "t".into(),
@@ -104,6 +108,7 @@ mod test_fixtures {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             // MCP tools carry no per-action required_scopes; scopes live on the
             // service-level oauth block.
@@ -123,6 +128,7 @@ mod test_fixtures {
 
     pub(super) fn secret_template() -> ServiceDefinition {
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "t".into(),
@@ -131,6 +137,7 @@ mod test_fixtures {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![ServiceAuth::Secret {
                 template: None,
                 slots: Vec::new(),
@@ -161,6 +168,9 @@ mod test_fixtures {
             map.insert(
                 key.to_string(),
                 ServiceAction {
+                    wait_mode: None,
+                    handoff_after_ms: None,
+                    timeout_ms: None,
                     method: "GET".into(),
                     path: "/".into(),
                     description: String::new(),
@@ -177,10 +187,12 @@ mod test_fixtures {
                     output_schema: None,
                     disabled: false,
                     request_body: None,
+                    download: None,
                 },
             );
         }
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "t".into(),
@@ -189,6 +201,7 @@ mod test_fixtures {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![ServiceAuth::OAuth {
                 provider: "google".into(),
                 scopes: vec![],

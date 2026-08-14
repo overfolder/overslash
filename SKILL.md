@@ -90,7 +90,7 @@ overslash_call {
 ```
 
 The platform kernel auto-grants the new instance to your owner-user's
-Myself group (admin + `auto_approve_reads`), so siblings of yours under the
+Myself group (admin access, read-level auto-approval), so siblings of yours under the
 same user pick it up immediately. The response carries
 `credentials_status`:
 
@@ -155,6 +155,10 @@ info:
   title: Acme
   key: acme                      # unique template key, ^[a-z][a-z0-9_-]*$
   category: Productivity
+  # icon: omitted on purpose. A template whose key matches an icon Overslash
+  # ships resolves to it automatically. Set `icon: builtin:<name>` to reuse a
+  # different shipped mark, or `icon: https://…` to host your own — https only.
+
 servers:
   - url: https://api.acme.com    # calls are bounded to this host
 components:

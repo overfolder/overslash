@@ -170,10 +170,22 @@ variable "enable_dev_auth" {
   default = false
 }
 
+variable "enable_live_map" {
+  type        = bool
+  default     = false
+  description = "Enable the Live Map (/map) and the per-call `action.*` events it animates (OVERSLASH_LIVE_MAP). Dev only — one durable events row per action call. See D58."
+}
+
 variable "enable_magic_link" {
   type        = bool
   default     = true
   description = "Enable passwordless email magic-link login (MAGIC_LINK_ENABLED). Default-on — it's the working login with no external IdP configured."
+}
+
+variable "enable_async_execution" {
+  type        = bool
+  default     = false
+  description = "Enable async (non-blocking) action calls (ASYNC_EXECUTION_ENABLED). Default-off: it spawns a claim-and-lease worker that runs upstream calls between requests. Requires an instance to exist to drain the queue, so keep cloud_run_min_instances >= 1 wherever this is on."
 }
 
 variable "overslash_env" {
@@ -347,7 +359,17 @@ variable "container_port" {
 locals {
   env_vars = merge(
     {
-      APPROVAL_EXPIRY_SECS      = "1800"
+      APPROVAL_EXPIRY_SECS = "1800"
+      # D56 rollout pin. The app defaults to 30s, but the inline call path was
+      # previously unbounded in code and bounded only by `request_timeout_seconds`
+      # below — so anything currently taking 30-120s would start failing the
+      # moment this deploys. Pinned at the ceiling to keep deployed behaviour
+      # identical while new and self-hosted deploys get the safe default.
+      #
+      # Remove this line once `duration_ms` percentiles on `action.executed`
+      # audit rows show nothing legitimate living above 30s; slow actions
+      # should carry `x-overslash-timeout_ms` in their template by then.
+      CALL_TIMEOUT_MS           = "110000"
       CLOUD_SQL_CONNECTION_NAME = var.cloud_sql_connection_name
       DASHBOARD_ORIGIN          = var.dashboard_origin
       MCP_EXTRA_ORIGINS         = var.mcp_extra_origins
@@ -364,9 +386,15 @@ locals {
       # explicitly here so each env's state is visible in the plan. Disabling
       # requires a falsey value ("0"); "1" keeps it on.
       MAGIC_LINK_ENABLED = var.enable_magic_link ? "1" : "0"
+
+      # Async (non-blocking) action calls. Rendered unconditionally, like
+      # MAGIC_LINK_ENABLED, so each env's state is visible in the plan.
+      # Off means `execution: "async"` is rejected and no worker is spawned.
+      ASYNC_EXECUTION_ENABLED = var.enable_async_execution ? "1" : "0"
     },
     var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},
     var.enable_dev_auth ? { DEV_AUTH = "1" } : {},
+    var.enable_live_map ? { OVERSLASH_LIVE_MAP = "1" } : {},
     var.redis_host != "" ? { REDIS_URL = "redis://${var.redis_host}:${var.redis_port}" } : {},
     var.cloud_billing ? {
       CLOUD_BILLING         = "true"
@@ -528,6 +556,23 @@ resource "google_cloud_run_v2_service" "api" {
             memory = var.memory
           }
           startup_cpu_boost = true
+
+          # Stated explicitly even though it is already the effective value.
+          # The provider only defaults `cpu_idle` to true when the `resources`
+          # block is ABSENT; because this block exists, an omitted `cpu_idle`
+          # is sent as false (hashicorp/terraform-provider-google#17246). So
+          # this API has always had always-allocated CPU — which is why it
+          # sits at 512Mi/1Gi, while the shortener and overfwd modules opt
+          # INTO throttling with `cpu_idle = true` and thereby earn the 256Mi
+          # floor.
+          #
+          # Pinning it matters now that the async execution worker depends on
+          # CPU between requests: a provider major bump that "fixed" the
+          # default would silently throttle every background job. Note this
+          # keeps the instance's CPU, not the instance — Cloud Run still
+          # scales in on request load, which is why async work lives in a
+          # leased DB row rather than a detached task.
+          cpu_idle = false
         }
 
         dynamic "env" {

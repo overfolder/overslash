@@ -1,6 +1,18 @@
 import { session, type ApprovalResponse, type ResolveApprovalRequest } from '$lib/session';
 import { pickApiError } from '$lib/approvals/format';
-import { type ApprovalEventData, eventStream, onEvent } from '$lib/stores/events.svelte';
+import {
+	EXECUTION_EVENT_TYPES,
+	type ApprovalEventData,
+	eventStream,
+	onEvent
+} from '$lib/stores/events.svelte';
+
+/** The `executions` topic payload. Carries `approval_id` for a gated call. */
+interface ExecutionEventData {
+	execution_id: string;
+	status: string;
+	approval_id?: string;
+}
 
 /**
  * Shared resolution controller for approvals.
@@ -35,6 +47,24 @@ export function createResolution(
 				execution.status === 'failed' ||
 				execution.status === 'cancelled' ||
 				execution.status === 'expired')
+	);
+	/**
+	 * This replay belongs to the async worker. `pending` then means "queued",
+	 * not "waiting for someone to press Call" — so the surfaces must not offer a
+	 * trigger, and the wait can legitimately run for minutes.
+	 */
+	const executionQueued = $derived(execution?.queued === true);
+	/**
+	 * The gated call asked for a deferred mode — true before it is approved.
+	 *
+	 * Both `async` and `hybrid` count, because a gated call of either kind is
+	 * queued identically: `hybrid` races a connection that an approval replay
+	 * does not have, so `ApprovalRow::is_async` matches both server-side. This
+	 * used to test `=== 'async'` alone, which left a gated hybrid approval
+	 * silently claiming it would run inline and then not doing so.
+	 */
+	const willRunInBackground = $derived(
+		current.execution_mode === 'async' || current.execution_mode === 'hybrid'
 	);
 
 	/**
@@ -76,6 +106,17 @@ export function createResolution(
 		)
 	);
 
+	// A queued replay finishes on the worker, which announces itself on the
+	// `executions` topic — the approval events above only cover replays that ran
+	// on a request. Without this subscription a backgrounded call shows "Queued"
+	// until the page is reloaded.
+	$effect(() =>
+		onEvent<ExecutionEventData>(EXECUTION_EVENT_TYPES, (event) => {
+			if (event.data?.approval_id !== current.id) return;
+			void refetch(current.id);
+		})
+	);
+
 	// Fallback poll, for when the stream is unavailable.
 	//
 	// `pollStartedAt` is anchored outside the reactive scope so the cap is a
@@ -95,12 +136,17 @@ export function createResolution(
 			pollStartedAt = Date.now();
 		}
 		const startedAt = pollStartedAt!;
-		if (Date.now() - startedAt > 30_000) return;
+		// An inline auto-call is bounded by the request cap, so 30s covers it. A
+		// queued one is bounded by the async ceiling instead and may legitimately
+		// run for minutes — capping it at 30s would strand the page on "Running"
+		// for every job that outlives the window.
+		const window = executionQueued ? 15 * 60_000 : 30_000;
+		if (Date.now() - startedAt > window) return;
 		const handle = setInterval(() => {
 			// The stream already delivers these transitions; polling on top of it
 			// would just be duplicate requests.
 			if (eventStream.live) return;
-			if (Date.now() - startedAt > 30_000) {
+			if (Date.now() - startedAt > window) {
 				clearInterval(handle);
 				return;
 			}
@@ -206,6 +252,12 @@ export function createResolution(
 		},
 		get executionTerminal() {
 			return executionTerminal;
+		},
+		get executionQueued() {
+			return executionQueued;
+		},
+		get willRunInBackground() {
+			return willRunInBackground;
 		},
 		resolve,
 		triggerCall,

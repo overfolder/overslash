@@ -105,14 +105,14 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
     }
 
     // response_type must be json or binary if set.
-    if let Some(ref rt) = action.response_type {
-        if !VALID_RESPONSE_TYPES.contains(&rt.as_str()) {
-            issues.err(
-                "invalid_response_type",
-                format!("response_type {rt:?} must be \"json\" or \"binary\""),
-                format!("{action_path}.response_type"),
-            );
-        }
+    if let Some(ref rt) = action.response_type
+        && !VALID_RESPONSE_TYPES.contains(&rt.as_str())
+    {
+        issues.err(
+            "invalid_response_type",
+            format!("response_type {rt:?} must be \"json\" or \"binary\""),
+            format!("{action_path}.response_type"),
+        );
     }
 
     check_sql_policy(action, &action_path, issues);
@@ -152,14 +152,14 @@ pub(super) fn check_platform_action(key: &str, action: &ServiceAction, issues: &
         );
     }
 
-    if let Some(ref perm) = action.permission {
-        if !is_valid_action_key(perm) {
-            issues.err(
-                "invalid_permission_key",
-                format!("permission {perm:?} must match ^[a-z][a-z0-9_]*$"),
-                format!("{action_path}.permission"),
-            );
-        }
+    if let Some(ref perm) = action.permission
+        && !is_valid_action_key(perm)
+    {
+        issues.err(
+            "invalid_permission_key",
+            format!("permission {perm:?} must match ^[a-z][a-z0-9_]*$"),
+            format!("{action_path}.permission"),
+        );
     }
 
     for (name, param) in &action.params {
@@ -326,7 +326,7 @@ fn check_description(
     }
 
     for (_, ident) in iter_placeholders(label) {
-        if !params.contains_key(ident) {
+        if !param_ident_resolvable(params, ident) {
             issues.err(
                 "unknown_description_param",
                 format!("{field} placeholder {{{ident}}} does not reference a defined param"),
@@ -364,51 +364,48 @@ fn check_param(
                 format!("{base}.enum"),
             );
         }
-        if let Some(ref default) = param.default {
-            if let Some(default_str) = default.as_str() {
-                if !values.iter().any(|v| v == default_str) {
-                    issues.err(
-                        "invalid_enum_values",
-                        format!("default value {default_str:?} is not a member of the enum"),
-                        format!("{base}.default"),
-                    );
-                }
-            }
+        if let Some(ref default) = param.default
+            && let Some(default_str) = default.as_str()
+            && !values.iter().any(|v| v == default_str)
+        {
+            issues.err(
+                "invalid_enum_values",
+                format!("default value {default_str:?} is not a member of the enum"),
+                format!("{base}.default"),
+            );
         }
     }
 
     if let Some(ref resolver) = param.resolve {
-        if has_unclosed_brace(&resolver.get) {
-            issues.err(
-                "invalid_path_syntax",
-                "resolver.get has an unclosed '{' placeholder",
-                format!("{base}.resolve.get"),
-            );
-        }
-        for (_, ident) in iter_placeholders(&resolver.get) {
-            if !all_params.contains_key(ident) {
-                issues.err(
-                    "unknown_resolver_param",
-                    format!(
-                        "resolver placeholder {{{ident}}} does not reference a defined param on this action"
-                    ),
-                    format!("{base}.resolve.get"),
-                );
-            }
-        }
-        if resolver.pick.trim().is_empty() {
-            issues.err(
-                "missing_field",
-                "resolver.pick is required",
-                format!("{base}.resolve.pick"),
-            );
-        }
+        super::resolver::check_resolver(resolver, name, all_params, &base, issues);
     }
+}
+
+/// Does `ident` name something the runtime substituter can resolve?
+///
+/// Exact param name, or a dotted path whose head segment is a defined param —
+/// `crate::description::substitute_placeholders` descends nested objects, so
+/// `{query.database}` resolves against the object-valued `query` param. Only
+/// the head is checkable here: the shape inside an object param is the
+/// upstream's, not something the template declares.
+///
+/// Deliberately not used for action-path placeholders. Those are substituted
+/// by a separate flat loop over the call params
+/// (`routes::actions::resolve`), which never descends — a dotted path
+/// placeholder would survive into the outbound URL verbatim.
+pub(super) fn param_ident_resolvable(
+    params: &std::collections::HashMap<String, ActionParam>,
+    ident: &str,
+) -> bool {
+    params.contains_key(ident)
+        || ident
+            .split_once('.')
+            .is_some_and(|(head, _)| params.contains_key(head))
 }
 
 /// Detect an unclosed `{` — something that iter_placeholders silently skips
 /// but is a syntax error in the linter's view.
-fn has_unclosed_brace(s: &str) -> bool {
+pub(super) fn has_unclosed_brace(s: &str) -> bool {
     let mut i = 0;
     let bytes = s.as_bytes();
     while i < bytes.len() {
@@ -427,7 +424,7 @@ fn has_unclosed_brace(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::template_validation::core::tests::{minimal_mcp, minimal_valid, param, run};
-    use crate::types::{McpAuth, ParamResolver, Risk, Runtime, ServiceAction, ServiceDefinition};
+    use crate::types::{McpAuth, Risk, Runtime, ServiceAction, ServiceDefinition};
     use std::collections::HashMap;
 
     #[test]
@@ -690,18 +687,20 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.code == "invalid_response_type"));
     }
 
+    /// Descriptions run through the same substituter, so the linter accepts
+    /// there what the runtime resolves.
     #[test]
-    fn unknown_resolver_param() {
+    fn description_dotted_placeholder_checks_only_the_head_segment() {
         let mut d = minimal_valid();
         let a = d.actions.get_mut("list").unwrap();
-        let mut p = param("string", false);
-        p.resolve = Some(ParamResolver {
-            get: "/items/{ghost}".into(),
-            pick: "name".into(),
-        });
-        a.params.insert("x".into(), p);
+        a.params.insert("query".into(), param("object", false));
+        a.description = "Run SQL on database {query.database}".into();
         let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "unknown_resolver_param"));
+        assert!(
+            !r.errors
+                .iter()
+                .any(|e| e.code == "unknown_description_param")
+        );
     }
 
     #[test]
@@ -718,6 +717,7 @@ mod tests {
         // An action with empty method/path (like overslash.yaml) must validate
         // clean as long as description is present.
         let mut d = ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "overslash".into(),
@@ -726,6 +726,7 @@ mod tests {
             hosts: vec![],
             category: Some("platform".into()),
             hidden: false,
+            icon: None,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Platform,
@@ -735,6 +736,9 @@ mod tests {
         d.actions.insert(
             "manage_secrets".into(),
             ServiceAction {
+                wait_mode: None,
+                handoff_after_ms: None,
+                timeout_ms: None,
                 method: String::new(),
                 path: String::new(),
                 description: "Manage secrets".into(),
@@ -751,6 +755,7 @@ mod tests {
                 output_schema: None,
                 disabled: false,
                 request_body: None,
+                download: None,
             },
         );
         let r = run(&d);

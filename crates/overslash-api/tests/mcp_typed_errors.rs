@@ -115,6 +115,7 @@ async fn mcp_call_no_connection_returns_typed_needs_authentication() {
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()
@@ -221,6 +222,7 @@ async fn mcp_call_expired_no_refresh_returns_typed_reauth_required() {
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()
@@ -281,6 +283,88 @@ async fn mcp_call_expired_no_refresh_returns_typed_reauth_required() {
     assert!(
         envelope.get("raw").is_none_or(Value::is_null),
         "MCP envelope must not include `raw` (upstream provider URL): {envelope}"
+    );
+}
+
+/// The secret-backed `needs_authentication` shape (D60) has to survive the MCP
+/// relay too. `forward()` gates on the top-level `error` code and then passes
+/// the parsed body through verbatim, so the two fields that shape carries —
+/// `missing_credentials` and `hint_url` — should ride along untouched. This
+/// pins that: a relay that reconstructed the envelope from known keys, or one
+/// that dropped the code off the whitelist, would strand the only recovery
+/// affordance a secret-backed template has.
+#[tokio::test]
+async fn mcp_call_unconfigured_secret_instance_relays_hint_url() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool, None).await;
+    let (_org_id, ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    // A `metabase` instance with no `token` bound: nothing to authenticate
+    // with, and no OAuth provider to mint a consent link for.
+    let create_resp = client
+        .post(format!("{base}/v1/services"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({
+            "template_key": "metabase",
+            "name": "metabase",
+            // The template's host is a `${METABASE_URL}` var with no default,
+            // so an instance has to name its own deployment.
+            "url": "https://metabase.example.com",
+            "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
+            "status": "active",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        create_resp.status().is_success(),
+        "service create failed: {:?}",
+        create_resp.text().await
+    );
+    let svc_id = create_resp.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "metabase:*:*"}))
+        .send()
+        .await
+        .unwrap();
+
+    let frame = rpc_tools_call(
+        &client,
+        &base,
+        &api_key,
+        1,
+        json!({"service": "metabase", "action": "list_databases", "params": {}}),
+    )
+    .await;
+
+    // A tool RESULT, not a JSON-RPC error — otherwise the model never sees it.
+    assert!(
+        frame.get("error").is_none_or(Value::is_null),
+        "expected tool result, got JSON-RPC error frame: {frame}"
+    );
+    assert_eq!(frame["result"]["isError"], true, "{frame}");
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let envelope: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(envelope["error"], "needs_authentication", "{envelope}");
+    assert_eq!(
+        envelope["missing_credentials"],
+        json!(["token"]),
+        "{envelope}"
+    );
+    let hint = envelope["hint_url"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{envelope}"));
+    assert!(
+        hint.contains(&svc_id) && hint.ends_with("?tab=credentials"),
+        "hint_url must survive the relay intact: {hint}"
     );
 }
 

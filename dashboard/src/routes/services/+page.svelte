@@ -16,9 +16,15 @@
 		ServiceStatus,
 		ConnectionSummary
 	} from '$lib/types';
+	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
-	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
+	import SearchBar, {
+		emptySearch,
+		filterTerms,
+		matchesAllText,
+		type FilterTerm, type SearchKey, type SearchValue
+	} from '$lib/components/SearchBar.svelte';
 	import SortableHeader from '$lib/components/SortableHeader.svelte';
 	import { compareBy, type SortDir } from '$lib/sort';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
@@ -76,7 +82,7 @@
 	let identities = $state<Identity[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
-	let searchValue = $state<SearchValue>({ expressions: [], freeText: '' });
+	let searchValue = $state<SearchValue>(emptySearch());
 	// Admin-only: when true, list every user-level service across the org.
 	// Non-admin callers can still flip this UI (it's just hidden), and the
 	// backend silently ignores the flag for them.
@@ -108,6 +114,39 @@
 		const url = new URL($page.url);
 		url.searchParams.delete('connection');
 		goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true });
+	}
+
+	// `?user=` / `?connection=` are server-side filters owned by the URL, so they
+	// ride in the bar as non-editable bubbles rather than as bar state — removing
+	// one drops the query param instead of mutating `searchValue`.
+	const pinnedFilters = $derived<FilterTerm[]>([
+		...(userFilter
+			? [
+					{
+						kind: 'filter' as const,
+						key: 'user',
+						op: '=' as const,
+						value: userFilter,
+						label: userFilterName ?? userFilter
+					}
+				]
+			: []),
+		...(connectionFilter
+			? [
+					{
+						kind: 'filter' as const,
+						key: 'connection',
+						op: '=' as const,
+						value: connectionFilter,
+						label: connectionFilterLabel ?? connectionFilter
+					}
+				]
+			: [])
+	]);
+
+	function removePinned(t: FilterTerm) {
+		if (t.key === 'user') clearUserFilter();
+		else if (t.key === 'connection') clearConnectionFilter();
 	}
 
 	let pendingDelete = $state<ServiceInstanceSummary | null>(null);
@@ -162,15 +201,12 @@
 
 	const filtered = $derived(
 		services.filter((s) => {
-			for (const expr of searchValue.expressions) {
+			for (const expr of filterTerms(searchValue)) {
 				if (!matchesExpression(s, expr)) return false;
 			}
-			const q = searchValue.freeText.trim().toLowerCase();
-			if (!q) return true;
-			return (
-				s.name.toLowerCase().includes(q) ||
-				s.template_key.toLowerCase().includes(q) ||
-				(s.owner_identity_id ?? '').toLowerCase().includes(q)
+			return matchesAllText(
+				[s.name, s.template_key, s.owner_identity_id ?? ''],
+				searchValue
 			);
 		})
 	);
@@ -335,27 +371,13 @@
 			<div class="error">{error}</div>
 		{/if}
 
-		{#if userFilter}
-			<div class="filter-banner">
-				<span>Showing services accessible to <strong>{userFilterName}</strong></span>
-				<button type="button" onclick={clearUserFilter}>Clear</button>
-			</div>
-		{/if}
-
-		{#if connectionFilter}
-			<div class="filter-banner">
-				<span>
-					<span class="filter-pill">connection = <strong>{connectionFilterLabel}</strong></span>
-				</span>
-				<button type="button" onclick={clearConnectionFilter}>Clear</button>
-			</div>
-		{/if}
-
 		{#if !loading && (services.length > 0 || showAllUsers || isAdmin)}
 			<div class="filters">
 				<SearchBar
 					keys={searchKeys}
 					bind:value={searchValue}
+					pinned={pinnedFilters}
+					onremovepinned={removePinned}
 					placeholder="Search services… (try status=active)"
 					onchange={(next) => (searchValue = next)}
 				/>
@@ -407,7 +429,10 @@
 						{#each sorted as s (s.id)}
 							<tr>
 								<td>
-									<a href={`/services/${s.id}`} class="link">{s.name}</a>
+									<span class="name-cell">
+										<ServiceIcon src={s.icon_url} name={s.name} size={20} />
+										<a href={`/services/${s.id}`} class="link">{s.name}</a>
+									</span>
 								</td>
 								<td>
 									<span class="mono">{s.template_key}</span>
@@ -427,13 +452,13 @@
 										<span class="group-pills">
 											<StatusBadge variant="user" label="User-level" />
 											{#each s.groups ?? [] as g (g.grant_id)}
-												<span class="group-pill" title={`${g.access_level}${g.auto_approve_reads ? ' · auto-approve reads' : ''}`}>{g.system_kind === 'self' ? 'Myself' : g.group_name}</span>
+												<span class="group-pill" title={`${g.access_level}${g.auto_approve_level !== 'none' ? ` · auto-approve ${g.auto_approve_level}` : ''}`}>{g.system_kind === 'self' ? 'Myself' : g.group_name}</span>
 											{/each}
 										</span>
 									{:else if s.groups && s.groups.length > 0}
 										<span class="group-pills">
 											{#each s.groups as g (g.grant_id)}
-												<span class="group-pill" title={`${g.access_level}${g.auto_approve_reads ? ' · auto-approve reads' : ''}`}>{g.system_kind === 'self' ? 'Myself' : g.group_name}</span>
+												<span class="group-pill" title={`${g.access_level}${g.auto_approve_level !== 'none' ? ` · auto-approve ${g.auto_approve_level}` : ''}`}>{g.system_kind === 'self' ? 'Myself' : g.group_name}</span>
 											{/each}
 										</span>
 									{:else}
@@ -490,32 +515,6 @@
 <style>
 	.page {
 		max-width: 1100px;
-	}
-	.filter-banner {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-3);
-		padding: var(--space-2) var(--space-3);
-		margin-bottom: var(--space-3, 0.75rem);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md, 8px);
-		background: color-mix(in srgb, var(--color-primary, #6366f1) 8%, transparent);
-		font-size: 0.85rem;
-	}
-	.filter-banner button {
-		padding: 4px 10px;
-		border: 1px solid var(--color-border);
-		background: var(--color-bg);
-		border-radius: var(--radius-sm, 4px);
-		cursor: pointer;
-	}
-	.filter-pill {
-		font-family: var(--font-mono);
-		font-size: 0.8rem;
-	}
-	.filter-pill strong {
-		color: var(--color-primary);
 	}
 	.tabs {
 		display: flex;
@@ -691,5 +690,11 @@
 		color: var(--color-text-muted, #6b7280);
 		font-size: 0.72rem;
 		line-height: 1.4;
+	}
+	.name-cell {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-width: 0;
 	}
 </style>

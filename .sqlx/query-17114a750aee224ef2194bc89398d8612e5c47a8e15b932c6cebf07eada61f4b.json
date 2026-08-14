@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO executions (id, approval_id, org_id, identity_id, status, started_at,\n                                 lease_expires_at, expires_at, worker_id, request)\n         VALUES ($1, $2, $3, $4, 'executing', now() - interval '1 hour',\n                 now() - interval '1 hour', now() + interval '1 hour', 'dead-worker',\n                 '{\"action\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:1/x\", \"headers\": {}}}'::jsonb)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "17114a750aee224ef2194bc89398d8612e5c47a8e15b932c6cebf07eada61f4b"
+}

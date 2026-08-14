@@ -19,6 +19,7 @@ enable_api_lb = false
 extra_api_domain_mappings = [
   "overfolder.api.dev.overslash.com",
   "overfolder-dev.api.dev.overslash.com",
+  "reveni-dev.api.dev.overslash.com",
 ]
 
 # Lets a locally-run MCP Inspector (default port 6274) complete the OAuth
@@ -29,6 +30,8 @@ mcp_extra_origins = "http://localhost:6274"
 dashboard_origin = "https://app.dev.overslash.com,https://*.app.dev.overslash.com"
 dashboard_url    = "https://app.dev.overslash.com"
 enable_dev_auth  = false
+# The Live Map and its per-call `action.*` events. Dev only (D58).
+enable_live_map = true
 # Passwordless email magic-link login — on (email is configured below).
 enable_magic_link = true
 # Sign-in with Google (default) + Sign-in with GitHub. Populate the OAuth
@@ -54,9 +57,13 @@ cloud_sql_disk_size_gb = 10
 cloud_sql_zone         = "europe-west1-b"
 
 # Cloud Run — scale to zero, minimal resources
-cloud_run_cpu           = "1"
-cloud_run_memory        = "512Mi"
-cloud_run_min_instances = 0
+cloud_run_cpu    = "1"
+cloud_run_memory = "512Mi"
+# Async execution needs an instance to exist in order to drain its queue, and
+# Cloud Run's autoscaler is request-driven — a pending row creates no scale-out
+# pressure. At 0 a queued job would sit until unrelated traffic warmed an
+# instance, so dev keeps one warm.
+cloud_run_min_instances = 1
 cloud_run_max_instances = 3
 
 # Networking — Auth Proxy mode (no VPC connector cost)
@@ -109,3 +116,5 @@ email_provider = "resend"
 email_from     = "no-reply@dev.overslash.com"
 email_reply_to = "support@overslash.com"
 
+# Async (non-blocking) action calls. On here first; prod follows once validated.
+enable_async_execution = true

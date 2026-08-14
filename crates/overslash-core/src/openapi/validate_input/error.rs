@@ -97,7 +97,7 @@ pub(super) fn key(e: &ArgError) -> (u8, &str) {
 /// preferring the lexicographically smaller name on ties. None if no
 /// candidate is close enough — better to say nothing than to suggest a
 /// wildly different field.
-pub(super) fn closest_match<'a>(
+pub(in crate::openapi) fn closest_match<'a>(
     target: &str,
     candidates: impl Iterator<Item = &'a str>,
 ) -> Option<String> {

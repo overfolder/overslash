@@ -9,6 +9,14 @@ export interface BuildInfo {
   version: string;
   commit: string;
   commit_short: string;
+  /** Whether the build carries the D42 SQL parser (`sql_policy` Cargo
+   *  feature). `false` means SQL-annotated actions never get parsed — they
+   *  fail closed to write-on-unknown-tables and always route to approval. */
+  sql_policy: boolean;
+  /** Whether this deployment runs the Live Map — `OVERSLASH_LIVE_MAP` on the
+   *  API. Gates the `/map` nav item and the page itself: without it no
+   *  `action.*` events are emitted and the graph would never move. */
+  live_map: boolean;
 }
 
 export interface OrgInfo {
@@ -79,6 +87,12 @@ export interface SecretRequestSettings {
  */
 export interface ExecutionSettings {
   default_deferred_execution: boolean;
+  /** Default upstream timeout for action calls, in ms. `null` inherits the
+   * deployment default. A template action or an individual call overrides it. */
+  call_timeout_ms: number | null;
+  /** Ceiling on any resolved call timeout, in ms. `null` inherits the
+   * deployment maximum. A caller asking for more is rejected. */
+  max_call_timeout_ms: number | null;
 }
 
 /** Org-level capture mode for upstream response bodies on
@@ -232,6 +246,9 @@ export interface TemplateSummary {
   hosts: string[];
   action_count: number;
   tier: TemplateTier;
+  /** Absolute URL of the catalog icon, resolved server-side (a built-in asset
+   * or an https:// URL a template declared). Absent means render the letter tile. */
+  icon_url?: string | null;
   /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
   hidden?: boolean;
   /** Base template key when this row is a derived layer; absent for standalone/global. */
@@ -337,6 +354,9 @@ export interface TemplateDetail {
   description?: string | null;
   category?: string | null;
   hosts: string[];
+  /** Absolute URL of the catalog icon, resolved server-side (a built-in asset
+   * or an https:// URL a template declared). Absent means render the letter tile. */
+  icon_url?: string | null;
   /** Compiled auth view for rendering the detail/connect UIs without re-parsing. */
   auth: ServiceAuth[];
   /**
@@ -521,6 +541,10 @@ export interface ActionSummary {
   output_schema?: unknown;
   /** Admin-hidden tool; the dashboard renders a "hidden" pill. */
   disabled?: boolean;
+  /** `x-overslash-wait-mode`: the execution mode a call defaults to when the
+   *  caller names none. Absent for almost every action — present only where
+   *  the template declares that a call may not answer inline. */
+  wait_mode?: 'sync' | 'async' | 'hybrid';
 }
 
 export type ServiceRuntime = 'http' | 'mcp';
@@ -582,6 +606,11 @@ export interface ServiceGroupRef {
    *  rather than parsing the storage-form `group_name`. */
   system_kind?: 'everyone' | 'admins' | 'self';
   access_level: string;
+  /** "none" | "read" | "write" | "admin" — how far up the ladder actions on
+   *  this service skip approval for members of this group. Never above
+   *  `access_level`. */
+  auto_approve_level: string;
+  /** @deprecated derived from `auto_approve_level !== 'none'`. */
   auto_approve_reads: boolean;
 }
 
@@ -602,6 +631,9 @@ export interface ServiceInstanceSummary {
   template_key: string;
   status: ServiceStatus;
   is_system: boolean;
+  /** Absolute URL of the template's catalog icon, resolved server-side (a built-in asset
+   * or an https:// URL a template declared). Absent means render the letter tile. */
+  icon_url?: string | null;
   owner_identity_id?: string;
   connection_id?: string;
   secret_name?: string;
@@ -640,8 +672,22 @@ export interface CreateServiceRequest {
   url?: string;
   status?: ServiceStatus;
   user_level?: boolean;
+  /**
+   * Group grants to attach at creation. Required (non-empty) when
+   * `user_level` is `false`: an org-level instance has no Myself group, so
+   * without a grant nothing can reach it. At least one must be a group the
+   * caller belongs to.
+   */
+  groups?: ServiceGroupGrantInput[];
   /** When `false`, this instance won't fall back to the default connection for its provider. Defaults to `true` server-side. */
   use_default_connection?: boolean;
+}
+
+export interface ServiceGroupGrantInput {
+  group_id: string;
+  /** read | write | admin. Defaults to `write` server-side. */
+  access_level?: 'read' | 'write' | 'admin';
+  auto_approve_reads?: boolean;
 }
 
 export interface UpdateServiceRequest {
@@ -837,6 +883,10 @@ export interface ConnectionSummary {
   owner_identity_id: string;
   provider_key: string;
   account_email: string | null;
+  /** Provider-hosted avatar for the linked account, when the provider named
+   *  one at connect time. Hotlinked; falls back to initials when absent or
+   *  when the URL has rotted (see `Avatar.svelte`). */
+  account_picture: string | null;
   scopes: string[];
   used_by_service_templates: string[];
   is_default: boolean;
@@ -875,6 +925,10 @@ export interface ConnectionDetail {
   id: string;
   provider_key: string;
   account_email: string | null;
+  /** Provider-hosted avatar for the linked account, when the provider named
+   *  one at connect time. Hotlinked; falls back to initials when absent or
+   *  when the URL has rotted (see `Avatar.svelte`). */
+  account_picture: string | null;
   scopes: string[];
   is_default: boolean;
   /** When true, this connection is preserved from the service-deletion
@@ -961,6 +1015,26 @@ export type CallResponse =
        * envelope, or upstream HTTP >= 400) even though the call executed.
        * Optional for wire-compat with older API builds. */
       is_error?: boolean;
+      /** Present only for an `execution: "hybrid"` call that finished before
+       * its handoff. A correlation handle on an already-terminal row, never a
+       * signal to poll — a `called` envelope always carries the result. */
+      execution_id?: string;
+    }
+  | {
+      /** The call was accepted but not completed: either `execution: "async"`,
+       * or an `execution: "hybrid"` call that outran its handoff. Poll
+       * `GET /v1/executions/{execution_id}` for the outcome.
+       *
+       * Shares HTTP 202 with `pending_approval`, so branch on `status` and
+       * never on the status code alone. */
+      status: 'accepted';
+      execution_id: string;
+      /** Dashboard deep link for a human — not the poll URL. */
+      execution_url: string;
+      action_description: string | null;
+      expires_at: string;
+      timeout_ms: number;
+      poll_after_ms: number;
     }
   | {
       status: 'pending_approval';
@@ -1054,6 +1128,20 @@ export interface Identity {
    * builds; treat `undefined` as `true` for display fallback.
    */
   auto_call_on_approve?: boolean;
+  /**
+   * The agent's mark: the logo of the MCP client it is bound to, or the
+   * generic bot when the client is unrecognised or absent. Resolved by the
+   * API (absolute URL). Not sent for `user` identities, which have `picture`.
+   */
+  icon_url?: string | null;
+  /**
+   * Three `#rrggbb` colours hashed from the agent's id, rendered as a bar
+   * under the icon so two agents on the same client stay distinguishable.
+   * Not sent for `user` identities.
+   */
+  icon_stripe?: string[] | null;
+  /** What the bound MCP client calls itself, e.g. `Claude Code`. */
+  mcp_client_label?: string | null;
   /**
    * `true` for a `user` identity that was pre-created (invited or
    * impersonation-provisioned) but has never completed a sign-in

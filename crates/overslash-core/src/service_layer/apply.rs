@@ -118,7 +118,10 @@ pub fn apply_delta(
     }
     if !delta.extensions.actions.is_empty() {
         match compile_extension_actions(base, &delta.extensions) {
-            Ok(compiled) => {
+            // Lint warnings are dropped at fold time: `validate_delta` already
+            // reported them to the author at write time, and repeating them on
+            // every resolve of every derived layer would be noise.
+            Ok((compiled, _lint_warnings)) => {
                 for (key, action) in compiled {
                     if base.actions.contains_key(&key) {
                         // Runtime collision: the base action wins; the extension
@@ -160,6 +163,7 @@ pub fn apply_delta(
         hosts,
         category: base.category.clone(),
         hidden: delta.hidden.unwrap_or(base.hidden),
+        icon: delta.icon.clone().or_else(|| base.icon.clone()),
         auth: base.auth.clone(),
         // Credential slots ride with `auth`: a mask may add actions and hosts,
         // never rebind credentials.
@@ -169,6 +173,10 @@ pub fn apply_delta(
         // never redeclares them.
         config: base.config.clone(),
         actions,
+        // Carried straight through: a layer tunes timeouts per action via
+        // `ActionPatch::timeout_ms`, and the org-wide knob lives on the org
+        // row rather than in the mask.
+        default_timeout_ms: base.default_timeout_ms,
         runtime: base.runtime,
         mcp: base.mcp.clone(),
         instance_defaults,
@@ -194,6 +202,12 @@ fn apply_action_patch(action: &mut ServiceAction, patch: &ActionPatch) {
     if let Some(desc) = &patch.description {
         action.description = desc.clone();
     }
+    // Overwrites in place, which is what collapses the "org per-action" layer
+    // into the action layer: by the time anything resolves a timeout, the
+    // patched value *is* the action's value and there is no second lookup.
+    if let Some(ms) = patch.timeout_ms {
+        action.timeout_ms = Some(ms);
+    }
 }
 
 /// The `scheme://host[:port]` prefix of a default endpoint, dropping any path.
@@ -215,10 +229,47 @@ fn url_to_origin(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service_icon::ServiceIcon;
     use crate::service_layer::fixtures::*;
     use crate::service_layer::{ExtensionAction, Extensions, validate_delta};
     use crate::types::Risk;
     use std::collections::HashMap;
+
+    #[test]
+    fn layer_inherits_an_implicit_base_icon() {
+        // The reason the implicit rule resolves at compile rather than at
+        // response time. This layer is keyed `github` here, but in production a
+        // derived layer carries its own key (`acme_github`) for which no asset
+        // exists — resolving any later would find nothing and silently demote
+        // it to a letter tile.
+        let base = base_with(&[("a", Risk::Read)]);
+        assert_eq!(
+            base.icon,
+            Some(ServiceIcon::Builtin {
+                slug: "github".into()
+            })
+        );
+        let (def, _) = apply_delta(&Delta::default(), &base);
+        assert_eq!(def.icon, base.icon);
+    }
+
+    #[test]
+    fn delta_icon_rebrands_the_layer() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            icon: Some(ServiceIcon::Remote {
+                url: "https://cdn.acme.test/logo.svg".into(),
+            }),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(
+            def.icon,
+            Some(ServiceIcon::Remote {
+                url: "https://cdn.acme.test/logo.svg".into()
+            })
+        );
+    }
 
     #[test]
     fn allowlist_intersects() {

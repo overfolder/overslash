@@ -15,7 +15,7 @@ use crate::{
     AppState,
     error::AppError,
     extractors::{AuthContext, ClientIp},
-    services::action_caller::{StoredCallRequest, StoredMcpCall, StoredPlatformCall},
+    services::call_timeout::CallTimeout,
 };
 use overslash_core::{
     permissions::{PermissionKey, suggest_tiers},
@@ -23,7 +23,7 @@ use overslash_core::{
 };
 
 use super::*;
-use super::{approval_detail::*, call::sql_audit_block};
+use super::{approval_detail::*, tags::sql_audit_block};
 
 /// Walk the ancestor chain and, at the first gap, file an approval.
 ///
@@ -63,6 +63,14 @@ pub(super) async fn enforce_permission_chain(
     effective: Risk,
     needs_gate: bool,
     skip_layer2: bool,
+    // How the caller asked for this call to run. Passed in already validated
+    // rather than re-derived from `req` here, so the mode that drives the
+    // refusals in `flags::validate_request` and the one stamped on the approval
+    // can never disagree.
+    mode: super::dto::ExecutionMode,
+    // The D56-resolved timeout for this call, stored on the approval so a
+    // later replay reproduces the budget the caller actually asked for.
+    call_timeout: CallTimeout,
 ) -> Result<Option<Response>, AppError> {
     // Users are gated by groups only — they are their own approvers.
     // Agents walk the ancestor chain; first gap → approval at gap level.
@@ -116,56 +124,22 @@ pub(super) async fn enforce_permission_chain(
                 let (response_action_detail, action_detail_truncated, action_detail_size_bytes) =
                     crate::routes::approvals::render_action_detail(redacted_detail.as_ref());
 
-                // Raw replay payload (full ActionRequest + side-channel fields)
-                // stored separately from action_detail so the replay at
-                // POST /v1/approvals/{id}/call reproduces the agent's
+                // Raw replay payload (full ActionRequest + side-channel
+                // fields) stored separately from action_detail so the replay
+                // at POST /v1/approvals/{id}/call reproduces the agent's
                 // original request faithfully — including jq `filter` and
                 // `prefer_stream` — even when `action_detail` has been
                 // redacted via x-overslash-redact for reviewer display.
                 //
-                // MCP-runtime approvals get a different shape (StoredMcpCall)
-                // disambiguated at parse time by the top-level `tool` key.
-                // Platform-runtime gets StoredPlatformCall, disambiguated by
-                // an explicit top-level `runtime: "platform"` marker.
-                let replay_payload = if let Some(pt) = meta.platform_target.as_ref() {
-                    serde_json::to_value(StoredPlatformCall {
-                        runtime: "platform".into(),
-                        service: meta.service_scope.as_ref().map(|s| s.service_key.clone()),
-                        action: pt.action_key.clone(),
-                        params: pt.params.clone(),
-                    })
-                    .ok()
-                } else if let Some(target) = meta.mcp_target.as_ref() {
-                    serde_json::to_value(StoredMcpCall {
-                        url: target.url.clone(),
-                        auth: target.auth.clone(),
-                        tool: target.tool.clone(),
-                        arguments: target.arguments.clone(),
-                    })
-                    .ok()
-                } else {
-                    // `action_req` is credential-free (the live OAuth header
-                    // rides on `auth_header`, which has no Serialize impl).
-                    // Record the service/instance the credential resolved
-                    // from — exactly when one resolved — so the replay path
-                    // re-mints a fresh token instead of persisting this one.
-                    let (replay_service_key, replay_instance_id) = if auth_header_present {
-                        (
-                            meta.service_scope.as_ref().map(|s| s.service_key.clone()),
-                            meta.instance_id,
-                        )
-                    } else {
-                        (None, None)
-                    };
-                    serde_json::to_value(StoredCallRequest::new(
-                        action_req.clone(),
-                        req.filter.clone(),
-                        req.prefer_stream.unwrap_or(false),
-                        replay_service_key,
-                        replay_instance_id,
-                    ))
-                    .ok()
-                };
+                // Shared with the async fork in `call`, so a gated async call
+                // and a direct one provably store the same thing.
+                let replay_payload = super::replay_payload::build(
+                    meta,
+                    req,
+                    action_req,
+                    auth_header_present,
+                    call_timeout,
+                );
 
                 // The same tag set the execution will inherit and the audit
                 // rows will carry — minted once, here, so an approval can
@@ -179,22 +153,33 @@ pub(super) async fn enforce_permission_chain(
                 );
 
                 let approval = scope
-                    .create_approval(
+                    .create_approval(overslash_db::repos::approval::CreateApproval {
                         identity_id,
-                        initial_resolver_id,
-                        &summary,
-                        redacted_detail,
-                        if disclosed_fields.is_empty() {
+                        current_resolver_identity_id: initial_resolver_id,
+                        action_summary: &summary,
+                        action_detail: redacted_detail,
+                        disclosed_fields: if disclosed_fields.is_empty() {
                             None
                         } else {
                             serde_json::to_value(&disclosed_fields).ok()
                         },
                         replay_payload,
-                        &keys,
-                        &token,
+                        permission_keys: &keys,
+                        token: &token,
                         expires_at,
-                        &tags,
-                    )
+                        tags: &tags,
+                        // The gate fires above the async and hybrid forks, so
+                        // this is the only record that the caller wanted this
+                        // call run off the request path. Both replay triggers
+                        // read it back.
+                        //
+                        // `hybrid` is stored as itself rather than folded into
+                        // `async`, even though both triggers treat it the same
+                        // (see `ApprovalRow::is_async`): the approval card
+                        // should be able to say which mode was asked for, and a
+                        // lossy stamp cannot be un-lost later.
+                        execution_mode: mode.label(),
+                    })
                     .await?;
 
                 let mut approval_audit_detail = serde_json::json!({

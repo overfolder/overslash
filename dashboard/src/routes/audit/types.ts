@@ -2,7 +2,13 @@
 export interface AuditEntry {
 	id: string;
 	identity_id: string | null;
+	/** The actor's name **as recorded on the row** — the name they had when they
+	 * acted, not their current one (D59). Survives the identity's deletion. */
 	identity_name: string | null;
+	/** Recorded name of the root user of the actor's chain, same historical
+	 * semantics. Fallback label for the User column when the live identity can
+	 * no longer be resolved. */
+	owner_user_name: string | null;
 	/** SPIFFE-style hierarchical path of the actor identity, e.g.
 	 * `spiffe://acme/user/alice/agent/henry`. Null when the chain could not be
 	 * resolved (deleted identity / missing org). Render with IdentityPath. */
@@ -73,8 +79,65 @@ export interface AuditFilters {
 	is_error?: boolean;
 }
 
-/** Execution events that carry the normalized `detail.is_error` flag. */
-const EXECUTION_ACTIONS = ['action.executed', 'action.streamed'];
+/** How the names recorded on a row (D59) line up with the live identity chain
+ *  carried by `identity_path`. Each unit reports what the row recorded, what
+ *  the identity is called now, and whether those differ.
+ *
+ *  The actor is the **leaf when an agent acted and the user unit when a human
+ *  acted directly** — `identityUnits` returns `leaf: null` for the latter, so
+ *  comparing against the leaf alone silently never fires for user rows. That is
+ *  the most common rename there is: an agent has to be renamed deliberately
+ *  through `PATCH /v1/identities/{id}`, while a user's display name is
+ *  refreshed from their IdP on every sign-in. */
+export interface RecordedName {
+	/** Name as of write time, from the row. Null for rows with no actor. */
+	recorded: string | null;
+	/** Name the identity carries now, from the live chain. Null when the chain
+	 *  could not be resolved (deleted identity). */
+	live: string | null;
+	/** Both known and different — the row is showing history. */
+	renamed: boolean;
+	/** What to label the unit with: the record, falling back to the live name
+	 *  for rows written before those columns existed. */
+	label: string | null;
+}
+
+export interface RecordedNames {
+	actor: RecordedName;
+	/** The user unit specifically. For a row where a human acted directly this
+	 *  is the same identity as `actor`; for an agent row it is their owner. */
+	user: RecordedName;
+	/** True when actor and user are distinct identities, i.e. an agent acted.
+	 *  Callers use it to avoid reporting one rename twice. */
+	actorIsAgent: boolean;
+}
+
+function compare(recorded: string | null, live: string | null): RecordedName {
+	return {
+		recorded,
+		live,
+		renamed: !!recorded && !!live && recorded !== live,
+		label: recorded ?? live
+	};
+}
+
+export function recordedNames(
+	entry: AuditEntry,
+	units: { user: { name: string } | null; leaf: { name: string } | null }
+): RecordedNames {
+	const liveUser = units.user?.name ?? null;
+	return {
+		actor: compare(entry.identity_name, units.leaf?.name ?? liveUser),
+		user: compare(entry.owner_user_name, liveUser),
+		actorIsAgent: !!units.leaf
+	};
+}
+
+/** Execution events that carry the normalized `detail.is_error` flag.
+ * `action.downloaded` is a deferred-download redemption: the bytes left the
+ * gateway on that request, so it's an execution for filtering purposes even
+ * though the originating call happened earlier (`action.deferred`). */
+const EXECUTION_ACTIONS = ['action.executed', 'action.streamed', 'action.downloaded'];
 
 /** Upstream-error presence for execution events. Reads the normalized
  * `detail.is_error` flag; falls back to `detail.status_code` for rows
@@ -146,10 +209,34 @@ export function upstreamResultLabel(entry: AuditEntry): string | null {
 
 export const PAGE_LIMIT = 50;
 
-export function buildQuery(filters: AuditFilters, limit: number, offset: number): string {
+/** Position of the last row already loaded, in `(created_at DESC, id DESC)`
+ *  order. `id` is not decoration: rows written in one transaction share a
+ *  timestamp, and a cursor without a tiebreaker skips or repeats them. */
+export interface AuditCursor {
+	before: string;
+	before_id: string;
+}
+
+/** Cursor for the page *after* these entries, or null when there are none. */
+export function cursorFrom(entries: AuditEntry[]): AuditCursor | null {
+	const last = entries[entries.length - 1];
+	return last ? { before: last.created_at, before_id: last.id } : null;
+}
+
+/** Keyset paging, not `OFFSET`: the backend still accepts an offset, but it
+ *  walks `offset + limit` index entries, so infinite scroll would cost
+ *  O(pages²) over a session. Passing no cursor asks for the first page. */
+export function buildQuery(
+	filters: AuditFilters,
+	limit: number,
+	cursor?: AuditCursor | null
+): string {
 	const p = new URLSearchParams();
 	p.set('limit', String(limit));
-	p.set('offset', String(offset));
+	if (cursor) {
+		p.set('before', cursor.before);
+		p.set('before_id', cursor.before_id);
+	}
 	if (filters.identity_id) p.set('identity_id', filters.identity_id);
 	if (filters.action) p.set('action', filters.action);
 	if (filters.resource_type) p.set('resource_type', filters.resource_type);

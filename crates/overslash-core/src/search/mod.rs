@@ -168,6 +168,7 @@ mod tests {
 
     fn mk_service(key: &str, display: &str, desc: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: key.into(),
@@ -176,6 +177,7 @@ mod tests {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![ServiceAuth::Secret {
                 template: None,
                 slots: Vec::new(),
@@ -202,6 +204,9 @@ mod tests {
 
     fn mk_action(desc: &str, risk: Risk) -> ServiceAction {
         ServiceAction {
+            wait_mode: None,
+            handoff_after_ms: None,
+            timeout_ms: None,
             method: "POST".into(),
             path: "/x".into(),
             description: desc.into(),
@@ -218,6 +223,7 @@ mod tests {
             output_schema: None,
             disabled: false,
             request_body: None,
+            download: None,
         }
     }
 

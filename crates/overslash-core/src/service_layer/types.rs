@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::instance_config::ConfigMap;
+use crate::service_icon::ServiceIcon;
 use crate::types::{DisclosureField, Risk};
 
 use super::normalize_default_url;
@@ -25,6 +26,12 @@ pub struct Delta {
     /// Relabel the description. `None` → inherit the base's description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Rebrand the template. `None` → inherit the base's icon, including one
+    /// the base got implicitly from its key — a layer's own key rarely matches
+    /// a shipped asset, so inheritance is what keeps it looking like the
+    /// service it derives from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<ServiceIcon>,
 
     // ---- action masks (restrictive; monotonic; order-independent) ----
     /// Keep only these action keys (∩). `None` → keep all of the base's actions;
@@ -69,6 +76,19 @@ pub struct ActionPatch {
     /// action through `Extensions.actions` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Replace the action's upstream timeout, in milliseconds.
+    ///
+    /// The one field on this struct that is **not** restrictive, and the
+    /// exception is deliberate (D56): a timeout grants no capability the
+    /// caller did not already have, and the org and deployment maxima still
+    /// clamp whatever this sets. Without it an org running a slow self-hosted
+    /// upstream would have to re-author the whole action through
+    /// [`Extensions`] just to move one number.
+    ///
+    /// Overwrites rather than raises — an org that knows its own Metabase is
+    /// slower *or* faster than the shipped default should be able to say so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 /// The expansive half of a delta: new actions + hosts. No auth, no rebinding.

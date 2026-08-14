@@ -30,6 +30,7 @@ use crate::{
     error::AppError,
     services::{
         audit_capture::{self, AuditResponseBodyMode},
+        call_timeout::CallTimeout,
         credential_template, http_caller,
         response_filter::{self, ResponseFilter},
     },
@@ -66,15 +67,28 @@ pub struct StoredCallRequest {
     /// Instance binding the original resolve used, when there was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<Uuid>,
+    /// The timeout resolved when the call was first made, in milliseconds.
+    ///
+    /// Stored already-resolved because replay cannot re-run the cascade: it
+    /// has the request but not the action key the template rungs were read
+    /// from. Replay re-applies the *caps* to this number
+    /// ([`call_timeout::reclamp_stored`]) so an org that tightened its ceiling
+    /// after granting the approval still binds.
+    ///
+    /// `None` on pre-D56 rows, which replay at the deployment default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 impl StoredCallRequest {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         action: ActionRequest,
         filter: Option<ResponseFilter>,
         prefer_stream: bool,
         service_key: Option<String>,
         instance_id: Option<Uuid>,
+        timeout_ms: Option<u64>,
     ) -> Self {
         Self {
             action,
@@ -82,6 +96,7 @@ impl StoredCallRequest {
             prefer_stream,
             service_key,
             instance_id,
+            timeout_ms,
         }
     }
 
@@ -98,6 +113,9 @@ impl StoredCallRequest {
             prefer_stream: false,
             service_key: None,
             instance_id: None,
+            // Pre-D56 row: no budget was recorded, so replay falls back to the
+            // deployment default rather than to "unbounded".
+            timeout_ms: None,
         })
     }
 }
@@ -153,6 +171,20 @@ impl ReplayPayload {
         }
         Ok(Self::Http(StoredCallRequest::from_stored_detail(value)?))
     }
+
+    /// The timeout resolved when the original call was made, if the payload
+    /// carries one.
+    ///
+    /// Only the HTTP shape does. MCP and platform replays dial through their
+    /// own executors — `mcp_caller` has its own budget, and platform actions
+    /// run in-process — so neither stores one, and both fall through to the
+    /// deployment default.
+    pub fn stored_timeout_ms(&self) -> Option<u64> {
+        match self {
+            Self::Http(stored) => stored.timeout_ms,
+            Self::Mcp(_) | Self::Platform(_) => None,
+        }
+    }
 }
 
 pub enum AuditSource {
@@ -161,6 +193,42 @@ pub enum AuditSource {
         approval_id: Uuid,
         execution_id: Uuid,
     },
+    /// Run off the request path by the async worker. There may be no approval
+    /// — a call can be async without ever having been gated — so only the
+    /// execution id is stamped.
+    Async {
+        execution_id: Uuid,
+    },
+}
+
+impl AuditSource {
+    /// Stamp the cross-reference keys that let an `action.executed` row be
+    /// traced back to whatever is tracking the call.
+    ///
+    /// Centralised because the buffered path, the error path, the streamed
+    /// path, and `stored_call` all need identical key names, and a fourth
+    /// hand-rolled copy is how they would drift.
+    pub fn stamp_refs(&self, detail: &mut serde_json::Value) {
+        let Some(obj) = detail.as_object_mut() else {
+            return;
+        };
+        match *self {
+            AuditSource::Direct => {}
+            AuditSource::Replay {
+                approval_id,
+                execution_id,
+            } => {
+                obj.insert(
+                    "replayed_from_approval".to_string(),
+                    serde_json::json!(approval_id),
+                );
+                obj.insert("execution_id".to_string(), serde_json::json!(execution_id));
+            }
+            AuditSource::Async { execution_id } => {
+                obj.insert("execution_id".to_string(), serde_json::json!(execution_id));
+            }
+        }
+    }
 }
 
 pub struct CallContext<'a> {
@@ -177,6 +245,10 @@ pub struct CallContext<'a> {
     /// Org-level response-body capture mode for the audit row, resolved by
     /// the caller (one PK lookup) so this pipeline stays query-free.
     pub audit_body_mode: AuditResponseBodyMode,
+    /// The D56-resolved upstream timeout for this call. Resolved by the caller
+    /// for the same reason as `audit_body_mode`: it needs the org row, and
+    /// this pipeline stays query-free.
+    pub timeout: CallTimeout,
 }
 
 pub enum CallOutcome {
@@ -317,25 +389,28 @@ pub async fn call_action_request(
 
     // ── Streaming path ───────────────────────────────────────────────
     if ctx.prefer_stream {
+        // Header phase only. A timeout here has written nothing to the client,
+        // so it can still become a clean 504 with a real audit row — which is
+        // exactly what a total deadline over the body would forfeit.
         let upstream = match http_caller::call_streaming(
             &ctx.state.http_client,
             &action_req.method,
             &resolved_url,
             &resolved_headers,
             action_req.body.as_deref(),
+            ctx.timeout.duration(),
         )
         .await
         {
             Ok(upstream) => upstream,
             Err(e) => {
-                let e = http_caller::CallError::Request(e);
                 log_transport_error_audit(
                     &ctx,
                     action_req,
                     audit_capture::scrub_transport_error(&e),
                 )
                 .await;
-                return Err(map_call_error(e));
+                return Err(map_call_error(e, ctx.timeout));
             }
         };
 
@@ -349,7 +424,12 @@ pub async fn call_action_request(
 
         write_stream_audit(&ctx, action_req, upstream_status.as_u16(), content_length).await;
 
-        let stream = upstream.bytes_stream();
+        // Past this point the response is already committed, so the transfer
+        // is bounded by inactivity rather than by total elapsed time.
+        let stream = http_caller::idle_guarded_stream(
+            upstream,
+            std::time::Duration::from_millis(ctx.state.config.call_stream_idle_timeout_ms),
+        );
         let body = axum::body::Body::from_stream(stream);
 
         let mut response = Response::builder().status(upstream_status.as_u16());
@@ -378,6 +458,7 @@ pub async fn call_action_request(
         &resolved_headers,
         action_req.body.as_deref(),
         ctx.state.config.max_response_body_bytes,
+        ctx.timeout.duration(),
     )
     .await
     {
@@ -388,7 +469,7 @@ pub async fn call_action_request(
             // error summary before propagating.
             log_transport_error_audit(&ctx, action_req, audit_capture::scrub_transport_error(&e))
                 .await;
-            return Err(map_call_error(e));
+            return Err(map_call_error(e, ctx.timeout));
         }
     };
 
@@ -436,20 +517,7 @@ pub async fn call_action_request(
             .expect("audit_detail is a json object")
             .insert("filter".to_string(), filter_audit);
     }
-    if let AuditSource::Replay {
-        approval_id,
-        execution_id,
-    } = ctx.audit_source
-    {
-        let obj = audit_detail
-            .as_object_mut()
-            .expect("audit_detail is a json object");
-        obj.insert(
-            "replayed_from_approval".to_string(),
-            serde_json::json!(approval_id),
-        );
-        obj.insert("execution_id".to_string(), serde_json::json!(execution_id));
-    }
+    ctx.audit_source.stamp_refs(&mut audit_detail);
 
     let _ = OrgScope::new(ctx.scope.org_id(), ctx.state.db.clone())
         .log_audit(AuditEntry {
@@ -472,7 +540,19 @@ pub async fn call_action_request(
 
 /// Map a transport-level `CallError` to the client-facing `AppError`.
 /// Kept identical to the pre-audit-row error contract.
-fn map_call_error(e: http_caller::CallError) -> AppError {
+///
+/// `offer_prefer_stream` is always `false` here, and inert either way. This
+/// pipeline's only consumer is the approval replay at
+/// `routes::approvals::replay_http`, whose error arm stores
+/// `app_err.to_string()` — the `#[error("response too large")]` Display, not
+/// the JSON body — so `IntoResponse` never runs and no hint of any wording is
+/// rendered on this path. `false` is the honest value rather than a live one:
+/// replay forces `prefer_stream: false` (the reviewer's connection is not the
+/// original caller's), and `deliver` is not sendable on a replay either, since
+/// `call_approval` takes no request body. If this path ever grows a hint, it
+/// needs its own wording — neither recovery is reachable from here.
+fn map_call_error(e: http_caller::CallError, timeout: CallTimeout) -> AppError {
+    let offer_prefer_stream = false;
     match e {
         http_caller::CallError::ResponseTooLarge {
             content_length,
@@ -482,6 +562,23 @@ fn map_call_error(e: http_caller::CallError) -> AppError {
             content_length,
             content_type,
             limit_bytes,
+            offer_prefer_stream,
+            // The replay path has no minted URL to offer either. Minting needs
+            // the resolved `HttpDeferred` context the inline handler builds,
+            // and a gated `deliver: "url"` already hits the buffered cap here
+            // for the same reason (SPEC "Deferred downloads"). Tracked, not
+            // fixed. Like `offer_prefer_stream`, nothing reads this: replay
+            // renders through `Display`, never `IntoResponse`.
+            download_url: None,
+            expires_at: None,
+        },
+        // `timeout_ms` comes from the transport (what was actually applied),
+        // the rest from the resolver (who set it, and what the caller would
+        // have to clear to ask for more).
+        http_caller::CallError::Timeout { timeout_ms } => AppError::UpstreamTimeout {
+            timeout_ms,
+            timeout_source: timeout.source(),
+            max_ms: timeout.max_ms(),
         },
         http_caller::CallError::Request(e) => AppError::Request(e),
     }
@@ -506,20 +603,7 @@ async fn log_transport_error_audit(
         "service": ctx.service_key,
         "action": ctx.action_key,
     });
-    if let AuditSource::Replay {
-        approval_id,
-        execution_id,
-    } = ctx.audit_source
-    {
-        let obj = audit_detail
-            .as_object_mut()
-            .expect("audit_detail is a json object");
-        obj.insert(
-            "replayed_from_approval".to_string(),
-            serde_json::json!(approval_id),
-        );
-        obj.insert("execution_id".to_string(), serde_json::json!(execution_id));
-    }
+    ctx.audit_source.stamp_refs(&mut audit_detail);
 
     let _ = OrgScope::new(ctx.scope.org_id(), ctx.state.db.clone())
         .log_audit(AuditEntry {
@@ -563,20 +647,7 @@ async fn write_stream_audit(
                 serde_json::json!({ "skipped": "streamed" }),
             );
     }
-    if let AuditSource::Replay {
-        approval_id,
-        execution_id,
-    } = ctx.audit_source
-    {
-        let obj = audit_detail
-            .as_object_mut()
-            .expect("audit_detail is a json object");
-        obj.insert(
-            "replayed_from_approval".to_string(),
-            serde_json::json!(approval_id),
-        );
-        obj.insert("execution_id".to_string(), serde_json::json!(execution_id));
-    }
+    ctx.audit_source.stamp_refs(&mut audit_detail);
 
     let _ = OrgScope::new(ctx.scope.org_id(), ctx.state.db.clone())
         .log_audit(AuditEntry {

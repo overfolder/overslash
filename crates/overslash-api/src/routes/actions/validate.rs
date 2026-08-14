@@ -124,17 +124,18 @@ pub(super) async fn validate_action_impl(
     // Caller-asserted risk gate — mirrors `/call` (which runs it inside
     // `resolve_request` after `validate_args` has already gated bad args).
     let effective = super::effective_risk(meta.risk, sql_policy.as_ref(), &meta.raw_method);
-    if let Some(required) = req.require_risk {
-        if required == Risk::Read && effective.is_mutating() {
-            let action_label = req
-                .action
-                .as_deref()
-                .or(req.service.as_deref())
-                .unwrap_or(&meta.raw_url);
-            return Err(AppError::BadRequest(format!(
-                "action '{action_label}' is risk={effective}; this entry point only permits risk=read actions. Use overslash_call instead."
-            )));
-        }
+    if let Some(required) = req.require_risk
+        && required == Risk::Read
+        && effective.is_mutating()
+    {
+        let action_label = req
+            .action
+            .as_deref()
+            .or(req.service.as_deref())
+            .unwrap_or(&meta.raw_url);
+        return Err(AppError::BadRequest(format!(
+            "action '{action_label}' is risk={effective}; this entry point only permits risk=read actions. Use overslash_call instead."
+        )));
     }
 
     // Permission key derivation — same logic as `/call` runs after
@@ -142,6 +143,15 @@ pub(super) async fn validate_action_impl(
     // After the no-`service` rejection in `resolve_action_metadata`,
     // `meta.service_scope` is always `Some` (both action and verb shapes
     // populate it; `http` flows through the verb shape).
+    //
+    // One deliberate divergence (D55): a param whose `resolve:` declares
+    // `scope:` has its value canonicalized before `/call` derives keys, and
+    // this preview does not. Resolution is an authenticated upstream round
+    // trip, and `resolve_action_metadata` is documented as cheap — no OAuth,
+    // no upstream calls — so a dry run does not pay for one. The preview
+    // therefore keys on the caller's raw argument, which is the *stricter*
+    // reading: an address that `/call` would collapse onto a granted
+    // canonical key previews as uncovered, never the reverse.
     let svc = meta.service_scope.as_ref().expect(
         "resolve_action_metadata always sets service_scope after the no-service-rejection gate",
     );
@@ -184,8 +194,8 @@ pub(super) async fn validate_action_impl(
                     "exceeds_ceiling",
                 ));
             }
-            GroupCeilingResult::WithinCeiling { read_bypass } => {
-                if read_bypass && identity.kind != "user" {
+            GroupCeilingResult::WithinCeiling { auto_approved } => {
+                if auto_approved && identity.kind != "user" {
                     skip_layer2 = true;
                 }
             }
@@ -193,11 +203,12 @@ pub(super) async fn validate_action_impl(
         }
     }
 
-    // D42 deny-only sweep — lockstep with `/call`: a deny rule overrides
-    // the read bypass and the user fast path, so the dry-run reports the
-    // same hard denial the real call would return.
+    // D42/D53 deny-only sweep — lockstep with `/call`: a deny rule overrides
+    // the auto-approve bypass and the user fast path, so the dry-run reports
+    // the same hard denial the real call would return.
     let walk_will_run = identity.kind != "user" && meta.needs_gate && !skip_layer2;
-    if sql_policy.is_some() && !walk_will_run {
+    let auto_approved_mutation = skip_layer2 && ceiling_risk.is_mutating();
+    if (sql_policy.is_some() || auto_approved_mutation) && !walk_will_run {
         let mut screen: Vec<PermissionKey> = perm_keys.clone();
         screen.extend(deny_screen_keys.iter().cloned());
         if let Some(reason) =

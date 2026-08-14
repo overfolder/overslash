@@ -14,6 +14,12 @@ pub(super) struct TemplateSummary {
     pub(super) hosts: Vec<String>,
     pub(super) action_count: usize,
     pub(super) tier: String,
+    /// Absolute URL of the catalog icon, resolved from the template's
+    /// `icon` (usually implicit from its key). Omitted when there is
+    /// nothing safe to render — the dashboard falls back to a letter tile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) icon_url: Option<String>,
+
     /// `x-overslash-hidden` — dashboard surfaces show hidden templates
     /// flagged; agent-facing surfaces (`/v1/search`, MCP) omit them.
     pub(super) hidden: bool,
@@ -37,6 +43,11 @@ pub(super) struct TemplateDetail {
     pub(super) description: Option<String>,
     pub(super) category: Option<String>,
     pub(super) hosts: Vec<String>,
+    /// Absolute URL of the catalog icon, resolved from the template's
+    /// `icon` (usually implicit from its key). Omitted when there is
+    /// nothing safe to render — the dashboard falls back to a letter tile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) icon_url: Option<String>,
     /// Compiled auth view for the dashboard's connect flows.
     pub(super) auth: Vec<serde_json::Value>,
     /// The credential slots an instance binds — one vault secret each, with
@@ -148,6 +159,9 @@ pub(super) struct AdminTemplateSummary {
     pub(super) hosts: Vec<String>,
     pub(super) action_count: usize,
     pub(super) tier: String,
+    /// See [`TemplateSummary::icon_url`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) icon_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -206,6 +220,15 @@ pub(crate) struct ActionSummary {
     /// Missing-scope delta when `scope_coverage == needs_reconnect`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) missing_scopes: Vec<String>,
+    /// `x-overslash-wait-mode` — the execution mode a call to this action
+    /// defaults to when the caller names none.
+    ///
+    /// Absent for the overwhelming majority, which is the point: it is here so
+    /// the handful of actions that answer `accepted` to a request that never
+    /// asked for it are legible *before* someone calls one and wonders why.
+    /// The response-shape consequence is invisible in every other listing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) wait_mode: Option<overslash_core::types::service::ExecutionMode>,
 }
 
 /// Full action details including the parameter schema — used by the API

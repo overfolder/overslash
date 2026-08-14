@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions\n            SET status = 'pending',\n                worker_id = NULL,\n                started_at = NULL,\n                lease_expires_at = NULL,\n                expires_at = GREATEST(expires_at, now() + make_interval(secs => $3))\n          WHERE id = $1 AND worker_id = $2 AND status = 'executing'\n            AND triggered_by IS DISTINCT FROM 'hybrid'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ff0660acf758641a755abbb2a4c39b1436849d2651ec6a88b2ea25612a1ae986"
+}

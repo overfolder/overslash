@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { ApiError, session, type MembershipSummary } from '$lib/session';
+	import { switchOrg } from '$lib/api/account';
 
 	function errorCode(e: unknown): string {
 		if (e instanceof ApiError) {
@@ -74,17 +75,7 @@
 		switching = true;
 		error = null;
 		try {
-			const res = await session.post<{ redirect_to?: string }>('/auth/switch-org', {
-				org_id: orgId
-			});
-			// Hard-reload on the returned URL (different subdomain for corp orgs).
-			// If the server didn't give one (self-hosted single-host), just reload
-			// the current page to pick up the new session cookie.
-			if (res?.redirect_to) {
-				window.location.href = res.redirect_to;
-			} else {
-				window.location.reload();
-			}
+			await switchOrg(orgId);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to switch org';
 			switching = false;

@@ -14,6 +14,7 @@ pub mod http;
 pub mod oauth;
 pub mod permissions;
 pub mod rate_limit;
+pub mod resolve_cache;
 pub mod search;
 pub mod secrets;
 pub mod webhooks;

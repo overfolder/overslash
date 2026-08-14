@@ -5,15 +5,20 @@
 -->
 <script lang="ts">
 	import type { Identity } from '$lib/types';
+	import { formatIdentity } from '$lib/identityDisplay';
 
 	let {
 		ownerId,
 		identityById,
-		currentUserId
+		currentUserId,
+		allowedDomains = []
 	}: {
 		ownerId: string | null;
 		identityById: Map<string, Identity>;
 		currentUserId?: string;
+		/** Org's allowed sign-in domains; a single entry is stripped off user
+		 *  emails. Defaults to none so this renders standalone (Storybook). */
+		allowedDomains?: string[];
 	} = $props();
 
 	const ident = $derived(ownerId ? identityById.get(ownerId) ?? null : null);
@@ -21,14 +26,16 @@
 		ident !== null && (ident.kind === 'agent' || ident.kind === 'sub_agent')
 	);
 	const isSelf = $derived(ident !== null && ident.kind === 'user' && ident.id === currentUserId);
+	// User owners are labelled by email; agents keep their name.
+	const display = $derived(ident ? formatIdentity(ident, allowedDomains) : null);
 	const label = $derived(
-		ident === null
+		display === null
 			? ownerId
 				? 'unknown'
 				: 'system'
 			: isSelf
-				? `${ident.name} (you)`
-				: ident.name
+				? `${display.primary} (you)`
+				: display.primary
 	);
 
 	// Walk up `owner_id` to render `parent / child / grandchild` for agent
@@ -47,7 +54,10 @@
 	});
 </script>
 
-<span class={isAgent ? 'owner owner-agent' : 'owner'} title={path ?? undefined}>
+<span
+	class={isAgent ? 'owner owner-agent' : 'owner'}
+	title={path ?? (isAgent ? undefined : display?.title)}
+>
 	<span
 		class="glyph"
 		style:background={isAgent ? 'var(--badge-bg-primary)' : 'var(--neutral-100)'}

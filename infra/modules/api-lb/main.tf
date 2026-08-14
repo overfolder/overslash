@@ -35,12 +35,6 @@ variable "cloud_run_service" {
   description = "Name of the Cloud Run service to route traffic to (output of cloud-run module)."
 }
 
-variable "backend_timeout_seconds" {
-  type        = number
-  default     = 120
-  description = "Backend response timeout. Must exceed EVENTS_STREAM_MAX_CONNECTION_SECS (default 30) — the SSE stream holds a response open that long on purpose."
-}
-
 variable "api_apex" {
   type        = string
   description = "Apex hostname, e.g. `api.overslash.com`. Used for the managed cert SAN list (apex + `*.<apex>`)."
@@ -144,13 +138,8 @@ resource "google_compute_backend_service" "api_backend" {
   # client-supplied header of the same name, so this cannot be spoofed.
   custom_request_headers = ["X-Client-Geo-Country:{client_region}"]
 
-  # `google_compute_backend_service` defaults this to 30s — exactly the SSE
-  # stream's own ceiling, so the two would race and the load balancer could cut
-  # a response mid-frame instead of us closing it cleanly. Serverless NEG
-  # backends are documented as deferring to Cloud Run's timeout rather than
-  # this field, but leaving a 30s value sitting here that *might* apply is not
-  # a bet worth taking on a streaming endpoint.
-  timeout_sec = var.backend_timeout_seconds
+  # No timeout_sec: serverless-NEG backends reject it. The SSE ceiling lives in
+  # modules/cloud-run's request_timeout_seconds.
 
   backend {
     group = google_compute_region_network_endpoint_group.api_neg.id

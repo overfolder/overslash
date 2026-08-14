@@ -88,6 +88,9 @@ async fn approval_carries_disclosed_fields_and_redacts_action_detail() {
     // always enforced, so reaching Layer 2 (the gap → approval path this test
     // is actually about) requires an explicit grant — we don't fall through a
     // permissive default anymore.
+    // Write, *without* auto-approve-reads: the read-bypass would otherwise
+    // skip Layer 2, and Layer 2 is what this test is about.
+    let everyone_id = common::everyone_group_id(&base, &client, &admin_key).await;
     let svc_instance: Value = client
         .post(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -95,6 +98,11 @@ async fn approval_carries_disclosed_fields_and_redacts_action_detail() {
             "template_key": "discloser",
             "name": "discloser",
             "user_level": false,
+            "groups": [{
+                "group_id": everyone_id.to_string(),
+                "access_level": "write",
+                "auto_approve_reads": false,
+            }],
             "status": "active",
         }))
         .send()
@@ -103,34 +111,7 @@ async fn approval_carries_disclosed_fields_and_redacts_action_detail() {
         .json()
         .await
         .unwrap();
-    let svc_id = svc_instance["id"].as_str().expect("service create failed");
-
-    let groups: Vec<Value> = client
-        .get(format!("{base}/v1/groups"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let everyone_id = groups
-        .iter()
-        .find(|g| g["system_kind"].as_str() == Some("everyone"))
-        .and_then(|g| g["id"].as_str())
-        .expect("Everyone group not found");
-
-    let grant_resp = client
-        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({
-            "service_instance_id": svc_id,
-            "access_level": "write",
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(grant_resp.status(), 200);
+    let _svc_id = svc_instance["id"].as_str().expect("service create failed");
 
     // Execute Mode C as the agent. No permission rule exists + explicit
     // `secrets` forces `needs_gate=true` → chain walk finds a gap at the
@@ -269,6 +250,8 @@ paths:
         resolve:
           get: /things/{thing_id}
           pick: name
+          # Canonicalizes the permission key onto the upstream's own id.
+          scope: canonical_id
       - name: other_id
         in: query
         required: false
@@ -384,6 +367,24 @@ async fn resolver_display_names_flow_into_disclosed_fields() {
     assert!(
         detail.contains("\"resolved\"") && detail.contains("Thing tt-42"),
         "action_detail should include the resolved projection:\n{detail}"
+    );
+
+    // `resolve.scope` canonicalizes the permission key onto the upstream's
+    // own id. The fake returns `canon-tt-42`, deliberately different from the
+    // caller's `tt-42`, so a no-op canonicalization cannot pass this.
+    let keys: Vec<&str> = exec["permission_keys"]
+        .as_array()
+        .expect("permission_keys present")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        keys.contains(&"thingsvc:archive_thing:thing_id=canon-tt-42"),
+        "scope should canonicalize the key, got: {keys:?}"
+    );
+    assert!(
+        !keys.iter().any(|k| k.contains("thing_id=tt-42")),
+        "the raw id must not survive canonicalization: {keys:?}"
     );
 
     // ── Site 2: audit-write ─────────────────────────────────────────────
@@ -513,5 +514,392 @@ async fn template_with_invalid_jq_is_rejected_at_register() {
     assert!(
         body_s.contains("disclose_invalid_jq"),
         "expected disclose_invalid_jq in error body, got: {body_s}"
+    );
+}
+
+// ── Resolver cache (D64) ────────────────────────────────────────────────
+
+/// Fixture for the cache tests. One resolver, deliberately **without**
+/// `scope:` — nothing here canonicalizes a permission key, so these tests are
+/// about upstream traffic and nothing else. `CACHE_TTL_PLACEHOLDER` lets one
+/// template serve both the cached and the opted-out case.
+const CACHE_TEMPLATE_YAML_FMT: &str = r#"openapi: "3.1.0"
+info:
+  title: "Resolver Cache Fixture"
+  key: "cachesvc"
+servers:
+  - url: "http://HOST_PLACEHOLDER"
+paths:
+  /things/{thing_id}/archive:
+    parameters:
+      - name: thing_id
+        in: path
+        required: true
+        schema: {type: string}
+        resolve:
+          get: /things/{thing_id}
+          pick: name
+          cache_ttl: CACHE_TTL_PLACEHOLDER
+    post:
+      operationId: archive_thing
+      summary: "Archive {thing_id}"
+      risk: write
+      scope_param: thing_id
+      disclose:
+        - label: Thing
+          filter: '.resolved.thing_id // .params.thing_id'
+"#;
+
+struct CacheFixture {
+    base: String,
+    client: reqwest::Client,
+    mock_base: String,
+    agent_key: String,
+    admin_key: String,
+    org_id: uuid::Uuid,
+}
+
+/// Boot an org with the cache fixture registered and permission granted, so a
+/// `/v1/actions/call` runs end-to-end rather than gating.
+async fn setup_cache_fixture(cache_ttl: &str) -> CacheFixture {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let mock_base = format!("http://{mock_addr}");
+
+    let override_base = mock_base.clone();
+    let (base, client) = start_api_with_registry_customized(pool.clone(), None, move |cfg| {
+        cfg.service_base_overrides
+            .insert("127.0.0.1".to_string(), override_base);
+    })
+    .await;
+    let (org_id, ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+
+    let yaml = CACHE_TEMPLATE_YAML_FMT
+        .replace("HOST_PLACEHOLDER", &mock_addr.to_string())
+        .replace("CACHE_TTL_PLACEHOLDER", cache_ttl);
+    let create: Value = client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"openapi": yaml, "user_level": false}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        create["key"].as_str(),
+        Some("cachesvc"),
+        "template register failed: {create:?}"
+    );
+
+    common::grant_service_to_everyone(&base, &client, &admin_key, "cachesvc").await;
+    let perm = client
+        .post(format!("{base}/v1/permissions"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"identity_id": ident_id, "action_pattern": "cachesvc:*:*"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(perm.status(), 200, "permission grant failed");
+
+    CacheFixture {
+        base,
+        client,
+        mock_base,
+        agent_key,
+        admin_key,
+        org_id,
+    }
+}
+
+impl CacheFixture {
+    async fn call(&self, key: &str, thing_id: &str) -> Value {
+        self.client
+            .post(format!("{}/v1/actions/call", self.base))
+            .header("Authorization", format!("Bearer {key}"))
+            .json(&json!({
+                "service": "cachesvc",
+                "action": "archive_thing",
+                "params": {"thing_id": thing_id},
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap()
+    }
+
+    /// How many resolver GETs the fake has seen for `thing_id`. The action's
+    /// own POST goes to `/things/{id}/archive`, so counting the bare path
+    /// cannot confuse the two.
+    async fn resolver_gets(&self, thing_id: &str) -> usize {
+        let received: Value = self
+            .client
+            .get(format!("{}/__received_requests", self.mock_base))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let want = format!("/things/{thing_id}");
+        received["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                r["method"].as_str() == Some("GET") && r["uri"].as_str() == Some(want.as_str())
+            })
+            .count()
+    }
+
+    async fn reset_log(&self) {
+        self.client
+            .delete(format!("{}/__received_requests", self.mock_base))
+            .send()
+            .await
+            .unwrap();
+    }
+}
+
+/// The point of the whole change: the second identical call answers from cache
+/// and makes no upstream request at all, while still disclosing the same
+/// resolved name. Before D64 this was two GETs for one unchanging answer —
+/// `services/gmail.yaml` asks the same question on a dozen actions.
+#[tokio::test]
+async fn a_repeated_call_resolves_once_and_still_discloses_the_name() {
+    let fx = setup_cache_fixture("300").await;
+    fx.reset_log().await;
+
+    let first = fx.call(&fx.agent_key, "tt-42").await;
+    assert_eq!(
+        first["status"].as_str(),
+        Some("called"),
+        "first call should execute: {first:?}"
+    );
+    assert_eq!(
+        fx.resolver_gets("tt-42").await,
+        1,
+        "first call resolves live"
+    );
+
+    let second = fx.call(&fx.agent_key, "tt-42").await;
+    assert_eq!(
+        second["status"].as_str(),
+        Some("called"),
+        "second call should execute: {second:?}"
+    );
+    assert_eq!(
+        fx.resolver_gets("tt-42").await,
+        1,
+        "the second call must answer from cache, adding no resolver GET"
+    );
+
+    // A cache that saves the round trip but loses the name would be worse than
+    // none: the whole reason a resolver exists is that a reviewer cannot read
+    // an opaque id. An executed call carries it on the audit row.
+    let audit: Vec<Value> = fx
+        .client
+        .get(format!("{}/v1/audit?limit=50", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.admin_key))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let executed: Vec<&Value> = audit
+        .iter()
+        .filter(|e| e["action"].as_str() == Some("action.executed"))
+        .collect();
+    assert_eq!(executed.len(), 2, "both calls should have executed");
+    for row in executed {
+        assert_eq!(
+            row["detail"]["disclosed"][0]["value"].as_str(),
+            Some("Thing tt-42"),
+            "every call must disclose the resolved name, cached or not: {row:?}"
+        );
+    }
+}
+
+/// A different argument is a different question, so it misses — the key is
+/// derived from the substituted target, not from the action.
+#[tokio::test]
+async fn a_different_argument_is_a_different_cache_entry() {
+    let fx = setup_cache_fixture("300").await;
+    fx.reset_log().await;
+
+    fx.call(&fx.agent_key, "tt-42").await;
+    fx.call(&fx.agent_key, "tt-99").await;
+
+    assert_eq!(fx.resolver_gets("tt-42").await, 1);
+    assert_eq!(fx.resolver_gets("tt-99").await, 1);
+}
+
+/// `cache_ttl: 0` opts a resolver out. It has to skip the *read* as well as the
+/// write — otherwise turning caching off for a volatile mapping would not take
+/// effect until entries written under the old setting aged out, on every
+/// replica.
+#[tokio::test]
+async fn cache_ttl_zero_resolves_live_every_time() {
+    let fx = setup_cache_fixture("0").await;
+    fx.reset_log().await;
+
+    fx.call(&fx.agent_key, "tt-42").await;
+    fx.call(&fx.agent_key, "tt-42").await;
+
+    assert_eq!(
+        fx.resolver_gets("tt-42").await,
+        2,
+        "an opted-out resolver must fire on every call"
+    );
+}
+
+/// The cross-principal test. Two agents under **different owner users**, same
+/// org, same template, same argument: they must not share an entry.
+///
+/// This pins the `ceiling_user_id` component of the key. Connections resolve at
+/// the owner (D22), so the owner is what decides *whose* credential a resolver
+/// GET goes out with — and gmail's `userId: me` resolves to a different address
+/// per connection while producing a byte-identical URL. Without this component
+/// the first caller's identity would land in the second caller's approval, and
+/// in the permission key minted from it.
+///
+/// The credential fingerprint is the *other* half of that protection and is
+/// covered separately below, since two agents under one owner can still present
+/// different credentials.
+#[tokio::test]
+async fn two_owner_users_do_not_share_a_cache_entry() {
+    let fx = setup_cache_fixture("300").await;
+
+    // A second user, with its own agent, under the same org.
+    let other_user: Value = fx
+        .client
+        .post(format!("{}/v1/identities", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.admin_key))
+        .json(&json!({"name": "other-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let other_user_id = other_user["id"].as_str().expect("other user created");
+
+    let other_agent: Value = fx
+        .client
+        .post(format!("{}/v1/identities", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.admin_key))
+        .json(&json!({"name": "other-agent", "kind": "agent", "parent_id": other_user_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let other_agent_id = other_agent["id"].as_str().expect("other agent created");
+
+    let key_resp: Value = fx
+        .client
+        .post(format!("{}/v1/api-keys", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.admin_key))
+        .json(&json!({
+            "org_id": fx.org_id,
+            "identity_id": other_agent_id,
+            "name": "other-agent-key"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let other_key = key_resp["key"]
+        .as_str()
+        .expect("api key minted")
+        .to_string();
+
+    let perm = fx
+        .client
+        .post(format!("{}/v1/permissions", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.admin_key))
+        .json(&json!({"identity_id": other_agent_id, "action_pattern": "cachesvc:*:*"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(perm.status(), 200, "permission grant for the second agent");
+
+    fx.reset_log().await;
+
+    let first = fx.call(&fx.agent_key, "tt-42").await;
+    assert_eq!(first["status"].as_str(), Some("called"), "{first:?}");
+    assert_eq!(fx.resolver_gets("tt-42").await, 1);
+
+    let second = fx.call(&other_key, "tt-42").await;
+    assert_eq!(second["status"].as_str(), Some("called"), "{second:?}");
+    assert_eq!(
+        fx.resolver_gets("tt-42").await,
+        2,
+        "a different owner user must resolve for itself, not read the first one's entry"
+    );
+}
+
+/// The other half of cross-principal safety: one caller, one owner, but two
+/// different credentials. `ceiling_user_id` is identical here, so only the
+/// credential fingerprint can keep these apart.
+///
+/// This is the shape `ResolvedAuth::secrets_only` produces — a call naming its
+/// own secrets inline, with no connection and no principal behind it. Two
+/// agents under one owner using different secret names would share an entry if
+/// the key stopped at the owner.
+#[tokio::test]
+async fn different_call_secrets_do_not_share_a_cache_entry() {
+    let fx = setup_cache_fixture("300").await;
+    fx.reset_log().await;
+
+    let call_with_secret = |secret: &'static str| {
+        let client = fx.client.clone();
+        let base = fx.base.clone();
+        let key = fx.agent_key.clone();
+        async move {
+            client
+                .post(format!("{base}/v1/actions/call"))
+                .header("Authorization", format!("Bearer {key}"))
+                .json(&json!({
+                    "service": "cachesvc",
+                    "action": "archive_thing",
+                    "params": {"thing_id": "tt-42"},
+                    "secrets": [
+                        {"name": secret, "inject_as": "header", "header_name": "X-Cache-Test"}
+                    ]
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+
+    call_with_secret("secret_one").await;
+    assert_eq!(fx.resolver_gets("tt-42").await, 1);
+
+    call_with_secret("secret_two").await;
+    assert_eq!(
+        fx.resolver_gets("tt-42").await,
+        2,
+        "a different credential must resolve for itself, not read the first one's entry"
+    );
+
+    // ...and the same credential twice still hits, so the fingerprint is
+    // discriminating on the credential rather than just defeating the cache.
+    call_with_secret("secret_two").await;
+    assert_eq!(
+        fx.resolver_gets("tt-42").await,
+        2,
+        "repeating a credential must hit the entry it wrote"
     );
 }

@@ -5,7 +5,6 @@
 //! org's pending action. Every method here filters by `self.org_id` so a
 //! probe with a foreign id returns `None` instead of the row.
 
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::repos::approval::{ApprovalRow, CreateApproval};
@@ -13,36 +12,13 @@ use crate::scopes::OrgScope;
 
 impl OrgScope {
     /// Create an approval. The caller's `OrgScope` is the source of truth for
-    /// `org_id` — any `org_id` field on the input is ignored and overwritten
-    /// to prevent cross-tenant smuggling at the construction site.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create_approval<'a>(
+    /// `org_id` — [`CreateApproval`] carries no such field, so a construction
+    /// site cannot smuggle a foreign tenant's id in.
+    pub async fn create_approval(
         &self,
-        identity_id: Uuid,
-        current_resolver_identity_id: Uuid,
-        action_summary: &'a str,
-        action_detail: Option<serde_json::Value>,
-        disclosed_fields: Option<serde_json::Value>,
-        replay_payload: Option<serde_json::Value>,
-        permission_keys: &'a [String],
-        token: &'a str,
-        expires_at: OffsetDateTime,
-        tags: &'a [String],
+        input: CreateApproval<'_>,
     ) -> Result<ApprovalRow, sqlx::Error> {
-        let input = CreateApproval {
-            org_id: self.org_id(),
-            identity_id,
-            current_resolver_identity_id,
-            action_summary,
-            action_detail,
-            disclosed_fields,
-            replay_payload,
-            permission_keys,
-            token,
-            expires_at,
-            tags,
-        };
-        crate::repos::approval::create(self.db(), &input).await
+        crate::repos::approval::create(self.db(), self.org_id(), &input).await
     }
 
     /// Look up an approval by id, scoped to this org. Returns `None` if the

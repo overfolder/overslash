@@ -38,8 +38,8 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::AppError,
-    extractors::{AuthContext, ClientIp, ReqExt},
-    services::{disclosure, response_filter::ResponseFilter},
+    extractors::{AuthContext, CallerTransport, ClientIp, ReqExt},
+    services::{disclosure, events::EventType, response_filter::ResponseFilter},
 };
 use overslash_core::{
     permissions::SuggestedTier,
@@ -50,20 +50,28 @@ use overslash_core::{
 };
 
 mod approval_detail;
+mod async_accept;
 mod auth;
 mod auth_envelopes;
 mod auth_resolve;
 mod auth_scopes;
 mod call;
+mod call_mcp;
+mod deferred;
 mod dto;
 mod errors;
+mod filter_apply;
+mod flags;
+mod hybrid;
 mod mcp_resolve;
 mod permission_gate;
+mod replay_payload;
 mod resolve;
 mod resolve_encode;
 mod resolve_metadata;
 mod service_resolve;
 mod tags;
+mod upstream_error;
 mod validate;
 
 use call::call_action_impl;
@@ -132,6 +140,8 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
             required_scopes,
             account_email,
             headless,
+            missing_credentials,
+            hint_url,
         } => {
             let mut body = json!({ "status": "needs_authentication" });
             if let Some(s) = service {
@@ -159,6 +169,15 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
                 if let Some(s) = short {
                     body["short"] = json!(s);
                 }
+            }
+            // Mirrors `AppError::into_response`: the secret-backed shape rides
+            // in either branch, since a headless org still needs the field
+            // list even though it gets no dashboard link.
+            if !missing_credentials.is_empty() {
+                body["missing_credentials"] = json!(missing_credentials);
+            }
+            if let Some(url) = hint_url {
+                body["hint_url"] = json!(url);
             }
             Some((StatusCode::OK, Json(body)).into_response())
         }
@@ -198,6 +217,54 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
     }
 }
 
+/// Everything the `action.*` pair needs, resolved once before the call so the
+/// two events agree on identity, target and `call_id`.
+///
+/// The pair is deliberately *not* ordered. It brackets the upstream call, so
+/// `emit_all` — which exists precisely to keep a derived event behind its
+/// cause — cannot cover it: each `emit` spawns its own task and the inserts
+/// race. A consumer must tolerate `action.completed` arriving first, which is
+/// why `call_id` is minted here rather than inferred from arrival order.
+struct CallActivity {
+    call_id: Uuid,
+    actor: Uuid,
+    org_id: Uuid,
+    service: Option<String>,
+    action: Option<String>,
+    pool: sqlx::PgPool,
+    http_client: reqwest::Client,
+    audience: Vec<Uuid>,
+}
+
+impl CallActivity {
+    /// `extra` is merged over the shared identity fields. Only the two call
+    /// sites below pass it, and neither reuses a shared key.
+    fn emit(&self, event_type: EventType, extra: serde_json::Value) {
+        let mut payload = serde_json::json!({
+            "call_id": self.call_id,
+            "actor_identity_id": self.actor,
+            "service": self.service,
+            "action": self.action,
+        });
+        let obj = payload.as_object_mut().expect("payload is a json object");
+        if let Some(extra) = extra.as_object() {
+            for (k, v) in extra {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        crate::services::events::emit(
+            self.pool.clone(),
+            self.http_client.clone(),
+            crate::services::events::EventDraft {
+                org_id: self.org_id,
+                event_type,
+                payload,
+                audience: self.audience.clone(),
+            },
+        );
+    }
+}
+
 /// Top-level handler that times the request and emits the
 /// `overslash_action_executions_total` / `_duration_seconds` metrics.
 /// Granular outcomes (approval_required vs called vs filtered) are encoded in
@@ -205,12 +272,16 @@ fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
 /// the inner function — we classify by HTTP status, plus the
 /// `UpstreamErrored` response-extension marker the executor branches set
 /// when the upstream itself failed (MCP in-band `is_error`, HTTP 5xx).
+// Same reason as `call_action_impl`: an axum handler's arguments are its
+// extractors, so the list is a flat function of what the request carries.
+#[allow(clippy::too_many_arguments)]
 async fn call_action(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
+    transport: CallerTransport,
     Query(q): Query<CallQuery>,
     Json(req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
@@ -226,7 +297,45 @@ async fn call_action(
     };
     let template_key = bounded_template_key(&state.registry, req.service.as_deref());
 
-    let result = call_action_impl(State(state), ReqExt(ext), auth, scope, ip, Json(req)).await;
+    // Live Map feed. Both events are emitted here rather than at the four
+    // terminal sites inside `call_action_impl` (MCP ok / MCP transport error /
+    // HTTP ok / HTTP transport error) because this wrapper is already the one
+    // place that brackets the call and classifies its outcome — see
+    // `status_label` below. Duplicating those rules four times to gain a
+    // slightly earlier `service` resolution would be a bad trade.
+    //
+    // Gated: each call costs one durable `events` row, on the hottest path in
+    // the system. `live_map_enabled` is set on dev, never in production.
+    let activity = match (state.config.live_map_enabled, auth.identity_id) {
+        (true, Some(actor)) => Some(CallActivity {
+            call_id: Uuid::new_v4(),
+            actor,
+            org_id: auth.org_id,
+            service: req.service.clone(),
+            action: req.action.clone(),
+            pool: state.db_pool(&ext),
+            http_client: state.http_client.clone(),
+            // Resolved once, here, and reused by both events. The chain walk
+            // is a query, so doing it per-event would double the cost of a
+            // feature that is already the most expensive observer we have.
+            audience: crate::services::events::audience::for_action(&scope, actor).await,
+        }),
+        _ => None,
+    };
+    if let Some(a) = activity.as_ref() {
+        a.emit(EventType::ActionCalled, serde_json::json!({}));
+    }
+
+    let result = call_action_impl(
+        State(state),
+        ReqExt(ext),
+        auth,
+        scope,
+        ip,
+        transport,
+        Json(req),
+    )
+    .await;
 
     // Resolve the outcome to its eventual HTTP status so 4xx user-input errors
     // (BadRequest, NotFound, Forbidden, RateLimited) don't count as `failed`.
@@ -254,21 +363,26 @@ async fn call_action(
     } else {
         "called"
     };
-    overslash_metrics::actions::record_execution(
-        &template_key,
-        mode,
-        status_label,
-        start.elapsed(),
-    );
+    let elapsed = start.elapsed();
+    overslash_metrics::actions::record_execution(&template_key, mode, status_label, elapsed);
+
+    if let Some(a) = activity.as_ref() {
+        a.emit(
+            EventType::ActionCompleted,
+            serde_json::json!({
+                "outcome": status_label,
+                "duration_ms": elapsed.as_millis() as u64,
+            }),
+        );
+    }
 
     // Opt-in error wrapping for the dashboard "try it" surface. Done *after*
     // metrics so the auth 401 still counts as `rejected`, not a fake `called`.
-    if q.wrap.unwrap_or(false) {
-        if let Err(err) = &result {
-            if let Some(resp) = wrap_auth_error_as_ok(err) {
-                return Ok(resp);
-            }
-        }
+    if q.wrap.unwrap_or(false)
+        && let Err(err) = &result
+        && let Some(resp) = wrap_auth_error_as_ok(err)
+    {
+        return Ok(resp);
     }
     result
 }
@@ -337,6 +451,50 @@ fn render_action_result(result: &ActionResult, verbose: Option<bool>) -> serde_j
     } else {
         crate::services::compact_response::compact(result)
     }
+}
+
+/// [`render_action_result`], plus: when the compact view actually dropped
+/// something, store the full result and hand back a URL to it.
+///
+/// This is the whole of D61 at the call path. The condition is deliberately
+/// narrow — a verbose render loses nothing, and a compact render that fit
+/// loses nothing either, so neither writes a row. Only a caller who asked for
+/// compact *and* got less than the upstream sent has anything to re-fetch.
+///
+/// Storage is best-effort: [`call_result::store`] returns `None` rather than an
+/// error on every failure path, so a full disk cannot turn a successful call
+/// into a 500. The envelope then carries the unstored hint, which is exactly
+/// the pre-D61 behaviour.
+pub(in crate::routes::actions) async fn render_stored(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    result: &ActionResult,
+    req: &CallRequest,
+    org_id: uuid::Uuid,
+    identity_id: uuid::Uuid,
+) -> serde_json::Value {
+    let mut rendered = render_action_result(result, req.verbose);
+    if rendered
+        .get("_truncated")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        return rendered;
+    }
+    let stored = crate::services::call_result::Stored {
+        org_id,
+        identity_id,
+        service_key: req.service.as_deref(),
+        action_key: req.action.as_deref(),
+    };
+    if let Some(d) = crate::services::call_result::store(state, ext, stored, result).await {
+        crate::services::compact_response::attach_full_result(
+            &mut rendered,
+            &d.download_url,
+            &d.expires_at,
+        );
+    }
+    rendered
 }
 
 /// Overlay the pinned `config` onto a call's args — the instance's own pins
@@ -474,6 +632,9 @@ async fn evaluate_sql_policy(
         .and_then(|e| e.label.clone())
         .or(db_key)
         .unwrap_or_else(|| "unknown".to_string());
+    // D69: functions this database vouches for on top of the shipped safe
+    // list. An unresolvable database has none, which is the fail-closed side.
+    let extra_safe = entry.map(|e| e.safe_functions).unwrap_or_default();
 
     // ── Locate and classify the SQL. ──
     let sql_field = sql_param.sql_field.as_deref().unwrap_or_default();
@@ -490,7 +651,7 @@ async fn evaluate_sql_policy(
         }
     } else {
         match sql_policy::extract_sql(sql_param_name, sql_field, params) {
-            Some(sql) => sql_policy::analyze(sql),
+            Some(sql) => sql_policy::analyze(sql, &extra_safe),
             // Present but not a string at the nominated path — validate_args
             // should have rejected it; refuse to guess.
             None => SqlAnalysis {
@@ -556,6 +717,41 @@ fn effective_risk(
     }
 }
 
+/// Overlay `resolve.scope` values onto the params used to derive permission
+/// keys.
+///
+/// The same human is reachable at several opaque addresses — a WhatsApp
+/// contact answers to both a phone JID and a privacy `@lid` — and each would
+/// otherwise mint its own permission key, so a grant made against one
+/// silently misses the other. A resolver that declares `scope` collapses them
+/// onto the canonical value (the phone number), which is both stable across
+/// addresses and legible in the rules list.
+///
+/// Only key derivation sees this. The outgoing request keeps the caller's raw
+/// arguments: canonicalization renames the permission, it must never silently
+/// retarget the call.
+///
+/// When resolution failed there is no canonical value and the raw argument
+/// stands. That direction is safe — the call derives a *different* key,
+/// matches no existing grant, and raises an approval.
+pub(super) fn canonical_scope_params(
+    params: &HashMap<String, serde_json::Value>,
+    canonical: &HashMap<String, String>,
+) -> HashMap<String, serde_json::Value> {
+    if canonical.is_empty() {
+        return params.clone();
+    }
+    let mut out = params.clone();
+    for (name, value) in canonical {
+        // Only rewrite params the caller actually supplied — a resolver must
+        // not conjure a scope value for an argument that was never passed.
+        if out.contains_key(name) {
+            out.insert(name.clone(), serde_json::Value::String(value.clone()));
+        }
+    }
+    out
+}
+
 /// Merge D42 table keys into the scope_param-derived key set.
 ///
 /// Appended when real scoped keys exist (DB-scoping and table-scoping are
@@ -584,4 +780,53 @@ fn merge_sql_keys(
         }
     }
     perm_keys
+}
+
+#[cfg(test)]
+mod canonical_scope_tests {
+    use super::canonical_scope_params;
+    use std::collections::HashMap;
+
+    fn params(pairs: &[(&str, serde_json::Value)]) -> HashMap<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn no_canonical_values_passes_the_params_through() {
+        let raw = params(&[("recipient", serde_json::json!("239135323373760@lid"))]);
+        assert_eq!(canonical_scope_params(&raw, &HashMap::new()), raw);
+    }
+
+    #[test]
+    fn canonical_value_replaces_the_raw_argument() {
+        let raw = params(&[
+            ("recipient", serde_json::json!("239135323373760@lid")),
+            ("text", serde_json::json!("hola")),
+        ]);
+        let canonical: HashMap<String, String> =
+            [("recipient".to_string(), "+34600111222".to_string())]
+                .into_iter()
+                .collect();
+        let out = canonical_scope_params(&raw, &canonical);
+        assert_eq!(out["recipient"], serde_json::json!("+34600111222"));
+        // Untouched params ride through unchanged.
+        assert_eq!(out["text"], serde_json::json!("hola"));
+    }
+
+    /// A resolver must not conjure a scope value for an argument the caller
+    /// never passed — that would mint a key for a param not in the request.
+    #[test]
+    fn a_canonical_value_for_an_absent_param_is_ignored() {
+        let raw = params(&[("text", serde_json::json!("hola"))]);
+        let canonical: HashMap<String, String> =
+            [("recipient".to_string(), "+34600111222".to_string())]
+                .into_iter()
+                .collect();
+        let out = canonical_scope_params(&raw, &canonical);
+        assert!(!out.contains_key("recipient"));
+        assert_eq!(out.len(), 1);
+    }
 }

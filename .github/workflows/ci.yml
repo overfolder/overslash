@@ -58,6 +58,31 @@ jobs:
               - 'sdk/**'
               - '.github/workflows/ci.yml'
 
+  # Unconditional, unlike `lint`: the `rust` paths filter skips a docs-only PR,
+  # which is exactly the PR that moves a decision number. Checkout plus bash,
+  # no toolchain, so it costs seconds. Runs on merge_group too, which is where
+  # a number that went stale during review finally becomes visible.
+  docs:
+    name: Docs (decision numbering)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # On a pull_request the checked-out ref is refs/pull/N/merge, whose
+          # first parent is the base tip — cheaper and more reliable than
+          # fetching origin/<base> by name.
+          fetch-depth: 2
+      - name: Decision numbering gate
+        env:
+          # Only against dev. A PR into master is the release PR, where every
+          # decision merged since the last release is legitimately numbered
+          # and would otherwise read as newly hardcoded.
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref == 'dev' && 'HEAD^1' || '' }}
+          # dev tolerates a placeholder for the minute before the allocator
+          # workflow runs; master never may.
+          STRICT_ALLOCATED: ${{ (github.ref == 'refs/heads/master' || github.base_ref == 'master') && '1' || '' }}
+        run: bash scripts/check-decisions.sh
+
   # Lint and the sqlx offline-cache check share one job: both are short
   # (~1.5 min each), neither is on the critical path (coverage is), and one
   # fewer job per run means one fewer runner slot competing with coverage
@@ -108,6 +133,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
+          # Pinned explicitly rather than left to the action's `stable` default:
+          # keep in sync with rust-toolchain.toml, or the action installs one
+          # toolchain and cargo silently downloads another on the first build.
+          toolchain: "1.97"
           components: rustfmt, clippy
       # The `key` suffix must be rotated whenever [profile.*] settings in
       # Cargo.toml change: rust-cache's primary key doesn't hash profiles, so
@@ -123,7 +152,7 @@ jobs:
       - uses: ./.github/actions/seed-ort-cache
       # Pin sqlx-cli to 0.9 so the CLI's offline-cache format matches the
       # workspace sqlx 0.9 (the .sqlx/ files it verifies).
-      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # v2.85.5
         with:
           tool: sqlx-cli@0.9
 
@@ -189,6 +218,10 @@ jobs:
       SQLX_OFFLINE: "true"
       # Points oversla-sh integration tests at the valkey service above.
       VALKEY_URL: redis://localhost:6380
+      # Same service, the name the API crate reads. Without it the resolver
+      # cache (D64) falls back to its in-memory store and the Redis backend —
+      # the one a deployed instance actually uses — ships unexercised.
+      REDIS_URL: redis://localhost:6380
     steps:
       # Free ~25 GB of pre-installed tooling we never use (Android SDK,
       # .NET, Haskell, CodeQL, cached Docker images, etc.) so the
@@ -235,6 +268,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
+          # See the lint job for why the toolchain is pinned explicitly (and
+          # must stay in sync with rust-toolchain.toml).
+          toolchain: "1.97"
           components: llvm-tools-preview
       # See the lint job for why the key carries a -deps-opt1 suffix (and
       # must be rotated again on the next [profile.*] change).
@@ -248,7 +284,7 @@ jobs:
       # artifacts stay valid). Linking ~99 instrumented test binaries is
       # the bulk of a warm-cache "compile" phase; mold cuts it sharply.
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1 (mutable tag)
-      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # v2.85.5
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
@@ -306,6 +342,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
+        with:
+          # See the lint job for why the toolchain is pinned explicitly (and
+          # must stay in sync with rust-toolchain.toml).
+          toolchain: "1.97"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: sql-policy-deps
@@ -442,6 +482,10 @@ jobs:
           SQL
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
+        with:
+          # See the lint job for why the toolchain is pinned explicitly (and
+          # must stay in sync with rust-toolchain.toml).
+          toolchain: "1.97"
       # See the lint job for why the key carries a -deps-opt1 suffix (and
       # must be rotated again on the next [profile.*] change).
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -451,7 +495,7 @@ jobs:
       # its cache from a release asset so cold-cache builds don't touch it.
       - uses: ./.github/actions/seed-ort-cache
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1 (mutable tag)
-      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # v2.85.5
         with:
           tool: sqlx-cli@0.9
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -488,7 +532,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, coverage, sql-policy, infra, dashboard, sdk, e2e]
+    needs: [changes, docs, lint, coverage, sql-policy, infra, dashboard, sdk, e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs passed or were skipped

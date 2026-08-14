@@ -54,6 +54,19 @@ bash "$(git rev-parse --show-toplevel)/scripts/check-line-counts.sh" || {
     exit 1
 }
 
+# Decision numbers must be unique, contiguous, and left as a placeholder for
+# the merge-time allocator. Milliseconds, and it catches a hardcoded number
+# before the branch is a PR that has to be renumbered under rebase pressure.
+# BASE_REF is HEAD, not the merge base with origin/dev: a worktree's
+# origin/dev is routinely a few commits stale, and diffing against it would
+# flag decisions somebody else already merged the old way. HEAD asks the only
+# question a pre-commit hook should — does *this* commit hardcode a number.
+echo "  decision numbering"
+BASE_REF=HEAD bash "$(git rev-parse --show-toplevel)/scripts/check-decisions.sh" || {
+    echo "See docs/runbooks/decision-numbering.md." >&2
+    exit 1
+}
+
 echo "  cargo fmt --check"
 cargo fmt --check || {
     echo "ERROR: Code not formatted. Run 'cargo fmt' first."

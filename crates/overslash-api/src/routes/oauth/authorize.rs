@@ -98,16 +98,15 @@ pub(super) async fn authorize(
     // `client_id`. A NULL (root/multi-org) client is accepted; the
     // org-derivation below forces the agent into ctx.org regardless of the
     // client. See docs/design/mcp-enrollment-org-scoping.md.
-    if let RequestOrgContext::Org { org_id, .. } = &ctx {
-        if let Some(client_org) = client.org_id {
-            if client_org != *org_id {
-                return oauth_error(
-                    StatusCode::UNAUTHORIZED,
-                    "invalid_client",
-                    "client is registered to a different org",
-                );
-            }
-        }
+    if let RequestOrgContext::Org { org_id, .. } = &ctx
+        && let Some(client_org) = client.org_id
+        && client_org != *org_id
+    {
+        return oauth_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "client is registered to a different org",
+        );
     }
 
     // Bounce through IdP login if not signed in.
@@ -122,10 +121,10 @@ pub(super) async fn authorize(
     // ctx.org, never in the stale session's org. Root has no subdomain to
     // mismatch against, so a valid session (corp or personal) is untouched.
     // See docs/design/mcp-enrollment-org-scoping.md.
-    if let RequestOrgContext::Org { org_id, .. } = &ctx {
-        if session_claims.org != *org_id {
-            return idp_bounce(&state, &ext, &ctx, &params).await;
-        }
+    if let RequestOrgContext::Org { org_id, .. } = &ctx
+        && session_claims.org != *org_id
+    {
+        return idp_bounce(&state, &ext, &ctx, &params).await;
     }
 
     // The org the enrolled agent lands in: the subdomain org on a corp
@@ -147,28 +146,26 @@ pub(super) async fn authorize(
         resolved_org,
     )
     .await
-    {
-        if let Ok(Some(agent)) =
+        && let Ok(Some(agent)) =
             identity::get_by_id(state.db(&ext), resolved_org, binding.agent_identity_id).await
-        {
-            if agent.archived_at.is_none() && agent.kind == "agent" {
-                let email = agent.email.as_deref().unwrap_or(&session_claims.email);
-                return issue_authorization_code(
-                    &state,
-                    &ext,
-                    &client.client_id,
-                    agent.id,
-                    resolved_org,
-                    email,
-                    &params.redirect_uri,
-                    &params.code_challenge,
-                    params.state.as_deref(),
-                );
-            }
-        }
-        // Binding points at an archived / missing / wrong-kind agent —
-        // stale row. Fall through to consent so the user re-enrolls.
+        && agent.archived_at.is_none()
+        && agent.kind == "agent"
+    {
+        let email = agent.email.as_deref().unwrap_or(&session_claims.email);
+        return issue_authorization_code(
+            &state,
+            &ext,
+            &client.client_id,
+            agent.id,
+            resolved_org,
+            email,
+            &params.redirect_uri,
+            &params.code_challenge,
+            params.state.as_deref(),
+        );
     }
+    // Binding points at an archived / missing / wrong-kind agent —
+    // stale row. Fall through to consent so the user re-enrolls.
 
     // No binding (or stale): park the authorize request and redirect to the
     // consent screen. The `request_id` lives only in memory (60s TTL) so a
@@ -226,29 +223,54 @@ async fn idp_bounce(
 ) -> Response {
     let authorize_path = rebuild_authorize_path(params);
     let next = urlencoding::encode(&authorize_path);
-    match default_idp_provider_for_request(state, ext, ctx).await {
+    let path = match default_idp_provider_for_request(state, ext, ctx).await {
         IdpBounce::Provider(provider) => {
             // Dev login is a separate endpoint, not the generic
             // /auth/login/{provider_key} path (which requires an
             // oauth_providers DB row).
-            let login = if provider == "dev" {
+            if provider == "dev" {
                 format!("/auth/dev/token?next={next}")
             } else {
                 format!("/auth/login/{provider}?next={next}")
-            };
-            Redirect::to(&login).into_response()
+            }
         }
         IdpBounce::Picker => {
-            // Corp subdomain with multiple enabled IdPs and no designated
+            // Corp subdomain with several sign-in providers and no designated
             // default — let the user pick. The dashboard login page calls
             // /auth/providers and renders the list.
-            Redirect::to(&format!("/login?next={next}")).into_response()
+            format!("/login?next={next}")
         }
-        IdpBounce::None => oauth_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "login_required",
-            "no IdP is configured for this org",
-        ),
+        IdpBounce::None => {
+            return oauth_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "login_required",
+                "no IdP is configured for this org",
+            );
+        }
+    };
+    Redirect::to(&bounce_target(state, ctx, &path)).into_response()
+}
+
+/// Resolve a bounce path against the host the user should actually land on.
+///
+/// A host-relative redirect resolves against whatever host `/oauth/authorize`
+/// was hit on — and the AS metadata advertises the **API** host
+/// (`<slug>.api.<apex>`, see `oauth_as::issuer_for`). Both bounce targets are
+/// wrong there: `/login` is a dashboard route that 404s on the API host, and
+/// `/auth/login/{provider}` sets its `oss_auth_*` cookies with
+/// `Domain=SESSION_COOKIE_DOMAIN` (`.app.<apex>`), which a browser on
+/// `<slug>.api.<apex>` rejects — login then dies at the callback with
+/// "missing auth nonce cookie". So on a corp subdomain we send the user to
+/// the org's app host explicitly.
+///
+/// Root, and any deployment without `APP_HOST_SUFFIX` (self-hosted
+/// single-host), keep the relative path: there's no other host to name.
+fn bounce_target(state: &AppState, ctx: &RequestOrgContext, path: &str) -> String {
+    match ctx {
+        RequestOrgContext::Org { slug, .. } => {
+            crate::routes::auth::org_app_url(state, slug, path).unwrap_or_else(|| path.to_string())
+        }
+        RequestOrgContext::Root => path.to_string(),
     }
 }
 
@@ -293,7 +315,7 @@ fn issue_authorization_code(
 enum IdpBounce {
     /// One specific provider key — redirect straight to its login.
     Provider(String),
-    /// Multiple IdPs configured for the org and none marked default — the
+    /// Several sign-in providers available and none marked default — the
     /// dashboard `/login` page should render a picker.
     Picker,
     /// No IdP available at all → service-unavailable.
@@ -303,14 +325,16 @@ enum IdpBounce {
 /// Pick how to bounce an unauthenticated `/oauth/authorize` caller through
 /// IdP login.
 ///
-/// On a corp subdomain (`RequestOrgContext::Org`) we honor the org's
-/// designated default IdP, then fall back to the picker if any IdPs are
-/// enabled. We **never** fall through to env-var (Overslash-managed) login
-/// on a corp subdomain — corp subdomains are strict trust domains
-/// (DECISIONS.md D12).
+/// On a corp subdomain (`RequestOrgContext::Org`) the candidates are whatever
+/// `services::org_signin` says the org can sign in with — its own IdPs plus
+/// the Overslash-managed providers when it opted in (D12's 2026-05 amendment,
+/// migration 066: managed sign-in is legitimate on a corp subdomain because
+/// membership is gated separately in `auth::provisioning`). The org's
+/// designated default wins; a lone candidate skips the one-button picker.
 ///
-/// On the apex (`RequestOrgContext::Root`) we keep the existing env-var
-/// behavior so personal-org sign-up keeps working without any DB IdP rows.
+/// On the apex (`RequestOrgContext::Root`) there is no org whose preferences
+/// to honor, so the deployment's own providers are the list, in preference
+/// order, so personal-org sign-up works without any DB IdP rows.
 async fn default_idp_provider_for_request(
     state: &AppState,
     ext: &axum::http::Extensions,
@@ -318,27 +342,31 @@ async fn default_idp_provider_for_request(
 ) -> IdpBounce {
     match ctx {
         RequestOrgContext::Org { org_id, .. } => {
-            // Designated default first.
-            if let Ok(Some(row)) = org_idp_config::get_default_by_org(state.db(ext), *org_id).await
-            {
-                return IdpBounce::Provider(row.provider_key);
+            let providers = match org_signin::list_org_signin_providers(state, ext, *org_id).await {
+                Ok(providers) => providers,
+                Err(e) => {
+                    // Don't let a pool timeout masquerade as "this org has no
+                    // IdP" — the operator would go hunting a config problem
+                    // that isn't there. `AppError` only logs from its
+                    // `IntoResponse`, which this path never reaches.
+                    tracing::error!(%org_id, error = %e, "failed to resolve org sign-in providers");
+                    return IdpBounce::None;
+                }
+            };
+            if let Some(default) = providers.iter().find(|p| p.is_default) {
+                return IdpBounce::Provider(default.provider_key.clone());
             }
-            // No default but at least one enabled IdP → picker.
-            match org_idp_config::list_enabled_by_org(state.db(ext), *org_id).await {
-                Ok(rows) if !rows.is_empty() => IdpBounce::Picker,
-                _ => IdpBounce::None,
+            match providers.len() {
+                0 => IdpBounce::None,
+                1 => IdpBounce::Provider(providers[0].provider_key.clone()),
+                _ => IdpBounce::Picker,
             }
         }
         RequestOrgContext::Root => {
-            if state.config.google_auth_client_id.is_some()
-                && state.config.google_auth_client_secret.is_some()
-            {
-                return IdpBounce::Provider("google".into());
-            }
-            if state.config.github_auth_client_id.is_some()
-                && state.config.github_auth_client_secret.is_some()
-            {
-                return IdpBounce::Provider("github".into());
+            for key in org_signin::MANAGED_PROVIDER_KEYS {
+                if state.config.env_auth_credentials(key).is_some() {
+                    return IdpBounce::Provider(key.to_string());
+                }
             }
             if state.config.dev_auth_enabled {
                 return IdpBounce::Provider("dev".into());

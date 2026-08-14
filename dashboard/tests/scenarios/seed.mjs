@@ -83,6 +83,7 @@ import { api } from './api.mjs';
  *   templateKey?: string,
  *   action?: string,
  *   params?: Record<string, unknown>,
+ *   execution?: 'sync' | 'async',
  * }} SeedApprovalInput
  */
 
@@ -235,12 +236,15 @@ export async function seedGroup(session, input) {
 }
 
 /**
+ * `autoApproveLevel` must not exceed `accessLevel` — the API rejects the pair
+ * with a 400 rather than clamping an explicit request (D53).
+ *
  * @param {import('./auth.mjs').Session} session
  * @param {string} groupId
  * @param {{
  *   serviceInstanceId: string,
  *   accessLevel: 'read' | 'write' | 'admin',
- *   autoApproveReads?: boolean,
+ *   autoApproveLevel?: 'none' | 'read' | 'write' | 'admin',
  * }} input
  */
 export async function seedGroupGrant(session, groupId, input) {
@@ -249,7 +253,7 @@ export async function seedGroupGrant(session, groupId, input) {
 		body: {
 			service_instance_id: input.serviceInstanceId,
 			access_level: input.accessLevel,
-			auto_approve_reads: input.autoApproveReads ?? false
+			auto_approve_level: input.autoApproveLevel ?? 'none'
 		},
 		expect: [200, 201]
 	});
@@ -301,6 +305,7 @@ export async function seedApproval(session, input = {}) {
 	});
 	const apiKey = await seedAgentApiKey(session, agent.id, `${agentName}-key`);
 
+	/** @type {Record<string, unknown>} */
 	let callBody;
 	if (input.templateKey && input.action) {
 		callBody = {
@@ -332,6 +337,11 @@ export async function seedApproval(session, input = {}) {
 		};
 	}
 
+	// `execution: "async"` is stamped on the approval and read back when the
+	// replay is triggered (D66) — the gate fires above the async fork, so the
+	// envelope here is the ordinary `pending_approval` either way.
+	if (input.execution) callBody.execution = input.execution;
+
 	const callRes = await fetch(`${session.apiUrl}/v1/actions/call`, {
 		method: 'POST',
 		headers: {
@@ -352,6 +362,26 @@ export async function seedApproval(session, input = {}) {
 		throw new Error(`seedApproval: 202 missing approval_id (got ${JSON.stringify(payload)})`);
 	}
 	return api(session, `/v1/approvals/${payload.approval_id}`);
+}
+
+/**
+ * Trigger an approved replay and return the refreshed approval.
+ *
+ * For a `sync` approval this dials the upstream and answers 200 with the
+ * result; for one seeded with `execution: 'async'` it queues the replay for
+ * the worker and answers 202 with a `pending` execution marked `queued`. Both
+ * shapes are the same `ApprovalResponse`, which is why one helper covers them.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {string} approvalId
+ * @returns {Promise<Approval & { execution?: Record<string, unknown> }>}
+ */
+export async function seedApprovalCall(session, approvalId) {
+	return api(session, `/v1/approvals/${approvalId}/call`, {
+		method: 'POST',
+		body: {},
+		expect: [200, 202]
+	});
 }
 
 /**
@@ -414,6 +444,20 @@ export async function setAuditResponseBodyMode(session, mode) {
 	return api(session, `/v1/orgs/${session.orgId}/audit-settings`, {
 		method: 'PATCH',
 		body: { response_body_mode: mode }
+	});
+}
+
+/**
+ * Patch the org's per-call upstream timeouts (D56). Pass `null` for a field to
+ * clear it back to the deployment default; omit it to leave it unchanged.
+ * @param {import('./auth.mjs').Session} session
+ * @param {{ call_timeout_ms?: number | null, max_call_timeout_ms?: number | null }} timeouts
+ * @returns {Promise<{ default_deferred_execution: boolean, call_timeout_ms: number | null, max_call_timeout_ms: number | null }>}
+ */
+export async function setCallTimeouts(session, timeouts) {
+	return api(session, `/v1/orgs/${session.orgId}/execution-settings`, {
+		method: 'PATCH',
+		body: timeouts
 	});
 }
 

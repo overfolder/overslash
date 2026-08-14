@@ -899,3 +899,108 @@ async fn test_idp_create_rejects_creds_when_use_org_credentials_true() {
         .unwrap();
     assert_eq!(resp.status(), 400);
 }
+
+#[tokio::test]
+async fn test_disabled_idp_row_suppresses_managed_provider() {
+    // A dedicated row claims its provider key even when disabled: switching
+    // the org's Google IdP off turns Google off for the org, rather than
+    // silently handing sign-in to Overslash's own OAuth app.
+    //
+    // Previously the two sides disagreed — `/auth/providers` deduped only
+    // against *enabled* rows and kept advertising managed Google, while
+    // credential resolution saw the disabled row and refused, so the login
+    // page rendered a Google button that dead-ended. Both now read the rule
+    // from `services::org_signin`.
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.google_auth_client_id = Some("env-google-id".into());
+        cfg.google_auth_client_secret = Some("env-google-secret".into());
+    })
+    .await;
+    let base = format!("http://{addr}");
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
+
+    overslash_db::repos::org::set_allow_overslash_managed_signin(&pool, org_id, true)
+        .await
+        .unwrap();
+
+    let orgs: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let slug = orgs["slug"].as_str().unwrap().to_string();
+
+    // A dedicated Google row that the admin has switched off.
+    sqlx::query(
+        "INSERT INTO org_idp_configs (org_id, provider_key, enabled) VALUES ($1, 'google', false)",
+    )
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The login page must not offer Google at all — no dead-end button.
+    let listed: Value = client
+        .get(format!("{base}/auth/providers?org={slug}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !listed["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["key"] == "google"),
+        "a disabled dedicated row turns the provider off: {listed}"
+    );
+
+    // ...and login agrees, rather than falling back to the managed creds.
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let login_resp = no_redirect
+        .get(format!("{base}/auth/login/google?org={slug}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        login_resp.status().is_client_error(),
+        "expected a refusal, got {}",
+        login_resp.status()
+    );
+
+    // The admin surface still shows the disabled row so it can be re-enabled.
+    let configs: Value = client
+        .get(format!("{base}/v1/org-idp-configs"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let google_rows: Vec<&Value> = configs
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["provider_key"] == "google")
+        .collect();
+    assert_eq!(
+        google_rows.len(),
+        1,
+        "exactly one Google entry — the org's own row, not a contradictory \
+         managed duplicate alongside it: {configs}"
+    );
+    assert_eq!(google_rows[0]["source"], "db");
+    assert_eq!(google_rows[0]["enabled"], false);
+}

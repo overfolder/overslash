@@ -15,7 +15,13 @@
 	let saving = $state(false);
 	let error = $state<string | null>(null);
 
-	// Seed OpenAPI skeleton so the user has something to edit.
+	// Seed OpenAPI skeleton so the user has something to edit. Kept between the
+	// markers below because `scaffold_skeleton_is_valid_and_lint_clean` (in
+	// crates/overslash-core/src/template_validation/yaml.rs) reads this literal
+	// out of this file and runs it through the real validator — the scaffold
+	// shipped `x-overslash-prefix` for months, which the compiler rejects
+	// outright, so the default skeleton could not be saved at all.
+	// SCAFFOLD-SKELETON-START
 	let yamlText = $state(`openapi: 3.1.0
 info:
   title: My Service
@@ -28,7 +34,9 @@ components:
       type: apiKey
       in: header
       name: Authorization
-      x-overslash-prefix: "Bearer "
+      x-overslash-template:
+        lang: jq
+        expr: '"Bearer " + .token'
       default_secret_name: my_service_token
 paths:
   /items:
@@ -37,6 +45,7 @@ paths:
       summary: List items
       risk: read
 `);
+	// SCAFFOLD-SKELETON-END
 
 	function handleYamlChange(yaml: string) {
 		yamlText = yaml;

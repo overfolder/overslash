@@ -65,6 +65,36 @@ pub async fn get_result(config_path: PathBuf, approval_id: String) -> anyhow::Re
     }
 }
 
+/// `overslash get-execution <execution_id>` — print one async call's outcome.
+///
+/// Exit codes match `get-result` exactly, and for the same reason: the split
+/// lets `overslash get-execution "$id" || handle_failure` work without parsing
+/// JSON, and keeps an `until` loop terminating only on success. `pending` and
+/// `executing` mean "polled too early", not "failed", but they are still
+/// non-zero so the loop keeps going.
+pub async fn get_execution(config_path: PathBuf, execution_id: String) -> anyhow::Result<()> {
+    let config = load_mcp_config(&config_path)?;
+    let client = api_client()?;
+    match get_execution_inner(&client, &config.server_url, &config.token, &execution_id).await {
+        Ok(value) => {
+            let status = value.get("status").and_then(Value::as_str).unwrap_or("");
+            println!("{}", serde_json::to_string(&value).unwrap());
+            std::process::exit(exit_code_for(status));
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Map an execution status to the process exit code.
+///
+/// Extracted so it is testable without `std::process::exit`.
+pub(crate) fn exit_code_for(status: &str) -> i32 {
+    if status == "executed" { 0 } else { 1 }
+}
+
 // ---------------------------------------------------------------------------
 // Inner functions — tested directly with mock servers
 // ---------------------------------------------------------------------------
@@ -77,12 +107,20 @@ async fn events_inner(
     // Two listings, merged. A failure on either aborts rather than returning a
     // partial feed: "your inbox is empty" is the one wrong answer here, since
     // it is exactly what makes a caller stop polling.
-    let actionable = get_json(client, base_url, token, "/v1/approvals?scope=actionable").await?;
+    let actionable = get_json(
+        client,
+        base_url,
+        token,
+        "/v1/approvals?scope=actionable",
+        "the approvals endpoint is unavailable",
+    )
+    .await?;
     let mine = get_json(
         client,
         base_url,
         token,
         "/v1/approvals?scope=mine&status=allowed",
+        "the approvals endpoint is unavailable",
     )
     .await?;
     Ok(inbox_events::build_events(&actionable, &mine))
@@ -95,7 +133,31 @@ async fn get_result_inner(
     approval_id: &str,
 ) -> anyhow::Result<Value> {
     let path = format!("/v1/approvals/{approval_id}/execution");
-    get_json(client, base_url, token, &path).await
+    get_json(
+        client,
+        base_url,
+        token,
+        &path,
+        "check the approval id, or the action may never have been approved",
+    )
+    .await
+}
+
+async fn get_execution_inner(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+    execution_id: &str,
+) -> anyhow::Result<Value> {
+    let path = format!("/v1/executions/{execution_id}");
+    get_json(
+        client,
+        base_url,
+        token,
+        &path,
+        "check the execution id from the accepted response",
+    )
+    .await
 }
 
 async fn get_json(
@@ -103,6 +165,9 @@ async fn get_json(
     base_url: &str,
     token: &str,
     path: &str,
+    // Endpoint-specific wording for a 404 — `get-execution` must not say
+    // "approval".
+    not_found_hint: &str,
 ) -> anyhow::Result<Value> {
     let url = format!("{}{}", base_url.trim_end_matches('/'), path);
     let resp = client
@@ -116,9 +181,7 @@ async fn get_json(
         return Err(unauthorized_error());
     }
     if status == reqwest::StatusCode::NOT_FOUND {
-        return Err(anyhow!(
-            "not found — check the approval id, or the action may never have been approved"
-        ));
+        return Err(anyhow!("not found — {not_found_hint}"));
     }
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();

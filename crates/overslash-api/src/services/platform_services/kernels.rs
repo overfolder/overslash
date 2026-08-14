@@ -1,5 +1,6 @@
 //! The service-instance kernels: list, get, create, update.
 
+use super::group_grants::validate_create_group_grants;
 use super::reconcile::*;
 use super::rows::*;
 use super::status::*;
@@ -146,9 +147,16 @@ pub async fn kernel_list_services(
                 };
                 derive_credentials_status(tpl, scopes, &row.credentials, row.secret_name.as_deref())
             });
+            let icon_url = template.and_then(|tpl| {
+                crate::services::icon_url::resolve_icon_url(
+                    tpl.icon.as_ref(),
+                    &ctx.config.public_url,
+                )
+            });
             let groups = groups_by_service.remove(&row.id).unwrap_or_default();
             let mut summary = row_to_summary(row, groups);
             summary.credentials_status = credentials_status;
+            summary.icon_url = icon_url;
             summary
         })
         .collect();
@@ -188,8 +196,17 @@ pub async fn kernel_get_service(
     let credentials_status =
         compute_credentials_status(&ctx.db, &ctx.registry, &scope, &row, row.owner_identity_id)
             .await;
+    let icon_url = resolve_instance_icon_url(
+        &ctx.db,
+        &ctx.registry,
+        &row,
+        row.owner_identity_id,
+        &ctx.config.public_url,
+    )
+    .await;
     let mut detail = row_to_detail(row);
     detail.credentials_status = credentials_status;
+    detail.icon_url = icon_url;
     Ok(detail)
 }
 
@@ -282,6 +299,19 @@ pub async fn kernel_create_service(
             input.status
         )));
     }
+
+    // Validate the requested group grants *before* the insert. There is no
+    // transaction spanning the row and its grants, so a late failure would
+    // leave exactly the thing this rule exists to prevent: an org-level
+    // instance with no grant, reachable by nobody.
+    let group_grants = validate_create_group_grants(
+        &scope,
+        auth_identity,
+        ctx.access_level,
+        owner_identity_id,
+        &input.groups,
+    )
+    .await?;
 
     // Resolve once for downstream validation + credential classification.
     let template_def = resolve_template_definition(
@@ -431,12 +461,14 @@ pub async fn kernel_create_service(
         }
     }
 
-    if let Some(url) = input.url.as_deref() {
-        if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(AppError::BadRequest(
-                "`url` must start with http:// or https://".into(),
-            ));
-        }
+    if let Some(url) = input.url.as_deref()
+        && !url.is_empty()
+        && !url.starts_with("http://")
+        && !url.starts_with("https://")
+    {
+        return Err(AppError::BadRequest(
+            "`url` must start with http:// or https://".into(),
+        ));
     }
 
     let create_input = CreateServiceInstance {
@@ -459,15 +491,16 @@ pub async fn kernel_create_service(
         .create_service_instance(create_input)
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.constraint().is_some() {
-                    return AppError::Conflict(format!("service '{name}' already exists"));
-                }
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.constraint().is_some()
+            {
+                return AppError::Conflict(format!("service '{name}' already exists"));
             }
             AppError::Database(e)
         })?;
 
-    // Auto-grant to the owner's Myself group with admin + auto_approve_reads.
+    // Auto-grant to the owner's Myself group with admin access and
+    // read-level auto-approval.
     // This is what makes the service reachable by the owner under the unified
     // group-ceiling model. The Myself group is created on-demand if missing.
     if let Some(owner_id) = row.owner_identity_id {
@@ -475,6 +508,61 @@ pub async fn kernel_create_service(
         scope
             .grant_service_to_self_group(owner_id, row.id, &label)
             .await?;
+    }
+
+    // Explicit group grants. Everything here was validated above, so a failure
+    // means the world moved underneath us — most plausibly a concurrent group
+    // delete between validation and here. There is no transaction spanning the
+    // instance row and its grants (the repos take a pool, not a `Transaction`),
+    // so compensate by hand: drop the instance rather than leave the exact
+    // thing this rule exists to prevent — an org-level service with no grant,
+    // reachable by nobody.
+    for grant in &group_grants {
+        let attached = scope
+            .add_group_grant(
+                grant.group_id,
+                row.id,
+                &grant.access_level,
+                // `validate_create_group_grants` normalizes and bounds this,
+                // so it is always Some here; fail closed if that ever changes.
+                grant.auto_approve_level.as_deref().unwrap_or("none"),
+            )
+            .await
+            .map_err(AppError::Database)
+            .and_then(|opt| {
+                opt.ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "group '{}' disappeared while creating the service; nothing was created",
+                        grant.group_id
+                    ))
+                })
+            });
+        let grant_row = match attached {
+            Ok(r) => r,
+            Err(e) => {
+                // Cascades the grants written so far (FK ON DELETE CASCADE).
+                let _ = scope.delete_service_instance(row.id).await;
+                return Err(e);
+            }
+        };
+        let _ = scope
+            .log_audit(overslash_db::repos::audit::AuditEntry {
+                org_id: ctx.org_id,
+                identity_id: Some(auth_identity),
+                action: "group_grant.created",
+                resource_type: Some("group_grant"),
+                resource_id: Some(grant_row.id),
+                detail: serde_json::json!({
+                    "group_id": grant.group_id,
+                    "service_instance_id": row.id,
+                    "service_name": &row.name,
+                    "access_level": &grant.access_level,
+                    "auto_approve_level": &grant_row.auto_approve_level,
+                }),
+                description: None,
+                ip_address: None,
+            })
+            .await;
     }
 
     let credentials_status = derive_credentials_status(
@@ -681,10 +769,11 @@ pub async fn kernel_update_service(
             Some(explicit) => explicit.clone(),
             None => existing.credentials.0.clone(),
         };
-        if input.credentials.is_none() && input.secret_name.is_some() {
-            if let [sole] = instance_slots.as_slice() {
-                base.remove(sole);
-            }
+        if input.credentials.is_none()
+            && input.secret_name.is_some()
+            && let [sole] = instance_slots.as_slice()
+        {
+            base.remove(sole);
         }
         let legacy = input.secret_name.as_ref().and_then(|o| o.as_deref());
         let (map, mut scalar) = reconcile_credentials(template_def, Some(&base), legacy)?;
@@ -698,12 +787,14 @@ pub async fn kernel_update_service(
         (None, None)
     };
 
-    if let Some(Some(ref url)) = input.url {
-        if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(AppError::BadRequest(
-                "`url` must start with http:// or https://".into(),
-            ));
-        }
+    if let Some(Some(ref url)) = input.url
+        && !url.is_empty()
+        && !url.starts_with("http://")
+        && !url.starts_with("https://")
+    {
+        return Err(AppError::BadRequest(
+            "`url` must start with http:// or https://".into(),
+        ));
     }
 
     // An explicit `config` is a whole-map replace (an empty map clears every

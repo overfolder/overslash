@@ -125,6 +125,7 @@ async fn reauth_required_flag_short_circuits_action_call() {
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()
@@ -199,6 +200,7 @@ async fn mode_c_no_connection_returns_needs_authentication() {
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()
@@ -285,6 +287,7 @@ async fn mode_c_no_oauth_client_configured_returns_actionable_4xx() {
             "template_key": "google_calendar",
             "name": "google-calendar",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()
@@ -362,6 +365,7 @@ async fn mode_c_missing_provider_row_stays_internal_500() {
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()
@@ -448,6 +452,7 @@ async fn reauth_required_rest_envelope_shape() {
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()
@@ -532,6 +537,7 @@ async fn wrap_true_returns_200_needs_authentication_envelope() {
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()
@@ -614,6 +620,7 @@ async fn wrap_true_returns_200_reauth_required_envelope() {
             "template_key": "x",
             "name": "x",
             "user_level": false,
+            "groups": common::everyone_grant(&base, &client, &admin_key).await,
             "status": "active",
         }))
         .send()

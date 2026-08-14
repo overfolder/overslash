@@ -1072,6 +1072,7 @@ async fn mcp_agent_without_permission_triggers_approval() {
     // otherwise skip Layer 2 entirely; this test is specifically about Layer 2
     // approval mechanics, so we keep the bypass off so a missing permission
     // rule still triggers an approval.
+    let everyone_id = common::everyone_group_id(&base, &client, &org_key).await;
     let svc: Value = client
         .post(format!("{base}/v1/services"))
         .header(auth(&org_key).0, auth(&org_key).1)
@@ -1079,6 +1080,11 @@ async fn mcp_agent_without_permission_triggers_approval() {
             "name": "stub_mcp_noperm",
             "template_key": "stub_mcp_noperm",
             "user_level": false,
+            "groups": [{
+                "group_id": everyone_id.to_string(),
+                "access_level": "admin",
+                "auto_approve_reads": false,
+            }],
             "status": "active",
         }))
         .send()
@@ -1087,34 +1093,7 @@ async fn mcp_agent_without_permission_triggers_approval() {
         .json()
         .await
         .unwrap();
-    let svc_id = svc["id"].as_str().expect("service id");
-
-    let groups: Vec<Value> = client
-        .get(format!("{base}/v1/groups"))
-        .header(auth(&org_key).0, auth(&org_key).1)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let everyone_id = groups
-        .iter()
-        .find(|g| g["system_kind"].as_str() == Some("everyone"))
-        .and_then(|g| g["id"].as_str())
-        .expect("Everyone group");
-    let resp = client
-        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
-        .header(auth(&org_key).0, auth(&org_key).1)
-        .json(&json!({
-            "service_instance_id": svc_id,
-            "access_level": "admin",
-            "auto_approve_reads": false,
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
+    let _svc_id = svc["id"].as_str().expect("service id");
 
     // Agent without permission → force-gated to approval even with kind:none.
     let resp = client

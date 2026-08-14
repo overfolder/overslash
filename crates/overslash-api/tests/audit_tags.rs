@@ -87,18 +87,19 @@ async fn execution_inherits_its_approvals_tags() {
         "table_mut:warehouse/public.orders",
     ]);
     let approval = scope
-        .create_approval(
+        .create_approval(overslash_db::repos::approval::CreateApproval {
             identity_id,
-            identity_id,
-            "run a write query",
-            None,
-            None,
-            None,
-            &[],
-            &format!("tok-{}", Uuid::new_v4()),
-            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
-            &minted,
-        )
+            current_resolver_identity_id: identity_id,
+            action_summary: "run a write query",
+            action_detail: None,
+            disclosed_fields: None,
+            replay_payload: None,
+            permission_keys: &[],
+            token: &format!("tok-{}", Uuid::new_v4()),
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            tags: &minted,
+            execution_mode: "sync",
+        })
         .await
         .unwrap();
     assert_eq!(approval.tags, minted, "tags must round-trip through INSERT");
@@ -131,18 +132,19 @@ async fn an_untagged_approval_yields_an_untagged_execution() {
     let scope = overslash_db::OrgScope::new(org_id, pool.clone());
 
     let approval = scope
-        .create_approval(
+        .create_approval(overslash_db::repos::approval::CreateApproval {
             identity_id,
-            identity_id,
-            "untagged",
-            None,
-            None,
-            None,
-            &[],
-            &format!("tok-{}", Uuid::new_v4()),
-            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
-            &[],
-        )
+            current_resolver_identity_id: identity_id,
+            action_summary: "untagged",
+            action_detail: None,
+            disclosed_fields: None,
+            replay_payload: None,
+            permission_keys: &[],
+            token: &format!("tok-{}", Uuid::new_v4()),
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            tags: &[],
+            execution_mode: "sync",
+        })
         .await
         .unwrap();
     let execution = scope
@@ -171,18 +173,19 @@ async fn an_execution_cannot_be_created_across_orgs() {
     let identity_id = insert_identity(&pool, theirs, "agent").await;
 
     let approval = overslash_db::OrgScope::new(theirs, pool.clone())
-        .create_approval(
+        .create_approval(overslash_db::repos::approval::CreateApproval {
             identity_id,
-            identity_id,
-            "their approval",
-            None,
-            None,
-            None,
-            &[],
-            &format!("tok-{}", Uuid::new_v4()),
-            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
-            &tags(&["service:metabase"]),
-        )
+            current_resolver_identity_id: identity_id,
+            action_summary: "their approval",
+            action_detail: None,
+            disclosed_fields: None,
+            replay_payload: None,
+            permission_keys: &[],
+            token: &format!("tok-{}", Uuid::new_v4()),
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            tags: &tags(&["service:metabase"]),
+            execution_mode: "sync",
+        })
         .await
         .unwrap();
 

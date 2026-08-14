@@ -90,6 +90,20 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 
 - [ ] **Approval visibility scoping** — `GET /v1/approvals?scope=actionable` vs `?scope=mine` (Phase 3 carry-over).
 - [ ] **Webhook payload**: include `gap_identity` and `can_be_handled_by` on approval events (Phase 3 carry-over).
+- [ ] **Live Map follow-ups** (D58, dev-gated behind `OVERSLASH_LIVE_MAP`):
+  - Structural agent→service edges from permission rules. Today they only
+    appear once traffic reveals them, because `GET /v1/permissions` is
+    per-identity and deriving them up front would cost one request per agent.
+  - Resolve an approval from the map. The amber state is real (it comes off
+    `approval.pending`); the design's click-a-packet Allow/Deny popover was
+    dropped rather than built against a half-modelled in-flight approval.
+  - The force layout's repulsion pass is O(n²) over every structural node,
+    every frame — inherited from the design prototype. Fine for a few hundred
+    nodes, and the reason the map is dev-gated is not this, but it is the first
+    thing to fix if it ever ships wider. A spatial grid is the usual answer.
+  - Decide whether `activity` can ever be on by default. It is the only topic
+    whose volume scales with the gateway's hot path — one durable `events` row
+    per call — so ungating it means answering that first.
 - [ ] **MCP Login Flow Fixes** (review card `877cb`) — assignment/consent page served from dashboard, default `inherit_permissions=true` for new MCP agents, reuse the existing agent on reauth, hide revoked MCP clients from the UI after 3s.
 
 ---
@@ -103,6 +117,11 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 - Light mode + theme toggle on the dashboard.
 - More e2e: MCP approval-bubbling and elicitation full-chain (puppet + scaffold specs in; deterministic gap-trigger pending — likely via a seeded service template + a no-permissions sub-agent).
 - Increase integration coverage across all API routes; unit tests for permission resolution; OAuth refresh + BYOC fallback edge cases.
+- **Priority-aware compact truncation.** `compact_response::shrink_to_budget` applies uniform limits across the whole JSON tree, so a payload that ships column descriptors alongside rows (Metabase, BigQuery, Snowflake, most tabular APIs) spends the 8 KB budget on metadata before the truncator reaches the rows — a 254-row Metabase result renders as 10 rows plus `…+244 more items`. Make it priority-aware: detect the principal collection by shape, drop sibling metadata before it, and add a depth lever so nested descriptor subtrees (`cols[i].fingerprint`) collapse while their scalar leaves (`cols[i].name`) survive. Heuristic rather than a template `x-overslash-*` extension: the motivating traffic arrives over Mode A (`service: "http"`), which has no template action to annotate. D57 (advertised paging params, a reachable `filter`) and D61 (a cropped result now carries a URL to its own full bytes) both made this less urgent, but neither made it wrong.
+- **Template async markers.** Let an action declare that it runs async by default (`x-overslash-async-default`), resolved at template-resolution time rather than mid-flight, and surfaced in the MCP tool schema and `/v1/search` so a caller sees it before calling. This is the answerable half of D56's objection to auto-promotion: the response shape stays a function of the request plus the *published* contract. Worth its own decision record, since it revisits D56.
+- ~~**Hybrid mode** (`execution: "hybrid"`)~~ — **shipped, D68.** The re-dial problem this entry said had to be solved first was dissolved rather than solved: hybrid is not sync-that-promotes but *async that the connection waits on*, so the request path never dials and there is no in-flight request to hand over. The job owns a durable, already-claimed row from before the first byte; the connection is a spectator with a deadline, and the handoff changes only who reports the result.
+- **Do not auto-promote a long-running sync call to async.** Considered and rejected: promotion either re-dials the upstream (duplicate side effects, and there are no idempotency keys) or spawns a detached task (no lease, dies on scale-in — a second async path with strictly weaker guarantees than the first). It also makes the response shape depend on runtime behaviour rather than on the request plus the published contract. The cheap fix for the underlying need is to have the 504 name `execution: "async"` in its hint.
+- Async execution follow-ups (D62/D66): (a) `execution` on the `overslash_read` MCP tool — the canonical async case, a slow analytics query, is read-class, but that tool has its own required-args schema and body-builder so it needs a second forwarder plus tests; (b) binary async results — currently a 400, because `http_caller::call` runs bodies through `from_utf8_lossy` before they reach the row; the real fix is the worker writing to object storage with the row keeping `{result_url, mime, size_bytes}`, which needs a bucket + IAM in Terraform; (c) `NOTIFY`-driven wake-up so a queued job starts immediately instead of within one 2s tick — the `LISTEN` bridge already exists in `services::events::bus`; (d) `orgs.max_async_call_timeout_ms`, if an org ever complains that the sync ceiling they set to bound connection-holding also bounds their background jobs; (e) a *direct* async row records no `actions_executions_total` at all — `stored_call` only records the upstream response — so since D66 a gated async call is strictly more observable than a direct one, which is backwards.
 
 ---
 
@@ -114,7 +133,7 @@ Through 2026-05. Highlights below; full detail in [STATUS.md](STATUS.md).
 - **OAuth + Service Registry**: native OAuth engine with three-tier BYOC, 9 OpenAPI 3.1 templates, three-tier template registry, template validation endpoint, per-service scopes, `on_behalf_of`.
 - **Mode A/B collapse** (SPEC §8): single Service + HTTP verb execution surface; typed `reauth_required` envelopes; dry-run `/v1/actions/validate`; stable webhook envelope.
 - **Identity hierarchy**: parent/child + `inherit_permissions` live pointer; approval bubbling; sub-agent idle archive + retention (backend).
-- **Groups (Layer 1 ceiling)**: read/write/admin grants, `auto_approve_reads`, raw HTTP as the `http` singleton.
+- **Groups (Layer 1 ceiling)**: read/write/admin grants, `auto_approve_level` (a second ceiling on the same ladder), raw HTTP as the `http` singleton.
 - **Rate limiting**: two-tier (User bucket + identity caps), Redis/Valkey or in-memory, standard headers + 429.
 - **Multi-provider OIDC** + per-org IdP configs + GitHub social login + email-domain provisioning.
 - **Multi-org auth**: subdomain routing on `*.app|api.overslash.com`, switch-org, account memberships, corp-org creation with creator-admin.

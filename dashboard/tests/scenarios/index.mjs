@@ -18,6 +18,7 @@
 export { resolveEnv } from './env.mjs';
 export { login, attachToContext, freshOrgSlug, deleteOrg } from './auth.mjs';
 export { purgeMail, seedMailbox, listMailboxMessages } from './mail.mjs';
+export { enrollMcpClient } from './mcp-enroll.mjs';
 export { api } from './api.mjs';
 export {
 	seedAgent,
@@ -32,9 +33,11 @@ export {
 	seedGroupGrant,
 	seedGroupMember,
 	seedApproval,
+	seedApprovalCall,
 	seedApprovalResolution,
 	seedExecution,
 	setAuditResponseBodyMode,
+	setCallTimeouts,
 	setManagedSignin,
 	setTemplateSettings,
 	enableGlobalTemplate,

@@ -90,6 +90,7 @@ async fn setup_pending_oauth_approval() -> PendingOauthApproval {
             token_expires_at: Some(future_time),
             scopes: Some(&["https://www.googleapis.com/auth/calendar".to_string()]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc.id),
         })
         .await

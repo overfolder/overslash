@@ -34,11 +34,35 @@ const CONNECTION_EVENT_TYPES = [
 
 const SECRET_EVENT_TYPES = ['secret_request.created', 'secret_request.fulfilled'] as const;
 
+/**
+ * Async (worker-run) executions. Distinct from the `approval.execution_*`
+ * names on purpose: those are keyed on an approval, and an async call may not
+ * have one. See DECISIONS D62.
+ */
+export const EXECUTION_EVENT_TYPES = [
+	'execution.completed',
+	'execution.failed',
+	'execution.cancelled'
+] as const;
+
+/**
+* Per-call traffic, feeding the Live Map. Only emitted by a build with
+ * `OVERSLASH_LIVE_MAP` set (dev), so on every other deployment these names
+ * are subscribed but never arrive.
+ *
+ * The pair is not ordered — the two events bracket the upstream call, so each
+ * is emitted by its own task and `.completed` can land first. Consumers pair
+ * them by `call_id` and must tolerate either arrival order.
+ */
+export const ACTIVITY_EVENT_TYPES = ['action.called', 'action.completed'] as const;
+
 /** Every event name the server can put on the wire. */
 const WIRE_EVENT_TYPES = [
 	...APPROVAL_EVENT_TYPES,
 	...CONNECTION_EVENT_TYPES,
-	...SECRET_EVENT_TYPES
+	...SECRET_EVENT_TYPES,
+	...EXECUTION_EVENT_TYPES,
+	...ACTIVITY_EVENT_TYPES
 ] as const;
 
 /**
@@ -61,10 +85,20 @@ export interface ApprovalEventData {
 	cascaded_approval_ids?: string[];
 }
 
-// Only `approvals` is subscribed: nothing in the dashboard reacts to connection
-// or secret-request events yet, and a narrower subscription means less work per
-// event on both sides. Widening it is a one-line change.
-const STREAM_URL = '/v1/events/stream?topics=approvals';
+// `connections` and `secrets` stay unsubscribed: nothing in the dashboard
+// reacts to them yet, and a narrower subscription means less work per event on
+// both sides. Widening is a one-line change.
+//
+// This filter is explicit, so a new server-side topic is invisible here until
+// it is named — omitting `executions` would leave /executions silently dead
+// rather than merely stale.
+//
+// `activity` is subscribed unconditionally rather than only when the Live Map
+// is enabled. This connection opens at layout mount, long before
+// `/v1/version` says whether the build emits `action.*` at all, and a build
+// with the flag off emits nothing — so gating here would buy no traffic
+// reduction and cost a reconnect.
+const STREAM_URL = '/v1/events/stream?topics=approvals,activity,executions';
 
 /**
  * How long to tolerate a reconnect before admitting the stream is down. The

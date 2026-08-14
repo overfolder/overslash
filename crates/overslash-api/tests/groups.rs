@@ -4,6 +4,10 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// Create an org-level template + service instance. Returns the service instance ID.
+///
+/// The instance is granted to **Admins**, not Everyone: an org-level instance
+/// must name a group its creator belongs to, and the visibility tests below
+/// depend on the plain test user (Everyone-only) *not* reaching it.
 async fn create_org_service(base: &str, client: &reqwest::Client, key: &str, name: &str) -> Uuid {
     let openapi = common::minimal_openapi(name);
     client
@@ -25,12 +29,36 @@ async fn create_org_service(base: &str, client: &reqwest::Client, key: &str, nam
             "template_key": name,
             "name": name,
             "user_level": false,
+            "groups": [{
+                "group_id": admins_group_id(base, client, key).await.to_string(),
+                "access_level": "admin",
+            }],
         }))
         .send()
         .await
         .unwrap();
     let svc: Value = resp.json().await.unwrap();
     svc["id"].as_str().unwrap().parse().unwrap()
+}
+
+/// The org's Admins group id.
+async fn admins_group_id(base: &str, client: &reqwest::Client, key: &str) -> Uuid {
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("admins"))
+        .and_then(|g| g["id"].as_str())
+        .expect("Admins group must exist after bootstrap")
+        .parse()
+        .unwrap()
 }
 
 /// Bootstrap: org + user identity + user-bound API key.
@@ -660,21 +688,24 @@ async fn patch_grant_rejects_access_level_on_admins() {
         .unwrap()
         .to_string();
 
+    // `create_org_service` already attaches the Admins grant — an org-level
+    // instance can't be created without naming a group.
     let svc_id = create_org_service(&base, &client, &org_key, "svc-admins-lvl").await;
-    let grant: Value = client
-        .post(format!("{base}/v1/groups/{admins_id}/grants"))
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
         .header("Authorization", format!("Bearer {org_key}"))
-        .json(&json!({
-            "service_instance_id": svc_id.to_string(),
-            "access_level": "read",
-        }))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let grant_id = grant["id"].as_str().unwrap();
+    let grant_id = grants
+        .iter()
+        .find(|g| g["service_instance_id"].as_str() == Some(&svc_id.to_string()))
+        .expect("create-time Admins grant")["id"]
+        .as_str()
+        .unwrap();
 
     let resp = client
         .patch(format!("{base}/v1/groups/{admins_id}/grants/{grant_id}"))
@@ -1848,4 +1879,271 @@ async fn group_granted_instance_is_callable_by_name() {
         neg_status == 404 || neg_status == 403,
         "agent without a group grant should be denied (got status={neg_status} body={neg_body})"
     );
+}
+
+#[tokio::test]
+async fn group_list_reports_caller_membership() {
+    let (base, org_key, _user_id, user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    // A group nobody has been assigned to.
+    client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({ "name": "Nobody", "description": "empty" }))
+        .send()
+        .await
+        .unwrap();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // Every user lands in Everyone at creation; nothing puts them in "Nobody".
+    let everyone = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .expect("Everyone group");
+    assert_eq!(everyone["is_member"], true);
+
+    let nobody = groups
+        .iter()
+        .find(|g| g["name"] == "Nobody")
+        .expect("Nobody group");
+    assert_eq!(nobody["is_member"], false);
+}
+
+// ── auto_approve_level (the second ceiling) ──────────────────────────
+
+/// Create a group + org service and return `(group_id, svc_id)`.
+async fn group_with_service(
+    base: &str,
+    client: &reqwest::Client,
+    org_key: &str,
+    name: &str,
+) -> (String, Uuid) {
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": format!("grp-{name}")}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let svc_id = create_org_service(base, client, org_key, name).await;
+    (group["id"].as_str().unwrap().to_string(), svc_id)
+}
+
+/// The new field round-trips, and the deprecated boolean is derived from it —
+/// `write` auto-approval implies reads are covered too.
+#[tokio::test]
+async fn add_grant_accepts_auto_approve_level() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let (group_id, svc_id) = group_with_service(&base, &client, &org_key, "aal-add").await;
+
+    let resp = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "admin",
+            "auto_approve_level": "write",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let grant: Value = resp.json().await.unwrap();
+    assert_eq!(grant["auto_approve_level"], "write");
+    assert_eq!(
+        grant["auto_approve_reads"], true,
+        "the deprecated boolean is derived: write-level auto-approval covers reads"
+    );
+}
+
+/// The deprecated boolean still works and lands on exactly the `read` rung —
+/// not the grant's ceiling. This is the compat contract.
+#[tokio::test]
+async fn auto_approve_reads_alias_maps_to_read_level() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let (group_id, svc_id) = group_with_service(&base, &client, &org_key, "aal-alias").await;
+
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "admin",
+            "auto_approve_reads": true,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        grant["auto_approve_level"], "read",
+        "the alias must not silently grant unattended writes on an admin grant"
+    );
+
+    // …and turning it off lands on `none`.
+    let grant_id = grant["id"].as_str().unwrap().to_string();
+    let patched: Value = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"auto_approve_reads": false}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(patched["auto_approve_level"], "none");
+    assert_eq!(patched["auto_approve_reads"], false);
+}
+
+/// The explicit field wins over the deprecated alias when both are sent.
+#[tokio::test]
+async fn auto_approve_level_takes_precedence_over_alias() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let (group_id, svc_id) = group_with_service(&base, &client, &org_key, "aal-prec").await;
+
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "write",
+            "auto_approve_level": "none",
+            "auto_approve_reads": true,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(grant["auto_approve_level"], "none");
+}
+
+/// Asking to auto-approve above the ceiling is a 400 — on create and on patch.
+#[tokio::test]
+async fn auto_approve_level_above_ceiling_is_rejected() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let (group_id, svc_id) = group_with_service(&base, &client, &org_key, "aal-over").await;
+
+    let resp = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+            "auto_approve_level": "write",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // Same rule on patch: create at read/read, then try to raise.
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+            "auto_approve_level": "read",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap().to_string();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"auto_approve_level": "admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // An unknown rung is a 400 too, not a silent "none".
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"auto_approve_level": "root"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+/// Lowering the ceiling drags an out-of-range auto-approve level down with it
+/// rather than failing. The direction matters: this only ever reduces
+/// privilege, so silently clamping is safe — the reverse is a 400 above.
+#[tokio::test]
+async fn lowering_access_level_clamps_auto_approve_level() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let (group_id, svc_id) = group_with_service(&base, &client, &org_key, "aal-clamp").await;
+
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "admin",
+            "auto_approve_level": "admin",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap().to_string();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "read"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(patched["access_level"], "read");
+    assert_eq!(
+        patched["auto_approve_level"], "read",
+        "auto-approval must never outrank the ceiling it hangs off"
+    );
+
+    // And the clamp is persisted, not just reflected in the response.
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(grants[0]["auto_approve_level"], "read");
 }

@@ -359,6 +359,7 @@ mod verb_host_path_tests {
 
     fn svc_with_hosts(hosts: Vec<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "github".into(),
@@ -367,6 +368,7 @@ mod verb_host_path_tests {
             hosts: hosts.into_iter().map(String::from).collect(),
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             actions: std::collections::HashMap::new(),
             runtime: overslash_core::types::Runtime::Http,

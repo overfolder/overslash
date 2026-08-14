@@ -1,11 +1,13 @@
-// PR screenshots for the new in-place grant controls (PATCH endpoint that
-// replaced the DELETE+POST auto-approve toggle, plus inline access_level
-// select). Captures both surfaces that gained the controls:
+// PR screenshots for the in-place grant controls on both surfaces that carry
+// them. Since D53 the auto-approve ToggleSwitch is a four-rung <select> on the
+// same read < write < admin ladder as access_level, bounded by it:
 //
-//   1. /org/groups/{id}      — already had a toggle; the access_level was
-//                              read-only text. Now both are editable.
-//   2. /services/{name}      — both auto_approve_reads and access_level were
-//                              read-only. Now both are editable.
+//   1. /org/groups/{id}      — access_level select + auto-approve select
+//   2. /services/{name}      — the same pair in the Groups section
+//
+// The interesting frames are the ones the boolean couldn't produce: an
+// auto-approve level of `write` (with its inline caution line), and the
+// server-side clamp when the ceiling drops below the level.
 //
 // Prereq: `make e2e-up`. Output: dashboard/screenshots/grant-controls-*.png.
 
@@ -20,6 +22,9 @@ import {
 const session = await login('admin');
 const snap = await makeSnapper(session);
 
+/** The auto-approve select is the second `.level-select` sibling of the row. */
+const autoApprove = (page) => page.locator('select.level-select').first();
+
 try {
 	const eng = await seedGroup(session, {
 		name: `Engineering-${Date.now()}`,
@@ -28,12 +33,11 @@ try {
 	const github = await seedService(session, { templateKey: 'github' });
 	await seedGroupGrant(session, eng.id, {
 		serviceInstanceId: github.id,
-		accessLevel: 'read',
-		autoApproveReads: false
+		accessLevel: 'admin',
+		autoApproveLevel: 'read'
 	});
 
-	// 1. Org groups detail page — the row now shows: read-level <select>
-	//    + auto-approve ToggleSwitch.
+	// 1. Org groups detail page — access_level <select> + auto-approve <select>.
 	{
 		const { page, ctx } = await snap.navigateAndSnap(
 			'grant-controls-groups-detail',
@@ -48,17 +52,18 @@ try {
 			}
 		);
 
-		// Toggle auto-approve and snap mid-flight so the new state is captured.
-		const toggle = page.getByRole('switch', { name: /Auto-approve reads/i }).first();
-		await toggle.click();
+		// Raise auto-approval to `write` — the rung the boolean could never
+		// express. The inline caution line renders under the select.
+		await autoApprove(page).selectOption('write');
 		await page.waitForTimeout(400);
-		await snap.snap(page, 'grant-controls-groups-toggled');
+		await snap.snap(page, 'grant-controls-groups-auto-approve-write');
 
-		// Change access_level via the inline select.
+		// Drop the ceiling to `read`. The server clamps auto-approval down with
+		// it and the row re-renders from the PATCH response, not optimistically.
 		const accessSelect = page.locator('select.access-select').first();
-		await accessSelect.selectOption('admin');
-		await page.waitForTimeout(400);
-		await snap.snap(page, 'grant-controls-groups-access-changed');
+		await accessSelect.selectOption('read');
+		await page.waitForTimeout(600);
+		await snap.snap(page, 'grant-controls-groups-clamped');
 
 		await ctx.close();
 	}
@@ -78,17 +83,14 @@ try {
 			}
 		);
 
-		const toggle = page
-			.getByRole('switch', { name: /Auto-approve reads/i })
-			.first();
-		await toggle.click();
-		await page.waitForTimeout(400);
-		await snap.snap(page, 'grant-controls-service-toggled');
-
 		const accessSelect = page.locator('select.access-select').first();
 		await accessSelect.selectOption('write');
 		await page.waitForTimeout(400);
 		await snap.snap(page, 'grant-controls-service-access-changed');
+
+		await autoApprove(page).selectOption('write');
+		await page.waitForTimeout(400);
+		await snap.snap(page, 'grant-controls-service-auto-approve-write');
 
 		await ctx.close();
 	}

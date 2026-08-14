@@ -32,6 +32,26 @@ pub async fn compute_credentials_status(
     )
 }
 
+/// Absolute URL of the icon an instance should render, resolved through the
+/// same template lookup `compute_credentials_status` performs.
+///
+/// Instances carry no icon column by design — an instance is a binding of a
+/// template to a credential, so its icon is the template's. Keeping the lookup
+/// here means the org-key listing path and the kernel path cannot drift.
+pub async fn resolve_instance_icon_url(
+    db: &sqlx::PgPool,
+    registry: &overslash_core::registry::ServiceRegistry,
+    row: &ServiceInstanceRow,
+    template_owner: Option<Uuid>,
+    public_url: &str,
+) -> Option<String> {
+    let template =
+        resolve_template_definition(db, registry, row.org_id, template_owner, &row.template_key)
+            .await
+            .ok()?;
+    crate::services::icon_url::resolve_icon_url(template.icon.as_ref(), public_url)
+}
+
 /// Granted scopes of the connection the *execution* path would actually use.
 ///
 /// Mirrors `resolve_service_auth` / `check_required_scopes` at call time: an
@@ -342,6 +362,7 @@ mod tests {
     #[test]
     fn none_when_template_has_no_auth_and_no_connection() {
         let tpl = ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "t".into(),
@@ -350,6 +371,7 @@ mod tests {
             hosts: vec![],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Http,

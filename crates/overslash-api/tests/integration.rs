@@ -22,6 +22,11 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
     let addr = listener.local_addr().unwrap();
 
     let config = overslash_api::config::Config {
+        call_result_max_bytes: 1024 * 1024,
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(), // unused, we pass pool directly
@@ -29,6 +34,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -49,10 +55,17 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
@@ -110,7 +123,9 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -1755,6 +1770,11 @@ async fn test_service_registry_api() {
     let pool = common::test_pool().await;
     // Start API with real service registry loaded
     let config = overslash_api::config::Config {
+        call_result_max_bytes: 1024 * 1024,
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -1762,6 +1782,7 @@ async fn test_service_registry_api() {
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
@@ -1782,10 +1803,17 @@ async fn test_service_registry_api() {
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
@@ -1854,7 +1882,9 @@ async fn test_service_registry_api() {
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()
@@ -2271,6 +2301,7 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
             token_expires_at: Some(expired_time),
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: None,
         })
         .await
@@ -2335,6 +2366,7 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
             token_expires_at: Some(future_time),
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: None,
         })
         .await
@@ -2391,6 +2423,7 @@ async fn test_update_tokens_preserves_refresh_token_when_none() {
             token_expires_at: Some(time::OffsetDateTime::now_utc() - time::Duration::hours(1)),
             scopes: Some(&[]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: None,
         })
         .await
@@ -2779,15 +2812,20 @@ async fn start_api_with_registry(
     )
     .unwrap_or_default();
 
-    if let Some((service_key, new_host)) = host_override {
-        if let Some(svc) = registry.get(service_key) {
-            let mut svc = svc.clone();
-            svc.hosts = vec![new_host];
-            registry.insert(svc);
-        }
+    if let Some((service_key, new_host)) = host_override
+        && let Some(svc) = registry.get(service_key)
+    {
+        let mut svc = svc.clone();
+        svc.hosts = vec![new_host];
+        registry.insert(svc);
     }
 
     let config = overslash_api::config::Config {
+        call_result_max_bytes: 1024 * 1024,
+        async_execution: Default::default(),
+        call_stream_idle_timeout_ms: 30_000,
+        call_timeout_max_ms: 110_000,
+        call_timeout_ms: 30_000,
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -2795,6 +2833,7 @@ async fn start_api_with_registry(
         db_min_connections: 1,
         db_acquire_timeout_secs: 10,
         events_stream_max_connection_secs: 30,
+        live_map_enabled: false,
         db_background_max_connections: 2,
         secrets_encryption_key: enc_key_hex,
         secrets_encryption_key_previous: None,
@@ -2815,10 +2854,17 @@ async fn start_api_with_registry(
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
+        download_token_ttl_secs: 900,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        resolve_cache_ttl_secs: 300,
+        resolve_cache_negative_ttl_secs: 30,
+        resolve_cache_scope_ttl_max_secs: 300,
+        resolve_cache_timeout_ms: 100,
+        resolve_cache_max_entries: 10_000,
+        resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
         allow_org_creation: true,
@@ -2875,7 +2921,9 @@ async fn start_api_with_registry(
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
+        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
         test_resources: None,
+        background_db: None,
     };
 
     let app = axum::Router::new()

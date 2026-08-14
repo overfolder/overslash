@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions\n            SET status = 'failed',\n                error = 'async_wall_clock',\n                worker_id = NULL,\n                lease_expires_at = NULL,\n                completed_at = now()\n          WHERE status = 'executing'\n            AND request IS NOT NULL\n            AND started_at IS NOT NULL\n            AND started_at < now() - make_interval(secs => $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "11dcbed64c3ee204eafb0c9b3d0ab0757d1a5c9b546daba1da9a1fe0796e8ef3"
+}

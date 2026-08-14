@@ -23,6 +23,7 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import { absoluteTime } from '$lib/utils/time';
+	import { invalidateAllowedDomains } from '$lib/orgDomains';
 
 	let { data }: { data: OrgPageData } = $props();
 
@@ -519,15 +520,17 @@
 		}
 	}
 
-	async function toggleDefaultDeferredExecution(nextValue?: boolean) {
+	// The endpoint patches partially, so send only the keys that changed —
+	// an omitted key leaves its setting alone, and an explicit null clears a
+	// timeout back to the deployment default.
+	async function patchExecutionSettings(patch: Partial<ExecutionSettings>) {
 		if (!org || !executionSettings) return;
-		const next = nextValue ?? !executionSettings.default_deferred_execution;
 		executionSaving = true;
 		executionError = null;
 		try {
 			const updated = await session.patch<ExecutionSettings>(
 				`/v1/orgs/${org.id}/execution-settings`,
-				{ default_deferred_execution: next }
+				patch
 			);
 			executionSettings = updated;
 		} catch (err) {
@@ -535,6 +538,33 @@
 		} finally {
 			executionSaving = false;
 		}
+	}
+
+	function toggleDefaultDeferredExecution(nextValue?: boolean) {
+		if (!executionSettings) return;
+		const next = nextValue ?? !executionSettings.default_deferred_execution;
+		return patchExecutionSettings({ default_deferred_execution: next });
+	}
+
+	// Blank clears the override; anything else must parse to a positive
+	// integer. Reject locally rather than round-tripping a 400 for a typo.
+	function commitTimeout(
+		field: 'call_timeout_ms' | 'max_call_timeout_ms',
+		raw: string
+	) {
+		if (!executionSettings) return;
+		const trimmed = raw.trim();
+		if (trimmed === '') {
+			if (executionSettings[field] === null) return;
+			return patchExecutionSettings({ [field]: null });
+		}
+		const parsed = Number(trimmed);
+		if (!Number.isInteger(parsed) || parsed <= 0) {
+			executionError = 'Timeout must be a whole number of milliseconds.';
+			return;
+		}
+		if (executionSettings[field] === parsed) return;
+		return patchExecutionSettings({ [field]: parsed });
 	}
 
 	async function patchTemplateSettings(patch: Partial<TemplateSettings>) {
@@ -608,6 +638,11 @@
 			managedSigninSettings = updated;
 			domainsInput = updated.managed_signin_allowed_domains.join('\n');
 			domainsDirty = false;
+			// Identity labels across the app strip the domain when exactly one is
+			// allowed. This page patches state in place instead of invalidating
+			// the layout load, so drop the memo explicitly or every other page
+			// keeps the old labels until a full reload.
+			invalidateAllowedDomains();
 			// Managed-provider rows in /v1/org-idp-configs are gated on the
 			// flag — refetch so they appear/disappear immediately.
 			await refetchIdp();
@@ -829,6 +864,48 @@
 						label="Deferred execution by default for new agents"
 					/>
 				</div>
+
+				<div class="timeout-rows">
+					<div class="toggle-label">Upstream call timeouts</div>
+					<div class="toggle-help">
+						How long an action call may wait on the service it is calling.
+						Leave a field blank to inherit this deployment's default. A
+						service template can set its own default for a known-slow action,
+						and an individual call can pass <code>timeout_ms</code> — but
+						neither may exceed the maximum below.
+					</div>
+					<div class="timeout-fields">
+						<label class="timeout-field">
+							Default (ms)
+							<input
+								type="number"
+								min="1000"
+								max="600000"
+								step="1000"
+								placeholder="deployment default"
+								value={executionSettings.call_timeout_ms ?? ''}
+								disabled={executionSaving}
+								onchange={(e) =>
+									commitTimeout('call_timeout_ms', e.currentTarget.value)}
+							/>
+						</label>
+						<label class="timeout-field">
+							Maximum (ms)
+							<input
+								type="number"
+								min="1000"
+								max="600000"
+								step="1000"
+								placeholder="deployment maximum"
+								value={executionSettings.max_call_timeout_ms ?? ''}
+								disabled={executionSaving}
+								onchange={(e) =>
+									commitTimeout('max_call_timeout_ms', e.currentTarget.value)}
+							/>
+						</label>
+					</div>
+				</div>
+
 				{#if executionError}
 					<div class="form-error">{executionError}</div>
 				{/if}
@@ -2279,6 +2356,31 @@
 		color: var(--color-text-muted);
 		font-size: 0.82rem;
 		line-height: 1.45;
+	}
+
+	.timeout-rows {
+		margin-top: 1rem;
+		padding-top: 1rem;
+		border-top: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.08));
+	}
+
+	.timeout-fields {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem;
+		margin-top: 0.75rem;
+	}
+
+	.timeout-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		font-size: 0.8125rem;
+		color: var(--text-secondary, #666);
+	}
+
+	.timeout-field input {
+		width: 12rem;
 	}
 	.domains-block {
 		display: flex;

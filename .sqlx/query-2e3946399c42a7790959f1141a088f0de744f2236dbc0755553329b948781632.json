@@ -1,0 +1,89 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT gg.service_instance_id, si.name AS service_name,\n                si.template_key, gg.access_level, gg.auto_approve_reads,\n                gg.auto_approve_level\n         FROM group_grants gg\n         JOIN identity_groups ig ON ig.group_id = gg.group_id\n         JOIN identities i ON i.id = ig.identity_id\n         JOIN groups g ON g.id = gg.group_id\n         JOIN service_instances si ON si.id = gg.service_instance_id\n         WHERE ig.identity_id = $1\n           AND i.org_id = $2\n           AND g.org_id = $2\n           AND si.org_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "service_instance_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_grants",
+            "name": "service_instance_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "service_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "template_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "template_key"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "access_level",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_grants",
+            "name": "access_level"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "auto_approve_reads",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "group_grants",
+            "name": "auto_approve_reads"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "auto_approve_level",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_grants",
+            "name": "auto_approve_level"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2e3946399c42a7790959f1141a088f0de744f2236dbc0755553329b948781632"
+}

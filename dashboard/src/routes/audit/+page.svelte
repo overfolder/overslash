@@ -2,14 +2,17 @@
 	import { replaceState } from '$app/navigation';
 	import { tick } from 'svelte';
 	import { session, ApiError } from '$lib/session';
-	import SearchBar, { type SearchValue } from '$lib/components/SearchBar.svelte';
+	import SearchBar, { addTerm, type SearchValue, type Term } from '$lib/components/SearchBar.svelte';
 	import AuditRow from './AuditRow.svelte';
 	import { downloadCsv } from './exportCsv';
 	import { buildAuditSearchKeys, filtersToSearch, searchToFilters } from './searchMapping';
+	import { makeIdentityFormatter } from '$lib/identityDisplay';
 	import {
 		buildQuery,
+		cursorFrom,
 		filtersToSearchString,
 		PAGE_LIMIT,
+		type AuditCursor,
 		type AuditEntry,
 		type AuditFilters
 	} from './types';
@@ -21,7 +24,14 @@
 	// svelte-ignore state_referenced_locally
 	let filters = $state<AuditFilters>(data.filters);
 	// svelte-ignore state_referenced_locally
-	const identities = data.identities;
+	const allIdentities = data.identities;
+	// The search bar offers live identities only — archived ones are fetched
+	// solely so historical rows can still resolve an actor's email.
+	const identities = allIdentities.filter((i) => !i.archived_at);
+	// Row actors are resolved by id, not by the name embedded in the SPIFFE
+	// path, so a rename or a duplicate display name can't mislabel a row.
+	const identityById = new Map(allIdentities.map((i) => [i.id, i]));
+	const fmt = $derived(makeIdentityFormatter(data.allowedDomains));
 	// The logged-in user, so `user = me` resolves to their identity (and reverses
 	// back to `me` when hydrating filters from the URL).
 	// svelte-ignore state_referenced_locally
@@ -31,8 +41,10 @@
 	const searchKeys = buildAuditSearchKeys(identities, currentUser);
 	// svelte-ignore state_referenced_locally
 	let searchValue = $state<SearchValue>(filtersToSearch(data.filters, identities, currentUser));
+	// Keyset cursor rather than a row offset: `OFFSET n` walks n+limit index
+	// entries, so scrolling a long log would get slower with every page.
 	// svelte-ignore state_referenced_locally
-	let offset = $state(data.entries.length);
+	let cursor = $state<AuditCursor | null>(cursorFrom(data.entries));
 	// svelte-ignore state_referenced_locally
 	let done = $state(data.entries.length < PAGE_LIMIT);
 	let loading = $state(false);
@@ -68,20 +80,17 @@
 		inFlight = ctrl;
 		loading = true;
 		loadError = null;
-		const nextOffset = reset ? 0 : offset;
+		const nextCursor = reset ? null : cursor;
 		const requestFilters = filters;
 		try {
 			const page = await session.get<AuditEntry[]>(
-				`/v1/audit?${buildQuery(requestFilters, PAGE_LIMIT, nextOffset)}`,
+				`/v1/audit?${buildQuery(requestFilters, PAGE_LIMIT, nextCursor)}`,
 				ctrl.signal
 			);
-			if (reset) {
-				entries = page;
-				offset = page.length;
-			} else {
-				entries = [...entries, ...page];
-				offset += page.length;
-			}
+			entries = reset ? page : [...entries, ...page];
+			// Derived from the rows we actually hold, so an aborted-and-retried
+			// fetch can never advance the cursor past a page that never landed.
+			cursor = cursorFrom(entries);
 			done = page.length < PAGE_LIMIT;
 		} catch (e) {
 			if ((e as { name?: string })?.name === 'AbortError') return;
@@ -123,14 +132,11 @@
 	/** Add `tag = <t>` to the active search. Tags AND, so clicking a second chip
 	 *  narrows rather than replaces; clicking one already present is a no-op. */
 	function onTagClick(t: string) {
-		const already = searchValue.expressions.some(
-			(e) => e.key === 'tag' && e.op === '=' && e.value === t
-		);
-		if (already) return;
-		onSearchChange({
-			...searchValue,
-			expressions: [...searchValue.expressions, { key: 'tag', op: '=', value: t }]
-		});
+		const term: Term = { kind: 'filter', key: 'tag', op: '=', value: t };
+		// `addTerm` returns the same object when the term is already there, so a
+		// repeat click costs no refetch.
+		const next = addTerm(searchValue, term);
+		if (next !== searchValue) onSearchChange(next);
 	}
 
 	function refresh() {
@@ -218,6 +224,8 @@
 							expanded={expandedId === anchor.id}
 							ontoggle={() => toggleExpand(anchor!.id)}
 							currentUserId={data.user?.identity_id}
+							{identityById}
+							{fmt}
 							ontagclick={onTagClick}
 						/>
 					</tbody>
@@ -255,6 +263,8 @@
 								expanded={expandedId === entry.id}
 								ontoggle={() => toggleExpand(entry.id)}
 								currentUserId={data.user?.identity_id}
+								{identityById}
+								{fmt}
 								ontagclick={onTagClick}
 							/>
 							{#snippet failed(error)}

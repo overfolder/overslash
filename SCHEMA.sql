@@ -93,6 +93,8 @@ CREATE TABLE public.approvals (
     disclosed_fields jsonb,
     replay_payload jsonb,
     tags text[] DEFAULT '{}'::text[] NOT NULL,
+    execution_mode text DEFAULT 'sync'::text NOT NULL,
+    CONSTRAINT approvals_execution_mode_check CHECK ((execution_mode = ANY (ARRAY['sync'::text, 'async'::text, 'hybrid'::text]))),
     CONSTRAINT approvals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'allowed'::text, 'denied'::text, 'expired'::text])))
 );
 
@@ -113,8 +115,24 @@ CREATE TABLE public.audit_log (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     description text,
     impersonated_by_identity_id uuid,
-    tags text[] DEFAULT '{}'::text[] NOT NULL
+    tags text[] DEFAULT '{}'::text[] NOT NULL,
+    actor_name text,
+    owner_user_name text
 );
+
+
+--
+-- Name: COLUMN audit_log.actor_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.audit_log.actor_name IS 'Name of identity_id as of write time. Historical by design (D56) — the row records the name the actor had when they acted, not their current one.';
+
+
+--
+-- Name: COLUMN audit_log.owner_user_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.audit_log.owner_user_name IS 'Name of the root user of the actor''s identity chain, as of write time. Root, not direct parent: a sub-agent resolves to the human at the top, matching the audit table''s User column.';
 
 
 --
@@ -149,6 +167,46 @@ CREATE TABLE public.byoc_credentials (
 
 
 --
+-- Name: call_results; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.call_results (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    service_key text,
+    action_key text,
+    body_ciphertext bytea NOT NULL,
+    status_code integer NOT NULL,
+    content_type text,
+    body_bytes bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: TABLE call_results; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.call_results IS 'Full ActionResult of a call whose compact rendering was truncated, stored so the same bytes can be delivered again without re-running upstream. Written by POST /v1/actions/call when verbose=false truncated; read via GET /v1/downloads/{token}.';
+
+
+--
+-- Name: COLUMN call_results.body_ciphertext; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.call_results.body_ciphertext IS 'AES-256-GCM [version|nonce|ct+tag] over the serialized ActionResult. Response headers live inside the blob, which is why the whole thing is encrypted.';
+
+
+--
+-- Name: COLUMN call_results.body_bytes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.call_results.body_bytes IS 'Plaintext size, for the download Descriptor. Bounded by call_result_max_bytes.';
+
+
+--
 -- Name: connections; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -166,8 +224,49 @@ CREATE TABLE public.connections (
     is_default boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    keep boolean DEFAULT false NOT NULL
+    keep boolean DEFAULT false NOT NULL,
+    account_picture text
 );
+
+
+--
+-- Name: download_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.download_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    token_hash bytea NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    service_instance_id uuid,
+    service_key text,
+    action_key text,
+    request jsonb,
+    credential_ref jsonb DEFAULT '{}'::jsonb NOT NULL,
+    mime text,
+    size_bytes bigint,
+    filename text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    last_used_at timestamp with time zone,
+    use_count integer DEFAULT 0 NOT NULL,
+    call_result_id uuid,
+    CONSTRAINT download_tokens_one_byte_source CHECK ((num_nonnulls(request, call_result_id) = 1))
+);
+
+
+--
+-- Name: TABLE download_tokens; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.download_tokens IS 'Capability tokens for deferred (out-of-band) byte delivery. Minted by POST /v1/actions/call with deliver:"url", redeemed by GET /v1/downloads/{token}.';
+
+
+--
+-- Name: COLUMN download_tokens.call_result_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.download_tokens.call_result_id IS 'When set, redemption serves these stored bytes instead of replaying `request`. Mutually exclusive with `request` (download_tokens_one_byte_source).';
 
 
 --
@@ -266,7 +365,7 @@ ALTER SEQUENCE public.events_id_seq OWNED BY public.events.id;
 
 CREATE TABLE public.executions (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
-    approval_id uuid NOT NULL,
+    approval_id uuid,
     org_id uuid NOT NULL,
     status text NOT NULL,
     remember boolean DEFAULT false NOT NULL,
@@ -281,6 +380,20 @@ CREATE TABLE public.executions (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     result_viewed_at timestamp with time zone,
     tags text[] DEFAULT '{}'::text[] NOT NULL,
+    identity_id uuid NOT NULL,
+    request jsonb,
+    service_key text,
+    service_instance_id uuid,
+    lease_expires_at timestamp with time zone,
+    worker_id text,
+    attempts integer DEFAULT 0 NOT NULL,
+    cancel_requested boolean DEFAULT false NOT NULL,
+    render_verbose boolean,
+    template_key text,
+    description text,
+    client_ip text,
+    CONSTRAINT executions_attempts_nonneg CHECK ((attempts >= 0)),
+    CONSTRAINT executions_has_origin CHECK (((approval_id IS NOT NULL) OR (request IS NOT NULL))),
     CONSTRAINT executions_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'executing'::text, 'executed'::text, 'failed'::text, 'cancelled'::text, 'expired'::text])))
 );
 
@@ -296,8 +409,25 @@ CREATE TABLE public.group_grants (
     access_level text NOT NULL,
     auto_approve_reads boolean DEFAULT false NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT group_grants_access_level_check CHECK ((access_level = ANY (ARRAY['read'::text, 'write'::text, 'admin'::text])))
+    auto_approve_level text DEFAULT 'none'::text NOT NULL,
+    CONSTRAINT group_grants_access_level_check CHECK ((access_level = ANY (ARRAY['read'::text, 'write'::text, 'admin'::text]))),
+    CONSTRAINT group_grants_auto_approve_level_valid CHECK ((auto_approve_level = ANY (ARRAY['none'::text, 'read'::text, 'write'::text, 'admin'::text]))),
+    CONSTRAINT group_grants_auto_approve_within_ceiling CHECK (((auto_approve_level = 'none'::text) OR (access_level = 'admin'::text) OR ((access_level = 'write'::text) AND (auto_approve_level = ANY (ARRAY['read'::text, 'write'::text]))) OR ((access_level = 'read'::text) AND (auto_approve_level = 'read'::text))))
 );
+
+
+--
+-- Name: COLUMN group_grants.auto_approve_reads; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.group_grants.auto_approve_reads IS 'DEPRECATED - derived mirror of (auto_approve_level <> ''none''). Read auto_approve_level instead; this column is dropped once the API alias is removed.';
+
+
+--
+-- Name: COLUMN group_grants.auto_approve_level; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.group_grants.auto_approve_level IS 'How far up the read<write<admin ladder actions skip Layer 2 (no permission rule, no approval). ''none'' = always require approval. Bounded by access_level.';
 
 
 --
@@ -617,8 +747,11 @@ CREATE TABLE public.orgs (
     audit_response_body_mode text DEFAULT 'off'::text NOT NULL,
     headless boolean DEFAULT false NOT NULL,
     allow_services_outside_catalog boolean DEFAULT false NOT NULL,
+    call_timeout_ms integer,
+    max_call_timeout_ms integer,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_audit_response_body_mode_check CHECK ((audit_response_body_mode = ANY (ARRAY['off'::text, 'errors_only'::text, 'all'::text]))),
+    CONSTRAINT orgs_call_timeout_bounds CHECK ((((call_timeout_ms IS NULL) OR ((call_timeout_ms >= 1000) AND (call_timeout_ms <= 600000))) AND ((max_call_timeout_ms IS NULL) OR ((max_call_timeout_ms >= 1000) AND (max_call_timeout_ms <= 600000))) AND ((call_timeout_ms IS NULL) OR (max_call_timeout_ms IS NULL) OR (call_timeout_ms <= max_call_timeout_ms)))),
     CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))
 );
 
@@ -958,11 +1091,35 @@ ALTER TABLE ONLY public.byoc_credentials
 
 
 --
+-- Name: call_results call_results_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.call_results
+    ADD CONSTRAINT call_results_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: connections connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.connections
     ADD CONSTRAINT connections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: download_tokens download_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: download_tokens download_tokens_token_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_token_hash_key UNIQUE (token_hash);
 
 
 --
@@ -1364,6 +1521,20 @@ CREATE INDEX email_unsubscribe_tokens_user_id ON public.email_unsubscribe_tokens
 
 
 --
+-- Name: call_results_expiry_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX call_results_expiry_idx ON public.call_results USING btree (expires_at);
+
+
+--
+-- Name: download_tokens_expiry_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX download_tokens_expiry_idx ON public.download_tokens USING btree (expires_at);
+
+
+--
 -- Name: events_org_replay_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1427,24 +1598,31 @@ CREATE INDEX idx_audit_log_identity ON public.audit_log USING btree (identity_id
 
 
 --
--- Name: idx_audit_log_impersonated_by; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_audit_log_org_action; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_audit_log_impersonated_by ON public.audit_log USING btree (org_id, impersonated_by_identity_id) WHERE (impersonated_by_identity_id IS NOT NULL);
-
-
---
--- Name: idx_audit_log_org; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_audit_log_org ON public.audit_log USING btree (org_id, created_at DESC);
+CREATE INDEX idx_audit_log_org_action ON public.audit_log USING btree (org_id, action, created_at DESC);
 
 
 --
--- Name: idx_audit_log_tags; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_audit_log_org_created_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_audit_log_tags ON public.audit_log USING gin (tags);
+CREATE INDEX idx_audit_log_org_created_id ON public.audit_log USING btree (org_id, created_at DESC, id DESC);
+
+
+--
+-- Name: idx_audit_log_org_resource_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_audit_log_org_resource_type ON public.audit_log USING btree (org_id, resource_type, created_at DESC);
+
+
+--
+-- Name: idx_audit_log_search_trgm; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_audit_log_search_trgm ON public.audit_log USING gin ((((((action || ' '::text) || COALESCE(description, ''::text)) || ' '::text) || COALESCE(actor_name, ''::text))) public.gin_trgm_ops);
 
 
 --
@@ -1472,7 +1650,28 @@ CREATE INDEX idx_connections_provider ON public.connections USING btree (org_id,
 -- Name: idx_executions_approval_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_executions_approval_id ON public.executions USING btree (approval_id);
+CREATE UNIQUE INDEX idx_executions_approval_id ON public.executions USING btree (approval_id) WHERE (approval_id IS NOT NULL);
+
+
+--
+-- Name: idx_executions_async_lease; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_async_lease ON public.executions USING btree (lease_expires_at) WHERE ((status = 'executing'::text) AND (request IS NOT NULL));
+
+
+--
+-- Name: idx_executions_async_queue; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_async_queue ON public.executions USING btree (created_at) WHERE ((status = 'pending'::text) AND (request IS NOT NULL));
+
+
+--
+-- Name: idx_executions_identity_recent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_identity_recent ON public.executions USING btree (org_id, identity_id, created_at DESC);
 
 
 --
@@ -2069,6 +2268,22 @@ ALTER TABLE ONLY public.byoc_credentials
 
 
 --
+-- Name: call_results call_results_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.call_results
+    ADD CONSTRAINT call_results_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: call_results call_results_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.call_results
+    ADD CONSTRAINT call_results_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: connections connections_byoc_credential_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2098,6 +2313,38 @@ ALTER TABLE ONLY public.connections
 
 ALTER TABLE ONLY public.connections
     ADD CONSTRAINT connections_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
+
+
+--
+-- Name: download_tokens download_tokens_call_result_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_call_result_id_fkey FOREIGN KEY (call_result_id) REFERENCES public.call_results(id) ON DELETE CASCADE;
+
+
+--
+-- Name: download_tokens download_tokens_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: download_tokens download_tokens_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: download_tokens download_tokens_service_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.download_tokens
+    ADD CONSTRAINT download_tokens_service_instance_id_fkey FOREIGN KEY (service_instance_id) REFERENCES public.service_instances(id) ON DELETE CASCADE;
 
 
 --

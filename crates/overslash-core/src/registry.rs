@@ -1,3 +1,4 @@
+use crate::service_icon::ServiceIcon;
 use std::collections::HashMap;
 #[cfg(feature = "yaml")]
 use std::path::Path;
@@ -42,10 +43,18 @@ fn http_pseudo_service() -> ServiceDefinition {
         hosts: Vec::new(),
         category: Some("Platform".to_string()),
         hidden: false,
+        // Set explicitly rather than left to the implicit rule: this
+        // definition is built here in Rust and never passes through
+        // `compile_service`, which is where `implicit_for_key` runs. A globe
+        // rather than a vendor mark — Mode A stands for "any URL you supply".
+        icon: ServiceIcon::implicit_for_key(HTTP_PSEUDO_SERVICE),
         auth: Vec::new(),
         secrets: Vec::new(),
         config: Vec::new(),
         actions: HashMap::new(),
+        // No upstream of its own to be slow — Mode A's timeout comes entirely
+        // from the caller, the org, or the deployment default.
+        default_timeout_ms: None,
         runtime: Runtime::Http,
         mcp: None,
         instance_defaults: None,
@@ -63,6 +72,12 @@ impl ServiceRegistry {
     /// fail at any stage are logged as `tracing::error!` and skipped so a
     /// single broken shipped template can't take down the whole process — CI
     /// catches the same cases via `shipped_services_load_clean` below.
+    ///
+    /// The extension lint ([`crate::openapi::lint_extensions`]) is the one check
+    /// that reports without skipping: its findings are `tracing::warn!` and the
+    /// template still loads, because a key nothing reads is a smaller problem
+    /// than an absent service. `shipped_services_lint_clean` is where that
+    /// leniency is paid for.
     ///
     /// `vars` is normally [`Vars::from_env`]; tests pass an explicit set rather
     /// than mutating the process environment, which races across the suite.
@@ -108,6 +123,23 @@ impl ServiceRegistry {
                     "alias normalization failed; skipping"
                 );
                 continue;
+            }
+
+            // Extension lint findings are logged and the template still loads.
+            // Making them fatal here would mean a stray key *removes a service*,
+            // which is strictly worse than the ignored field the lint exists to
+            // report — and `shipped_services_lint_clean` already refuses to let
+            // one reach a release. The log line matters for an operator pointing
+            // `services_dir` at templates of their own, which never passed our
+            // CI. See D67.
+            for w in crate::openapi::lint_extensions(&doc) {
+                tracing::warn!(
+                    file = %path.display(),
+                    code = %w.code,
+                    path = %w.path,
+                    message = %w.message,
+                    "shipped service template declares something nothing reads"
+                );
             }
 
             // Expand `${VAR}` before compile, so `servers[].url` is already the
@@ -491,6 +523,36 @@ paths:
     }
 
     #[test]
+    fn every_shipped_template_resolves_to_a_shipped_icon() {
+        // Catches the two ways this silently degrades: a renamed asset (the
+        // implicit `builtin:<key>` rule stops matching and the service drops to
+        // a letter tile), and an `icon:` naming an asset nobody shipped.
+        //
+        // Templates listed as `pending` in assets/service-icons/manifest.json
+        // legitimately have no mark yet and are expected to be iconless.
+        const EXPECTED_WITHOUT_ICON: &[&str] = &["eventbrite", "linkedin", "outlook", "slack"];
+
+        let reg =
+            ServiceRegistry::load_from_dir(&shipped_services_dir(), Vars::for_tests()).unwrap();
+
+        for def in reg.all() {
+            let key = def.key.as_str();
+            match &def.icon {
+                None => assert!(
+                    EXPECTED_WITHOUT_ICON.contains(&key),
+                    "template '{key}' has no icon; add one to \
+                     assets/service-icons/manifest.json or list it as pending"
+                ),
+                Some(icon) => assert!(
+                    icon.is_known_builtin()
+                        || matches!(icon, crate::service_icon::ServiceIcon::Remote { .. }),
+                    "template '{key}' points at '{icon}', which is not a shipped asset"
+                ),
+            }
+        }
+    }
+
+    #[test]
     fn shipped_email_host_comes_from_the_deployment_variable() {
         // The whole point of D44: `hosts[0]` — which is what
         // `Config::platform_credential_for` compares the outgoing URL against
@@ -770,6 +832,11 @@ paths:
         // it only checks non-emptiness). Assert every shipped `*.yaml` both
         // validates AND lands in the registry under its declared key, so a
         // validation regression fails loudly here instead of at call time.
+        //
+        // Its one-level-down analogue is `shipped_services_lint_clean` (in
+        // `template_validation::yaml`), for the template that loads fine and
+        // quietly does less than it says — this test catches a template that
+        // vanishes, that one catches a key nothing reads.
         let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()

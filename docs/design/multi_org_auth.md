@@ -157,8 +157,9 @@ Self-hosted deployments bypass this middleware when `SINGLE_ORG_MODE=<slug>` is 
 ### Flow 2 — Org subdomain login (`acme.app.overslash.com/login`)
 
 - Subdomain middleware resolves `org_id` for `acme`.
-- `GET /auth/providers` returns only the org's enabled IDPs from `org_idp_configs`. There is no "Continue with Overslash" fallback — an Overslash-level IDP cannot grant membership to a corp org under this design, so offering it would be misleading.
+- `GET /auth/providers` returns the org's enabled IDPs from `org_idp_configs`, plus the Overslash-managed providers when the org opted in via `allow_overslash_managed_signin` (Flow 2b). Without that opt-in there is no "Continue with Overslash" fallback — an Overslash-level IDP cannot grant membership to a corp org, so offering it would be misleading. Both halves come from `services::org_signin`, which every sign-in path reads.
   - Exception: the org's creator (and any other Overslash-backed user who already has a membership in the org) reaches it via `/auth/switch-org` from the root dashboard, not via the org's `/login` page.
+- `GET /oauth/authorize` (the MCP authorization server) bounces an unauthenticated caller through the same provider list: the org's designated default if it has one, else straight to a lone provider, else the `/login` picker. The redirect is absolute to `https://<slug>.<app-apex>` — the `oss_auth_*` cookies are scoped to `SESSION_COOKIE_DOMAIN` (`.app.<apex>`), so a login started on `<slug>.api.<apex>` (the host the AS metadata advertises) would have them rejected by the browser.
 - Provisioning on callback — lookups key on `(org_id, external_id)`, never on email:
   1. Exchange code → `{ subject, email, name }` from IDP. If email missing → reject (`idp_missing_email`).
   2. Look up `identities` by `(org_id, kind='user', external_id=<IDP subject>)`.
@@ -174,7 +175,10 @@ Added 2026-05, migration 066. Default `true` for new corp orgs, `false` for exis
 > **Migration 092 (2026-07):** admission on this path is no longer hard-wired to invites. The org-level `require_invite_admission` flag (default `true`) picks the gate — invite-only, or an org-wide domain allowlist. Steps 3–5 below describe the `require_invite_admission = true` (default) case; the `false` case is described immediately after.
 
 - The org has `allow_overslash_managed_signin = true`.
-- `resolve_auth_credentials` first looks for a dedicated `org_idp_configs` row for the provider. If present, dedicated creds win (the admin's explicit setup is authoritative). If absent, it next checks the org's OAuth App Credentials (`OAUTH_{PROVIDER}_CLIENT_ID/SECRET` org secrets) and returns those when configured — an org-level credential is an intentional override of the shared env app. Only when neither is set does it fall back to the server's env-var creds (`GOOGLE_AUTH_CLIENT_ID`, `GITHUB_AUTH_CLIENT_ID`, …) — the Overslash-managed OAuth app authenticates the user.
+- `resolve_auth_credentials` delegates to `services::org_signin`, which resolves availability and credentials together so the login page cannot advertise a provider that sign-in then refuses:
+  - A dedicated `org_idp_configs` row **claims** its provider key. If the row is enabled, its own credentials win (the admin's explicit setup is authoritative), falling back to the org's OAuth App Credentials (`OAUTH_{PROVIDER}_CLIENT_ID/SECRET` org secrets) when the row is configured to defer to them — a missing pair there is an error, not a fallthrough.
+  - If the row is **disabled**, that provider is off for the org. Managed sign-in does not quietly take it over; the login page stops listing it too.
+  - For a key no row claims, the managed path applies: the org's OAuth App Credentials first (an org-level credential is an intentional override of the shared env app), then the server's env-var creds (`GOOGLE_AUTH_CLIENT_ID`, `GITHUB_AUTH_CLIENT_ID`, …) — the Overslash-managed OAuth app authenticates the user.
 - The callback path swaps the `allowed_email_domains` gate for an invite check:
   1. Exchange code → `{ subject, email, name }`. If email missing → reject (`idp_missing_email`).
   2. If the `identities(org_id, external_id)` row already exists, refresh + return (existing member).
@@ -209,7 +213,7 @@ Current: reads JWT, extracts `org_id` from claims. New: reads JWT → extracts `
 
 - **Login page** (`dashboard/src/routes/login/+page.svelte`):
   - On root domain: render only Overslash-level providers; no org field.
-  - On org subdomain: render only the org's enabled IDPs. No Overslash fallback button.
+  - On org subdomain: render the org's enabled IDPs, plus the Overslash-managed providers when the org enabled managed sign-in. No Overslash fallback button otherwise.
   - If the subdomain has no enabled IDPs yet, show an explanatory page: "This org has no sign-in configured. Contact the org admin." The admin (= creator) reaches the org via root → org switcher.
 - **`+layout.ts`**: `MeIdentity` gains `user_id`, `memberships: [{ org_id, slug, name, role, is_personal }]`, `personal_org_id`.
 - **`OrgSwitcher.svelte`** (new) — sidebar-top component. Dropdown listing memberships grouped as Personal / Orgs; calls `/auth/switch-org` then hard-reloads to returned URL. No per-row badges — every row is just an org name.

@@ -69,6 +69,66 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(30),
+            call_timeout_ms: env::var("CALL_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(30_000),
+            // Just under the 120s Cloud Run cuts at, so we return our own 504
+            // with an audit row rather than letting the proxy drop the
+            // connection anonymously. (The HTTPS LB sets no timeout of its
+            // own — serverless-NEG backends reject `timeout_sec`.)
+            call_timeout_max_ms: env::var("CALL_TIMEOUT_MAX_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(110_000),
+            call_stream_idle_timeout_ms: env::var("CALL_STREAM_IDLE_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(30_000),
+            async_execution: crate::config::AsyncExecutionConfig {
+                enabled: env::var("ASYNC_EXECUTION_ENABLED")
+                    .ok()
+                    .map(|v| matches!(v.as_str(), "true" | "1" | "yes"))
+                    .unwrap_or(false),
+                call_timeout_max_ms: env::var("ASYNC_CALL_TIMEOUT_MAX_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(900_000),
+                worker_concurrency: env::var("ASYNC_WORKER_CONCURRENCY")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(2),
+                lease_ttl_secs: env::var("ASYNC_LEASE_TTL_SECS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(60),
+                max_attempts: env::var("ASYNC_MAX_ATTEMPTS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(1),
+                hybrid_handoff_ms: env::var("HYBRID_HANDOFF_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(5_000),
+                hybrid_handoff_max_ms: env::var("HYBRID_HANDOFF_MAX_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(30_000),
+                hybrid_max_inflight: env::var("HYBRID_MAX_INFLIGHT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(32),
+            },
             services_dir: env::var("SERVICES_DIR").unwrap_or_else(|_| "services".into()),
             google_auth_client_id: env::var("GOOGLE_AUTH_CLIENT_ID").ok(),
             google_auth_client_secret: env::var("GOOGLE_AUTH_CLIENT_SECRET").ok(),
@@ -76,6 +136,7 @@ impl Config {
             github_auth_client_secret: env::var("GITHUB_AUTH_CLIENT_SECRET").ok(),
             public_url,
             dev_auth_enabled: env::var("DEV_AUTH").is_ok(),
+            live_map_enabled: env::var("OVERSLASH_LIVE_MAP").is_ok(),
             // Default-on; only an explicit falsey value disables it.
             magic_link_enabled: env::var("MAGIC_LINK_ENABLED")
                 .map(|v| !matches!(v.trim().to_lowercase().as_str(), "false" | "0" | "no"))
@@ -92,6 +153,18 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(2000),
+            download_token_ttl_secs: env::var("DOWNLOAD_TOKEN_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(900), // 15 min
+            // No `.filter(|n| *n > 0)` here, unlike the TTL above: 0 is a
+            // meaningful value — it turns result storage off — whereas a
+            // zero-second token lifetime is only ever a misconfiguration.
+            call_result_max_bytes: env::var("CALL_RESULT_MAX_BYTES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1024 * 1024), // 1 MB
             dashboard_url: env::var("DASHBOARD_URL").unwrap_or_else(|_| "/".into()),
             // "*localhost*" matches any http://localhost:<port> / http://127.0.0.1:<port>
             // origin so that worktrees with dynamic dashboard ports work out of the box.
@@ -99,6 +172,33 @@ impl Config {
             dashboard_origin: env::var("DASHBOARD_ORIGIN").unwrap_or_else(|_| "*localhost*".into()),
             mcp_extra_origins: env::var("MCP_EXTRA_ORIGINS").unwrap_or_default(),
             redis_url: env::var("REDIS_URL").ok(),
+            // No `.filter(|n| *n > 0)` on the TTLs: `0` is a real value that
+            // turns the cache off, not a typo to fall back from.
+            resolve_cache_ttl_secs: env::var("RESOLVE_CACHE_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300), // 5 min
+            resolve_cache_negative_ttl_secs: env::var("RESOLVE_CACHE_NEGATIVE_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
+            resolve_cache_scope_ttl_max_secs: env::var("RESOLVE_CACHE_SCOPE_TTL_MAX_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300), // 5 min
+            resolve_cache_timeout_ms: env::var("RESOLVE_CACHE_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(100),
+            resolve_cache_max_entries: env::var("RESOLVE_CACHE_MAX_ENTRIES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(10_000),
+            resolve_cache_namespace: env::var("RESOLVE_CACHE_NAMESPACE")
+                .ok()
+                .filter(|s| !s.is_empty()),
             default_rate_limit: env::var("DEFAULT_RATE_LIMIT")
                 .ok()
                 .and_then(|s| s.parse().ok())

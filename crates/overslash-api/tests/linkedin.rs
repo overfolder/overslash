@@ -153,6 +153,7 @@ async fn test_linkedin_mock_read_and_write() {
                 "w_member_social".to_string(),
             ]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc.id),
         })
         .await
@@ -270,6 +271,7 @@ async fn test_linkedin_create_post_routes_through_approval() {
                 "w_member_social".to_string(),
             ]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc.id),
         })
         .await
@@ -385,6 +387,7 @@ async fn test_linkedin_real_e2e() {
                 "w_member_social".to_string(),
             ]),
             account_email: None,
+            account_picture: None,
             byoc_credential_id: None,
         })
         .await

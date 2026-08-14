@@ -10,6 +10,81 @@ Since 2026-07-03, `cdn.pyke.io` answers HTTP 403 (Cloudflare bot challenge) to n
 
 ---
 
+## Display-param resolver GETs: query-param credentials and the SSRF guard
+
+`services::param_resolver::resolve_display_params` fires an authenticated GET
+per `x-overslash-resolve` declaration so approvals can name an object instead
+of its id. Two gaps remain in how those GETs are made
+(`routes/actions/resolve.rs`, at the `resolver_headers` construction):
+
+1. **`in: query` credentials do not reach them.** Header-injected credentials
+   now do: OAuth arrives pre-materialized as `auth_header`, and secret-backed
+   apiKey schemes (Metabase's `x-api-key`) go through the same
+   `resolve_credential_values` + `inject_secrets` the executor runs. But
+   `inject_secrets` appends query-param credentials to the request URL, and
+   the resolver builds its own URL *inside* `resolve_display_params` — so the
+   injection lands on a throwaway URL and is discarded. No shipped template
+   pairs a query-param credential with a resolver; the day one does, the
+   resolver URL has to be built before injection rather than inside the
+   resolver. Symptom if it happens: the provider 401s, resolution silently
+   fails, and the disclosure shows the raw id — never an error.
+
+2. **They bypass the SSRF guard.** Resolver GETs go out on
+   `state.http_client` directly, while the executor's own call goes through
+   `services::ssrf_guard`. Same host either way (the resolver reuses the
+   action's resolved base), so this is not a new reachable target — but it is
+   an un-guarded egress on an operator-supplied URL, and it predates any
+   particular template.
+
+Both are unchanged by the D64 cache: a hit skips the GET entirely, and a miss
+makes exactly the same request it always did.
+
+---
+
+## Resolver cache: Valkey holds PII, on an instance with no AUTH and no TLS
+
+`services::resolve_cache` (D64) writes resolved display names — people's names,
+phone numbers, email addresses, Drive file titles — to Valkey when `REDIS_URL`
+is set. The values are encrypted with the existing keyring, so what lands in
+the store is ciphertext, and the key hashes everything except the org id.
+
+What is *not* fixed: `infra/modules/memorystore/main.tf` creates
+`google_redis_instance.valkey` with neither `auth_enabled` nor
+`transit_encryption_mode`, so the instance is protected only by
+`authorized_network` — and `infra/main.tf` points both the API's `REDIS_URL`
+and `oversla-sh`'s `VALKEY_URL` at the same `module.memorystore[0]`, so a
+public URL shortener shares that keyspace. That was unremarkable while the only
+tenant was rate-limit counters. Follow-up: set `auth_enabled = true` and
+`transit_encryption_mode = "SERVER_AUTHENTICATION"`, plumbing the auth string
+through Secret Manager into both URLs. Note this is **breaking for oversla-sh**
+too, and there is no terraform CI — someone has to run `make tofu-apply`.
+
+---
+
+## `crates/overslash-api/src/lib.rs` sits exactly on the 1000-line gate
+
+`scripts/check-line-counts.sh` fails any file under `crates/*/src` over 1000
+lines, and `lib.rs` is now at 1000 exactly. Two consecutive PRs (D63's icons,
+D64's resolver cache) have each had to shave their own comments to fit, which
+means the file is being kept under the limit by prose golf rather than by
+structure, and **the next change to it will fail CI**.
+
+The seam is already visible: `AppState`, `TestResources`, `TestResourceResolver`
+and the ~8 near-identical per-request accessors (`db`, `auth_code_store`,
+`rate_limit_cache`, `free_unlimited_cache`, `rate_limiter`, `event_bus`,
+`resolve_cache`, …) are one cohesive ~150-line block with a single job —
+swapping process-wide resources for per-test ones — and would move to a
+`state.rs` module without touching anything else. Deliberately not done inside
+the D64 PR: it is a refactor of code that PR does not otherwise own, and it
+would conflict with anything else in flight against `lib.rs`.
+
+Also open, and cheaper: the cache has no single-flight, so N concurrent
+identical misses still make N upstream calls. That is exactly the pre-D64
+behaviour — the herd is now cross-replica but no larger — so it is a
+missed optimisation, not a regression.
+
+---
+
 ## Domain admission does not verify Google's `hd` claim, and two domain lists coexist
 
 Migration 092 added org-wide domain admission for managed sign-in
@@ -111,10 +186,10 @@ D30 gates automated dependency bumps behind Dependabot's 7-day `cooldown`, but a
 
 D31 pins every third-party action in `.github/workflows/*.yml` to a commit SHA so D30's `cooldown` applies. Two of those pins freeze a *moving pointer* rather than a release tag, and Dependabot's version-update logic tracks tags/releases — so it will not reliably propose bumps for either:
 
-- `dtolnay/rust-toolchain@4be7066` — its ref is the `stable` **branch**, not a semver tag; the branch tip is what we froze. (Overfolder carries the same debt.)
+- `dtolnay/rust-toolchain@4be7066` — its ref is the `stable` **branch**, not a semver tag; the branch tip is what we froze. (Overfolder carries the same debt.) Note the branch name no longer selects the toolchain: every step now passes an explicit `toolchain: "1.97"` matching `rust-toolchain.toml`, so only the *action code* rides the branch.
 - `rui314/setup-mold@9c9c13b` — the repo publishes no semver releases at all, only a mutable `v1` tag that moves.
 
-Both still behave correctly at runtime — rustup resolves `stable` and installs the current stable toolchain; mold installs normally. Only the *action code* is frozen, so upstream fixes won't be picked up automatically and the pins can drift stale silently with no PR. Low risk (both actions are small and stable), but they're untracked pins. Ideal fix: re-pin each to its current tip by hand periodically (e.g. quarterly), or switch to a version-tagged equivalent with the same ergonomics if one appears, so Dependabot can manage it.
+Both still behave correctly at runtime — rustup installs the toolchain the step asks for; mold installs normally. Only the *action code* is frozen, so upstream fixes won't be picked up automatically and the pins can drift stale silently with no PR. Low risk (both actions are small and stable), but they're untracked pins. Ideal fix: re-pin each to its current tip by hand periodically (e.g. quarterly), or switch to a version-tagged equivalent with the same ergonomics if one appears, so Dependabot can manage it.
 
 ---
 
@@ -157,31 +232,6 @@ likely first caller), teach `collect_body_parameters` to pick the schema for the
 declared media type and give routing an encoder per type, keyed off
 `RequestBodySpec::content_type`.
 
-## An unresolvable instance credential sends an unauthenticated request
-
-When a service instance cannot resolve its credentials — an unbound secret slot,
-or (since D38) a `required` config var with no value — `resolve_instance_auth`
-sets `instance_secret_missing` and deliberately declines to return a partial
-credential set. It then falls through to `resolve_service_auth`, which only
-knows about OAuth and env-backed secrets. For a template like `email` that has
-neither, resolution ends with *no* credentials and the call is sent upstream
-**unauthenticated**, returning whatever the upstream says (a 401 from a real
-overfwd) rather than a `needs_authentication` prompt naming what to configure.
-
-Verified on `email`: both an unbound `mailbox_pass` and a missing `mailbox_user`
-produce an outbound request carrying neither `X-Mailbox-Auth` nor the org
-`Authorization` — correct in that nothing partial or truncated is ever sent, but
-the caller gets a confusing upstream error instead of "go set this field".
-
-The safety property is covered (`email_unbound_mailbox_never_injects_gateway_key_alone`,
-`email_missing_required_config_never_sends_a_truncated_credential`); the UX is
-not. Fixing it means short-circuiting to `needs_authentication` when the template
-declares no OAuth and no env fallback, which changes behaviour for every
-secret-backed template — deliberately out of scope for D38, which only had to
-match the existing unbound-slot contract.
-
----
-
 ## Object-array recipients can't be scoped — `scope_param` names params, not values inside them
 
 `scope_param` now accepts a list with per-entry labels
@@ -221,6 +271,19 @@ approval. Correct but read-path-less. To close: try
 `features: embed-dashboard,sql_policy` on the Windows matrix row (LLVM is
 preinstalled on the runner), and delete this entry if the build passes.
 
+Windows is now the *only* build without the parser. The Cloud Run image
+(`crates/overslash-api/Dockerfile`, which serves both dev and prod via
+`infra/modules/cloud-build`) shipped without it for the whole 0.7 line — its
+`cargo build` carried no `--features`, so every SQL call on the hosted
+deployments classified `sql_reason:unavailable` and bubbled to approval with
+no table analysis at all, while the release-binary matrix above made it look
+handled. Both `cargo build` lines in that Dockerfile now pass
+`--features sql_policy`, and `GET /v1/version` / `/health` report a
+`sql_policy` boolean so the question is answerable without reading a build
+recipe. Keep the two Dockerfile invocations identical — the first is
+`cargo chef cook`, which exists only to warm the dependency layer, and a
+feature mismatch between it and the real `cargo build` silently wastes it.
+
 Two adjacent small items:
 
 - **Metabase `{{template_vars}}` don't parse** → classify write. If agents
@@ -231,24 +294,78 @@ Two adjacent small items:
   whitelisting bare EXPLAIN means recursing into the option list). Relax in
   `sql_policy/analyze.rs` if the prompt-noise ever matters.
 
-## Approval expiry emits no event on any transport
+## Deferred downloads don't carry the D56 timeout cascade
 
-The expiry sweep (`SystemScope::expire_stale_approvals`, driven from the
-background loop in `lib.rs`) flips stale pending approvals in a single bulk
-cross-org `UPDATE` and records only a metric — no audit row, no webhook, and
-now no stream event. So a caller watching `GET /v1/events/stream` sees
-`approval.created` and then silence: the approval it was waiting on expires
-invisibly, and the only way to learn that is to poll the resource.
+`GET /v1/downloads/{token}` re-dials the upstream at fetch time
+(`services/deferred_download.rs`), and that request is bounded by the bare
+deployment default (`CALL_TIMEOUT_MS`) rather than by the layered timeout the
+original call resolved. There is no caller-supplied `timeout_ms` on a token
+redemption and no action key to read the template rungs from — the request was
+resolved when the token was minted, possibly under different org policy — so
+the cascade has nowhere to come from without persisting the resolved budget
+alongside the stored request.
 
-The blocker is shape, not intent. Emitting per-approval events needs the rows
-themselves (to derive each one's `audience` from its requester/resolver chains,
-per D45) and an `OrgScope` per distinct org in the batch, whereas the sweep
-deliberately returns a count. To close: have `expire_stale_approvals` return the
-expired rows, group them by `org_id`, and emit `approval.resolved` with
-`status: "expired"` through `services::events::emit` — the same treatment
-`services/permission_chain.rs`'s cascade path already gets, which likewise has
-no `AuthContext` and derives its audience entirely from the approval row.
+Bounding the header phase at the default is already a strict improvement on
+the unbounded wait it replaced, so this is a fidelity gap rather than a hole.
+The fix is to store the resolved timeout on the `download_tokens` row at mint
+and re-clamp it at redemption, exactly as replay does with
+`StoredCallRequest::timeout_ms`.
 
-Bubbling — both the user-initiated path and the auto-bubble sweep — is no
-longer silent: it emits `approval.bubbled` plus the derived `approval.pending`.
-Expiry is the one remaining transition a subscriber cannot observe.
+Related: the proxied fetch is itself a request through the same 120s cap the
+synchronous ceiling is sized against, so a genuinely multi-minute export is not
+deliverable through this path regardless of what timeout it carries.
+
+## `Config` has no `Default`, so every new field touches ~17 test literals
+
+`crates/overslash-api/src/config/mod.rs` defines `Config` with no `Default`
+impl, and every construction site — one in-crate (`empty_test_config`) plus
+sixteen across `tests/` — is an exhaustive struct literal with no
+`..Default::default()` spread. Adding a single field is therefore a
+seventeen-file mechanical diff before any of it can compile.
+
+`ServiceAction` had the same problem and D56 fixed it there by deriving
+`Default` and spreading at the two real construction sites. `Config` wants the
+same treatment, but it is a bigger decision than it looks: the tests are a
+separate binary, so a `#[cfg(test)]` helper cannot reach them, and a public
+`Config::for_tests()` is a surface worth agreeing on rather than adding in
+passing.
+
+## `ext::READS` positions are reviewed, not proven
+
+`crates/overslash-core/src/openapi/ext.rs` records which document position reads
+each `x-overslash-*` extension, and D67's lint reads that matrix to decide
+whether a key is misplaced. Two of the three drift directions are closed
+mechanically: `ext::get`'s `debug_assert!` fails a reader whose position is
+missing from the matrix, and `no_extension_getter_bypasses_the_accessor` bans the
+raw `obj.get("x-overslash-…")` spelling in `openapi/` production code.
+
+The third is not. A matrix entry claiming a position that no extractor actually
+reads would make the lint stay *silent* on precisely the no-op it exists to
+catch, and nothing detects that — `ext::get` is never called at the phantom
+position, so the assertion never runs. Each entry cites the reader line it
+records (`// schemes.rs:95`), which makes it reviewable, and the four known
+asymmetries are pinned by `position_asymmetries_are_recorded`. But the guarantee
+is "someone checked", not "the compiler checked".
+
+Closing it properly means the readers *enumerating* their positions rather than
+naming one per call — e.g. a per-position extractor trait whose implementation
+list is the matrix. That is a much larger refactor of `openapi::extract` than
+D67 warranted, and the payoff is bounded: the entries are cited, and a phantom
+position only costs a missed warning, never a false one.
+
+## `/v1/actions/validate` never ran the deferred-flag gate it claims to
+
+`flags::validate_resolved` carried a doc comment reading "Called from both
+`/call` and `/validate`, so the dry-run can never green-light a shape the real
+call refuses." Only `/call` has ever called it. The comment is now accurate
+rather than aspirational, but the gap it described is real: `/v1/actions/validate`
+will report a call as valid when `execution: "async"` against a
+`runtime: platform` service or a binary-returning action is a 400 on the real
+path.
+
+Closing it is a behaviour change to an endpoint whose whole contract is
+"answer without side effects", and it adds 400s where callers currently get a
+verdict — so it wants its own decision rather than riding along with the
+wait-mode rung, which is what surfaced it. Low harm in the meantime: the shapes
+it misses are all refused a moment later by the call the dry-run was preparing
+for.

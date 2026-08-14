@@ -1,21 +1,28 @@
 <script lang="ts">
 	import type { Identity } from '$lib/types';
+	import { formatIdentity, providerLabel } from '$lib/identityDisplay';
+	import Avatar from '$lib/components/Avatar.svelte';
 
 	let {
 		data
-	}: { data: { requestedName: string; identity: Identity | null; identities: Identity[] } } =
-		$props();
+	}: {
+		data: {
+			requestedName: string;
+			identity: Identity | null;
+			identities: Identity[];
+			allowedDomains: string[];
+		};
+	} = $props();
 
 	const ident = $derived(data.identity);
+	// This route stays name-keyed (SPIFFE path segments carry names, and
+	// $lib/identityPath builds /users/<name> from them), but the page itself
+	// labels the user by email like every other surface — otherwise an audit-log
+	// link reading `ada` lands on a page headed `Ada Lovelace`.
+	const display = $derived(ident ? formatIdentity(ident, data.allowedDomains) : null);
 	const agents = $derived(
 		ident ? data.identities.filter((i) => i.owner_id === ident.id) : []
 	);
-
-	function providerLabel(p?: string | null): string {
-		if (!p) return '—';
-		const map: Record<string, string> = { google: 'Google', github: 'GitHub', oidc: 'OIDC' };
-		return map[p.toLowerCase()] ?? p;
-	}
 </script>
 
 <svelte:head><title>{data.requestedName} · Users · Overslash</title></svelte:head>
@@ -30,10 +37,10 @@
 		</div>
 	{:else}
 		<header class="header">
-			<div class="avatar">{ident.name.slice(0, 1).toUpperCase()}</div>
+			<Avatar name={ident.name} email={ident.email} picture={ident.picture} size={48} />
 			<div>
-				<h1>{ident.name}</h1>
-				<p class="muted">{ident.email ?? '—'}</p>
+				<h1 title={display?.title}>{display?.primary}</h1>
+				<p class="muted">{display?.secondary ?? ident.email ?? '—'}</p>
 			</div>
 		</header>
 
@@ -41,6 +48,14 @@
 			<div class="row">
 				<span class="label">Kind</span>
 				<span>{ident.kind}</span>
+			</div>
+			<div class="row">
+				<span class="label">Email</span>
+				<span>{ident.email ?? '—'}</span>
+			</div>
+			<div class="row">
+				<span class="label">Display name</span>
+				<span>{ident.name}</span>
 			</div>
 			<div class="row">
 				<span class="label">Identity provider</span>
@@ -57,7 +72,7 @@
 		</div>
 
 		<div class="card">
-			<h2>Agents owned by {ident.name}</h2>
+			<h2>Agents owned by <span title={display?.title}>{display?.primary}</span></h2>
 			{#if agents.length === 0}
 				<p class="muted">No agents yet.</p>
 			{:else}
@@ -90,18 +105,6 @@
 		align-items: center;
 		gap: 0.85rem;
 		margin-bottom: 1rem;
-	}
-	.avatar {
-		width: 48px;
-		height: 48px;
-		border-radius: 999px;
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-weight: 600;
-		font-size: 1.1rem;
 	}
 	h1 {
 		font: var(--text-h1);

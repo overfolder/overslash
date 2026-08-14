@@ -6,14 +6,14 @@ use crate::credential_template::TemplateReads;
 use crate::template_validation::ValidationIssue;
 use crate::types::{CredentialTemplate, ServiceAuth, TokenInjection};
 
+use super::super::ext::{self, Ext, Pos, SchemeKind};
 use super::auth::extract_template;
 
 pub(super) fn extract_oauth2(
     obj: &Map<String, Value>,
     _base: &str,
 ) -> Result<ServiceAuth, Vec<ValidationIssue>> {
-    let provider = obj
-        .get("x-overslash-provider")
+    let provider = ext::get(obj, Pos::SecurityScheme(SchemeKind::Oauth2), Ext::Provider)
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
@@ -23,12 +23,12 @@ pub(super) fn extract_oauth2(
     let mut scopes: Vec<String> = Vec::new();
     if let Some(flows) = obj.get("flows").and_then(Value::as_object) {
         for flow in flows.values() {
-            if let Some(f) = flow.as_object() {
-                if let Some(s) = f.get("scopes").and_then(Value::as_object) {
-                    for k in s.keys() {
-                        if !scopes.contains(k) {
-                            scopes.push(k.clone());
-                        }
+            if let Some(f) = flow.as_object()
+                && let Some(s) = f.get("scopes").and_then(Value::as_object)
+            {
+                for k in s.keys() {
+                    if !scopes.contains(k) {
+                        scopes.push(k.clone());
                     }
                 }
             }
@@ -38,13 +38,17 @@ pub(super) fn extract_oauth2(
     // OAuth tokens are standardly injected as `Authorization: Bearer <token>`.
     // Allow an explicit override via x-overslash-token_injection; otherwise
     // use the bearer default.
-    let token_injection =
-        parse_token_injection(obj.get("x-overslash-token_injection")).unwrap_or(TokenInjection {
-            inject_as: "header".into(),
-            header_name: Some("Authorization".into()),
-            query_param: None,
-            prefix: Some("Bearer ".into()),
-        });
+    let token_injection = parse_token_injection(ext::get(
+        obj,
+        Pos::SecurityScheme(SchemeKind::Oauth2),
+        Ext::TokenInjection,
+    ))
+    .unwrap_or(TokenInjection {
+        inject_as: "header".into(),
+        header_name: Some("Authorization".into()),
+        query_param: None,
+        prefix: Some("Bearer ".into()),
+    });
 
     Ok(ServiceAuth::OAuth {
         provider,
@@ -64,11 +68,14 @@ pub(super) fn extract_api_key(
     // Config keys declared under `components.x-overslash-config`.
     declared_config: &[String],
 ) -> Result<ServiceAuth, Vec<ValidationIssue>> {
-    let default_secret_name = obj
-        .get("x-overslash-default_secret_name")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
+    let default_secret_name = ext::get(
+        obj,
+        Pos::SecurityScheme(SchemeKind::ApiKey),
+        Ext::DefaultSecretName,
+    )
+    .and_then(Value::as_str)
+    .unwrap_or("")
+    .to_string();
 
     let inject_as = obj.get("in").and_then(Value::as_str).unwrap_or("header");
     let name = obj.get("name").and_then(Value::as_str).map(str::to_string);
@@ -99,26 +106,35 @@ pub(super) fn extract_api_key(
         config: config_keys,
     } = reads;
 
-    let secret_source = match obj.get("x-overslash-secret_source").and_then(Value::as_str) {
+    let secret_source = match ext::get(
+        obj,
+        Pos::SecurityScheme(SchemeKind::ApiKey),
+        Ext::SecretSource,
+    )
+    .and_then(Value::as_str)
+    {
         Some("org") => crate::types::SecretSource::Org,
         Some("instance") | None => crate::types::SecretSource::Instance,
         Some(other) => {
             return Err(vec![ValidationIssue::new(
                 "openapi_unsupported_construct",
-                format!("x-overslash-secret_source must be `instance` or `org` (got {other:?})"),
-                format!("{base}.x-overslash-secret_source"),
+                format!(
+                    "{} must be `instance` or `org` (got {other:?})",
+                    Ext::SecretSource.key()
+                ),
+                format!("{base}.{}", Ext::SecretSource.key()),
             )]);
         }
     };
 
-    let optional = match obj.get("x-overslash-optional") {
+    let optional = match ext::get(obj, Pos::SecurityScheme(SchemeKind::ApiKey), Ext::Optional) {
         None => false,
         Some(Value::Bool(b)) => *b,
         Some(other) => {
             return Err(vec![ValidationIssue::new(
                 "openapi_unsupported_construct",
-                format!("x-overslash-optional must be a boolean (got {other})"),
-                format!("{base}.x-overslash-optional"),
+                format!("{} must be a boolean (got {other})", Ext::Optional.key()),
+                format!("{base}.{}", Ext::Optional.key()),
             )]);
         }
     };
@@ -145,14 +161,14 @@ pub(super) fn extract_api_key(
         }
     };
 
-    let label = match obj.get("x-overslash-label") {
+    let label = match ext::get(obj, Pos::SecurityScheme(SchemeKind::ApiKey), Ext::Label) {
         None => String::new(),
         Some(Value::String(s)) => s.trim().to_string(),
         Some(other) => {
             return Err(vec![ValidationIssue::new(
                 "openapi_unsupported_construct",
-                format!("x-overslash-label must be a string (got {other})"),
-                format!("{base}.x-overslash-label"),
+                format!("{} must be a string (got {other})", Ext::Label.key()),
+                format!("{base}.{}", Ext::Label.key()),
             )]);
         }
     };
@@ -186,15 +202,17 @@ pub(super) fn extract_http_auth(
             format!("{base}.scheme"),
         )]);
     }
-    let default_secret_name = obj
-        .get("x-overslash-default_secret_name")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
+    let default_secret_name = ext::get(
+        obj,
+        Pos::SecurityScheme(SchemeKind::Http),
+        Ext::DefaultSecretName,
+    )
+    .and_then(Value::as_str)
+    .unwrap_or("")
+    .to_string();
     Ok(ServiceAuth::Secret {
         scheme: scheme_key.to_string(),
-        label: obj
-            .get("x-overslash-label")
+        label: ext::get(obj, Pos::SecurityScheme(SchemeKind::Http), Ext::Label)
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim()

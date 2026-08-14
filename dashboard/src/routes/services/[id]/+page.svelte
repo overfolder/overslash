@@ -16,7 +16,8 @@
 		deleteService,
 		upgradeConnectionScopes
 	} from '$lib/api/services';
-	import { groupsApi, type Group } from '$lib/api/groups';
+	import { groupsApi, type Group, type GroupGrantPick } from '$lib/api/groups';
+	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
 	import type {
 		ActionSummary,
 		ConnectionSummary,
@@ -30,13 +31,16 @@
 		TemplateDetail
 	} from '$lib/types';
 	import { listSecrets } from '$lib/api/secrets';
+	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
+	import ConnectionAvatar from '$lib/components/connections/ConnectionAvatar.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
 	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
 	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
 	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import AutoApproveSelect from '$lib/components/AutoApproveSelect.svelte';
 
 
 	const id = $derived($page.params.id ?? '');
@@ -127,12 +131,31 @@
 	// When the service is bound to a connection, offer to preserve it. Default
 	// off → the backend cleans up the connection if nothing else uses it.
 	let keepConnection = $state(false);
-	let activeTab = $state<'overview' | 'credentials' | 'actions'>('overview');
+	type Tab = 'overview' | 'credentials' | 'actions';
+	const TABS: Tab[] = ['overview', 'credentials', 'actions'];
+
+	// `?tab=` deep-link. The API's `needs_authentication` envelope hands agents a
+	// `hint_url` pointing straight at the credentials form of the instance that
+	// isn't configured, so the tab has to be addressable — landing on Overview
+	// and making the user hunt for it would defeat the hint.
+	function tabFromUrl(): Tab {
+		const t = $page.url.searchParams.get('tab');
+		return TABS.includes(t as Tab) ? (t as Tab) : 'overview';
+	}
+
+	let activeTab = $state<Tab>(tabFromUrl());
+
+	function selectTab(t: Tab) {
+		activeTab = t;
+		// Keep the URL in step so the tab survives a reload and stays shareable.
+		// replaceState: a tab switch isn't a navigation worth a back-button entry.
+		const url = new URL($page.url);
+		if (t === 'overview') url.searchParams.delete('tab');
+		else url.searchParams.set('tab', t);
+		goto(url, { replaceState: true, noScroll: true, keepFocus: true });
+	}
 
 	// Group-assignment form state
-	let newGroupId = $state('');
-	let newAccessLevel = $state<'read' | 'write' | 'admin'>('read');
-	let newAutoApprove = $state(false);
 	let savingGroup = $state(false);
 
 	const oauthAuth = $derived(
@@ -237,7 +260,7 @@
 			await groupsApi.addGrant(ownerSelfGroup.id, {
 				service_instance_id: svc.id,
 				access_level: 'admin',
-				auto_approve_reads: true
+				auto_approve_level: 'read'
 			});
 			const fresh = await listServiceGroups(svc.id, ctrl.signal);
 			if (ctrl.signal.aborted || destroyed) return;
@@ -318,7 +341,9 @@
 		reconnectAbort?.abort();
 		reconnectAbort = null;
 		connecting = false;
-		activeTab = 'overview';
+		// Not an unconditional 'overview': this also runs on first load, and a
+		// `?tab=credentials` deep-link has to survive it.
+		activeTab = tabFromUrl();
 		loading = true;
 		error = null;
 		try {
@@ -574,24 +599,21 @@
 		}
 	}
 
-	async function addGroupGrant() {
-		if (!svc || !newGroupId) return;
+	async function addGroupGrant(pick: GroupGrantPick) {
+		if (!svc) return;
 		const ctrl = new AbortController();
 		savingGroup = true;
 		error = null;
 		try {
-			await groupsApi.addGrant(newGroupId, {
+			await groupsApi.addGrant(pick.group_id, {
 				service_instance_id: svc.id,
-				access_level: newAccessLevel,
-				auto_approve_reads: newAutoApprove
+				access_level: pick.access_level,
+				auto_approve_level: pick.auto_approve_level
 			});
 			if (destroyed) return;
 			const fresh = await listServiceGroups(svc.id, ctrl.signal);
 			if (destroyed || ctrl.signal.aborted) return;
 			serviceGroups = fresh;
-			newGroupId = '';
-			newAccessLevel = 'read';
-			newAutoApprove = false;
 		} catch (e) {
 			if (destroyed || ctrl.signal.aborted) return;
 			error = e instanceof ApiError ? `Failed to add group (${e.status})` : 'Failed to add group';
@@ -610,13 +632,14 @@
 		}
 	}
 
-	async function toggleGrantAutoApprove(ref: ServiceGroupRef) {
+	async function changeGrantAutoApproveLevel(ref: ServiceGroupRef, auto_approve_level: string) {
+		if (auto_approve_level === ref.auto_approve_level) return;
 		try {
-			const fresh = await groupsApi.patchGrant(ref.group_id, ref.grant_id, {
-				auto_approve_reads: !ref.auto_approve_reads
-			});
+			const fresh = await groupsApi.patchGrant(ref.group_id, ref.grant_id, { auto_approve_level });
 			serviceGroups = serviceGroups.map((g) =>
-				g.grant_id === ref.grant_id ? { ...g, auto_approve_reads: fresh.auto_approve_reads } : g
+				g.grant_id === ref.grant_id
+					? { ...g, auto_approve_level: fresh.auto_approve_level }
+					: g
 			);
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to update grant (${e.status})` : 'Failed to update grant';
@@ -630,8 +653,16 @@
 		if (access_level === ref.access_level) return;
 		try {
 			const fresh = await groupsApi.patchGrant(ref.group_id, ref.grant_id, { access_level });
+			// Lowering the ceiling clamps `auto_approve_level` server-side, so
+			// fold both fields back — not just the one we asked to change.
 			serviceGroups = serviceGroups.map((g) =>
-				g.grant_id === ref.grant_id ? { ...g, access_level: fresh.access_level } : g
+				g.grant_id === ref.grant_id
+					? {
+							...g,
+							access_level: fresh.access_level,
+							auto_approve_level: fresh.auto_approve_level
+						}
+					: g
 			);
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to update grant (${e.status})` : 'Failed to update grant';
@@ -676,7 +707,11 @@
 
 	$effect(() => {
 		// System services don't expose a credentials tab — snap back to overview
-		// if state somehow landed on credentials (e.g. rapid nav between instances).
+		// if state somehow landed on credentials (e.g. rapid nav between
+		// instances, or a ?tab=credentials deep-link at a system service).
+		// Assign directly rather than via selectTab: routing the URL rewrite
+		// through here would make `$page` a dependency of an effect that also
+		// writes the state it reads.
 		if (isSystem && activeTab === 'credentials') {
 			activeTab = 'overview';
 		}
@@ -700,17 +735,20 @@
 		<p class="muted">Service not found.</p>
 	{:else}
 		<header class="head">
-			<div>
-				<h1>{svc.name}</h1>
-				<div class="sub">
-					<span class="mono">{svc.template_key}</span>
-					<StatusBadge variant={svc.template_source as 'global' | 'org' | 'user'} />
-					<StatusBadge variant={svc.status} />
-					{#if svc.credentials_status === 'needs_reconnect'}
-						<StatusBadge variant="needs-reconnect" label="needs reconnection" />
-					{:else if svc.credentials_status === 'partially_degraded'}
-						<StatusBadge variant="partially-degraded" label="partial scopes" />
-					{/if}
+			<div class="title-block">
+				<ServiceIcon src={svc.icon_url} name={svc.name} size={40} />
+				<div>
+					<h1>{svc.name}</h1>
+					<div class="sub">
+						<span class="mono">{svc.template_key}</span>
+						<StatusBadge variant={svc.template_source as 'global' | 'org' | 'user'} />
+						<StatusBadge variant={svc.status} />
+						{#if svc.credentials_status === 'needs_reconnect'}
+							<StatusBadge variant="needs-reconnect" label="needs reconnection" />
+						{:else if svc.credentials_status === 'partially_degraded'}
+							<StatusBadge variant="partially-degraded" label="partial scopes" />
+						{/if}
+					</div>
 				</div>
 			</div>
 			<div class="head-actions">
@@ -752,12 +790,12 @@
 		{/if}
 
 		<nav class="tabs">
-			{#each (isSystem ? ['overview', 'actions'] : ['overview', 'credentials', 'actions']) as t}
+			{#each (isSystem ? TABS.filter((t) => t !== 'credentials') : TABS) as t}
 				<button
 					type="button"
 					class="tab"
 					class:active={activeTab === t}
-					onclick={() => (activeTab = t as typeof activeTab)}
+					onclick={() => selectTab(t)}
 				>
 					{t}
 				</button>
@@ -867,7 +905,7 @@
 							<tr>
 								<th>Group</th>
 								<th>Access</th>
-								<th>Auto-approve reads</th>
+								<th>Auto-approve</th>
 								{#if !isSystem}<th class="actions-col"></th>{/if}
 							</tr>
 						</thead>
@@ -900,13 +938,13 @@
 									</td>
 									<td>
 										{#if canRemoveGrant(g)}
-											<ToggleSwitch
-												checked={g.auto_approve_reads}
-												onchange={() => toggleGrantAutoApprove(g)}
-												label="Auto-approve reads"
+											<AutoApproveSelect
+												value={g.auto_approve_level}
+												accessLevel={g.access_level}
+												onchange={(level) => changeGrantAutoApproveLevel(g, level)}
 											/>
 										{:else}
-											{g.auto_approve_reads ? 'Yes' : 'No'}
+											{g.auto_approve_level}
 										{/if}
 									</td>
 									{#if !isSystem}
@@ -946,37 +984,12 @@
 				{/if}
 				{#if isAdmin && !isSystem}
 					{#if unassignedGroups.length > 0}
-						<div class="add-group">
-							<label class="field">
-								<span class="label">Group</span>
-								<select bind:value={newGroupId}>
-									<option value="">— Select a group —</option>
-									{#each unassignedGroups as g (g.id)}
-										<option value={g.id}>{g.name}</option>
-									{/each}
-								</select>
-							</label>
-							<label class="field">
-								<span class="label">Access</span>
-								<select bind:value={newAccessLevel}>
-									<option value="read">Read</option>
-									<option value="write">Write</option>
-									<option value="admin">Admin</option>
-								</select>
-							</label>
-							<label class="inline-field">
-								<input type="checkbox" bind:checked={newAutoApprove} />
-								<span>Auto-approve reads</span>
-							</label>
-							<button
-								type="button"
-								class="btn primary"
-								onclick={addGroupGrant}
-								disabled={!newGroupId || savingGroup}
-							>
-								{savingGroup ? 'Adding…' : 'Add group'}
-							</button>
-						</div>
+						<GroupGrantPicker
+							groups={allGroups}
+							excludeIds={[...assignedGroupIds]}
+							busy={savingGroup}
+							onadd={addGroupGrant}
+						/>
 					{:else if allGroups.length === 0}
 						<p class="muted small">No groups exist yet. Create one in <a href="/org/groups" class="link">Org → Groups</a>.</p>
 					{:else}
@@ -995,7 +1008,16 @@
 						<span class="label">Status</span>
 						{#if currentConnection}
 							<StatusBadge variant="connected" />
-							<span class="muted">{connectionLabel(currentConnection)}</span>
+							<span class="conn-label">
+								<ConnectionAvatar
+									provider={currentConnection.provider_key}
+									accountEmail={currentConnection.account_email}
+									picture={currentConnection.account_picture}
+									size={24}
+									label={oauthProvider}
+								/>
+								<span class="muted">{connectionLabel(currentConnection)}</span>
+							</span>
 						{:else}
 							<StatusBadge variant="needs-setup" />
 						{/if}
@@ -1167,6 +1189,11 @@
 									>
 									<td>
 										{#if a.disabled}<span class="pill pill-muted">hidden</span>{/if}
+										{#if a.wait_mode && a.wait_mode !== 'sync'}<span
+											class="pill pill-defer"
+											title="This action declares execution: &quot;{a.wait_mode}&quot;. A call that names no execution mode of its own may answer 202 accepted with an execution to poll, rather than the result. Pass execution: &quot;sync&quot; to insist on the answer inline."
+											>{a.wait_mode}</span
+										>{/if}
 									</td>
 								</tr>
 							{/each}
@@ -1196,7 +1223,12 @@
 											title={a.risk === 'dynamic'
 												? 'Classified per call: the SQL is parsed — read-only SELECTs run as read, anything else routes to approval'
 												: undefined}>{a.risk}</span
-										></td
+										>
+										{#if a.wait_mode && a.wait_mode !== 'sync'}<span
+											class="pill pill-defer"
+											title="This action declares execution: &quot;{a.wait_mode}&quot;. A call that names no execution mode of its own may answer 202 accepted with an execution to poll, rather than the result. Pass execution: &quot;sync&quot; to insist on the answer inline."
+											>{a.wait_mode}</span
+										>{/if}</td
 									>
 								</tr>
 							{/each}
@@ -1252,6 +1284,12 @@
 		color: var(--color-text-muted);
 		text-decoration: none;
 		margin-bottom: 0.5rem;
+	}
+	.title-block {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		min-width: 0;
 	}
 	.head {
 		display: flex;
@@ -1348,6 +1386,12 @@
 		font-family: var(--font-mono);
 		font-size: 0.82rem;
 	}
+	.conn-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
 	.muted {
 		color: var(--color-text-muted);
 	}
@@ -1379,6 +1423,15 @@
 		background: rgba(120, 120, 120, 0.12);
 		color: var(--color-text-muted);
 		border-color: rgba(120, 120, 120, 0.25);
+	}
+	/* Not a warning — a declaration. The action is telling the caller its
+	   result may arrive out of band, which is a property worth spotting in a
+	   list, not a problem to fix. */
+	.pill-defer {
+		background: rgba(90, 140, 220, 0.12);
+		color: var(--color-text-muted);
+		border-color: rgba(90, 140, 220, 0.35);
+		margin-left: 0.35rem;
 	}
 	.actions {
 		display: flex;
@@ -1462,17 +1515,6 @@
 		text-align: right;
 		white-space: nowrap;
 	}
-	.add-group {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: flex-end;
-		gap: 0.75rem;
-		padding-top: 0.5rem;
-		border-top: 1px dashed var(--color-border);
-	}
-	.add-group .field {
-		min-width: 180px;
-	}
 	.restore-self {
 		display: flex;
 		flex-wrap: wrap;
@@ -1485,12 +1527,6 @@
 	.restore-self p {
 		margin: 0;
 		flex: 1 1 240px;
-	}
-	.inline-field {
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
-		font-size: 0.85rem;
 	}
 	.scope-row {
 		align-items: flex-start;

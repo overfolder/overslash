@@ -294,6 +294,10 @@ pub async fn resolve_access_token(
                     new_refresh.as_deref(),
                     new_expires,
                     Some(&scopes),
+                    // A refresh never re-reads userinfo, so it has neither a
+                    // fresh label nor a fresh avatar to write; both COALESCE
+                    // to whatever the connection already carries.
+                    None,
                     None,
                 )
                 .await
@@ -415,23 +419,33 @@ impl TokenResponse {
     }
 }
 
-/// Fetch the user's profile from the provider's userinfo endpoint and extract
-/// their email address, if any. Never fails the overall flow: a missing
-/// userinfo URL, a non-2xx response, or a response without a recognised email
-/// field all return `Ok(None)` — the connection still lands, just unlabeled.
+/// What the provider's userinfo endpoint tells us about the account behind a
+/// connection. Both fields are independently optional: a provider may label
+/// the account without a picture, or (rarely) the reverse.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AccountProfile {
+    pub email: Option<String>,
+    pub picture: Option<String>,
+}
+
+/// Fetch the profile of the account being connected from the provider's
+/// userinfo endpoint. Never fails the overall flow: a missing userinfo URL, a
+/// non-2xx response, or a response with nothing recognisable all return an
+/// empty `AccountProfile` — the connection still lands, just unlabeled.
 ///
 /// Response shapes vary per provider:
-/// - Google / generic OIDC: `{"email": "..."}`
-/// - GitHub: `{"email": null, "login": "..."}` when email is private — fall
-///   back to `login@users.noreply.github.com` for a stable label.
-/// - Slack (users.identity): `{"user": {"email": "..."}}`
-pub async fn fetch_account_email(
+/// - Google / generic OIDC: `{"email": "...", "picture": "https://…"}`
+/// - GitHub: `{"email": null, "login": "...", "avatar_url": "https://…"}` when
+///   the email is private — fall back to `login@users.noreply.github.com` for
+///   a stable label.
+/// - Slack (users.identity): `{"user": {"email": "...", "image_192": "…"}}`
+pub async fn fetch_account_profile(
     http_client: &reqwest::Client,
     provider: &oauth_provider::OAuthProviderRow,
     access_token: &str,
-) -> Result<Option<String>, OAuthError> {
+) -> Result<AccountProfile, OAuthError> {
     let Some(url) = provider.userinfo_endpoint.as_deref() else {
-        return Ok(None);
+        return Ok(AccountProfile::default());
     };
 
     let resp = http_client
@@ -444,7 +458,7 @@ pub async fn fetch_account_email(
         .map_err(|e| OAuthError::HttpError(e.to_string()))?;
 
     if !resp.status().is_success() {
-        return Ok(None);
+        return Ok(AccountProfile::default());
     }
 
     let body: serde_json::Value = resp
@@ -452,7 +466,60 @@ pub async fn fetch_account_email(
         .await
         .map_err(|e| OAuthError::ParseError(e.to_string()))?;
 
-    Ok(extract_email(&body, &provider.key))
+    Ok(AccountProfile {
+        email: extract_email(&body, &provider.key),
+        picture: extract_picture(&body),
+    })
+}
+
+/// Pull an avatar URL out of a userinfo response.
+///
+/// Unlike [`extract_email`] this needs no per-provider special case: every
+/// shape we have met names the field differently but nests it the same way, so
+/// one probe chain covers them. The URL is stored and later hotlinked by the
+/// dashboard, so only `https` is accepted — an `http` avatar would downgrade
+/// the page, and a `data:`/`javascript:` URL from a hostile custom provider
+/// has no business reaching an `<img src>`.
+fn extract_picture(body: &serde_json::Value) -> Option<String> {
+    // `picture` is OIDC standard (Google); `avatar_url` is GitHub; the rest
+    // are the vendor spellings we have seen.
+    const ROOT_FIELDS: [&str; 5] = [
+        "picture",
+        "avatar_url",
+        "avatarUrl",
+        "profile_image_url_https",
+        "photoUrl",
+    ];
+    // Slack's users.identity nests the account under `user`, and offers a
+    // ladder of square sizes — take the largest we can count on.
+    const USER_FIELDS: [&str; 5] = [
+        "image_512",
+        "image_192",
+        "image_72",
+        "picture",
+        "avatar_url",
+    ];
+
+    let pick = |v: Option<&serde_json::Value>| -> Option<String> {
+        let s = v?.as_str()?.trim();
+        (!s.is_empty() && s.starts_with("https://")).then(|| s.to_string())
+    };
+
+    for field in ROOT_FIELDS {
+        if let Some(url) = pick(body.get(field)) {
+            return Some(url);
+        }
+    }
+    let user = body.get("user")?;
+    // Microsoft Graph and Slack both nest, but Slack keeps the images one
+    // level deeper again under `profile` for some token types.
+    for field in USER_FIELDS {
+        if let Some(url) = pick(user.get(field)) {
+            return Some(url);
+        }
+    }
+    let profile = user.get("profile")?;
+    USER_FIELDS.into_iter().find_map(|f| pick(profile.get(f)))
 }
 
 fn extract_email(body: &serde_json::Value, provider_key: &str) -> Option<String> {
@@ -466,10 +533,10 @@ fn extract_email(body: &serde_json::Value, provider_key: &str) -> Option<String>
         "userPrincipalName",
         "preferred_username",
     ] {
-        if let Some(s) = body.get(field).and_then(|v| v.as_str()) {
-            if !s.is_empty() {
-                return Some(s.to_string());
-            }
+        if let Some(s) = body.get(field).and_then(|v| v.as_str())
+            && !s.is_empty()
+        {
+            return Some(s.to_string());
         }
     }
     // Slack's users.identity nests it.
@@ -477,20 +544,18 @@ fn extract_email(body: &serde_json::Value, provider_key: &str) -> Option<String>
         .get("user")
         .and_then(|u| u.get("email"))
         .and_then(|v| v.as_str())
+        && !s.is_empty()
     {
-        if !s.is_empty() {
-            return Some(s.to_string());
-        }
+        return Some(s.to_string());
     }
     // GitHub returns `email: null` when the user has hidden it; fall back to
     // a synthesized noreply address so the UI still shows something
     // meaningful rather than a UUID.
-    if provider_key == "github" {
-        if let Some(login) = body.get("login").and_then(|v| v.as_str()) {
-            if !login.is_empty() {
-                return Some(format!("{login}@users.noreply.github.com"));
-            }
-        }
+    if provider_key == "github"
+        && let Some(login) = body.get("login").and_then(|v| v.as_str())
+        && !login.is_empty()
+    {
+        return Some(format!("{login}@users.noreply.github.com"));
     }
     None
 }
@@ -689,6 +754,67 @@ mod tests {
     fn extract_email_returns_none_when_no_hint() {
         let body = serde_json::json!({"name": "Alice"});
         assert_eq!(extract_email(&body, "google"), None);
+    }
+
+    #[test]
+    fn extract_picture_google_shape() {
+        let body = serde_json::json!({"sub": "1", "picture": "https://lh3.example/a/x=s96"});
+        assert_eq!(
+            extract_picture(&body),
+            Some("https://lh3.example/a/x=s96".into())
+        );
+    }
+
+    #[test]
+    fn extract_picture_github_avatar_url() {
+        let body =
+            serde_json::json!({"login": "octocat", "avatar_url": "https://avatars.example/u/1"});
+        assert_eq!(
+            extract_picture(&body),
+            Some("https://avatars.example/u/1".into())
+        );
+    }
+
+    #[test]
+    fn extract_picture_slack_prefers_the_largest_image() {
+        let body = serde_json::json!({
+            "user": {"image_72": "https://slack.example/72", "image_512": "https://slack.example/512"}
+        });
+        assert_eq!(
+            extract_picture(&body),
+            Some("https://slack.example/512".into())
+        );
+    }
+
+    #[test]
+    fn extract_picture_slack_nested_under_profile() {
+        let body =
+            serde_json::json!({"user": {"profile": {"image_192": "https://slack.example/192"}}});
+        assert_eq!(
+            extract_picture(&body),
+            Some("https://slack.example/192".into())
+        );
+    }
+
+    #[test]
+    fn extract_picture_returns_none_when_absent() {
+        let body = serde_json::json!({"email": "alice@example.com"});
+        assert_eq!(extract_picture(&body), None);
+    }
+
+    /// The stored URL is hotlinked straight into an `<img src>`, so a provider
+    /// that hands back a non-https scheme must not make it that far.
+    #[test]
+    fn extract_picture_rejects_non_https_schemes() {
+        for url in [
+            "http://insecure.example/a.png",
+            "javascript:alert(1)",
+            "data:image/png;base64,AAAA",
+            "",
+        ] {
+            let body = serde_json::json!({"picture": url});
+            assert_eq!(extract_picture(&body), None, "should have rejected {url}");
+        }
     }
 }
 

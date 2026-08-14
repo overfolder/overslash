@@ -60,11 +60,12 @@ struct InviteResponse {
 }
 
 /// Project a pre-created member identity onto the invite wire shape.
-/// `pending` while the person has never signed in (`external_id IS NULL`);
-/// `accepted` once an SSO callback adopted the identity.
+/// `pending` while nobody has claimed the row; `accepted` once an SSO callback
+/// adopted the identity (`external_id`) or the invitee accepted from the
+/// dashboard (`user_id`).
 impl From<IdentityRow> for InviteResponse {
     fn from(row: IdentityRow) -> Self {
-        let accepted = row.external_id.is_some();
+        let accepted = row.external_id.is_some() || row.user_id.is_some();
         let role = if row.is_org_admin {
             membership::ROLE_ADMIN
         } else {
@@ -222,18 +223,25 @@ async fn resolve_inviter_display_name(
         .or_else(|| user_row.email.filter(|s| !s.trim().is_empty()))
 }
 
-/// Is this identity a genuine *invite* — a pending (`external_id IS NULL`)
-/// user with an email, that was NOT merely a side effect of name-based
-/// impersonation? An impersonation-provisioned pending user is a real member
-/// and is managed on the Members page (which badges it "pending"); it should
-/// not masquerade as an invitation an admin deliberately sent, or a
-/// heavily-impersonated org (e.g. a white-label backend) would see its
-/// invites list flooded with users it never explicitly invited.
-fn is_pending_invite(r: &IdentityRow) -> bool {
+/// Is this identity a genuine *invite* — a user with an email who has never
+/// joined, that was NOT merely a side effect of name-based impersonation? An
+/// impersonation-provisioned pending user is a real member and is managed on
+/// the Members page (which badges it "pending"); it should not masquerade as
+/// an invitation an admin deliberately sent, or a heavily-impersonated org
+/// (e.g. a white-label backend) would see its invites list flooded with users
+/// it never explicitly invited.
+///
+/// "Never joined" needs both `external_id IS NULL` *and* `user_id IS NULL`:
+/// an invitation accepted from the dashboard
+/// (`routes/account_invitations.rs`) links a `users` row without ever minting
+/// an `external_id` for this org, and that member must stop appearing as a
+/// revocable invite the moment they join.
+pub(crate) fn is_pending_invite(r: &IdentityRow) -> bool {
     r.kind == "user"
         && r.archived_at.is_none()
         && r.email.is_some()
         && r.external_id.is_none()
+        && r.user_id.is_none()
         && r.metadata.get("provisioned_by").and_then(|v| v.as_str()) != Some("impersonation")
 }
 
@@ -305,27 +313,25 @@ async fn delete_invite(
         None => false,
     };
 
-    if deleted {
-        if let Some(row) = existing {
-            let email = row.email.unwrap_or_default();
-            let role = if row.is_org_admin {
-                membership::ROLE_ADMIN
-            } else {
-                membership::ROLE_MEMBER
-            };
-            let _ = scope
-                .log_audit(AuditEntry {
-                    org_id: scope.org_id(),
-                    identity_id: acl.identity_id,
-                    action: "org_invite.revoked",
-                    resource_type: Some("identity"),
-                    resource_id: Some(id),
-                    detail: json!({ "email": email, "role": role }),
-                    description: Some(&format!("Revoked invite for {email}")),
-                    ip_address: ip.0.as_deref(),
-                })
-                .await;
-        }
+    if deleted && let Some(row) = existing {
+        let email = row.email.unwrap_or_default();
+        let role = if row.is_org_admin {
+            membership::ROLE_ADMIN
+        } else {
+            membership::ROLE_MEMBER
+        };
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: scope.org_id(),
+                identity_id: acl.identity_id,
+                action: "org_invite.revoked",
+                resource_type: Some("identity"),
+                resource_id: Some(id),
+                detail: json!({ "email": email, "role": role }),
+                description: Some(&format!("Revoked invite for {email}")),
+                ip_address: ip.0.as_deref(),
+            })
+            .await;
     }
 
     Ok(Json(json!({ "deleted": deleted })))

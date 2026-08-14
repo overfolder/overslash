@@ -360,8 +360,9 @@ x-overslash-mcp:
               and human approvals gate this action; pass CONFIRMED once the
               Overslash approval (if any) has resolved.
         required: []
-      # MCP-runtime disclosure input is {runtime, tool, arguments, service,
-      # action}; filters address `.arguments.*`. The upstream sub-schemas are
+      # MCP-runtime disclosure input is {runtime, tool, arguments, resolved,
+      # service, action}; filters address `.arguments.*`, or `.resolved.*` when
+      # a param declares a resolver. The upstream sub-schemas are
       # opaque objects, so disclose the operation, its object type, and the
       # (truncated) payload itself.
       disclose:

@@ -34,6 +34,60 @@ impl<S: Send + Sync> FromRequestParts<S> for ReqExt {
     }
 }
 
+/// Which Overslash surface a request came in on.
+///
+/// MCP tool calls do not reach `/v1/actions/call` in-process — `routes::mcp`
+/// re-issues them as a loopback HTTP request carrying the caller's own bearer
+/// (see `routes::mcp::forward`), so on arrival they are indistinguishable from
+/// any other REST call. `forward` stamps [`TRANSPORT_HEADER`] and this reads it
+/// back.
+///
+/// The header is **advisory**: it rides on an ordinary request and any caller
+/// can set it. That is acceptable because nothing behind it is a decision about
+/// access — it only selects which recovery options an error message names, so
+/// the worst a spoofed value buys is a less useful hint. Do not grow a
+/// permission, quota, or billing check onto this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallerTransport {
+    /// Arrived over `POST /mcp` and was forwarded here.
+    Mcp,
+    /// Everything else — direct REST callers and dashboard sessions. Not
+    /// approval replay, which reaches the call pipeline without a request of
+    /// its own and so never runs this extractor.
+    Rest,
+}
+
+/// Header `routes::mcp::forward` stamps on its loopback requests.
+pub const TRANSPORT_HEADER: &str = "x-overslash-transport";
+
+impl CallerTransport {
+    /// Whether this surface can act on a `prefer_stream: true` retry.
+    ///
+    /// The MCP tool schemas expose `deliver` but not `prefer_stream`, and they
+    /// are `additionalProperties: false`, so an MCP caller cannot send it even
+    /// knowing it exists. Telling one to "retry with prefer_stream" is a dead
+    /// end dressed up as a fix.
+    pub fn offers_prefer_stream(self) -> bool {
+        self == Self::Rest
+    }
+}
+
+impl FromRequestParts<AppState> for CallerTransport {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &AppState,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        let is_mcp = parts
+            .headers
+            .get(TRANSPORT_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("mcp"));
+        Ok(if is_mcp { Self::Mcp } else { Self::Rest })
+    }
+}
+
 /// Extracts the client IP address from request headers or connection info.
 #[derive(Debug, Clone)]
 pub struct ClientIp(pub Option<String>);
@@ -46,24 +100,23 @@ impl FromRequestParts<AppState> for ClientIp {
         _state: &AppState,
     ) -> std::result::Result<Self, Self::Rejection> {
         // X-Forwarded-For: first IP in the chain
-        if let Some(forwarded) = parts.headers.get("x-forwarded-for") {
-            if let Ok(value) = forwarded.to_str() {
-                if let Some(first) = value.split(',').next() {
-                    let ip = first.trim();
-                    if !ip.is_empty() {
-                        return Ok(ClientIp(Some(ip.to_string())));
-                    }
-                }
+        if let Some(forwarded) = parts.headers.get("x-forwarded-for")
+            && let Ok(value) = forwarded.to_str()
+            && let Some(first) = value.split(',').next()
+        {
+            let ip = first.trim();
+            if !ip.is_empty() {
+                return Ok(ClientIp(Some(ip.to_string())));
             }
         }
 
         // X-Real-IP
-        if let Some(real_ip) = parts.headers.get("x-real-ip") {
-            if let Ok(value) = real_ip.to_str() {
-                let ip = value.trim();
-                if !ip.is_empty() {
-                    return Ok(ClientIp(Some(ip.to_string())));
-                }
+        if let Some(real_ip) = parts.headers.get("x-real-ip")
+            && let Ok(value) = real_ip.to_str()
+        {
+            let ip = value.trim();
+            if !ip.is_empty() {
+                return Ok(ClientIp(Some(ip.to_string())));
             }
         }
 
@@ -109,10 +162,9 @@ pub struct AuthContext {
 fn check_subdomain_matches_jwt(parts: &Parts, jwt_org: Uuid) -> Result<(), AppError> {
     use crate::middleware::subdomain::RequestOrgContext;
     if let Some(RequestOrgContext::Org { org_id, .. }) = parts.extensions.get::<RequestOrgContext>()
+        && *org_id != jwt_org
     {
-        if *org_id != jwt_org {
-            return Err(AppError::Unauthorized("org_mismatch".into()));
-        }
+        return Err(AppError::Unauthorized("org_mismatch".into()));
     }
     Ok(())
 }
@@ -287,10 +339,10 @@ impl FromRequestParts<AppState> for AuthContext {
         }
 
         // Per-key absolute expiry (independent of identity activity).
-        if let Some(expires_at) = key_row.expires_at {
-            if expires_at < time::OffsetDateTime::now_utc() {
-                return Err(AppError::Unauthorized("api key expired".into()));
-            }
+        if let Some(expires_at) = key_row.expires_at
+            && expires_at < time::OffsetDateTime::now_utc()
+        {
+            return Err(AppError::Unauthorized("api key expired".into()));
         }
 
         // Touch api_key last_used (fire and forget). Bounded to the key's
@@ -302,7 +354,7 @@ impl FromRequestParts<AppState> for AuthContext {
         });
 
         // X-Overslash-As: identity substitution for keys with "impersonate" scope.
-        // Copy the value out to an owned String so the immutable borrow of
+        // Copy the values out to owned Strings so the immutable borrow of
         // `parts.headers` ends before the `ClientIp` extractor takes `&mut`.
         let has_impersonate_scope = key_row.scopes.iter().any(|s| s == "impersonate");
         let as_value = match parts.headers.get("x-overslash-as") {
@@ -310,6 +362,33 @@ impl FromRequestParts<AppState> for AuthContext {
                 raw.to_str()
                     .map_err(|_| AppError::BadRequest("x-overslash-as is not valid UTF-8".into()))?
                     .to_owned(),
+            ),
+            None => None,
+        };
+        // Read the companion name header as raw bytes, not `to_str()`: that
+        // helper rejects everything outside visible ASCII, which is exactly the
+        // half of the world this header exists to carry. The `UTF-8''` form
+        // handles clients that cannot put those bytes on the wire at all.
+        let as_name_raw = match parts.headers.get("x-overslash-as-name") {
+            Some(raw) => Some(
+                std::str::from_utf8(raw.as_bytes())
+                    .map_err(|_| {
+                        AppError::BadRequest("x-overslash-as-name is not valid UTF-8".into())
+                    })?
+                    .to_owned(),
+            ),
+            None => None,
+        };
+        if as_name_raw.is_some() && as_value.is_none() {
+            return Err(AppError::BadRequest(
+                "x-overslash-as-name requires x-overslash-as".into(),
+            ));
+        }
+        let as_name = match as_name_raw.as_deref() {
+            Some(raw) => Some(
+                overslash_core::identity_path::parse_display_name(raw)
+                    .map_err(|e| AppError::BadRequest(format!("x-overslash-as-name: {e}")))?
+                    .into_owned(),
             ),
             None => None,
         };
@@ -325,9 +404,10 @@ impl FromRequestParts<AppState> for AuthContext {
                     .await
                     .ok()
                     .and_then(|c| c.0);
-                let target_id = crate::impersonation::resolve_target(
+                let target = crate::impersonation::resolve_target(
                     &tmp_scope,
                     &raw,
+                    as_name.as_deref(),
                     key_row.identity_id,
                     client_ip.as_deref(),
                 )
@@ -339,7 +419,7 @@ impl FromRequestParts<AppState> for AuthContext {
                 // final effective identity regardless of how it was named.
                 let caller_access =
                     resolve_identity_access(&tmp_scope, key_row.identity_id).await?;
-                let target_access = resolve_identity_access(&tmp_scope, target_id).await?;
+                let target_access = resolve_identity_access(&tmp_scope, target.identity_id).await?;
                 if target_access > caller_access {
                     return Err(AppError::Forbidden(
                         "impersonation target has higher access level than the key's identity"
@@ -347,7 +427,20 @@ impl FromRequestParts<AppState> for AuthContext {
                     ));
                 }
 
-                (Some(target_id), Some(key_row.identity_id))
+                // Only now — past the cap — may a name land on a row this
+                // request did not create.
+                if let (Some(root_id), Some(name)) = (target.renameable_root, as_name.as_deref()) {
+                    crate::impersonation::apply_display_name(
+                        &tmp_scope,
+                        root_id,
+                        name,
+                        key_row.identity_id,
+                        client_ip.as_deref(),
+                    )
+                    .await?;
+                }
+
+                (Some(target.identity_id), Some(key_row.identity_id))
             }
             Some(_) => {
                 // Header present but key lacks "impersonate" scope — reject explicitly.
@@ -470,10 +563,9 @@ async fn resolve_identity_access(
         .get_identity(identity_id)
         .await
         .map_err(|e| AppError::Internal(format!("db error: {e}")))?
+        && ident.is_org_admin
     {
-        if ident.is_org_admin {
-            return Ok(AccessLevel::Admin);
-        }
+        return Ok(AccessLevel::Admin);
     }
     let ceiling_user_id =
         crate::services::group_ceiling::resolve_ceiling_user_id(scope, identity_id)
@@ -520,14 +612,14 @@ impl FromRequestParts<AppState> for OrgAcl {
         // group lookup. Agents and non-admin users still go through the
         // overslash service group-grant path below.
         let scope_for_admin = OrgScope::new(auth.org_id, state.db_pool(&parts.extensions));
-        if let Some(ident) = scope_for_admin.get_identity(identity_id).await? {
-            if ident.is_org_admin {
-                return Ok(OrgAcl {
-                    org_id: auth.org_id,
-                    identity_id: Some(identity_id),
-                    access_level: AccessLevel::Admin,
-                });
-            }
+        if let Some(ident) = scope_for_admin.get_identity(identity_id).await?
+            && ident.is_org_admin
+        {
+            return Ok(OrgAcl {
+                org_id: auth.org_id,
+                identity_id: Some(identity_id),
+                access_level: AccessLevel::Admin,
+            });
         }
 
         // Construct an OrgScope inline (extractors are the official scope

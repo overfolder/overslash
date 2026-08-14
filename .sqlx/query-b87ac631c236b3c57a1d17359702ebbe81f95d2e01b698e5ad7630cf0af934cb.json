@@ -1,0 +1,233 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO download_tokens (\n             token_hash, org_id, identity_id, service_instance_id,\n             service_key, action_key, request, call_result_id, credential_ref,\n             mime, size_bytes, filename, expires_at\n         )\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,\n                 LEAST(now() + make_interval(secs => $13), $14::timestamptz))\n         RETURNING id, token_hash, org_id, identity_id, service_instance_id,\n                   service_key, action_key, request, call_result_id, credential_ref,\n                   mime, size_bytes, filename, created_at, expires_at,\n                   last_used_at, use_count",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "token_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "service_instance_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "service_instance_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "service_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "service_key"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "action_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "action_key"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "request",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "request"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "call_result_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "call_result_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "credential_ref",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "credential_ref"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "mime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "mime"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "filename"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "last_used_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "last_used_at"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "use_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "download_tokens",
+            "name": "use_count"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Uuid",
+        "Jsonb",
+        "Text",
+        "Int8",
+        "Text",
+        "Float8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "b87ac631c236b3c57a1d17359702ebbe81f95d2e01b698e5ad7630cf0af934cb"
+}

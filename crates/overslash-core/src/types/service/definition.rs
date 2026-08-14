@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::service_icon::ServiceIcon;
+
 use super::action::ServiceAction;
 use super::auth::{ConfigVar, SecretSlot, ServiceAuth};
 
@@ -48,6 +50,12 @@ pub struct ServiceDefinition {
     /// dashboard surfaces show them flagged.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    /// Catalog icon (`info.x-overslash-icon`). Usually implicit: a template
+    /// whose key matches a shipped asset gets `builtin:<key>` without
+    /// declaring anything. Resolved to an absolute URL at the API boundary —
+    /// never rendered from this value directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<ServiceIcon>,
     #[serde(default)]
     pub auth: Vec<ServiceAuth>,
     /// Credential slots this template needs, declared once
@@ -64,6 +72,13 @@ pub struct ServiceDefinition {
     pub config: Vec<ConfigVar>,
     #[serde(default)]
     pub actions: HashMap<String, ServiceAction>,
+    /// `info.x-overslash-default_timeout_ms`: the timeout every action of this
+    /// service inherits unless it declares its own. The one-line answer to
+    /// "this whole upstream is slow" — a per-action value
+    /// ([`ServiceAction::timeout_ms`]) still wins, and the org and deployment
+    /// maxima still clamp the result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_timeout_ms: Option<u64>,
     /// Execution runtime. Defaults to `Http` for backwards compat with every
     /// existing template. MCP templates set this to `Mcp` and populate `mcp`.
     #[serde(default, skip_serializing_if = "Runtime::is_default")]
@@ -375,6 +390,7 @@ mod tests {
     fn service_definition_http_defaults_keep_mcp_absent() {
         // Existing Http templates must serialize without runtime/mcp keys.
         let svc = ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "slack".into(),
@@ -383,6 +399,7 @@ mod tests {
             hosts: vec!["slack.com".into()],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Http,
@@ -403,6 +420,9 @@ mod tests {
         actions.insert(
             "search_issues".into(),
             ServiceAction {
+                wait_mode: None,
+                handoff_after_ms: None,
+                timeout_ms: None,
                 method: "".into(),
                 path: "".into(),
                 description: "Search issues".into(),
@@ -419,9 +439,11 @@ mod tests {
                 output_schema: Some(serde_json::json!({ "type": "object" })),
                 disabled: false,
                 request_body: None,
+                download: None,
             },
         );
         let svc = ServiceDefinition {
+            default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
             key: "linear_mcp".into(),
@@ -430,6 +452,7 @@ mod tests {
             hosts: vec![],
             category: Some("Development".into()),
             hidden: false,
+            icon: None,
             auth: vec![],
             actions,
             runtime: Runtime::Mcp,
@@ -465,6 +488,9 @@ mod tests {
     #[test]
     fn service_action_disabled_elided_when_false() {
         let a = ServiceAction {
+            wait_mode: None,
+            handoff_after_ms: None,
+            timeout_ms: None,
             method: "GET".into(),
             path: "/foo".into(),
             description: "x".into(),
@@ -481,6 +507,7 @@ mod tests {
             output_schema: None,
             disabled: false,
             request_body: None,
+            download: None,
         };
         let j = serde_json::to_value(&a).unwrap();
         assert!(j.get("disabled").is_none());

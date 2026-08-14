@@ -10,6 +10,7 @@ pub(super) struct RestoreResponse {
 }
 
 pub(super) async fn restore_identity(
+    State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -52,8 +53,9 @@ pub(super) async fn restore_identity(
                     ip_address: ip.0.as_deref(),
                 })
                 .await;
+            let ctx = IdentityIconCtx::for_one(&state, &scope, &identity).await?;
             Ok(Json(RestoreResponse {
-                identity: (*identity).into(),
+                identity: IdentityResponse::from_row(*identity, &ctx),
                 api_keys_resurrected,
             }))
         }
@@ -89,6 +91,7 @@ pub(super) struct ArchiveResponse {
 /// 200 with `archived_count: 0`. The optional JSON body `{ "reason": "..." }`
 /// may be omitted (defaults to `"manual"`).
 pub(super) async fn archive_identity(
+    State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -128,8 +131,9 @@ pub(super) async fn archive_identity(
         })
         .await;
 
+    let ctx = IdentityIconCtx::for_one(&state, &scope, &outcome.identity).await?;
     Ok(Json(ArchiveResponse {
-        identity: (*outcome.identity).into(),
+        identity: IdentityResponse::from_row(*outcome.identity, &ctx),
         archived_count: outcome.archived_count,
     }))
 }

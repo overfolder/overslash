@@ -15,11 +15,14 @@ pub mod middleware;
 pub mod ownership;
 pub mod routes;
 pub mod services;
+pub mod state;
+
+pub use state::{AppState, TestPoolId, TestResourceResolver, TestResources};
 
 use std::sync::Arc;
 
 use axum::Router;
-use axum::http::{Extensions, HeaderName, HeaderValue, Method, header};
+use axum::http::{HeaderName, HeaderValue, Method, header};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use tower_http::{
@@ -29,170 +32,8 @@ use tower_http::{
 };
 
 use crate::config::Config;
-use overslash_core::email::Mailer;
 use overslash_core::embeddings::{DisabledEmbedder, Embedder};
 use overslash_core::registry::ServiceRegistry;
-
-/// Application state shared across handlers.
-#[derive(Clone)]
-pub struct AppState {
-    pub db: PgPool,
-    pub config: Config,
-    pub http_client: reqwest::Client,
-    pub registry: Arc<ServiceRegistry>,
-    pub rate_limiter: Arc<dyn services::rate_limit::RateLimitStore>,
-    pub rate_limit_cache: Arc<services::rate_limit::RateLimitConfigCache>,
-    /// Caches per-org `plan` lookups so the rate-limit middleware can decide
-    /// whether to bypass for `free_unlimited` orgs without hitting Postgres
-    /// on every request. See `services::billing_tier`.
-    pub free_unlimited_cache: Arc<services::billing_tier::FreeUnlimitedCache>,
-    /// In-memory store for one-shot OAuth 2.1 authorization codes (60s TTL).
-    /// Process-local for v1; promoted to Redis once horizontal replication
-    /// is on the roadmap (tracked in `TECH_DEBT.md`).
-    pub auth_code_store: services::oauth_as::AuthCodeStore,
-    /// In-memory store for `/oauth/authorize` requests paused at the consent
-    /// step, keyed by a single-use `request_id`. Same 60s TTL as auth codes.
-    pub pending_authorize_store: services::oauth_as::PendingAuthorizeStore,
-    /// Embedding backend for `/v1/search`. Holds [`DisabledEmbedder`] when
-    /// `OVERSLASH_EMBEDDINGS=off` or when the pgvector preflight fails;
-    /// otherwise the real `FastembedEmbedder`. Checked on every query via
-    /// `embedder.is_enabled()` before touching the vector store.
-    pub embedder: Arc<dyn Embedder>,
-    /// Cached result of the pgvector preflight (see [`init_embeddings`]).
-    /// `true` iff both the env flag is on *and* the extension is present
-    /// in the connected Postgres. When `false`, the search endpoint
-    /// short-circuits the cosine retrieval and blends only keyword +
-    /// fuzzy scores.
-    pub embeddings_available: bool,
-    pub platform_registry: std::sync::Arc<services::platform_caller::PlatformRegistry>,
-    /// Transactional-email sender. `NoopMailer` until `EMAIL_PROVIDER` is set;
-    /// callers (billing, onboarding, DLQ digest) just `state.mailer.send(...)`
-    /// and stay oblivious to provider wiring.
-    pub mailer: Arc<dyn Mailer>,
-    /// Process-local fan-out for `GET /v1/events/stream`. Fed exclusively by
-    /// the Postgres listener task (see `services::events::bus`), so every
-    /// replica sees every event regardless of which one produced it.
-    pub event_bus: services::events::EventBus,
-    /// Per-request resource resolver. `None` in production: the field
-    /// accessors below fall through to `self.db`, `self.rate_limit_cache`,
-    /// etc. `Some(_)` only in test builds where multiple test pools share
-    /// a single Axum router; the test-pool middleware stamps a
-    /// `TestPoolId` into request extensions, and the resolver returns the
-    /// per-test `TestResources` bundle so org_id-keyed caches and OAuth
-    /// stores stay isolated across tests.
-    pub test_resources: Option<Arc<dyn TestResourceResolver>>,
-}
-
-/// Per-test resource bundle for the shared-router test harness. Bundles
-/// the six AppState fields that must be swapped per request to keep tests
-/// isolated when they share an Axum router: the DB pool, the two OAuth
-/// in-memory stores, and the three org-id-keyed rate-limit / billing
-/// caches (which would otherwise alias across tests because
-/// `BootstrapFixtures.org_id` is shared by every test cloning the
-/// bootstrapped template).
-pub struct TestResources {
-    pub db: PgPool,
-    pub auth_code_store: services::oauth_as::AuthCodeStore,
-    pub pending_authorize_store: services::oauth_as::PendingAuthorizeStore,
-    pub rate_limit_cache: Arc<services::rate_limit::RateLimitConfigCache>,
-    pub free_unlimited_cache: Arc<services::billing_tier::FreeUnlimitedCache>,
-    pub rate_limiter: Arc<dyn services::rate_limit::RateLimitStore>,
-    /// Per-test event bus. Without this, every test cloning the bootstrapped
-    /// template shares one org id, so one test's events would surface on
-    /// another's stream.
-    pub event_bus: services::events::EventBus,
-}
-
-/// Marker stamped into request `Extensions` by the test-pool middleware,
-/// used by the resolver to look up the per-test `TestResources` bundle.
-/// Production requests never carry this extension.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TestPoolId(pub uuid::Uuid);
-
-/// Resolves the per-test resource bundle for a request. Implemented by
-/// the test harness in `tests/common/shared_router.rs`. Always returns
-/// `None` in production (the field accessors below short-circuit to the
-/// static AppState fields).
-pub trait TestResourceResolver: Send + Sync {
-    fn resolve<'a>(&'a self, ext: &Extensions) -> Option<&'a TestResources>;
-}
-
-impl AppState {
-    /// Returns the `PgPool` for this request. In production (and in
-    /// per-test-router test helpers) this is `&self.db`. Under the
-    /// shared-router test harness, the test-pool middleware stamped a
-    /// `TestPoolId` into `ext` and this resolves to that test's pool.
-    pub fn db<'a>(&'a self, ext: &'a Extensions) -> &'a PgPool {
-        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
-            Some(res) => &res.db,
-            None => &self.db,
-        }
-    }
-
-    /// Owned `PgPool` clone for `tokio::spawn` captures. PgPool is cheap
-    /// to clone (Arc internally) — use this anywhere the spawned future
-    /// outlives the request and can't borrow from `Extensions`.
-    pub fn db_pool(&self, ext: &Extensions) -> PgPool {
-        self.db(ext).clone()
-    }
-
-    pub fn auth_code_store<'a>(
-        &'a self,
-        ext: &'a Extensions,
-    ) -> &'a services::oauth_as::AuthCodeStore {
-        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
-            Some(res) => &res.auth_code_store,
-            None => &self.auth_code_store,
-        }
-    }
-
-    pub fn pending_authorize_store<'a>(
-        &'a self,
-        ext: &'a Extensions,
-    ) -> &'a services::oauth_as::PendingAuthorizeStore {
-        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
-            Some(res) => &res.pending_authorize_store,
-            None => &self.pending_authorize_store,
-        }
-    }
-
-    pub fn rate_limit_cache<'a>(
-        &'a self,
-        ext: &'a Extensions,
-    ) -> &'a services::rate_limit::RateLimitConfigCache {
-        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
-            Some(res) => &res.rate_limit_cache,
-            None => &self.rate_limit_cache,
-        }
-    }
-
-    pub fn free_unlimited_cache<'a>(
-        &'a self,
-        ext: &'a Extensions,
-    ) -> &'a services::billing_tier::FreeUnlimitedCache {
-        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
-            Some(res) => &res.free_unlimited_cache,
-            None => &self.free_unlimited_cache,
-        }
-    }
-
-    pub fn rate_limiter<'a>(
-        &'a self,
-        ext: &'a Extensions,
-    ) -> &'a dyn services::rate_limit::RateLimitStore {
-        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
-            Some(res) => res.rate_limiter.as_ref(),
-            None => self.rate_limiter.as_ref(),
-        }
-    }
-
-    pub fn event_bus<'a>(&'a self, ext: &'a Extensions) -> &'a services::events::EventBus {
-        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
-            Some(res) => &res.event_bus,
-            None => &self.event_bus,
-        }
-    }
-}
 
 /// Create the application router with all routes and middleware.
 pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
@@ -248,45 +89,45 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     // billing deploy fails fast (not at first checkout). Skip when billing is
     // disabled or the secret key isn't set — the validation in `from_env`
     // already enforces that pairing.
-    if config.cloud_billing {
-        if let Some(secret_key) = config.stripe_secret_key.as_deref() {
-            let http = reqwest::Client::new();
-            config.stripe_eur_price_id = Some(
-                routes::billing::resolve_stripe_price_by_lookup_key(
-                    &http,
-                    secret_key,
-                    &config.stripe_eur_lookup_key,
-                    &config.stripe_api_base,
+    if config.cloud_billing
+        && let Some(secret_key) = config.stripe_secret_key.as_deref()
+    {
+        let http = reqwest::Client::new();
+        config.stripe_eur_price_id = Some(
+            routes::billing::resolve_stripe_price_by_lookup_key(
+                &http,
+                secret_key,
+                &config.stripe_eur_lookup_key,
+                &config.stripe_api_base,
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to resolve EUR Stripe price (lookup_key={}): {e}",
+                    config.stripe_eur_lookup_key
                 )
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to resolve EUR Stripe price (lookup_key={}): {e}",
-                        config.stripe_eur_lookup_key
-                    )
-                })?,
-            );
-            config.stripe_usd_price_id = Some(
-                routes::billing::resolve_stripe_price_by_lookup_key(
-                    &http,
-                    secret_key,
-                    &config.stripe_usd_lookup_key,
-                    &config.stripe_api_base,
+            })?,
+        );
+        config.stripe_usd_price_id = Some(
+            routes::billing::resolve_stripe_price_by_lookup_key(
+                &http,
+                secret_key,
+                &config.stripe_usd_lookup_key,
+                &config.stripe_api_base,
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to resolve USD Stripe price (lookup_key={}): {e}",
+                    config.stripe_usd_lookup_key
                 )
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to resolve USD Stripe price (lookup_key={}): {e}",
-                        config.stripe_usd_lookup_key
-                    )
-                })?,
-            );
-            tracing::info!(
-                eur_lookup = %config.stripe_eur_lookup_key,
-                usd_lookup = %config.stripe_usd_lookup_key,
-                "Resolved Stripe price IDs from lookup keys"
-            );
-        }
+            })?,
+        );
+        tracing::info!(
+            eur_lookup = %config.stripe_eur_lookup_key,
+            usd_lookup = %config.stripe_usd_lookup_key,
+            "Resolved Stripe price IDs from lookup keys"
+        );
     }
 
     // Load service registry. Falling back to `with_builtins()` (rather
@@ -308,6 +149,29 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             });
     tracing::info!("Loaded {} service definitions", registry.len());
 
+    // D42: `sql_policy` is a default-off Cargo feature, so a build can load
+    // SQL-annotated templates while carrying no parser. That mode is correct
+    // but degraded — every such call classifies write on unknown tables and
+    // routes to approval without the statement ever being read — and it is
+    // otherwise indistinguishable from a genuinely write-shaped query. Say so
+    // once at boot rather than leaving it to be inferred from a Dockerfile.
+    // `GET /v1/version` reports the same bit for anyone asking after the fact.
+    if !overslash_core::sql_policy::available() {
+        let annotated = registry
+            .all()
+            .into_iter()
+            .flat_map(|svc| svc.actions.values())
+            .filter(|action| action.params.values().any(|p| p.sql_field.is_some()))
+            .count();
+        if annotated > 0 {
+            tracing::warn!(
+                "{annotated} SQL-annotated action(s) loaded but this build has no SQL parser: \
+                 every SQL call classifies write on unknown tables and routes to approval. \
+                 Rebuild with --features sql_policy to classify for real."
+            );
+        }
+    }
+
     let (rate_limiter, in_memory_store) =
         services::rate_limit::create_store_with_eviction(&config).await;
     let rate_limit_cache = Arc::new(services::rate_limit::RateLimitConfigCache::new(
@@ -316,6 +180,9 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     let free_unlimited_cache = Arc::new(services::billing_tier::FreeUnlimitedCache::new(
         std::time::Duration::from_secs(30),
     ));
+
+    let (resolve_cache, in_memory_resolve_cache) =
+        services::resolve_cache::create_resolve_cache(&config).await;
 
     let (embedder, embeddings_available) = init_embeddings(&db).await;
 
@@ -339,7 +206,9 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         platform_registry: std::sync::Arc::new(services::platform_registry::build_registry()),
         mailer,
         event_bus: event_bus.clone(),
+        resolve_cache,
         test_resources: None,
+        background_db: Some(background_db.clone()),
     };
 
     // Bridge Postgres NOTIFY onto the local bus, and keep the log trimmed.
@@ -359,32 +228,82 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     {
         let db = background_db.clone();
         let system = overslash_db::scopes::SystemScope::new_internal(db.clone());
-        // The auto-bubble sweep emits the same events a human bubble does, so
-        // it needs a client for the webhook half of that.
+        // The auto-bubble and expiry sweeps emit the same events their
+        // human-driven counterparts do, so they need a client for the webhook
+        // half of that.
         let bg_http_client = state.http_client.clone();
+        // Hoisted out of the task: it is constant for the process lifetime, and
+        // reading it inside the `async move` would drag the whole `Config` in.
+        let orphan_grace = state.config.orphan_execution_grace_secs();
+        let async_cfg = state.config.async_execution.clone();
+        let async_queue_ttl = state.config.execution_pending_ttl_secs as i64;
+        let async_wall = state.config.async_orphan_grace_secs();
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                instrumented_step("approval_expiry", system.expire_stale_approvals(), |n| {
-                    tracing::info!("Expired {n} stale approvals");
-                    for _ in 0..n {
-                        overslash_metrics::approvals::record_event("expired", "system");
-                    }
-                })
+                instrumented_step(
+                    "approval_expiry",
+                    services::approval_expiry::process_expiry(&system, &bg_http_client),
+                    |n| {
+                        tracing::info!("Expired {n} stale approvals");
+                        for _ in 0..n {
+                            overslash_metrics::approvals::record_event("expired", "system");
+                        }
+                    },
+                )
                 .await;
                 instrumented_step("execution_expiry", system.expire_stale_executions(), |n| {
                     tracing::info!("Expired {n} pending executions")
                 })
                 .await;
                 // Orphaned `executing` rows — API crashed mid-replay. Grace
-                // window is the replay timeout plus a minute of slack.
-                let orphan_grace =
-                    (state.config.execution_replay_timeout_secs as i64).saturating_add(60);
+                // window is the replay wall plus a minute of slack: if the wall
+                // had been going to fire it already would have, so anything
+                // still `executing` past it lost its process.
                 instrumented_step(
                     "orphan_execution_reap",
                     system.expire_orphaned_executions(orphan_grace),
                     |n| tracing::info!("Reaped {n} orphaned executing executions"),
+                )
+                .await;
+                // Async rows are excluded from the reap above (`request IS NULL`)
+                // because a worker-run job may legitimately run for many
+                // minutes while heartbeating. Liveness for those is the lease,
+                // not `started_at`, so they get their own three sweeps.
+                //
+                // Requeue and exhaust are disjoint by construction (`<` vs
+                // `>=` on attempts), so the order here does not matter.
+                instrumented_step(
+                    "async_lease_requeue",
+                    system.requeue_expired_async_leases(async_cfg.max_attempts, async_queue_ttl),
+                    |n| tracing::info!("Requeued {n} async executions with expired leases"),
+                )
+                .await;
+                instrumented_step(
+                    "async_attempts_exhausted",
+                    system.fail_exhausted_async_executions(async_cfg.max_attempts),
+                    |n| tracing::info!("Failed {n} async executions that ran out of attempts"),
+                )
+                .await;
+                // Backstop for a worker alive enough to heartbeat but wedged on
+                // an upstream that never answers — without this it would hold
+                // its lease forever and neither sweep above would see the row.
+                instrumented_step(
+                    "async_wall_clock",
+                    system.fail_async_executions_over_wall(async_wall),
+                    |n| tracing::info!("Failed {n} async executions past the wall clock"),
+                )
+                .await;
+                // Hybrid rows are excluded from both reclaim sweeps above, so
+                // this is the only thing that reaches one whose replica died
+                // mid-call. It fails rather than requeues: the upstream already
+                // received the request, and an action call has no idempotency
+                // key to make a second send safe.
+                instrumented_step(
+                    "hybrid_lease_lost",
+                    system.fail_expired_hybrid_leases(),
+                    |n| tracing::info!("Failed {n} hybrid executions whose replica died"),
                 )
                 .await;
                 instrumented_step("subagent_archive", system.archive_idle_subagents(), |n| {
@@ -418,6 +337,25 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     |n| tracing::info!("Expired {n} mcp_upstream_flows"),
                 )
                 .await;
+                // Same reasoning, one row per `deliver: "url"` call. Expired
+                // tokens are already unredeemable — `claim` matches on
+                // `expires_at > now()` — so this only reclaims space.
+                instrumented_step(
+                    "download_token_expiry",
+                    async { overslash_db::repos::download_token::prune_expired(&db).await },
+                    |n| tracing::info!("Expired {n} download_tokens"),
+                )
+                .await;
+                // Stored results for truncated compact renders (D61). Ordering
+                // against the sweep above is irrelevant: the FK from
+                // `download_tokens.call_result_id` cascades, so pruning a
+                // result reaps the token pointing at it either way.
+                instrumented_step(
+                    "call_result_expiry",
+                    async { overslash_db::repos::call_result::prune_expired(&db).await },
+                    |n| tracing::info!("Expired {n} call_results"),
+                )
+                .await;
             }
         });
 
@@ -445,6 +383,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         {
             let rate_limit_cache = state.rate_limit_cache.clone();
             let free_unlimited_cache = state.free_unlimited_cache.clone();
+            let resolve_cache_evict = in_memory_resolve_cache.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -454,6 +393,11 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     }
                     rate_limit_cache.evict_expired();
                     free_unlimited_cache.evict_expired();
+                    // Same tick as the two above; only the in-memory backend
+                    // needs it, as Valkey expires its own keys via `SET .. EX`.
+                    if let Some(store) = &resolve_cache_evict {
+                        store.evict_expired();
+                    }
                     overslash_metrics::background::record_tick(
                         "rate_limit_evict",
                         "ok",
@@ -462,6 +406,23 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     overslash_metrics::background::set_last_success("rate_limit_evict");
                 }
             });
+        }
+
+        // Async execution worker. Spawned only when the flag is on, so a
+        // flag-off deployment installs neither the worker nor a signal
+        // handler and behaves bit-identically to before this feature.
+        //
+        // The signal handler exists solely so the worker can hand its leases
+        // back before Cloud Run's SIGKILL — it is deliberately not wired into
+        // `axum::serve(...).with_graceful_shutdown(...)`; see
+        // `services::shutdown` for why draining HTTP would be worse than
+        // useless here.
+        if state.config.async_execution.enabled {
+            services::shutdown::install_signal_handler();
+            tokio::spawn(services::async_executor::run(
+                state.clone(),
+                background_db.clone(),
+            ));
         }
 
         // DB pool stats poller — emits gauge every 30s. Deliberately reports
@@ -525,6 +486,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::permissions::router())
         .merge(routes::actions::router())
         .merge(routes::approvals::router())
+        .merge(routes::executions::router())
         .merge(routes::audit::router())
         .merge(routes::webhooks::router())
         .merge(routes::search::router())
@@ -540,6 +502,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::oauth_mcp_clients::router())
         .merge(routes::org_idp_configs::router())
         .merge(routes::org_invites::router())
+        .merge(routes::account_invitations::router())
         .merge(routes::org_members::router())
         .merge(routes::org_oauth_credentials::router())
         .merge(routes::org_service_keys::router())
@@ -615,12 +578,22 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::health::router())
         .merge(routes::version::router())
         .merge(routes::skill_md::router())
+        // Built-in service icons. Outside auth for the same reason as
+        // /SKILL.md: an <img> carries no Authorization header, and
+        // cross-origin it carries no cookie either.
+        .merge(routes::icons::router())
         .merge(routes::oauth_upstream::router())
         .merge(routes::oauth::consent_router())
         // Public one-click unsubscribe — must stay outside auth + rate-limit
         // layers because email clients and recipients clicking from inboxes
         // have no session cookie. The token in the URL is the sole authority.
         .merge(routes::unsubscribe::router())
+        // Deferred-download redemption. Outside auth for the same reason: the
+        // fetcher (curl in a sandbox, a browser) is deliberately not the
+        // caller and holds none of its credentials. Outside the rate-limit
+        // layer because that layer keys on an API-key prefix these requests
+        // don't have — the handler throttles per-IP itself.
+        .merge(routes::downloads::router())
         .merge(stripe_webhook_routes)
         .merge(validate_routes)
         .merge(rate_limited_routes)

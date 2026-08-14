@@ -78,10 +78,10 @@ pub fn prepare_from_value(mut doc: Value, opts: &ImportOptions) -> ImportPrepara
 
     let operations = collect_operations(&doc, opts.include_operations.as_ref());
 
-    if let Value::Object(ref mut root) = doc {
-        if let Some(filter) = opts.include_operations.as_ref() {
-            filter_paths(root, filter);
-        }
+    if let Value::Object(ref mut root) = doc
+        && let Some(filter) = opts.include_operations.as_ref()
+    {
+        filter_paths(root, filter);
     }
 
     ImportPreparation {

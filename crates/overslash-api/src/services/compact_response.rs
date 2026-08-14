@@ -29,11 +29,18 @@ use serde_json::{Map, Value, json};
 /// callers needing more can re-issue with `verbose: true`.
 pub const COMPACT_BUDGET_BYTES: usize = 8 * 1024;
 
-/// Conservative upper bound on the bytes the truncation marker
-/// (`"_truncated": true, "_hint": "…"`) adds to the serialized envelope.
-/// Subtracted from the working budget so the final output, marker
-/// included, still fits inside [`COMPACT_BUDGET_BYTES`].
-const MARKER_RESERVE_BYTES: usize = 128;
+/// Conservative upper bound on the bytes the truncation marker adds to the
+/// serialized envelope. Subtracted from the working budget so the final
+/// output, marker included, still fits inside [`COMPACT_BUDGET_BYTES`].
+///
+/// Sized with real headroom rather than snugly around the current marker, so
+/// rewording the hint doesn't silently push the output back over budget. It
+/// now has to cover three fields rather than two: `_truncated`, the `_hint`
+/// prose, and the `_full_result` descriptor ([`attach_full_result`]) — an
+/// absolute download URL plus an RFC-3339 expiry, both stamped *after* the
+/// budget check has already run. `marker_does_not_push_output_back_over_budget`
+/// is what catches an under-estimate here.
+const MARKER_RESERVE_BYTES: usize = 512;
 
 const MAX_STRING_CHARS: usize = 200;
 const MAX_ARRAY_ITEMS: usize = 10;
@@ -51,14 +58,11 @@ pub fn compact(result: &ActionResult) -> Value {
     // Reserve room for the truncation marker upfront so its bytes can't
     // push the final output back over `COMPACT_BUDGET_BYTES`.
     let working_budget = COMPACT_BUDGET_BYTES.saturating_sub(MARKER_RESERVE_BYTES);
-    if shrink_to_budget(&mut value, working_budget) {
-        if let Some(obj) = value.as_object_mut() {
-            obj.insert("_truncated".into(), Value::Bool(true));
-            obj.insert(
-                "_hint".into(),
-                Value::String("pass verbose=true to see the full response".into()),
-            );
-        }
+    if shrink_to_budget(&mut value, working_budget)
+        && let Some(obj) = value.as_object_mut()
+    {
+        obj.insert("_truncated".into(), Value::Bool(true));
+        obj.insert("_hint".into(), Value::String(HINT_NO_STORED_RESULT.into()));
     }
     value
 }
@@ -208,6 +212,51 @@ fn truncate_string(s: &mut String, max_chars: usize) -> bool {
     true
 }
 
+/// The hint on a truncated result whose full body was *not* stored — result
+/// storage is off, or the body is over `call_result_max_bytes`.
+///
+/// Leads with narrowing, not widening. This marker is the only in-band signal
+/// an agent gets that a response was cropped, and pointing it solely at
+/// `verbose=true` taught exactly the wrong reflex: re-issue the same
+/// over-broad call and pull the whole payload into context. The cheaper
+/// answers — the action's own paging parameters, or a `filter` that projects
+/// the fields actually wanted — come first; `verbose` stays the fallback for
+/// when the full body really is what's needed.
+pub const HINT_NO_STORED_RESULT: &str = "narrow with the action's paging params or a jq \
+filter, or pass verbose=true for the full body";
+
+/// The hint when the full result *is* stored and reachable at
+/// `_full_result.download_url`.
+///
+/// Same ordering rule as [`HINT_NO_STORED_RESULT`] — narrowing still beats
+/// pulling the whole payload into context, so it stays first. What changes is
+/// the fallback: the stored copy is free, whereas `verbose=true` is a field on
+/// a *new* `CallRequest` and therefore pays for the upstream call a second
+/// time. Naming that cost is the point; the pre-D61 wording recommended the
+/// expensive option without saying it was one.
+pub const HINT_STORED_RESULT: &str = "narrow with the action's paging params or a jq filter, \
+or fetch the full result from _full_result.download_url — it is already stored, so that \
+costs no second upstream call (verbose=true re-runs the call instead)";
+
+/// Stamp a stored-result descriptor onto a compact envelope and upgrade the
+/// hint to match.
+///
+/// Split from [`compact`] rather than folded into it so this module stays pure:
+/// minting the descriptor needs a database write, and [`compact`] is the piece
+/// worth keeping trivially unit-testable. Callers stamp only when a store
+/// actually succeeded, so `_full_result` present always means re-fetchable —
+/// an agent never chases a dangling URL.
+pub fn attach_full_result(value: &mut Value, download_url: &str, expires_at: &str) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    obj.insert(
+        "_full_result".into(),
+        json!({ "download_url": download_url, "expires_at": expires_at }),
+    );
+    obj.insert("_hint".into(), Value::String(HINT_STORED_RESULT.into()));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +365,71 @@ mod tests {
             "compact result was {serialized_len} bytes"
         );
         assert_eq!(v["_truncated"], true);
+    }
+
+    /// The unstored hint leads with narrowing rather than widening: pointing a
+    /// cropped response solely at `verbose=true` teaches the reflex of
+    /// re-issuing the same over-broad call and pulling the whole payload into
+    /// context.
+    #[test]
+    fn unstored_hint_leads_with_narrowing() {
+        let big = "x".repeat(50_000);
+        let r = base(&big);
+        let v = compact(&r);
+        let hint = v["_hint"].as_str().expect("hint");
+        assert!(
+            hint.starts_with("narrow with"),
+            "narrowing must come first: {hint}"
+        );
+        let narrow = hint.find("narrow").expect("names narrowing");
+        let verbose = hint.find("verbose").expect("names verbose as fallback");
+        assert!(narrow < verbose, "verbose must stay the fallback: {hint}");
+    }
+
+    /// `attach_full_result` upgrades both the descriptor and the hint, and the
+    /// result stays inside the budget — the marker reserve exists to cover
+    /// these bytes, which are stamped *after* the shrink has measured.
+    #[test]
+    fn attaching_full_result_upgrades_hint_and_stays_in_budget() {
+        let items: Vec<Value> = (0..2_000)
+            .map(|i| json!({"id": format!("s:{i}"), "subject": "hello world".repeat(5)}))
+            .collect();
+        let body = serde_json::to_string(&Value::Array(items)).unwrap();
+        let r = base(&body);
+        let mut v = compact(&r);
+        assert_eq!(v["_truncated"], true);
+
+        attach_full_result(
+            &mut v,
+            "https://api.overslash.com/v1/downloads/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "2026-08-11T12:34:56Z",
+        );
+
+        assert!(v["_full_result"]["download_url"].as_str().is_some());
+        assert_eq!(v["_full_result"]["expires_at"], "2026-08-11T12:34:56Z");
+        let hint = v["_hint"].as_str().expect("hint");
+        assert!(
+            hint.contains("_full_result.download_url"),
+            "hint must point at the stored bytes: {hint}"
+        );
+        // The stored copy is free and `verbose=true` is not. Saying so is the
+        // whole reason this wording differs from the unstored one.
+        assert!(
+            hint.contains("no second upstream call"),
+            "hint must say the stored copy is free: {hint}"
+        );
+        assert!(
+            hint.contains("re-runs the call"),
+            "hint must name what verbose costs: {hint}"
+        );
+        // Narrowing still leads, same rule as the unstored hint.
+        assert!(hint.starts_with("narrow with"), "{hint}");
+
+        let len = serde_json::to_string(&v).unwrap().len();
+        assert!(
+            len <= COMPACT_BUDGET_BYTES,
+            "descriptor pushed the envelope over budget: {len} > {COMPACT_BUDGET_BYTES}"
+        );
     }
 
     /// Regression — a body that's just barely over budget on pass 1 used

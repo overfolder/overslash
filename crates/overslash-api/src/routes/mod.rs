@@ -1,3 +1,4 @@
+pub mod account_invitations;
 pub mod actions;
 pub mod api_keys;
 pub mod approvals;
@@ -8,9 +9,12 @@ pub mod byoc_credentials;
 pub mod connect_gate;
 pub mod connections;
 pub mod dev_e2e;
+pub mod downloads;
 pub mod events;
+pub mod executions;
 pub mod groups;
 pub mod health;
+pub mod icons;
 pub mod identities;
 pub mod mcp;
 pub mod oauth;

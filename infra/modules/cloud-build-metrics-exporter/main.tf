@@ -39,6 +39,13 @@ variable "github_branch" {
   type = string
 }
 
+locals {
+  image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter"
+
+  # Distinct tag under the `/cache` path Kaniko used, so old blobs age out alone.
+  cache_ref = "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter/cache:buildcache"
+}
+
 resource "google_cloudbuild_trigger" "deploy" {
   name     = "${var.base_prefix}-metrics-exporter-deploy"
   project  = var.project_id
@@ -57,8 +64,8 @@ resource "google_cloudbuild_trigger" "deploy" {
 
   # Path filter: only fire when something that actually goes into the
   # exporter image changes. Mirrors the shortener trigger's pattern.
-  # - Cargo.toml / Cargo.lock / rust-toolchain.toml: workspace inputs the
-  #   Dockerfile COPYs at the top of the builder stage.
+  # - Cargo.toml / Cargo.lock / rust-toolchain.toml: the workspace inputs
+  #   cargo-chef distills into the dependency recipe.
   # - crates/overslash-metrics-exporter/**: the exporter sources + Dockerfile.
   # - .sqlx/**: offline sqlx query metadata used by SQLX_OFFLINE=true.
   # Sibling workspace crates (overslash-metrics, overslash-db, ...) are
@@ -74,24 +81,35 @@ resource "google_cloudbuild_trigger" "deploy" {
   ]
 
   build {
-    # Build with Kaniko for persistent layer caching. Cloud Build uses a
-    # fresh VM per run, so a plain `docker build` always hits a cold cache
-    # and recompiles all Rust deps. Kaniko caches each layer (incl. the
-    # builder-stage dependency layer) as content-addressed blobs in
-    # <dest>/cache, isolated per project, and pushes the image directly
-    # (replacing the separate push step). No extra IAM; --cache-ttl bounds
-    # staleness. See the cloud-build (API) module for the full rationale.
+    # AR token for the buildx step (see the cloud-build (API) module).
     step {
-      name = "gcr.io/kaniko-project/executor:latest"
-      args = [
-        "--dockerfile=crates/overslash-metrics-exporter/Dockerfile",
-        "--context=dir:///workspace",
-        "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter:$COMMIT_SHA",
-        "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter:latest",
-        "--cache=true",
-        # Pin the cache repo explicitly (see cloud-build module for rationale).
-        "--cache-repo=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter/cache",
-        "--cache-ttl=168h",
+      name       = "gcr.io/google.com/cloudsdktool/cloud-sdk"
+      entrypoint = "bash"
+      args       = ["-c", "gcloud auth print-access-token > /workspace/.ar-token"]
+    }
+
+    # Registry layer cache: a fresh VM per build means it can't live on disk.
+    # Replaces Kaniko (archived June 2025). See the cloud-build (API) module.
+    step {
+      name       = "gcr.io/cloud-builders/docker"
+      entrypoint = "bash"
+      args = ["-c", <<-EOT
+        set -eu
+        docker login -u oauth2accesstoken --password-stdin \
+          https://${var.region}-docker.pkg.dev < /workspace/.ar-token
+        rm -f /workspace/.ar-token
+        docker buildx create --name cloudbuild --driver docker-container --use --bootstrap
+        docker buildx build \
+          --file crates/overslash-metrics-exporter/Dockerfile \
+          --tag ${local.image}:$COMMIT_SHA \
+          --tag ${local.image}:latest \
+          --cache-from type=registry,ref=${local.cache_ref} \
+          --cache-to type=registry,ref=${local.cache_ref},mode=max,image-manifest=true,oci-mediatypes=true \
+          --provenance=false \
+          --progress=plain \
+          --push \
+          .
+      EOT
       ]
     }
 
@@ -100,7 +118,7 @@ resource "google_cloudbuild_trigger" "deploy" {
       entrypoint = "gcloud"
       args = [
         "run", "jobs", "update", var.cloud_run_job_name,
-        "--image", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter:$COMMIT_SHA",
+        "--image", "${local.image}:$COMMIT_SHA",
         "--region", var.region,
       ]
     }
@@ -110,7 +128,8 @@ resource "google_cloudbuild_trigger" "deploy" {
       machine_type = "E2_HIGHCPU_8"
     }
 
-    timeout = "1200s"
+    # Cold builds recompile every dep and warm ones pay a cache export; 1200s was tight.
+    timeout = "1800s"
   }
 }
 

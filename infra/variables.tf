@@ -75,10 +75,22 @@ variable "enable_dev_auth" {
   default     = false
 }
 
+variable "enable_live_map" {
+  description = "Enable the Live Map (/map) and the per-call `action.*` events it animates (OVERSLASH_LIVE_MAP). Dev only — one durable events row per action call. See D58."
+  type        = bool
+  default     = false
+}
+
 variable "enable_magic_link" {
   description = "Enable passwordless email magic-link login (MAGIC_LINK_ENABLED). Default-on: it's the working login on an env with no external IdP configured."
   type        = bool
   default     = true
+}
+
+variable "enable_async_execution" {
+  description = "Enable async (non-blocking) action calls (ASYNC_EXECUTION_ENABLED). Default-off. The worker only drains while an instance exists, so enable it only where cloud_run_min_instances >= 1."
+  type        = bool
+  default     = false
 }
 
 variable "enable_google_login" {

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -7,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::util::fmt_time;
+
+use crate::services::group_ceiling;
 
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::group::GroupRow;
@@ -18,6 +22,10 @@ use crate::{
     extractors::{AdminAcl, ClientIp, OrgAcl, ReqExt},
 };
 use overslash_core::permissions::AccessLevel;
+
+use crate::services::group_ceiling::{
+    bound_auto_approve, map_grant_constraint, resolve_auto_approve,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -61,14 +69,22 @@ struct UpdateGroupRequest {
 struct AddGrantRequest {
     service_instance_id: Uuid,
     access_level: String,
+    /// `"none" | "read" | "write" | "admin"`. Omitted means `"none"`.
     #[serde(default)]
-    auto_approve_reads: bool,
+    auto_approve_level: Option<String>,
+    /// DEPRECATED alias for `auto_approve_level`: `true` => `"read"`,
+    /// `false` => `"none"`. Ignored when `auto_approve_level` is present.
+    #[serde(default)]
+    auto_approve_reads: Option<bool>,
 }
 
 #[derive(Deserialize)]
 struct PatchGrantRequest {
     #[serde(default)]
     access_level: Option<String>,
+    #[serde(default)]
+    auto_approve_level: Option<String>,
+    /// DEPRECATED alias — see [`AddGrantRequest::auto_approve_reads`].
     #[serde(default)]
     auto_approve_reads: Option<bool>,
 }
@@ -93,6 +109,12 @@ struct GroupResponse {
     /// Set iff `system_kind == 'self'` — the user-identity this Myself group is for.
     #[serde(skip_serializing_if = "Option::is_none")]
     owner_identity_id: Option<Uuid>,
+    /// Whether the calling identity belongs to this group. Resolved through
+    /// the caller's ceiling user, since agents inherit membership from their
+    /// owner rather than joining groups themselves. Only computed on the list
+    /// endpoint — omitted elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_member: Option<bool>,
     created_at: String,
     updated_at: String,
 }
@@ -107,6 +129,7 @@ impl From<GroupRow> for GroupResponse {
             is_system: r.is_system,
             system_kind: r.system_kind,
             owner_identity_id: r.owner_identity_id,
+            is_member: None,
             created_at: fmt_time(r.created_at),
             updated_at: fmt_time(r.updated_at),
         }
@@ -120,6 +143,11 @@ struct GroupGrantResponse {
     service_instance_id: Uuid,
     service_name: String,
     access_level: String,
+    /// `"none" | "read" | "write" | "admin"` — how far up the ladder actions
+    /// skip Layer 2 entirely. Bounded by `access_level`.
+    auto_approve_level: String,
+    /// DEPRECATED — `auto_approve_level != "none"`. Kept for one release so
+    /// existing callers keep working; read `auto_approve_level` instead.
     auto_approve_reads: bool,
     created_at: String,
 }
@@ -191,6 +219,23 @@ async fn list_groups(
     Query(q): Query<ListGroupsQuery>,
 ) -> Result<Json<Vec<GroupResponse>>> {
     let rows = scope.list_groups().await?;
+
+    // Membership is what gates create-time group selection on an org-level
+    // service (see `validate_create_group_grants`), so the listing carries it
+    // and the dashboard can flag an invalid pick without a round trip.
+    let member_of: HashSet<Uuid> = match caller_identity {
+        Some(id) => {
+            let ceiling_user = group_ceiling::resolve_ceiling_user_id(&scope, id).await?;
+            scope
+                .list_groups_for_identity(ceiling_user)
+                .await?
+                .into_iter()
+                .map(|g| g.id)
+                .collect()
+        }
+        None => HashSet::new(),
+    };
+
     let filtered: Vec<_> = rows
         .into_iter()
         .filter(|r| {
@@ -201,7 +246,12 @@ async fn list_groups(
                 || q.include_self
                 || (caller_identity.is_some() && r.owner_identity_id == caller_identity)
         })
-        .map(GroupResponse::from)
+        .map(|r| {
+            let is_member = member_of.contains(&r.id);
+            let mut resp = GroupResponse::from(r);
+            resp.is_member = Some(is_member);
+            resp
+        })
         .collect();
     Ok(Json(filtered))
 }
@@ -320,12 +370,19 @@ async fn add_grant(
     Json(req): Json<AddGrantRequest>,
 ) -> Result<Json<GroupGrantResponse>> {
     // Validate access_level
-    if !matches!(req.access_level.as_str(), "read" | "write" | "admin") {
-        return Err(AppError::BadRequest(format!(
+    let access = AccessLevel::parse(&req.access_level).ok_or_else(|| {
+        AppError::BadRequest(format!(
             "invalid access_level '{}': must be read, write, or admin",
             req.access_level
-        )));
-    }
+        ))
+    })?;
+
+    // Auto-approval is a second ceiling on the same ladder. On a create every
+    // overshoot is something the caller typed, so `explicit = true`.
+    let requested_auto =
+        resolve_auto_approve(req.auto_approve_level.as_deref(), req.auto_approve_reads)?.flatten();
+    let auto_level = bound_auto_approve(access, requested_auto, true)?;
+    let auto_level = AccessLevel::render_auto(auto_level);
 
     // Verify group exists and belongs to org
     let group = scope
@@ -376,7 +433,7 @@ async fn add_grant(
             group_id,
             req.service_instance_id,
             &req.access_level,
-            req.auto_approve_reads,
+            auto_level,
         )
         .await
         .map_err(|e| match &e {
@@ -385,7 +442,7 @@ async fn add_grant(
             {
                 AppError::Conflict("service already granted to this group".into())
             }
-            _ => AppError::Database(e),
+            _ => map_grant_constraint(e),
         })?
         .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
@@ -401,7 +458,7 @@ async fn add_grant(
                 "service_instance_id": req.service_instance_id,
                 "service_name": &svc.name,
                 "access_level": &req.access_level,
-                "auto_approve_reads": req.auto_approve_reads,
+                "auto_approve_level": auto_level,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -414,6 +471,7 @@ async fn add_grant(
         service_instance_id: grant_row.service_instance_id,
         service_name: svc.name,
         access_level: grant_row.access_level,
+        auto_approve_level: grant_row.auto_approve_level,
         auto_approve_reads: grant_row.auto_approve_reads,
         created_at: fmt_time(grant_row.created_at),
     }))
@@ -438,6 +496,7 @@ async fn list_grants(
                 service_instance_id: r.service_instance_id,
                 service_name: r.service_name,
                 access_level: r.access_level,
+                auto_approve_level: r.auto_approve_level,
                 auto_approve_reads: r.auto_approve_reads,
                 created_at: fmt_time(r.created_at),
             })
@@ -525,7 +584,10 @@ async fn update_grant(
     // Reject no-op patches outright. PATCH semantics make this ambiguous —
     // either "leave everything alone" (succeed but do nothing) or "you forgot
     // a field" (400). Picking 400 keeps the dashboard's error path honest.
-    if req.access_level.is_none() && req.auto_approve_reads.is_none() {
+    if req.access_level.is_none()
+        && req.auto_approve_level.is_none()
+        && req.auto_approve_reads.is_none()
+    {
         return Err(AppError::BadRequest("no fields to update".into()));
     }
 
@@ -562,22 +624,51 @@ async fn update_grant(
         return Err(AppError::Forbidden("admin access required".into()));
     }
 
-    if let Some(level) = req.access_level.as_deref()
-        && !matches!(level, "read" | "write" | "admin")
-    {
-        return Err(AppError::BadRequest(format!(
-            "invalid access_level '{level}': must be read, write, or admin"
-        )));
-    }
+    let patched_access = req
+        .access_level
+        .as_deref()
+        .map(|level| {
+            AccessLevel::parse(level).ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "invalid access_level '{level}': must be read, write, or admin"
+                ))
+            })
+        })
+        .transpose()?;
 
+    let requested_auto =
+        resolve_auto_approve(req.auto_approve_level.as_deref(), req.auto_approve_reads)?;
+
+    // A COALESCE-only UPDATE can't see the *resulting* pair, and the ceiling
+    // rule is about that pair — a patch touching only one column can still
+    // leave `auto_approve_level` above `access_level`. Read the current row
+    // and decide against the merged values.
+    let current = scope
+        .get_group_grant(grant_id, group_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("grant not found".into()))?;
+
+    // Unparseable stored values fail closed: an unknown access level reads as
+    // `read`, an unknown auto-approve level as "no auto-approval".
+    let effective_access = patched_access
+        .unwrap_or_else(|| AccessLevel::parse(&current.access_level).unwrap_or(AccessLevel::Read));
+    let effective_auto = requested_auto
+        .unwrap_or_else(|| AccessLevel::parse_auto(&current.auto_approve_level).flatten());
+    let auto_level =
+        bound_auto_approve(effective_access, effective_auto, requested_auto.is_some())?;
+    let auto_level = AccessLevel::render_auto(auto_level);
+
+    // Always write the resolved level, never `None` — that's what makes the
+    // clamp land when only `access_level` was patched.
     let grant_row = scope
         .update_group_grant(
             grant_id,
             group_id,
             req.access_level.as_deref(),
-            req.auto_approve_reads,
+            Some(auto_level),
         )
-        .await?
+        .await
+        .map_err(map_grant_constraint)?
         .ok_or_else(|| AppError::NotFound("grant not found".into()))?;
 
     // Resolve the service name for the response — update_group_grant returns
@@ -599,7 +690,7 @@ async fn update_grant(
                 "service_instance_id": grant_row.service_instance_id,
                 "service_name": &svc.name,
                 "access_level": req.access_level,
-                "auto_approve_reads": req.auto_approve_reads,
+                "auto_approve_level": auto_level,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -612,6 +703,7 @@ async fn update_grant(
         service_instance_id: grant_row.service_instance_id,
         service_name: svc.name,
         access_level: grant_row.access_level,
+        auto_approve_level: grant_row.auto_approve_level,
         auto_approve_reads: grant_row.auto_approve_reads,
         created_at: fmt_time(grant_row.created_at),
     }))
@@ -651,7 +743,8 @@ async fn assign_identity(
     // Without this, an admin could add bob to alice's Myself group, and
     // since the ceiling query unions grants across all the user's groups,
     // bob would silently inherit every grant alice has via Myself —
-    // including admin + auto_approve_reads on every service alice owns.
+    // including admin access and auto-approved reads on every service
+    // alice owns.
     if grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id != Some(req.identity_id)
     {
         return Err(AppError::BadRequest(

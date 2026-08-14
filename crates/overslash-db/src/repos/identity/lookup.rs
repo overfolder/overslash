@@ -21,6 +21,41 @@ pub(crate) async fn find_user_by_email_global(
     .await
 }
 
+/// Cross-org list of *pending invitations* addressed to `email` — the
+/// invitee-side counterpart of `routes/org_invites.rs`'s admin listing.
+/// Surfaced on `SystemScope::list_pending_invitations_for_email`.
+///
+/// "Pending" is the never-joined predicate: `external_id IS NULL` (no IdP
+/// subject has ever claimed the row) *and* `user_id IS NULL` (no human is
+/// attached). Both are needed — an invite accepted in-app links a user
+/// without ever minting an `external_id` for that org.
+///
+/// Identities auto-created as a side effect of name-based impersonation are
+/// excluded: nobody invited that person, so surfacing the org to them would
+/// leak its existence. Same rule as `org_invites::is_pending_invite`.
+///
+/// Case-insensitive, matching `find_user_by_email_in_org` — `identities.email`
+/// carries no lower-case CHECK, so historical rows can be mixed-case.
+pub(crate) async fn list_pending_invites_by_email(
+    pool: &PgPool,
+    email: &str,
+) -> Result<Vec<IdentityRow>, sqlx::Error> {
+    sqlx::query_as!(
+        IdentityRow,
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at
+         FROM identities
+         WHERE kind = 'user' AND lower(email) = lower($1)
+           AND archived_at IS NULL
+           AND external_id IS NULL
+           AND user_id IS NULL
+           AND metadata->>'provisioned_by' IS DISTINCT FROM 'impersonation'
+         ORDER BY created_at ASC",
+        email,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// Look up a live user-kind identity by email **within one org**. Backs both
 /// name-based impersonation (`X-Overslash-As: alice@acme.com`) and the
 /// adopt-by-email branch of the login path, which is what makes a

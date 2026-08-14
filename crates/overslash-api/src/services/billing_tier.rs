@@ -72,10 +72,10 @@ impl FreeUnlimitedCache {
         pool: &PgPool,
         org_id: Uuid,
     ) -> Option<(String, Option<OffsetDateTime>)> {
-        if let Some(entry) = self.entries.get(&org_id) {
-            if entry.fetched_at.elapsed() < self.ttl {
-                return Some((entry.plan.clone(), entry.trial_ends_at));
-            }
+        if let Some(entry) = self.entries.get(&org_id)
+            && entry.fetched_at.elapsed() < self.ttl
+        {
+            return Some((entry.plan.clone(), entry.trial_ends_at));
         }
 
         match overslash_db::repos::org::get_billing(pool, org_id).await {

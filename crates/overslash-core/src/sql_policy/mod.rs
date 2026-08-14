@@ -22,16 +22,38 @@
 //!   enumeration — but views/CTEs hide base-table columns from any parser, so
 //!   true column masking (PII) is the database's / Metabase's job, never
 //!   promised here.
+//! - **Function calls are screened by name** (D69): a `SELECT` stays read only
+//!   while every function it calls is on the safe list (`functions.rs`) —
+//!   `pg_catalog`'s IMMUTABLE/STABLE set, a short VOLATILE-but-harmless
+//!   carve-out (`pg_sleep`, `random`, …), plus whatever the database's
+//!   `safe_functions` config adds. Anything else classifies write **and**
+//!   drops `tables_exhaustive`, because a `nextval`, a `dblink`, or any UDF
+//!   reaches relations the parse tree cannot name. The screen is only as
+//!   good as the enumeration behind it, so the enumeration is *checked*
+//!   against the tree's own `FuncCall` count rather than trusted — a call the
+//!   walk could not reach fails the statement closed.
 //!
-//! Documented non-guarantees: volatile functions inside a SELECT
-//! (`SELECT nextval('s')`) classify read — function-level policy is out of
-//! scope, DB grants own it; Metabase `{{template_vars}}` do not parse and
-//! therefore classify write; a read-only upstream key remains the backstop
-//! regardless (belt and suspenders).
+//! Documented non-guarantees: an unlisted-but-harmless function (a PostGIS
+//! `st_*`, an extension) classifies write until an operator lists it — the
+//! fail-closed direction, fixed by config rather than a release; the safe list
+//! trusts a *name*, so a function shadowing a catalog name from earlier on the
+//! `search_path` inherits its listing; **operators are not screened**, so a
+//! user-defined operator backed by a volatile function is not caught (its
+//! function name never appears as a call); Metabase `{{template_vars}}` do not
+//! parse and therefore classify write; a read-only upstream key remains the
+//! backstop regardless (belt and suspenders).
 
 mod analyze;
 mod config;
 mod types;
+
+// Only the classifier reads these, and only it is feature-gated.
+#[cfg(feature = "sql_policy")]
+mod catalog_functions;
+#[cfg(feature = "sql_policy")]
+mod functions;
+#[cfg(feature = "sql_policy")]
+mod walk;
 
 pub use analyze::{analyze, available, extract_sql};
 pub use config::{SQL_DATABASES_CONFIG_KEY, SqlDatabaseEntry, parse_sql_databases};

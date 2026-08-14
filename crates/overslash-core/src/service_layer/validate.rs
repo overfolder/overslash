@@ -24,6 +24,13 @@ pub fn validate_delta(
 ) -> ValidationReport {
     let mut issues = Issues::default();
 
+    // `display_name` and `description` need no checking — they are inert
+    // strings. `icon` is not: it is the one delta field that becomes a URL the
+    // operator's browser loads, so the standalone path's https-only rule has to
+    // hold here too or the derived-layer write path is an unvalidated back door
+    // into it.
+    crate::template_validation::check_service_icon(delta.icon.as_ref(), "icon", &mut issues);
+
     // The base's FULL keyset (there is no hidden-vs-visible split once compiled;
     // every base action key is off-limits for an extension).
     let base_keys: HashSet<&str> = base.actions.keys().map(String::as_str).collect();
@@ -91,14 +98,56 @@ pub fn validate_delta(
             );
         }
     }
+
+    // Two extension actions bound to the same method+path compile into one
+    // operation, because `compile_extension_actions` assembles them into a
+    // synthetic document where `paths.{path}.{method}` holds a single operation.
+    // The loser is dropped with no diagnostic, and which one loses depends on
+    // `HashMap` iteration order — so the same delta can resolve differently
+    // between processes. An error rather than a warning: unlike a key nothing
+    // reads, this silently removes a whole action, and the author is right here.
+    let mut bound: std::collections::HashMap<(String, String), &str> =
+        std::collections::HashMap::new();
+    let mut ordered: Vec<&String> = delta.extensions.actions.keys().collect();
+    ordered.sort();
+    for key in ordered {
+        let action = &delta.extensions.actions[key];
+        let binding = (action.method.to_lowercase(), action.path.clone());
+        match bound.get(&binding) {
+            None => {
+                bound.insert(binding, key.as_str());
+            }
+            Some(first) => issues.err(
+                "extension_binding_collision",
+                format!(
+                    "extension actions '{first}' and '{key}' are both bound to \
+                     {} {} — one of the two would be dropped",
+                    action.method.to_uppercase(),
+                    action.path
+                ),
+                format!("extensions.actions.{key}"),
+            ),
+        }
+    }
     if !delta.extensions.actions.is_empty() {
-        if let Err(errs) = compile_extension_actions(base, &delta.extensions) {
-            for e in errs {
-                issues.err(
-                    "extension_invalid",
-                    format!("extension actions failed to compile: {}", e.message),
-                    "extensions.actions",
-                );
+        match compile_extension_actions(base, &delta.extensions) {
+            // Write-time surfacing, so an extension operation declaring something
+            // nothing reads is named while the author still has the delta open —
+            // `POST /v1/templates/validate-delta` renders these in the layer
+            // editor.
+            Ok((_, lint_warnings)) => {
+                for w in lint_warnings {
+                    issues.warn(w.code, w.message, w.path);
+                }
+            }
+            Err(errs) => {
+                for e in errs {
+                    issues.err(
+                        "extension_invalid",
+                        format!("extension actions failed to compile: {}", e.message),
+                        "extensions.actions",
+                    );
+                }
             }
         }
     }
@@ -177,6 +226,37 @@ mod tests {
     use crate::service_layer::{ActionPatch, ExtensionAction, Extensions, InstanceDefaults};
     use crate::types::Risk;
     use std::collections::HashMap;
+
+    #[test]
+    fn validate_rejects_a_non_https_delta_icon() {
+        // The derived-layer write path must not be a way around the standalone
+        // path's https-only rule.
+        let base = base_with(&[("a", Risk::Read)]);
+        for raw in ["javascript:alert(1)", "http://example.com/a.svg"] {
+            let delta = Delta {
+                icon: Some(crate::service_icon::ServiceIcon::try_from(raw.to_string()).unwrap()),
+                ..Default::default()
+            };
+            let report = validate_delta(&delta, &base, false);
+            assert!(!report.valid, "{raw} should be rejected");
+            assert!(report.errors.iter().any(|e| e.code == "invalid_icon"));
+        }
+    }
+
+    #[test]
+    fn validate_accepts_an_https_delta_icon() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            icon: Some(
+                crate::service_icon::ServiceIcon::try_from(
+                    "https://cdn.acme.test/logo.svg".to_string(),
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        assert!(validate_delta(&delta, &base, false).valid);
+    }
 
     #[test]
     fn validate_rejects_risk_clamp_down() {
@@ -345,6 +425,123 @@ mod tests {
             report.valid,
             "expected valid, got errors: {:?}",
             report.errors
+        );
+    }
+
+    /// Two extension actions bound to the same method+path compile into one
+    /// operation and the loser is dropped, so the delta must not be accepted.
+    /// Found while checking a review claim that the *lint dot-path* could be
+    /// misattributed in this case — it cannot (the path map and the operation map
+    /// are overwritten in lockstep, so the finding names whichever operation
+    /// survived), but the silent drop underneath it was real.
+    #[test]
+    fn two_extension_actions_on_one_binding_are_rejected() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let at = |path: &str, method: &str| ExtensionAction {
+            method: method.into(),
+            path: path.into(),
+            operation: serde_json::json!({
+                "description": "Lookup",
+                "x-overslash-risk": "read"
+            }),
+        };
+        let delta = Delta {
+            extensions: Extensions {
+                actions: HashMap::from([
+                    ("first".to_string(), at("/dup", "GET")),
+                    ("second".to_string(), at("/dup", "GET")),
+                ]),
+                hosts: vec![],
+            },
+            ..Default::default()
+        };
+        let report = validate_delta(&delta, &base, false);
+        assert!(!report.valid, "one of the two would vanish silently");
+        let issue = report
+            .errors
+            .iter()
+            .find(|e| e.code == "extension_binding_collision")
+            .unwrap_or_else(|| panic!("expected the collision error, got {:?}", report.errors));
+        // Reported against the deterministic pair, not whichever key the
+        // HashMap happened to yield last.
+        assert!(
+            issue.message.contains("'first' and 'second'"),
+            "message should name both, deterministically: {}",
+            issue.message
+        );
+        assert!(issue.message.contains("GET /dup"), "{}", issue.message);
+    }
+
+    /// Differing on either half of the binding is fine — that is two operations
+    /// on one path item, or the same method on two paths.
+    #[test]
+    fn extension_actions_differing_in_method_or_path_are_fine() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let at = |path: &str, method: &str| ExtensionAction {
+            method: method.into(),
+            path: path.into(),
+            operation: serde_json::json!({
+                "description": "Lookup",
+                "x-overslash-risk": "read"
+            }),
+        };
+        let delta = Delta {
+            extensions: Extensions {
+                actions: HashMap::from([
+                    ("get_it".to_string(), at("/thing", "GET")),
+                    ("post_it".to_string(), at("/thing", "POST")),
+                    ("get_other".to_string(), at("/other", "GET")),
+                ]),
+                hosts: vec![],
+            },
+            ..Default::default()
+        };
+        let report = validate_delta(&delta, &base, false);
+        assert!(report.valid, "errors: {:?}", report.errors);
+    }
+
+    /// An extension operation goes through the same compile as a shipped
+    /// template, so it inherits the same silent no-ops — `x-overslash-download`
+    /// is MCP-only and does nothing on an HTTP operation.
+    ///
+    /// The finding's path must address the delta the author submitted, not the
+    /// synthetic `paths./regional.get` document assembled to compile it.
+    #[test]
+    fn extension_action_declaring_an_ignored_key_warns_against_the_delta_path() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            extensions: Extensions {
+                actions: HashMap::from([(
+                    "regional".to_string(),
+                    ExtensionAction {
+                        method: "GET".into(),
+                        path: "/regional".into(),
+                        operation: serde_json::json!({
+                            "description": "Regional lookup",
+                            "x-overslash-risk": "read",
+                            "x-overslash-download": { "url": ".url" },
+                            "response_type": "binary"
+                        }),
+                    },
+                )]),
+                hosts: vec![],
+            },
+            ..Default::default()
+        };
+        let report = validate_delta(&delta, &base, false);
+        assert!(
+            report.valid,
+            "an ignored key must not block the delta: {:?}",
+            report.errors
+        );
+        let paths: Vec<&str> = report.warnings.iter().map(|w| w.path.as_str()).collect();
+        assert!(
+            paths.contains(&"extensions.actions.regional.operation.x-overslash-download"),
+            "download finding should address the delta, got {paths:?}"
+        );
+        assert!(
+            paths.contains(&"extensions.actions.regional.operation.response_type"),
+            "response_type finding should address the delta, got {paths:?}"
         );
     }
 }

@@ -251,6 +251,25 @@ Auto-created identities are unprivileged by construction: user identities are ba
 
 A path deeper than 8 agent segments, a malformed root (neither UUID nor email), or an empty segment is a `400`; an archived target is `403`; the header without the `impersonate` scope is `403`. This is the primary integration surface for white-label backends (e.g. Overfolder) that act on their users' behalf without pre-syncing Overslash UUIDs.
 
+#### `X-Overslash-As-Name`
+
+The target path says *who*; it cannot say what they are called. An email identifies a person, so without help a provisioned user is labelled from their email local-part — `alice@acme.com` becomes a member named `alice`, and that is what the org sees in its members list, on approval cards, and in `audit_log.actor_name`. The companion `X-Overslash-As-Name` header carries the real one. Agents need no equivalent: for them the path segment already *is* the name.
+
+| Header value | Meaning |
+|---|---|
+| `Alice Smith` | taken literally |
+| `UTF-8''Jos%C3%A9%20%C3%81lvarez` | RFC 8187 `ext-value`, percent-decoded — the form `Content-Disposition`'s `filename*` uses |
+
+The encoded form is not decoration. A header value is a byte string: `fetch` isomorphic-encodes it and throws above U+00FF, so a browser or Node client cannot put `José` in a header at all. Decoding *every* value unconditionally was the alternative and would quietly mangle a name like `50% Club`, so decoding is opt-in via the prefix. The one value the literal form cannot carry is a name that itself begins `UTF-8''`; exactly one prefix is consumed, so a client sends such a name through the encoded form like any other (the SDK does this automatically).
+
+The name applies to the **user root** only, and only ever in a direction that cannot overwrite something better:
+
+- The root is being provisioned now → it is created with this name instead of the derived one.
+- The root exists but has never signed in (`external_id IS NULL`) and is not an org admin → the name is refreshed, and the change is audited as `identity.updated`. Re-sending an unchanged name writes nothing; this runs on the auth path of every request.
+- The root has signed in → ignored. The IdP owns the name from adoption onward.
+
+The refresh is applied **after** the ACL cap, so a caller who turns out not to be allowed to act as the target cannot leave a rename behind on the way to its `403`. A value that is empty, over 128 characters, carries a control character, or fails to decode is a `400` — never a silent truncation. The header without `X-Overslash-As` is a `400`; aimed at a UUID that names an agent, also a `400`, since dropping it silently would let a caller believe a rename happened.
+
 ### Members are identities; invites are pre-created members
 
 A person "belongs to an org" iff there is a `kind='user'` identity for them in that org. There is exactly one such identity per person per org, and it is created by any of three paths — an admin invite, name-based impersonation, or a first SSO sign-in — that all converge on the same row:
@@ -262,6 +281,8 @@ A person "belongs to an org" iff there is a `kind='user'` identity for them in t
 **Impersonation-provisioning is an admission decision.** A pre-created identity satisfies `require_invite_admission` regardless of which admin-authorized path created it — an explicit invite or name-based impersonation. This is not a bypass: the `impersonate` scope is admin-minted, and the provisioned row is *already* a full member (Everyone + Myself groups) the moment it is created, before any login. Refusing to adopt it at sign-in would not unmake the member; it would only stop the real human from ever logging into an account that is already theirs. Because adoption is the moment a pre-created identity becomes a human-usable login, it emits an `identity.adopted` audit row carrying `provisioned_by` (`invite` vs `impersonation`), so an org can tell the two admission paths apart after the fact.
 
 (The former `org_invites` table was folded into `identities` by migration 103; the `/v1/org-invites` API keeps its wire shape as a projection over user identities.)
+
+`POST /v1/identities` and `PATCH /v1/identities/{id}` accept an `email` beside `name`, so the third path — an admin creating the member directly — can also pair identifier and name in one request. `/v1/org-invites` remains the "…and tell them" path: it derives the name from the address and sends the notification. The same invariants apply wherever the row is created: one live identity per email in an org (a duplicate is a `409`), `email` is `user`-only (`400` otherwise), and it may only be **changed** while `external_id IS NULL` — after a sign-in the address is what decides which human can claim the account, so it belongs to the IdP, not to an admin (`409`). That last guard is re-checked under `FOR UPDATE` inside the patch transaction, so a sign-in racing the patch cannot slip past it.
 
 ---
 
@@ -354,7 +375,7 @@ Access levels map to the `Risk` enum:
 
 Raw HTTP access goes through the system-managed `http` service instance (one per org, created at bootstrap). Group access is granted via the standard `group_grants` mechanism, with the same access-level → risk mapping as any other service: `read` covers GET/HEAD/OPTIONS, `write` adds POST/PUT/PATCH, `admin` adds DELETE. There is no `allow_raw_http` boolean — raw HTTP is just another service from the ceiling's point of view, and most orgs leave it un-granted on `Everyone`.
 
-**Myself groups.** Every user identity has an automatically-managed "Myself" group (`system_kind = 'self'`, exactly one member: the user). When a user creates a service — or an agent creates one `on_behalf_of` its owner-user, which is the default for any identity-bound service create — the service is owned by the user and auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_reads = true`. The owner can downgrade these grants (cap at `read`, disable auto-approve) or fully remove them; ownership lives on `service_instances.owner_identity_id` independently of the grant, so a removed grant can be re-added by the owner from the dashboard at any time.
+**Myself groups.** Every user identity has an automatically-managed "Myself" group (`system_kind = 'self'`, exactly one member: the user). When a user creates a service — or an agent creates one `on_behalf_of` its owner-user, which is the default for any identity-bound service create — the service is owned by the user and auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_level = 'read'`. The owner can downgrade these grants (cap at `read`, drop auto-approval to `none`), raise auto-approval up to the ceiling, or fully remove them; ownership lives on `service_instances.owner_identity_id` independently of the grant, so a removed grant can be re-added by the owner from the dashboard at any time.
 
 **Myself group constraints.** Myself groups carry tighter invariants than user-created groups, enforced at the API:
 - *Membership is fixed.* The owner-user is the only member; backend rejects add/remove on `system_kind = 'self'`.
@@ -367,7 +388,16 @@ There is no separate "user-level service" tier in the permission model. `owner_i
 
 There is no permissive default. After the Myself migration, every bootstrapped user identity belongs to at least the Everyone and Myself system groups, and Everyone always carries the `overslash:write` grant from org bootstrap, so `ceiling.grants` is never empty in practice and the ceiling is always enforced. The `NoGroups` permissive branch survives only as a safety net for org-level keys with no identity at all.
 
-**Auto-approve reads:** Each service grant can enable `auto_approve_reads`. When the matching grant has the flag set and the action is non-mutating (`risk: read`, or GET/HEAD/OPTIONS for raw HTTP), **Layer 2 is bypassed entirely**: the agent's call runs immediately, no permission rule is created, no approval is filed. Mutating requests (`risk: write` or `delete`) always go through normal approval flow. The Myself grant defaults to `auto_approve_reads = true`, so an agent reading from one of its owner-user's own services skips approval without polluting the agent's permission-rule list. Org admins can also enable the flag on shared org grants for services where reads are safe (listing PRs, checking calendar events).
+**Auto-approve level (D53):** Each service grant carries a second ceiling, `auto_approve_level` ∈ `none | read | write | admin`, on the *same* ladder as `access_level` and bounded by it. Where `access_level` answers "may this run at all?", `auto_approve_level` answers "may it run without a human?". When a matching grant's level permits the action's risk, **Layer 2 is bypassed entirely**: the call runs immediately, no permission rule is created, no approval is filed. Anything above the level goes through the normal approval flow.
+
+- `none` — every call files an approval (the default for a new grant).
+- `read` — non-mutating calls (`risk: read`, or GET/HEAD/OPTIONS for raw HTTP) run unattended. This is what the retired `auto_approve_reads = true` boolean meant, and the default on the Myself grant, so an agent reading from one of its owner-user's own services skips approval without polluting the agent's permission-rule list.
+- `write` — adds POST/PUT/PATCH-class actions. For read-heavy *and* write-heavy agent loops on a service where mutations are cheap and reversible (a scratch project, an internal channel).
+- `admin` — adds `risk: delete`.
+
+Auto-approval can never exceed `access_level`: raising it past the ceiling is a `400`, and lowering the ceiling clamps it down. It is permission to skip the *human*, never permission to exceed the grant. **A deny rule still overrides it** — every auto-approved mutating call runs the deny-only chain sweep before dispatch, so a carve-out an admin made on purpose survives a `write`-level grant.
+
+`auto_approve_reads` remains accepted on the API for one release as a deprecated alias (`true` ⇒ `"read"`) and is returned derived as `auto_approve_level != "none"`.
 
 **Layer 2: Permission keys (fine-grained, user-managed, agent-specific)**
 
@@ -392,7 +422,7 @@ Where grants come from for a given caller:
                   │           │  │   _http    │    │   groups        │
                   └─────┬─────┘  └─────┬──────┘    └────────┬────────┘
                         │              │                     │
-                        │  group_grants (access_level + auto_approve_reads)
+                        │  group_grants (access_level + auto_approve_level)
                         ▼              ▼                     ▼
                        ┌───────────────────────────────────────┐
                        │  Union: CeilingGrant per service      │
@@ -426,8 +456,8 @@ How a single action call is authorized end-to-end:
        yes               no (agent)
         │                │
         ▼                ▼
-    [CALL now]     read_bypass ?
-                   (auto_approve_reads=true AND non-mutating risk)
+    [CALL now]     auto_approved ?
+                   (auto_approve_level permits this risk)
                         │
                 ┌───────┴────────┐
                 │                │
@@ -447,7 +477,7 @@ How a single action call is authorized end-to-end:
                                         with the keys, else the user)
 ```
 
-The win this delivers compared to the previous "user-owned service bypass": an agent reading from one of its owner-user's services no longer has to wait for a human approval on the first call. The Myself grant's `auto_approve_reads = true` short-circuits Layer 2 for reads — no popup, no permission-rule clutter — while writes still flow through approval.
+The win this delivers compared to the previous "user-owned service bypass": an agent reading from one of its owner-user's services no longer has to wait for a human approval on the first call. The Myself grant's `auto_approve_level = 'read'` short-circuits Layer 2 for reads — no popup, no permission-rule clutter — while writes still flow through approval until the owner raises the level.
 
 ### Resolution Flow
 
@@ -455,7 +485,7 @@ The flow above expanded as discrete steps:
 
 1. Agent makes a request → system derives permission keys from the request
 2. **Group check (Layer 1)**: is the service + access level within the owner-user's group grants? If not → **deny** (not approvable)
-3. **Read bypass**: if the matching grant has `auto_approve_reads = true` and the action is non-mutating, skip Layer 2 and call immediately
+3. **Auto-approve bypass**: if the matching grant's `auto_approve_level` permits this action's risk, skip Layer 2 and call immediately (a deny rule still applies to mutating calls)
 4. **Permission key check (Layer 2)**: are all derived keys covered by existing rules for this identity? If yes → **auto-approve**
 5. If not → **create approval request** → user decides → "Allow & Remember" stores keys with optional TTL
 
@@ -546,9 +576,10 @@ The core trust assumption: **agents are not trusted to approve their own actions
    - **Agent** — `POST /v1/approvals/{id}/call` (sync; returns the replayed result).
    - **User** — "Call Now" in the dashboard, which calls the same endpoint.
    An atomic `pending → executing` transition plus a unique index on `(approval_id)` guarantees at-most-one replay even under user+agent races.
+   If the original call asked for `execution: "async"` (D62/D66), triggering it instead **queues** the replay for the async worker: `/call` answers **202** with the same `ApprovalResponse` body, carrying `execution_mode: "async"` and a `pending` execution marked `queued`, and the result is fetched from `GET /v1/approvals/{id}/execution` or `GET /v1/executions/{id}`. The synchronous claim carries `AND request IS NULL`, so a queued row can never also be dialled inline.
 6. Pending executions expire after **15 minutes**. The resolver may also `POST /v1/approvals/{id}/call`.
 
-The agent observes the outcome by polling `GET /v1/approvals/{id}` (the nested `execution` object transitions with the row) or by listening for the `approval.executed` / `approval.execution_failed` / `approval.execution_cancelled` webhooks. A dedicated `GET /v1/approvals/{id}/execution` endpoint returns the execution summary directly. **For auto-fired executions** (`triggered_by="auto"`) the `approval.executed` webhook payload also carries the full action `result` so a white-label platform can render the outcome from a single delivery without a follow-up GET. Manual `/call` paths omit `result` because the caller already received it inline on the response.
+The agent observes the outcome by polling `GET /v1/approvals/{id}` (the nested `execution` object transitions with the row) or by listening for the `approval.executed` / `approval.execution_failed` / `approval.execution_cancelled` webhooks. A dedicated `GET /v1/approvals/{id}/execution` endpoint returns the execution summary directly. **For auto-fired executions** (`triggered_by="auto"`) and for any replay that ran on the async worker, the `approval.executed` webhook payload also carries the full action `result` so a white-label platform can render the outcome from a single delivery without a follow-up GET. A manual *synchronous* `/call` omits `result` because that caller already received it inline on the response; a manual call on an `execution: "async"` approval does not, since its 202 carried no body.
 
 **There is no self-authenticating approval URL.** Approval resolution always requires credentials of an identity with authority over the requesting identity. This prevents an agent from obtaining and resolving its own approval link.
 
@@ -578,6 +609,7 @@ Approval and action execution are decoupled into two stages. `POST /v1/approvals
 - **At-most-once.** `executions.approval_id` is uniquely indexed and the `pending → executing` transition is an atomic SQL UPDATE guarded by `status='pending' AND expires_at > now()`. User and agent can race `/execute`; exactly one wins, the other receives 409. Any terminal state (executed / failed / cancelled / expired) is sticky.
 - **Identity & audit.** Replay always uses the **requester's** identity for audit and rate limiting, regardless of whether the agent or the resolver pressed the button. The `audit_logs` row for `action.executed` carries `detail.replayed_from_approval` and `detail.execution_id`; a separate `approval.executed` entry records the button press.
 - **Streaming.** Originally-streaming requests are replayed as buffered requests (bounded by `MAX_RESPONSE_BODY_BYTES`) — there is no agent connection to stream to. The stored result flags `streamed_originally: true` so callers can tell.
+- **Deferred delivery.** `deliver: "url"` (D51) is *not* carried onto the approval payload, and the permission gate runs before the mint — so a gated deferred call returns `pending_approval` without minting a token, and its replay executes buffered like any other. In practice this is rare: the actions that want deferred delivery are `risk: read` downloads. A gated one that returns a large binary will hit the buffered cap on replay; the fix, when something needs it, is for replay to re-mint a token rather than buffer.
 - **Timeouts & orphans.** The `/call` handler bounds the upstream call with `EXECUTION_REPLAY_TIMEOUT_SECS` (default 30). If the API crashes while `status='executing'`, a sweeper transitions the row to `failed` with `error='orphaned'` after the timeout plus a minute of slack.
 - **Ceilings.** The group-ceiling check is not re-run at `/call` — the resolver's allow is authoritative, and the ceiling was enforced at approval creation.
 
@@ -600,6 +632,20 @@ Each identity (or each org) can set `notifications.managed_by_platform = true`. 
 - The platform is responsible for surfacing pending events via its own webhook subscription, polling, or SSE stream (§10 *Async event delivery*)
 
 This is a per-identity flag (so a single org can have both platform-mediated agents and direct-use agents) but typically set at agent-creation time by the platform's enrollment flow.
+
+### Canonical scope values
+
+A `scope_param` normally takes the caller's argument verbatim. When that argument is an *address* rather than an identity — the same WhatsApp contact answers to both a phone JID and a privacy `@lid` — each spelling mints its own key, so a grant made against one silently misses the other and the rules list fills with opaque handles.
+
+A param whose `resolve:` declares `scope:` (§9) fixes this: the resolver's canonical value replaces the raw argument **when deriving permission keys only**. `recipient=239135323373760@lid` and `recipient=34600111222@s.whatsapp.net` both become `recipient=+34600111222`.
+
+Three properties make this safe to rely on:
+
+- **The outgoing request is untouched.** Canonicalization renames the permission; it never retargets the call. The literal argument is what goes on the wire and what the approval discloses.
+- **It fails safe.** When resolution fails there is no canonical value and the raw argument stands. That derives a *different* key, which matches no existing grant, so the call raises an approval rather than slipping through one.
+- **Trust is already spent.** The canonical value comes from the same upstream the call is about to act on, which can already do anything the credential permits.
+
+Note this is a live behaviour change for any grant already stored against a raw address: it stops matching once its template declares `scope:`, and re-prompts for approval once.
 
 ### Specificity Tiers
 
@@ -729,7 +775,7 @@ When a user creates a service from a template that uses OAuth, the connect flow 
 
 **Orchestrated vs. imported connections.** The flow above — overslash builds the authorize URL and completes the dance at `GET /v1/oauth/callback` — is the **orchestrated** path, used by normal orgs and the dashboard's own connect UI; it always uses the default `{public_url}/v1/oauth/callback` redirect. **White-label partners that already own their OAuth** (e.g., Overfolder) instead run the dance themselves and hand overslash the resulting tokens via `POST /v1/connections/import` — overslash is a **token vault**: it stores the tokens (identical connection row), refreshes them, and injects them at execution, but never issues a `redirect_uri`. The import **requires** a `byoc_credential_id` (the partner's registered client; a null pin is a 400): overslash self-refreshes autonomously, hard-pinned to that client — never the env/org `OAUTH_*_CLIENT` cascade, since a refresh token is valid only against the client that issued it.
 
-Auth-recovery for white-label end users is governed by a per-org **`headless`** capability (`orgs.headless`, admin-only via `GET`/`PATCH /v1/orgs/{id}/headless`). A white-label org's end users have no Overslash dashboard session, so the gated `/connect-authorize` link normal orgs receive is a dead end for them. For a headless org, the three auth-recovery envelopes (`reauth_required`, `needs_authentication`, `missing_scopes`) are **URL-less**: they omit `auth_url`/`short` (and `upgrade_url` for `missing_scopes`), carry `headless: true` plus `provider`/`required_scopes`/`account_email`, and mint **no** `oauth_connection_flows` row. The integration reads the envelope, re-runs its own dance, and re-imports. Non-headless orgs keep the gated flow unchanged. (This replaces the removed per-connection `integration_managed` flag, which conflated *who refreshes* with *who runs the user flow*.) Full design in [docs/design/white-label-token-vault.md](docs/design/white-label-token-vault.md).
+Auth-recovery for white-label end users is governed by a per-org **`headless`** capability (`orgs.headless`, admin-only via `GET`/`PATCH /v1/orgs/{id}/headless`). A white-label org's end users have no Overslash dashboard session, so the gated `/connect-authorize` link normal orgs receive is a dead end for them. For a headless org, the three auth-recovery envelopes (`reauth_required`, `needs_authentication`, `missing_scopes`) are **URL-less**: they omit `auth_url`/`short` (and `upgrade_url` for `missing_scopes`), carry `headless: true` plus `provider`/`required_scopes`/`account_email`, and mint **no** `oauth_connection_flows` row. The integration reads the envelope, re-runs its own dance, and re-imports. Non-headless orgs keep the gated flow unchanged. (Separately, the **secret-backed** `needs_authentication` shape is URL-less for every org — a template that authenticates with vault secrets has no consent page to link — and carries `missing_credentials` + `hint_url` instead; see D60.) (This replaces the removed per-connection `integration_managed` flag, which conflated *who refreshes* with *who runs the user flow*.) Full design in [docs/design/white-label-token-vault.md](docs/design/white-label-token-vault.md).
 
 **Provider-level credentials, not service-level.** OAuth client credentials are scoped to the *provider* (e.g., `google`), not to individual services. Google Calendar, Google Drive, and Gmail all reference `provider: google` in their templates — they all share the same OAuth app credentials. Scopes differ per service, but the OAuth client is the same. This means an org that configures org-level Google credentials gets Calendar, Drive, and Gmail working with one setup.
 
@@ -752,6 +798,57 @@ All action execution goes through a single endpoint. The caller specifies a serv
 **`http` pseudo-service** — the caller uses the `http` pseudo-service with a full URL, method, headers, body, and secret injection metadata. This is the lowest-level path — agents construct the full request. Requires `http` in the user's group. Derives keys: `http:POST:api.github.com` + `secret:gh_token:api.github.com`.
 
 These are a spectrum of abstraction over the same execution pipeline and permission key format (`{service}:{action}:{arg}`).
+
+#### Call timeouts (`timeout_ms`)
+
+How long a call may wait on its upstream is resolved from five layers, most specific first. The first one with an opinion wins:
+
+| # | layer | where it lives |
+|---|-------|----------------|
+| 1 | this call | `timeout_ms` on the request body (and on the `overslash_call` / `overslash_read` MCP tools) |
+| 2 | this action | `x-overslash-timeout_ms` on the operation, after any org layer is folded in |
+| 3 | this service | `info.x-overslash-default_timeout_ms` |
+| 4 | this org | `orgs.call_timeout_ms`, via `PATCH /v1/orgs/{id}/execution-settings` |
+| 5 | this deployment | `CALL_TIMEOUT_MS` (default 30000) |
+
+The result is then clamped by `orgs.max_call_timeout_ms` and `CALL_TIMEOUT_MAX_MS` (default 110000). Caps combine by *tightest wins*, not by specificity — an org cannot raise itself above what the deployment allows.
+
+A caller-supplied `timeout_ms` above the effective maximum is a **400** naming the ceiling; a *template or org default* above it is silently clamped. The asymmetry is deliberate: the caller is present and can act on the error, while a misconfigured template value that 400s every call in the org is a strictly worse failure than one that quietly runs at the ceiling.
+
+Exceeding the budget returns **504** with `{error: "upstream_timeout", timeout_ms, timeout_source, max_timeout_ms, hint}`. `timeout_source` names the layer that set it (`per_call`, `action_template`, `service_template`, `org_default`, `global_default`, `stored`) — which is what turns "why is this timing out" into a one-line fix. An `action.executed` audit row is written either way, carrying `detail.error.kind = "timeout"`.
+
+`CALL_TIMEOUT_MAX_MS` is the **synchronous** ceiling and is sized to sit under the deployment's own request cap (Cloud Run and the load balancer both cut at 120s). Work that legitimately runs longer is not served by raising it.
+
+#### Execution mode (`execution`)
+
+Whether the caller waits on its connection for the upstream. Three values, and the response shape follows from the resolved one:
+
+| value | what the caller gets |
+|-------|----------------------|
+| `sync` | the upstream body on this response, bounded by the deployment's request cap. The historical behaviour. |
+| `async` | **202** `{"status": "accepted", execution_id, execution_url, expires_at, timeout_ms, poll_after_ms}`. The call is persisted and dialled off the request path; poll `GET /v1/executions/{id}` or subscribe to the `executions` topic. |
+| `hybrid` | the job runs off the connection from the first byte and the connection waits on it for `handoff_after_ms`. Beat the window and the caller gets the ordinary `called` envelope (with an `execution_id` correlating it to the row); miss it and the caller gets the `accepted` envelope above. |
+
+`async` and `hybrid` both require `ASYNC_EXECUTION_ENABLED`. Each is a **400** in combination with `prefer_stream`, `deliver: "url"`, `return_url`, a `runtime: platform` service, or an action returning binary; `filter` and `verbose` are allowed. A *gated* call returns the ordinary `pending_approval` envelope rather than a 202 — the mode is stamped on the approval and honoured when the replay is triggered.
+
+Two rungs decide it, most specific first:
+
+| rung | source | where it lives |
+|------|--------|----------------|
+| 1 | this call | `execution` on the request body (and on the `overslash_call` / `overslash_read` MCP tools) |
+| 2 | this action | `x-overslash-wait-mode` on the operation or MCP tool |
+
+Anything unresolved is `sync`. The caller wins in **both** directions — `execution: "sync"` against an action declaring `hybrid` runs synchronously — so the template key is a default and never a cap. There is no service, org, or deployment rung.
+
+A template default that cannot be honoured is **silently demoted to `sync`** rather than refused: the six conditions above (and `ASYNC_EXECUTION_ENABLED` being off) each drop rung 2, while a caller naming the same mode against the same condition still gets the 400. Same asymmetry as `timeout_ms`, for the same reason — the caller is present and can act on an error, and a template value that 400s every call in the org is a strictly worse failure than one that quietly runs synchronously. A demotion is counted (`overslash_wait_mode_demoted_total{reason}`) and logged, since every affected call still returns 200 and the author would otherwise never learn.
+
+When the mode did **not** come from the request, the `accepted` envelope carries `execution_mode_source` (`action_template`) — so an agent receiving a 202 it did not ask for can tell a standing declaration from a one-off. It is absent when the caller named the mode.
+
+`x-overslash-handoff_after_ms` on the action supplies the hybrid handoff when the request does not. It is **clamped** to `[100ms, HYBRID_HANDOFF_MAX_MS]` and to the call's own budget rather than refused — again the template-versus-caller split, since a caller-supplied value out of range is a 400.
+
+**Streaming is bounded differently.** For `prefer_stream: true` the resolved timeout bounds **time to first byte** only; the transfer itself is bounded by a per-chunk idle timeout (`CALL_STREAM_IDLE_TIMEOUT_MS`, default 30000). A total deadline over a streamed body would mean "your 900MB export fails at exactly 90s", and would fire *after* the audit row recorded a 200 and the response headers were flushed — handing the client a silently truncated body.
+
+**Replays** reuse the timeout resolved when the call was first made (stored on the approval), re-clamped against the org's *current* maximum — so tightening the ceiling binds retroactively rather than being outranked by a stale approval. Approvals created before this shipped carry no budget and replay at the deployment default.
 
 Direct `connection: <uuid>` requests (a previously-shipped implementation deviation that paired a stored OAuth connection with an arbitrary URL) are **not supported**. Free-form authed calls go through "Service + HTTP verb" — naming the service instance is what bounds where the bearer can land via the template's `hosts[]`. See DECISIONS.md D14.
 
@@ -819,17 +916,18 @@ Templates live in a three-tier registry:
 
 **Org-admin visibility**: Org-admins can see all templates in the org (global + org + user-created) in a read-only list for security/compliance — they need to know what external APIs their users are connecting to.
 
-**Layers (`extends`/`delta`).** Each org/user template row is a **layer**. A **standalone** layer (`extends` NULL) holds a full OpenAPI doc (the classic org/user template). A **derived** layer (`extends` set) holds a *delta* over a base template named by `extends` (resolved by key: DB rows then the global registry), and its effective template is the **fold** `resolve(layer) = apply(delta, resolve(extends))`. The delta's **masks** are restrictive and order-independent — action `allowlist` (∩) / `denylist` (\), per-action `risk` clamp-**up**-only, additive `disclose`, relabel, template `hidden` — so `resolve(child) ⊆ resolve(base)` (a child can never re-expose what a parent hid); its **extensions** add new actions/hosts only (no auth, no rebinding). An **org** layer may additionally carry `instance_defaults` — non-secret presets (endpoint `url` + `x-overslash-instance-config` values) that every service instance created from the layer inherits unless it sets its own, so an org running its own deployment (its overfwd Mailbox Gateway, its self-hosted MCP server) names it once instead of on every user's instance. `extends` is a **live pointer**: editing a base (or Overslash shipping a new global version) propagates to every descendant immediately. `extends` and the layer's own `key` are decoupled — reusing the base key shadows it (curation that agents get transparently), a distinct key is a separate catalog entry alongside the base. Discovery, instantiation, and **execution** all resolve through the fold, so a masked-out action is unreachable everywhere. See [DECISIONS.md D26](DECISIONS.md) and [docs/design/layered-service-templates.md](docs/design/layered-service-templates.md).
+**Layers (`extends`/`delta`).** Each org/user template row is a **layer**. A **standalone** layer (`extends` NULL) holds a full OpenAPI doc (the classic org/user template). A **derived** layer (`extends` set) holds a *delta* over a base template named by `extends` (resolved by key: DB rows then the global registry), and its effective template is the **fold** `resolve(layer) = apply(delta, resolve(extends))`. The delta's **masks** are restrictive and order-independent — action `allowlist` (∩) / `denylist` (\), per-action `risk` clamp-**up**-only, additive `disclose`, relabel, template `hidden` — so `resolve(child) ⊆ resolve(base)` (a child can never re-expose what a parent hid); its **extensions** add new actions/hosts only (no auth, no rebinding). An **org** layer may additionally carry `instance_defaults` — non-secret presets (endpoint `url` + `x-overslash-instance-config` values) that every service instance created from the layer inherits unless it sets its own, so an org running its own deployment (its overfwd Mailbox Gateway, its self-hosted MCP server) names it once instead of on every user's instance. `extends` is a **live pointer**: editing a base (or Overslash shipping a new global version) propagates to every descendant immediately. `extends` and the layer's own `key` are decoupled — reusing the base key shadows it (curation that agents get transparently), a distinct key is a separate catalog entry alongside the base. Discovery, instantiation, and **execution** all resolve through the fold, so a masked-out action is unreachable everywhere. See [DECISIONS.md D29](DECISIONS.md) and [docs/design/layered-service-templates.md](docs/design/layered-service-templates.md).
 
 ### Template Definition
 
-Templates are authored as OpenAPI 3.1 documents. The AI-gateway-specific fields that OpenAPI cannot express natively live under the `x-overslash-*` vendor-extension namespace: `risk`, `scope_param`, `resolve`, `aliases`, `provider`, `default_secret_name`, `sql-field`, `sql-database`. For authoring ergonomics, the same keys may also be written without the prefix (just `risk:`, `scope_param:`, etc.) — the backend normalizes aliases to their canonical `x-overslash-*` form on load and before persist. Ambiguous documents (both forms present on the same object) are rejected with a stable `ambiguous_alias` error.
+Templates are authored as OpenAPI 3.1 documents. The AI-gateway-specific fields that OpenAPI cannot express natively live under the `x-overslash-*` vendor-extension namespace: `risk`, `scope_param`, `resolve`, `aliases`, `provider`, `default_secret_name`, `sql-field`, `sql-database`, `icon`. For authoring ergonomics, the same keys may also be written without the prefix (just `risk:`, `scope_param:`, etc.) — the backend normalizes aliases to their canonical `x-overslash-*` form on load and before persist. Ambiguous documents (both forms present on the same object) are rejected with a stable `ambiguous_alias` error.
 
 ```yaml
 openapi: 3.1.0
 info:
   title: Google Calendar
   key: google_calendar              # alias for x-overslash-key
+                                    # icon: implicit — `google_calendar.svg` is shipped
 servers:
   - url: https://www.googleapis.com
 components:
@@ -876,14 +974,20 @@ paths:
 ```
 
 **Key gateway-specific fields:**
-- **`x-overslash-risk` / `risk:`** — enum: `read`, `write`, `delete`, `dynamic`. Defaults to a value inferred from the HTTP method (GET/HEAD/OPTIONS → read, DELETE → delete, else write). Influences auto-approve-reads behavior. **`dynamic`** (D42/D43) means "classified per call from the SQL the caller supplies": valid only on an action with an `x-overslash-sql-field` param, presented as `write` in static contexts (write until proven read), and resolved at call time to the parser's verdict — a build without the `sql_policy` feature, an unsupported dialect, or an unparseable statement all fail closed to write.
+- **`x-overslash-risk` / `risk:`** — enum: `read`, `write`, `delete`, `dynamic`. Defaults to a value inferred from the HTTP method (GET/HEAD/OPTIONS → read, DELETE → delete, else write). Decides which rung of a grant's `auto_approve_level` the action falls under. **`dynamic`** (D42/D43) means "classified per call from the SQL the caller supplies": valid only on an action with an `x-overslash-sql-field` param, presented as `write` in static contexts (write until proven read), and resolved at call time to the parser's verdict — a build without the `sql_policy` feature, an unsupported dialect, an unparseable statement, or (D69) a `SELECT` calling a function outside the safe list all fail closed to write.
 - **`x-overslash-scope_param` / `scope_param:`** — which parameter(s) provide the `{arg}` segment in permission keys. Without it, the arg is `*`. Accepts a param name (`scope_param: repo`), a `param:label` pair, or a list of either (`scope_param: [to:recipient, cc:recipient, bcc:recipient]`). Each value mints one `{service}:{action}:{label}={value}` key — an array-valued param fans out per element — and the label defaults to the param name. Keys are deduped, so params sharing a label collapse a value that appears in more than one of them into a single key (and a single approval). See §5 for how rules match labelled keys.
-- **`x-overslash-sql-field` / `sql-field:`** — on a parameter, a dotted body path that both nominates this param as the raw-SQL field (D42/D43 content policy: parse → read/write risk floor; per-table permission keys split by context — read-context relations mint `{service}:{action}:table={label}/{relation}`, mutation targets mint `table_mut={label}/{relation}`, plus the mutation-shaped all-tables sentinel `table_mut={label}/*` when relations can't be enumerated; the label-less value-only form covers both classes; `column=`/`column_star=` deny screening) and names where the SQL string sits in the assembled JSON body. On a **string** param the value is *placed* at the path (`native.query` keeps the caller surface flat while nesting the outgoing body); on an **object** param the path is *descended into* (it must anchor at the param's own name). One per action, enforced at template compile.
-- **`x-overslash-sql-database` / `sql-database:`** — a jq expression over the call params (e.g. `.database | tostring`) whose result keys into the instance's `sql_databases` config map (`{"<db-key>": {"dialect": "...", "label": "..."}}`) to resolve the parse dialect and the human DB label used in audit rows and permission keys. Unresolved falls back to postgres with the raw key as label (fail-closed).
-- **`x-overslash-resolve` / `resolve:`** — on a parameter, fetch a human-readable name for an opaque ID. Runs a follow-up GET against the service and extracts a field. Used in agent-facing descriptions.
+- **`x-overslash-sql-field` / `sql-field:`** — on a parameter, a dotted body path that both nominates this param as the raw-SQL field (D42/D43 content policy: parse → read/write risk floor; per-table permission keys split by context — read-context relations mint `{service}:{action}:table={label}/{relation}`, mutation targets mint `table_mut={label}/{relation}`, plus the mutation-shaped all-tables sentinel `table_mut={label}/*` when relations can't be enumerated; the label-less value-only form covers both classes; `column=`/`column_star=` deny screening; D69 function screening — a `SELECT` stays read only while every function it calls is on the safe list, and an unlisted one both elevates to write and forfeits the enumeration, minting the sentinel) and names where the SQL string sits in the assembled JSON body. On a **string** param the value is *placed* at the path (`native.query` keeps the caller surface flat while nesting the outgoing body); on an **object** param the path is *descended into* (it must anchor at the param's own name). One per action, enforced at template compile.
+- **`x-overslash-sql-database` / `sql-database:`** — a jq expression over the call params (e.g. `.database | tostring`) whose result keys into the instance's `sql_databases` config map (`{"<db-key>": {"dialect": "...", "label": "...", "safe_functions": [...]}}`) to resolve the parse dialect, the human DB label used in audit rows and permission keys, and (D69) any extension or in-house functions this database vouches for on top of the shipped `pg_catalog` safe list. Unresolved falls back to postgres with the raw key as label and no extra functions (fail-closed).
+- **`x-overslash-resolve` / `resolve:`** — on a parameter, fetch a human-readable name for an opaque ID before the approval is minted. Declares a target and a projection. The target is either `get:` (HTTP runtime — a follow-up authenticated GET against the same service host) or `tool:` + `args:` (MCP runtime — a `tools/call` against the same instance; the named tool must be `risk: read`, since a resolver runs before a human has seen anything). The projection is either `pick:` (one dot-path into the response) or `display:` (a `{dot.path}` template sharing the description grammar, so `{name}[ ({phone})]` drops the bracketed segment when the phone is unknown). Optional `scope:` names a dot-path whose value **canonicalizes the permission key** — see §5. Optional `cache_ttl:` (seconds) is how long this resolver's answer may be reused; `0` opts out. Resolution is best-effort: a failed or slow lookup (3s timeout) degrades the approval's readability and never blocks it. Feeds agent-facing descriptions and the disclosure `.resolved.*` projection (§12a). Available on `parameters[]`, body-schema properties, and MCP `input_schema` properties.
+- **`cache_ttl:`** (inside a `resolve` block) — how many seconds a resolver's answer may be reused, overriding the deployment's `RESOLVE_CACHE_TTL_SECS`. A **default, not a cap**: the deployment's ceiling still clamps it, and clamps harder when the resolver declares `scope:` (`RESOLVE_CACHE_SCOPE_TTL_MAX_SECS`). `0` disables caching for this resolver alone. Set it high only where the mapping is genuinely immutable (`me` → your own address); a `scope:`-bearing resolver decides which *permission grant* matches while the call still targets the caller's raw argument, so a wide window is a window in which a grant can be matched against a stale mapping — the linter warns (`resolver_cache_ttl_wide`). See D64.
 - **`x-overslash-aliases` / `aliases:`** — on a parameter, a list of alternate caller-facing names (e.g. `[to, dest]` on a `recipient` param). A call that supplies an alias key instead of the canonical name has it rewritten to the canonical name before validation, so a well-known synonym is accepted rather than rejected as an unknown argument. A declared field always wins over an alias that collides with it, and an alias claimed by two params is ambiguous and ignored (the caller gets the normal unknown-argument error, with a Levenshtein "did you mean" suggestion). The unprefixed `aliases:` form is normalized on `parameters[]` entries; body-schema properties use the canonical `x-overslash-aliases` key (same as `resolve`).
 - **`x-overslash-provider` / `provider:`** — on an `oauth2` security scheme, the symbolic OAuth provider name (`google`, `slack`, `github`, ...). Decoupled from OAuth URLs so the gateway can resolve credentials independently.
 - **`x-overslash-default_secret_name` / `default_secret_name:`** — on an `apiKey` or `http` security scheme, the canonical secret name for auto-wiring. Templates are expected to declare **either** an OAuth scheme **or** an apiKey/http scheme with this field — OAuth templates don't fall back to a secret.
+- **`x-overslash-timeout_ms` / `timeout_ms:`** — on an operation (or MCP tool), how long that action is expected to need upstream, in milliseconds. A **default, not a cap**: it encodes knowledge about the upstream ("Metabase aggregations are slow"), and the org and deployment maxima still clamp it. Omitted, the action inherits the service default, then the org default, then the deployment default. A value that is present but not a positive integer is a template *error*, not a silent fallback. See §8 for the full cascade.
+- **`x-overslash-wait-mode` / `wait-mode:`** — on an operation (or MCP tool), the execution mode a call to it defaults to when the caller names no `execution` of its own: `sync` (the default everywhere), `async`, or `hybrid`. A **default, not a cap** — the request field wins in both directions, so a caller can always insist on `sync`. Declaring a deferred mode changes the *response shape* of a call that never asked for one, so it is for actions that genuinely cannot answer inside the synchronous ceiling; the alternative for those is a 504. Where the mode cannot be honoured (`prefer_stream`, `deliver: "url"`, `return_url`, `runtime: platform`, a binary response, or async disabled) the declaration is dropped and the call runs synchronously rather than failing. An unrecognized value is a template *error* and falls back to synchronous. See §8.
+- **`x-overslash-handoff_after_ms` / `handoff_after_ms:`** — on an operation (or MCP tool), how long a *hybrid* call to it holds the connection before answering 202. Clamped to the deployment maximum and to the call's own budget, never refused. Inert under any other resolved mode. See §8.
+- **`x-overslash-default_timeout_ms` / `default_timeout_ms:`** — under `info`, the same thing one rung less specific: the timeout every action of this service inherits unless it declares its own. The one-line answer to "this whole upstream is slow".
+- **`x-overslash-icon` / `icon:`** — under `info`, the mark the dashboard shows for this service. Two forms: `builtin:<name>`, an asset Overslash ships and serves at `/icons/<name>.svg`, and an `https://` URL hosted elsewhere. **Usually omitted**: a template whose key matches a shipped asset resolves to `builtin:<key>` implicitly, which is why the shipped templates declare nothing. Explicit values are for the two cases the convention can't express — a key that deliberately differs from the asset it reuses (`github_legacy_oauth`), or a remote URL. Resolved server-side and surfaced as an absolute `icon_url` on the template and service-instance responses; a template with nothing renderable omits the field, and the dashboard falls back to a letter tile. Only `https://` ever reaches a browser — `http:`, `data:` and `javascript:` are template *errors*, checked both at write time and again when the response is built. Overslash never fetches a remote icon (that would be an SSRF vector and a boot-time network dependency), so there is no size or format validation of one. `${VAR}` expansion applies like anywhere else, which is how a self-hoster points the set at their own CDN. Icons are deliberately **not** on `/v1/search`: it fans out up to 100 rows per (instance × action) and the field would cost an agent's context window for something no model can render.
 - **Platform-namespace actions** — `x-overslash-platform_actions` (alias `platform_actions:`) at the top level declares permission anchors with no HTTP binding (e.g. the `overslash` meta service's admin actions).
 
 ### OAuth Scopes
@@ -951,8 +1055,9 @@ Service: "client-calendar"          (OAuth token for alice@bigclient.org — use
 
 **Service ownership:**
 - Services have an optional `owner_identity_id` used purely as a namespace and provenance marker. `NULL` means the service lives in the org namespace (e.g., `github`); a non-null value puts the service in that user's private namespace (e.g., alice's `my-scraper`).
-- Permission and visibility flow through `group_grants` uniformly regardless of `owner_identity_id`. An owner-created service is auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_reads = true`, which is what makes it reachable. Org admins can additionally grant any service — owner-namespaced or not — to other groups for sharing.
+- Permission and visibility flow through `group_grants` uniformly regardless of `owner_identity_id`. An owner-created service is auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_level = 'read'`, which is what makes it reachable. Org admins can additionally grant any service — owner-namespaced or not — to other groups for sharing.
 - Agents that create services with the default `user_level: true` create them under their owner-user's namespace (matching the SPEC rule that agents create resources at owner-user level so all sibling agents share them). Pass `user_level: false` to create an org-namespaced service or `on_behalf_of: <user>` to target a specific owner.
+- **An org-level create must name its groups.** `user_level: false` produces a service with no owner and therefore no Myself group — a grant is the only path to it, so `POST /v1/services` requires a non-empty `groups: [{ group_id, access_level, auto_approve_reads }]` and rejects the request otherwise. At least one named group must be one the creator belongs to (resolved through their ceiling user), so an admin can't strand a service outside their own reach. Myself groups are rejected here: they are auto-managed and only ever grant their owner's own services.
 
 **Naming and resolution:**
 
@@ -1029,7 +1134,7 @@ The dashboard flow above has an exact REST counterpart: agents can instantiate t
 
 Authority rules:
 - An **agent** can create services on behalf of its owner-user via `on_behalf_of` (§6 *Scoping*) — the resulting service is owned by the user, shared across all agents in that subtree.
-- An agent **cannot** create org-level services. Only org-admins (acting as users) can.
+- An agent **cannot** create org-level services. Only org-admins (acting as users) can, and only by naming at least one group they belong to (see *Service ownership* above).
 - The calling identity must have the template visible to it (§9 *Tier visibility*).
 
 The creation call returns one of:
@@ -1133,7 +1238,7 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 
 | Code | What it catches |
 |---|---|
-| `missing_field` | required field (`key`, `display_name`, `description`, `resolver.pick`, path on HTTP actions) is empty |
+| `missing_field` | required field (`key`, `display_name`, `description`, a `resolve` projection — `pick` or `display` —, path on HTTP actions) is empty |
 | `invalid_key` | service `key` does not match `^[a-z][a-z0-9_-]*$` |
 | `invalid_action_key` | action key does not match `^[a-z][a-z0-9_]*$` |
 | `invalid_host` | host is empty, contains scheme, path, or whitespace |
@@ -1146,10 +1251,18 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 | `path_param_not_required` | `{param}` in `path` references a param not marked `required: true` |
 | `invalid_param_type` | `params.<name>.type` is not one of `string`, `number`, `integer`, `boolean`, `array`, `object` |
 | `invalid_enum_values` | `enum` is empty, or `default` is set but not a member of `enum` |
-| `unbalanced_brackets` | description has an unbalanced or nested `[` (segments are flat only) |
+| `unbalanced_brackets` | description or `resolve.display` has an unbalanced or nested `[` (segments are flat only) |
 | `invalid_description_syntax` | description has an unclosed `{` placeholder |
+| `invalid_path_syntax` | `resolve.get`, a `resolve.args` value, or `resolve.display` has an unclosed `{` placeholder |
 | `unknown_description_param` | `{param}` in description does not reference a defined param |
-| `unknown_resolver_param` | `{param}` in `resolve.get` does not reference a defined param on the same action |
+| `unknown_resolver_param` | `{param}` in `resolve.get` or a `resolve.args` value does not reference a defined param on the same action |
+| `invalid_resolver_target` | `resolve` declares neither or both of `get` / `tool`; `args` on a `get` resolver; or a target that does not match the service runtime (`get:` on MCP, `tool:` on HTTP) |
+| `invalid_resolver_projection` | `resolve` declares both `pick` and `display` |
+| `invalid_resolver_scope` | `resolve.scope` on an array param — each element mints its own key, so one canonical value cannot replace the list |
+| `unknown_resolver_tool` | `resolve.tool` does not name a tool on this service (matched on the wire name, i.e. `mcp_tool` when it differs from the action key) |
+| `invalid_resolver_tool` | `resolve.tool` names a `write`/`delete` action — resolvers run before approval and must be read-only |
+| `invalid_resolver_cache_ttl` | `resolve.cache_ttl` is present but not a non-negative integer number of seconds |
+| `resolver_cache_ttl_wide` | *(warning)* `resolve` declares `scope` with a `cache_ttl` over 300s — a grant can then be matched against a mapping that stale while the call still targets the raw argument |
 | `unknown_scope_param` | a `scope_param` entry does not reference a defined param |
 | `invalid_scope_param` | `scope_param` is not a param name / `param:label` pair / list of them |
 | `invalid_response_type` | `response_type` is set to something other than `"json"` or `"binary"` |
@@ -1157,6 +1270,27 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 | `yaml_parse` | YAML source could not be parsed (wrapped serde_yaml error) |
 | `schema_error` | JSON input (CRUD path) for `auth` or `actions` is structurally malformed |
 | `risk_method_mismatch` *(warning)* | read-only HTTP method (GET/HEAD/OPTIONS) is annotated with `risk: write` or `risk: delete` |
+| `unknown_extension` *(warning)* | an `x-overslash-*` key nothing in the gateway reads — a typo, or a name that only ever existed in a design doc |
+| `misplaced_extension` *(warning)* | a real extension at a position whose extractor does not read it (e.g. `x-overslash-download` on an HTTP operation — it is MCP-only) |
+| `unprefixed_alias_ignored` *(warning)* | the bare spelling of an extension at a position the alias normalizer does not rewrite (e.g. `secrets:` under `components`) |
+| `unknown_template_key` *(warning)* | an unrecognized non-`x-` key at a position whose fields are enumerated (this is what catches `response_type:` on an operation) |
+
+**Keys nothing reads (D67).** The four warnings above come from
+`openapi::lint_extensions`, which runs on the alias-normalized document at every
+entry point. They are **warnings on every path, never errors**: an error at
+registry load would *skip* the template, and a missing service is worse than an
+ignored field, while an error on update would make an already-active stored
+template un-saveable. `shipped_services_lint_clean` is what keeps a shipped
+template from regressing, and `template_resolve` re-reports them against the
+stored document so a row written before the lint existed becomes visible.
+
+Position is authoritative, not just spelling: `openapi::ext` records which
+position reads each extension, and every extractor reads through it. Positions
+whose sibling keys are vocabulary Overslash does not own — request-body and MCP
+tool-input schema properties, a pasted `discovered_tools` snapshot, a
+platform-action param, an unrecognized security-scheme `type` — are open-world
+for bare keys, so a payload field genuinely named `risk` or `template` is never
+reported. Foreign vendor extensions (`x-amazon-*`, `x-ms-*`) are always ignored.
 
 **Grammar notes.** `[optional segment]` in descriptions is **flat only** — nested `[` inside `[...]` is rejected. A `{param}` placeholder inside a description or `[...]` segment must reference a param defined on the same action. The runtime interpolator in `overslash-core::description` uses the same shared grammar primitives (`overslash-core::description_grammar`) as the linter, so "runtime accepts it but linter doesn't" drift is not possible.
 
@@ -1208,6 +1342,10 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
       "description": "Send email as {userId}",
       "risk": "write",
       "tier": "global",
+      "params": [
+        { "name": "userId", "type": "string", "required": true, "description": "The sending account, or `me`." },
+        { "name": "maxResults", "type": "integer", "description": "Page size.", "default": 100 }
+      ],
       "auth": { "type": "oauth", "provider": "google", "connected": true },
       "score": 0.78
     },
@@ -1239,7 +1377,13 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
 }
 ```
 
-In browse mode (`query=""`), each row omits `action`, `description`, `risk`, and `score` — the response is an instance-level directory.
+In browse mode (`query=""`), each row omits `action`, `description`, `risk`, `params`, and `score` — the response is an instance-level directory.
+
+**`params` — the action's caller-supplied contract** (action rows only). Each entry carries `name`, `type`, `required` (omitted when false), `description` (clamped to 160 characters), `enum`, and `default`. Ordered required-first, then alphabetically, so byte-identical requests return byte-identical JSON.
+
+This is the answer to a specific failure: before it existed, `description` was the only string about an action that ever reached the model, so a paging parameter a template declared was undiscoverable unless its prose happened to restate it — an agent facing a list endpoint had no way to see that a narrower call was available. Note `default` in particular: a declared default is injected into the arg map at call time, so it is what the caller *gets* when it omits the parameter.
+
+Parameters marked `instance-config` are excluded. An org admin pins those per service instance and they are merged in under the caller's arguments at execution time, so listing them would only invite a wrong one.
 
 **Catalog rows.** Under `include_catalog=true`, templates with no configured instance for the caller appear as catalog rows: they omit `service` and `account_email`/`secret_name`, set `auth.connected: false`, and carry `"setup_required": true`. Agents must call `overslash_auth.create_service_from_template` to provision an instance before any of those actions become callable.
 
@@ -1380,7 +1524,7 @@ Each disclose filter runs against this projection of the resolved request:
 
 - `body` is parsed as JSON when the outbound request's `Content-Type` is a JSON media type (`application/json`, `application/*+json`); otherwise it's carried as the raw string.
 - `params` is the post-resolution parameter map — every arg the agent passed, regardless of whether it was bound to the URL path, the query string, or the body.
-- `resolved` is the display-name map produced by the template's `resolve` param declarations (param name → human-readable string, e.g. a Drive `fileId` → the file's name). Only params whose lookup succeeded appear, so filters should fall back explicitly: `.resolved.fileId // .params.fileId`. Resolution runs **once, at resolve time**, and the map rides in the request metadata through execution — a delete action's audit-write disclosure still names the object even though it no longer exists upstream. MCP- and platform-runtime actions keep their own projections unchanged (`{runtime, tool, arguments, service, action}` / `{runtime, action, params, service}`, no `resolved` key): display-param resolvers are HTTP-action-only.
+- `resolved` is the display-name map produced by the template's `resolve` param declarations (param name → human-readable string, e.g. a Drive `fileId` → the file's name). Only params whose lookup succeeded appear, so filters should fall back explicitly: `.resolved.fileId // .params.fileId`. Resolution runs **at most once per call, at resolve time**, and the map rides in the request metadata through execution — a delete action's audit-write disclosure still names the object even though it no longer exists upstream. An answer may be served from a bounded-TTL cache keyed on the org, the credential principal, the concrete target and the projection, so "once per call" is a ceiling on upstream traffic, not a guarantee of it (D64). MCP-runtime actions carry the same key in their own projection (`{runtime, tool, arguments, resolved, service, action}`), so the idiom there reads `.resolved.recipient // .arguments.recipient`. Platform-runtime actions have no `resolved` key (`{runtime, action, params, service}`): they make no outgoing call for a resolver to ride on.
 
 ### Declaration
 
@@ -1425,13 +1569,52 @@ paths:
 
 Unprefixed `disclose:` / `redact:` aliases normalize to `x-overslash-disclose` / `x-overslash-redact` like the other operation-level extensions. jq syntax is validated at template register / promote time; a malformed filter rejects the template with a `disclose_invalid_jq` issue.
 
+## Deferred downloads (`deliver: "url"`, `x-overslash-download`)
+
+`POST /v1/actions/call` takes `deliver: "inline" | "url"`, default `inline`, also exposed on the `overslash_call` / `overslash_read` MCP tools. With `deliver: "url"` the response body is replaced by a descriptor and the bytes move out of band:
+
+```json
+{ "download_url": "https://api.overslash.com/v1/downloads/<token>",
+  "expires_at": "2026-08-04T12:15:00Z",
+  "mime": "video/mp4", "size_bytes": 41943040, "filename": "clip.mp4" }
+```
+
+`GET /v1/downloads/{token}` is unauthenticated — the token *is* the capability, the way a presigned URL is. It is 256 bits of randomness stored only as a SHA-256 hash, expires after `DOWNLOAD_TOKEN_TTL_SECS` (default 900), and stays redeemable until then so a resumed or retried transfer works. Redemption re-resolves the upstream credential from the vault and re-checks the identity, then streams the bytes through with `content-type` / `content-length` / `content-disposition` / `etag` / `last-modified` / `cache-control` forwarded. `MAX_RESPONSE_BODY_BYTES` does not apply, exactly as with `prefer_stream`. Unknown and expired tokens both return a bare `404`.
+
+`filter` is reachable from every surface including MCP, where both call tools declare it as a bare jq string and the dispatcher lifts it into the wire's `{lang, expr}`. It applies on all three runtimes (HTTP, MCP, platform). It narrows what the caller *receives*, not what the upstream *sends*: the size cap fires while the body is still arriving, so an oversized response fails before the filter runs — pair it with the action's own paging parameters. Combining `deliver: "url"` with `filter` or `prefer_stream` is a `400`, as is passing a credential in an inline `headers` entry on a raw-HTTP call — name it via `secrets` instead, and it is resolved at fetch time. Mint writes an `action.deferred` audit row (HTTP runtime only; MCP already wrote `action.executed`); redemption writes `action.downloaded`.
+
+An HTTP action needs no declaration — it *is* its own download, so the token captures the resolved request. An MCP tool returns a *descriptor pointing at* the bytes, so it declares where:
+
+```yaml
+    - name: download_media
+      risk: read
+      download:
+        url: .structured.media_path      # required
+        mime: .structured.mime           # optional metadata
+        size: .structured.size
+        filename: .structured.filename
+        auth: inherit                    # or `none` for a pre-signed URL
+```
+
+Filters are jq over the same `{runtime, tool, structured, content, is_error}` envelope the `disclose` filters see. The resolved location **must be same-origin with the MCP server's own URL** — a relative path is joined against it, an absolute URL elsewhere is refused. The deferred fetch attaches that instance's credential, so without this a compromised MCP server could name any host and be handed the bearer. OAuth-authenticated services are not supported yet: their credential is minted live and deliberately not persistable. The gate reads `oauth_injected` rather than the presence of an `Authorization` header, since a query-param token injection resolves OAuth with no header to check.
+
+**A cap failure mints one for you.** When a buffered call exceeds `MAX_RESPONSE_BODY_BYTES`, the token for that same request is minted at the point of failure and returned on the `502` as `download_url` + `expires_at` — `deliver: "url"` on the HTTP runtime never needs the body, so the failure already holds everything the retry needs. The status stays `502`: nothing silently succeeds, and a caller that ignores the fields sees the same error it saw before. Minting is best-effort — the refusals above (OAuth-injected services, inline raw-HTTP credentials) and any other failure leave the fields absent, and the hint falls back to naming `deliver: "url"`, plus `prefer_stream: true` for the callers who can send it. That gives the hint three forms in all, under one rule: never name a recovery the caller cannot use. A caller that passed a `filter` still gets a URL, and the hint says the URL serves the *unfiltered* body, since the filter never ran. The audit row records `cause: "response_too_large"` to distinguish it from a caller that asked.
+
+This does not extend to the MCP runtime or to approval replay. An MCP tool's download URL is derived by running the action's `x-overslash-download` filters over the tool result — which is precisely the thing that was too large — and replay has no resolved mint context, so a gated `deliver: "url"` still hits the buffered cap.
+
+See D51 and D57.
+
 ### Wire shape of a disclosed field
 
 ```json
 { "label": "To", "value": "alice@example.com", "error": null, "truncated": false }
 ```
 
-`error` carries a per-filter runtime error (jq type mismatch, missing field, etc.) — one filter's failure never poisons the rest of the summary. `truncated` is set when the value hit the per-field `max_chars` clamp or the 10 KB hard ceiling.
+`error` carries a **fixed classification** of a per-filter failure — `filter runtime error`, optionally qualified with jq's own error kind (`(cannot index)`, `(cannot calculate)`, `(cannot use)`), plus `filter produced more than N values` for the output cap. One filter's failure never poisons the rest of the summary.
+
+The engine's own message is deliberately **never** carried. jq embeds the operands it choked on directly in its error text, and disclosure filters run against the *un-redacted* projection (see below) — so propagating that text would put a redacted value onto `approvals.disclosed_fields` and `audit_log.detail.disclosed`, the two places redaction exists to keep it out of. This mirrors the rule the credential-template renderer has always enforced (`services/credential_template.rs`). Response filters (§ `filter`) are the deliberate exception: their operand is the upstream body, which the caller already receives on `result.body`.
+
+`truncated` is set when the value hit the per-field `max_chars` clamp or the 10 KB hard ceiling.
 
 ### Sandbox guarantees
 
@@ -1446,6 +1629,8 @@ All of an action's filters run in one `spawn_blocking` task with these limits:
 ### Trust boundary
 
 Templates are authored by org ops (three-tier registry: global / org / user). A template author who chooses not to redact a sensitive path takes responsibility for that call — redaction is declarative, not heuristic. The `disclose` jq engine can read redacted-target paths (extraction runs on the un-redacted projection); if an author surfaces a token via a filter, they're doing so deliberately.
+
+That responsibility covers what an author *writes*, not what the engine says when a filter breaks. Extraction has to see the un-redacted projection — the shipped Gmail template redacts `body.raw` and discloses To/Subject/Body extracted *from* `body.raw` — so a filter that assumed the wrong shape (`.body.card_number.last4` against a plain string) would otherwise hand back the very value the same template redacted, with nothing in the filter text for a reviewer to catch. Hence the fixed error strings above: a **shape mismatch** can never leak what an author did redact.
 
 ---
 

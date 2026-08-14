@@ -34,7 +34,7 @@ UNauth users go here, and on auth, they go back to the page they were trying to 
 The same `/login` page renders differently depending on the host the browser hit. The backend's `/auth/providers` response carries a `scope` field that drives the UI.
 
 - **Root apex (`app.overslash.com`)** — `scope: "root"`. Lists only Overslash-level IdPs (env-var Google / GitHub / Dev Login). A user who signs in here gets their personal org on first login.
-- **Corp subdomain (`<slug>.app.overslash.com`)** — `scope: "org"`. Lists only that org's IdPs from `org_idp_configs`. Env-level IdPs are NOT shown — a corp-subdomain login must go through the corp's IdP. This is the trust-domain boundary.
+- **Corp subdomain (`<slug>.app.overslash.com`)** — `scope: "org"`. Lists that org's own IdPs from `org_idp_configs` (enabled ones only), plus the Overslash-managed providers if the org enabled **Allow Overslash-managed sign-in** — those carry `managed: true` and a `source: "env"` badge. A provider the org has its own row for is never also offered as managed, whether or not that row is enabled. Nothing else appears: another org's IdP is its own trust domain.
 - **Corp subdomain with no IdP configured yet** — `scope: "org"` with an empty providers list. The page shows an explanatory empty state: "This organization has no sign-in configured yet. Ask the org admin to add an Identity Provider on their Org Settings page." The admin (= org creator) reaches the org via `/auth/switch-org` from the root dashboard, not via this login page.
 
 ### Org creator = regular admin, no "breakglass" framing
@@ -257,16 +257,21 @@ Used throughout for lists of users, services, secrets, audit events, etc.
 
 ### Search Bar
 
-A unified search component used across Services, Template Catalog, Audit Log, and Org Users/Groups views. Combines free-text search with structured filters.
+A unified search component used across Services, Template Catalog, Audit Log, Approvals, Secrets, Connections and Org Users/Groups views. Combines free-text search with structured filters.
 
 **Behavior:**
-- **Free text**: typing plain text matches against any visible field (name, template, owner, identity, etc.)
-- **Structured expressions**: `key operator value` syntax. Operators: `=` (exact), `~` (contains), `!=` (not equal). Multiple expressions are joined by AND.
-- **Parsed expressions** render as **removable pill chips** inside the input field. Each chip shows `key = value` with an "✕" to remove. Free text remains as editable text after the chips.
+- **Everything is a bubble.** A search is an ordered list of **terms**, and every term renders as a removable pill inside the input with an "✕". There is no loose text left in the field once a term is committed.
+- **Text bubbles**: typing plain text and pressing Enter mints one bubble. The whole phrase becomes a single bubble (`pull request` is one term, not two), and it matches against any visible field.
+- **Filter bubbles**: `key operator value` syntax. Operators: `=` (exact), `~` (contains), `!=` (not equal).
+- **Terms AND**, whatever their kind or order. Two text bubbles both have to match; a text bubble and a filter bubble both have to match. Text bubbles are the only way to express "narrow by two different phrases".
+- **Committing**: Enter, blur, or picking a value from autocomplete. A term identical to one already present is swallowed rather than duplicated (text compares case-insensitively).
+- **Editing**: clicking a bubble's body returns it to the input — a filter reopens in its `key op …` pending state so value autocomplete still works. Backspace on an empty input removes the last bubble.
+- **Quoting**: a `"quoted phrase"` is opaque to the parser, so `"foo=bar"` stays one text bubble even on a surface that has a `foo` key.
+- **Pinned bubbles**: filters owned by the URL rather than by the bar (`/services?connection=<id>`) render first, greyed and non-editable; removing one drops the query param.
 
 ```
 /-------------------------------------------------------------------------------------\
-| [owner = Org][name ~ "fish"] blah blah                                              |
+| [owner = Org ✕][name ~ "fish" ✕][⌕ blah blah ✕]                                      |
 \-------------------------------------------------------------------------------------/
 ```
 
@@ -274,11 +279,14 @@ A unified search component used across Services, Template Catalog, Audit Log, an
 - **Services**: `owner`, `name`, `template`, `status`, `connection`
 - **Template Catalog**: `source`, `name`, `category`
 - **Audit Log**: `identity`, `event`, `service`, `result`, `time`
-- **Org Users**: `name`, `email`, `group`, `role`, `status`
+- **Approvals**: `risk`, `service`, `agent`
+- **Secrets**: `name`, `owner`
+- **Connections**: `provider`, `account`
+- **Org Users**: `name`, `email`, `role`, `provider`
 
 **Autocomplete**: After typing 3+ characters that match a known key prefix, a dropdown appears below the input suggesting matching keys (e.g., typing "own" suggests `owner =`). Debounced at 200ms to avoid interrupting normal typing. Selecting a key suggestion inserts the key + operator and positions the cursor for value entry. **Values are also autocompleted** when possible — e.g., after `owner =`, the dropdown shows known values ("Org", "You", specific user names). Selecting a value **creates the pill** immediately. Recent searches appear below suggestions.
 
-**Visual**: White background, neutral-200 border, 8px corner radius. Pill chips have primary-50 background, primary text, small "✕".
+**Visual**: White background, neutral-200 border, 8px corner radius. Filter bubbles use the primary tint (`--color-primary-bg` / `--color-primary`); text bubbles use a neutral tint with a leading `⌕`, so the two kinds read apart at a glance. Both carry a small "✕".
 
 ### Split Button
 
@@ -317,6 +325,7 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - Logo ("Overs/ash") at top (bold 18px)
 - Nav items with 18px icon placeholder + label. Active item: primary-50 background, primary text, semi-bold. Inactive: neutral-600 text, medium weight.
 - "ADMIN" section label (11px semi-bold, neutral-400, letter-spaced) separates admin-only items.
+- **Pending invitations** (sidebar footer, directly above the org switcher): rendered only when the signed-in user has invitations from orgs they haven't joined, sourced from `/auth/me/identity.invitations[]` (same list as `GET /v1/account/invitations`). An "INVITATIONS" section label followed by one card per org — org name, "invited as admin/member", and **Accept** / **Decline**. Accept posts to `/v1/account/invitations/{id}/accept`, then switches to that org and hard-reloads onto its subdomain. Decline asks for confirmation, then archives the invitation. When the inviting org signs its members in through its own IdP (`allow_overslash_managed_signin = false`) the buttons are replaced by a "Sign in to accept →" link to that org's subdomain — accepting has to happen there.
 - **Org switcher** (sidebar footer, above the Settings link): shows the current org's name. When the user belongs to more than one org, clicking it opens a dropdown grouped by **Personal** / **Orgs** with the current entry highlighted. Selecting an entry posts to `/auth/switch-org { org_id }` and the browser hard-reloads onto the returned URL (root apex for personal orgs, `<slug>.app.overslash.com` for corp orgs). The current org's role (admin / member) is implicit — no per-row badges; every row is just an org name.
 - Collapse button (chevron «) at the bottom or top-right of the sidebar.
 - **Build stamp** (last line of the sidebar footer): `v<version> · <short sha>` in muted 11px text, read from `GET /v1/version`. Hovering shows the full SHA; clicking copies it and the line reads "Copied" for ~1.5s. Absent until the request resolves, and if it fails.
@@ -325,6 +334,7 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - Logo collapses to "/" (the slash character, bold 18px) — the iconic part of "Overs/ash".
 - Nav items show icons only (18px, centered), no labels. Active item still has primary-50 rounded background. Tooltip on hover shows the label.
 - "ADMIN" label hidden. Admin nav items still show as icon-only.
+- Pending invitations collapse to a single bordered cell — envelope glyph + count badge — with the count in the hover tooltip; clicking expands the sidebar rather than opening a popover, since the org names are the whole point and 64px can't carry them.
 - Org switcher collapses to the first letter of the current org's slug in a single cell; clicking still opens the dropdown (which anchors to the right of the sidebar so it's readable).
 - Build stamp drops the short SHA and shows the version alone — the SHA stays available in the hover tooltip, and clicking still copies it.
 - Expand button (chevron ») to restore.
@@ -394,6 +404,14 @@ The default view post-login, unless the user was already trying to go to another
 Left panel: **Agent tree**. Right panel: **Detail view** for the selected node.
 
 The tree stays clean — each row shows: name, status indicator, and pending approval badge count if any. Selecting a node populates the detail panel.
+
+### Agent marks
+
+An agent renders as **the logo of the MCP client bound to it, over three colours hashed from its own id** — `AgentAvatar.svelte`, drawn where a user identity's row shows its status dot. The two halves answer different questions and both are needed: the logo says *what kind of client this is* and is shared by every agent running on it, so a team of five Claude Code agents would otherwise be five identical rows; the stripe says *which agent this is*.
+
+The mark is the client's, not the agent's, so there is no picker and nothing to choose — an agent whose client we ship no mark for, and one with no MCP binding at all (the API-key case), both fall back to a **generic bot glyph** rather than to a gap. The tile itself is `ServiceIcon.svelte`, so it inherits the letter-tile-underneath behaviour and the fixed light ground described under Services.
+
+The stripe is three equal segments taken from the last nine bytes of `sha256(agent id)`, one byte per channel. It is `aria-hidden` — decoration, with the name and the client label carrying the meaning — and carries a hairline inset border, because raw hash colours can land arbitrarily close to the page background in either theme. Sizes: 20px in the agent tree, 32px in the detail header, 16px in the audit log's Agent column, and on the Live Map's balls.
 
 ### Agent tree (left panel)
 
@@ -680,7 +698,7 @@ A section/tab within the Org Dashboard for managing user groups. Groups define t
 
 - *Groups list (`/org/groups`).* Calls `GET /v1/groups` (default), so each user sees their own Myself row alongside Everyone, Admins, and any custom groups they belong to. The row renders as **"Myself"** — never the raw storage form `Myself: <email> (<id8>)`. Admins surveying other users' Myself rows pass `?include_self=true`; those rows render as **"Myself (email)"**, falling back to **"Myself (email, id8)"** only on email collision.
 - *Delete button.* Hidden on every system row (Everyone, Admins, all Myself). The backend rejects deletes on system groups, so the action is suppressed at the UI layer rather than surfaced as a broken button.
-- *Group detail (`/org/groups/<self-id>`).* For a Myself group, the page hides the rename form, delete button, and add-member affordance (system metadata is immutable; membership is fixed to the owner). Grant management — Add grant, Remove, and the auto-approve toggle — is shown only when the caller *is* the Myself owner; non-owner viewers (admins via `?include_self=true`) see a read-only audit view, since the backend cross-owner guard rejects their writes anyway. When the owner is viewing, the "Add grant" service picker is filtered to services owned by the group's `owner_identity_id` — matching the same guard.
+- *Group detail (`/org/groups/<self-id>`).* For a Myself group, the page hides the rename form, delete button, and add-member affordance (system metadata is immutable; membership is fixed to the owner). Grant management — Add grant, Remove, and the auto-approve level select — is shown only when the caller *is* the Myself owner; non-owner viewers (admins via `?include_self=true`) see a read-only audit view, since the backend cross-owner guard rejects their writes anyway. When the owner is viewing, the "Add grant" service picker is filtered to services owned by the group's `owner_identity_id` — matching the same guard.
 - *Services list groups column (`/services`).* Group pills for self grants render as **"Myself"**, derived from `system_kind === 'self'` on the per-grant `ServiceGroupRef`.
 - *Service detail Groups table (`/services/<name>`).* Owner's self grants render as **"Myself"** (same rule). The "Restore Myself grant" inline affordance remains for owners who removed their own grant.
 
@@ -689,15 +707,21 @@ Group: Engineering
 
 Service Grants
 ──────────────────────────────────────────────────────────────────
-github:ANY:*             Full GitHub API access             Auto-approve reads: ✓
-slack:*:*                Slack — any action                 Auto-approve reads: ✓
-stripe:*:*               Stripe — any action                Auto-approve reads: ✗
-google-calendar:ANY:*    Google Calendar API access         Auto-approve reads: ✓
+Service            Access level      Auto-approve
+github             admin             read
+slack              write             write     ⚠ writes run with no prompt
+stripe             read              none
+google-calendar    write             read
 ```
 
 Grants use the `{service}:{action}:{arg}` format, where the arg is a value or a labelled `{label}={value}` pair (SPEC §5). A value-only grant matches whichever label carries that value, so an operator never has to know the label to write a working rule. Org-admins pick from known services and choose the access tier (`*` for all actions, `ANY` for raw HTTP verbs, specific verbs, or specific actions). The UI presents this as dropdowns — not as raw key strings to type.
 
-**Auto-approve reads** toggle per service grant: when enabled, agents' non-mutating requests automatically create permission keys without user approval. Disabled by default for sensitive services (financial, PII).
+**Auto-approve** select per service grant (`none | read | write | admin`, SPEC §5 / D53). It rides the same ladder as **Access level** and is bounded by it, so the two render as adjacent dropdowns:
+
+- Rungs above the row's `access_level` render **disabled** rather than hidden — the ladder stays legible, and it's obvious that reaching `admin` means raising Access first.
+- Choosing `write` or `admin` shows an inline caution line under the select (*"Agents in this group run writes on this service with no approval prompt."*). No confirm modal — the warning is the guardrail.
+- Lowering **Access level** clamps **Auto-approve** down server-side, so both cells are refreshed from the PATCH response rather than patched locally.
+- Defaults to `none` on a new grant; `read` on the auto-created Myself grant.
 
 - **"Everyone"** group is always present, cannot be deleted, all users are implicit members
 
@@ -729,7 +753,7 @@ Dev Login         Debug       ● Active    —         env (read-only)
 - **Custom OIDC**: issuer URL (auto-discovers via `.well-known/openid-configuration`) + client ID + client secret
 - **Dev Login**: toggle on/off. Warning badge when enabled in production.
 
-Providers configured via environment variables are shown with an "env" badge and are read-only — they cannot be edited or disabled from the dashboard. Env vars take precedence over in-database settings.
+Overslash-managed providers are shown with an "env" badge and are read-only — they cannot be edited or disabled from the dashboard, and they appear only when **Allow Overslash-managed sign-in** is on. The org's own configs take precedence: a provider the org has an `org_idp_configs` row for is listed as that row (editable, with its real Enabled state) and not also as a managed entry.
 
 Per-provider settings:
 - **Auto-create users**: create user identity on first login (matched by email domain)
@@ -961,6 +985,12 @@ Scope upgrade is deliberately absent from this view — it lives in the service-
 ## Services view
 
 A single nav item covering both **service templates** (API blueprints) and **services** (named instances with credentials). Two sub-views via tabs at the top: **My Services** (default) and **Template Catalog**.
+
+**Service marks** are rendered by `ServiceIcon.svelte` wherever a service or template is named: the instances table (20px), the catalog card (32px), the service detail header (40px), the template editor breadcrumb (20px) and the new-service preview (28px). It takes the `icon_url` the API resolved and draws the existing `ServiceTile` monogram **underneath** it — not as an `{:else}` — for the same reason `Avatar` does: a third-party host that hangs fires neither `load` nor `error`, so a branch would leave an empty square for as long as that takes. A service with no icon, or one whose image fails, is therefore always a letter tile and never a gap. The image sits on a fixed light ground in both themes, because a brand mark carries its own colours (several of the shipped ones are near-black) and cannot be restyled — it is served cross-origin and rendered in an `<img>`.
+
+The **Live Map** draws the same mark on its service balls, from the same `icon_url`, but through `.lm-ball-icon` rather than this component: a ball is a circle sized for a face, so the mark is `contain`ed rather than cropped and inset with clearspace so it does not touch the rim. It keeps the light ground for the same reason, which matters more there — the map canvas is dark in both themes. A service whose template resolves no mark keeps its monogram; an agent draws its MCP client mark here too (see **Agent marks** below).
+
+Every image inside a ball is inert to pointer input (`draggable="false"` plus `pointer-events: none`). A ball is the node's drag handle, and without that the browser's native image drag wins the gesture — you drag a translucent copy of the picture out of the page instead of moving the node. Monograms never had the problem because `.lm-node-in` is already `user-select: none`.
 
 ### My Services
 
@@ -1199,6 +1229,8 @@ A dedicated nav item. Filterable, searchable event stream — newest first, pagi
 
 The audit log uses **infinite scroll** over a paginated API (cursor-based). No page numbers or "Load more" button — new events load automatically as the user scrolls near the bottom.
 
+The cursor is `before` + `before_id` (the timestamp and id of the last row loaded), not an offset: `OFFSET n` makes the database walk `n + limit` index entries, so a long scroll session would get slower with every page. `before_id` is not decoration — events written in one transaction share a timestamp, and a cursor without a tiebreaker skips or repeats them at that boundary.
+
 **Scroll trigger**: when the viewport is within 200px of the last loaded row, the next page is fetched.
 
 **States**:
@@ -1424,6 +1456,8 @@ Login required. If not logged in → redirect to login → redirect back. If log
 
 - Shows human-readable description + raw request details + resolved service instance (qualified: `user/github` or `org/github`)
 - **Agent (identity)** — rendered as a SPIFFE-style hierarchical path (`acme/user/alice/agent/henry/...`), with the same link-unit treatment as the audit log Identity column (see §"Audit Log"). Backed by `identity_path` on the approval API response. The bare `identity_id` UUID is never shown to end users.
+
+> **Audit rows show recorded names.** Unlike every other surface, the audit table labels its actor with the name the identity had *when the event was written* (`identity_name` / `owner_user_name`, D59) — an audit row records who acted under the name they acted under. A name that has since changed is marked with a dotted underline, carries the current name in its hover, and shows a "Recorded as" line in the expanded pane. This applies to a human acting directly as much as to an agent — user display names are refreshed from the IdP on every sign-in, so they are in fact the names most likely to have moved. The User column is the one exception: it renders an *email* resolved live by id, and an email does not move when a display name does, so it is marked only where it has fallen back to rendering the path's name. the expanded pane's SPIFFE path stays live and id-linked. Free-text search matches the recorded name, so what an operator can see is what they can search for; `identity = <name>` still resolves to an id and is unaffected by renames.
 - Full specificity picker for "Allow & Remember" — reads `suggested_tiers` and `description` from the approval API (same as Agents view)
 - After resolution → confirmation + link to Agents view
 - **Already resolved** — "This approval was allowed by alice 3m ago." (or denied)

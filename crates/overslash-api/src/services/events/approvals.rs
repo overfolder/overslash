@@ -1,6 +1,7 @@
-//! Event drafts for the three moments an approval needs a decision from
-//! someone new: it was raised, it was handed upward, and — derived from both —
-//! it is now waiting on a particular resolver.
+//! Event drafts for the moments an approval changes hands: it was raised, it
+//! was handed upward, and — derived from both — it is now waiting on a
+//! particular resolver. Plus the one way it can end without anybody deciding:
+//! it expired.
 //!
 //! `approval.pending` is the signal a caller subscribes to when all it wants is
 //! an inbox. It restates what `approval.created` and `approval.bubbled` already
@@ -10,8 +11,9 @@
 //! different event shapes.
 //!
 //! Every draft here is built from the approval row rather than from a caller,
-//! so the background auto-bubble sweep — which has no `AuthContext` — produces
-//! exactly the same events as a human pressing the button.
+//! so the background sweeps — auto-bubble and expiry, neither of which has an
+//! `AuthContext` — produce exactly the same events as a human pressing the
+//! button.
 
 use serde_json::json;
 use uuid::Uuid;
@@ -132,5 +134,35 @@ pub async fn bubbled(
             "via": via.as_str(),
         }),
         audience,
+    }
+}
+
+/// `approval.resolved` with `status: "expired"` — nobody decided in time and
+/// the sweep closed it out.
+///
+/// The same event type a human verdict emits, deliberately: a subscriber
+/// already watching `approval.resolved` to learn how its request ended should
+/// not need a second type to learn that it ended in silence. `status` is what
+/// separates the verdicts, exactly as it does between `allowed` and `denied`.
+///
+/// Audience comes from the row as it stood while pending, so everyone who
+/// could see the approval waiting also sees it run out.
+pub async fn expired(
+    scope: &OrgScope,
+    approval_id: Uuid,
+    requester_id: Uuid,
+    resolver_id: Uuid,
+    action_summary: &str,
+) -> EventDraft {
+    EventDraft {
+        org_id: scope.org_id(),
+        event_type: EventType::ApprovalResolved,
+        payload: json!({
+            "approval_id": approval_id,
+            "status": "expired",
+            "action_summary": action_summary,
+            "resolved_by": "system",
+        }),
+        audience: audience::for_approval(scope, requester_id, Some(resolver_id)).await,
     }
 }

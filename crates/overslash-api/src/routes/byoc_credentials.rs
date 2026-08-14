@@ -140,13 +140,13 @@ async fn create_byoc(
         )
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.code().as_deref() == Some("23505") {
-                    return AppError::Conflict(format!(
-                        "BYOC credential already exists for provider '{}'",
-                        req.provider
-                    ));
-                }
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.code().as_deref() == Some("23505")
+            {
+                return AppError::Conflict(format!(
+                    "BYOC credential already exists for provider '{}'",
+                    req.provider
+                ));
             }
             AppError::Database(e)
         })?;

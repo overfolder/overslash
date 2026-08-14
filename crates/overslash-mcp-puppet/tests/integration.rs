@@ -47,14 +47,14 @@ async fn handle_mcp(State(state): State<MockState>, _headers: HeaderMap, body: S
 
     // Bare-response delivery (elicitation answer).
     if parsed.get("method").is_none() {
-        if let Some(id) = parsed.get("id").and_then(Value::as_str) {
-            if id.starts_with("elicit_") {
-                if let Some((_, tx)) = state.pending.remove(id) {
-                    let result = parsed.get("result").cloned().unwrap_or(Value::Null);
-                    let _ = tx.send(result);
-                }
-                return (StatusCode::ACCEPTED, "").into_response();
+        if let Some(id) = parsed.get("id").and_then(Value::as_str)
+            && id.starts_with("elicit_")
+        {
+            if let Some((_, tx)) = state.pending.remove(id) {
+                let result = parsed.get("result").cloned().unwrap_or(Value::Null);
+                let _ = tx.send(result);
             }
+            return (StatusCode::ACCEPTED, "").into_response();
         }
         return (StatusCode::BAD_REQUEST, "unknown bare response").into_response();
     }

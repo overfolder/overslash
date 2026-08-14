@@ -143,7 +143,7 @@ runs it through the **jq engine already used by `x-overslash-disclose`** (input 
 defaulted params object, output = the `arguments` object). Absent a transform → verbatim,
 so there is **zero regression** for the raw tools and every other MCP service.
 
-Disclosure/audit already project `{runtime, tool, arguments, service, action}`, so they
+Disclosure/audit already project `{runtime, tool, arguments, resolved, service, action}`, so they
 naturally observe the **post-transform** arguments — i.e. exactly what is sent upstream,
 which is what a reviewer wants to see. The draft's write tools set `x-overslash-disclose`
 filters against the transformed `.arguments.createRequest…` accordingly.

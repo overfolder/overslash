@@ -18,6 +18,7 @@ enable_api_lb         = true
 dashboard_origin = "https://app.overslash.com,https://*.app.overslash.com"
 dashboard_url    = "https://app.overslash.com"
 enable_dev_auth  = false
+enable_live_map  = false
 # Passwordless email magic-link login — on (email is configured below).
 enable_magic_link = true
 # Sign-in with Google (default) + Sign-in with GitHub. Populate the OAuth
@@ -95,3 +96,5 @@ alert_email       = "alert@overslash.com"
 
 read_oauth_credentials_from_env = false
 
+# Async (non-blocking) action calls. Off until validated on dev.
+enable_async_execution = false

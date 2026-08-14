@@ -6,6 +6,7 @@
 	import { getSecret } from '$lib/api/secrets';
 	import type { Identity, SecretDetail, SecretVersionView } from '$lib/types';
 	import OwnerCell from '$lib/components/secrets/OwnerCell.svelte';
+	import { formatIdentity } from '$lib/identityDisplay';
 	import RevealModal from '$lib/components/secrets/RevealModal.svelte';
 	import UpdateValueModal from '$lib/components/secrets/UpdateValueModal.svelte';
 	import RestoreVersionModal from '$lib/components/secrets/RestoreVersionModal.svelte';
@@ -13,6 +14,7 @@
 
 	const name = $derived($page.params.name ?? '');
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
 
 	let detail = $state<SecretDetail | null>(null);
 	let identities = $state<Identity[]>([]);
@@ -55,13 +57,16 @@
 		return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 	}
 
-	function fmtCreatedBy(id: string | null): string {
-		if (!id) return 'system';
+	/** Version author, plus a hover title. The label may have the org's single
+	 *  allowed domain stripped off; `title` always carries the full address. */
+	function fmtCreatedBy(id: string | null): { text: string; title: string | undefined } {
+		if (!id) return { text: 'system', title: undefined };
 		const ident = identityById.get(id);
-		if (!ident) return id.slice(0, 8);
+		if (!ident) return { text: id.slice(0, 8), title: id };
 		const prefix =
 			ident.kind === 'user' ? 'user:' : ident.kind === 'sub_agent' ? 'sub_agent:' : 'agent:';
-		return `${prefix}${ident.name}`;
+		const d = formatIdentity(ident, allowedDomains);
+		return { text: `${prefix}${d.primary}`, title: `${prefix}${d.title}` };
 	}
 </script>
 
@@ -100,6 +105,7 @@
 							ownerId={detail.owner_identity_id}
 							{identityById}
 							{currentUserId}
+							{allowedDomains}
 						/>
 					</div>
 					<div class="meta-item">
@@ -136,6 +142,7 @@
 			<div class="version-list">
 				{#each detail.versions as v, i (v.version)}
 					{@const isCurrent = v.version === detail.current_version}
+					{@const author = fmtCreatedBy(v.created_by)}
 					<div class="version-row">
 						<div class="rail">
 							<div class="dot" class:current={isCurrent}></div>
@@ -151,7 +158,7 @@
 								{/if}
 							</div>
 							<div class="version-meta">
-								<span class="created-by">{fmtCreatedBy(v.created_by)}</span>
+								<span class="created-by" title={author.title}>{author.text}</span>
 								<span>{fmtTimestamp(v.created_at)}</span>
 							</div>
 						</div>

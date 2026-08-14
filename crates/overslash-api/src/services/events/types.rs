@@ -16,19 +16,54 @@ use std::str::FromStr;
 pub enum Topic {
     Approvals,
     Connections,
+    Executions,
     Secrets,
+    /// Per-call traffic — one pair of events per action call, and the only
+    /// topic whose volume scales with the gateway's hot path rather than with
+    /// operator activity. Emission is gated on `live_map_enabled`; the topic
+    /// itself stays permanently subscribable so a client that asks for it on a
+    /// deployment with the flag off gets silence rather than a 400 that varies
+    /// by environment.
+    Activity,
 }
 
 impl Topic {
-    pub const ALL: [Topic; 3] = [Topic::Approvals, Topic::Connections, Topic::Secrets];
+    /// The array length is typed on purpose: adding a variant without adding
+    /// it here is a compile error, which is how a new topic is guaranteed to
+    /// reach `parse_topics(None)` and [`topic_names`].
+    ///
+    /// Both `Executions` and `Activity` are here because two branches each
+    /// added a topic and each wrote `[Topic; 4]` — resolving that by taking
+    /// one side compiles cleanly and silently drops the other.
+    pub const ALL: [Topic; 5] = [
+        Topic::Approvals,
+        Topic::Connections,
+        Topic::Executions,
+        Topic::Secrets,
+        Topic::Activity,
+    ];
 
     pub fn as_str(&self) -> &'static str {
         match self {
             Topic::Approvals => "approvals",
             Topic::Connections => "connections",
+            Topic::Executions => "executions",
             Topic::Secrets => "secrets",
+            Topic::Activity => "activity",
         }
     }
+}
+
+/// Quoted, comma-joined topic names for error messages.
+///
+/// Derived from [`Topic::ALL`] rather than written out, so the message telling
+/// a client which topics exist cannot fall behind the set that does.
+pub fn topic_names() -> String {
+    Topic::ALL
+        .iter()
+        .map(|t| format!("'{t}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl fmt::Display for Topic {
@@ -44,7 +79,9 @@ impl FromStr for Topic {
         match s {
             "approvals" => Ok(Topic::Approvals),
             "connections" => Ok(Topic::Connections),
+            "executions" => Ok(Topic::Executions),
             "secrets" => Ok(Topic::Secrets),
+            "activity" => Ok(Topic::Activity),
             _ => Err(()),
         }
     }
@@ -70,12 +107,39 @@ pub enum EventType {
     ApprovalExecuted,
     ApprovalExecutionFailed,
     ApprovalExecutionCancelled,
+    /// An async (worker-run) execution reached a terminal state.
+    ///
+    /// Deliberately NOT folded into the `approval.execution_*` names: those
+    /// are keyed on an approval, and an async call may not have one. The wire
+    /// strings here are public API and are stored verbatim by webhook
+    /// subscriptions, so overloading an existing name would silently start
+    /// delivering unrelated events to every current subscriber. See D62.
+    ExecutionCompleted,
+    ExecutionFailed,
+    ExecutionCancelled,
     ConnectionCreated,
     ConnectionUpdated,
     ConnectionScopesUpgraded,
     ConnectionDeleted,
     SecretRequestCreated,
     SecretRequestFulfilled,
+    /// An action call has started. Paired with [`EventType::ActionCompleted`]
+    /// by a `call_id` minted in the request wrapper.
+    ///
+    /// Unlike every other variant here, these two fire on the gateway's
+    /// hottest path — one durable `events` row each, per call. That is why
+    /// both are emitted only when `live_map_enabled` is set, and why the
+    /// dashboard's Live Map is a dev-gated view rather than a default one.
+    ///
+    /// The pair is *not* ordered: they bracket the upstream call, so
+    /// [`emit_all`](super::emit_all) cannot cover them and each `emit` spawns
+    /// its own task. A consumer must tolerate `completed` arriving first.
+    ActionCalled,
+    /// An action call finished, however it finished. `outcome` carries the
+    /// same classification the metrics wrapper uses (`called`, `denied`,
+    /// `rejected`, `failed`, `upstream_error`), so a 403 and an upstream 500
+    /// stay distinguishable.
+    ActionCompleted,
 }
 
 impl EventType {
@@ -88,12 +152,17 @@ impl EventType {
             EventType::ApprovalExecuted => "approval.executed",
             EventType::ApprovalExecutionFailed => "approval.execution_failed",
             EventType::ApprovalExecutionCancelled => "approval.execution_cancelled",
+            EventType::ExecutionCompleted => "execution.completed",
+            EventType::ExecutionFailed => "execution.failed",
+            EventType::ExecutionCancelled => "execution.cancelled",
             EventType::ConnectionCreated => "connection.created",
             EventType::ConnectionUpdated => "connection.updated",
             EventType::ConnectionScopesUpgraded => "connection.scopes_upgraded",
             EventType::ConnectionDeleted => "connection.deleted",
             EventType::SecretRequestCreated => "secret_request.created",
             EventType::SecretRequestFulfilled => "secret_request.fulfilled",
+            EventType::ActionCalled => "action.called",
+            EventType::ActionCompleted => "action.completed",
         }
     }
 
@@ -106,11 +175,15 @@ impl EventType {
             | EventType::ApprovalExecuted
             | EventType::ApprovalExecutionFailed
             | EventType::ApprovalExecutionCancelled => Topic::Approvals,
+            EventType::ExecutionCompleted
+            | EventType::ExecutionFailed
+            | EventType::ExecutionCancelled => Topic::Executions,
             EventType::ConnectionCreated
             | EventType::ConnectionUpdated
             | EventType::ConnectionScopesUpgraded
             | EventType::ConnectionDeleted => Topic::Connections,
             EventType::SecretRequestCreated | EventType::SecretRequestFulfilled => Topic::Secrets,
+            EventType::ActionCalled | EventType::ActionCompleted => Topic::Activity,
         }
     }
 }
@@ -152,6 +225,53 @@ pub fn parse_topics(raw: Option<&str>) -> Result<Vec<Topic>, String> {
 
 #[cfg(test)]
 mod tests {
+    /// A variant added to the enum but not to `ALL` compiles fine and then
+    /// silently never reaches `parse_topics(None)`, so the count is asserted
+    /// rather than inferred.
+    ///
+    /// If this fires after a merge, the likely cause is two branches each
+    /// adding a topic: both write `[Topic; 4]`, and resolving the conflict by
+    /// taking one side drops the other topic entirely. Bump the number *and*
+    /// check both variants are present.
+    #[test]
+    fn every_topic_is_in_all_and_round_trips() {
+        assert_eq!(
+            Topic::ALL.len(),
+            5,
+            "Topic::ALL is out of step with the enum — see this test's doc comment"
+        );
+        for t in Topic::ALL {
+            assert_eq!(
+                Topic::from_str(t.as_str()),
+                Ok(t),
+                "{t} failed to round-trip"
+            );
+        }
+    }
+
+    /// Pins the derivation: a hardcoded error string is how the SSE handler's
+    /// topic list fell behind the topic set in the first place.
+    #[test]
+    fn topic_names_lists_every_topic() {
+        let names = topic_names();
+        for t in Topic::ALL {
+            assert!(names.contains(t.as_str()), "{t} missing from {names}");
+        }
+    }
+
+    /// Every execution event must land on a topic a client can subscribe to.
+    #[test]
+    fn execution_events_map_to_the_executions_topic() {
+        for e in [
+            EventType::ExecutionCompleted,
+            EventType::ExecutionFailed,
+            EventType::ExecutionCancelled,
+        ] {
+            assert_eq!(e.topic(), Topic::Executions);
+            assert!(Topic::ALL.contains(&e.topic()));
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -164,6 +284,8 @@ mod tests {
             (EventType::ApprovalExecutionCancelled, Topic::Approvals),
             (EventType::ConnectionDeleted, Topic::Connections),
             (EventType::SecretRequestFulfilled, Topic::Secrets),
+            (EventType::ActionCalled, Topic::Activity),
+            (EventType::ActionCompleted, Topic::Activity),
         ] {
             assert_eq!(event.topic(), expected, "{event}");
         }
@@ -187,5 +309,17 @@ mod tests {
             vec![Topic::Approvals]
         );
         assert_eq!(parse_topics(Some("approvals,bogus")), Err("bogus".into()));
+    }
+
+    /// `activity` parses whether or not `live_map_enabled` is set. Emission is
+    /// what the flag gates; a subscription that 400s on one deployment and
+    /// succeeds on another would be a worse contract than one that is quiet.
+    #[test]
+    fn activity_is_a_valid_topic_independent_of_the_live_map_flag() {
+        assert_eq!(
+            parse_topics(Some("approvals,activity")).unwrap(),
+            vec![Topic::Approvals, Topic::Activity]
+        );
+        assert!(Topic::ALL.contains(&Topic::Activity));
     }
 }

@@ -18,7 +18,15 @@ pub fn router() -> Router<AppState> {
 struct AuditEntry {
     id: Uuid,
     identity_id: Option<Uuid>,
+    /// The actor's name **as recorded on the row** — the name they had when
+    /// they acted, not their current one (D56). Falls back to the live name
+    /// for rows written before migration 109, and stays populated after the
+    /// identity is deleted, which the old live lookup could not do.
     identity_name: Option<String>,
+    /// Recorded name of the root user of the actor's chain. Same historical
+    /// semantics as `identity_name`; the User column falls back to it when the
+    /// identity can no longer be resolved live.
+    owner_user_name: Option<String>,
     /// SPIFFE-style hierarchical path of the actor identity, e.g.
     /// `spiffe://acme/user/alice/agent/henry`. Null when the chain could not
     /// be resolved (deleted identity, unknown org).
@@ -50,13 +58,29 @@ struct AuditEntry {
 struct AuditQuery {
     #[serde(default = "default_limit")]
     limit: i64,
+    /// Legacy offset pagination. Still supported, but `OFFSET n` walks
+    /// `n + limit` index entries, so paging a long log with it costs O(pages²)
+    /// over a session. Prefer the `before` / `before_id` cursor.
     #[serde(default)]
     offset: i64,
+    /// Keyset cursor: `created_at` of the last row already seen. Combined with
+    /// `before_id` it returns the next page in `(created_at DESC, id DESC)`
+    /// order at constant cost, whatever the depth.
+    #[serde(default, deserialize_with = "deserialize_optional_datetime")]
+    before: Option<OffsetDateTime>,
+    /// Tiebreaker for the cursor: `id` of the last row already seen. Rows
+    /// written in one transaction share a timestamp, so without it a cursor at
+    /// that boundary would skip or repeat them.
+    before_id: Option<Uuid>,
     action: Option<String>,
     resource_type: Option<String>,
     identity_id: Option<Uuid>,
-    /// Free-text substring (case-insensitive) over action, description and
-    /// identity name. Drives the audit log search bar.
+    /// Free-text search over action, description and identity name. Comma
+    /// separated, and every term must match (AND) — the same convention as
+    /// `tag` and `identity_kind`, so the search bar's text bubbles narrow the
+    /// way its filter chips do. A comma inside a term is escaped as `\,`, so
+    /// a phrase like `New York\, NY` stays one term and survives the URL
+    /// round-trip intact. See `split_q_terms`.
     q: Option<String>,
     /// Exact match on `audit_log.id`. Powers the `?event=<uuid>` deep-link
     /// — the dashboard fires this query to verify a deep-linked event exists
@@ -124,6 +148,45 @@ where
     }
 }
 
+/// Split the `q` parameter into free-text terms on unescaped commas, so a
+/// search phrase may itself contain one: `New York\, NY` is a single term.
+///
+/// `tag` and `identity_kind` split on a plain comma — they carry controlled
+/// vocabularies where a comma cannot occur. `q` is arbitrary user text, and a
+/// naive split would turn one search bubble into two on the next page load.
+fn split_q_terms(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                // Only `,` and `\` are escapes; anything else keeps both
+                // characters so a Windows path or a regex is never eaten.
+                Some(next @ (',' | '\\')) => cur.push(next),
+                Some(other) => {
+                    cur.push('\\');
+                    cur.push(other);
+                }
+                None => cur.push('\\'),
+            },
+            ',' => {
+                let term = cur.trim();
+                if !term.is_empty() {
+                    out.push(term.to_string());
+                }
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    let term = cur.trim();
+    if !term.is_empty() {
+        out.push(term.to_string());
+    }
+    out
+}
+
 async fn query_audit(
     scope: OrgScope,
     axum::extract::Query(params): axum::extract::Query<AuditQuery>,
@@ -135,6 +198,7 @@ async fn query_audit(
             .filter(|k| !k.is_empty())
             .collect::<Vec<_>>()
     });
+    let q_terms = params.q.and_then(empty).map(|s| split_q_terms(&s));
     let tags = params.tag.and_then(empty).map(|s| {
         s.split(',')
             .map(|t| t.trim().to_string())
@@ -148,7 +212,7 @@ async fn query_audit(
         identity_id: params.identity_id,
         since: params.since,
         until: params.until,
-        q: params.q.and_then(empty),
+        q_terms: q_terms.filter(|v| !v.is_empty()),
         event_id: params.event_id,
         uuid: params.uuid,
         action_contains: params.action_contains.and_then(empty),
@@ -165,6 +229,8 @@ async fn query_audit(
         tags: tags.filter(|v| !v.is_empty()),
         tag_contains: params.tag_contains.and_then(empty),
         limit: params.limit,
+        before: params.before,
+        before_id: params.before_id,
         offset: params.offset,
     };
 
@@ -234,7 +300,12 @@ async fn query_audit(
     Ok(Json(
         rows.into_iter()
             .map(|r| {
-                let identity_name = r.identity_id.and_then(|id| name_map.get(&id).cloned());
+                // Recorded name first (D56), live name only as a fallback for
+                // rows predating migration 109. A hard-deleted identity keeps
+                // its name here; the live map has nothing to offer for it.
+                let identity_name = r
+                    .actor_name
+                    .or_else(|| r.identity_id.and_then(|id| name_map.get(&id).cloned()));
                 let (identity_path, identity_path_ids) = r
                     .identity_id
                     .and_then(|id| path_map.get(&id).cloned())
@@ -259,24 +330,25 @@ async fn query_audit(
                 // name/kind/path let the dashboard render the approver
                 // distinctly from the subject. No-op for other events.
                 let mut detail = r.detail;
-                if let Some(rid) = resolved_by(&detail) {
-                    if let Some(obj) = detail.as_object_mut() {
-                        if let Some(n) = name_map.get(&rid) {
-                            obj.insert("resolved_by_name".into(), serde_json::json!(n));
-                        }
-                        if let Some(k) = kind_map.get(&rid) {
-                            obj.insert("resolved_by_kind".into(), serde_json::json!(k));
-                        }
-                        if let Some((p, ids)) = path_map.get(&rid) {
-                            obj.insert("resolved_by_path".into(), serde_json::json!(p));
-                            obj.insert("resolved_by_path_ids".into(), serde_json::json!(ids));
-                        }
+                if let Some(rid) = resolved_by(&detail)
+                    && let Some(obj) = detail.as_object_mut()
+                {
+                    if let Some(n) = name_map.get(&rid) {
+                        obj.insert("resolved_by_name".into(), serde_json::json!(n));
+                    }
+                    if let Some(k) = kind_map.get(&rid) {
+                        obj.insert("resolved_by_kind".into(), serde_json::json!(k));
+                    }
+                    if let Some((p, ids)) = path_map.get(&rid) {
+                        obj.insert("resolved_by_path".into(), serde_json::json!(p));
+                        obj.insert("resolved_by_path_ids".into(), serde_json::json!(ids));
                     }
                 }
                 AuditEntry {
                     id: r.id,
                     identity_id: r.identity_id,
                     identity_name,
+                    owner_user_name: r.owner_user_name,
                     identity_path,
                     identity_path_ids,
                     action: r.action,

@@ -33,6 +33,10 @@ services:
       # to the API instead of the Vite dev server. Mirror DASH_HOST_PORT so
       # redirects land on the dashboard, which proxies /v1 + /auth back here.
       DASHBOARD_URL: http://localhost:${DASH_HOST_PORT:-5173}
+      # Live Map (/map) and the per-call `action.*` events it animates. On for
+      # the local stack, off everywhere but dev — it costs one durable `events`
+      # row per action call (D58).
+      OVERSLASH_LIVE_MAP: "1"
     ports:
       # Loopback publish for host access (browser/curl on the host).
       - "127.0.0.1:${API_HOST_PORT:-3000}:3000"

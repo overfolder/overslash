@@ -33,7 +33,7 @@ services:
         condition: service_healthy
     ports:
       # Host 3033 -> container 3000 (3000 is taken by the dashboard dev server).
-      - "3033:3000"
+      - "127.0.0.1:3033:3000"
     environment:
       MB_DB_TYPE: postgres
       MB_DB_DBNAME: metabase

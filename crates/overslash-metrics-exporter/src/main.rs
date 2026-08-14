@@ -257,10 +257,10 @@ fn metric(name: &str) -> String {
 fn build_connect_options(database_url: &str, password: Option<String>) -> Result<PgConnectOptions> {
     let mut opts =
         PgConnectOptions::from_str(database_url).context("failed to parse DATABASE_URL")?;
-    if let Some(pw) = password {
-        if !pw.is_empty() {
-            opts = opts.password(&pw);
-        }
+    if let Some(pw) = password
+        && !pw.is_empty()
+    {
+        opts = opts.password(&pw);
     }
     Ok(opts)
 }

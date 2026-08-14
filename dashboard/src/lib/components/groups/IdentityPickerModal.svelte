@@ -1,29 +1,38 @@
 <script lang="ts">
 	import type { Identity } from '$lib/api/groups';
+	import { makeIdentityFormatter } from '$lib/identityDisplay';
 
 	let {
 		open,
 		identities,
 		excludeIds = [],
+		allowedDomains = [],
 		onPick,
 		onCancel
 	}: {
 		open: boolean;
 		identities: Identity[];
 		excludeIds?: string[];
+		/** Org's allowed sign-in domains; a single entry is stripped off the
+		 *  emails shown here. Defaults to none so this renders standalone. */
+		allowedDomains?: string[];
 		onPick: (id: Identity) => void;
 		onCancel: () => void;
 	} = $props();
 
 	let query = $state('');
 
+	const fmt = $derived(makeIdentityFormatter(allowedDomains));
 	const users = $derived(identities.filter((i) => i.kind === 'user'));
+	// Matching runs against the raw fields, so typing either half of an address
+	// finds the user whether or not the domain is stripped from the label.
 	const filtered = $derived(
 		users.filter((u) => {
 			if (excludeIds.includes(u.id)) return false;
 			if (!query.trim()) return true;
 			const q = query.toLowerCase();
 			return (
+				(u.email ?? '').toLowerCase().includes(q) ||
 				u.name.toLowerCase().includes(q) ||
 				(u.external_id ?? '').toLowerCase().includes(q)
 			);
@@ -37,17 +46,18 @@
 			<h2>Add member</h2>
 			<input
 				type="text"
-				placeholder="Search users…"
+				placeholder="Search by email or name…"
 				bind:value={query}
 				class="search"
 			/>
 			<ul class="list">
 				{#each filtered as u (u.id)}
+					{@const d = fmt.format(u)}
 					<li>
-						<button class="row" onclick={() => onPick(u)}>
-							<span class="name">{u.name}</span>
-							{#if u.external_id}
-								<span class="ext">{u.external_id}</span>
+						<button class="row" onclick={() => onPick(u)} title={d.title}>
+							<span class="name">{d.primary}</span>
+							{#if d.secondary}
+								<span class="ext">{d.secondary}</span>
 							{/if}
 						</button>
 					</li>

@@ -87,17 +87,15 @@ pub(super) async fn tools_list_response(
     // §2 + §4.
     let mut self_approve_visible = false;
     if let (Some(identity_id), Some(client_id)) = (auth.identity_id, auth.mcp_client_id.as_deref())
-    {
-        if let Ok(Some(binding)) =
+        && let Ok(Some(binding)) =
             overslash_db::repos::mcp_client_agent_binding::get_for_agent_and_client(
                 state.db(ext),
                 identity_id,
                 client_id,
             )
             .await
-        {
-            self_approve_visible = binding.self_approve_enabled;
-        }
+    {
+        self_approve_visible = binding.self_approve_enabled;
     }
 
     let approve_input_schema = json!({
@@ -169,7 +167,26 @@ pub(super) async fn tools_list_response(
                     "verbose": {
                         "type": "boolean",
                         "default": false,
-                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every read. Pass true only when you need a specific header or the response was cropped."
+                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every read. Pass true only when you need a specific header. If the response was cropped, prefer the `_full_result.download_url` in the result — those bytes are already stored, whereas verbose=true re-runs the upstream call."
+                    },
+                    "deliver": {
+                        "type": "string",
+                        "enum": ["inline", "url"],
+                        "default": "inline",
+                        "description": "Where the response body goes. `inline` (default) returns it in the result. `url` returns a short-lived download URL instead and does NOT put the bytes in your context — use it for files (images, video, PDFs, any binary or large payload), then pipe the URL to disk with something like `curl -o <path> \"<download_url>\"`. The URL needs no credentials and expires, so fetch it promptly."
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "How long to wait on the upstream, in milliseconds. Omit it and the action's own template default applies, which is usually right. Raise it for known-slow work like a large analytics query. Asking for more than this org's maximum is rejected rather than silently reduced, and the error names the ceiling."
+                    },
+                    "filter": {
+                        "type": "string",
+                        "description": "A jq expression applied to the response body server-side, so only what it selects enters your context. Use it to project the fields you need out of a list endpoint (e.g. `[.data[] | {id, name}]`) instead of pulling every field of every row. Note it narrows what you *receive*, not what the upstream *sends*: a response that exceeds the gateway's size cap fails before the filter runs, so pair it with the action's own paging/limit parameters. Cannot be combined with `deliver: \"url\"` (there is no body to filter — the bytes never pass through the gateway at call time)."
+                    },
+                    "execution": {
+                        "type": "string",
+                        "enum": ["sync", "async", "hybrid"],
+                        "description": "Whether to wait for the result. Omit it and the action's own declared mode applies — a read that knows it is slow (a large export, a heavy analytics query) may declare `hybrid`, in which case this tool can return `status: \"accepted\"` and an `execution_id` you poll with `get_execution` rather than the data itself. Pass `sync` to override that and insist on the answer inline, bounded by the deployment's request cap. `hybrid` waits briefly and falls back to `accepted`; `async` returns immediately."
                     }
                 },
                 "required": ["service", "action"],
@@ -196,12 +213,35 @@ pub(super) async fn tools_list_response(
                     "params":      {},
                     "approval_id": {
                         "type": "string",
-                        "description": "Trigger the replay of a previously-approved action. Mutually exclusive with service/action/params."
+                        "description": "Trigger the replay of a previously-approved action. Mutually exclusive with service/action/params. If the original call asked for `execution: \"async\"`, this queues the replay rather than running it: the response carries `execution_mode: \"async\"` and a pending execution, and you fetch the outcome with `get_result` (or `get_execution` with the execution id)."
                     },
                     "verbose": {
                         "type": "boolean",
                         "default": false,
-                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every call. Pass true only when you need a specific header or the response was cropped. Only takes effect on fresh calls (service + action); ignored when `approval_id` is set, since approval replays return an ApprovalResponse with its own shape."
+                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every call. Pass true only when you need a specific header. If the response was cropped, prefer the `_full_result.download_url` in the result — those bytes are already stored, whereas verbose=true re-runs the upstream call. Only takes effect on fresh calls (service + action); ignored when `approval_id` is set, since approval replays return an ApprovalResponse with its own shape."
+                    },
+                    "deliver": {
+                        "type": "string",
+                        "enum": ["inline", "url"],
+                        "default": "inline",
+                        "description": "Where the response body goes. `inline` (default) returns it in the result. `url` returns a short-lived download URL instead and does NOT put the bytes in your context — use it for files (images, video, PDFs, any binary or large payload), then pipe the URL to disk with something like `curl -o <path> \"<download_url>\"`. The URL needs no credentials and expires, so fetch it promptly. Only takes effect on fresh calls (service + action)."
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "How long to wait on the upstream, in milliseconds. Omit it and the action's own template default applies, which is usually right. Raise it for known-slow work like a large analytics query. Asking for more than this org's maximum is rejected rather than silently reduced, and the error names the ceiling. Only takes effect on fresh calls (service + action); an approval replay reuses the timeout resolved when the call was first made."
+                    },
+                    "filter": {
+                        "type": "string",
+                        "description": "A jq expression applied to the response body server-side, so only what it selects enters your context. Use it to project the fields you need out of a list endpoint (e.g. `[.data[] | {id, name}]`) instead of pulling every field of every row. Note it narrows what you *receive*, not what the upstream *sends*: a response that exceeds the gateway's size cap fails before the filter runs, so pair it with the action's own paging/limit parameters. Cannot be combined with `deliver: \"url\"`. Only takes effect on fresh calls (service + action)."
+                    },
+                    "execution": {
+                        "type": "string",
+                        "enum": ["sync", "async", "hybrid"],
+                        "description": "Whether to wait for the result. Omit it and the action's own declared mode applies — most actions are synchronous, but one that knows it is slow may declare `hybrid`, so a call you did not mark can still come back `status: \"accepted\"`; the envelope names the reason in `execution_mode_source`. `sync` returns the upstream response in this tool result, bounded by the deployment's request cap, and overrides a slow action's declaration when you need the answer inline. `hybrid` starts the call off this request and waits on it briefly: if it finishes in time you get the ordinary result inline, and if it does not you get `status: \"accepted\"` and an `execution_id` instead — so handle both shapes. Prefer `hybrid` over `async` when most calls are fast and only the tail is slow, since it costs no extra round trip in the common case. `async` accepts the call and returns immediately with `status: \"accepted\"` and an `execution_id`; the call runs in the background and you fetch the outcome with `overslash_read` `get_execution`, polling until its status is terminal. Use it for work that takes longer than a tool call should block on — a large export, a slow analytics query, a batch job — and in particular when a synchronous call was rejected for exceeding the timeout ceiling. Not available with prefer_stream, deliver: \"url\", return_url, platform actions, or actions that return binary. Only takes effect on fresh calls (service + action); ignored when approval_id is set — but it is remembered: if the call is gated, triggering the approval later queues it instead of running it inline."
+                    },
+                    "handoff_after_ms": {
+                        "type": "integer",
+                        "description": "Only with `execution: \"hybrid\"`. How long the call may hold this request before answering `accepted`, in milliseconds. Omit to use the deployment default. Must be less than the call's `timeout_ms`; asking for more than the deployment's maximum is an error rather than being silently lowered."
                     }
                 },
                 "additionalProperties": false

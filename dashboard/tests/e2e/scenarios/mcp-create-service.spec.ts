@@ -7,7 +7,7 @@
 //   1. The MCP dispatcher forwards `overslash.create_service` through
 //      `/v1/actions/call` to the platform_services kernel.
 //   2. The kernel auto-grants the new instance to the owner-user's Myself
-//      group (admin + auto_approve_reads).
+//      group (admin access, read-level auto-approval).
 //   3. For an OAuth-only template with no connection bound, the response
 //      carries `credentials_status: "needs_authentication"`.
 //   4. The split between `manage_services_own` and `manage_services_share` is
@@ -37,7 +37,7 @@ type ServiceGroupRef = {
 	group_name: string;
 	system_kind?: string;
 	access_level: string;
-	auto_approve_reads: boolean;
+	auto_approve_level: string;
 };
 
 type Group = {
@@ -129,7 +129,7 @@ test('agent with manage_services_own creates a service from a shipped template v
 	expect(found, `agent listing must include the just-created service`).toBeDefined();
 
 	// The service's group grants must include the owner-user's Myself group
-	// with admin + auto_approve_reads. This is the kernel's auto-grant from
+	// with admin access + read-level auto-approval. This is the kernel's auto-grant from
 	// `kernel_create_service`, mirroring services.rs:558-568 in the original
 	// HTTP handler — the assertion catches regressions that would silently
 	// skip the auto-grant on the platform path.
@@ -141,7 +141,7 @@ test('agent with manage_services_own creates a service from a shipped template v
 	expect(myselfGrant, `expected a Myself grant on the new service`).toBeDefined();
 	if (!myselfGrant) return;
 	expect(myselfGrant.access_level).toBe('admin');
-	expect(myselfGrant.auto_approve_reads).toBe(true);
+	expect(myselfGrant.auto_approve_level).toBe('read');
 
 	// Permission split assertion: the agent has only `manage_services_own`. The
 	// "share" half (granting to non-Myself groups) requires admin and is the

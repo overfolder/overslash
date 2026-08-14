@@ -19,6 +19,9 @@
 		PermissionRule
 	} from '$lib/types';
 	import { session, ApiError, type ApprovalResponse } from '$lib/session';
+	import { makeIdentityFormatter, providerLabel } from '$lib/identityDisplay';
+	import Avatar from '$lib/components/Avatar.svelte';
+	import AgentAvatar from '$lib/components/AgentAvatar.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import ApprovalRow from '$lib/components/approval/ApprovalRow.svelte';
@@ -26,6 +29,12 @@
 	import { collapse, motionDuration } from '$lib/utils/motion';
 	import { flip } from 'svelte/animate';
 	import { ttlRemaining } from '$lib/utils/time';
+
+	// User identities are labelled by email, not by the IdP display name — see
+	// `$lib/identityDisplay`. The org's allowed sign-in domains come from the
+	// root layout load and decide whether the domain is stripped off.
+	let { data }: { data: { allowedDomains: string[] } } = $props();
+	const fmt = $derived(makeIdentityFormatter(data.allowedDomains));
 
 	let identities = $state<Identity[]>([]);
 	let approvals = $state<ApprovalResponse[]>([]);
@@ -618,10 +627,11 @@
 	{/if}
 
 	{#if scopedUser}
+		{@const owner = fmt.format(scopedUser)}
 		<div class="filter-banner">
 			<span
-				>Viewing agents owned by <strong>{scopedUser.name}</strong>{#if scopedUser.email}
-					· {scopedUser.email}{/if}</span
+				>Viewing agents owned by <strong title={owner.title}>{owner.primary}</strong>{#if owner.secondary}
+					· {owner.secondary}{/if}</span
 			>
 			<button type="button" onclick={clearUserFilter}>Clear</button>
 		</div>
@@ -667,6 +677,7 @@
 		<!-- Right: Detail panel -->
 		<main class="detail-panel">
 			{#if selected}
+				{@const sel = fmt.format(selected)}
 				<!-- Mobile: back-to-list affordance -->
 				<button
 					class="back-to-list"
@@ -681,8 +692,20 @@
 				</button>
 				<!-- Header -->
 				<div class="detail-header">
-					<span class="status-dot active"></span>
-					<h2 class="detail-name">{selected.kind === 'user' ? selected.name : `agent:${selected.name}`}</h2>
+					{#if selected.kind === 'user'}
+						<span class="status-dot active"></span>
+					{:else}
+						<AgentAvatar
+							name={selected.name}
+							iconUrl={selected.icon_url}
+							stripe={selected.icon_stripe}
+							clientLabel={selected.mcp_client_label}
+							size={32}
+						/>
+					{/if}
+					<h2 class="detail-name" title={sel.title}>
+						{selected.kind === 'user' ? sel.primary : `agent:${selected.name}`}
+					</h2>
 					{#if selected.kind !== 'user'}
 						<span class="pill pill-active">Active</span>
 						<span class="pill pill-neutral">user-created</span>
@@ -747,10 +770,37 @@
 
 				{#if selected.kind === 'user'}
 					<!-- User root: read-only identity fields, but its remembered rules
-					     (permission grants) are shown and editable per backend auth. -->
+					     (permission grants) are shown and editable per backend auth.
+					     The tree labels users by email, so this pane is where the IdP
+					     display name, the full unstripped address, and the provider
+					     live. -->
 					<div class="field-row">
 						<span class="field-label">Kind</span>
 						<span class="field-value">user</span>
+					</div>
+					{#if selected.email}
+						<div class="field-row">
+							<span class="field-label">Email</span>
+							<span class="field-value">{selected.email}</span>
+						</div>
+					{/if}
+					{#if sel.secondary}
+						<div class="field-row">
+							<span class="field-label">Display name</span>
+							<span class="field-value user-name">
+								<Avatar
+									name={selected.name}
+									email={selected.email}
+									picture={selected.picture}
+									size={20}
+								/>
+								{sel.secondary}
+							</span>
+						</div>
+					{/if}
+					<div class="field-row">
+						<span class="field-label">Identity provider</span>
+						<span class="field-value">{providerLabel(selected.provider)}</span>
 					</div>
 					{#if selected.id === meIdentityId}
 						<p class="muted" style="font-size:0.85rem;">This is the logged-in user. User identities are read-only.</p>
@@ -775,9 +825,10 @@
 					{@render rulesSection()}
 				{:else}
 					<!-- Agent detail fields -->
+					{@const parent = parentIdentity ? fmt.format(parentIdentity) : null}
 					<div class="field-row">
 						<span class="field-label">Parent</span>
-						<span class="field-value">{parentIdentity?.name ?? '—'}{parentIdentity?.id === meIdentityId ? ' (you)' : ''}</span>
+						<span class="field-value" title={parent?.title}>{parent?.primary ?? '—'}{parentIdentity?.id === meIdentityId ? ' (you)' : ''}</span>
 					</div>
 					<div class="field-row">
 						<span class="field-label">Inherits Permissions</span>
@@ -943,6 +994,7 @@
 	{@const isCollapsed = collapsed.has(node.id)}
 	{@const pending = pendingByIdentity.get(node.id) ?? 0}
 	{@const isSelected = selectedId === node.id}
+	{@const label = fmt.format(node)}
 	<div
 		class="tree-node"
 		class:selected={isSelected}
@@ -966,8 +1018,18 @@
 				</button>
 			{/if}
 		</span>
-		<span class="status-dot" class:active={node.kind !== 'user' || true}></span>
-		<span class="tree-label">{node.name}</span>
+		{#if node.kind === 'user'}
+			<span class="status-dot active"></span>
+		{:else}
+			<AgentAvatar
+				name={node.name}
+				iconUrl={node.icon_url}
+				stripe={node.icon_stripe}
+				clientLabel={node.mcp_client_label}
+				size={20}
+			/>
+		{/if}
+		<span class="tree-label" title={label.title}>{label.primary}</span>
 		{#if node.id === meIdentityId}
 			<span class="tree-you">(you)</span>
 		{/if}
@@ -1040,7 +1102,8 @@
 					<select name="parent_id" required value={createParentId ?? ''}>
 						<option value="" disabled>Choose a parent…</option>
 						{#each createEligibleParents as p (p.id)}
-							<option value={p.id}>{p.name}{p.id === meIdentityId ? ' (you)' : ''}</option>
+							{@const d = fmt.format(p)}
+							<option value={p.id} title={d.title}>{d.primary}{p.id === meIdentityId ? ' (you)' : ''}</option>
 						{/each}
 					</select>
 				</label>
@@ -1068,7 +1131,7 @@
 		open={detail.deleteModalOpen}
 		title={isUser ? 'Remove user from org?' : 'Delete agent?'}
 		message={isUser
-			? `Remove ${selected.name} from this org? This archives ${totalDescendants > 0 ? `their ${totalDescendants} agent${totalDescendants === 1 ? '' : 's'} and ` : ''}revokes all their API keys, and removes their access to the org.`
+			? `Remove ${selected.email ?? selected.name} from this org? This archives ${totalDescendants > 0 ? `their ${totalDescendants} agent${totalDescendants === 1 ? '' : 's'} and ` : ''}revokes all their API keys, and removes their access to the org.`
 			: totalDescendants > 0
 				? `Delete agent:${selected.name}? This will also delete ${totalDescendants} sub-agent${totalDescendants === 1 ? '' : 's'} and revoke all their API keys.`
 				: `Delete agent:${selected.name}? This cannot be undone.`}
@@ -1465,6 +1528,11 @@
 		flex-direction: column;
 		gap: 6px;
 		flex: 1;
+	}
+	.user-name {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
 	}
 	.field-help {
 		font-size: 12px;

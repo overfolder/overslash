@@ -140,6 +140,50 @@ DB's job. Keep the read-only Metabase key as the backstop regardless (belt +
 suspenders). Wiring point: `crates/overslash-api/src/routes/actions/call.rs`, where
 full `req.params` is already in memory before the ceiling/chain walk.
 
+### Function calls — enforceable, added after the fact (D69)
+
+The list above shipped with one hole written down as a non-guarantee:
+"volatile functions inside a SELECT classify read — function-level policy is
+out of scope, DB grants own it." Delegating to DB grants reads fine and does
+not hold, because the gateway is precisely the layer an org reaches for when
+it *cannot* re-grant the upstream — the Metabase service account is shared,
+and `risk: dynamic` promises Overslash will tell read from write on its
+behalf. Under the D42 rule `SELECT pg_read_file('/etc/passwd')`,
+`SELECT dblink_exec('…','DELETE FROM t')` and
+`SELECT query_to_xml('DELETE FROM t', …)` were all reads that auto-approved
+and executed; the last two are arbitrary write execution through a statement
+the classifier had just certified.
+
+D69 closes it by making the function set part of the verdict, **fail-closed**:
+a `SELECT` stays read only while every function it invokes is on a safe list,
+and a miss both elevates to write and drops `tables_exhaustive`, because a UDF
+body or a `dblink` host reaches relations the `FROM` clause never named.
+
+The list is generated, not curated: every `pg_catalog` function Postgres marks
+IMMUTABLE or STABLE, since Postgres's own contract is that those cannot modify
+the database. That single rule excludes `nextval`, `set_config`,
+`pg_read_file`, `lo_import` and `pg_terminate_backend` without naming any of
+them, and it scales to a namespace `CREATE FUNCTION` extends at runtime — the
+reason a denylist was rejected. Two subtractions and one addition are made by
+hand and each says why in the source: the relation-slurping XML functions
+(STABLE, but they read a relation named at runtime) and `txid_current`
+(STABLE, but it assigns an xid) come out; `pg_sleep` and its
+volatile-but-harmless siblings go in. Per-database `safe_functions` in the
+`sql_databases` config is the escape hatch for PostGIS, `unaccent` and
+in-house UDFs.
+
+The subtle half is the **enumeration**, not the list. `pg_query`'s `nodes()`
+iterator is a hand-written per-variant field list and skips seven positions —
+aggregate `FILTER`, `LIMIT`/`OFFSET`, `VALUES` rows, `DISTINCT ON`, window
+frame `ORDER BY`, `agg_order`, array subscripts — which for D42's table
+enumeration is imprecision and for a screen is a bypass. The walk re-roots at
+each dropped field for precision, and is then *checked* against a count of
+`FuncCall` nodes taken from prost's derived `Debug` rendering of the tree, so
+a call the walk could not reach fails the statement closed instead of passing
+as a read. Operators remain unscreened — an `A_Expr` names an operator, not a
+function, and resolving one to its implementing function needs a catalog the
+classifier does not have.
+
 ## Outcome (2026-07-24)
 
 Everything above shipped in one change rather than the audit-first sequence —
@@ -158,6 +202,6 @@ see **D43** for the deltas discovered during implementation:
   mutation targets mint `table_mut={label}/{relation}` (+ mutation-shaped
   sentinel), so a remembered read grant never authorizes writes and
   asymmetric policies are expressible; `column=`/`column_star=` deny screen,
-  ladder `**` rungs, deny-sweep under the `auto_approve_reads` bypass.
+  ladder `**` rungs, deny-sweep under the `auto_approve_level` bypass.
 - Verified against a live Metabase + Pagila (views, partitioned `payment`,
   CSV export): `make metabase-up` / `make metabase-e2e`.

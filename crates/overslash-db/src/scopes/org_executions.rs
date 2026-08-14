@@ -94,3 +94,83 @@ impl OrgScope {
         crate::repos::execution::mark_viewed(self.db(), self.org_id(), id).await
     }
 }
+
+impl OrgScope {
+    /// Queue a direct async call — one with no approval behind it.
+    pub async fn create_async_execution(
+        &self,
+        input: crate::repos::execution::AsyncExecutionInput<'_>,
+    ) -> Result<ExecutionRow, sqlx::Error> {
+        crate::repos::execution::create_async_direct(self.db(), input).await
+    }
+
+    /// Create the row for a hybrid call, already claimed by this process so no
+    /// worker on another replica can dial it a second time.
+    pub async fn create_hybrid_execution(
+        &self,
+        input: crate::repos::execution::AsyncExecutionInput<'_>,
+        worker_id: &str,
+        lease_ttl_secs: i64,
+    ) -> Result<crate::repos::execution::AsyncClaim, sqlx::Error> {
+        crate::repos::execution::create_hybrid_claimed(self.db(), input, worker_id, lease_ttl_secs)
+            .await
+    }
+
+    /// Hand an approved gated call to the async worker. `None` when the row is
+    /// no longer enqueueable — see `enqueue_from_approval`; the "approval
+    /// predates `replay_payload`" case is what falls back to the inline replay.
+    pub async fn enqueue_approval_execution(
+        &self,
+        approval_id: Uuid,
+        triggered_by: &str,
+        client_ip: Option<&str>,
+        queue_ttl_secs: i64,
+    ) -> Result<Option<ExecutionRow>, sqlx::Error> {
+        crate::repos::execution::enqueue_from_approval(
+            self.db(),
+            self.org_id(),
+            approval_id,
+            triggered_by,
+            client_ip,
+            queue_ttl_secs,
+        )
+        .await
+    }
+
+    /// Request cancellation of an async row. Immediate from `pending`,
+    /// cooperative from `executing`. `None` when already terminal.
+    pub async fn request_execution_cancel(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ExecutionRow>, sqlx::Error> {
+        crate::repos::execution::request_cancel(self.db(), self.org_id(), id).await
+    }
+
+    /// Point read by execution id.
+    pub async fn get_execution(&self, id: Uuid) -> Result<Option<ExecutionRow>, sqlx::Error> {
+        crate::repos::execution::find_by_id(self.db(), self.org_id(), id).await
+    }
+}
+
+impl OrgScope {
+    /// List executions for `identity_id`, or for its whole subtree.
+    pub async fn list_executions_for_identity(
+        &self,
+        identity_id: Uuid,
+        subtree: bool,
+        status: Option<&str>,
+        origin: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ExecutionRow>, sqlx::Error> {
+        crate::repos::execution::list_for_identity(
+            self.db(),
+            self.org_id(),
+            identity_id,
+            subtree,
+            status,
+            origin,
+            limit,
+        )
+        .await
+    }
+}

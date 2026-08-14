@@ -1,86 +1,62 @@
-FROM rust:1.95-trixie AS builder
+# Dependency caching is cargo-chef's job (D54): `prepare` distills the workspace
+# into a recipe of dependencies only, `cook` compiles it into a layer. That
+# replaces the per-crate `COPY Cargo.toml` + `fn main(){}` stub scaffold this
+# file used to hand-maintain — a new crate needs no edit here — and the
+# `find crates/ -exec touch` that existed to defeat the stub fingerprints.
+FROM rust:1.97-trixie AS chef
 
 WORKDIR /app
 
-# Copy workspace manifests first for dependency caching
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY crates/overslash-core/Cargo.toml crates/overslash-core/Cargo.toml
-COPY crates/overslash-db/Cargo.toml crates/overslash-db/Cargo.toml
-COPY crates/overslash-api/Cargo.toml crates/overslash-api/Cargo.toml
-COPY crates/overslash-mcp/Cargo.toml crates/overslash-mcp/Cargo.toml
-COPY crates/overslash-mcp-puppet/Cargo.toml crates/overslash-mcp-puppet/Cargo.toml
-COPY crates/overslash-cli/Cargo.toml crates/overslash-cli/Cargo.toml
-COPY crates/oversla-sh/Cargo.toml crates/oversla-sh/Cargo.toml
-COPY crates/overslash-metrics/Cargo.toml crates/overslash-metrics/Cargo.toml
-COPY crates/overslash-metrics-exporter/Cargo.toml crates/overslash-metrics-exporter/Cargo.toml
-COPY crates/overslash-fakes/Cargo.toml crates/overslash-fakes/Cargo.toml
-COPY tests/mock-target/Cargo.toml tests/mock-target/Cargo.toml
+# pg_query (the `sql_policy` feature, D42) generates its bindings with bindgen,
+# which needs libclang at compile time. Builder stage only: pg_query's build.rs
+# emits `cargo:rustc-link-lib=static=pg_query` and compiles the vendored
+# libpg_query C sources into a static archive, so nothing from clang reaches the
+# runtime stage. CI's sql-policy job installs the same package
+# (.github/workflows/ci.yml).
+RUN apt-get update && apt-get install -y --no-install-recommends libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Create dummy source files to cache dependency compilation
-RUN mkdir -p crates/overslash-core/src \
-    && echo "pub fn _dummy() {}" > crates/overslash-core/src/lib.rs \
-    && mkdir -p crates/overslash-db/src \
-    && echo "pub fn _dummy() {}" > crates/overslash-db/src/lib.rs \
-    && mkdir -p crates/overslash-api/src \
-    && echo "pub fn _dummy() {}" > crates/overslash-api/src/lib.rs \
-    && mkdir -p crates/overslash-mcp/src \
-    && echo "pub fn _dummy() {}" > crates/overslash-mcp/src/lib.rs \
-    && mkdir -p crates/overslash-mcp-puppet/src/bin \
-    && echo "pub fn _dummy() {}" > crates/overslash-mcp-puppet/src/lib.rs \
-    && echo "fn main() {}" > crates/overslash-mcp-puppet/src/bin/overslash-mcp-puppet.rs \
-    && mkdir -p crates/overslash-cli/src \
-    && echo "fn main() {}" > crates/overslash-cli/src/main.rs \
-    && mkdir -p crates/oversla-sh/src \
-    && echo "pub fn _dummy() {}" > crates/oversla-sh/src/lib.rs \
-    && echo "fn main() {}" > crates/oversla-sh/src/main.rs \
-    && mkdir -p crates/overslash-metrics/src \
-    && echo "pub fn _dummy() {}" > crates/overslash-metrics/src/lib.rs \
-    && mkdir -p crates/overslash-metrics-exporter/src \
-    && echo "fn main() {}" > crates/overslash-metrics-exporter/src/main.rs \
-    && mkdir -p crates/overslash-fakes/src/bin \
-    && echo "pub fn _dummy() {}" > crates/overslash-fakes/src/lib.rs \
-    && echo "fn main() {}" > crates/overslash-fakes/src/bin/overslash_fakes.rs \
-    && mkdir -p tests/mock-target/src \
-    && echo "fn main() {}" > tests/mock-target/src/main.rs
+RUN cargo install cargo-chef --locked --version ^0.1
 
-# Build dependencies only (cached layer)
-RUN cargo build --release --package overslash-cli
+# --- Planner: workspace in, dependency recipe out ---
+# This stage re-runs on every source change, but it only reads manifests, so
+# it costs seconds. Its single output — recipe.json — changes only when the
+# dependency graph does, which is what keeps the `cook` layer below cached.
+FROM chef AS planner
 
-# Copy actual source code
-COPY crates/ crates/
-COPY services/ services/
-COPY .sqlx/ .sqlx/
-COPY SKILL.md SKILL.md
-# Release line this build came from — overslash-core's build.rs reads it, since
-# crate versions stay pinned at 0.1.0 (D19). Reports "<version>-dev" by default;
-# a prod build sets OVERSLASH_RELEASE=1 (below) so it reports the clean
-# "<version>". Copied after the dependency-only build above so a release bump
-# doesn't invalidate the cached dependency layer.
-COPY .release-please-manifest.json .release-please-manifest.json
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Touch source files to invalidate the dummy builds
-RUN find crates/ -name "*.rs" -exec touch {} +
+# --- Builder ---
+FROM chef AS builder
+
+COPY --from=planner /app/recipe.json recipe.json
+
+# Dependencies only. Cached as an image layer, so a source-only change reuses
+# it; Cloud Build restores it from the registry cache (infra/modules/cloud-build).
+RUN cargo chef cook --release --package overslash-cli --features sql_policy --recipe-path recipe.json
+
+# Real source. Everything after this line re-runs on any source change — which
+# is why the ARGs below sit here and not above the cook step.
+COPY . .
 
 # Git commit of this build, reported by /health and GET /v1/version. The build
 # context has no .git, so overslash-core's build.rs cannot discover it — Cloud
 # Build passes its $COMMIT_SHA in (infra/modules/cloud-build/main.tf).
-#
-# Declared *here*, after the dependency-only build above: an ARG invalidates
-# every layer that follows it, and the SHA changes on every commit. Placing it
-# earlier would recompile all dependencies (~6 min) on each build.
 ARG OVERSLASH_GIT_SHA=unknown
 ENV OVERSLASH_GIT_SHA=${OVERSLASH_GIT_SHA}
 
 # Set to 1 by the prod Cloud Build trigger only (infra/modules/cloud-build).
 # When set, build.rs emits the clean manifest version instead of "<version>-dev";
-# dev leaves it empty and keeps the "-dev" marker. Declared here, after the
-# dependency-only build, for the same cache reason as OVERSLASH_GIT_SHA above.
+# dev leaves it empty and keeps the "-dev" marker. The release line itself comes
+# from .release-please-manifest.json, since crate versions stay pinned at 0.1.0
+# (D19).
 ARG OVERSLASH_RELEASE=
 ENV OVERSLASH_RELEASE=${OVERSLASH_RELEASE}
 
 # sqlx offline mode: use cached query metadata from .sqlx/ instead of a live DB
 ENV SQLX_OFFLINE=true
-RUN cargo build --release --package overslash-cli
+RUN cargo build --release --package overslash-cli --features sql_policy
 
 # --- Runtime stage ---
 FROM debian:trixie-slim AS runtime

@@ -6,7 +6,9 @@ use crate::description_grammar::find_closing_bracket;
 ///
 /// Supports two forms:
 /// - `{param}` — replaced with the stringified value of `param` from `params`.
-///   Missing params are left as literal `{param}`.
+///   A dotted key (`{query.database}`) descends into nested objects when no
+///   param is named exactly that. Missing params are left as literal
+///   `{param}`.
 /// - `[optional text with {param}]` — the bracketed segment is included only
 ///   when ALL `{param}` placeholders inside have present, non-null values.
 ///   Otherwise the entire segment (including brackets) is removed.
@@ -57,7 +59,7 @@ pub fn interpolate_template(template: &str, params: &HashMap<String, serde_json:
 }
 
 /// Resolve `[...]` optional segments. Flat only — no nesting.
-fn resolve_optional_segments(
+pub(crate) fn resolve_optional_segments(
     template: &str,
     params: &HashMap<String, serde_json::Value>,
 ) -> String {
@@ -93,6 +95,33 @@ fn resolve_optional_segments(
     result
 }
 
+/// Look up a placeholder key in the param map.
+///
+/// An exact flat match wins first, so a param whose name literally contains a
+/// dot keeps resolving to itself. Failing that the key is read as a dotted
+/// path and descended through nested JSON objects — which is what lets a
+/// resolver reach an id nested inside an object-valued body param
+/// (`{query.database}` → `params["query"]["database"]`).
+///
+/// Objects only: no array indices, matching the path grammar
+/// `crate::disclosure::apply_redactions` already uses. A path that doesn't
+/// resolve returns `None`, and every caller renders the placeholder literally
+/// exactly as it did before dotted keys were understood.
+fn lookup<'a>(
+    params: &'a HashMap<String, serde_json::Value>,
+    key: &str,
+) -> Option<&'a serde_json::Value> {
+    if let Some(v) = params.get(key) {
+        return Some(v);
+    }
+    let (head, rest) = key.split_once('.')?;
+    let mut cur = params.get(head)?;
+    for seg in rest.split('.') {
+        cur = cur.as_object()?.get(seg)?;
+    }
+    Some(cur)
+}
+
 /// Check if every `{param}` placeholder in `segment` has a present, non-null value.
 fn all_placeholders_present(segment: &str, params: &HashMap<String, serde_json::Value>) -> bool {
     let mut i = 0;
@@ -102,7 +131,7 @@ fn all_placeholders_present(segment: &str, params: &HashMap<String, serde_json::
         if bytes[i] == b'{' {
             if let Some(close) = segment[i + 1..].find('}') {
                 let key = &segment[i + 1..i + 1 + close];
-                if !key.is_empty() && !is_value_present(params.get(key)) {
+                if !key.is_empty() && !is_value_present(lookup(params, key)) {
                     return false;
                 }
                 i = i + 1 + close + 1;
@@ -123,7 +152,8 @@ fn is_value_present(value: Option<&serde_json::Value>) -> bool {
 }
 
 /// Replace `{param}` placeholders with stringified values.
-/// Missing params are left as literal `{param}`.
+/// Missing params are left as literal `{param}`. Keys resolve through
+/// [`lookup`], so a dotted key reaches into nested objects.
 ///
 /// Substituted values pass through unmodified — long strings are
 /// preserved as-is. This matters for non-display callers like the
@@ -162,14 +192,13 @@ fn substitute_with(
         if bytes[i] == b'{' {
             if let Some(close) = text[i + 1..].find('}') {
                 let key = &text[i + 1..i + 1 + close];
-                if !key.is_empty() {
-                    if let Some(value) = params.get(key) {
-                        if !value.is_null() {
-                            result.push_str(&fmt(value));
-                            i = i + 1 + close + 1;
-                            continue;
-                        }
-                    }
+                if !key.is_empty()
+                    && let Some(value) = lookup(params, key)
+                    && !value.is_null()
+                {
+                    result.push_str(&fmt(value));
+                    i = i + 1 + close + 1;
+                    continue;
                 }
                 // No match — keep literal
                 result.push('{');
@@ -439,6 +468,76 @@ mod tests {
         let out = interpolate_template("Click {url} to confirm", &p);
         assert_eq!(out, format!("Click {body} to confirm"));
         assert!(!out.contains('…'));
+    }
+
+    // --- dotted-path keys ---
+
+    #[test]
+    fn dotted_key_descends_into_nested_object() {
+        // The export_query shape: the id lives inside an object-valued body
+        // param, and the resolver URL has to reach it.
+        let p = params(&[("query", json!({"database": 4, "type": "native"}))]);
+        assert_eq!(
+            substitute_placeholders("/api/database/{query.database}", &p),
+            "/api/database/4"
+        );
+    }
+
+    #[test]
+    fn dotted_key_descends_several_levels() {
+        let p = params(&[("a", json!({"b": {"c": "deep"}}))]);
+        assert_eq!(interpolate_description("{a.b.c}", &p), "deep");
+    }
+
+    #[test]
+    fn exact_key_containing_a_dot_wins_over_descent() {
+        // A param literally named "a.b" must keep resolving to itself rather
+        // than being reinterpreted as a path into "a".
+        let p = params(&[("a.b", json!("flat")), ("a", json!({"b": "nested"}))]);
+        assert_eq!(interpolate_description("{a.b}", &p), "flat");
+    }
+
+    #[test]
+    fn dotted_key_with_missing_head_stays_literal() {
+        let p = params(&[("other", json!({"database": 4}))]);
+        assert_eq!(
+            interpolate_description("{query.database}", &p),
+            "{query.database}"
+        );
+    }
+
+    #[test]
+    fn dotted_key_through_a_non_object_stays_literal() {
+        // Descending into a scalar (or an array — indices are deliberately
+        // not part of the grammar) resolves to nothing.
+        let p = params(&[("q", json!("SELECT 1")), ("arr", json!([{"x": 1}]))]);
+        assert_eq!(interpolate_description("{q.database}", &p), "{q.database}");
+        assert_eq!(interpolate_description("{arr.0.x}", &p), "{arr.0.x}");
+    }
+
+    #[test]
+    fn dotted_key_null_leaf_stays_literal() {
+        let p = params(&[("query", json!({"database": null}))]);
+        assert_eq!(
+            interpolate_description("{query.database}", &p),
+            "{query.database}"
+        );
+    }
+
+    #[test]
+    fn optional_segment_sees_dotted_keys() {
+        // The presence check and the substitution pass must agree, or a
+        // segment would be dropped even though its placeholder resolves.
+        let p = params(&[("query", json!({"database": 4}))]);
+        assert_eq!(
+            interpolate_description("Run SQL[ on database {query.database}]", &p),
+            "Run SQL on database 4"
+        );
+        let p = params(&[("query", json!({"type": "native"}))]);
+        assert_eq!(
+            interpolate_description("Run SQL[ on database {query.database}]", &p),
+            "Run SQL"
+        );
     }
 
     #[test]

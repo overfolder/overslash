@@ -48,15 +48,25 @@ export async function makeSnapper(session, outDir = resolve('screenshots')) {
 
 	/** @param {{ viewport?: ViewportSize, theme?: ColorScheme }} [opts] */
 	async function newPage(opts = {}) {
+		const dark = opts.theme === 'dark';
 		const ctx = await browser.newContext({
-			viewport: opts.viewport ?? { width: 1280, height: 800 }
+			viewport: opts.viewport ?? { width: 1280, height: 800 },
+			// `initialTheme()` in `$lib/stores/shell` falls back to
+			// `prefers-color-scheme` when nothing is stored, so this alone
+			// already produces a dark render. Belt to the braces below.
+			colorScheme: dark ? 'dark' : 'light'
 		});
 		await attachToContext(ctx, session);
 		const page = await ctx.newPage();
-		if (opts.theme === 'dark') {
+		if (dark) {
+			// Seed the *store's* key, not `data-theme`. The theme is a
+			// `persisted` store reading `localStorage.ovs_theme`; it writes
+			// `data-theme` itself on hydration, so setting that attribute here
+			// was silently overwritten a tick later and every "dark" screenshot
+			// in this repo came out light.
 			await page.addInitScript(() => {
 				try {
-					document.documentElement.dataset.theme = 'dark';
+					localStorage.setItem('ovs_theme', JSON.stringify('dark'));
 				} catch {}
 			});
 		}
@@ -88,8 +98,14 @@ export async function makeSnapper(session, outDir = resolve('screenshots')) {
 	async function navigateAndSnap(name, path, opts = {}) {
 		const { ctx, page } = await newPage({ viewport: opts.viewport, theme: opts.theme });
 		const url = path.startsWith('http') ? path : `${session.dashboardUrl}${path}`;
-		await page.goto(url, { waitUntil: 'networkidle' });
+		// NOT `networkidle`: every authenticated page holds an open SSE
+		// connection to /v1/events/stream (added in #504), so the network is
+		// never idle and `goto` times out after 30s. Callers pass `waitFor` to
+		// pin the element that actually matters; the settle below covers the
+		// handful that don't.
+		await page.goto(url, { waitUntil: 'domcontentloaded' });
 		if (opts.waitFor) await opts.waitFor(page);
+		else await page.waitForLoadState('load');
 		const out = await snap(page, name, { fullPage: opts.fullPage });
 		return { ctx, page, out };
 	}

@@ -873,3 +873,282 @@ async fn impersonation_provisioned_user_is_not_revocable_as_an_invite() {
         .unwrap();
     assert_eq!(still_there, 1, "identity must survive the no-op delete");
 }
+
+// ── X-Overslash-As-Name: the display name of the user root ────────────────────
+
+/// Read an identity's name straight from the DB.
+async fn name_of(pool: &PgPool, id: Uuid) -> String {
+    sqlx::query_scalar("SELECT name FROM identities WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Impersonate as `target`, optionally carrying a display name, and return the
+/// (status, parsed body) of `/v1/whoami`.
+async fn whoami_as(
+    base: &str,
+    client: &reqwest::Client,
+    key: &str,
+    target: &str,
+    name: Option<&str>,
+) -> (u16, Value) {
+    let mut req = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {key}"))
+        .header("X-Overslash-As", target);
+    if let Some(name) = name {
+        req = req.header("X-Overslash-As-Name", name);
+    }
+    let resp = req.send().await.unwrap();
+    let status = resp.status().as_u16();
+    (status, resp.json().await.unwrap_or(Value::Null))
+}
+
+/// Without the name header a JIT-provisioned user is labelled from their email
+/// local-part; with it, the org sees the real name. The provenance recorded on
+/// the audit row says which of the two happened.
+#[tokio::test]
+async fn name_header_sets_name_on_jit_created_user() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+
+    let (_, derived) = whoami_as(&base, &client, &imp_key, "derived@example.com", None).await;
+    let derived_id: Uuid = derived["identity_id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(name_of(&pool, derived_id).await, "derived");
+
+    let (_, named) = whoami_as(
+        &base,
+        &client,
+        &imp_key,
+        "alice@example.com",
+        Some("Alice Smith"),
+    )
+    .await;
+    let alice_id: Uuid = named["identity_id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(name_of(&pool, alice_id).await, "Alice Smith");
+
+    // Still an unadopted member — the name changes nothing about admission.
+    let ext_id: Option<String> =
+        sqlx::query_scalar("SELECT external_id FROM identities WHERE id = $1")
+            .bind(alice_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(ext_id.is_none());
+
+    let source: Option<String> = sqlx::query_scalar(
+        "SELECT detail->>'name_source' FROM audit_log
+         WHERE action = 'identity.provisioned' AND resource_id = $1",
+    )
+    .bind(alice_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(source.as_deref(), Some("header"));
+}
+
+/// A member who has never signed in still has an email-derived placeholder for
+/// a name; a later call carrying the real one corrects it, and says so in the
+/// audit log. Re-sending the same name writes nothing — this runs on the auth
+/// path of every request.
+#[tokio::test]
+async fn name_header_renames_unadopted_user_then_stops() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+    let email = "rename-me@example.com";
+
+    let (_, first) = whoami_as(&base, &client, &imp_key, email, None).await;
+    let id: Uuid = first["identity_id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(name_of(&pool, id).await, "rename-me");
+
+    whoami_as(&base, &client, &imp_key, email, Some("Rena Meyer")).await;
+    assert_eq!(name_of(&pool, id).await, "Rena Meyer");
+
+    // Twice more with the same name: the rename must not re-fire.
+    whoami_as(&base, &client, &imp_key, email, Some("Rena Meyer")).await;
+    whoami_as(&base, &client, &imp_key, email, Some("Rena Meyer")).await;
+
+    let renames: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT detail->>'from', detail->>'to' FROM audit_log
+         WHERE action = 'identity.updated' AND resource_id = $1
+           AND detail->>'via' = 'impersonation'",
+    )
+    .bind(id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(renames.len(), 1, "an unchanged name must not write a row");
+    assert_eq!(renames[0].0.as_deref(), Some("rename-me"));
+    assert_eq!(renames[0].1.as_deref(), Some("Rena Meyer"));
+}
+
+/// Once a human has signed in, their identity provider owns their name. A
+/// header from a white-label backend must not fight it.
+#[tokio::test]
+async fn name_header_is_ignored_for_an_adopted_user() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+    let email = "adopted@example.com";
+
+    let (_, first) = whoami_as(&base, &client, &imp_key, email, Some("Provisional")).await;
+    let id: Uuid = first["identity_id"].as_str().unwrap().parse().unwrap();
+
+    // Stand in for a first sign-in.
+    sqlx::query("UPDATE identities SET external_id = 'idp-subject-1' WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, _) = whoami_as(&base, &client, &imp_key, email, Some("Overwritten")).await;
+    assert_eq!(
+        status, 200,
+        "the call still succeeds; only the rename is a no-op"
+    );
+    assert_eq!(name_of(&pool, id).await, "Provisional");
+}
+
+/// An org admin's pre-created row is deliberately out of reach: the guard is
+/// narrower than "unadopted" on purpose.
+#[tokio::test]
+async fn name_header_is_ignored_for_an_org_admin() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+    let email = "admin-invite@example.com";
+
+    let (_, first) = whoami_as(&base, &client, &imp_key, email, Some("Placeholder")).await;
+    let id: Uuid = first["identity_id"].as_str().unwrap().parse().unwrap();
+    sqlx::query("UPDATE identities SET is_org_admin = true WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    whoami_as(&base, &client, &imp_key, email, Some("Renamed By Header")).await;
+    assert_eq!(name_of(&pool, id).await, "Placeholder");
+}
+
+/// The rename is a write to a row this request did not create, so it must not
+/// land until the ACL cap has agreed the caller may act as the target at all.
+#[tokio::test]
+async fn name_header_rename_does_not_outrun_the_acl_cap() {
+    let (base, client, pool, org_id, admin_key, sa_id, target_user_id, _) = setup().await;
+
+    // A pre-created member who outranks the caller: unadopted (so the rename
+    // would otherwise apply) but an admin by group, which the cap sees.
+    let (_, seeded) = whoami_as(
+        &base,
+        &client,
+        &create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await,
+        "high-priv@example.com",
+        None,
+    )
+    .await;
+    let high_priv_id: Uuid = seeded["identity_id"].as_str().unwrap().parse().unwrap();
+    sqlx::query(
+        "INSERT INTO identity_groups (identity_id, group_id)
+         SELECT $1, id FROM groups WHERE org_id = $2 AND system_kind = 'admins'",
+    )
+    .bind(high_priv_id)
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // A low-privilege key aims at them, carrying a name.
+    let low_priv_key =
+        create_impersonation_key(&base, &client, &admin_key, org_id, target_user_id).await;
+    let (status, _) = whoami_as(
+        &base,
+        &client,
+        &low_priv_key,
+        "high-priv@example.com",
+        Some("Should Not Land"),
+    )
+    .await;
+
+    assert_eq!(status, 403);
+    assert_eq!(
+        name_of(&pool, high_priv_id).await,
+        "high-priv",
+        "a refused impersonation must not have renamed its target"
+    );
+}
+
+/// Non-ASCII names arrive in the RFC 8187 form, because a header value is a
+/// byte string and a JS client cannot put `José` in one at all.
+#[tokio::test]
+async fn name_header_accepts_the_rfc8187_form() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+
+    let (status, body) = whoami_as(
+        &base,
+        &client,
+        &imp_key,
+        "jose@example.com",
+        Some("UTF-8''Jos%C3%A9%20%C3%81lvarez"),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let id: Uuid = body["identity_id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(name_of(&pool, id).await, "José Álvarez");
+}
+
+/// A name that cannot be stored as-is is a clean 400, never a truncation and
+/// never a 500.
+#[tokio::test]
+async fn name_header_rejects_unusable_values() {
+    let (base, client, _pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+
+    let too_long = "a".repeat(129);
+    for bad in [
+        "   ",
+        "UTF-8''",
+        "UTF-8''bad%ZZescape",
+        "UTF-8''%FF%FE",
+        "UTF-8''tab%09separated",
+        too_long.as_str(),
+    ] {
+        let (status, _) = whoami_as(&base, &client, &imp_key, "bad@example.com", Some(bad)).await;
+        assert_eq!(status, 400, "value {bad:?} must 400");
+    }
+}
+
+/// The name has no target of its own — it qualifies `X-Overslash-As`. Sent
+/// alone it is a mistake worth surfacing, not a header to ignore.
+#[tokio::test]
+async fn name_header_alone_is_rejected() {
+    let (base, client, _pool, org_id, admin_key, sa_id, _, _) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+
+    let resp = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As-Name", "Alice Smith")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+}
+
+/// A display name means nothing for an agent, whose name is its path segment.
+/// Silently dropping it would let a caller believe a rename happened.
+#[tokio::test]
+async fn name_header_rejects_an_agent_target() {
+    let (base, client, _pool, org_id, admin_key, sa_id, _, target_agent_id) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+
+    let (status, _) = whoami_as(
+        &base,
+        &client,
+        &imp_key,
+        &target_agent_id.to_string(),
+        Some("Not A Person"),
+    )
+    .await;
+    assert_eq!(status, 400);
+}

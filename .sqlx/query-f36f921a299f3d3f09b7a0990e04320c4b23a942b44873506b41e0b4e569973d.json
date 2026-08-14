@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT body_ciphertext FROM call_results LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "body_ciphertext",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "call_results",
+            "name": "body_ciphertext"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f36f921a299f3d3f09b7a0990e04320c4b23a942b44873506b41e0b4e569973d"
+}

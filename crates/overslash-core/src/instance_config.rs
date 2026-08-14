@@ -149,6 +149,9 @@ mod tests {
 
     fn def_with(params: &[(&str, bool)]) -> ServiceDefinition {
         let mut action = ServiceAction {
+            wait_mode: None,
+            handoff_after_ms: None,
+            timeout_ms: None,
             method: "GET".into(),
             path: "/x".into(),
             description: "x".into(),
@@ -165,6 +168,7 @@ mod tests {
             output_schema: None,
             disabled: false,
             request_body: None,
+            download: None,
         };
         for (name, instance_config) in params {
             action
@@ -172,6 +176,7 @@ mod tests {
                 .insert((*name).to_string(), param(*instance_config));
         }
         ServiceDefinition {
+            default_timeout_ms: None,
             config: Vec::new(),
             key: "t".into(),
             display_name: "T".into(),
@@ -179,6 +184,7 @@ mod tests {
             hosts: vec!["api.example.com".into()],
             category: None,
             hidden: false,
+            icon: None,
             auth: vec![],
             secrets: vec![],
             actions: HashMap::from([("a".to_string(), action)]),

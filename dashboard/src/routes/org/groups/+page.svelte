@@ -4,6 +4,7 @@
 	import { page } from '$app/stores';
 	import { ApiError } from '$lib/session';
 	import { groupsApi, identitiesApi, type Group, type Identity } from '$lib/api/groups';
+	import { shortEmail } from '$lib/identityDisplay';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	type Row = Group & { memberCount: number; grantCount: number };
@@ -23,6 +24,7 @@
 	let deleteBusy = $state(false);
 
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 	// Self rows that share an email (rare — same user re-added under different
 	// identities, or two users with the same external email per migration 043).
@@ -38,18 +40,25 @@
 		return new Set(Array.from(seen.entries()).filter(([, n]) => n > 1).map(([e]) => e));
 	});
 
-	function groupLabel(g: Group): string {
-		if (g.system_kind !== 'self') return g.name;
+	/** Label plus a hover title. The label may have the org's single allowed
+	 *  domain stripped off; `title` always carries the full address so nothing
+	 *  is only ever visible in shortened form. */
+	function groupLabel(g: Group): { text: string; title: string | undefined } {
+		if (g.system_kind !== 'self') return { text: g.name, title: undefined };
 		if (g.owner_identity_id && currentUserId && g.owner_identity_id === currentUserId) {
-			return 'Myself';
+			return { text: 'Myself', title: undefined };
 		}
 		const ident = g.owner_identity_id ? identityById.get(g.owner_identity_id) : undefined;
 		const email = ident?.email ?? ident?.name;
-		if (!email) return 'Myself';
-		if (collidingSelfEmails.has(email) && g.owner_identity_id) {
-			return `Myself (${email}, ${g.owner_identity_id.slice(0, 8)})`;
-		}
-		return `Myself (${email})`;
+		if (!email) return { text: 'Myself', title: undefined };
+		// Collision detection keys on the *raw* email — stripping the domain
+		// first would invent collisions between `ada@acme.com` and `ada@other.com`.
+		const shown = ident?.email ? shortEmail(ident.email, allowedDomains) : email;
+		const suffix =
+			collidingSelfEmails.has(email) && g.owner_identity_id
+				? `, ${g.owner_identity_id.slice(0, 8)}`
+				: '';
+		return { text: `Myself (${shown}${suffix})`, title: `Myself (${email}${suffix})` };
 	}
 
 	onMount(load);
@@ -174,9 +183,10 @@
 			</thead>
 			<tbody>
 				{#each rows as g (g.id)}
+					{@const label = groupLabel(g)}
 					<tr>
 						<td>
-							<a href="/org/groups/{g.id}" class="name-link">{groupLabel(g)}</a>
+							<a href="/org/groups/{g.id}" class="name-link" title={label.title}>{label.text}</a>
 						</td>
 						<td class="muted">{g.description || '—'}</td>
 						<td class="num">{g.memberCount}</td>

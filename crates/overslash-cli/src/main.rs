@@ -89,12 +89,37 @@ enum Command {
     /// that marks the output as read, so it stops showing up in
     /// `overslash inbox`.
     ///
+    /// A gated call made with `execution: "async"` runs on the worker once it
+    /// is triggered, so it stays "in flight" for a while: poll with
+    /// `until overslash get-result "$id"; do sleep 2; done`.
+    ///
     /// Exit code: 0 = executed, 1 = failed/cancelled/expired or still in
     /// flight, 2 = error.
     #[command(name = "get-result")]
     GetResult {
         /// Approval UUID whose execution result to fetch.
         approval_id: String,
+        /// Profile name (reads `~/.config/overslash/mcp.<profile>.json`).
+        #[arg(long)]
+        profile: Option<String>,
+        /// Override the config path entirely.
+        #[arg(long, env = "OVERSLASH_MCP_CONFIG")]
+        config: Option<std::path::PathBuf>,
+    },
+    /// Fetch the outcome of an async action call.
+    ///
+    /// The id comes from the `execution_id` field of an
+    /// `{"status":"accepted"}` response to a call made with
+    /// `execution: "async"`. Reading it is also what marks the output as read.
+    ///
+    /// Exit code: 0 = executed, 1 = failed/cancelled/expired or still in
+    /// flight, 2 = error. `pending` and `executing` are deliberately non-zero
+    /// so `until overslash get-execution "$id"; do sleep 2; done` terminates
+    /// on success and only on success.
+    #[command(name = "get-execution")]
+    GetExecution {
+        /// Execution UUID whose outcome to fetch.
+        execution_id: String,
         /// Profile name (reads `~/.config/overslash/mcp.<profile>.json`).
         #[arg(long)]
         profile: Option<String>,
@@ -285,6 +310,15 @@ async fn main() -> anyhow::Result<()> {
             common::bootstrap_cli();
             let path = mcp::resolve_config_path(profile, config)?;
             inbox::get_result(path, approval_id).await
+        }
+        Command::GetExecution {
+            execution_id,
+            profile,
+            config,
+        } => {
+            common::bootstrap_cli();
+            let path = mcp::resolve_config_path(profile, config)?;
+            inbox::get_execution(path, execution_id).await
         }
         Command::Mcp {
             command,

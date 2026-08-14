@@ -43,6 +43,10 @@
 	const isPending = $derived(ctrl.isPending);
 	const execution = $derived(ctrl.execution);
 	const executionPending = $derived(ctrl.executionPending);
+	/** Queued on the async worker — `pending`, but there is nothing to trigger. */
+	const executionQueued = $derived(ctrl.executionQueued);
+	/** The gated call asked for `execution: "async"` — true before it is approved. */
+	const willRunInBackground = $derived(ctrl.willRunInBackground);
 
 	const submitting = $derived(ctrl.submitting);
 	const error = $derived(ctrl.error);
@@ -186,6 +190,13 @@
 			<div class="aq-when">
 				<span class="req">{rel(current.created_at)}</span>
 			</div>
+			<!-- Approving this does not produce a result here: it hands the call to
+			     the worker. Worth one word to the reviewer *before* they decide. -->
+			{#if willRunInBackground}
+				<span class="exec-pill exec-pill--neutral" title="Runs in the background once approved"
+					>background</span
+				>
+			{/if}
 			<RiskBadge risk={current.risk} />
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div class="aq-actions" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
@@ -217,7 +228,9 @@
 		{:else}
 			<div class="exec-status">
 				{#if executionState === 'pending'}
-					<span class="exec-pill exec-pill--pending">awaiting call</span>
+					<span class="exec-pill exec-pill--pending"
+						>{executionQueued ? 'queued' : 'awaiting call'}</span
+					>
 				{:else if executionState === 'executed'}
 					<span class="exec-pill exec-pill--executed">called</span>
 					{#if execution?.http_status_code != null}
@@ -236,9 +249,13 @@
 			{#if executionPending}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div class="aq-actions" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-					<button class="ovs-btn ovs-btn-primary sm" disabled={submitting} onclick={call}>
-						{submitting ? 'Calling…' : 'Call now'}
-					</button>
+					<!-- A queued row belongs to the worker: offering "Call now" would
+					     hand the user a button whose only outcome is a 409. -->
+					{#if !executionQueued}
+						<button class="ovs-btn ovs-btn-primary sm" disabled={submitting} onclick={call}>
+							{submitting ? 'Calling…' : 'Call now'}
+						</button>
+					{/if}
 					<button class="ovs-btn ovs-btn-secondary sm" disabled={submitting} onclick={cancel}>
 						Cancel
 					</button>

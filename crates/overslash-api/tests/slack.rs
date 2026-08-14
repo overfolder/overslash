@@ -156,6 +156,7 @@ async fn seed_slack_connection(
             token_expires_at: Some(future),
             scopes: None,
             account_email: None,
+            account_picture: None,
             byoc_credential_id: Some(byoc.id),
         })
         .await

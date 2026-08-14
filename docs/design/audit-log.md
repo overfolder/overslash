@@ -19,7 +19,9 @@ Overslash had an audit_log table and basic infrastructure (migration 007) but on
 - Real-time webhook dispatch for audit events (deferred)
 - Audit log retention/archival policies
 - Dashboard UI for browsing audit entries
-- Composite indexes for filtered queries (premature; add when needed)
+- ~~Composite indexes for filtered queries (premature; add when needed)~~ —
+  retired by migration 110. "When needed" arrived; see § "Index behaviour under
+  load" for the measurement that justified them.
 
 ## Design
 
@@ -166,6 +168,95 @@ create_pull:
     number: { from: response, path: number }
     title: { from: response, path: title }
 ```
+
+## Index behaviour under load (measured 2026-08-11)
+
+Reproduce with `scripts/bench_audit_query.sh` — it seeds 500k synthetic rows
+(400k in the queried org, 100k in a second org as noise) and `EXPLAIN ANALYZE`s
+every shape below. Both columns were taken on the same machine against
+identically-sized tables; run the "before" column by pointing `MIGRATIONS` at a
+migration set without 110.
+
+| Query | before (`LIMIT 50`) | after (migration 110) |
+|---|---|---|
+| No filters, first page | 0.24 ms | 0.12 ms |
+| `q` = one common term | 0.56 ms | 0.28 ms |
+| `q` = two common terms | 0.55 ms | 0.38 ms |
+| `action =` matching 1 row in 4 (dense) | 0.22 ms | 0.27 ms |
+| **`action =` matching 1 row in 5000 (sparse)** | **48.8 ms** | **0.62 ms** |
+| `resource_type =` matching 1 row in 4 | 0.23 ms | 0.28 ms |
+| `ip_address =` matching 1 row in 250 | 3.2 ms | 5.8 ms |
+| **`q` matching nothing** | **1584 ms** | **0.28 ms** |
+| No filters, `OFFSET 5000` | 7.8 ms | 2.8 ms |
+| Keyset cursor at the same depth | — | 0.14 ms |
+| Insert 10k rows, one session | ~350 ms | ~640 ms |
+
+### What the original measurement established
+
+1. **`idx_audit_log_org (org_id, created_at DESC)` drove every query.** It
+   satisfied the org predicate *and* the `ORDER BY created_at DESC LIMIT n`, so
+   an unfiltered page touched five buffers. Pairing the org column with the sort
+   column is what makes that work — any new index on this table intended for the
+   dashboard's query shape must end in `created_at DESC` for the same reason.
+   Migration 110 widens it to `(org_id, created_at DESC, id DESC)` rather than
+   adding an index beside it, so the keyset cursor's total order is served
+   without a sort node.
+
+2. **Every other predicate was a post-index filter, and cost scaled with how
+   many rows had to be walked before `LIMIT` was satisfied.** Dense filters were
+   free; a filter matching nothing walked the org's entire history.
+
+3. **`idx_audit_log_tags` (GIN) was not used by this query.** The planner
+   prefers the ordered index because it can stop at `LIMIT 50`, where a bitmap
+   scan would have to sort the whole match set first.
+
+### What migration 110 changed, and why the cliff needed two fixes
+
+The 2553 ms no-match case was **not** primarily a missing-index problem. Roughly
+two thirds of it was the per-row `identities` join: the plan was a nested loop
+over 400k candidate rows, and materializing the actor name (D59) removed it
+outright. That alone took the case to ~500 ms.
+
+The rest needed the trigram index, and getting the planner to use it took a
+second change. A `pg_trgm` GIN index cannot serve the multi-term free-text
+clause #533 introduced: the pattern is a correlated column of `unnest`, so the
+clause is an anti-join subplan evaluated per row, not an indexable predicate.
+The query therefore carries **one redundant conjunct** over a single parameter —
+the longest term of three characters or more, matched against
+`action || ' ' || description || ' ' || actor_name`, the exact expression
+`idx_audit_log_search_trgm` is built on. It is sound because it is a *superset*
+of the real predicate: any row matching one column matches the concatenation, so
+it can only admit extra rows, which the `NOT EXISTS` then rejects. Terms shorter
+than three characters have no trigram to look up and keep the sequential filter.
+
+Composite indexes are now justified rather than assumed: a **sparse** `action =`
+went from 48.8 ms to 0.62 ms. A *dense* one did not need them and is marginally
+slower through the composite (0.22 → 0.27 ms), which is the honest shape of that
+trade.
+
+### Costs this bought
+
+- **Writes are ~1.8× slower**: ~35 µs → ~64 µs per row on a 500k-row table.
+  Attributed by dropping indexes one at a time: the trigram GIN is ~27 µs/row of
+  it and the two composites ~5 µs/row. `audit_log` is the hottest insert path in
+  the system, so this is the number to watch; it is the price of the 5600× read
+  win on the case that was timing out.
+- **The row is wider by two names**, so filters that still walk the ordered index
+  touch more heap pages: `ip_address =` went 3.2 → 5.8 ms. Reproducible across
+  runs, not noise. If IP filtering ever matters at scale, it takes the same
+  composite shape as `action`.
+- Two indexes were dropped in the same migration, which gives some of the write
+  cost back: the tags GIN above, and `idx_audit_log_impersonated_by`, which was
+  dead — `impersonated_by_identity_id` appears only in `SELECT` lists and
+  `INSERT`s, never in a `WHERE`, anywhere in the tree.
+
+`OFFSET` remains linear and is still accepted by the API, but the dashboard now
+pages with `before` / `before_id`. `id` is in the cursor because rows written in
+one transaction share `now()`; without a tiebreaker the boundary between pages
+silently skips or repeats them.
+
+Caveat: synthetic uniform data. The plan *shapes* are the durable result; the
+millisecond figures are directional.
 
 ## Alternatives considered
 

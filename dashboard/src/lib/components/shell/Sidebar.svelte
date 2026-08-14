@@ -2,11 +2,19 @@
 	import { page } from '$app/stores';
 	import { sidebarCollapsed } from '$lib/stores/shell';
 	import { viewport } from '$lib/stores/viewport';
-	import { NAV_ITEMS, ADMIN_NAV_ITEMS, SETTINGS_NAV_ITEM, pickActiveHref } from './nav-items';
+	import {
+		NAV_ITEMS,
+		ADMIN_NAV_ITEMS,
+		LIVE_MAP_NAV_ITEM,
+		SETTINGS_NAV_ITEM,
+		pickActiveHref
+	} from './nav-items';
 	import Logo from './Logo.svelte';
 	import NavItem from './NavItem.svelte';
 	import OrgSwitcher from './OrgSwitcher.svelte';
+	import PendingInvites from './PendingInvites.svelte';
 	import CreateOrgModal from '$lib/components/CreateOrgModal.svelte';
+	import type { PendingInvitation } from '$lib/api/account';
 	import type { MembershipSummary } from '$lib/session';
 	import type { BuildInfo } from '$lib/types';
 	import { buildLabel, buildTitle, hasCommit } from '$lib/api/version';
@@ -15,6 +23,7 @@
 		isAdmin = false,
 		isInstanceAdmin = false,
 		memberships = [],
+		invitations = [],
 		currentOrgId = '',
 		mobileOpen = false,
 		onCloseMobile = () => {},
@@ -23,6 +32,8 @@
 		isAdmin?: boolean;
 		isInstanceAdmin?: boolean;
 		memberships?: MembershipSummary[];
+		/** Orgs that invited this user but which they haven't joined yet. */
+		invitations?: PendingInvitation[];
 		currentOrgId?: string;
 		mobileOpen?: boolean;
 		onCloseMobile?: () => void;
@@ -44,14 +55,22 @@
 	);
 	const isMobile = $derived($viewport === 'mobile');
 
+	// The Live Map only exists on a build that emits `action.*` events, and
+	// that answer arrives with `/v1/version` rather than with the page. The
+	// item therefore appears a beat after first paint — acceptable for a
+	// dev-only view, and cheaper than blocking nav on a fetch.
+	const liveMap = $derived(buildInfo?.live_map === true);
+
 	// `/org` (Settings) is a prefix of `/org/groups` (Groups), so per-item
 	// isActive() lights up both. Pick the longest match across every visible
 	// item once and pass it down to NavItem so only one is highlighted.
 	const allItems = $derived([
 		...NAV_ITEMS,
+		...(liveMap ? [LIVE_MAP_NAV_ITEM] : []),
 		...(isAdmin ? ADMIN_NAV_ITEMS : []),
 		...(isAdmin ? [SETTINGS_NAV_ITEM] : [])
 	]);
+
 	const activeHref = $derived(pickActiveHref($page.url.pathname, allItems));
 
 	let createOrgOpen = $state(false);
@@ -116,6 +135,16 @@
 			/>
 		{/each}
 
+		{#if liveMap}
+			<NavItem
+				href={LIVE_MAP_NAV_ITEM.href}
+				label={LIVE_MAP_NAV_ITEM.label}
+				icon={LIVE_MAP_NAV_ITEM.icon}
+				{collapsed}
+				{activeHref}
+			/>
+		{/if}
+
 		{#if isAdmin}
 			{#if !collapsed}<div class="section-label">ADMIN</div>{:else}<div class="divider"></div>{/if}
 			{#each ADMIN_NAV_ITEMS as item (item.href)}
@@ -131,6 +160,7 @@
 	</nav>
 
 	<div class="footer">
+		<PendingInvites {invitations} {collapsed} />
 		{#if memberships.length > 0 && currentOrgId}
 			<OrgSwitcher {memberships} {currentOrgId} {collapsed} />
 		{/if}
