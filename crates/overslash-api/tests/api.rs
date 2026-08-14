@@ -148,6 +148,7 @@ mod templates_import;
 mod trial;
 mod upstream_metrics;
 mod version;
+mod wait_mode;
 mod webhook_digest;
 mod welcome_unsubscribe;
 mod whatsapp;

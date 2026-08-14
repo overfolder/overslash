@@ -12,7 +12,7 @@ use crate::types::{
 use super::super::ext::{self, Ext, Pos};
 use super::{
     parse_aliases, parse_disclose, parse_download, parse_instance_config, parse_redact,
-    parse_resolver, parse_scope_params, parse_sql_policy, parse_timeout_ms,
+    parse_resolver, parse_scope_params, parse_sql_policy, parse_timeout_ms, parse_wait_mode,
 };
 
 // ── x-overslash-mcp → McpSpec + ServiceActions ───────────────────────
@@ -328,6 +328,18 @@ fn lower_mcp_tool(
         &base,
         errors,
     );
+    let wait_mode = parse_wait_mode(
+        ext::get(obj, Pos::McpTool, Ext::WaitMode),
+        Ext::WaitMode.key(),
+        &base,
+        errors,
+    );
+    let handoff_after_ms = parse_timeout_ms(
+        ext::get(obj, Pos::McpTool, Ext::HandoffAfterMs),
+        Ext::HandoffAfterMs.key(),
+        &base,
+        errors,
+    );
 
     // The upstream MCP tool name defaults to the action key, but may be
     // overridden with `mcp_tool` when the server's tool name isn't a valid
@@ -345,6 +357,8 @@ fn lower_mcp_tool(
         description,
         risk,
         timeout_ms,
+        wait_mode,
+        handoff_after_ms,
         params,
         scope_param,
         disclose,

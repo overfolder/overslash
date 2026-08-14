@@ -14,10 +14,12 @@
 //! - this module — `servers[].url` → `hosts`, plus the `x-overslash-*`
 //!   readers that more than one of the groups above needs.
 
+use std::str::FromStr;
+
 use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
-use crate::types::{DisclosureField, DownloadAuth, DownloadSpec, ScopeParams};
+use crate::types::{DisclosureField, DownloadAuth, DownloadSpec, ExecutionMode, ScopeParams};
 
 use super::ext::{self, Ext, Pos};
 
@@ -249,6 +251,34 @@ pub(in crate::openapi) fn parse_timeout_ms(
             issues.push(ValidationIssue::new(
                 "invalid_timeout",
                 format!("{key} must be a positive integer number of milliseconds"),
+                format!("{base}.{key}"),
+            ));
+            None
+        }
+    }
+}
+
+/// `x-overslash-wait-mode` → [`ExecutionMode`].
+///
+/// Shaped like [`parse_timeout_ms`] deliberately: an unrecognized value is a
+/// [`ValidationIssue`] and `None`, never a hard error. A template whose mode is
+/// misspelled falls back to synchronous — the historical behaviour — rather
+/// than removing the action, which is the same lenient direction D67 chose for
+/// the extension lint and for the same reason: a stray key must not be able to
+/// take a service down.
+pub(in crate::openapi) fn parse_wait_mode(
+    v: Option<&Value>,
+    key: &str,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<ExecutionMode> {
+    let v = v?;
+    match v.as_str().and_then(|s| ExecutionMode::from_str(s).ok()) {
+        Some(mode) => Some(mode),
+        None => {
+            issues.push(ValidationIssue::new(
+                "invalid_wait_mode",
+                format!("{key} must be one of \"sync\", \"async\", \"hybrid\""),
                 format!("{base}.{key}"),
             ));
             None

@@ -112,6 +112,26 @@ pub fn record_hybrid_handoff_seconds(elapsed: Duration) {
     histogram!("overslash_hybrid_handoff_seconds").record(elapsed.as_secs_f64());
 }
 
+/// An action's `x-overslash-wait-mode` was dropped and the call ran
+/// synchronously instead.
+///
+/// The one path where a template says one thing and the gateway does another
+/// without telling the caller, which is exactly why it is counted. A rising
+/// series here means a template is declaring a mode it can never get — the
+/// author's own mistake, invisible to them by construction, since every
+/// affected call still returns 200.
+///
+/// Deliberately unlabelled by template: `reason` is a closed set of six, while
+/// a template dimension would grow with the catalog on a series that should
+/// normally sit at zero.
+pub fn record_wait_mode_demotion(reason: &'static str) {
+    counter!(
+        "overslash_wait_mode_demoted_total",
+        "reason" => reason,
+    )
+    .increment(1);
+}
+
 /// Map a numeric HTTP status to its class label (`"2xx"`, `"4xx"`, etc).
 pub fn status_class(code: u16) -> &'static str {
     match code {

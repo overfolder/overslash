@@ -157,61 +157,11 @@ impl Delivery {
 
 /// Whether the caller waits on this connection for the upstream.
 ///
-/// Named `execution` rather than `async` because `async` is a Rust keyword and
-/// a reserved word in JS/TS, so the field would be unnameable in generated
-/// clients and awkward in every mirror type.
-///
-/// `Sync` is the historical behaviour: the response carries the upstream body,
-/// bounded by the deployment's request cap. `Async` accepts the call, persists
-/// it, and hands back an execution id to poll — the only way a call can outlive
-/// the caller's connection. See DECISIONS D62.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum ExecutionMode {
-    #[default]
-    Sync,
-    Async,
-    /// Starts like `Sync` and finishes like `Async`: the job runs off the
-    /// connection from the first byte, and the connection waits on it for
-    /// `handoff_after_ms`. Beat the window and the caller gets the ordinary
-    /// `Called` envelope; miss it and the caller gets `Accepted` and polls.
-    ///
-    /// Both shapes are predictable from the request alone, which is the bar
-    /// D56 set when it refused to *auto*-promote an over-ceiling call: the
-    /// surprise it ruled out was a response shape that changed based on a
-    /// number in a template the caller never saw. See DECISIONS D68.
-    Hybrid,
-}
-
-impl ExecutionMode {
-    pub(super) fn is_async(self) -> bool {
-        matches!(self, ExecutionMode::Async)
-    }
-
-    pub(super) fn is_hybrid(self) -> bool {
-        matches!(self, ExecutionMode::Hybrid)
-    }
-
-    /// Runs off the caller's connection — always (`Async`) or possibly
-    /// (`Hybrid`).
-    ///
-    /// Every refusal in [`super::flags`] keys off this rather than on the
-    /// variant, so the two deferred modes cannot drift into different answers
-    /// for the same flag combination.
-    pub(super) fn is_deferred(self) -> bool {
-        !matches!(self, ExecutionMode::Sync)
-    }
-
-    /// Wire spelling, for error text that has to name the mode the caller
-    /// actually asked for.
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            ExecutionMode::Sync => "sync",
-            ExecutionMode::Async => "async",
-            ExecutionMode::Hybrid => "hybrid",
-        }
-    }
-}
+/// Re-exported from `overslash-core` rather than defined here: an action
+/// template can now name a mode of its own (`x-overslash-wait-mode`), so the
+/// template compiler needs the type too, and one enum is what keeps the
+/// request spelling and the template spelling from drifting.
+pub(super) use overslash_core::types::service::ExecutionMode;
 
 #[derive(Serialize)]
 #[serde(tag = "status")]
@@ -329,6 +279,19 @@ pub(super) enum CallResponse {
         timeout_ms: u64,
         /// Server-suggested delay before the first poll, in milliseconds.
         poll_after_ms: u64,
+        /// Which rung of the wait-mode cascade chose this mode — present only
+        /// when it was *not* the request.
+        ///
+        /// Absent on every call whose caller named `execution`, which is why
+        /// it is skipped rather than always `"per_call"`: a caller that asked
+        /// for async does not need telling where async came from. It is here
+        /// for the other case, the one this field exists for — a 202 answering
+        /// a request that never mentioned a mode. Without it an agent has no
+        /// way to tell "this action defers by declaration" from "something
+        /// odd happened once", and would have to guess whether to expect the
+        /// same shape next time.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        execution_mode_source: Option<&'static str>,
     },
 }
 
@@ -355,6 +318,18 @@ pub(super) struct ResolvedMeta {
     pub(super) action_timeout_ms: Option<u64>,
     /// `info.x-overslash-default_timeout_ms` on the resolved service, post-fold.
     pub(super) service_timeout_ms: Option<u64>,
+    /// `x-overslash-wait-mode` on the resolved action — rung 2 of the
+    /// [`wait_mode`](crate::services::wait_mode) cascade, and the only rung
+    /// below the request.
+    ///
+    /// `None` for verb / `http` shapes, exactly like `action_timeout_ms`:
+    /// there is no action template to have an opinion, so those shapes are
+    /// synchronous unless the caller says otherwise.
+    pub(super) action_wait_mode: Option<overslash_core::types::service::ExecutionMode>,
+    /// `x-overslash-handoff_after_ms` on the resolved action. Read only when
+    /// the resolved mode is hybrid, and clamped rather than refused — see
+    /// [`crate::services::hybrid::resolve_handoff`].
+    pub(super) action_handoff_after_ms: Option<u64>,
     /// `x-overslash-download` from the action template. MCP actions only —
     /// it's how a tool result says "the bytes are over there". HTTP actions
     /// are their own download and leave this `None`.

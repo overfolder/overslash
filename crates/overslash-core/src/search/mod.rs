@@ -204,6 +204,8 @@ mod tests {
 
     fn mk_action(desc: &str, risk: Risk) -> ServiceAction {
         ServiceAction {
+            wait_mode: None,
+            handoff_after_ms: None,
             timeout_ms: None,
             method: "POST".into(),
             path: "/x".into(),

@@ -34,8 +34,8 @@ pub(super) const ROOT_ALIASES: &[Alias] = &[
 ];
 
 /// MCP tool-level aliases. Tools are shaped like operations, so the same
-/// `risk:` / `scope_param:` / `disclose:` / `redact:` unprefixed forms
-/// apply. Other tool fields (`name`, `description`, `input_schema`,
+/// `risk:` / `scope_param:` / `disclose:` / `redact:` / `wait-mode:`
+/// unprefixed forms apply. Other tool fields (`name`, `description`, `input_schema`,
 /// `output_schema`, `disabled`) are plain JSON and not rewritten.
 pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
     Alias {
@@ -61,6 +61,14 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
     Alias {
         alias: "timeout_ms",
         canonical: "x-overslash-timeout_ms",
+    },
+    Alias {
+        alias: "wait-mode",
+        canonical: "x-overslash-wait-mode",
+    },
+    Alias {
+        alias: "handoff_after_ms",
+        canonical: "x-overslash-handoff_after_ms",
     },
 ];
 
@@ -107,6 +115,14 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
     Alias {
         alias: "timeout_ms",
         canonical: "x-overslash-timeout_ms",
+    },
+    Alias {
+        alias: "wait-mode",
+        canonical: "x-overslash-wait-mode",
+    },
+    Alias {
+        alias: "handoff_after_ms",
+        canonical: "x-overslash-handoff_after_ms",
     },
 ];
 

@@ -69,6 +69,11 @@ pub(super) async fn start(
     call_tags: &[String],
     ip: Option<&str>,
     upstream_tpl: &str,
+    // Which rung of the wait-mode cascade produced `hybrid` — `None` when the
+    // caller named it. Rides through the saturation fall-through too, so a
+    // call answered on the async queue still reports where its mode came from
+    // rather than looking caller-driven.
+    mode_source: Option<&'static str>,
 ) -> Result<Response> {
     // Saturated: fall through to the ordinary async queue rather than queueing
     // on the semaphore. The caller gets the same `accepted` envelope it would
@@ -92,6 +97,7 @@ pub(super) async fn start(
             call_tags,
             ip,
             upstream_tpl,
+            mode_source,
         )
         .await;
     };
@@ -237,6 +243,7 @@ pub(super) async fn start(
                             "action": req.action,
                             "timeout_ms": call_timeout.ms(),
                             "execution_mode": "hybrid",
+                            "execution_mode_source": mode_source,
                             "handed_off_after_ms": handoff.as_millis() as u64,
                         }),
                         description: meta.description.as_deref(),
@@ -257,6 +264,7 @@ pub(super) async fn start(
                     expires_at: crate::routes::util::fmt_time(expires_at),
                     timeout_ms: call_timeout.ms(),
                     poll_after_ms: crate::routes::approvals::POLL_AFTER_MS,
+                    execution_mode_source: mode_source,
                 }),
             )
                 .into_response())

@@ -220,6 +220,15 @@ pub(crate) struct ActionSummary {
     /// Missing-scope delta when `scope_coverage == needs_reconnect`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) missing_scopes: Vec<String>,
+    /// `x-overslash-wait-mode` — the execution mode a call to this action
+    /// defaults to when the caller names none.
+    ///
+    /// Absent for the overwhelming majority, which is the point: it is here so
+    /// the handful of actions that answer `accepted` to a request that never
+    /// asked for it are legible *before* someone calls one and wonders why.
+    /// The response-shape consequence is invisible in every other listing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) wait_mode: Option<overslash_core::types::service::ExecutionMode>,
 }
 
 /// Full action details including the parameter schema — used by the API

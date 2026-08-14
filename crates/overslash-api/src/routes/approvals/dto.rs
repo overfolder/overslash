@@ -117,6 +117,8 @@ mod risk_tests {
         actions.insert(
             action.into(),
             ServiceAction {
+                wait_mode: None,
+                handoff_after_ms: None,
                 timeout_ms: None,
                 method: "GET".into(),
                 path: "/".into(),

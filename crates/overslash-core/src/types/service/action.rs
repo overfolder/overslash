@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+use super::execution::ExecutionMode;
 use super::risk::DeclaredRisk;
 use super::scope::ScopeParams;
 
@@ -54,6 +55,39 @@ pub struct ServiceAction {
     /// reads it there is no separate "org per-action" layer left to consult.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// `x-overslash-wait-mode`: the execution mode a call to this action falls
+    /// back to when the caller names no `execution` of its own.
+    ///
+    /// A *default*, not a cap, and the same shape as
+    /// [`timeout_ms`](Self::timeout_ms) one field up: the template author is
+    /// the one party who knows this upstream takes four minutes, and before
+    /// this there was no way to say so — the caller who did not know either
+    /// simply rode into a 504 at the synchronous ceiling.
+    ///
+    /// Weaker than `timeout_ms` in one direction on purpose. A conflicting
+    /// request flag (`prefer_stream`, `deliver: "url"`, `return_url`) or a
+    /// template that cannot defer at all (`runtime: platform`, a binary
+    /// response) **demotes this to sync silently** rather than refusing the
+    /// call. The caller who names `execution` explicitly still gets the 400:
+    /// that caller is present and can act on it, while a mistyped template
+    /// value that 400s every call in the org is strictly worse than one that
+    /// quietly runs synchronously — D56's asymmetry, applied to a mode
+    /// instead of a number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_mode: Option<ExecutionMode>,
+    /// `x-overslash-handoff_after_ms`: how long a *hybrid* call to this action
+    /// holds the connection before answering 202.
+    ///
+    /// Clamped to the deployment maximum and to the call's own budget, never
+    /// refused — this is a template default, and the same reasoning as
+    /// [`wait_mode`](Self::wait_mode) applies. Only a caller-supplied
+    /// `handoff_after_ms` out of range is a 400.
+    ///
+    /// Meaningful only when the resolved mode is hybrid. Under any other mode
+    /// it is inert rather than an error, because the resolved mode depends on
+    /// the request and a template cannot know it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_after_ms: Option<u64>,
     #[serde(default)]
     pub params: HashMap<String, ActionParam>,
     /// Which params provide the `{arg}` segment in permission keys, and under

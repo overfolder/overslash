@@ -116,6 +116,8 @@ mod tests {
                 m.insert(
                     "list".into(),
                     ServiceAction {
+                        wait_mode: None,
+                        handoff_after_ms: None,
                         timeout_ms: None,
                         method: "GET".into(),
                         path: "/items".into(),
@@ -190,6 +192,8 @@ mod tests {
         actions.insert(
             "search".into(),
             ServiceAction {
+                wait_mode: None,
+                handoff_after_ms: None,
                 timeout_ms: None,
                 method: String::new(),
                 path: String::new(),

@@ -420,6 +420,8 @@ mod tests {
         actions.insert(
             "search_issues".into(),
             ServiceAction {
+                wait_mode: None,
+                handoff_after_ms: None,
                 timeout_ms: None,
                 method: "".into(),
                 path: "".into(),
@@ -486,6 +488,8 @@ mod tests {
     #[test]
     fn service_action_disabled_elided_when_false() {
         let a = ServiceAction {
+            wait_mode: None,
+            handoff_after_ms: None,
             timeout_ms: None,
             method: "GET".into(),
             path: "/foo".into(),

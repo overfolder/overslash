@@ -11,7 +11,7 @@ use super::super::ext::{self, Ext, Pos};
 use super::params::{collect_body_parameters, collect_parameters, parse_request_body};
 use super::{
     parse_aliases, parse_disclose, parse_instance_config, parse_redact, parse_scope_params,
-    parse_sql_policy, parse_timeout_ms,
+    parse_sql_policy, parse_timeout_ms, parse_wait_mode,
 };
 
 // ── paths.*.* → ServiceAction ────────────────────────────────────────
@@ -152,6 +152,18 @@ pub(crate) fn extract_http_action(
         &base,
         &mut disclose_errors,
     );
+    let wait_mode = parse_wait_mode(
+        ext::get(op, Pos::Operation, Ext::WaitMode),
+        Ext::WaitMode.key(),
+        &base,
+        &mut disclose_errors,
+    );
+    let handoff_after_ms = parse_timeout_ms(
+        ext::get(op, Pos::Operation, Ext::HandoffAfterMs),
+        Ext::HandoffAfterMs.key(),
+        &base,
+        &mut disclose_errors,
+    );
     if !disclose_errors.is_empty() {
         return Err(disclose_errors);
     }
@@ -166,6 +178,8 @@ pub(crate) fn extract_http_action(
             risk,
             response_type,
             timeout_ms,
+            wait_mode,
+            handoff_after_ms,
             params,
             scope_param,
             required_scopes,

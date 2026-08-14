@@ -246,6 +246,7 @@ fn actions_from_definition_inner(
                 disabled: a.disabled,
                 scope_coverage,
                 missing_scopes,
+                wait_mode: a.wait_mode,
             }
         })
         .collect();

@@ -168,6 +168,8 @@ mod test_fixtures {
             map.insert(
                 key.to_string(),
                 ServiceAction {
+                    wait_mode: None,
+                    handoff_after_ms: None,
                     timeout_ms: None,
                     method: "GET".into(),
                     path: "/".into(),

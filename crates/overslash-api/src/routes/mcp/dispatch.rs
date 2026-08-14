@@ -204,10 +204,25 @@ fn insert_filter(body: &mut serde_json::Map<String, Value>, args: &Value) {
 /// Forward the caller's `execution` mode, when they set one.
 ///
 /// Absent stays absent rather than defaulting to `"sync"`: the API
-/// distinguishes the two so a future org-level default has somewhere to land.
+/// distinguishes the two, and that distinction is now load-bearing rather than
+/// forward-looking — an omitted mode is what lets the action's own
+/// `x-overslash-wait-mode` apply, and sending `"sync"` here would silently
+/// suppress it for every MCP caller.
 fn insert_execution_mode(body: &mut serde_json::Map<String, Value>, args: &Value) {
     if let Some(m) = args.get("execution").filter(|v| !v.is_null()) {
         body.insert("execution".into(), m.clone());
+    }
+}
+
+/// Forward the caller's hybrid handoff window, when they set one.
+///
+/// Declared in `overslash_call`'s input schema since hybrid shipped, and never
+/// forwarded — an agent that set it got the deployment default and no error,
+/// because the schema is `additionalProperties: false` and so the value was
+/// dropped here rather than rejected by the API.
+fn insert_handoff_after_ms(body: &mut serde_json::Map<String, Value>, args: &Value) {
+    if let Some(ms) = args.get("handoff_after_ms").filter(|v| !v.is_null()) {
+        body.insert("handoff_after_ms".into(), ms.clone());
     }
 }
 
@@ -269,6 +284,7 @@ pub(super) async fn dispatch_call(
     insert_timeout_ms(&mut body, args);
     insert_filter(&mut body, args);
     insert_execution_mode(&mut body, args);
+    insert_handoff_after_ms(&mut body, args);
     forward(
         state,
         bearer,
@@ -699,6 +715,35 @@ mod tests {
             let mut body = serde_json::Map::new();
             insert_filter(&mut body, &serde_json::json!({"filter": raw.clone()}));
             assert_eq!(body.get("filter"), Some(&raw));
+        }
+    }
+
+    /// `overslash_call` has declared this key since hybrid shipped and never
+    /// forwarded it, so an agent that set it silently got the deployment
+    /// default. The schema is `additionalProperties: false`, which is what
+    /// made the drop invisible: a well-behaved client had no way to discover
+    /// the key was inert.
+    #[test]
+    fn the_hybrid_handoff_window_reaches_the_action_handler() {
+        let mut body = serde_json::Map::new();
+        insert_handoff_after_ms(&mut body, &serde_json::json!({"handoff_after_ms": 2500}));
+        assert_eq!(body.get("handoff_after_ms"), Some(&serde_json::json!(2500)));
+    }
+
+    #[test]
+    fn an_absent_execution_mode_stays_absent() {
+        // Load-bearing since the action template became rung 2: stamping
+        // `"sync"` for a caller who said nothing would suppress every
+        // action's own `x-overslash-wait-mode` on the entire MCP surface.
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"execution": null}),
+            serde_json::json!({"handoff_after_ms": null}),
+        ] {
+            let mut body = serde_json::Map::new();
+            insert_execution_mode(&mut body, &args);
+            insert_handoff_after_ms(&mut body, &args);
+            assert!(body.is_empty(), "nothing should be stamped for {args}");
         }
     }
 }
