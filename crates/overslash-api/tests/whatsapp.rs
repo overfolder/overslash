@@ -203,9 +203,13 @@ x-overslash-mcp:
     )
 }
 
-/// The shipped template's resolver wiring: `send_message.recipient` declares
-/// an MCP `resolve` pointing at the read-only `resolve_jid` tool, and the
-/// disclose block prefers the resolved display string over the raw argument.
+/// The shipped template's resolver wiring: a write tool's recipient-shaped
+/// param declares an MCP `resolve` pointing at the read-only `resolve_jid`
+/// tool, and the disclose block prefers the resolved display string over the
+/// raw argument. Three tools carry one so the fixture covers both param names
+/// the shipped template resolves on — `recipient` (send_message, send_file)
+/// and `chat_jid` (send_reaction) — plus an `enum` param, since v0.7.0's
+/// `send_file` is the first shipped WhatsApp tool to declare one.
 /// Mirrors `services/whatsapp.yaml` — keep the two in step.
 fn whatsapp_resolver_template_yaml(key: &str, url: &str, secret_name: &str) -> String {
     format!(
@@ -254,6 +258,64 @@ x-overslash-mcp:
           filter: ".arguments.recipient"
         - label: Message
           filter: ".arguments.text"
+
+    - name: send_reaction
+      risk: write
+      scope_param: chat_jid
+      description: 'React to {{message_id}} in {{chat_jid}}'
+      input_schema:
+        type: object
+        properties:
+          chat_jid:
+            type: string
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{{chat_jid}}'
+              display: '{{name}}[ ({{phone}})]'
+              scope: phone
+          message_id: {{ type: string, minLength: 1 }}
+          emoji: {{ type: string }}
+        required: [chat_jid, message_id, emoji]
+      disclose:
+        - label: Chat
+          filter: ".resolved.chat_jid // .arguments.chat_jid"
+        - label: JID
+          filter: ".arguments.chat_jid"
+        - label: Emoji
+          primary: true
+          filter: ".arguments.emoji"
+
+    - name: send_file
+      risk: write
+      scope_param: recipient
+      description: 'Send {{media_path}} to {{recipient}}'
+      input_schema:
+        type: object
+        properties:
+          recipient:
+            type: string
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{{recipient}}'
+              display: '{{name}}[ ({{phone}})]'
+              scope: phone
+          media_path: {{ type: string, minLength: 1 }}
+          media_type:
+            type: string
+            enum: [auto, image, video, audio, document, sticker]
+            default: auto
+          caption: {{ type: string }}
+        required: [recipient, media_path]
+      disclose:
+        - label: Recipient
+          filter: ".resolved.recipient // .arguments.recipient"
+        - label: File
+          primary: true
+          filter: ".arguments.media_path"
+        - label: Type
+          filter: '.arguments.media_type // "auto"'
 "#
     )
 }
@@ -1237,5 +1299,395 @@ async fn a_repeated_lid_resolves_once_across_calls() {
     assert!(
         keys.contains("+34600111222"),
         "cached canonical value must still key the permission, got: {keys}"
+    );
+}
+
+// ── v0.7.0 surface ──────────────────────────────────────────────────────
+//
+// whatsapp-mcp-docker 0.7.0 widened the write surface well past
+// `send_message`: media sends, reactions, polls, presence, disappearing
+// timers and read receipts. Two things about that release are new for this
+// template and are what the tests below pin.
+//
+// First, `send_message.recipient` stopped being the only param worth
+// resolving. A reaction is as visible in a chat as a message is, and it is
+// addressed by `chat_jid` — so the D55 machinery has to work on a param that
+// isn't called `recipient`, and the permission key has to canonicalize the
+// same way. Second, `send_file` is the first shipped WhatsApp tool with an
+// `enum`, and a bad `media_type` has to come back as a 400 the agent can act
+// on rather than reaching the container.
+
+/// The reaction path's version of `lid_recipient_resolves_to_contact_and_phone`.
+/// Nothing about resolution is specific to a param named `recipient`; this
+/// pins that, because the shipped template resolves on `chat_jid` for six of
+/// its v0.7.0 tools.
+#[tokio::test]
+async fn a_chat_jid_param_resolves_for_a_reaction_approval() {
+    let pool = common::test_pool().await;
+    let (stub_addr, stub_state) = start_stub_with(Stub::default()).await;
+    let stub_url = format!("http://{stub_addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_org, _agent_ident, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    register_whatsapp_resolver_template(RegisterCtx {
+        base: &base,
+        client: &client,
+        admin_key: &admin_key,
+        agent_key: &agent_key,
+        key: "whatsapp_reaction",
+        url: &stub_url,
+        secret_name: "whatsapp_reaction_token",
+        secret_value: "stub-token",
+    })
+    .await;
+
+    let exec: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "whatsapp_reaction",
+            "action": "send_reaction",
+            "params": {
+                "chat_jid": "239135323373760@lid",
+                "message_id": "3EB0C767D26B8CA1F8A2",
+                "emoji": "👍"
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("pending_approval"),
+        "expected pending_approval, got: {exec:?}"
+    );
+    let approval_id = exec["approval_id"].as_str().unwrap();
+
+    assert_eq!(
+        stub_state.lock().unwrap().resolved_jids,
+        vec!["239135323373760@lid".to_string()],
+        "the resolver must run against chat_jid's literal value"
+    );
+
+    let approval: Value = client
+        .get(format!("{base}/v1/approvals/{approval_id}"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let disclosed = approval["disclosed_fields"].as_array().unwrap();
+    assert_eq!(disclosed[0]["label"].as_str(), Some("Chat"));
+    assert_eq!(
+        disclosed[0]["value"].as_str(),
+        Some("Sonia Pérez (+34600111222)"),
+        "the reviewer must see the human whose chat is being reacted in"
+    );
+    assert_eq!(disclosed[1]["label"].as_str(), Some("JID"));
+    assert_eq!(disclosed[1]["value"].as_str(), Some("239135323373760@lid"));
+    // The emoji is the whole payload of a reaction — it is the hero field.
+    assert_eq!(disclosed[2]["label"].as_str(), Some("Emoji"));
+    assert_eq!(disclosed[2]["value"].as_str(), Some("👍"));
+
+    let keys: Vec<&str> = approval["permission_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        keys.contains(&"whatsapp_reaction:send_reaction:chat_jid=+34600111222"),
+        "a chat_jid scope must canonicalize onto the phone number too, got: {keys:?}"
+    );
+    assert!(
+        !keys.iter().any(|k| k.contains("@lid")),
+        "the LID must not survive into a permission key: {keys:?}"
+    );
+}
+
+/// `send_file` never carries bytes — it names them. The approval therefore has
+/// to disclose the *reference*, and the envelope the container will pick, so a
+/// reviewer can tell "forward the invoice PDF" from "send this as a sticker".
+#[tokio::test]
+async fn send_file_discloses_the_media_reference_and_envelope() {
+    let pool = common::test_pool().await;
+    let (stub_addr, _stub_state) = start_stub_with(Stub::default()).await;
+    let stub_url = format!("http://{stub_addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_org, _agent_ident, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    register_whatsapp_resolver_template(RegisterCtx {
+        base: &base,
+        client: &client,
+        admin_key: &admin_key,
+        agent_key: &agent_key,
+        key: "whatsapp_media_send",
+        url: &stub_url,
+        secret_name: "whatsapp_media_send_token",
+        secret_value: "stub-token",
+    })
+    .await;
+
+    let media_path = format!("/media/{MEDIA_SHA}");
+    let exec: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "whatsapp_media_send",
+            "action": "send_file",
+            "params": {
+                "recipient": "239135323373760@lid",
+                "media_path": media_path,
+                "caption": "la factura de marzo"
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("pending_approval"),
+        "expected pending_approval, got: {exec:?}"
+    );
+    let approval_id = exec["approval_id"].as_str().unwrap();
+
+    let approval: Value = client
+        .get(format!("{base}/v1/approvals/{approval_id}"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let disclosed = approval["disclosed_fields"].as_array().unwrap();
+    let row = |label: &str| -> String {
+        disclosed
+            .iter()
+            .find(|d| d["label"].as_str() == Some(label))
+            .unwrap_or_else(|| panic!("no `{label}` row in {disclosed:?}"))["value"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(row("Recipient"), "Sonia Pérez (+34600111222)");
+    assert_eq!(
+        row("File"),
+        media_path,
+        "the byte reference must be reviewable"
+    );
+    // `media_type` was omitted, and the filter spells the default rather than
+    // dropping the row — "auto" is a real decision the container will make.
+    assert_eq!(row("Type"), "auto");
+}
+
+/// The first shipped WhatsApp enum. A `media_type` outside the declared set has
+/// to fail at the gateway with the member list attached: the container would
+/// reject it too, but only after a round trip, and with an error the agent
+/// cannot recover from as cheaply.
+#[tokio::test]
+async fn an_unknown_media_type_is_rejected_with_the_enum_members() {
+    let pool = common::test_pool().await;
+    let (stub_addr, stub_state) = start_stub_with(Stub::default()).await;
+    let stub_url = format!("http://{stub_addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_org, _agent_ident, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    register_whatsapp_resolver_template(RegisterCtx {
+        base: &base,
+        client: &client,
+        admin_key: &admin_key,
+        agent_key: &agent_key,
+        key: "whatsapp_media_enum",
+        url: &stub_url,
+        secret_name: "whatsapp_media_enum_token",
+        secret_value: "stub-token",
+    })
+    .await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "whatsapp_media_enum",
+            "action": "send_file",
+            "params": {
+                "recipient": "34600111222@s.whatsapp.net",
+                "media_path": format!("/media/{MEDIA_SHA}"),
+                "media_type": "gif"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "invalid_action_args", "got: {body}");
+
+    let err = body["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "not_in_enum" && e["field"] == "media_type")
+        .unwrap_or_else(|| panic!("expected NotInEnum(media_type), got: {body}"));
+    let allowed: Vec<&str> = err["allowed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        allowed.contains(&"sticker") && allowed.contains(&"auto"),
+        "the member list is the agent's recovery path, got: {allowed:?}"
+    );
+
+    // Rejected at the gateway: the container never saw it, so no resolver ran
+    // and nothing was dispatched.
+    assert!(
+        stub_state.lock().unwrap().resolved_jids.is_empty(),
+        "a schema rejection must short-circuit before the resolver"
+    );
+}
+
+// ── Container catalog drift ─────────────────────────────────────────────
+//
+// The shipped template is a hand-mirrored copy of the container's
+// `tools/list`. Nothing in this repo pins a container image, tag or digest,
+// so this constant *is* the version contract — and until v0.7.0 nothing
+// noticed when the two drifted. The failure that matters here is an
+// ADDITION: a release ships new tools, the template keeps working, and the
+// capability is simply unreachable with no error anywhere. So this asserts
+// both directions, not just that every exposed tool exists upstream.
+
+/// whatsapp-mcp-docker v0.7.0 `tools/list`, verified 2026-08-14 against
+/// <https://github.com/angel-manuel/whatsapp-mcp-docker/releases/tag/v0.7.0>
+/// (`internal/tools/register.go` + `internal/mcptools/tools.go`, cross-checked
+/// against `SUPPORTED.md`).
+const CONTAINER_CATALOG_V0_7_0: &[&str] = &[
+    // Cache-backed reads (internal/mcptools) — no whatsmeow call.
+    "get_chat",
+    "get_contact_chats",
+    "get_conversation",
+    "get_direct_chat_by_contact",
+    "get_last_interaction",
+    "get_message_context",
+    "list_chats",
+    "list_conversations",
+    "list_messages",
+    // whatsmeow-backed (internal/tools).
+    "cache_sync",
+    "cache_sync_status",
+    "download_media",
+    "get_contact_details",
+    "get_group_info",
+    "get_poll_results",
+    "list_all_contacts",
+    "mark_read",
+    "pairing_complete",
+    "pairing_start",
+    "ping",
+    "resolve_jid",
+    "search_contacts",
+    "send_audio_message",
+    "send_chat_presence",
+    "send_file",
+    "send_message",
+    "send_poll",
+    "send_presence",
+    "send_reaction",
+    "set_default_disappearing_timer",
+    "set_disappearing_timer",
+    "set_status_message",
+    "subscribe_presence",
+    "vote_poll",
+];
+
+/// Tools the container serves that the template deliberately does not expose.
+/// Every entry needs a reason — an unexplained omission is indistinguishable
+/// from a missed sync, which is the whole failure this test exists to catch.
+const INTENTIONALLY_NOT_EXPOSED: &[&str] = &[
+    // `cache_sync_status` is the richer diagnostic and is gated identically,
+    // so a bare liveness probe adds a tool without adding a capability.
+    "ping",
+];
+
+#[tokio::test]
+async fn shipped_template_matches_the_container_catalog() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool, None).await;
+    let (_org, _agent_ident, agent_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let tpl: Value = client
+        .get(format!("{base}/v1/templates/whatsapp"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let actions = tpl["actions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("whatsapp template has actions: {tpl}"));
+    assert!(
+        !actions.is_empty(),
+        "whatsapp template exposes tools: {tpl}"
+    );
+
+    // The upstream name is `mcp_tool` when aliased, else the action key.
+    let exposed: Vec<&str> = actions
+        .iter()
+        .map(|a| {
+            a["mcp_tool"]
+                .as_str()
+                .or_else(|| a["key"].as_str())
+                .unwrap_or_else(|| panic!("action with neither mcp_tool nor key: {a}"))
+        })
+        .collect();
+
+    // Direction 1: nothing exposed that the container does not serve. A tool
+    // that moved or was renamed upstream answers -32603 "Unknown tool" at
+    // call time, which is a 502 the caller can do nothing about.
+    for name in &exposed {
+        assert!(
+            CONTAINER_CATALOG_V0_7_0.contains(name),
+            "template exposes `{name}`, which whatsapp-mcp-docker v0.7.0 does not serve — \
+             re-run tools/list against the container and re-sync services/whatsapp.yaml \
+             (see the CONTAINER_CATALOG_V0_7_0 constant)"
+        );
+    }
+
+    // Direction 2: nothing served is silently unexposed. This is the case
+    // v0.7.0 itself was: thirteen new tools, reachable by the container and
+    // by nobody through the gateway.
+    let missing: Vec<&&str> = CONTAINER_CATALOG_V0_7_0
+        .iter()
+        .filter(|name| !exposed.contains(name) && !INTENTIONALLY_NOT_EXPOSED.contains(name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "whatsapp-mcp-docker serves tools the template does not expose: {missing:?} — \
+         add them to services/whatsapp.yaml, or to INTENTIONALLY_NOT_EXPOSED with a reason"
     );
 }

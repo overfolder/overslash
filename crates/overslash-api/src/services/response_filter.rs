@@ -351,6 +351,51 @@ mod tests {
         }
     }
 
+    /// Shipped templates never pass through `POST /v1/templates`, so the
+    /// `disclose_invalid_jq` gate in `routes::templates` — the one that keeps a
+    /// user-supplied filter from reaching an approval — has never seen them.
+    /// They load straight off disk in `overslash-core`, which deliberately does
+    /// not link jaq, so a typo in a shipped `disclose:` filter would surface
+    /// for the first time on a live approval, as a classified error row with
+    /// no operand (D65) and therefore nothing to debug from.
+    #[test]
+    fn shipped_disclose_filters_compile() {
+        let services_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = overslash_core::registry::ServiceRegistry::load_from_dir(
+            &services_dir,
+            overslash_core::template_vars::Vars::for_tests(),
+        )
+        .unwrap();
+
+        let mut broken: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+        for def in reg.all() {
+            for (action_key, action) in &def.actions {
+                for (i, f) in action.disclose.iter().enumerate() {
+                    checked += 1;
+                    if let Err(msg) = validate_syntax(&ResponseFilter::Jq {
+                        expr: f.filter.clone(),
+                    }) {
+                        broken.push(format!(
+                            "{}:{action_key}.disclose[{i}] ({:?}): {msg}",
+                            def.key, f.filter
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(checked > 0, "no shipped disclose filters found to check");
+        assert!(
+            broken.is_empty(),
+            "shipped disclose filters must be valid jq: {broken:#?}"
+        );
+    }
+
     #[tokio::test]
     async fn apply_output_overflow() {
         let out = apply(
