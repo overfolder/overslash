@@ -79,7 +79,7 @@ response was too big".
 |---|---|---|
 | Constant | `max_response_body_bytes` (5 MB) | `COMPACT_BUDGET_BYTES` (8 KB) |
 | Fires | while the body is still arriving, inside `http_caller::call` | after the body is buffered, in `compact_response::compact` |
-| Result | **502**, no body ever existed | **200**, cropped body with `_truncated: true` |
+| Result | **502**, no body ever existed | **200**, cropped body with `_truncated: {dropped: […]}` |
 | Applies to | every caller | only `verbose: false` (i.e. MCP) |
 | Recovery | D57 — a token for the *same request*, replayed on redemption | D61 — a token for the *stored bytes*, served without an upstream call |
 

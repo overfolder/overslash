@@ -167,7 +167,7 @@ pub(super) async fn tools_list_response(
                     "verbose": {
                         "type": "boolean",
                         "default": false,
-                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every read. Pass true only when you need a specific header. If the response was cropped, prefer the `_full_result.download_url` in the result — those bytes are already stored, whereas verbose=true re-runs the upstream call."
+                        "description": "Return the full ActionResult including every response header and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB, plus any pagination headers such as `Link`) is enough for almost every read. Pass true only when you need some other header. If the response was cropped, `_truncated.dropped` names anything load-bearing that went, and prefer the `_full_result.download_url` in the result — those bytes are already stored, whereas verbose=true re-runs the upstream call."
                     },
                     "deliver": {
                         "type": "string",
@@ -218,7 +218,7 @@ pub(super) async fn tools_list_response(
                     "verbose": {
                         "type": "boolean",
                         "default": false,
-                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every call. Pass true only when you need a specific header. If the response was cropped, prefer the `_full_result.download_url` in the result — those bytes are already stored, whereas verbose=true re-runs the upstream call. Only takes effect on fresh calls (service + action); ignored when `approval_id` is set, since approval replays return an ApprovalResponse with its own shape."
+                        "description": "Return the full ActionResult including every response header and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB, plus any pagination headers such as `Link`) is enough for almost every call. Pass true only when you need some other header. If the response was cropped, `_truncated.dropped` names anything load-bearing that went, and prefer the `_full_result.download_url` in the result — those bytes are already stored, whereas verbose=true re-runs the upstream call. Only takes effect on fresh calls (service + action); ignored when `approval_id` is set, since approval replays return an ApprovalResponse with its own shape."
                     },
                     "deliver": {
                         "type": "string",
