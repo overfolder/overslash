@@ -51,6 +51,8 @@ identities  (additive)
   UNIQUE (org_id, user_id) WHERE user_id IS NOT NULL AND kind = 'user'
 ```
 
+**On the `(org_id, user_id)` UNIQUE:** designed here, assumed by three call sites and by migration 043's rationale, but not actually created until migration 115 (`identities_org_user_unique`) — 040 shipped only a plain index on `user_id`. In the gap, a login that missed both the subject and the email key could fork a second actor for a human who already had one, and `find_by_org_and_user` would then pick between the halves by planner order.
+
 **Why `users.email` is not unique:** since we key on `(provider, subject)` at auth time, two different Google accounts that happen to report the same email must produce distinct `users` rows. Uniqueness on email would block that — and opening a UNIQUE collision on login would reveal account existence to an attacker.
 
 **Why a global `users` table:** decouples identity-of-the-human from identity-of-the-actor-in-an-org. Billing, profile, account deletion all need a stable "human" record. The existing `identities` table continues to be the unit of permission in an org; we just link each user-kind identity back to a `user_id`.

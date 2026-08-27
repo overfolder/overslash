@@ -285,3 +285,116 @@ async fn admin_invite_signs_in_as_admin() {
         "membership must honor the admin invite"
     );
 }
+
+/// Adopt-by-**user**: the human is already an actor in this org, but under a
+/// different address than the one their IdP reports today. The subject key
+/// misses (a founder identity minted by `POST /v1/orgs` carries no
+/// `external_id`) and the email key misses too, so before the account was
+/// consulted this forked a second actor linked to the same `users` row —
+/// splitting the person's agents, grants and audit trail, and leaving
+/// `find_by_org_and_user` to pick between the halves by planner order.
+///
+/// Admission here is managed sign-in with domain admission, which is what
+/// makes the fork reachable: with `require_invite_admission` on (the default)
+/// the same login is rejected `not_invited` long before it can mint anything.
+#[tokio::test]
+async fn member_whose_idp_email_changed_is_adopted_not_forked() {
+    let (base, client, pool) = api_with_google_mock().await;
+    let (org_id, _, _, _) = common::bootstrap_org_identity(&base, &client).await;
+    let org_slug = sqlx::query_scalar::<_, String>("SELECT slug FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // Seed the founder shape: an Overslash-backed account whose subject is the
+    // one the mock reports, and an org identity linked to it that carries the
+    // address the account had at signup — NOT the address the IdP reports now.
+    let account_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name, overslash_idp_provider, overslash_idp_subject)
+         VALUES ('founder@example.com', 'Founder', 'google', 'oidc-sub-testuser')
+         RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let founder_identity: Uuid = sqlx::query_scalar(
+        "SELECT id FROM identities WHERE org_id = $1 AND is_org_admin = true
+         ORDER BY created_at LIMIT 1",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE identities SET email = 'founder@example.com', user_id = $2, external_id = NULL
+         WHERE id = $1",
+    )
+    .bind(founder_identity)
+    .bind(account_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_org_memberships (user_id, org_id, role) VALUES ($1, $2, 'admin')",
+    )
+    .bind(account_id)
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "UPDATE orgs SET require_invite_admission = false,
+                         managed_signin_allowed_domains = ARRAY['example.com']
+         WHERE id = $1",
+    )
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Sign in on the org slug. The mock reports sub `oidc-sub-testuser` with
+    // email `testuser@example.com`: same human, different address.
+    let nonce = "adopt-nonce-4";
+    let state_param = format!("login:google:{nonce}");
+    let resp = client
+        .get(format!(
+            "{base}/auth/callback/google?code=ac4&state={state_param}"
+        ))
+        .header(
+            "cookie",
+            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 303, "an existing member must be let back in");
+
+    let actors: Vec<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, external_id, email FROM identities
+         WHERE org_id = $1 AND kind = 'user' AND user_id = $2",
+    )
+    .bind(org_id)
+    .bind(account_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        actors.len(),
+        1,
+        "one actor per human per org — sign-in must adopt, not fork: {actors:?}"
+    );
+    assert_eq!(actors[0].0, founder_identity, "the original actor survives");
+    assert_eq!(
+        actors[0].1.as_deref(),
+        Some("oidc-sub-testuser"),
+        "adoption claims the subject so the fast path hits next time"
+    );
+    assert_eq!(
+        actors[0].2.as_deref(),
+        Some("founder@example.com"),
+        "the address is fixed at create; adoption refreshes name/metadata only"
+    );
+}

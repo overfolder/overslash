@@ -1549,6 +1549,13 @@ CREATE INDEX events_prune_idx ON public.events USING btree (created_at);
 
 
 --
+-- Name: identities_org_user_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX identities_org_user_unique ON public.identities USING btree (org_id, user_id) WHERE ((user_id IS NOT NULL) AND (kind = 'user'::text));
+
+
+--
 -- Name: idx_api_keys_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1735,13 +1742,6 @@ CREATE INDEX idx_identities_archived ON public.identities USING btree (archived_
 --
 
 CREATE INDEX idx_identities_email ON public.identities USING btree (email) WHERE (email IS NOT NULL);
-
-
---
--- Name: idx_identities_email_lookup; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_identities_email_lookup ON public.identities USING btree (email) WHERE (email IS NOT NULL);
 
 
 --
