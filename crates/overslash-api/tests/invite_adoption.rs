@@ -398,3 +398,107 @@ async fn member_whose_idp_email_changed_is_adopted_not_forked() {
         "the address is fixed at create; adoption refreshes name/metadata only"
     );
 }
+
+/// Archiving a user identity revokes access, and there is no restore for
+/// `kind = 'user'`. Neither sign-in lookup that can surface an archived row —
+/// by IdP subject, or by account — may hand the same human a fresh session.
+/// Adopt-by-email needs no case here: its query filters `archived_at IS NULL`
+/// in SQL.
+#[tokio::test]
+async fn an_archived_member_cannot_sign_back_in() {
+    for (case, seed_external_id) in [("by-subject", true), ("by-account", false)] {
+        let (base, client, pool) = api_with_google_mock().await;
+        let (org_id, _, _, _) = common::bootstrap_org_identity(&base, &client).await;
+        let org_slug = sqlx::query_scalar::<_, String>("SELECT slug FROM orgs WHERE id = $1")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let account_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, display_name, overslash_idp_provider, overslash_idp_subject)
+             VALUES ('founder@example.com', 'Founder', 'google', 'oidc-sub-testuser')
+             RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let member: Uuid = sqlx::query_scalar(
+            "SELECT id FROM identities WHERE org_id = $1 AND is_org_admin = true
+             ORDER BY created_at LIMIT 1",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // `by-subject` reaches the fast path; `by-account` leaves external_id
+        // NULL so only the account lookup can find the row. A plain archive
+        // (not remove-user) leaves `user_id` populated either way.
+        sqlx::query(
+            "UPDATE identities
+                SET email = 'founder@example.com', user_id = $2,
+                    external_id = CASE WHEN $3 THEN 'oidc-sub-testuser' ELSE NULL END,
+                    archived_at = now(), archived_reason = 'manual'
+              WHERE id = $1",
+        )
+        .bind(member)
+        .bind(account_id)
+        .bind(seed_external_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO user_org_memberships (user_id, org_id, role) VALUES ($1, $2, 'admin')",
+        )
+        .bind(account_id)
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE orgs SET require_invite_admission = false,
+                             managed_signin_allowed_domains = ARRAY['example.com']
+             WHERE id = $1",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let nonce = "adopt-nonce-5";
+        let state_param = format!("login:google:{nonce}");
+        let resp = client
+            .get(format!(
+                "{base}/auth/callback/google?code=ac5&state={state_param}"
+            ))
+            .header(
+                "cookie",
+                format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            403,
+            "{case}: archived access must stay revoked"
+        );
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("identity_archived"), "{case}: got {body}");
+
+        // Refused, not forked: the archived row still holds the (org, human)
+        // slot, so minting a second actor would collide with
+        // `identities_org_user_unique` rather than fail cleanly.
+        let actors: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM identities WHERE org_id = $1 AND kind = 'user' AND user_id = $2",
+        )
+        .bind(org_id)
+        .bind(account_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(actors, 1, "{case}: a refusal must not mint a second actor");
+    }
+}

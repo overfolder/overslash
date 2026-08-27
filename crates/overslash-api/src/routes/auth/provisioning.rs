@@ -288,6 +288,7 @@ async fn provision_org_subdomain(
     )
     .await?
     {
+        refuse_if_archived(&existing)?;
         let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
         let metadata = userinfo_metadata(userinfo);
         let _ = scope
@@ -346,6 +347,7 @@ async fn provision_org_subdomain(
         )
         .await?
     {
+        refuse_if_archived(&existing)?;
         let metadata = userinfo_metadata(userinfo);
         // Claim the subject on first adoption only — same rule as the
         // adopt-by-email branch below: `external_id` records who originally
@@ -658,6 +660,31 @@ async fn provision_org_subdomain(
         user_id,
         userinfo.email.clone(),
     ))
+}
+
+/// An archived actor is a revoked one. Archiving a user identity revokes its
+/// API keys (`revoked_reason = identity_archived`) and there is no restore for
+/// `kind = 'user'` — `restore_identity` is sub-agent-only — so handing the
+/// same human a fresh session at the next sign-in would give back by the front
+/// door exactly the access an admin took away.
+///
+/// The two lookups this guards resolve by IdP subject and by account, neither
+/// of which can express "live" in SQL the way `find_user_by_email_in_org`
+/// does with its `archived_at IS NULL`; this is that filter, applied in the
+/// one place the row is already in hand.
+///
+/// Refuse rather than fall through to the admission gate: only `remove_user`
+/// detaches `user_id`, so a plain archive leaves this row still holding the
+/// `(org, human)` slot, and minting a second actor would collide with
+/// `identities_org_user_unique`. Re-admission is an admin action — remove the
+/// member and re-invite them, which detaches the tombstone on the way out.
+fn refuse_if_archived(
+    existing: &overslash_db::repos::identity::IdentityRow,
+) -> Result<(), AppError> {
+    if existing.archived_at.is_some() {
+        return Err(AppError::Forbidden("identity_archived".into()));
+    }
+    Ok(())
 }
 
 fn userinfo_metadata(userinfo: &NormalizedUserInfo) -> serde_json::Value {
