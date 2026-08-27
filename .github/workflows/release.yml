@@ -88,7 +88,7 @@ jobs:
           # keep in sync with rust-toolchain.toml, or the action installs one
           # toolchain and cargo silently downloads another on the first build.
           toolchain: "1.97"
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.target }}
           cache-on-failure: true
