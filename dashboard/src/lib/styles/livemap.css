@@ -214,6 +214,16 @@
 	font-size: 11px;
 	color: var(--color-text-secondary);
 }
+/* Org-wide services: owned by no single user, so they sit on the shared ring
+   outside every ownership container. Dashed, the same way the org aggregate
+   ball says "this stands for several". */
+.lm-node.k-service.is-org .lm-ball {
+	border-style: dashed;
+	background: var(--color-bg);
+}
+.lm-node.k-service.is-org .lm-cap {
+	border-style: dashed;
+}
 .lm-node.k-org .lm-ball {
 	width: calc(var(--lm-user, 60px) * 1.24);
 	height: calc(var(--lm-user, 60px) * 1.24);

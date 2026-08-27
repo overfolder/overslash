@@ -267,8 +267,9 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 	/**
 	 * Is this node folded away inside a collapsed container?
 	 *
-	 * Services have no `rootOf` entry — they sit on the shared outer ring and
-	 * belong to no one cluster — so they fall out of this for free.
+	 * A user-level service has a `rootOf` entry like an agent does, so it folds
+	 * with its owner's cluster for free. Org-level ones have none — they sit on
+	 * the shared outer ring, in no container — and fall out of this the same way.
 	 */
 	function inClosedBox(n: MapNode): boolean {
 		if (n.kind === 'user' || n.kind === 'org') return !!boxClosed[n.id];
@@ -712,6 +713,35 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 			}
 		}
 
+		// An owned service is held by its user, not by a ring: the container is
+		// drawn around whatever the layout produces, so the instance has to be
+		// pulled towards the cluster rather than parked outside it.
+		for (const id of ids) {
+			const m = meta(id);
+			if (m?.kind !== 'service' || !m.owner) continue;
+			const root = resolve(m.owner);
+			const a = pos.get(root);
+			const b = pos.get(id);
+			const fa = acc.get(root);
+			const fb = acc.get(id);
+			if (!a || !b || !fa || !fb) continue;
+			// The layout's own offset, not a constant: spring and target have to
+			// agree, or the instance settles between them and the box is
+			// stretched to reach it. `graph.ownedServiceGap` shrinks when the
+			// subagent rings fold away, and this has to shrink with it.
+			const L = graph.ownedServiceGap;
+			let dx = b.x - a.x;
+			let dy = b.y - a.y;
+			const d = Math.hypot(dx, dy) || 1;
+			const f = (d - L) * SPRING_K * 0.55;
+			dx /= d;
+			dy /= d;
+			fa[0] += dx * f;
+			fa[1] += dy * f;
+			fb[0] -= dx * f;
+			fb[1] -= dy * f;
+		}
+
 		for (const id of ids) {
 			const p = pos.get(id);
 			const m = meta(id);
@@ -726,10 +756,14 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 				p.vy = 0;
 				continue;
 			}
-			// Services and users hold their ring; agents are free to swing.
+			// Org services and users hold their ring; agents are free to swing.
+			// An owned service is held loosely instead, because the spring to its
+			// owner above is what places it: the two agree on the distance, so
+			// the target is left to say only which *direction* from the owner.
 			if (m.kind === 'service') {
-				a[0] += (t.x - p.x) * 3 * mass;
-				a[1] += (t.y - p.y) * 3 * mass;
+				const w = m.owner ? 1.2 : 3;
+				a[0] += (t.x - p.x) * w * mass;
+				a[1] += (t.y - p.y) * w * mass;
 			} else if (m.kind === 'user' || m.kind === 'org') {
 				a[0] += (t.x - p.x) * 0.5 * mass;
 				a[1] += (t.y - p.y) * 0.5 * mass;
@@ -905,9 +939,10 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 	 *
 	 * Membership is `graph.rootOf`, which the physics already uses to keep a
 	 * user's agents near one another — so the box encloses a grouping the layout
-	 * was producing anyway rather than imposing a new one. Services are absent
-	 * from `rootOf` on purpose: one instance is called from several clusters, so
-	 * it belongs inside none of them.
+	 * was producing anyway rather than imposing a new one. A user-level service
+	 * is in there too: it is reachable only by its owner's fleet. Org-level
+	 * instances are absent from `rootOf` on purpose — one of those is called
+	 * from several clusters, so it belongs inside none of them.
 	 */
 	function computeBoxes(now: number, live: Set<string>) {
 		if (!graph) return;
@@ -1113,11 +1148,19 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 			if (fade <= 0) continue;
 			const dim = hits && !(hits.has(e.from) || hits.has(e.to));
 			const busy = edgeBusy.has(e.id);
+			// An org-level instance collects an edge from every cluster that ever
+			// called it, and at rest that thicket reads as structure it is not.
+			// Owned traffic keeps its weight, and so does an unlisted node's: we
+			// do not know it is shared, only that we could not list it.
+			const toMeta = meta(e.to);
+			const shared =
+				!e.tree && toMeta?.kind === 'service' && !toMeta.owner && !toMeta.unlisted;
 			ctx.beginPath();
 			ctx.moveTo(s[0], s[1]);
 			ctx.lineTo(s[2], s[3]);
 			ctx.lineWidth = e.tree ? 1.5 : busy ? 1.2 : 1;
-			ctx.globalAlpha = (dim ? 0.05 : busy ? 0.5 : e.tree ? 0.62 : 0.3) * fade;
+			ctx.globalAlpha =
+				(dim ? 0.05 : busy ? (shared ? 0.31 : 0.5) : e.tree ? 0.62 : shared ? 0.13 : 0.3) * fade;
 			ctx.strokeStyle = busy ? colors.primary : e.tree ? colors.tree : colors.edge;
 			ctx.stroke();
 		}

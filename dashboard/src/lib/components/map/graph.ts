@@ -13,6 +13,7 @@
  * them; a dragged node overrides them. See `sim.ts`.
  */
 import type { Identity, ServiceInstanceSummary } from '$lib/types';
+import { formatIdentity } from '$lib/identityDisplay';
 
 export type NodeKind = 'user' | 'agent' | 'subagent' | 'service' | 'org';
 
@@ -37,12 +38,21 @@ export interface MapNode {
 	stripe?: string[];
 	/** Parent in the identity tree — the agent, for a subagent. */
 	parent?: string;
-	/** The owner *user*, for anything below one. */
+	/** The owner *user*, for anything below one. On a service it is the user
+	 *  whose instance this is; absent means an org-level instance everyone
+	 *  shares, which belongs to no one cluster. */
 	owner?: string;
+	/** Lossless hover text, where `label` is a shortened form of it — a user's
+	 *  full email plus display name, which domain stripping throws away. */
+	title?: string;
 	/** Descendant count, for the tooltip. */
 	sub?: number;
 	/** Service instance status, for the tooltip. */
 	status?: string;
+	/** A service node invented from the event stream, with no listing behind
+	 *  it. Its owner is unknown rather than absent, so it must not be reported
+	 *  as org-wide. */
+	unlisted?: boolean;
 }
 
 export interface MapEdge {
@@ -71,6 +81,24 @@ export interface Graph {
 	rootOf: Map<string, string>;
 	resolve(id: string): string;
 	closedFor(id: string, kind: NodeKind): boolean;
+	/**
+	 * Wire `service` value from an `action.*` event → node id.
+	 *
+	 * The event carries the caller-supplied *name* and nothing else, but a name
+	 * is only unique per owner, so the answer depends on who called. This
+	 * mirrors the gateway's own `resolve_service_instance_by_name`: the actor's
+	 * own user-level instance shadows the org-level one of the same name.
+	 *
+	 * A name no listed instance matches — a user-level instance an admin can
+	 * watch but not list — falls back to an unqualified id, which lands on the
+	 * shared ring in no container rather than guessing at an owner.
+	 */
+	serviceIdFor(name: string | null | undefined, actorId?: string): string;
+	/** How far from its owner an owned service's target sits, in world units.
+	 *  The physics springs to the same length — a spring that disagrees with
+	 *  the target leaves the instance between the two and stretches the
+	 *  container out to reach it. Varies with how much of the tree is folded. */
+	ownedServiceGap: number;
 }
 
 /** The aggregate node users collapse into. */
@@ -81,15 +109,26 @@ export const ORG_ID = 'agg:org';
 export const RAW_HTTP_ID = 'service:__none__';
 
 /**
- * Wire `service` value from an `action.*` event → node id.
+ * Node id for a listed service instance.
  *
- * That name is not guaranteed to be in the viewer's `listServices()`: an org
- * admin watching the whole org sees calls to user-level instances they cannot
- * themselves list. Those ids come back through `extraServiceIds` so the
- * traffic has somewhere to land instead of disappearing.
+ * Instance names are unique per `(org, owner)`, not per org — the map lists
+ * with `include_user_level=true`, so an admin's payload can hold three rows
+ * called `gcal` owned by three different users. Keying by name alone collapses
+ * them onto one ball, and a ball can only sit inside one ownership container.
+ * `org` stands in for an org-level instance, which has no owner.
  */
-export function serviceNodeId(name: string | null | undefined): string {
-	return name ? `service:${name}` : RAW_HTTP_ID;
+function serviceNodeIdFor(ownerUserId: string | undefined, name: string): string {
+	return `service:${ownerUserId ?? 'org'}:${name}`;
+}
+
+/**
+ * Node id for a name seen on the stream that no listed instance matched: an
+ * org admin watching the whole org sees calls to user-level instances they
+ * cannot themselves list. Two segments, so it never collides with a qualified
+ * id, and `extraServiceIds` gives the traffic somewhere to land.
+ */
+function unlistedServiceNodeId(name: string): string {
+	return `service:${name}`;
 }
 
 // Radii of the concentric rings, in world units. Lifted from the design's
@@ -98,14 +137,20 @@ const R_USER = 250;
 const R_AGENT = 365;
 const R_AGENT_COLLAPSED = 300;
 const R_SUB_GAP = 85;
-/** Service ring, per service. The ring has to clear the agents, but sizing it
- *  by a constant meant three services on a 700-unit circle set the fit radius
- *  and zoomed a small fleet down to something unreadable. */
+/** Shared service ring, per service. The ring has to clear the agents, but
+ *  sizing it by a constant meant three services on a 700-unit circle set the
+ *  fit radius and zoomed a small fleet down to something unreadable. Only
+ *  org-level instances ride it now, so the count it is sized by is smaller. */
 const R_SERVICE_MIN_GAP = 170;
 const R_SERVICE_PER_NODE = 42;
-/** Angular spread between siblings, radians. */
+/** How far past a user's outermost subagent that user's own services sit,
+ *  measured from the user rather than from the centre. */
+const R_OWNED_SERVICE_GAP = 40;
+/** Angular spread between siblings, radians. Services fan wider than agents
+ *  because their arc is further out and their balls are square. */
 const SPREAD_AGENT = 0.42;
 const SPREAD_SUB = 0.11;
+const SPREAD_SERVICE = 0.5;
 
 const polar = (r: number, a: number) => ({ x: Math.cos(a) * r, y: Math.sin(a) * r });
 
@@ -123,7 +168,7 @@ function mono(name: string, chars = 1): string {
  * a sub-agent, and a node three levels down belongs on the outer ring
  * regardless of what it calls itself.
  */
-function identityNodes(identities: Identity[]): MapNode[] {
+function identityNodes(identities: Identity[], allowedDomains: string[]): MapNode[] {
 	const byId = new Map(identities.map((i) => [i.id, i]));
 	const childCount = new Map<string, number>();
 	for (const i of identities) {
@@ -131,12 +176,19 @@ function identityNodes(identities: Identity[]): MapNode[] {
 	}
 
 	return identities.map((i) => {
+		// `$lib/identityDisplay` owns what an identity is called: a user's real
+		// handle is their email, domain-stripped when the org has one sign-in
+		// domain, and the IdP `name` claim is neither unique nor stable. The
+		// container chip is named off this, so a cluster reads the same as its
+		// row in the users list. Agents have no email and keep their name.
+		const display = formatIdentity(i, allowedDomains);
 		if (i.kind === 'user') {
 			return {
 				id: i.id,
 				kind: 'user' as const,
-				label: i.name,
-				mono: mono(i.name),
+				label: display.primary,
+				mono: mono(display.primary),
+				title: display.title,
 				picture: i.picture ?? undefined,
 				sub: childCount.get(i.id) ?? 0
 			};
@@ -148,8 +200,9 @@ function identityNodes(identities: Identity[]): MapNode[] {
 		return {
 			id: i.id,
 			kind: parentIsUser ? ('agent' as const) : ('subagent' as const),
-			label: i.name,
-			mono: mono(i.name),
+			label: display.primary,
+			mono: mono(display.primary),
+			title: display.title,
 			// Agents are created through the API and have no IdP, so this is
 			// almost always undefined — but the column is on every identity,
 			// so read it rather than assume.
@@ -163,27 +216,78 @@ function identityNodes(identities: Identity[]): MapNode[] {
 	});
 }
 
-function serviceNodes(services: ServiceInstanceSummary[], extraIds: string[]): MapNode[] {
-	const nodes: MapNode[] = services.map((s) => ({
-		id: `service:${s.name}`,
+/**
+ * `owner_identity_id` → the *user* whose cluster owns it.
+ *
+ * The column can name an agent: an `on_behalf_of` create binds the instance to
+ * the agent rather than to its user. Containers are keyed by user, so walk up
+ * the tree the way `identityNodes` reads depth rather than the `kind` column.
+ * An owner outside the returned set (archived, or filtered out) resolves to
+ * itself — the instance is someone's, we just cannot name whose.
+ */
+function ownerUserResolver(identities: Identity[]): (id: string) => string {
+	const byId = new Map(identities.map((i) => [i.id, i]));
+	return (id: string): string => {
+		const seen = new Set<string>();
+		let cur = id;
+		for (;;) {
+			if (seen.has(cur)) return cur;
+			seen.add(cur);
+			const n = byId.get(cur);
+			if (!n || n.kind === 'user') return cur;
+			const next = n.owner_id ?? n.parent_id;
+			if (!next) return cur;
+			cur = next;
+		}
+	};
+}
+
+/** A listed instance with its owner resolved to a user and its node id minted
+ *  once, so the nodes and the name→id index cannot disagree. */
+interface ListedInstance {
+	id: string;
+	owner?: string;
+	summary: ServiceInstanceSummary;
+}
+
+function listedInstances(
+	services: ServiceInstanceSummary[],
+	ownerUserOf: (id: string) => string
+): ListedInstance[] {
+	return services.map((s) => {
+		const owner = s.owner_identity_id ? ownerUserOf(s.owner_identity_id) : undefined;
+		return { id: serviceNodeIdFor(owner, s.name), owner, summary: s };
+	});
+}
+
+function serviceNodes(listed: ListedInstance[], extraIds: string[]): MapNode[] {
+	const nodes: MapNode[] = listed.map(({ id, owner, summary }) => ({
+		id,
 		kind: 'service' as const,
-		label: s.name,
-		mono: mono(s.name, 2),
-		icon: s.icon_url ?? undefined,
-		status: s.status
+		label: summary.name,
+		mono: mono(summary.name, 2),
+		icon: summary.icon_url ?? undefined,
+		owner,
+		status: summary.status
 	}));
 	// Added only once traffic has actually used them — a permanent "raw http"
 	// ball on the ring of an org that never makes one would be noise.
 	const known = new Set(nodes.map((n) => n.id));
+	// An instance first seen in traffic is keyed by bare name; the fleet
+	// refetch that lists it mints a qualified id for the same instance. Drop
+	// the unqualified one, or the map draws that service twice.
+	const listedNames = new Set(listed.map((l) => l.summary.name));
 	for (const id of extraIds) {
 		if (known.has(id)) continue;
-		known.add(id);
 		const label = id === RAW_HTTP_ID ? 'direct' : id.slice('service:'.length);
+		if (id !== RAW_HTTP_ID && listedNames.has(label)) continue;
+		known.add(id);
 		nodes.push({
 			id,
 			kind: 'service' as const,
 			label,
 			mono: mono(label, 2),
+			unlisted: true,
 			status: id === RAW_HTTP_ID ? 'No service named' : 'Seen in traffic'
 		});
 	}
@@ -196,11 +300,28 @@ export function buildGraph(
 	/** Service node ids seen on the event stream but absent from `services`. */
 	extraServiceIds: string[],
 	collapse: CollapseState,
-	overrides: Record<string, boolean>
+	overrides: Record<string, boolean>,
+	/** Org sign-in domains, so a user's label matches the users list. */
+	allowedDomains: string[] = []
 ): Graph {
-	const idNodes = identityNodes(identities);
-	const svcNodes = serviceNodes(services, extraServiceIds);
+	const ownerUserOf = ownerUserResolver(identities);
+	const listed = listedInstances(services, ownerUserOf);
+	const idNodes = identityNodes(identities, allowedDomains);
+	const svcNodes = serviceNodes(listed, extraServiceIds);
 	const all = [...idNodes, ...svcNodes];
+
+	// (owner, name) → node id, for the name-only ids the event stream carries.
+	const instanceKey = (owner: string | undefined, name: string) => `${owner ?? 'org'}\u0000${name}`;
+	const instanceIndex = new Map<string, string>(
+		listed.map((l) => [instanceKey(l.owner, l.summary.name), l.id])
+	);
+	const serviceIdFor = (name: string | null | undefined, actorId?: string): string => {
+		if (!name) return RAW_HTTP_ID;
+		const ownerUser = actorId ? ownerUserOf(actorId) : undefined;
+		const own = ownerUser ? instanceIndex.get(instanceKey(ownerUser, name)) : undefined;
+		if (own) return own;
+		return instanceIndex.get(instanceKey(undefined, name)) ?? unlistedServiceNodeId(name);
+	};
 
 	const users = idNodes.filter((n) => n.kind === 'user');
 	const orgNode: MapNode = {
@@ -354,12 +475,45 @@ export function buildGraph(
 		);
 	});
 
+	// A user-level instance sits on its owner's spoke, just past that user's
+	// subagents, so the ownership container encloses it without stretching out
+	// to the shared ring. Placed as an *offset from the owner*, not at an
+	// absolute radius: the physics springs it to the owner, and a target the
+	// spring cannot reach only stretches the box between the two.
+	const agentOffset = collapse.users ? agentR : agentR - R_USER;
+	// `ring` counts the pass that found no children, and starts at one, so the
+	// number of subagent levels actually placed is two less. With the subagents
+	// lane folded there is nothing on those rings to clear, and reserving the
+	// space anyway leaves a band of empty box between a user and their
+	// services. The shared ring below keeps its own (looser) reckoning — it
+	// only has to clear the tree, whereas this has to land right next to it.
+	const subLevels = collapse.subagents ? 0 : Math.max(0, ring - 2);
+	const ownedOffset = agentOffset + R_SUB_GAP * subLevels + R_OWNED_SERVICE_GAP;
+	const owned = svcNodes.filter((s) => s.owner);
+	let ownedReach = 0;
+	for (const u of users) {
+		const own = owned.filter((s) => s.owner === u.id);
+		// `userAngle` is populated even with users collapsed, so a folded org
+		// still fans its services out by owner instead of piling them up.
+		const base = collapse.users ? { x: 0, y: 0 } : targets.get(u.id) ?? { x: 0, y: 0 };
+		own.forEach((s, j) => {
+			const ang = (userAngle.get(u.id) ?? 0) + (j - (own.length - 1) / 2) * SPREAD_SERVICE;
+			const off = polar(ownedOffset, ang);
+			const t = { x: base.x + off.x, y: base.y + off.y };
+			ownedReach = Math.max(ownedReach, Math.hypot(t.x, t.y));
+			targets.set(s.id, t);
+		});
+	}
+	// Whatever is left: org-level instances, plus anything owned by an identity
+	// outside the returned set, which has no spoke to sit on. The ring has to
+	// clear both the subagents and everyone's owned services.
+	const shared = svcNodes.filter((s) => !targets.has(s.id));
 	const svcR = Math.max(
-		agentR + R_SUB_GAP * Math.max(1, ring - 1) + R_SERVICE_MIN_GAP,
-		svcNodes.length * R_SERVICE_PER_NODE
+		Math.max(agentR + R_SUB_GAP * Math.max(1, ring - 1), ownedReach) + R_SERVICE_MIN_GAP,
+		shared.length * R_SERVICE_PER_NODE
 	);
-	svcNodes.forEach((s, i) => {
-		const n = svcNodes.length;
+	shared.forEach((s, i) => {
+		const n = shared.length;
 		targets.set(s.id, polar(svcR, (i * 2 * Math.PI) / n + Math.PI / n));
 	});
 
@@ -368,7 +522,23 @@ export function buildGraph(
 		if (n.kind === 'user' || n.kind === 'org') rootOf.set(n.id, n.id);
 		else if (n.kind === 'agent') rootOf.set(n.id, n.owner ? resolve(n.owner) : n.id);
 		else if (n.kind === 'subagent') rootOf.set(n.id, n.owner ? resolve(n.owner) : n.id);
+		// A user-level instance is reachable only by its owner's fleet, so it
+		// belongs in that cluster. Org-level instances get no entry: they are
+		// called from several clusters and belong inside none of them.
+		else if (n.kind === 'service' && n.owner) rootOf.set(n.id, resolve(n.owner));
 	}
 
-	return { byId, structural, structSet, edges, hidden, targets, rootOf, resolve, closedFor };
+	return {
+		byId,
+		structural,
+		structSet,
+		edges,
+		hidden,
+		targets,
+		rootOf,
+		resolve,
+		closedFor,
+		serviceIdFor,
+		ownedServiceGap: ownedOffset
+	};
 }

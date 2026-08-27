@@ -2,16 +2,23 @@
 	import { onMount } from 'svelte';
 	import { onEvent, eventStream, type StreamEvent } from '$lib/stores/events.svelte';
 	import type { Identity, ServiceInstanceSummary } from '$lib/types';
-	import { buildGraph, serviceNodeId, type CollapseState, type MapNode } from './graph';
+	import { buildGraph, type CollapseState, type MapNode } from './graph';
+	import { resolveOwner, ownerLabel } from '$lib/ownerLabel';
 	import { createSim, SIZES, type CallOutcome, type Sim, type TooltipCall } from './sim';
 
 	let {
 		identities = [],
 		services = [],
+		currentUserId = undefined,
+		allowedDomains = [],
 		onUnknownActor = () => {}
 	}: {
 		identities?: Identity[];
 		services?: ServiceInstanceSummary[];
+		/** The viewer, so their own services read "You" rather than their email. */
+		currentUserId?: string;
+		/** Org sign-in domains, stripped off owner emails by `$lib/ownerLabel`. */
+		allowedDomains?: string[];
 		/** An event named an identity we have never heard of — the fleet
 		 *  snapshot is stale. The page decides whether to refetch. */
 		onUnknownActor?: () => void;
@@ -66,7 +73,9 @@
 	 *  the very first pass and register against a `sim` that is still null. */
 	let ready = $state(false);
 
-	const graph = $derived(buildGraph(identities, services, extraServices, collapse, overrides));
+	const graph = $derived(
+		buildGraph(identities, services, extraServices, collapse, overrides, allowedDomains)
+	);
 
 	const counts = $derived.by(() => {
 		let users = 0;
@@ -92,17 +101,22 @@
 		if (!q) return null;
 		const s = new Set<string>();
 		for (const n of graph.byId.values()) {
-			if (n.label.toLowerCase().includes(q)) s.add(graph.resolve(n.id));
+			// `title` too: a user's label is their domain-stripped email, and
+			// nobody who types the full address expects to find nothing.
+			const hay = `${n.label} ${n.title ?? ''}`.toLowerCase();
+			if (hay.includes(q)) s.add(graph.resolve(n.id));
 		}
 		return s;
 	});
 
 	/**
 	 * Cluster roots worth drawing a container around: a user (or the org
-	 * aggregate) with at least one agent or subagent standing under it.
+	 * aggregate) with at least one agent, subagent or owned service standing
+	 * under it.
 	 *
-	 * Folding the Agents lane leaves every root memberless, so the boxes go with
-	 * it — which is right, since there is nothing left to enclose.
+	 * Folding the Agents lane leaves a root with only its services, and a user
+	 * who owns neither drops out entirely — which is right, since there is
+	 * nothing left to enclose.
 	 */
 	const boxRoots = $derived.by(() => {
 		const roots: string[] = [];
@@ -162,7 +176,9 @@
 	function handleAction(e: StreamEvent<ActionEventData>) {
 		const { call_id: callId, actor_identity_id: actor } = e.data;
 		if (!callId || !actor) return;
-		const to = serviceNodeId(e.data.service);
+		// Instance names are unique per owner, so which ball the traffic lands on
+		// depends on the actor — see `Graph.serviceIdFor`.
+		const to = graph.serviceIdFor(e.data.service, actor);
 		// Both endpoints may be new to us. A service gets a node on the spot;
 		// an identity has to come from the API, so ask the page to refetch.
 		if (!graph.byId.has(to) && !extraServices.includes(to)) {
@@ -293,8 +309,24 @@
 		};
 	}
 
+	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
+
+	/** How a service ball names its owner. The same resolver the services list,
+	 *  the service detail header and the API Explorer picker use, so the map
+	 *  agrees with them on what an owner is called. */
+	function serviceOwnership(n: MapNode): string {
+		if (!n.owner) return 'Org-wide';
+		const scope = resolveOwner(n.owner, identityById, currentUserId, allowedDomains);
+		return scope.kind === 'self' ? 'Yours' : `Owned by ${ownerLabel(scope)}`;
+	}
+
 	function tipSubtitle(n: MapNode): string {
-		if (n.kind === 'service') return n.status ?? 'Service';
+		if (n.kind === 'service') {
+			const status = n.status ?? 'Service';
+			// A node invented from traffic has no listing behind it: its owner is
+			// unknown, not absent, so the status is the whole of what we know.
+			return n.unlisted ? status : `${serviceOwnership(n)} · ${status}`;
+		}
 		if (n.kind === 'org') return 'All users';
 		if (n.kind === 'user') return `Owner · ${n.sub ?? 0} agents`;
 		const kind = n.kind === 'agent' ? 'Agent' : 'Subagent';
@@ -326,6 +358,7 @@
 				{@const badge = graph.hidden.get(n.id) ?? 0}
 				<div
 					class="lm-node k-{n.kind}"
+					class:is-org={n.kind === 'service' && !n.owner && !n.unlisted}
 					class:is-dim={hits && !hits.has(n.id)}
 					class:is-hit={hits?.has(n.id)}
 					use:tracked={n.id}
@@ -490,7 +523,7 @@
 
 		{#if tip}
 			<div class="lm-tip" style:left="{tip.x}px" style:top="{tip.y}px">
-				<div class="lm-tip-id">{tip.node.label}</div>
+				<div class="lm-tip-id" title={tip.node.title}>{tip.node.title ?? tip.node.label}</div>
 				<div class="lm-tip-sub">{tipSubtitle(tip.node)}</div>
 				<div class="lm-tip-rows">
 					{#if tip.rows.length === 0}
