@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0](https://github.com/overfolder/overslash/compare/v0.8.0...v0.9.0) (2026-08-27)
+
+
+### Features
+
+* **whatsapp:** sync template to whatsapp-mcp-docker 0.7.0 ([e85c1e2](https://github.com/overfolder/overslash/commit/e85c1e27bc7655bb5d59a7b13ce168ad76728698))
+* **whatsapp:** sync template to whatsapp-mcp-docker 0.7.0 ([9e632dd](https://github.com/overfolder/overslash/commit/9e632dd3dbfbb4b811edaa1ca8ec3c12a1d2e8f4))
+
+
+### Bug Fixes
+
+* **compact:** keep pagination headers and rank cursor keys above the alphabet ([#572](https://github.com/overfolder/overslash/issues/572)) ([e01ced9](https://github.com/overfolder/overslash/commit/e01ced96461ffba7a341ae77a4de095766d5a8de)), closes [#537](https://github.com/overfolder/overslash/issues/537)
+
 ## [0.8.0](https://github.com/overfolder/overslash/compare/v0.7.0...v0.8.0) (2026-08-14)
 
 
