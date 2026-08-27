@@ -267,7 +267,7 @@ pub(super) async fn mint_http_download(
     Ok((
         StatusCode::OK,
         Json(CallResponse::Called {
-            result: render_action_result(&result, d.req.verbose),
+            result: render_action_result(&result, d.req.verbose, None),
             action_description: d.meta.description.clone(),
             is_error: false,
             execution_id: None,

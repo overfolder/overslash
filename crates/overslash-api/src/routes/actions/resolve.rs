@@ -199,6 +199,7 @@ pub(super) async fn resolve_request(
                 // but the service still knows whether its upstream is slow.
                 action_timeout_ms: None,
                 action_wait_mode: None,
+                action_pagination: None,
                 action_handoff_after_ms: None,
                 service_timeout_ms: svc.default_timeout_ms,
                 download: None,
@@ -416,6 +417,7 @@ pub(super) async fn resolve_request(
                     action_timeout_ms: action.timeout_ms,
                     service_timeout_ms: svc.default_timeout_ms,
                     action_wait_mode: action.wait_mode,
+                    action_pagination: action.pagination.clone(),
                     action_handoff_after_ms: action.handoff_after_ms,
                     download: action.download.clone(),
                     params: req.params.clone(),
@@ -477,6 +479,7 @@ pub(super) async fn resolve_request(
                     // so there is no upstream to time out.
                     action_timeout_ms: None,
                     action_wait_mode: None,
+                    action_pagination: None,
                     action_handoff_after_ms: None,
                     service_timeout_ms: None,
                     // Platform actions dispatch in-process; nothing is dialed.
@@ -877,6 +880,7 @@ pub(super) async fn resolve_request(
                 action_timeout_ms: action.timeout_ms,
                 service_timeout_ms: svc.default_timeout_ms,
                 action_wait_mode: action.wait_mode,
+                action_pagination: action.pagination.clone(),
                 action_handoff_after_ms: action.handoff_after_ms,
                 download: None,
                 params: req.params.clone(),

@@ -195,6 +195,24 @@ paths:
   /gmail/v1/users/{userId}/messages:
     get:
       operationId: list_messages
+      # Google's list endpoints have no bound of their own: omit `maxResults`
+      # and the API decides, which on a large mailbox is how a read turns into
+      # a response nobody asked for. `page_size.default` seeds the parameter's
+      # own default, so a caller that says nothing still gets one page.
+      #
+      # `nextPageToken` sits *after* the `messages` array in Google's payload —
+      # the case D74's key cap was ranked for, and the reason `from:` names it
+      # explicitly rather than trusting a truncator to keep it.
+      pagination:
+        page_size:
+          param: maxResults
+          default: 100
+          max: 500
+        next:
+          style: cursor
+          param: pageToken
+          from: nextPageToken
+        items: messages
       summary: "Search messages for {userId}"
       risk: read
       scope_param: userId
@@ -383,6 +401,17 @@ paths:
   /gmail/v1/users/{userId}/threads:
     get:
       operationId: list_threads
+      # Same shape as list_messages, one collection over.
+      pagination:
+        page_size:
+          param: maxResults
+          default: 100
+          max: 500
+        next:
+          style: cursor
+          param: pageToken
+          from: nextPageToken
+        items: threads
       summary: "Search threads (conversations) for {userId}"
       risk: read
       scope_param: userId
@@ -572,6 +601,17 @@ paths:
   /gmail/v1/users/{userId}/drafts:
     get:
       operationId: list_drafts
+      # Same shape as list_messages, one collection over.
+      pagination:
+        page_size:
+          param: maxResults
+          default: 100
+          max: 500
+        next:
+          style: cursor
+          param: pageToken
+          from: nextPageToken
+        items: drafts
       summary: "List draft messages for {userId}"
       risk: read
       scope_param: userId

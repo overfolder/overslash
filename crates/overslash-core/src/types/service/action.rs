@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use super::execution::ExecutionMode;
+use super::pagination::PaginationSpec;
 use super::risk::DeclaredRisk;
 use super::scope::ScopeParams;
 
@@ -88,6 +89,22 @@ pub struct ServiceAction {
     /// the request and a template cannot know it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_after_ms: Option<u64>,
+    /// `x-overslash-pagination`: how this action pages, in the gateway's
+    /// vocabulary rather than the upstream's.
+    ///
+    /// Two jobs, and the reason both live behind one key is that neither is
+    /// much use alone. It names the parameter that bounds a page — whose
+    /// declared default the compiler seeds from here when the upstream
+    /// declares none — and it names how to reach the next page, so a paged
+    /// response can carry a `next` the caller can act on without having
+    /// learned that this particular API spells continuation `pageToken` and
+    /// the one beside it spells it `start_cursor`.
+    ///
+    /// `None` is not "this action returns everything": it is "nobody has said".
+    /// Most of the corpus is still in that state, which is the gap this key
+    /// exists to close one action at a time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pagination: Option<PaginationSpec>,
     #[serde(default)]
     pub params: HashMap<String, ActionParam>,
     /// Which params provide the `{arg}` segment in permission keys, and under

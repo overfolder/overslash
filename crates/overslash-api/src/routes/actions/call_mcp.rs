@@ -184,7 +184,8 @@ pub(super) async fn dispatch(
     // Dev's #547 routes every rendered result through `render_stored` so an
     // oversized compact body gets a re-fetchable URL. The MCP fork moved out
     // of `call` after that landed, so it has to carry the same call.
-    let rendered = super::render_stored(state, ext, &result, req, auth.org_id, identity_id).await;
+    let rendered =
+        super::render_stored(state, ext, &result, req, meta, auth.org_id, identity_id).await;
     let mut resp = (
         StatusCode::OK,
         Json(CallResponse::Called {

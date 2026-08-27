@@ -571,6 +571,9 @@ fn map_call_error(e: http_caller::CallError, timeout: CallTimeout) -> AppError {
             // renders through `Display`, never `IntoResponse`.
             download_url: None,
             expires_at: None,
+            // Same reason: nothing here renders the hint, so there is nothing
+            // for a parameter name to improve.
+            page_size_param: None,
         },
         // `timeout_ms` comes from the transport (what was actually applied),
         // the rest from the resolver (who set it, and what the caller would

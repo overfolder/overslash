@@ -6,13 +6,15 @@ use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
 use crate::types::{
-    ActionParam, DeclaredRisk, McpAuth, McpSpec, ParamLocation, ServiceAction, ServiceDefinition,
+    ActionParam, DeclaredRisk, McpAuth, McpSpec, NextStyle, ParamLocation, ServiceAction,
+    ServiceDefinition,
 };
 
 use super::super::ext::{self, Ext, Pos};
 use super::{
-    parse_aliases, parse_disclose, parse_download, parse_instance_config, parse_redact,
-    parse_resolver, parse_scope_params, parse_sql_policy, parse_timeout_ms, parse_wait_mode,
+    parse_aliases, parse_disclose, parse_download, parse_instance_config, parse_pagination,
+    parse_redact, parse_resolver, parse_scope_params, parse_sql_policy, parse_timeout_ms,
+    parse_wait_mode,
 };
 
 // ── x-overslash-mcp → McpSpec + ServiceActions ───────────────────────
@@ -340,6 +342,26 @@ fn lower_mcp_tool(
         &base,
         errors,
     );
+    // `link` is the one style an MCP tool cannot wear. A tool result is a
+    // JSON-RPC envelope with no response headers, so a Link-styled spec here
+    // would parse cleanly and then find nothing to read — the silent no-op
+    // D67's lint exists to catch, except one layer too deep for the lint to
+    // see, since the key *is* read at this position.
+    let pagination = parse_pagination(ext::get(obj, Pos::McpTool, Ext::Pagination), &base, errors)
+        .filter(|spec| {
+            if spec.next.style == NextStyle::Link {
+                errors.push(ValidationIssue::new(
+                    "pagination_invalid_style",
+                    format!(
+                        "{} style \"link\" needs a response header, and an MCP tool result has none",
+                        Ext::Pagination.key()
+                    ),
+                    format!("{base}.{}.next.style", Ext::Pagination.key()),
+                ));
+                return false;
+            }
+            true
+        });
 
     // The upstream MCP tool name defaults to the action key, but may be
     // overridden with `mcp_tool` when the server's tool name isn't a valid
@@ -359,6 +381,7 @@ fn lower_mcp_tool(
         timeout_ms,
         wait_mode,
         handoff_after_ms,
+        pagination,
         params,
         scope_param,
         disclose,

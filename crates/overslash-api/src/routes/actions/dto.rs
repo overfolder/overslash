@@ -331,6 +331,13 @@ pub(super) struct ResolvedMeta {
     /// the resolved mode is hybrid, and clamped rather than refused — see
     /// [`crate::services::hybrid::resolve_handoff`].
     pub(super) action_handoff_after_ms: Option<u64>,
+    /// `x-overslash-pagination` on the resolved action — how this action
+    /// pages, if anyone has said.
+    ///
+    /// `None` for verb / `http` shapes for the same reason as the two fields
+    /// above: a raw HTTP call has no action template, so there is no
+    /// declaration to read and nothing to say about the next page.
+    pub(super) action_pagination: Option<overslash_core::types::PaginationSpec>,
     /// `x-overslash-download` from the action template. MCP actions only —
     /// it's how a tool result says "the bytes are over there". HTTP actions
     /// are their own download and leave this `None`.

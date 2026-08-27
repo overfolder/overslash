@@ -986,6 +986,7 @@ paths:
 - **`x-overslash-timeout_ms` / `timeout_ms:`** — on an operation (or MCP tool), how long that action is expected to need upstream, in milliseconds. A **default, not a cap**: it encodes knowledge about the upstream ("Metabase aggregations are slow"), and the org and deployment maxima still clamp it. Omitted, the action inherits the service default, then the org default, then the deployment default. A value that is present but not a positive integer is a template *error*, not a silent fallback. See §8 for the full cascade.
 - **`x-overslash-wait-mode` / `wait-mode:`** — on an operation (or MCP tool), the execution mode a call to it defaults to when the caller names no `execution` of its own: `sync` (the default everywhere), `async`, or `hybrid`. A **default, not a cap** — the request field wins in both directions, so a caller can always insist on `sync`. Declaring a deferred mode changes the *response shape* of a call that never asked for one, so it is for actions that genuinely cannot answer inside the synchronous ceiling; the alternative for those is a 504. Where the mode cannot be honoured (`prefer_stream`, `deliver: "url"`, `return_url`, `runtime: platform`, a binary response, or async disabled) the declaration is dropped and the call runs synchronously rather than failing. An unrecognized value is a template *error* and falls back to synchronous. See §8.
 - **`x-overslash-handoff_after_ms` / `handoff_after_ms:`** — on an operation (or MCP tool), how long a *hybrid* call to it holds the connection before answering 202. Clamped to the deployment maximum and to the call's own budget, never refused. Inert under any other resolved mode. See §8.
+- **`x-overslash-pagination` / `pagination:`** — on an operation (or MCP tool), that this action returns one *page* of a larger collection, and how to reach the next one. Two halves. `page_size: {param, default, max}` names the declared numeric parameter that bounds a page; `default` **seeds that parameter's own `default:`** at compile time when it declares none, so the bound reaches the wire through `apply_defaults` like any other default (and appears on `/v1/search` rows for the same reason) rather than through a second injection path — a parameter that already declares one keeps it, and the two disagreeing is a warning. `max` is declarative: it bounds `default` at validation time and is *not* enforced against a caller who explicitly asks for more. `next: {style, param, from}` names the continuation: `cursor` (an opaque value read from the dotted body path in `from` — Slack's `cursor`, Notion's `start_cursor`, Google's `pageToken`), `offset` (advance `param` by the effective page size), `page` (increment `param`), or `link` (RFC 8288 `rel="next"`, which names its own next URL and so takes neither `param` nor `from`; refused on an MCP tool, whose results carry no headers). Optional `items` (dotted path to the principal collection) and `has_more` (dotted path to an explicit boolean) are how a last page is recognised. A **paged result** carries `_pagination: {has_more, next: {service, action, params}}`, where `params` is the *difference* between the call just made and the next one, in the action's own parameter names — merge it into what you sent. The gateway never follows a page itself. A malformed block is a template *error* and the action goes back to being unpaged; a `page_size.param` naming a parameter the action does not declare is an error too, since it reads as a bound and applies none. See §12b.
 - **`x-overslash-default_timeout_ms` / `default_timeout_ms:`** — under `info`, the same thing one rung less specific: the timeout every action of this service inherits unless it declares its own. The one-line answer to "this whole upstream is slow".
 - **`x-overslash-icon` / `icon:`** — under `info`, the mark the dashboard shows for this service. Two forms: `builtin:<name>`, an asset Overslash ships and serves at `/icons/<name>.svg`, and an `https://` URL hosted elsewhere. **Usually omitted**: a template whose key matches a shipped asset resolves to `builtin:<key>` implicitly, which is why the shipped templates declare nothing. Explicit values are for the two cases the convention can't express — a key that deliberately differs from the asset it reuses (`github_legacy_oauth`), or a remote URL. Resolved server-side and surfaced as an absolute `icon_url` on the template and service-instance responses; a template with nothing renderable omits the field, and the dashboard falls back to a letter tile. Only `https://` ever reaches a browser — `http:`, `data:` and `javascript:` are template *errors*, checked both at write time and again when the response is built. Overslash never fetches a remote icon (that would be an SSRF vector and a boot-time network dependency), so there is no size or format validation of one. `${VAR}` expansion applies like anywhere else, which is how a self-hoster points the set at their own CDN. Icons are deliberately **not** on `/v1/search`: it fans out up to 100 rows per (instance × action) and the field would cost an agent's context window for something no model can render.
 - **Platform-namespace actions** — `x-overslash-platform_actions` (alias `platform_actions:`) at the top level declares permission anchors with no HTTP binding (e.g. the `overslash` meta service's admin actions).
@@ -1568,6 +1569,43 @@ paths:
 ```
 
 Unprefixed `disclose:` / `redact:` aliases normalize to `x-overslash-disclose` / `x-overslash-redact` like the other operation-level extensions. jq syntax is validated at template register / promote time; a malformed filter rejects the template with a `disclose_invalid_jq` issue.
+
+## 12b. Pagination (`x-overslash-pagination`)
+
+An action that declares `x-overslash-pagination` returns one page of a larger
+collection, and every paged result carries the same continuation shape whatever
+the upstream calls it:
+
+```json
+"_pagination": {
+  "has_more": true,
+  "next": {
+    "service": "gmail",
+    "action": "list_messages",
+    "params": { "pageToken": "CAUQ…", "maxResults": 100 }
+  }
+}
+```
+
+`next.params` is the **difference** between the call just made and the one that
+fetches the next page — merge it into the params you sent, do not replace them.
+`{"has_more": false}` with no `next` is the last page, and is emitted rather
+than omitted so it is distinguishable from a cursor going missing.
+
+The marker appears on both the verbose and the compact render, beside
+`_truncated` / `_hint` / `_full_result`. It is derived from the response body
+and headers **as they arrived**: a jq `filter` that projects the cursor away
+does not cost the caller the page, and neither does compaction (D74). It is
+absent on `deliver: "url"` and `Prefer: stream`, whose envelopes carry a
+download token rather than rows.
+
+`/v1/search` action rows carry `paginated: true` when the action declares
+pagination, so an agent can see that following pages is possible without
+inferring it from a parameter name; the page-size parameter and its injected
+default already appear in the row's `params` (§10).
+
+**The gateway never follows a page.** It bounds the call and offers the next
+one. Whether page two is worth fetching is a question about the caller's task.
 
 ## Deferred downloads (`deliver: "url"`, `x-overslash-download`)
 

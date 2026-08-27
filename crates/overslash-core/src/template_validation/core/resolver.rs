@@ -627,6 +627,7 @@ mod tests {
         ServiceAction {
             wait_mode: None,
             handoff_after_ms: None,
+            pagination: None,
             timeout_ms: None,
             method: String::new(),
             path: String::new(),

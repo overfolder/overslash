@@ -124,6 +124,16 @@ pub enum AppError {
         /// hint adapts, so a `None` reads exactly like the pre-D57 502.
         download_url: Option<String>,
         expires_at: Option<String>,
+        /// The action's page-size parameter, when it declares one
+        /// (`x-overslash-pagination`).
+        ///
+        /// The hint has always told the caller to narrow with "the action's own
+        /// paging parameters", which is advice it had no way to act on without
+        /// going back to `/v1/search` to find out what they are called. Naming
+        /// the parameter turns a direction into an instruction. `None` where
+        /// there is no action template (raw HTTP) or nobody has declared how it
+        /// pages — in which case the wording falls back to what it was.
+        page_size_param: Option<String>,
     },
 
     /// The upstream did not answer within the timeout resolved for this call.
@@ -473,6 +483,7 @@ impl IntoResponse for AppError {
                 offer_prefer_stream,
                 download_url,
                 expires_at,
+                page_size_param,
             } => {
                 // Three states, not two. Never name a recovery the caller
                 // cannot use — that is what turns one wasted round trip into
@@ -490,11 +501,17 @@ impl IntoResponse for AppError {
                 // on disk rather than in a context window. `prefer_stream` is
                 // appended only where it is reachable; it is absent from the
                 // MCP tool schemas, which are `additionalProperties: false`.
-                let hint = if download_url.is_some() {
+                let narrow = match page_size_param {
+                    Some(p) => format!("a smaller `{p}`"),
+                    None => "the action's own paging parameters".to_string(),
+                };
+                let minted = format!(
                     "the response exceeded the cap; fetch the full body at \
-                     download_url, or narrow the call with the action's own \
-                     paging parameters or a filter. The URL returns the \
-                     unfiltered body."
+                     download_url, or narrow the call with {narrow} or a \
+                     filter. The URL returns the unfiltered body."
+                );
+                let hint: &str = if download_url.is_some() {
+                    &minted
                 } else if *offer_prefer_stream {
                     "retry with deliver: \"url\" to get a download URL instead \
                      of the body, or prefer_stream: true to stream the bytes \

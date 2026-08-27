@@ -115,7 +115,127 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
         );
     }
 
+    check_pagination(action, &action_path, issues);
+
     check_sql_policy(action, &action_path, issues);
+}
+
+/// Cross-field checks for `x-overslash-pagination`. The structural shape was
+/// already settled by `extract::parse_pagination`; what only this layer can see
+/// is whether the parameters it names exist on the action, since the extension
+/// and the parameter list are parsed from different parts of the document.
+///
+/// Every finding here is an **error**, unlike the extension lint's warnings.
+/// The distinction is what the mistake costs: a key nothing reads is inert, but
+/// a page size pointing at a parameter that does not exist is a bound the
+/// gateway believes it applied and never did — the exact silent unboundedness
+/// this extension was added to end.
+fn check_pagination(action: &ServiceAction, action_path: &str, issues: &mut Issues) {
+    let Some(pagination) = action.pagination.as_ref() else {
+        return;
+    };
+    let base = format!("{action_path}.pagination");
+
+    let named = |field: &str, param: &str, issues: &mut Issues| -> Option<&ActionParam> {
+        match action.params.get(param) {
+            Some(p) => Some(p),
+            None => {
+                issues.err(
+                    "unknown_pagination_param",
+                    format!(
+                        "pagination {field} {param:?} does not reference a defined param — a page the request cannot express is not a page"
+                    ),
+                    format!("{base}.{field}"),
+                );
+                None
+            }
+        }
+    };
+
+    if let Some(page_size) = pagination.page_size.as_ref()
+        && let Some(param) = named("page_size.param", &page_size.param, issues)
+    {
+        if param.param_type != "integer" && param.param_type != "number" {
+            issues.err(
+                "invalid_pagination_param_type",
+                format!(
+                    "pagination page_size.param {:?} is declared {:?}; a page size must be numeric",
+                    page_size.param, param.param_type
+                ),
+                format!("{base}.page_size.param"),
+            );
+        }
+        // The compiler seeds the param's `default:` from here only when it has
+        // none, so two different numbers means the one written in the extension
+        // is inert. Not an error — the action still pages, and the behaviour is
+        // the parameter's, which is the more specific statement — but it reads
+        // as a promise it does not keep.
+        if let (Some(declared), Some(seeded)) = (
+            param.default.as_ref().and_then(|d| d.as_i64()),
+            page_size.default,
+        ) && declared != seeded
+        {
+            issues.warn(
+                "pagination_default_shadowed",
+                format!(
+                    "pagination page_size.default ({seeded}) is ignored: param {:?} declares its own default ({declared})",
+                    page_size.param
+                ),
+                format!("{base}.page_size.default"),
+            );
+        }
+        if let (Some(max), Some(declared)) = (
+            page_size.max,
+            param.default.as_ref().and_then(|d| d.as_i64()),
+        ) && declared > max
+        {
+            issues.err(
+                "pagination_default_exceeds_max",
+                format!(
+                    "param {:?} defaults to {declared}, above the page_size.max of {max}",
+                    page_size.param
+                ),
+                format!("{action_path}.params.{}.default", page_size.param),
+            );
+        }
+    }
+
+    if let Some(param) = pagination.next.param.as_ref() {
+        let numeric_needed = pagination.next.style.is_arithmetic();
+        if let Some(p) = named("next.param", param, issues)
+            && numeric_needed
+            && p.param_type != "integer"
+            && p.param_type != "number"
+        {
+            issues.err(
+                "invalid_pagination_param_type",
+                format!(
+                    "pagination next.param {param:?} is declared {:?}; style {:?} advances a number",
+                    p.param_type,
+                    pagination.next.style.as_str()
+                ),
+                format!("{base}.next.param"),
+            );
+        }
+    }
+
+    // `items` is what an arithmetic style uses to tell a full page from the
+    // last one. Without it — and without an explicit `has_more` — the gateway
+    // has to offer the next page unconditionally, which costs the caller one
+    // empty call at the end of every traversal.
+    if pagination.next.style.is_arithmetic()
+        && pagination.items.is_none()
+        && pagination.has_more.is_none()
+    {
+        issues.warn(
+            "pagination_unbounded_end",
+            format!(
+                "style {:?} has no `items` or `has_more`, so the last page cannot be recognised and `next` is offered after it",
+                pagination.next.style.as_str()
+            ),
+            base.clone(),
+        );
+    }
 }
 
 pub(super) fn check_platform_action(key: &str, action: &ServiceAction, issues: &mut Issues) {
@@ -422,370 +542,4 @@ pub(super) fn has_unclosed_brace(s: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::template_validation::core::tests::{minimal_mcp, minimal_valid, param, run};
-    use crate::types::{McpAuth, Risk, Runtime, ServiceAction, ServiceDefinition};
-    use std::collections::HashMap;
-
-    #[test]
-    fn unknown_http_method() {
-        let mut d = minimal_valid();
-        d.actions.get_mut("list").unwrap().method = "SNOOZE".into();
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "invalid_http_method"));
-    }
-
-    #[test]
-    fn unknown_path_param() {
-        let mut d = minimal_valid();
-        d.actions.get_mut("list").unwrap().path = "/items/{id}".into();
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "unknown_path_param"));
-    }
-
-    #[test]
-    fn path_param_not_required() {
-        let mut d = minimal_valid();
-        let a = d.actions.get_mut("list").unwrap();
-        a.path = "/items/{id}".into();
-        a.params.insert("id".into(), param("string", false));
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "path_param_not_required"));
-    }
-
-    #[test]
-    fn invalid_param_type() {
-        let mut d = minimal_valid();
-        d.actions
-            .get_mut("list")
-            .unwrap()
-            .params
-            .insert("x".into(), param("float", false));
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "invalid_param_type"));
-    }
-
-    #[test]
-    fn invalid_enum_values_empty() {
-        let mut d = minimal_valid();
-        let mut p = param("string", false);
-        p.enum_values = Some(vec![]);
-        d.actions
-            .get_mut("list")
-            .unwrap()
-            .params
-            .insert("x".into(), p);
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "invalid_enum_values"));
-    }
-
-    #[test]
-    fn invalid_enum_default_not_member() {
-        let mut d = minimal_valid();
-        let mut p = param("string", false);
-        p.enum_values = Some(vec!["a".into(), "b".into()]);
-        p.default = Some(serde_json::json!("c"));
-        d.actions
-            .get_mut("list")
-            .unwrap()
-            .params
-            .insert("x".into(), p);
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "invalid_enum_values"));
-    }
-
-    #[test]
-    fn description_unbalanced_brackets() {
-        let mut d = minimal_valid();
-        d.actions.get_mut("list").unwrap().description = "List [unclosed".into();
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "unbalanced_brackets"));
-    }
-
-    #[test]
-    fn description_unknown_param() {
-        let mut d = minimal_valid();
-        d.actions.get_mut("list").unwrap().description = "List {ghost}".into();
-        let r = run(&d);
-        assert!(
-            r.errors
-                .iter()
-                .any(|e| e.code == "unknown_description_param")
-        );
-    }
-
-    #[test]
-    fn description_placeholder_defined_ok() {
-        let mut d = minimal_valid();
-        let a = d.actions.get_mut("list").unwrap();
-        a.description = "List[ filtered by {filter}]".into();
-        a.params.insert("filter".into(), param("string", false));
-        assert!(run(&d).valid);
-    }
-
-    /// Prose the agent reads is not a label template. LinkedIn's `create_post`
-    /// documents that an author URN looks like `urn:li:person:{sub}` — real
-    /// documentation, not a placeholder. Only the `summary` is interpolated,
-    /// so only the `summary` is grammar-checked.
-    #[test]
-    fn braces_in_description_are_prose_when_a_summary_exists() {
-        let mut d = minimal_valid();
-        let a = d.actions.get_mut("list").unwrap();
-        a.description = "The author URN is urn:li:person:{sub}.".into();
-        a.summary = Some("List items".into());
-        assert!(run(&d).valid);
-    }
-
-    /// ...but a bad placeholder in the `summary` still fails, and the issue
-    /// points at `summary` rather than at `description`.
-    #[test]
-    fn summary_unknown_param_is_reported_against_summary() {
-        let mut d = minimal_valid();
-        let a = d.actions.get_mut("list").unwrap();
-        a.description = "List items".into();
-        a.summary = Some("List {ghost}".into());
-        let r = run(&d);
-        let issue = r
-            .errors
-            .iter()
-            .find(|e| e.code == "unknown_description_param")
-            .expect("summary placeholder must still be validated");
-        assert!(
-            issue.path.ends_with(".summary"),
-            "issue should name the summary field, got {:?}",
-            issue.path
-        );
-    }
-
-    /// An action may author the same text in both fields. The reported field
-    /// has to come from which field exists, not from comparing their contents
-    /// — otherwise this case blames `description` and sends the author editing
-    /// a line that is not the one being validated.
-    #[test]
-    fn identical_summary_and_description_still_blames_summary() {
-        let mut d = minimal_valid();
-        let a = d.actions.get_mut("list").unwrap();
-        a.description = "List {ghost}".into();
-        a.summary = Some("List {ghost}".into());
-        let r = run(&d);
-        let issue = r
-            .errors
-            .iter()
-            .find(|e| e.code == "unknown_description_param")
-            .expect("the placeholder must still be caught");
-        assert!(
-            issue.path.ends_with(".summary"),
-            "identical text must still be attributed to the field that is \
-             interpolated, got {:?}",
-            issue.path
-        );
-    }
-
-    /// Presence and syntax are independent: a missing `description` must not
-    /// buy a malformed `summary` a free pass. Both issues are reported, each
-    /// against its own field.
-    #[test]
-    fn absent_description_does_not_suppress_summary_grammar_checks() {
-        let mut d = minimal_valid();
-        let a = d.actions.get_mut("list").unwrap();
-        a.description = String::new();
-        a.summary = Some("List {ghost}".into());
-        let r = run(&d);
-
-        assert!(
-            r.errors
-                .iter()
-                .any(|e| e.code == "missing_field" && e.path.ends_with(".description")),
-            "the absent description must still be reported: {:?}",
-            r.errors
-        );
-        let placeholder = r
-            .errors
-            .iter()
-            .find(|e| e.code == "unknown_description_param")
-            .expect("an empty description must not skip the summary's grammar");
-        assert!(placeholder.path.ends_with(".summary"), "{placeholder:?}");
-    }
-
-    /// The ordinary shape of an MCP tool that declares neither — the MCP spec
-    /// makes a tool description optional and `tools/list` often omits it. An
-    /// empty label has no grammar to be wrong about, so dropping the early
-    /// return must not start reporting anything here.
-    #[test]
-    fn absent_description_and_summary_report_nothing_extra() {
-        let mut d = minimal_mcp(McpAuth::Bearer {
-            secret_name: Some("tok".into()),
-        });
-        for a in d.actions.values_mut() {
-            a.description = String::new();
-            a.summary = None;
-        }
-        let r = run(&d);
-        assert!(r.valid, "expected a clean report, got {:?}", r.errors);
-    }
-
-    #[test]
-    fn description_required() {
-        let mut d = minimal_valid();
-        d.actions.get_mut("list").unwrap().description = "".into();
-        let r = run(&d);
-        assert!(
-            r.errors
-                .iter()
-                .any(|e| e.code == "missing_field" && e.path.ends_with(".description"))
-        );
-    }
-
-    #[test]
-    fn unknown_scope_param() {
-        let mut d = minimal_valid();
-        d.actions.get_mut("list").unwrap().scope_param = "ghost".into();
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "unknown_scope_param"));
-    }
-
-    /// Each entry in a list is checked on its own, and the message names the
-    /// offending param rather than the whole list.
-    #[test]
-    fn unknown_scope_param_inside_a_list() {
-        let mut d = minimal_valid();
-        let action = d.actions.get_mut("list").unwrap();
-        action
-            .params
-            .insert("folder".into(), param("string", false));
-        action.scope_param = crate::types::ScopeParams::parse_list(["folder", "ghost"]).unwrap();
-        let r = run(&d);
-        let issues: Vec<_> = r
-            .errors
-            .iter()
-            .filter(|e| e.code == "unknown_scope_param")
-            .collect();
-        assert_eq!(issues.len(), 1, "only the unknown entry should report");
-        assert!(issues[0].message.contains("ghost"), "{:?}", issues[0]);
-    }
-
-    /// The label half names a permission namespace the author invents, not a
-    /// param — validating it against the schema would reject the shipped
-    /// `to:recipient` form.
-    #[test]
-    fn scope_param_label_need_not_name_a_param() {
-        let mut d = minimal_valid();
-        let action = d.actions.get_mut("list").unwrap();
-        action
-            .params
-            .insert("folder".into(), param("string", false));
-        action.scope_param = crate::types::ScopeParams::parse_list(["folder:recipient"]).unwrap();
-        let r = run(&d);
-        assert!(!r.errors.iter().any(|e| e.code == "unknown_scope_param"));
-    }
-
-    #[test]
-    fn invalid_response_type() {
-        let mut d = minimal_valid();
-        d.actions.get_mut("list").unwrap().response_type = Some("xml".into());
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "invalid_response_type"));
-    }
-
-    /// Descriptions run through the same substituter, so the linter accepts
-    /// there what the runtime resolves.
-    #[test]
-    fn description_dotted_placeholder_checks_only_the_head_segment() {
-        let mut d = minimal_valid();
-        let a = d.actions.get_mut("list").unwrap();
-        a.params.insert("query".into(), param("object", false));
-        a.description = "Run SQL on database {query.database}".into();
-        let r = run(&d);
-        assert!(
-            !r.errors
-                .iter()
-                .any(|e| e.code == "unknown_description_param")
-        );
-    }
-
-    #[test]
-    fn risk_method_mismatch_warning() {
-        let mut d = minimal_valid();
-        d.actions.get_mut("list").unwrap().risk = Risk::Delete.into();
-        let r = run(&d);
-        assert!(r.valid); // warning, not error
-        assert!(r.warnings.iter().any(|w| w.code == "risk_method_mismatch"));
-    }
-
-    #[test]
-    fn platform_namespace_action_allowed() {
-        // An action with empty method/path (like overslash.yaml) must validate
-        // clean as long as description is present.
-        let mut d = ServiceDefinition {
-            default_timeout_ms: None,
-            secrets: Vec::new(),
-            config: Vec::new(),
-            key: "overslash".into(),
-            display_name: "Overslash".into(),
-            description: None,
-            hosts: vec![],
-            category: Some("platform".into()),
-            hidden: false,
-            icon: None,
-            auth: vec![],
-            actions: HashMap::new(),
-            runtime: Runtime::Platform,
-            mcp: None,
-            instance_defaults: None,
-        };
-        d.actions.insert(
-            "manage_secrets".into(),
-            ServiceAction {
-                wait_mode: None,
-                handoff_after_ms: None,
-                timeout_ms: None,
-                method: String::new(),
-                path: String::new(),
-                description: "Manage secrets".into(),
-                summary: None,
-                risk: Risk::Write.into(),
-                response_type: None,
-                params: HashMap::new(),
-                scope_param: Default::default(),
-                required_scopes: Vec::new(),
-                permission: None,
-                disclose: Vec::new(),
-                redact: Vec::new(),
-                mcp_tool: None,
-                output_schema: None,
-                disabled: false,
-                request_body: None,
-                download: None,
-            },
-        );
-        let r = run(&d);
-        assert!(r.valid, "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn mcp_description_is_optional() {
-        // MCP spec: tool description is optional. A tools/list response
-        // that omits description should still validate — HTTP actions
-        // require one, platform actions require one, but MCP tools do not.
-        let mut d = minimal_mcp(McpAuth::None);
-        d.actions.get_mut("search").unwrap().description = String::new();
-        let r = run(&d);
-        assert!(r.valid, "errors: {:?}", r.errors);
-    }
-
-    #[test]
-    fn http_description_still_required() {
-        // Regression guard: making description optional for MCP must not
-        // relax the HTTP path. Platform + HTTP actions still reject empty
-        // descriptions.
-        let mut d = minimal_valid();
-        let a = d.actions.get_mut("list").unwrap();
-        a.description = String::new();
-        let r = run(&d);
-        assert!(
-            r.errors
-                .iter()
-                .any(|e| e.code == "missing_field" && e.path.contains("description"))
-        );
-    }
-}
+mod tests;
