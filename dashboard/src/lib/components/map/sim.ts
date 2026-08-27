@@ -13,7 +13,7 @@
  * generator is replaced by `startCall`/`finishCall` driven off the `action.*`
  * event stream.
  */
-import type { Graph, NodeKind } from './graph';
+import type { Graph, MapNode, NodeKind } from './graph';
 
 /** Node diameters, px. Agents and subagents share a size — a subagent is
  *  marked by its dashed border, not by being smaller. */
@@ -44,6 +44,18 @@ const MAX_PACKETS = 400;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 1.6;
 
+/** Container padding around a cluster's outermost balls, world units. The top
+ *  is deeper than the sides because the name chip hangs off that edge. */
+const BOX_PAD_X = 16;
+const BOX_PAD_TOP = 26;
+const BOX_PAD_BOTTOM = 22;
+const BOX_RADIUS = 14;
+/** Breathing room two containers insist on before they stop pushing apart. */
+const BOX_GAP = 18;
+const BOX_PUSH = 5;
+/** Pointer slop, px, before a chip press counts as a drag rather than a click. */
+const DRAG_SLOP = 3;
+
 export type CallOutcome = 'called' | 'denied' | 'rejected' | 'failed' | 'upstream_error';
 
 interface Vec {
@@ -68,6 +80,31 @@ interface Packet {
 	edge?: string;
 }
 
+/**
+ * One ownership container: the dashed box drawn around a user's cluster, or —
+ * once the cluster is folded — the chip standing in for it.
+ *
+ * `x0..y1` is the world-space box and is meaningless while `collapsed`; the
+ * chip anchor `lx,ly` outlives it, so folding leaves the name where the box's
+ * top-left corner was rather than teleporting it to the cluster's centre.
+ */
+interface Box {
+	x0: number;
+	y0: number;
+	x1: number;
+	y1: number;
+	lx: number;
+	ly: number;
+	/** The root and its members, cached for the box-vs-box separation pass. */
+	ids: string[];
+	collapsed: boolean;
+	/** No remembered anchor yet — the chip centres on the root instead. */
+	centered: boolean;
+	count: number;
+	running: number;
+	waiting: number;
+}
+
 export interface TooltipCall {
 	label: string;
 	waiting: boolean;
@@ -83,10 +120,13 @@ export interface SimMounts {
 	stage: HTMLElement;
 	canvas: HTMLCanvasElement;
 	layer: HTMLElement;
+	/** Holds the container name chips. Panned and zoomed with the map, but each
+	 *  chip counter-scales so its text stays screen-constant. */
+	chipLayer: HTMLElement;
 }
 
 export function createSim(mounts: SimMounts, cb: SimCallbacks) {
-	const { stage, canvas, layer } = mounts;
+	const { stage, canvas, layer, chipLayer } = mounts;
 
 	let graph: Graph | null = null;
 	let hits: Set<string> | null = null;
@@ -101,6 +141,16 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 	const leaving = new Map<string, number>();
 	let prevLive = new Set<string>();
 
+	/** Cluster root → folded. Owned by the component; pushed in wholesale. */
+	let boxClosed: Record<string, boolean> = {};
+	const boxes = new Map<string, Box>();
+	const chipEls = new Map<string, HTMLElement>();
+	/** Where each container's chip sat the last time its box was drawn open. */
+	const lastChipAnchor = new Map<string, { x: number; y: number }>();
+	/** Targets a human placed by hand. `setGraph` must not re-seed these, or a
+	 *  cluster someone dragged aside snaps back on the next fleet refetch. */
+	const manualTargets = new Set<string>();
+
 	const packets: Packet[] = [];
 	const byCall = new Map<string, Packet>();
 	/** `${from}>${to}` in *unresolved* ids → when a call last used it. */
@@ -112,6 +162,19 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		| { mode: 'pan'; sx: number; sy: number; tx: number; ty: number }
 		| { mode: 'node'; id: string; sx: number; sy: number; ox: number; oy: number }
 		| null = null;
+	let groupDrag: {
+		root: string;
+		ids: string[];
+		wx: number;
+		wy: number;
+		sx: number;
+		sy: number;
+		moved: boolean;
+		orig: { x: number; y: number }[];
+	} | null = null;
+	/** Set when a chip press turned into a real drag, so the button's click —
+	 *  which fires anyway — does not also toggle the container. */
+	let groupDragMoved = false;
 	let alpha = { v: 1, n: -1 };
 	let hoverId: string | null = null;
 
@@ -159,8 +222,10 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		graph = next;
 		for (const [id, t] of next.targets) {
 			// A pinned node keeps the position the user gave it; re-seeding
-			// from the layout would yank it back mid-gesture.
-			if (pin?.id === id) continue;
+			// from the layout would yank it back mid-gesture. Same for a
+			// cluster dragged by its chip: that gesture has to outlive the
+			// fleet refetch that rebuilt the graph.
+			if (pin?.id === id || manualTargets.has(id)) continue;
 			target.set(id, t);
 			if (!pos.has(id)) pos.set(id, { x: t.x, y: t.y, vx: 0, vy: 0 });
 		}
@@ -172,11 +237,49 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 	const setHideIdle = (v: boolean) => {
 		hideIdle = v;
 	};
+	const setBoxClosed = (v: Record<string, boolean>) => {
+		boxClosed = v;
+		// A fold changes who is on screen; wake the layout so the boxes that
+		// remain redraw at their new extent instead of on the next call.
+		alpha.v = Math.max(alpha.v, 0.5);
+	};
 
 	function registerNode(id: string, el: HTMLElement | null) {
 		if (el) nodeEls.set(id, el);
 		else nodeEls.delete(id);
 	}
+
+	function registerChip(root: string, el: HTMLElement | null) {
+		if (el) chipEls.set(root, el);
+		else chipEls.delete(root);
+	}
+
+	/** Everything under a cluster root, excluding the root itself. */
+	function memberIds(root: string): string[] {
+		if (!graph) return [];
+		const out: string[] = [];
+		for (const n of graph.structural) {
+			if (n.id !== root && graph.rootOf.get(n.id) === root) out.push(n.id);
+		}
+		return out;
+	}
+
+	/**
+	 * Is this node folded away inside a collapsed container?
+	 *
+	 * Services have no `rootOf` entry — they sit on the shared outer ring and
+	 * belong to no one cluster — so they fall out of this for free.
+	 */
+	function inClosedBox(n: MapNode): boolean {
+		if (n.kind === 'user' || n.kind === 'org') return !!boxClosed[n.id];
+		const root = graph?.rootOf.get(n.id);
+		return !!root && root !== n.id && !!boxClosed[root];
+	}
+
+	const isBoxHidden = (id: string) => {
+		const n = meta(id);
+		return !!n && inClosedBox(n);
+	};
 
 	// ── traffic ──────────────────────────────────────────────────────────
 	function touch(id: string, now = performance.now()) {
@@ -282,6 +385,7 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 
 	function recenter() {
 		pin = null;
+		manualTargets.clear();
 		if (graph) for (const [id, t] of graph.targets) target.set(id, t);
 		fitView();
 		alpha.v = 1;
@@ -290,7 +394,16 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 	// ── pointer ──────────────────────────────────────────────────────────
 	const isOverlay = (e: Event) =>
 		e.target instanceof Element &&
-		!!(e.target.closest('.lm-node-in') || e.target.closest('.lm-panel'));
+		!!(
+			e.target.closest('.lm-node-in') ||
+			e.target.closest('.lm-panel') ||
+			e.target.closest('.lm-boxchip')
+		);
+
+	const toWorld = (clientX: number, clientY: number): [number, number] => {
+		const r = stage.getBoundingClientRect();
+		return [(clientX - r.left - view.tx) / view.k, (clientY - r.top - view.ty) / view.k];
+	};
 
 	function onStagePointerDown(e: PointerEvent) {
 		if (isOverlay(e)) return;
@@ -308,7 +421,77 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		stage.setPointerCapture(e.pointerId);
 	}
 
+	/**
+	 * Grab a container by its chip. The whole cluster moves as one — dragging a
+	 * single member out would only deform the box it is drawn from.
+	 */
+	function onChipPointerDown(e: PointerEvent, root: string) {
+		e.stopPropagation();
+		const ids = [root, ...memberIds(root)];
+		groupDragMoved = false;
+		const [wx, wy] = toWorld(e.clientX, e.clientY);
+		groupDrag = {
+			root,
+			ids,
+			wx,
+			wy,
+			sx: e.clientX,
+			sy: e.clientY,
+			moved: false,
+			orig: ids.map((id) => {
+				const p = pos.get(id);
+				return { x: p?.x ?? 0, y: p?.y ?? 0 };
+			})
+		};
+		// Capture on the chip, not the stage. A capture retargets the
+		// compatibility mouse events too, and `click` is dispatched at the
+		// common ancestor of mousedown and mouseup — capture the stage and that
+		// ancestor is the stage, so the button's own click never fires and the
+		// container can never be folded. Pointer events still bubble from the
+		// chip to the stage, so the drag handlers below keep working.
+		chipEls.get(root)?.setPointerCapture(e.pointerId);
+		stage.classList.add('is-grabbing-group');
+	}
+
+	/**
+	 * Did the last chip press turn into a drag? Reading it clears it, so the
+	 * click that trails a drag is swallowed and the next one is not.
+	 */
+	function consumeGroupDrag(): boolean {
+		const moved = groupDragMoved;
+		groupDragMoved = false;
+		return moved;
+	}
+
 	function onPointerMove(e: PointerEvent) {
+		const g = groupDrag;
+		if (g) {
+			if (!g.moved) {
+				// Below the slop threshold this is still a click, and moving the
+				// cluster by two pixels under the cursor would make every fold
+				// feel like a failed drag.
+				if (Math.abs(e.clientX - g.sx) <= DRAG_SLOP && Math.abs(e.clientY - g.sy) <= DRAG_SLOP)
+					return;
+				g.moved = true;
+			}
+			const [wx, wy] = toWorld(e.clientX, e.clientY);
+			const dx = wx - g.wx;
+			const dy = wy - g.wy;
+			g.ids.forEach((id, i) => {
+				const p = pos.get(id);
+				if (!p) return;
+				p.x = g.orig[i].x + dx;
+				p.y = g.orig[i].y + dy;
+				p.vx = 0;
+				p.vy = 0;
+				// Move the target too, or the springs drag the cluster home the
+				// moment the pointer lifts.
+				target.set(id, { x: p.x, y: p.y });
+				manualTargets.add(id);
+			});
+			alpha.v = 1;
+			return;
+		}
 		if (!drag) return;
 		if (drag.mode === 'pan') {
 			view.tx = drag.tx + (e.clientX - drag.sx);
@@ -324,6 +507,11 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 	}
 
 	function onPointerUp() {
+		if (groupDrag) {
+			groupDragMoved = groupDrag.moved;
+			groupDrag = null;
+			stage.classList.remove('is-grabbing-group');
+		}
 		if (pin?.dragging) {
 			pin.dragging = false;
 			pin.released = performance.now();
@@ -441,6 +629,9 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 
 		const live = new Set<string>();
 		for (const n of graph.structural) {
+			// Folded into a collapsed container: off the map entirely, however
+			// busy it is. Its chip reports the activity instead.
+			if (inClosedBox(n)) continue;
 			const busy = (lastActive.get(n.id) ?? 0) > now - IDLE_GRACE_MS || nodeState.has(n.id);
 			const keep =
 				!hideIdle ||
@@ -472,13 +663,21 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		}
 		prevLive = live;
 		const fadeOf = (id: string) => {
+			// A fold is instant, not a fade: the component drops the ball on the
+			// same tick, and an edge still drawn to where it was reads as a line
+			// into nowhere.
+			if (isBoxHidden(id)) return 0;
 			const l = leaving.get(id);
 			if (l != null) return Math.max(0, 1 - (now - l) / 360);
 			const t0 = seenAt.get(id);
 			return t0 == null ? 0 : Math.min(1, (now - t0) / 110);
 		};
 
+		// `simulate` reads the previous frame's boxes for the box-vs-box push;
+		// `computeBoxes` then refreshes them from the positions it just moved,
+		// so the outline `draw` strokes is never a frame behind its balls.
 		simulate(dt, now, edges);
+		computeBoxes(now, live);
 		draw(now, edges, edgeBusy, fadeOf, live);
 
 		uiAcc += dt;
@@ -488,6 +687,7 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 				el.classList.toggle('is-running', nodeState.get(id) === 'running');
 				el.classList.toggle('is-waiting', nodeState.get(id) === 'waiting');
 			}
+			syncChips();
 			for (const [id, t] of leaving) if (now - t > 400) leaving.delete(id);
 			cb.onShownChange([...live, ...[...leaving.keys()].filter((i) => !live.has(i))]);
 			cb.onZoomChange(Math.round(view.k * 100));
@@ -603,6 +803,45 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 			}
 		}
 
+		// Containers must not overlap, or two boxes read as one shape and their
+		// chips land on top of each other. Push whole clusters: nudging a single
+		// member out only deforms the box it is drawn from.
+		const openBoxes: Box[] = [];
+		for (const b of boxes.values()) if (!b.collapsed) openBoxes.push(b);
+		for (let i = 0; i < openBoxes.length; i++) {
+			for (let j = i + 1; j < openBoxes.length; j++) {
+				const A = openBoxes[i];
+				const B = openBoxes[j];
+				const ox = Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0) + BOX_GAP;
+				const oy = Math.min(A.y1, B.y1) - Math.max(A.y0, B.y0) + BOX_GAP;
+				if (ox <= 0 || oy <= 0) continue;
+				// Separate along whichever axis is cheaper to clear.
+				let nx = 0;
+				let ny = 0;
+				let mag: number;
+				if (ox < oy) {
+					nx = (A.x0 + A.x1) / 2 <= (B.x0 + B.x1) / 2 ? -1 : 1;
+					mag = ox;
+				} else {
+					ny = (A.y0 + A.y1) / 2 <= (B.y0 + B.y1) / 2 ? -1 : 1;
+					mag = oy;
+				}
+				const f = mag * BOX_PUSH;
+				for (const id of A.ids) {
+					const a = acc.get(id);
+					if (!a) continue;
+					a[0] += nx * f;
+					a[1] += ny * f;
+				}
+				for (const id of B.ids) {
+					const a = acc.get(id);
+					if (!a) continue;
+					a[0] -= nx * f;
+					a[1] -= ny * f;
+				}
+			}
+		}
+
 		// Cooling: forces ease off as the layout settles and slow nodes freeze
 		// outright. Without it the graph never stops shimmering.
 		const damp = Math.pow(0.72, dt * 60);
@@ -660,6 +899,169 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		}
 	}
 
+	// ── containers ───────────────────────────────────────────────────────
+	/**
+	 * The dashed box around each ownership cluster, refreshed every frame.
+	 *
+	 * Membership is `graph.rootOf`, which the physics already uses to keep a
+	 * user's agents near one another — so the box encloses a grouping the layout
+	 * was producing anyway rather than imposing a new one. Services are absent
+	 * from `rootOf` on purpose: one instance is called from several clusters, so
+	 * it belongs inside none of them.
+	 */
+	function computeBoxes(now: number, live: Set<string>) {
+		if (!graph) return;
+		const members = new Map<string, string[]>();
+		for (const n of graph.structural) {
+			const root = graph.rootOf.get(n.id);
+			if (!root || root === n.id) continue;
+			const list = members.get(root);
+			if (list) list.push(n.id);
+			else members.set(root, [n.id]);
+		}
+
+		const stale = new Set(boxes.keys());
+		for (const [root, ids] of members) {
+			stale.delete(root);
+			const rp = pos.get(root);
+			if (!rp) {
+				boxes.delete(root);
+				continue;
+			}
+			const all = [root, ...ids];
+
+			if (boxClosed[root]) {
+				// `+N` has to count what the chip actually hides, which includes
+				// anything already folded into a member by the per-node collapse.
+				let count = ids.length;
+				let running = 0;
+				for (const id of ids) {
+					count += graph.hidden.get(id) ?? 0;
+					if ((lastActive.get(id) ?? 0) > now - IDLE_GRACE_MS) running++;
+				}
+				let held = 0;
+				for (const id of waiting) if (graph.rootOf.get(resolve(id)) === root) held++;
+				const anchor = lastChipAnchor.get(root);
+				boxes.set(root, {
+					x0: 0,
+					y0: 0,
+					x1: 0,
+					y1: 0,
+					lx: anchor?.x ?? rp.x,
+					ly: anchor?.y ?? rp.y,
+					ids: all,
+					collapsed: true,
+					centered: !anchor,
+					count,
+					running,
+					waiting: held
+				});
+				continue;
+			}
+
+			// Open: hug what is actually on screen. A cluster whose agents are
+			// all hidden as idle shrinks back to its user ball rather than
+			// keeping a box around empty space.
+			let x0 = Infinity;
+			let y0 = Infinity;
+			let x1 = -Infinity;
+			let y1 = -Infinity;
+			for (const id of all) {
+				if (id !== root && !live.has(id) && !leaving.has(id)) continue;
+				const p = pos.get(id);
+				if (!p) continue;
+				const r = radiusOf(id);
+				x0 = Math.min(x0, p.x - r);
+				x1 = Math.max(x1, p.x + r);
+				y0 = Math.min(y0, p.y - r);
+				y1 = Math.max(y1, p.y + r);
+			}
+			if (!Number.isFinite(x0)) {
+				boxes.delete(root);
+				continue;
+			}
+			x0 -= BOX_PAD_X;
+			x1 += BOX_PAD_X;
+			y0 -= BOX_PAD_TOP;
+			y1 += BOX_PAD_BOTTOM;
+			// Remembered so folding leaves the chip on the corner it was already
+			// sitting on, instead of jumping to the middle of the cluster.
+			lastChipAnchor.set(root, { x: x0 + 10, y: y0 });
+			boxes.set(root, {
+				x0,
+				y0,
+				x1,
+				y1,
+				lx: x0 + 10,
+				ly: y0,
+				ids: all,
+				collapsed: false,
+				centered: false,
+				count: 0,
+				running: 0,
+				waiting: 0
+			});
+		}
+		for (const root of stale) boxes.delete(root);
+	}
+
+	/** One path for every open box: they never overlap, so a single nonzero
+	 *  fill is both cheaper and free of double-darkened seams. */
+	function drawBoxes(ctx: CanvasRenderingContext2D) {
+		let any = false;
+		ctx.save();
+		ctx.beginPath();
+		for (const b of boxes.values()) {
+			if (b.collapsed) continue;
+			any = true;
+			const w = b.x1 - b.x0;
+			const h = b.y1 - b.y0;
+			if (typeof ctx.roundRect === 'function') ctx.roundRect(b.x0, b.y0, w, h, BOX_RADIUS);
+			else ctx.rect(b.x0, b.y0, w, h);
+		}
+		if (any) {
+			ctx.globalAlpha = 0.04;
+			ctx.fillStyle = colors.tree;
+			ctx.fill();
+			ctx.globalAlpha = 0.28;
+			ctx.lineWidth = 1;
+			ctx.setLineDash([4, 5]);
+			ctx.strokeStyle = colors.tree;
+			ctx.stroke();
+		}
+		ctx.restore();
+	}
+
+	/** Chip classes and text. Cheap enough at the UI cadence; the transform is
+	 *  separate, because that has to track the view every frame. */
+	function syncChips() {
+		const h = hits;
+		for (const [root, el] of chipEls) {
+			const b = boxes.get(root);
+			if (!b) {
+				el.classList.remove('is-live');
+				continue;
+			}
+			el.classList.add('is-live');
+			el.classList.toggle('is-closed', b.collapsed);
+			el.classList.toggle('is-active', b.collapsed && b.running > 0);
+			el.classList.toggle('is-waiting', b.collapsed && b.waiting > 0);
+			// A search that matches nothing in this cluster dims its chip the way
+			// it dims the balls — otherwise a folded cluster looks like a hit.
+			el.classList.toggle('is-dim', h ? !b.ids.some((id) => h.has(id)) : false);
+			const count = el.querySelector('.lm-chip-count');
+			if (count) count.textContent = b.collapsed ? `+${b.count}` : '';
+			const act = el.querySelector('.lm-chip-act');
+			if (!act) continue;
+			// Waiting outranks running, same as the node states: a fold that hides
+			// a gated call must not report itself as merely busy.
+			if (!b.collapsed) act.textContent = '';
+			else if (b.waiting > 0) act.textContent = `${b.waiting} waiting`;
+			else if (b.running > 0) act.textContent = `${b.running} active`;
+			else act.textContent = '';
+		}
+	}
+
 	// ── canvas ───────────────────────────────────────────────────────────
 	function draw(
 		now: number,
@@ -699,6 +1101,9 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		};
 
 		const visible = (id: string) => live.has(id) || leaving.has(id);
+
+		// Under the edges: a container is ground, not content.
+		drawBoxes(ctx);
 
 		for (const e of edges) {
 			if (!visible(e.from) || !visible(e.to)) continue;
@@ -749,9 +1154,19 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		}
 
 		layer.style.transform = `translate(${tx}px,${ty}px) scale(${k})`;
+		chipLayer.style.transform = `translate(${tx}px,${ty}px) scale(${k})`;
 		for (const [id, el] of nodeEls) {
 			const p = pos.get(id);
 			if (p) el.style.transform = `translate(${p.x}px,${p.y}px)`;
+		}
+		// Chips ride the map but not its zoom: the counter-scale keeps their text
+		// at a constant size, so a name is still readable at 30%.
+		for (const [root, el] of chipEls) {
+			const b = boxes.get(root);
+			if (!b) continue;
+			el.style.transform =
+				`translate(${b.lx}px,${b.ly}px) scale(${1 / k})` +
+				(b.centered ? ' translate(-50%,-50%)' : '');
 		}
 	}
 
@@ -780,7 +1195,9 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		setGraph,
 		setHits,
 		setHideIdle,
+		setBoxClosed,
 		registerNode,
+		registerChip,
 		startCall,
 		finishCall,
 		setWaiting,
@@ -791,6 +1208,8 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		setHover,
 		onStagePointerDown,
 		onNodePointerDown,
+		onChipPointerDown,
+		consumeGroupDrag,
 		onPointerMove,
 		onPointerUp,
 		destroy

@@ -8,7 +8,7 @@
 //
 // Prereq: `make e2e-up` (which sets OVERSLASH_LIVE_MAP=1).
 // Output: dashboard/screenshots/{live-map-idle,live-map-traffic,
-// live-map-expanded}.png.
+// live-map-expanded,live-map-collapsed}.png.
 
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
@@ -154,6 +154,16 @@ try {
 	await page.waitForTimeout(3500);
 	await page.screenshot({ path: resolve(OUT, 'live-map-expanded.png') });
 	console.log('[live-map] wrote live-map-expanded.png');
+
+	// One cluster folded into its container chip while its agents keep calling:
+	// the `+N` count and the breathing "N active" are the whole point of the
+	// shot, and the two clusters left open are the comparison.
+	const folded = page.locator('.lm-boxchip.is-live', { hasText: 'ana' }).first();
+	await folded.waitFor({ timeout: 10_000 });
+	await folded.click();
+	await page.waitForTimeout(1500);
+	await page.screenshot({ path: resolve(OUT, 'live-map-collapsed.png') });
+	console.log('[live-map] wrote live-map-collapsed.png');
 
 	clearInterval(burst);
 } finally {
