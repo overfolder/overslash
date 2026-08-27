@@ -206,6 +206,13 @@ async fn run_http(ctx: StoredCallCtx<'_>, stored: StoredCallRequest) -> StoredOu
             {
                 obj.insert("streamed_originally".into(), serde_json::Value::Bool(true));
             }
+            // This path renders verbose JSON directly rather than through
+            // `render_stored`, so the marker has to be stamped here or an
+            // async/gated call to a paged action comes back without one — and
+            // "no next" is indistinguishable from "last page" to whoever polls.
+            if let Some(pagination) = stored.pagination.as_ref() {
+                pagination.stamp(&mut result_json, &result);
+            }
             StoredOutcome::Executed {
                 upstream_errored: result.status_code >= 500,
                 is_error: result.status_code >= 400,
@@ -295,8 +302,13 @@ async fn run_mcp(ctx: StoredCallCtx<'_>, call: StoredMcpCall) -> StoredOutcome {
 
     match outcome {
         Ok(Ok(result)) => {
-            let result_json = serde_json::to_value(&result)
+            let mut result_json = serde_json::to_value(&result)
                 .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
+            // Same as the HTTP arm: an MCP tool may declare pagination, and a
+            // replayed tool call is as entitled to a `next` as an inline one.
+            if let Some(pagination) = call.pagination.as_ref() {
+                pagination.stamp(&mut result_json, &result);
+            }
             // Mirror the inline MCP call's `action.executed` audit shape so
             // reviewers see runtime/tool/arguments/is_error here too. The HTTP
             // path emits its own from action_caller; this is the equivalent.

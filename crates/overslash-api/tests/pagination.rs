@@ -31,6 +31,16 @@ async fn setup(
     path: &str,
     pagination: &str,
 ) -> (String, String, reqwest::Client) {
+    let (base, agent, _admin, client) = paged_setup(pool, key, path, pagination).await;
+    (base, agent, client)
+}
+
+async fn paged_setup(
+    pool: sqlx::PgPool,
+    key: &str,
+    path: &str,
+    pagination: &str,
+) -> (String, String, String, reqwest::Client) {
     common::allow_loopback_ssrf();
     let mock = common::start_mock().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
@@ -126,7 +136,7 @@ async fn setup(
         .await
         .unwrap();
 
-    (base, agent_key, client)
+    (base, agent_key, admin_key, client)
 }
 
 async fn call(

@@ -62,6 +62,53 @@ use serde_json::{Map, Value, json};
 /// is not a page token, it is a payload wearing one's name.
 const MAX_CURSOR_VALUE_CHARS: usize = 1024;
 
+/// Everything the marker needs, carried on a stored replay payload.
+///
+/// A stored call is a *resolved* request — a URL, headers, a body — and the
+/// action key and argument map that produced it are gone by then. That is the
+/// same fact D56 hit with the timeout cascade, and this is the same answer:
+/// store what replay cannot re-derive. Without it, a paged action called
+/// `execution: "async"` or routed through an approval would come back with no
+/// `next` at all, and the caller would have no way to tell that from a last
+/// page — which is the confusion this whole feature exists to remove.
+///
+/// `None` on every payload written before this existed, and on every action
+/// that declares no pagination. Both replay exactly as they did.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoredPagination {
+    pub spec: PaginationSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub params: HashMap<String, Value>,
+}
+
+impl StoredPagination {
+    /// Stamp `_pagination` into an already-rendered result object.
+    ///
+    /// The stored paths render verbose JSON directly rather than going through
+    /// `render_stored`, so this is their equivalent of the insert that function
+    /// makes — placed beside the `streamed_originally` stamp for the same
+    /// reason, since that is where a stored result is already annotated.
+    pub fn stamp(&self, rendered: &mut Value, result: &ActionResult) {
+        let Some(obj) = rendered.as_object_mut() else {
+            return;
+        };
+        obj.insert(
+            "_pagination".into(),
+            next_page(
+                &self.spec,
+                self.service.as_deref(),
+                self.action.as_deref(),
+                &self.params,
+                result,
+            ),
+        );
+    }
+}
+
 /// What an action's pagination declaration produced for one response.
 ///
 /// `has_more == false` with no `next` is a real answer, not an empty one: it
@@ -750,6 +797,55 @@ mod tests {
             &r,
         );
         assert_eq!(marker["next"]["params"]["pageToken"], json!("CAUQ"));
+    }
+
+    /// The stored paths render verbose JSON directly instead of going through
+    /// `render_stored`, so this is their equivalent of the insert that function
+    /// makes. Without it an async or replayed call to a paged action comes back
+    /// with no `next` — indistinguishable, to whoever polls, from a last page.
+    #[test]
+    fn a_stored_declaration_stamps_the_same_marker_onto_a_rendered_result() {
+        let stored = StoredPagination {
+            spec: cursor_spec(),
+            service: Some("gmail".into()),
+            action: Some("list_messages".into()),
+            params: sent(&[("maxResults", json!(10))]),
+        };
+        let r = result(200, json!({"nextPageToken": "CAUQ"}), &[]);
+        let mut rendered = serde_json::to_value(&r).unwrap();
+        stored.stamp(&mut rendered, &r);
+        assert_eq!(
+            rendered["_pagination"],
+            next_page(
+                &cursor_spec(),
+                Some("gmail"),
+                Some("list_messages"),
+                &sent(&[("maxResults", json!(10))]),
+                &r
+            ),
+            "a stored replay and its inline twin must produce the identical marker"
+        );
+    }
+
+    /// Old rows deserialize without the field and replay exactly as they did.
+    #[test]
+    fn a_stored_declaration_round_trips_through_json() {
+        let stored = StoredPagination {
+            spec: cursor_spec(),
+            service: Some("gmail".into()),
+            action: Some("list_messages".into()),
+            params: sent(&[("maxResults", json!(10))]),
+        };
+        let wire = serde_json::to_value(&stored).unwrap();
+        let back: StoredPagination = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.spec, stored.spec);
+        assert_eq!(back.params, stored.params);
+        assert!(
+            serde_json::from_value::<Option<StoredPagination>>(Value::Null)
+                .unwrap()
+                .is_none(),
+            "a payload written before this field existed must still parse"
+        );
     }
 
     #[test]

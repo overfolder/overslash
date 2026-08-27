@@ -131,6 +131,25 @@ carry the identical object. The marker is handed *into* `compact` rather than
 stamped after it, so its bytes are measured inside the budget — the discipline
 D74 established for preserved headers.
 
+### A stored call has to be told
+
+`routes::actions::render_stored` covers the four inline dispatch forks. It does
+not cover the two that run later — the async worker's job and an approval replay
+— because both start from a `StoredCallRequest`, which holds a *resolved*
+request. By then the action key and the argument map are gone.
+
+`StoredCallRequest.timeout_ms` already records this wall in its own doc comment:
+"replay cannot re-run the cascade: it has the request but not the action key the
+template rungs were read from." Pagination hits it twice over, needing the
+argument map too, so `StoredPagination { spec, service, action, params }` rides
+on the payload and `stored_call::run_http` / `run_mcp` stamp `_pagination` where
+`render_stored` would have.
+
+Payloads written before the field existed parse to `None` and replay exactly as
+they did. Platform actions carry nothing, because `ext::READS` does not admit
+the key at `Pos::PlatformAction` — a platform action answers from this process,
+so there is no upstream page to be on.
+
 ## Deliberately absent
 
 - **Auto-follow.** The gateway never loops. Looping multiplies latency,
