@@ -182,9 +182,19 @@ fn continuation_params(
         NextStyle::Page => {
             let param = spec.next.param.as_ref()?;
             // Page ordinals are the one place the corpus disagrees about the
-            // origin: WhatsApp's `page` defaults to 0, GitHub's to 1. The
-            // declared default is the template's own statement of which, and
-            // absent one, incrementing what was sent is right either way.
+            // origin: WhatsApp counts from 0, GitHub from 1. The parameter's
+            // declared `default:` is the template's statement of which, and
+            // `apply_defaults` has already merged it into `sent` — which is why
+            // `check_pagination` refuses a `page` style whose parameter
+            // declares none, and why this can stop rather than guess.
+            //
+            // Stopping, deliberately, and *not* `unwrap_or(0)` the way the
+            // `offset` arm above can afford to. An offset of 0 means "from the
+            // start" in every API that has offsets. A page of 0 does not: guess
+            // it against a 1-based upstream and the "next" page is the one just
+            // fetched, so a caller following `next` re-reads page one forever.
+            // A traversal that stops early is a bounded mistake; one that never
+            // terminates is not.
             let current = sent.get(param).and_then(number)?;
             params.insert(param.clone(), json!(current + 1));
         }
@@ -628,6 +638,42 @@ mod tests {
             &result(200, json!({"messages": rows}), &[]),
         );
         assert_eq!(marker["next"]["params"], json!({"page": 1, "limit": 20}));
+    }
+
+    /// The asymmetry with `offset` is deliberate, and this is what it buys. An
+    /// offset of 0 means "from the start" everywhere; a page of 0 does not, so
+    /// guessing it against a 1-based upstream would make `next` point at the
+    /// page just fetched and loop a follower forever. `check_pagination`
+    /// refuses a `page` style whose parameter declares no origin, so reaching
+    /// here means something stripped it — and stopping early is the bounded
+    /// mistake.
+    #[test]
+    fn page_refuses_to_guess_an_origin_it_was_not_given() {
+        let spec = PaginationSpec {
+            page_size: Some(PageSize {
+                param: "limit".into(),
+                default: Some(20),
+                max: None,
+            }),
+            next: NextSpec {
+                style: NextStyle::Page,
+                param: Some("page".into()),
+                from: None,
+            },
+            items: Some("messages".into()),
+            has_more: None,
+        };
+        let rows: Vec<Value> = (0..20).map(|i| json!({"i": i})).collect();
+        let marker = next_page(
+            &spec,
+            Some("whatsapp"),
+            Some("list_messages"),
+            // No `page` sent and none defaulted in — the case validation exists
+            // to prevent.
+            &sent(&[("limit", json!(20))]),
+            &result(200, json!({"messages": rows}), &[]),
+        );
+        assert_eq!(marker, json!({"has_more": false}));
     }
 
     fn link_spec() -> PaginationSpec {

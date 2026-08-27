@@ -435,6 +435,52 @@ fn a_seeded_default_above_the_declared_max_is_an_error() {
     );
 }
 
+/// A page ordinal has no universal origin, so the parameter's `default:` is the
+/// only place a template says whether it counts from 0 or 1. Without it the
+/// gateway stops at page one and calls that the whole collection.
+#[test]
+fn a_page_style_without_a_declared_origin_is_an_error() {
+    let mut d = minimal_valid();
+    let action = d.actions.get_mut("list").unwrap();
+    action
+        .params
+        .insert("limit".into(), param("integer", false));
+    action.params.insert("page".into(), param("integer", false));
+    action.pagination = Some(crate::types::PaginationSpec {
+        page_size: Some(crate::types::PageSize {
+            param: "limit".into(),
+            default: Some(20),
+            max: None,
+        }),
+        next: crate::types::NextSpec {
+            style: crate::types::NextStyle::Page,
+            param: Some("page".into()),
+            from: None,
+        },
+        items: Some("items".into()),
+        has_more: None,
+    });
+    let r = run(&d);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.code == "pagination_page_origin_unknown"),
+        "{:?}",
+        r.errors
+    );
+
+    // Declaring it — whichever origin the upstream uses — clears the error.
+    d.actions
+        .get_mut("list")
+        .unwrap()
+        .params
+        .get_mut("page")
+        .unwrap()
+        .default = Some(serde_json::json!(0));
+    let r = run(&d);
+    assert!(r.valid, "errors: {:?}", r.errors);
+}
+
 /// Without `items` or `has_more`, an arithmetic style cannot tell the last
 /// page from a full one — so it offers a next page that is not there.
 #[test]

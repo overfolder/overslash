@@ -64,6 +64,16 @@ paths:
 | `page` | previous page + 1 | whatsapp |
 | `link` | RFC 8288 `rel="next"` header | github |
 
+`page` requires its parameter to declare a `default:`. A page ordinal has no
+universal origin — WhatsApp counts from 0, GitHub from 1 — and that default is
+the only place a template says which. Without it the gateway cannot compute page
+two, so it stops at page one and reports `has_more: false`: a partial answer
+that reads as a complete one. The runtime deliberately does *not* fall back to
+0 the way the `offset` arm can: an offset of 0 means "from the start"
+everywhere, but a guessed page of 0 against a 1-based upstream makes `next`
+point at the page just fetched, and a follower loops forever. A traversal that
+stops early is a bounded mistake; one that never terminates is not.
+
 `link` is refused on an MCP tool at compile: a tool result is a JSON-RPC
 envelope with no response headers, so the declaration would parse and then find
 nothing — a silent no-op one layer deeper than D67's extension lint can see.

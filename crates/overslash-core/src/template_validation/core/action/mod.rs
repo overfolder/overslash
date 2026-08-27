@@ -1,6 +1,6 @@
 use crate::description_grammar::{iter_placeholders, validate_flat_brackets};
 use crate::template_validation::Issues;
-use crate::types::{ActionParam, DeclaredRisk, ServiceAction};
+use crate::types::{ActionParam, DeclaredRisk, NextStyle, ServiceAction};
 
 use super::sql_policy::check_sql_policy;
 
@@ -217,6 +217,30 @@ fn check_pagination(action: &ServiceAction, action_path: &str, issues: &mut Issu
                 format!("{base}.next.param"),
             );
         }
+    }
+
+    // A page ordinal has no universal origin — WhatsApp counts from 0, GitHub
+    // from 1 — so the parameter's own `default:` is the only place a template
+    // says which. Without it the gateway cannot compute page two and stops at
+    // page one, reporting `has_more: false`: a partial answer that reads as a
+    // complete one, which is the failure this extension exists to end.
+    //
+    // An error rather than a warning, for the same reason `unknown_pagination_
+    // param` is: the declaration says the action pages and it does not.
+    if pagination.next.style == NextStyle::Page
+        && let Some(param) = pagination.next.param.as_ref()
+        && action
+            .params
+            .get(param)
+            .is_some_and(|p| p.default.is_none())
+    {
+        issues.err(
+            "pagination_page_origin_unknown",
+            format!(
+                "pagination style \"page\" needs param {param:?} to declare a `default:` — it is the only place a template says whether pages count from 0 or from 1, and without it the gateway cannot ask for page two"
+            ),
+            format!("{action_path}.params.{param}.default"),
+        );
     }
 
     // `items` is what an arithmetic style uses to tell a full page from the
