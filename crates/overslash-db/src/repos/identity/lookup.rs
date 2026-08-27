@@ -138,8 +138,13 @@ pub async fn find_user_by_external_id_in_org(
 }
 
 /// Find the user-kind `identities` row for a specific `(org_id, user_id)`
-/// pair. At most one row exists (partial UNIQUE from migration 040). Used by
+/// pair. At most one row exists — `identities_org_user_unique`, the partial
+/// UNIQUE migration 040 was designed around and 115 finally created. Used by
 /// the multi-org switch flow to resolve `sub` for the new JWT.
+///
+/// The bound matters: this is `fetch_optional`, which takes the first row and
+/// discards the rest, so duplicates would not surface as an error here — they
+/// would quietly make the caller's answer depend on planner order.
 pub async fn find_by_org_and_user(
     pool: &PgPool,
     org_id: Uuid,
