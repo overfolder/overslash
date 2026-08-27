@@ -1,4 +1,4 @@
-.PHONY: local local-db local-down dev dev-api dev-dashboard down net test check line-count check-decisions allocate-decision fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
+.PHONY: local local-db local-down dev dev-api dev-dashboard down net test check line-count check-decisions diff-stats allocate-decision fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean \
        dashboard-static web-build web build install \
@@ -259,6 +259,13 @@ line-count:
 # Decision numbers are unique, contiguous, and allocated at merge (mirrors CI).
 check-decisions:
 	bash scripts/check-decisions.sh
+
+# How much production code this branch actually changes, the way CI reports it
+# on the PR. A report, not a gate — deliberately absent from `check`, and from
+# the pre-commit hook. Needs an up-to-date origin/dev (worktrees fetch master
+# only by default): git fetch origin dev:refs/remotes/origin/dev
+diff-stats:
+	./scripts/pr-diff-stats.py origin/dev HEAD
 
 # Stamp the real number onto a decision authored as a placeholder. Normally the
 # allocate-decision workflow does this on dev; run it by hand when that fails.
