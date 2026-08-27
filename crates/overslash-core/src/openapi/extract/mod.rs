@@ -19,7 +19,10 @@ use std::str::FromStr;
 use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
-use crate::types::{DisclosureField, DownloadAuth, DownloadSpec, ExecutionMode, ScopeParams};
+use crate::types::{
+    DisclosureField, DownloadAuth, DownloadSpec, ExecutionMode, NextSpec, NextStyle, PageSize,
+    PaginationSpec, ScopeParams,
+};
 
 use super::ext::{self, Ext, Pos};
 
@@ -280,6 +283,245 @@ pub(in crate::openapi) fn parse_wait_mode(
                 "invalid_wait_mode",
                 format!("{key} must be one of \"sync\", \"async\", \"hybrid\""),
                 format!("{base}.{key}"),
+            ));
+            None
+        }
+    }
+}
+
+/// `x-overslash-pagination` → [`PaginationSpec`].
+///
+/// Lenient in the same direction as [`parse_wait_mode`] and for the same
+/// reason: a malformed declaration yields issues and `None`, leaving the action
+/// exactly as unpaged as it was before anyone wrote the key. The alternative —
+/// removing the action — turns a typo in an optional hint into a missing
+/// capability, which is the failure D67 built the extension lint to avoid.
+///
+/// Structural shape only. Whether the named parameters actually exist on the
+/// action is a cross-field question, and it lives with the rest of those in
+/// `template_validation::core::action`.
+pub(in crate::openapi) fn parse_pagination(
+    v: Option<&Value>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<PaginationSpec> {
+    let v = v?;
+    let key = Ext::Pagination.key();
+    let path = format!("{base}.{key}");
+    let Some(obj) = v.as_object() else {
+        issues.push(ValidationIssue::new(
+            "pagination_invalid",
+            format!("{key} must be an object"),
+            path,
+        ));
+        return None;
+    };
+
+    let next = parse_next_spec(obj.get("next"), key, &path, issues)?;
+    let page_size = parse_page_size(obj.get("page_size"), key, &path, issues);
+    let items = parse_pagination_path(obj.get("items"), "items", key, &path, issues);
+    let has_more = parse_pagination_path(obj.get("has_more"), "has_more", key, &path, issues);
+
+    Some(PaginationSpec {
+        page_size,
+        next,
+        items,
+        has_more,
+    })
+}
+
+fn parse_next_spec(
+    v: Option<&Value>,
+    key: &str,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<NextSpec> {
+    let Some(v) = v else {
+        issues.push(ValidationIssue::new(
+            "pagination_invalid",
+            format!("{key} must declare `next` — a page size with no way to reach page two is a limit, not pagination"),
+            base.to_string(),
+        ));
+        return None;
+    };
+    let Some(obj) = v.as_object() else {
+        issues.push(ValidationIssue::new(
+            "pagination_invalid",
+            format!("{key}.next must be an object"),
+            format!("{base}.next"),
+        ));
+        return None;
+    };
+
+    let style = match obj.get("style").and_then(Value::as_str) {
+        Some(s) => match NextStyle::from_str(s) {
+            Ok(style) => style,
+            Err(()) => {
+                issues.push(ValidationIssue::new(
+                    "pagination_invalid_style",
+                    format!(
+                        "{key}.next.style must be one of \"cursor\", \"offset\", \"page\", \"link\""
+                    ),
+                    format!("{base}.next.style"),
+                ));
+                return None;
+            }
+        },
+        None => {
+            issues.push(ValidationIssue::new(
+                "pagination_invalid_style",
+                format!("{key}.next.style is required"),
+                format!("{base}.next.style"),
+            ));
+            return None;
+        }
+    };
+
+    let param = parse_pagination_path(obj.get("param"), "next.param", key, base, issues);
+    let from = parse_pagination_path(obj.get("from"), "next.from", key, base, issues);
+
+    // Per-style shape. Each arm is one sentence about what the style needs to
+    // be able to name the next page at all, and a spec that cannot is dropped
+    // rather than half-honoured.
+    match style {
+        NextStyle::Link => {
+            if param.is_some() || from.is_some() {
+                issues.push(ValidationIssue::new(
+                    "pagination_invalid",
+                    format!(
+                        "{key}.next.style \"link\" takes neither `param` nor `from` — the Link header names the whole next URL"
+                    ),
+                    format!("{base}.next"),
+                ));
+                return None;
+            }
+        }
+        NextStyle::Cursor => {
+            if param.is_none() || from.is_none() {
+                issues.push(ValidationIssue::new(
+                    "pagination_invalid",
+                    format!(
+                        "{key}.next.style \"cursor\" needs both `from` (where the cursor is in the response) and `param` (where it goes on the next call)"
+                    ),
+                    format!("{base}.next"),
+                ));
+                return None;
+            }
+        }
+        NextStyle::Offset | NextStyle::Page => {
+            if param.is_none() {
+                issues.push(ValidationIssue::new(
+                    "pagination_invalid",
+                    format!("{key}.next.style \"{}\" needs `param`", style.as_str()),
+                    format!("{base}.next"),
+                ));
+                return None;
+            }
+            if from.is_some() {
+                issues.push(ValidationIssue::new(
+                    "pagination_invalid",
+                    format!(
+                        "{key}.next.style \"{}\" computes its value from the request, so `from` reads nothing",
+                        style.as_str()
+                    ),
+                    format!("{base}.next.from"),
+                ));
+                return None;
+            }
+        }
+    }
+
+    Some(NextSpec { style, param, from })
+}
+
+fn parse_page_size(
+    v: Option<&Value>,
+    key: &str,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<PageSize> {
+    let v = v?;
+    let path = format!("{base}.page_size");
+    let Some(obj) = v.as_object() else {
+        issues.push(ValidationIssue::new(
+            "pagination_invalid",
+            format!("{key}.page_size must be an object"),
+            path,
+        ));
+        return None;
+    };
+    let Some(param) = parse_pagination_path(obj.get("param"), "page_size.param", key, base, issues)
+    else {
+        issues.push(ValidationIssue::new(
+            "pagination_invalid",
+            format!("{key}.page_size.param is required"),
+            format!("{path}.param"),
+        ));
+        return None;
+    };
+
+    let default = parse_page_size_number(obj.get("default"), "default", key, &path, issues);
+    let max = parse_page_size_number(obj.get("max"), "max", key, &path, issues);
+    if let (Some(d), Some(m)) = (default, max)
+        && d > m
+    {
+        issues.push(ValidationIssue::new(
+            "pagination_default_exceeds_max",
+            format!("{key}.page_size.default ({d}) is above its own max ({m})"),
+            format!("{path}.default"),
+        ));
+        return None;
+    }
+
+    Some(PageSize {
+        param,
+        default,
+        max,
+    })
+}
+
+fn parse_page_size_number(
+    v: Option<&Value>,
+    field: &str,
+    key: &str,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<i64> {
+    let v = v?;
+    match v.as_i64() {
+        Some(n) if n > 0 => Some(n),
+        _ => {
+            issues.push(ValidationIssue::new(
+                "pagination_invalid",
+                format!("{key}.page_size.{field} must be a positive integer"),
+                format!("{base}.{field}"),
+            ));
+            None
+        }
+    }
+}
+
+/// A non-empty string field. Shared by the parameter names and the dotted
+/// response paths because the failure is the same one: a key written but left
+/// blank, which reads as authored and behaves as absent.
+fn parse_pagination_path(
+    v: Option<&Value>,
+    field: &str,
+    key: &str,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<String> {
+    let v = v?;
+    match v.as_str() {
+        Some(s) if !s.trim().is_empty() => Some(s.to_string()),
+        // An explicit `null` is how a template says "not this one" in YAML;
+        // it is absence spelled out, not a mistake worth reporting.
+        None if v.is_null() => None,
+        _ => {
+            issues.push(ValidationIssue::new(
+                "pagination_invalid",
+                format!("{key}.{field} must be a non-empty string"),
+                format!("{base}.{field}"),
             ));
             None
         }

@@ -138,10 +138,21 @@ const MAX_DROPPED_ENTRIES: usize = 10;
 
 /// Build the compact view of an [`ActionResult`]. Pure — no I/O, no
 /// allocations on the hot path beyond the JSON tree itself.
-pub fn compact(result: &ActionResult) -> Value {
+///
+/// `pagination` is the `_pagination` marker the caller already derived from the
+/// *unrendered* result — see [`crate::services::pagination`]. It is inserted
+/// here, before the shrink, for the same reason [`preserved_headers`] is: its
+/// bytes then compete with the body inside one budget rather than arriving
+/// afterwards from a fixed reserve. Nothing crops it — [`shrink_to_budget`]
+/// only ever rebuilds `body` — which is the point. It is the way forward, and
+/// this module's first rule is that the way forward survives.
+pub fn compact(result: &ActionResult, pagination: Option<&Value>) -> Value {
     let mut out = Map::new();
     out.insert("status_code".into(), json!(result.status_code));
     out.insert("duration_ms".into(), json!(result.duration_ms));
+    if let Some(pagination) = pagination {
+        out.insert("_pagination".into(), pagination.clone());
+    }
 
     // Headers go in *before* the shrink so their bytes are measured with
     // everything else rather than guessed at.
@@ -551,7 +562,7 @@ mod tests {
     #[test]
     fn drops_non_pagination_headers_and_parses_json_body() {
         let r = base(r#"{"drafts":[{"id":"abc"}],"resultSizeEstimate":1}"#);
-        let v = compact(&r);
+        let v = compact(&r, None);
         assert_eq!(v["status_code"], 200);
         assert_eq!(v["duration_ms"], 42);
         assert!(
@@ -573,7 +584,7 @@ mod tests {
         let mut r = base(r#"{"items":[1,2,3]}"#);
         r.headers.insert("link".into(), link.into());
 
-        let v = compact(&r);
+        let v = compact(&r, None);
         assert_eq!(v["headers"]["link"], link);
         assert!(
             v["headers"].get("content-type").is_none(),
@@ -590,7 +601,7 @@ mod tests {
         let mut r = base("{}");
         r.headers
             .insert("Link".into(), "<https://x.test/2>; rel=\"next\"".into());
-        let v = compact(&r);
+        let v = compact(&r, None);
         assert_eq!(v["headers"]["link"], "<https://x.test/2>; rel=\"next\"");
     }
 
@@ -603,7 +614,7 @@ mod tests {
         r.headers
             .insert("link".into(), "x".repeat(MAX_PRESERVED_HEADER_BYTES + 1));
 
-        let v = compact(&r);
+        let v = compact(&r, None);
         assert!(v.get("headers").is_none(), "{v}");
         assert_eq!(v["body"]["ok"], true, "the body itself was fine: {v}");
         let dropped = v["_truncated"]["dropped"].as_array().expect("dropped list");
@@ -623,7 +634,7 @@ mod tests {
     #[test]
     fn cursor_key_survives_the_object_cap() {
         let body = padded_object(30, &[("nextPageToken", json!("CURSOR-abc-123"))]);
-        let v = compact(&base(&body));
+        let v = compact(&base(&body), None);
 
         assert_eq!(
             v["body"]["nextPageToken"], "CURSOR-abc-123",
@@ -650,7 +661,7 @@ mod tests {
     fn arrays_outrank_scalar_metadata_in_the_key_cap() {
         let rows: Vec<Value> = (0..5).map(|i| json!({"id": i})).collect();
         let body = padded_object(25, &[("rows", json!(rows))]);
-        let v = compact(&base(&body));
+        let v = compact(&base(&body), None);
 
         let kept = v["body"]["rows"].as_array().expect("rows must survive");
         assert_eq!(kept.len(), 5, "{}", v["body"]);
@@ -752,7 +763,7 @@ mod tests {
     #[test]
     fn truncated_marker_is_an_object_carrying_a_dropped_list() {
         let big = "x".repeat(50_000);
-        let v = compact(&base(&big));
+        let v = compact(&base(&big), None);
         assert!(v["_truncated"].is_object(), "{}", v["_truncated"]);
         assert!(v["_truncated"]["dropped"].is_array(), "{}", v["_truncated"]);
     }
@@ -760,14 +771,14 @@ mod tests {
     #[test]
     fn non_json_body_kept_as_string() {
         let r = base("OK");
-        let v = compact(&r);
+        let v = compact(&r, None);
         assert_eq!(v["body"], "OK");
     }
 
     #[test]
     fn empty_body_is_null() {
         let r = base("");
-        let v = compact(&r);
+        let v = compact(&r, None);
         assert_eq!(v["body"], Value::Null);
     }
 
@@ -784,7 +795,7 @@ mod tests {
         );
 
         let r = base(&body);
-        let v = compact(&r);
+        let v = compact(&r, None);
         let serialized_len = serde_json::to_string(&v).unwrap().len();
         assert!(
             serialized_len <= COMPACT_BUDGET_BYTES,
@@ -807,7 +818,7 @@ mod tests {
             format!("<https://x.test/2?c={}>", "p".repeat(900)),
         );
 
-        let v = compact(&r);
+        let v = compact(&r, None);
         assert!(v["headers"]["link"].is_string(), "{v}");
         let len = serde_json::to_string(&v).unwrap().len();
         assert!(
@@ -825,7 +836,7 @@ mod tests {
             original_bytes: 100,
             filtered_bytes: 20,
         });
-        let v = compact(&r);
+        let v = compact(&r, None);
         assert_eq!(v["body"], json!({"picked": "yes"}));
     }
 
@@ -838,7 +849,7 @@ mod tests {
             message: "upstream body wasn't json".into(),
             original_bytes: 8,
         });
-        let v = compact(&r);
+        let v = compact(&r, None);
         let err = &v["body"]["filter_error"];
         assert_eq!(err["kind"], "body_not_json");
         assert_eq!(err["message"], "upstream body wasn't json");
@@ -848,7 +859,7 @@ mod tests {
     fn long_string_body_is_truncated() {
         let big = "x".repeat(50_000);
         let r = base(&big);
-        let v = compact(&r);
+        let v = compact(&r, None);
         let serialized_len = serde_json::to_string(&v).unwrap().len();
         assert!(
             serialized_len <= COMPACT_BUDGET_BYTES,
@@ -865,7 +876,7 @@ mod tests {
     fn unstored_hint_leads_with_narrowing() {
         let big = "x".repeat(50_000);
         let r = base(&big);
-        let v = compact(&r);
+        let v = compact(&r, None);
         let hint = v["_hint"].as_str().expect("hint");
         assert!(
             hint.starts_with("narrow with"),
@@ -886,7 +897,7 @@ mod tests {
             .collect();
         let body = serde_json::to_string(&Value::Array(items)).unwrap();
         let r = base(&body);
-        let mut v = compact(&r);
+        let mut v = compact(&r, None);
         assert!(v["_truncated"].is_object());
 
         attach_full_result(
@@ -934,7 +945,7 @@ mod tests {
         let items: Vec<Value> = (0..100).map(|_| Value::String(chunk.clone())).collect();
         let body = serde_json::to_string(&Value::Array(items)).unwrap();
         let r = base(&body);
-        let v = compact(&r);
+        let v = compact(&r, None);
         let final_len = serde_json::to_string(&v).unwrap().len();
         assert!(
             final_len <= COMPACT_BUDGET_BYTES,
@@ -957,7 +968,7 @@ mod tests {
         let items: Vec<Value> = (0..1_000).map(|i| json!({"id": i})).collect();
         let body = serde_json::to_string(&Value::Array(items)).unwrap();
         let r = base(&body);
-        let v = compact(&r);
+        let v = compact(&r, None);
 
         let arr = v["body"].as_array().expect("body should still be an array");
         // Last element is the sentinel.

@@ -445,12 +445,57 @@ async fn validate_action(
 /// HTTP API wire-compatible for the dashboard and direct REST consumers.
 /// The MCP forwarder explicitly passes `verbose: false` to opt into the
 /// compact shape on behalf of LLM clients.
-fn render_action_result(result: &ActionResult, verbose: Option<bool>) -> serde_json::Value {
+fn render_action_result(
+    result: &ActionResult,
+    verbose: Option<bool>,
+    pagination: Option<&serde_json::Value>,
+) -> serde_json::Value {
     if verbose.unwrap_or(true) {
-        serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+        let mut rendered = serde_json::to_value(result).unwrap_or(serde_json::Value::Null);
+        if let (Some(pagination), Some(obj)) = (pagination, rendered.as_object_mut()) {
+            obj.insert("_pagination".into(), pagination.clone());
+        }
+        rendered
     } else {
-        crate::services::compact_response::compact(result)
+        // Handed *into* compact rather than stamped after it, so its bytes are
+        // measured with the rest of the envelope instead of being charged to a
+        // fixed reserve — the same discipline D74 applied to the preserved
+        // headers, and for the same reason: a marker sized by guesswork is a
+        // marker that eventually pushes the output back over budget.
+        crate::services::compact_response::compact(result, pagination)
     }
+}
+
+/// The name of the action's page-size parameter, for the oversized-response
+/// hint. Advice a caller can act on without a second lookup.
+pub(in crate::routes::actions) fn page_size_param(meta: &ResolvedMeta) -> Option<String> {
+    meta.action_pagination
+        .as_ref()?
+        .page_size
+        .as_ref()
+        .map(|p| p.param.clone())
+}
+
+/// The `_pagination` marker for a call, or `None` when the action never said
+/// how it pages.
+///
+/// Built here rather than inside the render so both shapes get the identical
+/// object: an agent on MCP and a dashboard on the REST API are looking at the
+/// same next page, and it would be a strange kind of uniformity that depended
+/// on `verbose`.
+fn pagination_marker(
+    meta: &ResolvedMeta,
+    req: &CallRequest,
+    result: &ActionResult,
+) -> Option<serde_json::Value> {
+    let spec = meta.action_pagination.as_ref()?;
+    Some(crate::services::pagination::next_page(
+        spec,
+        req.service.as_deref(),
+        req.action.as_deref(),
+        &req.params,
+        result,
+    ))
 }
 
 /// [`render_action_result`], plus: when the compact view actually dropped
@@ -470,10 +515,12 @@ pub(in crate::routes::actions) async fn render_stored(
     ext: &axum::http::Extensions,
     result: &ActionResult,
     req: &CallRequest,
+    meta: &ResolvedMeta,
     org_id: uuid::Uuid,
     identity_id: uuid::Uuid,
 ) -> serde_json::Value {
-    let mut rendered = render_action_result(result, req.verbose);
+    let pagination = pagination_marker(meta, req, result);
+    let mut rendered = render_action_result(result, req.verbose, pagination.as_ref());
     // Presence, not value: `_truncated` is an object naming what was dropped,
     // so there is nothing to compare against.
     if rendered.get("_truncated").is_none() {

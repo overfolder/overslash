@@ -70,6 +70,10 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
         alias: "handoff_after_ms",
         canonical: "x-overslash-handoff_after_ms",
     },
+    Alias {
+        alias: "pagination",
+        canonical: "x-overslash-pagination",
+    },
 ];
 
 pub(super) const INFO_ALIASES: &[Alias] = &[
@@ -123,6 +127,10 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
     Alias {
         alias: "handoff_after_ms",
         canonical: "x-overslash-handoff_after_ms",
+    },
+    Alias {
+        alias: "pagination",
+        canonical: "x-overslash-pagination",
     },
 ];
 

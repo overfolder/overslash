@@ -151,6 +151,18 @@ struct SearchResult {
     /// that a narrower call was available.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     params: Vec<ParamInfo>,
+    /// Whether this action declares `x-overslash-pagination` — that it returns
+    /// one page of a larger collection, and that the result will carry a
+    /// `_pagination.next` naming the call for the page after it.
+    ///
+    /// A bare boolean, and no more. `params` one field up already shows the
+    /// page-size parameter and the bound it defaults to, so spelling the
+    /// mechanism out again here would be paid for on every row of a fan-out
+    /// that reaches a hundred of them. What the caller cannot get from
+    /// `params` is the fact that following pages is *possible at all* without
+    /// inferring it from a parameter's name — which is the one bit this adds.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    paginated: bool,
 }
 
 /// The model-facing projection of an [`ServiceAction`] parameter.
@@ -395,6 +407,7 @@ async fn search(
                     scope_coverage: None,
                     missing_scopes: Vec::new(),
                     params: Vec::new(),
+                    paginated: false,
                 });
             } else {
                 for inst in connected_instances {
@@ -417,6 +430,7 @@ async fn search(
                         missing_scopes: Vec::new(),
                         // Likewise: the parameter contract is per-action.
                         params: Vec::new(),
+                        paginated: false,
                     });
                 }
             }
@@ -543,6 +557,7 @@ async fn search(
                     scope_coverage: None,
                     missing_scopes: Vec::new(),
                     params: param_infos(action),
+                    paginated: action.pagination.is_some(),
                 });
             } else {
                 // Fan-out: one row per (action × instance). Score is the
@@ -574,6 +589,7 @@ async fn search(
                         scope_coverage,
                         missing_scopes,
                         params: param_infos(action),
+                        paginated: action.pagination.is_some(),
                     });
                 }
             }
@@ -639,6 +655,7 @@ async fn search(
                     scope_coverage,
                     missing_scopes,
                     params: param_infos(action),
+                    paginated: action.pagination.is_some(),
                 });
             }
         }

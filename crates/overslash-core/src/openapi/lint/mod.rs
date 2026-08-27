@@ -707,7 +707,7 @@ mod tests {
     #[test]
     fn no_extension_getter_bypasses_the_accessor() {
         const READERS: &[(&str, &str)] = &[
-            ("compile.rs", include_str!("../compile.rs")),
+            ("compile/mod.rs", include_str!("../compile/mod.rs")),
             ("extract/mod.rs", include_str!("../extract/mod.rs")),
             ("extract/actions.rs", include_str!("../extract/actions.rs")),
             ("extract/auth.rs", include_str!("../extract/auth.rs")),

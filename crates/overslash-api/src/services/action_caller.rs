@@ -78,6 +78,12 @@ pub struct StoredCallRequest {
     /// `None` on pre-D56 rows, which replay at the deployment default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// What the action declared about paging, plus the arguments the original
+    /// call went out with. Stored for the same reason `timeout_ms` is: replay
+    /// has the resolved request but not the action key or the argument map the
+    /// marker is computed from. See [`StoredPagination`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pagination: Option<crate::services::pagination::StoredPagination>,
 }
 
 impl StoredCallRequest {
@@ -89,6 +95,7 @@ impl StoredCallRequest {
         service_key: Option<String>,
         instance_id: Option<Uuid>,
         timeout_ms: Option<u64>,
+        pagination: Option<crate::services::pagination::StoredPagination>,
     ) -> Self {
         Self {
             action,
@@ -97,6 +104,7 @@ impl StoredCallRequest {
             service_key,
             instance_id,
             timeout_ms,
+            pagination,
         }
     }
 
@@ -116,6 +124,9 @@ impl StoredCallRequest {
             // Pre-D56 row: no budget was recorded, so replay falls back to the
             // deployment default rather than to "unbounded".
             timeout_ms: None,
+            // Likewise: a row from before the declaration existed replays with
+            // no `next`, exactly as it did when it was written.
+            pagination: None,
         })
     }
 }
@@ -130,6 +141,10 @@ pub struct StoredMcpCall {
     pub auth: McpAuth,
     pub tool: String,
     pub arguments: serde_json::Value,
+    /// As on [`StoredCallRequest`]: an MCP tool may declare pagination too,
+    /// and a replayed tool call is as entitled to a `next` as an inline one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pagination: Option<crate::services::pagination::StoredPagination>,
 }
 
 /// Replay payload for a platform-runtime approval. Stored on
@@ -571,6 +586,9 @@ fn map_call_error(e: http_caller::CallError, timeout: CallTimeout) -> AppError {
             // renders through `Display`, never `IntoResponse`.
             download_url: None,
             expires_at: None,
+            // Same reason: nothing here renders the hint, so there is nothing
+            // for a parameter name to improve.
+            page_size_param: None,
         },
         // `timeout_ms` comes from the transport (what was actually applied),
         // the rest from the resolver (who set it, and what the caller would
