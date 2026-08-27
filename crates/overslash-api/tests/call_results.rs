@@ -148,7 +148,10 @@ async fn truncated_compact_result_carries_a_download_url() {
     .await;
     let result = &body["result"];
 
-    assert_eq!(result["_truncated"], true, "expected a crop: {result}");
+    assert!(
+        result["_truncated"].is_object(),
+        "expected a crop: {result}"
+    );
     let url = result["_full_result"]["download_url"]
         .as_str()
         .unwrap_or_else(|| panic!("_full_result.download_url missing: {result}"));
@@ -340,7 +343,7 @@ async fn oversized_response_stores_nothing_and_says_so() {
     )
     .await;
     let result = &body["result"];
-    assert_eq!(result["_truncated"], true);
+    assert!(result["_truncated"].is_object());
     assert!(
         result.get("_full_result").is_none(),
         "nothing should be stored over the cap: {result}"
@@ -388,7 +391,7 @@ async fn zero_cap_disables_storage() {
         json!({ "verbose": false }),
     )
     .await;
-    assert_eq!(body["result"]["_truncated"], true);
+    assert!(body["result"]["_truncated"].is_object());
     assert!(body["result"].get("_full_result").is_none());
 
     let rows: i64 = sqlx::query_scalar!("SELECT count(*) FROM call_results")

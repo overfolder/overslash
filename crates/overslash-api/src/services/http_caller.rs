@@ -115,11 +115,27 @@ pub async fn call(
         .map_err(|e| map_reqwest_timeout(e, timeout_ms))?;
     let status_code = response.status().as_u16();
 
-    let resp_headers: HashMap<String, String> = response
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    // Fold rather than collect: a `HashMap` built straight from the iterator
+    // keeps only the *last* of any repeated field name, and `Link` legally
+    // repeats — so a `rel="next"` could be lost here, one layer before the
+    // compact render ever sees it. RFC 9110 §5.3 says repeated field lines
+    // combine with ", "; `set-cookie` is the documented exception, where
+    // comma-joining corrupts the cookies, so it keeps the old last-wins.
+    let mut resp_headers: HashMap<String, String> = HashMap::new();
+    for (k, v) in response.headers().iter() {
+        let name = k.as_str();
+        let value = v.to_str().unwrap_or("");
+        match resp_headers.get_mut(name) {
+            Some(existing) if name != "set-cookie" => {
+                existing.push_str(", ");
+                existing.push_str(value);
+            }
+            Some(existing) => *existing = value.to_string(),
+            None => {
+                resp_headers.insert(name.to_string(), value.to_string());
+            }
+        }
+    }
 
     // Check Content-Length before consuming the body
     let content_length = response.content_length();

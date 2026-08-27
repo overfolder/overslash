@@ -47,3 +47,8 @@ debug = "line-tables-only"
 # crates appear in reports. Covers the old sqlx-macros override too.
 [profile.dev.package."*"]
 opt-level = 1
+
+# `test` inherits from `dev`, so this is already the effective value — spelled
+# out so the setting survives any future divergence of the two profiles.
+[profile.test]
+debug = "line-tables-only"

@@ -36,6 +36,7 @@ mod billing;
 mod byoc_self_service;
 mod call_results;
 mod call_timeouts;
+mod compact_pagination;
 mod compact_response;
 mod connection_account_picture;
 mod connection_credential_source;

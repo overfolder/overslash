@@ -56,8 +56,10 @@ async fn verbose_default_keeps_full_action_result_shape() {
     );
 }
 
-/// `verbose: false` switches to the compact shape: no `headers`, body is
-/// upgraded from string to parsed JSON, status + duration retained.
+/// `verbose: false` switches to the compact shape: body is upgraded from
+/// string to parsed JSON, status + duration retained, and headers are gone —
+/// the `/echo` fake sends nothing on the pagination allow-list, and everything
+/// off it is still dropped.
 #[tokio::test]
 async fn verbose_false_returns_compact_shape() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
@@ -92,7 +94,7 @@ async fn verbose_false_returns_compact_shape() {
     assert!(result["duration_ms"].is_number());
     assert!(
         result.get("headers").is_none(),
-        "compact mode must drop headers, got: {}",
+        "compact mode keeps only pagination headers, and /echo sends none: {}",
         result["headers"]
     );
     // The /echo fake returns `{headers, body, uri}` — a JSON object. Compact
