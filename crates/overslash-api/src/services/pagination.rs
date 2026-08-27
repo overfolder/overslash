@@ -243,8 +243,17 @@ where
         .next()?;
 
     for link in split_links(value) {
-        let (url, params) = link.split_once('>')?;
-        let url = url.trim().strip_prefix('<')?;
+        // `continue`, never `?`. A segment that is not bracketed at all is one
+        // segment we cannot read, and bailing here would abandon the rest of
+        // the header — including a `rel="next"` sitting right after it. That is
+        // the silent cursor loss this module exists to prevent, arrived at from
+        // the other direction.
+        let Some((url, params)) = link.split_once('>') else {
+            continue;
+        };
+        let Some(url) = url.trim().strip_prefix('<') else {
+            continue;
+        };
         if params
             .split(';')
             .filter_map(|p| p.split_once('='))
@@ -650,6 +659,25 @@ mod tests {
             &result(200, json!([]), &[("link", link)]),
         );
         assert_eq!(marker["next"]["params"], json!({"page": 3}));
+    }
+
+    /// A segment we cannot read is one segment, not the end of the header.
+    #[test]
+    fn link_skips_a_malformed_segment_and_keeps_looking() {
+        let link = "garbage-without-brackets, \
+                    <https://api.github.com/user/repos?page=4>; rel=\"next\"";
+        let marker = next_page(
+            &link_spec(),
+            Some("github"),
+            Some("list_repos"),
+            &sent(&[("page", json!(3))]),
+            &result(200, json!([]), &[("link", link)]),
+        );
+        assert_eq!(
+            marker["next"]["params"],
+            json!({"page": 4}),
+            "a broken first segment must not abandon the rest of the header"
+        );
     }
 
     #[test]
