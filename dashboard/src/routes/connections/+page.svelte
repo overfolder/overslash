@@ -5,6 +5,7 @@
 	import { listConnections, setConnectionDefault } from '$lib/api/services';
 	import type { ConnectionSummary, Identity, OAuthProviderInfo } from '$lib/types';
 	import { compareBy, type SortDir } from '$lib/sort';
+	import { resolveOwner, ownerLabel, ownerTitle, type OwnerScope } from '$lib/ownerLabel';
 	import { relativeTime, absoluteTime } from '$lib/utils/time';
 	import SearchBar, {
 		emptySearch,
@@ -18,13 +19,19 @@
 	import ConnectionAvatar from '$lib/components/connections/ConnectionAvatar.svelte';
 	import ConnectAccountModal from '$lib/components/connections/ConnectAccountModal.svelte';
 
-	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[] } } =
-		$props();
+	let {
+		data
+	}: {
+		data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; allowedDomains?: string[] };
+	} = $props();
 
 	// Derive isAdmin + current user id from layout data — gates the admin-only
 	// "show all users' connections" toggle and labels the Owner column.
 	const isAdmin = $derived(data.user?.is_org_admin === true);
 	const currentUserId = $derived(data.user?.identity_id);
+	// Org's allowed sign-in domains, for stripping the domain off owner emails.
+	// Comes from the root layout load, same as `data.user`.
+	const allowedDomains = $derived(data.allowedDomains ?? []);
 
 	let connections = $state<ConnectionSummary[]>([]);
 	let identities = $state<Identity[]>([]);
@@ -40,10 +47,12 @@
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 
 	// Display label for a connection's owner in the "all users" view. Connections
-	// are bound to the user identity (D22), so owner_identity_id is always set.
-	function ownerLabel(c: ConnectionSummary): string {
-		if (currentUserId && c.owner_identity_id === currentUserId) return 'You';
-		return identityById.get(c.owner_identity_id)?.name ?? 'user';
+	// are bound to the user identity (D22), so owner_identity_id is always set —
+	// this column never renders 'Org'. Labelled by email via `$lib/ownerLabel`,
+	// matching the services list, because the IdP `name` claim is neither unique
+	// nor stable (see `$lib/identityDisplay`).
+	function ownerOf(c: ConnectionSummary): OwnerScope {
+		return resolveOwner(c.owner_identity_id, identityById, currentUserId, allowedDomains);
 	}
 
 	const providers = $derived(data.providers);
@@ -115,7 +124,7 @@
 	const sortAccessor: Record<string, (c: ConnectionSummary) => string | number> = {
 		provider: (c) => displayName(c.provider_key),
 		account: (c) => c.account_email ?? '',
-		owner: (c) => ownerLabel(c),
+		owner: (c) => ownerLabel(ownerOf(c)),
 		scopes: (c) => c.scopes.length,
 		default: (c) => (c.is_default ? 0 : 1),
 		usedby: (c) => c.used_by_service_templates.length,
@@ -270,6 +279,7 @@
 				</thead>
 				<tbody>
 					{#each sorted as c (c.id)}
+						{@const owner = ownerOf(c)}
 						<tr
 							class:is-new={c.id === highlightId}
 							class:show-owner={showAllUsers}
@@ -297,9 +307,9 @@
 								{/if}
 							</td>
 							{#if showAllUsers}
-								<td data-label="Owner" class="owner-cell muted" title={c.owner_identity_id}>
+								<td data-label="Owner" class="owner-cell muted" title={ownerTitle(owner)}>
 									<span class="card-label">Owner</span>
-									<span>{ownerLabel(c)}</span>
+									<span>{ownerLabel(owner)}</span>
 								</td>
 							{/if}
 							<td data-label="Scopes">

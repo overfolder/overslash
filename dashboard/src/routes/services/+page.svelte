@@ -27,6 +27,14 @@
 	} from '$lib/components/SearchBar.svelte';
 	import SortableHeader from '$lib/components/SortableHeader.svelte';
 	import { compareBy, type SortDir } from '$lib/sort';
+	import { formatIdentity } from '$lib/identityDisplay';
+	import {
+		resolveOwner,
+		ownerLabel,
+		ownerTitle,
+		needsOwnerPrefix,
+		type OwnerScope
+	} from '$lib/ownerLabel';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import TemplateCatalog from '$lib/components/templates/TemplateCatalog.svelte';
 	import ApiExplorer from '$lib/components/api-explorer/ApiExplorer.svelte';
@@ -65,6 +73,10 @@
 	// Derive isAdmin + current user id from layout data
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	// Org's allowed sign-in domains — `$lib/ownerLabel` strips a matching domain
+	// off owner emails so another user's rows read `ada / gcal`, not
+	// `ada@acme.com / gcal`. Supplied by the root layout load.
+	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
 
 	// `?user=<id>` (admin-only) scopes the list to a single user's accessible
 	// services — set when an admin drills in from the Users list. The backend
@@ -92,9 +104,11 @@
 
 	// Display name for the active `?user=` filter banner; falls back to the raw
 	// id until/unless the identity list resolves it.
-	const userFilterName = $derived(
-		userFilter ? (identityById.get(userFilter)?.name ?? userFilter) : null
-	);
+	const userFilterName = $derived.by(() => {
+		if (!userFilter) return null;
+		const ident = identityById.get(userFilter);
+		return ident ? formatIdentity(ident, allowedDomains).primary : userFilter;
+	});
 
 	// Account label for the active connection pill; falls back to the raw id
 	// until the connections list resolves it.
@@ -205,7 +219,10 @@
 				if (!matchesExpression(s, expr)) return false;
 			}
 			return matchesAllText(
-				[s.name, s.template_key, s.owner_identity_id ?? ''],
+				// The owner label, not `owner_identity_id`: nobody searches for a
+				// UUID, and in the all-users view the owner is what separates two
+				// identically named services.
+				[s.name, s.template_key, ownerLabel(ownerOf(s))],
 				searchValue
 			);
 		})
@@ -228,11 +245,17 @@
 		name: (s) => s.name,
 		template: (s) => s.template_key,
 		status: (s) => s.status,
-		owner: (s) => ownerLabel(s)
+		owner: (s) => ownerLabel(ownerOf(s))
 	};
 
 	const sorted = $derived(
-		[...filtered].sort((a, b) => compareBy(a, b, sortAccessor[sortKey], sortDir))
+		[...filtered].sort((a, b) => {
+			const primary = compareBy(a, b, sortAccessor[sortKey], sortDir);
+			// Colliding names sort equal, so without a tie-break three `gcal` rows
+			// land in whatever order the API returned. Settle them by owner.
+			if (primary !== 0 || sortKey === 'owner') return primary;
+			return compareBy(a, b, (s) => ownerLabel(ownerOf(s)), sortDir);
+		})
 	);
 
 	async function load() {
@@ -260,11 +283,11 @@
 		}
 	}
 
-	function ownerLabel(s: ServiceInstanceSummary): string {
-		if (!s.owner_identity_id) return 'Org';
-		if (currentUserId && s.owner_identity_id === currentUserId) return 'You';
-		const ident = identityById.get(s.owner_identity_id);
-		return ident?.name ?? 'user';
+	// Owner of a row, relative to the viewer. Drives both the Owner column and
+	// the `ada / gcal` name prefix — service names are unique per owner, not per
+	// org, so the admin "show all users" view is full of collisions.
+	function ownerOf(s: ServiceInstanceSummary): OwnerScope {
+		return resolveOwner(s.owner_identity_id, identityById, currentUserId, allowedDomains);
 	}
 
 	async function archive(s: ServiceInstanceSummary) {
@@ -427,11 +450,16 @@
 					</thead>
 					<tbody>
 						{#each sorted as s (s.id)}
+							{@const owner = ownerOf(s)}
 							<tr>
 								<td>
-									<span class="name-cell">
+									<span class="name-cell" title={ownerTitle(owner)}>
 										<ServiceIcon src={s.icon_url} name={s.name} size={20} />
-										<a href={`/services/${s.id}`} class="link">{s.name}</a>
+										<a href={`/services/${s.id}`} class="link"
+											>{#if needsOwnerPrefix(owner)}<span class="owner-prefix"
+													>{owner.label} /</span
+												>{/if}{s.name}</a
+										>
 									</span>
 								</td>
 								<td>
@@ -446,7 +474,7 @@
 										<StatusBadge variant={credentialStatus(s, connectionIds)} />
 									{/if}
 								</td>
-								<td class="muted" title={s.owner_identity_id ?? ''}>{ownerLabel(s)}</td>
+								<td class="muted" title={ownerTitle(owner)}>{ownerLabel(owner)}</td>
 								<td>
 									{#if s.owner_identity_id && currentUserId && s.owner_identity_id !== currentUserId}
 										<span class="group-pills">
@@ -496,7 +524,7 @@
 	{:else if activeTab === 'catalog'}
 		<TemplateCatalog {isAdmin} orgId={($page as any).data?.user?.org_id} />
 	{:else}
-		<ApiExplorer initialService={explorerInitialService} {isAdmin} />
+		<ApiExplorer initialService={explorerInitialService} {isAdmin} {currentUserId} {allowedDomains} />
 	{/if}
 </div>
 
@@ -696,5 +724,21 @@
 		align-items: center;
 		gap: 0.5rem;
 		min-width: 0;
+	}
+	/* The owner qualifier on another user's service. Muted and lighter than the
+	   name so `gcal` stays the token the eye lands on and `ada /` reads as the
+	   scope it is. It sits inside the anchor, so it underlines with the rest of
+	   the link on hover.
+
+	   A long address wraps this cell, so the qualifier is kept whole: `nowrap`
+	   holds `ada@acme.com /` together and the margin (rather than a literal
+	   space, which a line break would swallow) sets the name off from it. The
+	   break then falls between the owner and the name it qualifies, which is
+	   the only place it reads correctly. */
+	.owner-prefix {
+		color: var(--color-text-muted);
+		font-weight: 400;
+		margin-right: 0.3em;
+		white-space: nowrap;
 	}
 </style>
