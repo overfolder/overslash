@@ -128,10 +128,22 @@ test.describe('ownership clusters', () => {
 
 	test('an owner outside the returned set leaves the instance unclustered', () => {
 		const g = build([service('jira', 'id-archived')]);
-		const node = [...g.byId.values()].find((n) => n.kind === 'service');
-		// Someone's, but not anyone we can draw a box around.
-		expect(g.rootOf.get(node!.id)).toBe('id-archived');
-		expect(g.structSet.has('id-archived')).toBe(false);
+		const node = [...g.byId.values()].find((n) => n.kind === 'service')!;
+		// Someone's, but not anyone we can draw a box around: no cluster, and no
+		// root naming a node that does not exist — `boxRoots` would render a chip
+		// for it, labelled with the raw id.
+		expect(node.owner).toBe('id-archived');
+		expect(g.rootOf.has(node.id)).toBe(false);
+		expect([...g.rootOf.values()]).not.toContain('id-archived');
+		// Still not org-wide: it has an owner, we just cannot name them.
+		expect(node.owner).toBeTruthy();
+	});
+
+	test('every cluster root names a node the map can actually draw', () => {
+		// The invariant `boxRoots` leans on — a root that resolves to nothing
+		// produces an invisible container chip carrying a bare UUID.
+		const g = build([service('jira', 'id-archived'), service('gcal', ANA), service('github')]);
+		for (const root of g.rootOf.values()) expect(g.byId.has(root)).toBe(true);
 	});
 });
 

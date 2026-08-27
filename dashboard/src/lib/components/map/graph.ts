@@ -519,13 +519,18 @@ export function buildGraph(
 
 	const rootOf = new Map<string, string>();
 	for (const n of structural) {
+		// An owner outside the returned set — archived, or filtered out — is no
+		// cluster at all: a root that names no node draws a container nobody can
+		// see around a ball that is on the shared ring anyway. Treat it as
+		// ownerless, which is where the radial targets above already put it.
+		let root = n.owner ? resolve(n.owner) : undefined;
+		if (root && !byId.has(root)) root = undefined;
 		if (n.kind === 'user' || n.kind === 'org') rootOf.set(n.id, n.id);
-		else if (n.kind === 'agent') rootOf.set(n.id, n.owner ? resolve(n.owner) : n.id);
-		else if (n.kind === 'subagent') rootOf.set(n.id, n.owner ? resolve(n.owner) : n.id);
+		else if (n.kind === 'agent' || n.kind === 'subagent') rootOf.set(n.id, root ?? n.id);
 		// A user-level instance is reachable only by its owner's fleet, so it
 		// belongs in that cluster. Org-level instances get no entry: they are
 		// called from several clusters and belong inside none of them.
-		else if (n.kind === 'service' && n.owner) rootOf.set(n.id, resolve(n.owner));
+		else if (n.kind === 'service' && root) rootOf.set(n.id, root);
 	}
 
 	return {
