@@ -32,6 +32,9 @@
 	let collapse = $state<CollapseState>({ users: false, agents: false, subagents: true });
 	/** Per-node open/closed, overriding the global chips. */
 	let overrides = $state<Record<string, boolean>>({});
+	/** Cluster root → folded into its container chip. A plain record rather than
+	 *  a Set: `$state` deep-proxies objects and arrays, not Sets. */
+	let boxClosed = $state<Record<string, boolean>>({});
 	let hideIdle = $state(true);
 	let query = $state('');
 	let shown = $state<string[]>([]);
@@ -56,7 +59,12 @@
 	let stage: HTMLElement;
 	let canvas: HTMLCanvasElement;
 	let layer: HTMLElement;
+	let chipLayer: HTMLElement;
 	let sim: Sim | null = null;
+	/** The simulation exists. Node elements arrive through `shown`, which is
+	 *  empty until it does — but the container chips would otherwise render on
+	 *  the very first pass and register against a `sim` that is still null. */
+	let ready = $state(false);
 
 	const graph = $derived(buildGraph(identities, services, extraServices, collapse, overrides));
 
@@ -89,8 +97,38 @@
 		return s;
 	});
 
+	/**
+	 * Cluster roots worth drawing a container around: a user (or the org
+	 * aggregate) with at least one agent or subagent standing under it.
+	 *
+	 * Folding the Agents lane leaves every root memberless, so the boxes go with
+	 * it — which is right, since there is nothing left to enclose.
+	 */
+	const boxRoots = $derived.by(() => {
+		const roots: string[] = [];
+		const seen = new Set<string>();
+		for (const n of graph.structural) {
+			const root = graph.rootOf.get(n.id);
+			if (!root || root === n.id || seen.has(root)) continue;
+			seen.add(root);
+			roots.push(root);
+		}
+		return roots;
+	});
+
+	/** Folded away inside a collapsed container. Mirrors the simulation's own
+	 *  test, so a fold takes effect on the click rather than on the next
+	 *  `onShownChange` up to 220ms later. */
+	function hiddenByBox(n: MapNode): boolean {
+		if (n.kind === 'user' || n.kind === 'org') return !!boxClosed[n.id];
+		const root = graph.rootOf.get(n.id);
+		return !!root && root !== n.id && !!boxClosed[root];
+	}
+
 	const shownNodes = $derived(
-		shown.map((id) => graph.byId.get(id)).filter((n): n is MapNode => !!n)
+		shown
+			.map((id) => graph.byId.get(id))
+			.filter((n): n is MapNode => !!n && !hiddenByBox(n))
 	);
 
 	// ── approval bookkeeping ─────────────────────────────────────────────
@@ -137,7 +175,7 @@
 
 	onMount(() => {
 		sim = createSim(
-			{ stage, canvas, layer },
+			{ stage, canvas, layer, chipLayer },
 			{
 				onShownChange: (ids) => {
 					// Fires four times a second whether or not anything moved.
@@ -152,6 +190,7 @@
 			}
 		);
 		sim.setGraph(graph);
+		ready = true;
 
 		const offAction = onEvent<ActionEventData>(['action.called', 'action.completed'], handleAction);
 		const offApproval = onEvent<ApprovalEventData>(
@@ -175,6 +214,7 @@
 		});
 
 		return () => {
+			ready = false;
 			offAction();
 			offApproval();
 			offResync();
@@ -192,6 +232,11 @@
 	$effect(() => {
 		sim?.setHideIdle(hideIdle);
 	});
+	$effect(() => {
+		// Spread rather than hand over the `$state` proxy: the simulation reads
+		// this on every frame, and it is deliberately outside Svelte.
+		sim?.setBoxClosed({ ...boxClosed });
+	});
 
 	/** Registers the element with the simulation, which moves it every frame. */
 	function tracked(node: HTMLElement, id: string) {
@@ -201,6 +246,20 @@
 				sim?.registerNode(id, null);
 			}
 		};
+	}
+
+	/** The same, for a container's name chip. */
+	function trackedChip(node: HTMLElement, root: string) {
+		sim?.registerChip(root, node);
+		return {
+			destroy() {
+				sim?.registerChip(root, null);
+			}
+		};
+	}
+
+	function toggleBox(root: string) {
+		boxClosed = { ...boxClosed, [root]: !boxClosed[root] };
 	}
 
 	function hasChildren(n: MapNode): boolean {
@@ -350,6 +409,32 @@
 						<div class="lm-cap">{n.label}</div>
 					</div>
 				</div>
+			{/each}
+		</div>
+
+		<!-- Container name chips. Outside `.lm-layer` because they must not take
+		     its zoom: the simulation counter-scales each one so its text stays
+		     the same size however far out the map is. -->
+		<div class="lm-chiplayer" bind:this={chipLayer}>
+			{#each ready ? boxRoots : [] as root (root)}
+				{@const label = graph.byId.get(root)?.label ?? root}
+				<button
+					class="lm-boxchip"
+					use:trackedChip={root}
+					title="{boxClosed[root] ? 'Expand' : 'Collapse'} {label} · drag to move"
+					onpointerdown={(e) => sim?.onChipPointerDown(e, root)}
+					onclick={() => {
+						// A drag ends in a click too. Swallow that one so moving a
+						// cluster does not also fold it.
+						if (sim?.consumeGroupDrag()) return;
+						toggleBox(root);
+					}}
+				>
+					<span class="lm-chip-caret" aria-hidden="true">▼</span>
+					<span class="lm-chip-name">{label}</span>
+					<span class="lm-chip-count"></span>
+					<span class="lm-chip-act"></span>
+				</button>
 			{/each}
 		</div>
 

@@ -26,7 +26,8 @@
 	container-type: inline-size;
 	touch-action: none;
 }
-.lm-stage.is-panning {
+.lm-stage.is-panning,
+.lm-stage.is-grabbing-group {
 	cursor: grabbing;
 }
 .lm-stage canvas {
@@ -378,6 +379,137 @@
 	background: var(--color-primary-bg);
 }
 
+/* ── ownership containers ─────────────────────────────────────────────────
+   The dashed box itself is drawn on the canvas (see sim.ts `drawBoxes`); only
+   its name chip is DOM, so the label stays selectable text at a fixed size
+   however far the map is zoomed out. The simulation writes the transform and
+   the state classes. */
+.lm-chiplayer {
+	position: absolute;
+	top: 0;
+	left: 0;
+	transform-origin: 0 0;
+	will-change: transform;
+}
+.lm-boxchip {
+	position: absolute;
+	top: 0;
+	left: 0;
+	transform-origin: top left;
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	height: 26px;
+	padding: 0 10px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: var(--color-surface);
+	color: var(--color-text-secondary);
+	font: var(--text-label-sm);
+	white-space: nowrap;
+	cursor: grab;
+	box-shadow: var(--shadow-sm);
+	transition:
+		opacity 0.2s ease,
+		color 0.1s,
+		border-color 0.1s;
+	/* Hidden until the simulation has a box to anchor it to — otherwise every
+	   chip flashes at the world origin on the first frame. */
+	visibility: hidden;
+}
+.lm-boxchip.is-live {
+	visibility: visible;
+}
+.lm-boxchip:hover {
+	color: var(--color-text);
+	border-color: var(--neutral-400);
+}
+.lm-boxchip:active {
+	cursor: grabbing;
+}
+.lm-boxchip.is-dim {
+	opacity: 0.16;
+}
+.lm-chip-caret {
+	font-size: 7px;
+	color: var(--color-text-muted);
+	transition: transform 0.12s ease;
+}
+.lm-chip-name {
+	font-weight: 500;
+}
+.lm-chip-count {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	color: var(--color-primary);
+}
+.lm-chip-count:empty {
+	display: none;
+}
+
+/* Folded: the chip is now the whole cluster, so it carries the weight the box
+   used to. */
+.lm-boxchip.is-closed {
+	box-shadow: var(--shadow-md);
+}
+.lm-boxchip.is-closed .lm-chip-name {
+	color: var(--color-text-heading);
+}
+.lm-boxchip.is-closed .lm-chip-caret {
+	transform: rotate(-90deg);
+}
+
+/* A folded cluster still has to look alive. */
+.lm-chip-act {
+	display: none;
+	align-items: center;
+	gap: 5px;
+	padding-left: 7px;
+	border-left: 1px solid var(--color-border);
+	font-family: var(--font-mono);
+	font-size: 10px;
+	color: var(--color-primary);
+}
+.lm-boxchip.is-active .lm-chip-act,
+.lm-boxchip.is-waiting .lm-chip-act {
+	display: flex;
+}
+.lm-chip-act::before {
+	content: '';
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+	animation: lm-breathe 1.1s ease-in-out infinite;
+}
+.lm-boxchip.is-active {
+	border-color: var(--color-primary);
+}
+.lm-boxchip.is-waiting {
+	border-color: var(--color-warning);
+}
+.lm-boxchip.is-waiting .lm-chip-act {
+	color: var(--color-warning);
+}
+/* Slower: a held call is not a busy one, and the two must not read alike. */
+.lm-boxchip.is-waiting .lm-chip-act::before {
+	animation-duration: 1.6s;
+}
+@keyframes lm-breathe {
+	0%,
+	100% {
+		opacity: 0.3;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.lm-chip-act::before {
+		animation: none;
+	}
+}
+
 .lm-zoom {
 	bottom: 16px;
 	right: 16px;
@@ -550,6 +682,16 @@
 	background: var(--neutral-200);
 	border-color: var(--neutral-400);
 }
+[data-theme='dark'] .lm-boxchip {
+	background: var(--neutral-100);
+	border-color: var(--neutral-300);
+}
+[data-theme='dark'] .lm-boxchip:hover {
+	border-color: var(--neutral-500);
+}
+[data-theme='dark'] .lm-boxchip.is-closed {
+	background: var(--neutral-200);
+}
 @media (prefers-color-scheme: dark) {
 	:root:not([data-theme='light']) .lm-ball {
 		background: var(--neutral-100);
@@ -569,6 +711,16 @@
 	:root:not([data-theme='light']) .lm-caret-btn {
 		background: var(--neutral-200);
 		border-color: var(--neutral-400);
+	}
+	:root:not([data-theme='light']) .lm-boxchip {
+		background: var(--neutral-100);
+		border-color: var(--neutral-300);
+	}
+	:root:not([data-theme='light']) .lm-boxchip:hover {
+		border-color: var(--neutral-500);
+	}
+	:root:not([data-theme='light']) .lm-boxchip.is-closed {
+		background: var(--neutral-200);
 	}
 	:root:not([data-theme='light']) .lm-chip:hover,
 	:root:not([data-theme='light']) .lm-zoom button:hover {
