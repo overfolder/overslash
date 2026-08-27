@@ -1,3 +1,19 @@
+# WhatsApp via a self-hosted whatsapp-mcp-docker container
+# (https://github.com/angel-manuel/whatsapp-mcp-docker).
+#
+# The tool list below is authored inline (globals ship their tools in-repo)
+# and mirrors the catalog the container serves as of v0.7.0 (2026-08-14,
+# verified against tools/list and internal/tools/register.go). `ping` is
+# served but deliberately not exposed: cache_sync_status is the richer
+# diagnostic and is gated the same way. When a new container release lands,
+# re-run tools/list and re-sync this file — the drift guard in
+# crates/overslash-api/tests/whatsapp.rs pins the names known here.
+#
+# Bytes never ride an MCP tool call in either direction. Media moves over
+# plain HTTP on the container's own port, behind the same bearer token as
+# /mcp: `GET /media/<sha256>` out (wrapped by download_media's `download`
+# block below) and `POST /media` in. The inbound half is NOT reachable
+# through this gateway — see the comment above send_file.
 openapi: 3.1.0
 info:
   title: WhatsApp
@@ -115,6 +131,178 @@ x-overslash-mcp:
           filter: ".arguments.text"
         - label: "Reply to"
           filter: ".arguments.reply_to_id // empty"
+
+    - name: send_reaction
+      risk: write
+      scope_param: chat_jid
+      description: >-
+        React to a message in {chat_jid} with an emoji. An EMPTY emoji removes
+        your existing reaction and a new one replaces it — WhatsApp allows one
+        reaction per person per message, so this is set-or-clear, not append.
+        The target message's author is resolved from the local cache; pass
+        sender_jid when the message is not cached (and your own JID for a
+        message you sent). Newsletter/channel messages are rejected: reacting
+        there needs a server id the cache does not capture.
+      input_schema:
+        type: object
+        properties:
+          chat_jid:
+            type: string
+            description: "Chat containing the message: a JID (`user@s.whatsapp.net` or `group@g.us`) or a raw phone number with country code (digits only)."
+            # Same reasoning as send_message.recipient: a reaction is visible
+            # to everyone in the chat, so the approval has to name the human
+            # rather than an unreadable @lid, and the permission key should
+            # collapse onto the phone number.
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{chat_jid}'
+              display: '{name}[ ({phone})]'
+              scope: phone
+          message_id:
+            type: string
+            minLength: 1
+            description: "Stanza id of the message to react to, as returned by get_conversation / list_messages."
+          emoji:
+            type: string
+            description: "Emoji to react with. An empty string removes your existing reaction."
+          sender_jid:
+            type: string
+            description: "Author of the target message. Only needed when that message is not in the local cache; otherwise it is looked up."
+        required: [chat_jid, message_id, emoji]
+      disclose:
+        - label: "Chat"
+          filter: ".resolved.chat_jid // .arguments.chat_jid"
+        - label: "JID"
+          filter: ".arguments.chat_jid"
+        - label: "Emoji"
+          primary: true
+          filter: ".arguments.emoji"
+        - label: "Message"
+          filter: ".arguments.message_id"
+
+    # ── polls ─────────────────────────────────────────────────────────
+    # A poll's standings are OBSERVED, never queried: WhatsApp offers no way
+    # to ask the server for a tally, so the container accumulates vote events
+    # as they arrive and get_poll_results reports what this device saw. Votes
+    # cast before pairing, or while the container was down, are simply gone —
+    # the same "empty can mean not-yet-synced" trap the cache reads carry,
+    # except here no cache_sync can repair it.
+    - name: send_poll
+      risk: write
+      scope_param: recipient
+      description: >-
+        Create a poll in {recipient} asking "{question}". Returns the poll's
+        message_id, which is the handle vote_poll and get_poll_results take.
+        Option texts are identified on the wire by a hash of the text, so two
+        identical options are indistinguishable once votes come back — the
+        container rejects duplicates rather than letting the tally be
+        ambiguous.
+      input_schema:
+        type: object
+        properties:
+          recipient:
+            type: string
+            description: "Destination chat: a JID (`user@s.whatsapp.net` or `group@g.us`) or a raw phone number with country code (digits only)."
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{recipient}'
+              display: '{name}[ ({phone})]'
+              scope: phone
+          question:
+            type: string
+            minLength: 1
+            description: "The poll question."
+          options:
+            type: array
+            items:
+              type: string
+              minLength: 1
+            minItems: 2
+            maxItems: 12
+            description: "Answer options, in display order. Must be unique."
+          selectable_count:
+            type: integer
+            minimum: 0
+            maximum: 12
+            description: "How many options one voter may pick. Default 1 (single choice); 0 means no limit. Must not exceed the number of options."
+        required: [recipient, question, options]
+      disclose:
+        - label: "Recipient"
+          filter: ".resolved.recipient // .arguments.recipient"
+        - label: "JID"
+          filter: ".arguments.recipient"
+        - label: "Question"
+          primary: true
+          filter: ".arguments.question"
+        - label: "Options"
+          filter: '.arguments.options | join(" / ")'
+        - label: "Picks allowed"
+          filter: '.arguments // {} | if has("selectable_count") then .selectable_count else empty end'
+
+    - name: vote_poll
+      risk: write
+      scope_param: chat_jid
+      description: >-
+        Cast (or withdraw) this device's vote on the poll {message_id} in
+        {chat_jid}. Option texts must match the ballot exactly; an empty
+        options array withdraws a previous vote. Only polls this device
+        actually received can be voted on — a poll created before pairing is
+        not votable, and no sync recovers it.
+      input_schema:
+        type: object
+        properties:
+          chat_jid:
+            type: string
+            description: "JID of the chat holding the poll (e.g. `34600111222@s.whatsapp.net` or `1234567890-1600000000@g.us`)."
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{chat_jid}'
+              display: '{name}[ ({phone})]'
+              scope: phone
+          message_id:
+            type: string
+            description: "Stanza id of the poll creation message, as returned by send_poll or by list_messages / get_message_context (kind `poll`)."
+          options:
+            type: array
+            items:
+              type: string
+            maxItems: 12
+            description: "Option texts to vote for, exactly as they appear on the ballot. Empty array withdraws."
+        required: [chat_jid, message_id, options]
+      disclose:
+        - label: "Chat"
+          filter: ".resolved.chat_jid // .arguments.chat_jid"
+        - label: "JID"
+          filter: ".arguments.chat_jid"
+        - label: "Vote"
+          primary: true
+          filter: '.arguments.options | if length == 0 then "withdraw vote" else join(" / ") end'
+        - label: "Poll"
+          filter: ".arguments.message_id"
+
+    - name: get_poll_results
+      risk: read
+      scope_param: chat_jid
+      description: >-
+        Read the tally of the poll {message_id} in {chat_jid}: per-option vote
+        counts and voters. Answered from the local cache, which accumulates
+        vote events as they arrive. WhatsApp offers no way to query a poll's
+        standings, so votes cast before this device was linked, or while the
+        container was down, are NOT counted and cannot be recovered by
+        cache_sync. Treat the numbers as "what this device observed".
+      input_schema:
+        type: object
+        properties:
+          chat_jid:
+            type: string
+            description: "JID of the chat holding the poll."
+          message_id:
+            type: string
+            description: "Stanza id of the poll creation message, as returned by send_poll or by list_messages / get_message_context (kind `poll`)."
+        required: [chat_jid, message_id]
 
     # ── contacts ──
     - name: search_contacts
@@ -346,6 +534,122 @@ x-overslash-mcp:
             minLength: 1
             description: "Stanza id of the media message, as returned by get_conversation / list_messages."
         required: [chat_jid, message_id]
+
+    # Sending media is the mirror image, and the asymmetry matters. Both send
+    # tools take a `media_path` — a pointer to bytes ALREADY stored in the
+    # container — and there are exactly two ways to get one:
+    #
+    #   * `download_media` called WITHOUT `deliver: "url"` returns the raw
+    #     descriptor, `media_path` included. That is the whole forwarding
+    #     path: re-send an attachment someone sent you without the bytes ever
+    #     touching an agent's context. With `deliver: "url"` the gateway
+    #     swaps `media_path` for a download_url of its own, which these tools
+    #     cannot take.
+    #   * `POST /media` on the container, which needs the container's own URL
+    #     and AUTH_TOKEN. Overslash never hands either to a caller, so
+    #     ORIGINATING new bytes is out-of-band work for whoever operates the
+    #     container — not something an agent can do through this service.
+    - name: send_file
+      risk: write
+      scope_param: recipient
+      description: >-
+        Send bytes already stored in this container to {recipient} as a media
+        message — image, video, audio attachment, document or sticker. Pass
+        the media_path a previous download_media returned (call it WITHOUT
+        `deliver: "url"`, which would hand you a gateway download URL this
+        tool cannot use). Bytes never travel through a tool call: this tool
+        takes neither base64 nor a local filesystem path, and uploading new
+        bytes is not reachable through the gateway. Use send_audio_message
+        instead for a voice note.
+      input_schema:
+        type: object
+        properties:
+          recipient:
+            type: string
+            description: "Destination chat: a JID (`user@s.whatsapp.net` or `group@g.us`) or a raw phone number with country code (digits only)."
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{recipient}'
+              display: '{name}[ ({phone})]'
+              scope: phone
+          media_path:
+            type: string
+            minLength: 1
+            description: "Reference to stored bytes: the `/media/<sha256>` path a download_media descriptor carries. A bare `<sha256>` is accepted too."
+          media_type:
+            type: string
+            enum: [auto, image, video, audio, document, sticker]
+            default: auto
+            description: "Envelope to send. `auto` picks from the stored mimetype: image/* -> image, video/* -> video, audio/* -> audio, image/webp -> sticker (what WhatsApp itself does with a .webp), anything else -> document. Stickers must be WebP; any other mimetype is refused."
+          caption:
+            type: string
+            description: "Optional caption. Image, video and document envelopes only — passing one with audio or a sticker is REJECTED rather than silently dropped, since those envelopes cannot carry it."
+          filename:
+            type: string
+            description: "Optional filename the recipient sees on a document send. Defaults to the name recorded when the bytes were stored."
+          reply_to_id:
+            type: string
+            description: "Optional stanza id of the message to quote-reply to."
+        required: [recipient, media_path]
+      disclose:
+        - label: "Recipient"
+          filter: ".resolved.recipient // .arguments.recipient"
+        - label: "JID"
+          filter: ".arguments.recipient"
+        - label: "File"
+          primary: true
+          filter: ".arguments.media_path"
+        - label: "Type"
+          filter: '.arguments.media_type // "auto"'
+        - label: "Caption"
+          filter: ".arguments.caption // empty"
+        - label: "Filename"
+          filter: ".arguments.filename // empty"
+        - label: "Reply to"
+          filter: ".arguments.reply_to_id // empty"
+
+    - name: send_audio_message
+      risk: write
+      scope_param: recipient
+      description: >-
+        Send stored audio to {recipient} as a voice note (PTT), taking the
+        same media_path reference as send_file. Voice notes are Ogg/Opus or
+        nothing: WhatsApp accepts another codec on the wire and then fails to
+        play it, which the sender sees as a successful send. So other formats
+        are transcoded when ffmpeg is available in the container, and REFUSED
+        with invalid_argument when it is not — never sent unplayable. Use
+        send_file for a plain audio attachment.
+      input_schema:
+        type: object
+        properties:
+          recipient:
+            type: string
+            description: "Destination chat: a JID (`user@s.whatsapp.net` or `group@g.us`) or a raw phone number with country code (digits only)."
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{recipient}'
+              display: '{name}[ ({phone})]'
+              scope: phone
+          media_path:
+            type: string
+            minLength: 1
+            description: "Reference to stored audio: the `/media/<sha256>` path a download_media descriptor carries. A bare `<sha256>` is accepted too."
+          reply_to_id:
+            type: string
+            description: "Optional stanza id of the message to quote-reply to."
+        required: [recipient, media_path]
+      disclose:
+        - label: "Recipient"
+          filter: ".resolved.recipient // .arguments.recipient"
+        - label: "JID"
+          filter: ".arguments.recipient"
+        - label: "Voice note"
+          primary: true
+          filter: ".arguments.media_path"
+        - label: "Reply to"
+          filter: ".arguments.reply_to_id // empty"
 
     # ── chats (read-side, cache-backed) — [RAW] power-user fallbacks ──
     - name: list_chats
@@ -580,6 +884,239 @@ x-overslash-mcp:
             type: string
             minLength: 1
         required: [contact_jid]
+
+    # ── account & presence (MUTATES ACCOUNT STATE) ────────────────────
+    # Everything in this section changes state other WhatsApp users can see,
+    # under the identity of the paired phone number, and none of it is a
+    # message. That combination is easy to under-weight: "set a typing
+    # indicator" reads like a no-op and is in fact this account telling a
+    # specific person it is talking to them right now. They are all `write`
+    # for that reason, and each disclose block names the observable effect
+    # rather than the argument shape.
+    - name: set_status_message
+      risk: write
+      description: >-
+        Overwrite the account's About text — the one-line bio on the profile,
+        visible to everyone the account's privacy settings allow. This is NOT
+        a status broadcast/story. Max 139 characters; an empty string clears
+        it. There is no undo and the previous text is not readable from here,
+        so a caller that may want it back must have saved it first.
+      input_schema:
+        type: object
+        properties:
+          text:
+            type: string
+            maxLength: 139
+            description: "New About text, 0-139 characters. An empty string clears the About line."
+        required: [text]
+      disclose:
+        - label: "About"
+          primary: true
+          filter: '.arguments.text | if . == "" then "(clear the About line)" else . end'
+
+    - name: send_presence
+      risk: write
+      description: >-
+        Publish the account's global availability: `available` marks it
+        online, `unavailable` marks it offline. Contacts allowed to see
+        last-seen observe the change immediately. Marking available is also
+        the prerequisite for actually receiving the updates
+        subscribe_presence asks for — the server stops delivering them to a
+        device that reports itself offline.
+      input_schema:
+        type: object
+        properties:
+          presence:
+            type: string
+            enum: [available, unavailable]
+            description: "`available` marks the account online; `unavailable` marks it offline."
+        required: [presence]
+      disclose:
+        - label: "Presence"
+          primary: true
+          filter: ".arguments.presence"
+
+    - name: send_chat_presence
+      risk: write
+      scope_param: chat_jid
+      description: >-
+        Show or clear the typing indicator in {chat_jid}. `composing` with
+        media `text` renders as "typing…" and with media `audio` as
+        "recording audio…"; `paused` clears it. The other party sees it live.
+        WhatsApp expires the indicator after a few seconds, so a sustained
+        indicator means re-sending — this tool does not hold one open.
+      input_schema:
+        type: object
+        properties:
+          chat_jid:
+            type: string
+            minLength: 1
+            description: "Chat to publish the indicator in: a user JID (`…@s.whatsapp.net` or `…@lid`), a group JID (`…@g.us`), or a raw phone number with country code."
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{chat_jid}'
+              display: '{name}[ ({phone})]'
+              scope: phone
+          state:
+            type: string
+            enum: [composing, paused]
+            description: "`composing` shows the indicator; `paused` clears it."
+          media:
+            type: string
+            enum: [text, audio]
+            default: text
+            description: "Which composing indicator to show: `text` for \"typing…\", `audio` for \"recording audio…\". Only meaningful with state=`composing`."
+        required: [chat_jid, state]
+      disclose:
+        - label: "Chat"
+          filter: ".resolved.chat_jid // .arguments.chat_jid"
+        - label: "JID"
+          filter: ".arguments.chat_jid"
+        - label: "State"
+          primary: true
+          filter: ".arguments.state"
+        - label: "Indicator"
+          filter: ".arguments.media // empty"
+
+    - name: subscribe_presence
+      risk: write
+      scope_param: jid
+      description: >-
+        Ask the server to push online/offline updates for {jid}. The
+        subscription is server-side and visible to WhatsApp as activity from
+        this account — it is a write for that reason, not because it changes
+        anything locally. Updates arrive asynchronously and are cached
+        against the contact; read them back with get_contact_details, which
+        reports `presence_observed: false` for a contact nothing has arrived
+        for rather than claiming they are offline. Requires this account to
+        be marked available (send_presence) for delivery to continue. Groups
+        do not publish presence.
+      input_schema:
+        type: object
+        properties:
+          jid:
+            type: string
+            minLength: 1
+            description: "User JID to watch (`…@s.whatsapp.net` or `…@lid`), or a raw phone number with country code."
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{jid}'
+              display: '{name}[ ({phone})]'
+              scope: phone
+        required: [jid]
+      disclose:
+        - label: "Contact"
+          primary: true
+          filter: ".resolved.jid // .arguments.jid"
+        - label: "JID"
+          filter: ".arguments.jid"
+
+    - name: set_disappearing_timer
+      risk: write
+      scope_param: chat_jid
+      description: >-
+        Change the disappearing-message timer for {chat_jid} to {duration}.
+        The change applies to EVERY participant, is announced in the chat
+        itself, and causes future messages to be deleted on all devices once
+        the timer elapses. Only `off`, `24h`, `7d` and `90d` are accepted —
+        whatsmeow will forward any duration, which official clients then
+        ignore and the server rejects in groups, so a wider vocabulary would
+        only let a caller "succeed" at setting a timer nobody honours.
+      input_schema:
+        type: object
+        properties:
+          chat_jid:
+            type: string
+            minLength: 1
+            description: "Chat to change: a user JID (`…@s.whatsapp.net` or `…@lid`), a group JID (`…@g.us`), or a raw phone number with country code."
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{chat_jid}'
+              display: '{name}[ ({phone})]'
+              scope: phone
+          duration:
+            type: string
+            enum: [off, 24h, 7d, 90d]
+            description: "Timer to apply. These are the only values WhatsApp honours."
+        required: [chat_jid, duration]
+      disclose:
+        - label: "Chat"
+          primary: true
+          filter: ".resolved.chat_jid // .arguments.chat_jid"
+        - label: "JID"
+          filter: ".arguments.chat_jid"
+        - label: "Timer"
+          filter: ".arguments.duration"
+
+    - name: set_default_disappearing_timer
+      risk: write
+      description: >-
+        Change the account-wide default disappearing-message timer applied to
+        NEWLY started chats. Existing chats keep whatever timer they already
+        have, so this is not a way to change them in bulk. Only `off`, `24h`,
+        `7d` and `90d` are accepted.
+      input_schema:
+        type: object
+        properties:
+          duration:
+            type: string
+            enum: [off, 24h, 7d, 90d]
+            description: "Timer to apply to new chats. These are the only values WhatsApp honours."
+        required: [duration]
+      disclose:
+        - label: "Timer"
+          primary: true
+          filter: ".arguments.duration"
+
+    - name: mark_read
+      risk: write
+      scope_param: chat_jid
+      description: >-
+        Send a read receipt for one or more messages in {chat_jid}, turning
+        the sender's ticks blue and moving their last-read position. Also
+        clears the chat's cached unread flag. All ids must be from the SAME
+        author — WhatsApp encodes one author per receipt — and sender_jid is
+        required in group chats. Cannot be undone: a receipt is a claim to
+        the other party that this account read their message, and there is no
+        way to retract it.
+      input_schema:
+        type: object
+        properties:
+          chat_jid:
+            type: string
+            minLength: 1
+            description: "Chat the messages live in: a user JID (`…@s.whatsapp.net` or `…@lid`), a group JID (`…@g.us`), a newsletter JID, or a raw phone number with country code."
+            resolve:
+              tool: resolve_jid
+              args:
+                jid: '{chat_jid}'
+              display: '{name}[ ({phone})]'
+              scope: phone
+          message_ids:
+            type: array
+            items:
+              type: string
+              minLength: 1
+            minItems: 1
+            maxItems: 200
+            description: "Stanza ids to acknowledge. All must have been sent by the same author."
+          sender_jid:
+            type: string
+            description: "Author of the messages. Required in group chats; ignored in direct chats, where the author is the chat itself."
+        required: [chat_jid, message_ids]
+      disclose:
+        - label: "Chat"
+          primary: true
+          filter: ".resolved.chat_jid // .arguments.chat_jid"
+        - label: "JID"
+          filter: ".arguments.chat_jid"
+        - label: "Messages"
+          filter: ".arguments.message_ids | length"
+        - label: "Author"
+          filter: ".arguments.sender_jid // empty"
 
     # ── cache diagnostics / control ──
     - name: cache_sync_status
