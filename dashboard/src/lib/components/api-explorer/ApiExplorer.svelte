@@ -2,7 +2,7 @@
 	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { ApiError, apiErrorReason } from '$lib/session';
+	import { ApiError, apiErrorReason, session } from '$lib/session';
 	import { listServices, listConnections, getServiceActions } from '$lib/api/services';
 	import { callAction, getTemplateActionDetail } from '$lib/api/actions';
 	import type {
@@ -12,8 +12,10 @@
 		CallRequest,
 		CallResponse,
 		SecretRef,
-		ServiceInstanceSummary
+		ServiceInstanceSummary,
+		Identity
 	} from '$lib/types';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import ModePill, { type ExplorerMode } from './ModePill.svelte';
 	import ServicePicker from './ServicePicker.svelte';
 	import ActionPicker from './ActionPicker.svelte';
@@ -23,14 +25,32 @@
 
 	let {
 		initialService,
-		isAdmin = false
-	}: { initialService?: string | null; isAdmin?: boolean } = $props();
+		isAdmin = false,
+		currentUserId,
+		allowedDomains = []
+	}: {
+		initialService?: string | null;
+		isAdmin?: boolean;
+		/** Viewer's identity id — decides which picker options get an owner
+		 *  qualifier. Options for the viewer's own services stay unqualified. */
+		currentUserId?: string;
+		/** Org's allowed sign-in domains; a single entry is stripped off owner
+		 *  emails. Defaults to none so this renders standalone (Storybook). */
+		allowedDomains?: string[];
+	} = $props();
 
 	let mode = $state<ExplorerMode>('service_action');
 	let services = $state<ServiceInstanceSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
+	let identities = $state<Identity[]>([]);
 	let loadingServices = $state(true);
 	let loadError = $state<string | null>(null);
+	// Admin-only: when true, list every user-level service across the org. Off by
+	// default — an admin exploring their own services should not have to scroll
+	// past the whole org's. The backend ignores the flag for non-admins.
+	let showAllUsers = $state(false);
+
+	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 
 	let selectedService = $state<string | null>(null);
 
@@ -74,18 +94,29 @@
 	// Match by id first (new UUID-in-URL path used by the services table) and
 	// fall back to name (older bookmarks and user-typed names). The backend
 	// accepts either form for `getServiceActions` and `callAction.service`.
+	// Two passes, not one `find` with an `||`: with the admin view on, several
+	// users' services share a name, and a name match on an earlier row must not
+	// shadow the exact id match further down.
 	const selectedServiceRow = $derived(
-		services.find((s) => s.id === selectedService || s.name === selectedService) ?? null
+		services.find((s) => s.id === selectedService) ??
+			services.find((s) => s.name === selectedService) ??
+			null
 	);
 
-	onMount(async () => {
+	async function loadServices(includeUserLevel: boolean) {
+		const [s, c] = await Promise.all([
+			listServices({ includeUserLevel }),
+			listConnections()
+		]);
+		services = s;
+		connections = c;
+	}
+
+	async function reload() {
+		loadingServices = true;
+		loadError = null;
 		try {
-			const [s, c] = await Promise.all([
-				listServices({ includeUserLevel: isAdmin }),
-				listConnections()
-			]);
-			services = s;
-			connections = c;
+			await loadServices(showAllUsers);
 		} catch (e) {
 			loadError =
 				e instanceof ApiError
@@ -94,6 +125,37 @@
 		} finally {
 			loadingServices = false;
 		}
+	}
+
+	onMount(async () => {
+		try {
+			await loadServices(showAllUsers);
+			// "Try it" on the services list hands us another user's service id
+			// (`?service=<uuid>`), which the caller-scoped list above does not
+			// contain. Rather than silently show an empty picker, widen the query
+			// once and flip the toggle so the state is visible to the admin.
+			const wanted = initialService;
+			if (
+				isAdmin &&
+				wanted &&
+				!services.some((s) => s.id === wanted || s.name === wanted)
+			) {
+				await loadServices(true);
+				showAllUsers = true;
+			}
+		} catch (e) {
+			loadError =
+				e instanceof ApiError
+					? `Failed to load services (${e.status})`
+					: 'Failed to load services';
+		} finally {
+			loadingServices = false;
+		}
+		// The identity list only labels picker options; a failure there must
+		// degrade to unqualified names, never to a broken explorer.
+		identities = await session
+			.get<Identity[]>('/v1/identities')
+			.catch(() => [] as Identity[]);
 	});
 
 	$effect(() => {
@@ -305,6 +367,21 @@
 <div class="explorer">
 	<header class="top">
 		<ModePill {mode} onchange={(m) => (mode = m)} />
+		{#if isAdmin && mode === 'service_action'}
+			<label class="admin-toggle" for="explorer-show-all-users">
+				<ToggleSwitch
+					id="explorer-show-all-users"
+					checked={showAllUsers}
+					onchange={(next) => {
+						showAllUsers = next;
+						void reload();
+					}}
+					size="sm"
+					label="Show all users' services"
+				/>
+				<span>Show all users' services</span>
+			</label>
+		{/if}
 	</header>
 
 	{#if loadError}
@@ -320,6 +397,9 @@
 					<ServicePicker
 						{services}
 						{connections}
+						{identityById}
+						{currentUserId}
+						{allowedDomains}
 						value={selectedService}
 						onchange={handleServiceChange}
 					/>
@@ -402,6 +482,18 @@
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
+	}
+	/* Matches the services and connections lists so the same control reads the
+	   same on all three surfaces. */
+	.admin-toggle {
+		margin-left: auto;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		font-size: 0.82rem;
+		color: var(--color-text-muted);
+		cursor: pointer;
+		user-select: none;
 	}
 	.layout {
 		display: grid;

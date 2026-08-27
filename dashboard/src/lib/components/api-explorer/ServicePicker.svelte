@@ -1,20 +1,37 @@
 <script lang="ts">
-	import type { ServiceInstanceSummary, ConnectionSummary } from '$lib/types';
+	import type { ServiceInstanceSummary, ConnectionSummary, Identity } from '$lib/types';
 	import { credentialStatus } from '$lib/api/service-status';
+	import { resolveOwner, qualifyName } from '$lib/ownerLabel';
 
 	let {
 		services,
 		connections,
+		identityById = new Map(),
+		currentUserId,
+		allowedDomains = [],
 		value,
 		onchange
 	}: {
 		services: ServiceInstanceSummary[];
 		connections: ConnectionSummary[];
+		/** Org identities, for naming the owner of someone else's service. Empty
+		 *  by default so this renders standalone — options are then unqualified. */
+		identityById?: Map<string, Identity>;
+		currentUserId?: string;
+		allowedDomains?: string[];
 		value: string | null;
 		onchange: (v: string) => void;
 	} = $props();
 
 	const connectionIds = $derived(new Set(connections.map((c) => c.id)));
+
+	// With the admin "show all users" view on, several users can each own a
+	// service called `gcal`. The dropdown has no owner column to fall back on,
+	// so the owner goes into the option label itself: `ada / gcal`.
+	function optionLabel(s: ServiceInstanceSummary): string {
+		const owner = resolveOwner(s.owner_identity_id, identityById, currentUserId, allowedDomains);
+		return qualifyName(s.name, owner);
+	}
 
 	const connected = $derived(
 		services.filter(
@@ -39,14 +56,14 @@
 		{#if connected.length > 0}
 			<optgroup label="Connected">
 				{#each connected as s (s.id)}
-					<option value={s.id}>{s.name}  ·  {s.template_key}</option>
+					<option value={s.id}>{optionLabel(s)}  ·  {s.template_key}</option>
 				{/each}
 			</optgroup>
 		{/if}
 		{#if other.length > 0}
 			<optgroup label="Other">
 				{#each other as s (s.id)}
-					<option value={s.id}>{s.name}  ·  {s.template_key}</option>
+					<option value={s.id}>{optionLabel(s)}  ·  {s.template_key}</option>
 				{/each}
 			</optgroup>
 		{/if}

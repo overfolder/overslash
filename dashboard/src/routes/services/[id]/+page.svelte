@@ -41,11 +41,13 @@
 	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import AutoApproveSelect from '$lib/components/AutoApproveSelect.svelte';
+	import { resolveOwner, ownerLabel, ownerTitle } from '$lib/ownerLabel';
 
 
 	const id = $derived($page.params.id ?? '');
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
 
 	let svc = $state<ServiceInstanceDetail | null>(null);
 	let template = $state<TemplateDetail | null>(null);
@@ -200,15 +202,13 @@
 	const editUrlRequired = $derived(
 		(template?.hosts?.length ?? 0) === 0 && !inheritedUrl
 	);
-	const ownerDisplay = $derived.by(() => {
-		const s = svc;
-		if (!s) return '';
-		const ownerId = s.owner_identity_id;
-		if (!ownerId) return 'Org';
-		if (currentUserId && ownerId === currentUserId) return 'You';
-		const match = identities.find((i) => i.id === ownerId);
-		return match?.name ?? 'user';
-	});
+	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
+	// Same labelling as the services list an admin arrives from: a user owner is
+	// named by their (domain-stripped) email, an agent by its name.
+	const ownerScope = $derived(
+		resolveOwner(svc?.owner_identity_id, identityById, currentUserId, allowedDomains)
+	);
+	const ownerDisplay = $derived(svc ? ownerLabel(ownerScope) : '');
 	const assignedGroupIds = $derived(new Set(serviceGroups.map((g) => g.group_id)));
 	// Filter out Myself groups for the "add a group" picker — Myself grants are
 	// auto-managed and only ever target their owner's services. Surfacing them
@@ -873,7 +873,7 @@
 				{/if}
 				<div class="row">
 					<span class="label">Owner</span>
-					<span title={svc.owner_identity_id ?? ''}>{ownerDisplay}</span>
+					<span title={ownerTitle(ownerScope)}>{ownerDisplay}</span>
 				</div>
 				<div class="row">
 					<span class="label">Created</span>

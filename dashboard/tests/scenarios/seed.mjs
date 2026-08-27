@@ -272,6 +272,32 @@ export async function seedGroupMember(session, groupId, identityId) {
 	});
 }
 
+// ── Org membership ──────────────────────────────────────────────────────
+
+/**
+ * Promote a member to org admin — the `identities.is_org_admin` column, not
+ * just Admins-group membership.
+ *
+ * The dev `admin` profile lands in the Admins group, so `/auth/me/identity`
+ * already reports `is_org_admin: true` and the dashboard renders every admin
+ * control. But the admin-view query params (`?include_user_level=true` on
+ * services and connections) are gated on the *column*, which dev seeding
+ * leaves false — so without this the toggle flips and nothing new appears.
+ * Any scenario that exercises an all-users view has to promote first.
+ *
+ * Idempotent: re-promoting an existing admin is a no-op 200.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {string} [identityId] defaults to the session's own identity
+ */
+export async function promoteToOrgAdmin(session, identityId) {
+	await api(session, `/v1/org-members/${identityId ?? session.identityId}`, {
+		method: 'PATCH',
+		body: { role: 'admin' },
+		expect: [200, 204]
+	});
+}
+
 // ── Approvals ───────────────────────────────────────────────────────────
 
 /**
