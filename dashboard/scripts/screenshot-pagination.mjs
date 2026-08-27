@@ -1,4 +1,4 @@
-// Real-stack screenshot for `x-overslash-pagination` (D-NEXT): an action that
+// Real-stack screenshot for `x-overslash-pagination` (D75): an action that
 // returns one page of a larger collection, and says so before anyone calls it.
 //
 // One surface, and the contrast on it is the point. A catalog service with two

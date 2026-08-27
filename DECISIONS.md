@@ -586,7 +586,7 @@ The key-cap half is subtler and was invisible by construction. `serde_json` is b
 
 This is a prerequisite for the generic-pagination work: a uniform `next` surfaced on top of a pipeline that eats the cursor is worse than no `next` at all, because an agent that can see how to page and then receives a response with the cursor removed will trust the truncated result.
 
-## D-NEXT: One vocabulary for paging — the gateway injects the page size, and hands back the next call rather than the upstream's spelling
+## D75: One vocabulary for paging — the gateway injects the page size, and hands back the next call rather than the upstream's spelling
 
 **Date**: 2026-08-27
 **Decision**: `x-overslash-pagination` on an operation or an MCP tool (bare alias `pagination:`) says two things and no more: **which declared parameter bounds a page**, with the bound to use when the caller names none (`page_size: {param, default, max}`), and **how to reach the next page** (`next: {style, param, from}`, plus optional `items` / `has_more` paths). Four styles cover the whole corpus — `cursor` (an opaque value read from a dotted body path: Slack's `cursor`, Notion's `start_cursor`, Google's `pageToken`), `offset` (advance by the page size: HubSpot, Outlook's `$skip`, Metabase), `page` (increment an ordinal: WhatsApp), and `link` (RFC 8288 `rel="next"`, HTTP only — an MCP tool result has no headers, and that combination is refused at compile).

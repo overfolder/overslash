@@ -1,6 +1,6 @@
 # Generic pagination
 
-**Status:** Implemented (D-NEXT)
+**Status:** Implemented (D75)
 
 Companion to [large-file-handling.md](large-file-handling.md), which bounds a
 response *after* it is too big. This bounds it before.
