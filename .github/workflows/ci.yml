@@ -529,6 +529,64 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Reports how much *production code* the PR touches: files under `src/`,
+  # source extensions only, test files, the test-support crates and inline
+  # `#[cfg(test)]` modules stripped out. `git diff --shortstat` is useless here
+  # — one `make sqlx-prepare` run dwarfs a real change — so this is the number
+  # to size a review by.
+  #
+  # Purely informational, and deliberately absent from `ci-ok`'s `needs`: a
+  # reporter must never block a merge. If the script itself breaks, the job
+  # still shows a red X in the PR's check list — visible without being a gate.
+  #
+  # Not wired to the `changes` paths-filter on purpose: every PR gets a number,
+  # including the docs-only ones (where the number is zero, which is the point).
+  diff-stats:
+    name: PR diff size
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # The workflow default is `pull-requests: read`; the sticky comment needs
+    # write. Scoped to this job rather than hoisted — no other job posts.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The script diffs against the merge-base, so it needs real history.
+          fetch-depth: 0
+
+      # A PR that touches no `src/` file exercises only the empty path, so the
+      # interesting code (rename pairing, test stripping, per-crate grouping,
+      # recovering paths from `git diff --no-index`) could sit broken and green.
+      # This runs the whole pipeline over a synthetic repo with known-correct
+      # expected counts. stdlib-only Python 3.10+; the runner ships 3.12, so no
+      # setup-python step.
+      - name: Self-test
+        run: ./scripts/pr-diff-stats.py --self-test
+
+      - name: Measure code diff
+        id: stats
+        run: |
+          ./scripts/pr-diff-stats.py \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" \
+            --out pr-diff-stats.md
+          cat pr-diff-stats.md >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo 'markdown<<PR_DIFF_STATS_EOF'
+            cat pr-diff-stats.md
+            echo 'PR_DIFF_STATS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # The step summary above already carries the number, so a fork PR — where
+      # `GITHUB_TOKEN` is read-only and this step fails — still reports it.
+      - name: Comment on PR
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        with:
+          header: diff-stats
+          message: ${{ steps.stats.outputs.markdown }}
+
   ci-ok:
     name: ci-ok
     if: always()
