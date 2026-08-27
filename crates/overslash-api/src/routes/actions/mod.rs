@@ -474,11 +474,9 @@ pub(in crate::routes::actions) async fn render_stored(
     identity_id: uuid::Uuid,
 ) -> serde_json::Value {
     let mut rendered = render_action_result(result, req.verbose);
-    if rendered
-        .get("_truncated")
-        .and_then(serde_json::Value::as_bool)
-        != Some(true)
-    {
+    // Presence, not value: `_truncated` is an object naming what was dropped,
+    // so there is nothing to compare against.
+    if rendered.get("_truncated").is_none() {
         return rendered;
     }
     let stored = crate::services::call_result::Stored {

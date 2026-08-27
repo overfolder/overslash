@@ -171,8 +171,9 @@ pub(super) enum CallResponse {
         /// Pre-rendered `ActionResult` view. Verbose mode encodes the full
         /// struct (status_code, headers, raw body string, duration_ms,
         /// optional filtered_body). Compact mode returns the shape from
-        /// `services::compact_response::compact` (headers dropped, body
-        /// parsed as JSON, ≤8 KB). The selector lives on `CallRequest.verbose`.
+        /// `services::compact_response::compact` (non-pagination headers
+        /// dropped, body parsed as JSON, ≤8 KB). The selector lives on
+        /// `CallRequest.verbose`.
         result: serde_json::Value,
         action_description: Option<String>,
         /// True when the upstream itself reported failure — an MCP envelope
