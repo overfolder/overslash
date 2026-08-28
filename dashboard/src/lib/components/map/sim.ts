@@ -62,6 +62,11 @@ const STRAY_GAP = 10;
 const STRAY_PUSH = 6;
 /** How much of a stray's push the cluster it is intruding on takes back. */
 const STRAY_REACTION = 0.25;
+/** Clearance two nodes keep from each other, measured on what is drawn — the
+ *  ball *and* its caption — rather than on the radii the springs reason about.
+ *  A pair the layout considers comfortably apart can still have two labels
+ *  lying across each other. */
+const NODE_GAP = 8;
 /** Penetration below this is not worth keeping the whole layout awake for. */
 const SEPARATION_EPSILON = 4;
 /** Overlap the positional pass tolerates, in world units, so the ring spring
@@ -113,7 +118,7 @@ interface Box {
 	y1: number;
 	lx: number;
 	ly: number;
-	/** The root and its members, cached for the box-vs-box separation pass. */
+	/** The root and its members, cached for the separation passes. */
 	ids: string[];
 	collapsed: boolean;
 	/** No remembered anchor yet — the chip centres on the root instead. */
@@ -121,6 +126,60 @@ interface Box {
 	count: number;
 	running: number;
 	waiting: number;
+}
+
+/**
+ * A rectangle in world units.
+ *
+ * Everything the positional passes separate reduces to one of these — a node
+ * with the caption under it, a container, the chip a folded container leaves
+ * behind — so one contact rule serves all three, and `Box` is one already.
+ */
+interface Rect {
+	x0: number;
+	y0: number;
+	x1: number;
+	y1: number;
+}
+
+/** One thing the shape pass can move: a whole cluster (open, or folded into
+ *  its chip) or a single node that belongs to no open container. */
+type Shape =
+	| { cluster: true; root: string; b: Box; rect: Rect; held: boolean }
+	| { cluster: false; id: string; rect: Rect; held: boolean };
+
+/**
+ * How far a pair of rectangles has to move to sit `gap` apart, and which way —
+ * or `null` when the move is not worth making.
+ *
+ * The gap goes in before the test, so this acts on any pair closer than the
+ * clearance rather than only on a pair already overlapping: two shapes touching
+ * read no better than two overlapping, and it is the convention the forces use
+ * too. `SEPARATION_SLOP` then applies to that shortfall — it is a floor on
+ * movement worth making, not on overlap worth caring about.
+ */
+function contact(a: Rect, b: Rect, gap: number) {
+	const needX = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) + gap;
+	const needY = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0) + gap;
+	if (needX <= SEPARATION_SLOP || needY <= SEPARATION_SLOP) return null;
+	// Out by the cheaper axis, the same choice the forces make.
+	const alongX = needX < needY;
+	const mag = alongX ? needX : needY;
+	const aFirst = alongX
+		? (a.x0 + a.x1) / 2 <= (b.x0 + b.x1) / 2
+		: (a.y0 + a.y1) / 2 <= (b.y0 + b.y1) / 2;
+	const dir = aFirst ? -1 : 1;
+	// The direction `a` moves in. `b` moves the other way.
+	return { ux: alongX ? dir : 0, uy: alongX ? 0 : dir, mag };
+}
+
+/** Slide a rectangle with what it describes, so the rest of the pass tests
+ *  against where things now are rather than where they started. */
+function shift(r: Rect, dx: number, dy: number) {
+	r.x0 += dx;
+	r.x1 += dx;
+	r.y0 += dy;
+	r.y1 += dy;
 }
 
 export interface TooltipCall {
@@ -709,12 +768,17 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 			return t0 == null ? 0 : Math.min(1, (now - t0) / 110);
 		};
 
-		// `simulate` reads the previous frame's boxes for the box-vs-box push;
-		// `computeBoxes` then refreshes them from the positions it just moved,
-		// so the outline `draw` strokes is never a frame behind its balls.
-		simulate(dt, now, edges);
+		// Forces first, then the two positional passes that have the last word.
+		// Order is the whole point: `separateNodes` moves individual balls, so it
+		// has to run *before* the boxes are built or `draw` strokes an outline
+		// that no longer hugs its members; `separateShapes` moves whole clusters
+		// and keeps their rectangles in step as it goes. `simulate` reads the
+		// previous frame's boxes for its own push — which is fine, since they are
+		// the corrected ones.
+		simulate(dt, now, edges, live);
+		separateNodes(live);
 		computeBoxes(now, live);
-		separateBoxes();
+		separateShapes(live);
 		draw(now, edges, edgeBusy, fadeOf, live);
 
 		uiAcc += dt;
@@ -753,7 +817,12 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 	}
 
 	// ── physics ──────────────────────────────────────────────────────────
-	function simulate(dt: number, now: number, edges: { from: string; to: string; tree: boolean }[]) {
+	function simulate(
+		dt: number,
+		now: number,
+		edges: { from: string; to: string; tree: boolean }[],
+		live: Set<string>
+	) {
 		if (!graph) return;
 		// Runs over the whole structure, not just the visible set: a hidden
 		// idle agent still takes up space, so revealing it doesn't shove its
@@ -784,10 +853,15 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 			// agree, or the instance settles between them and the box is
 			// stretched to reach it. `graph.ownedServiceGap` shrinks when the
 			// subagent rings fold away, and this has to shrink with it.
-			const L = graph.ownedServiceGap;
 			let dx = b.x - a.x;
 			let dy = b.y - a.y;
 			const d = Math.hypot(dx, dy) || 1;
+			// Never closer than the two of them can be drawn, and never pulling
+			// back against a correction: see `clearance` and `restLength`.
+			const L = Math.max(
+				restLength(root, id, graph.ownedServiceGap),
+				clearance(root, id, dx / d, dy / d)
+			);
 			const f = (d - L) * SPRING_K * 0.55;
 			dx /= d;
 			dy /= d;
@@ -832,15 +906,24 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 			const b = pos.get(e.to);
 			const src = meta(e.from);
 			if (!fa || !fb || !a || !b || !src) continue;
-			const L = e.tree
-				? src.kind === 'user' || src.kind === 'org'
-					? SHELL_R
-					: SHELL_R * 0.66
-				: 340;
 			const k = e.tree ? SPRING_K : SPRING_K * 0.024;
 			let dx = b.x - a.x;
 			let dy = b.y - a.y;
 			const d = Math.hypot(dx, dy) || 1;
+			// A tree edge holds its pair at a set distance, so that distance has
+			// to be one they can be drawn at: see `clearance`. The loose edges
+			// between a caller and a service hold nothing — they are a hint at
+			// 340 units and a fortieth of the stiffness — and need no floor.
+			const L = e.tree
+				? Math.max(
+						restLength(
+							e.from,
+							e.to,
+							src.kind === 'user' || src.kind === 'org' ? SHELL_R : SHELL_R * 0.66
+						),
+						clearance(e.from, e.to, dx / d, dy / d)
+					)
+				: 340;
 			const f = (d - L) * k;
 			dx /= d;
 			dy /= d;
@@ -850,6 +933,12 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 			fb[1] -= dy * f;
 		}
 
+		// How far each node reaches from its anchor, so the pair loop below can
+		// rule a pair out on a comparison rather than on a `clearance` call.
+		const reach = ids.map((id) => {
+			const e = extentOf(id);
+			return Math.max(-e.dx0, e.dx1, -e.dy0, e.dy1);
+		});
 		for (let i = 0; i < ids.length; i++) {
 			const ia = ids[i];
 			const ma = meta(ia);
@@ -867,7 +956,7 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 				const rootA = graph.rootOf.get(ia);
 				const sameTree = !!rootA && rootA === graph.rootOf.get(ib);
 				const pad = radiusOf(ia) + radiusOf(ib);
-				const min = bothUsers
+				const spacing = bothUsers
 					? USER_GAP
 					: sameTree
 						? Math.max(56, pad + 18)
@@ -875,7 +964,10 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 				let dx = b.x - a.x;
 				let dy = b.y - a.y;
 				let d2 = dx * dx + dy * dy;
-				if (d2 > min * min) continue;
+				// Neither the layout's spacing nor anything `clearance` could ask
+				// for reaches this far, so the pair is not each other's business.
+				const bound = Math.max(spacing, reach[i] + reach[j] + NODE_GAP);
+				if (d2 > bound * bound) continue;
 				if (d2 === 0) {
 					// Exactly coincident: no separating direction exists.
 					// Nudge deterministically rather than dividing by zero.
@@ -884,6 +976,15 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 					d2 = 0.5;
 				}
 				const d = Math.sqrt(d2);
+				// The layout's own spacing, floored by what the pair is actually
+				// drawn as. A force content to leave them closer than they can be
+				// drawn leaves `separateNodes` doing all of it and arguing with
+				// whatever holds them — the ring spring wins the radial half of
+				// that argument every frame, and the map never settles. With the
+				// floor in, the force wants what the pass enforces, and by the
+				// time the pass runs there is nothing left to correct.
+				const min = Math.max(spacing, clearance(ia, ib, dx / d, dy / d));
+				if (d >= min) continue;
 				const f = ((min - d) * (bothUsers ? 3.2 : sameTree ? 5 : 7)) / d;
 				fa[0] -= dx * f;
 				fa[1] -= dy * f;
@@ -937,10 +1038,18 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		// All of it on the stray and a node held hard to its ring target would
 		// sit there shoving forever; all of it on the cluster and one loose ball
 		// could walk a whole fleet across the map.
+		//
+		// Only a node that is visible and belongs to no open container can be a
+		// stray. A member of another cluster intruding here means the two boxes
+		// intersect, which the pair loop above already says — and says it by
+		// moving both clusters whole, rather than shearing one member out of the
+		// fleet it is drawn with. A node hidden inside a folded container is not
+		// on the map at all, and an invisible ball must not shove a visible box.
+		const boxed = new Set<string>();
+		for (const b of openBoxes) for (const id of b.ids) boxed.add(id);
 		for (const b of openBoxes) {
-			const members = new Set(b.ids);
 			for (const id of ids) {
-				if (members.has(id) || pin?.id === id) continue;
+				if (boxed.has(id) || !live.has(id) || pin?.id === id) continue;
 				const p = pos.get(id);
 				const a = acc.get(id);
 				if (!p || !a) continue;
@@ -1177,105 +1286,324 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		for (const root of stale) boxes.delete(root);
 	}
 
+	// ── separation ───────────────────────────────────────────────────────
 	/**
-	 * Move overlapping containers apart, by moving them rather than by asking.
+	 * Everything the pointer is holding.
 	 *
-	 * The spring in `simulate` does the smooth work, but a force can only ever
+	 * A cluster or a ball under the pointer is never the one that moves: the
+	 * human is the one placing it, and shoving it out from under them is the map
+	 * arguing back.
+	 */
+	function heldIds(): Set<string> {
+		const h = new Set<string>();
+		if (pin) h.add(pin.id);
+		if (groupDrag) for (const id of groupDrag.ids) h.add(id);
+		return h;
+	}
+
+	/** A node's rendered extent as offsets from its anchor: the ball *and* the
+	 *  caption under it, which is the wider of the two. `radiusOf` is the
+	 *  fallback for a node the DOM has not laid out yet. */
+	function extentOf(id: string) {
+		const e = nodeExtent.get(id);
+		if (e) return e;
+		const r = radiusOf(id);
+		return { dx0: -r, dx1: r, dy0: -r, dy1: r };
+	}
+
+	/** A node's rectangle, the same construction `computeBoxes` measures a
+	 *  container with — so a ball is the same size to both. */
+	function nodeRect(id: string): Rect | null {
+		const p = pos.get(id);
+		if (!p) return null;
+		const e = extentOf(id);
+		return { x0: p.x + e.dx0, x1: p.x + e.dx1, y0: p.y + e.dy0, y1: p.y + e.dy1 };
+	}
+
+	/**
+	 * What a fixed-distance spring should actually hold its pair at.
+	 *
+	 * `base` is the layout's number, and the floor. Above it the *targets* have
+	 * the say, because `separateNodes` moves a corrected node's target with it:
+	 * a spring that goes on asking for the layout's number pulls the node
+	 * straight back into what it was just moved off, and the two take turns
+	 * forever — which on a spoke that is packed tighter than its captions fit is
+	 * the only outcome, since neither the ring radii nor `ownedServiceGap` were
+	 * reckoned from text nothing here controls. Reading the rest length off the
+	 * targets is how the correction stops being argued with; `setGraph` re-seeds
+	 * them, so a new fleet starts from the layout's numbers again.
+	 */
+	function restLength(anchor: string, id: string, base: number): number {
+		const ta = target.get(anchor);
+		const tb = target.get(id);
+		if (!ta || !tb) return base;
+		return Math.max(base, Math.hypot(tb.x - ta.x, tb.y - ta.y));
+	}
+
+	/**
+	 * The shortest distance along `ux,uy` at which two nodes clear each other by
+	 * `NODE_GAP` — the floor under the rest length of any spring holding a pair
+	 * at a set distance.
+	 *
+	 * A spring that asks for a distance at which the two overlap is one
+	 * `separateNodes` spends every frame arguing with, and neither wins: the
+	 * pass moves them apart by what is drawn, the spring pulls them back to what
+	 * it was told, and a settled map twitches forever. The same reasoning as the
+	 * container that has to be big enough for its own name — a ring has to be
+	 * wide enough for the names on it, and the names are captions whose length
+	 * nothing here controls.
+	 *
+	 * Clearing on *either* axis is enough, so the smaller of the two demands
+	 * wins: two balls side by side need the width of both captions between them,
+	 * but one above the other needs only their heights.
+	 */
+	function clearance(a: string, b: string, ux: number, uy: number): number {
+		const ea = extentOf(a);
+		const eb = extentOf(b);
+		// `b` sits at `a + s·(ux,uy)`. Which of its edges has to clear which of
+		// `a`'s depends on the side it is approaching from.
+		const sx =
+			ux > 0
+				? (ea.dx1 - eb.dx0 + NODE_GAP) / ux
+				: ux < 0
+					? (ea.dx0 - eb.dx1 - NODE_GAP) / ux
+					: Infinity;
+		const sy =
+			uy > 0
+				? (ea.dy1 - eb.dy0 + NODE_GAP) / uy
+				: uy < 0
+					? (ea.dy0 - eb.dy1 - NODE_GAP) / uy
+					: Infinity;
+		const need = Math.min(sx, sy);
+		// Neither axis asked for anything, which means there was no direction to
+		// reckon along: the two are exactly on top of each other. Demand nothing
+		// rather than infinity — a rest length of `Infinity` is a force of
+		// `-Infinity`, and one NaN position takes the whole map with it. The
+		// repulsion nudges a coincident pair apart on its own, and the frame
+		// after that there is a direction again.
+		return Number.isFinite(need) ? need : 0;
+	}
+
+	/**
+	 * Move overlapping nodes apart, by moving them rather than by asking.
+	 *
+	 * The repulsion in `simulate` is a force, and a force settles wherever it
+	 * balances whatever pulls the other way — the same draw the containers used
+	 * to settle for. It also reasons in `radiusOf`, a circle around the ball,
+	 * while what a reader sees is the ball *and* its caption, and the caption is
+	 * the wider of the two. Two balls the springs consider comfortably apart can
+	 * have their labels lying across each other, and siblings on one ring, whose
+	 * minimum is only `pad + 18`, routinely do.
+	 *
+	 * So this measures what is drawn and has the last word on it. It runs before
+	 * `computeBoxes` deliberately: these are individual balls moving, and a
+	 * container is built to hug its members, so a correction made after the
+	 * rectangle was measured would leave `draw` stroking an outline a frame
+	 * behind the cluster inside it. A crowded ring pushes itself apart and its
+	 * box grows to hold it — the map spreads rather than lie about what is on
+	 * top of what.
+	 */
+	function separateNodes(live: Set<string>) {
+		const ids: string[] = [];
+		const rects: Rect[] = [];
+		for (const id of live) {
+			// A leaving node is mid-transition, and `measureNodes` declines to
+			// measure one for the same reason: its extent describes where it is
+			// going, not how big it is.
+			if (leaving.has(id)) continue;
+			const r = nodeRect(id);
+			if (!r) continue;
+			ids.push(id);
+			rects.push(r);
+		}
+		if (ids.length < 2) return;
+		const held = heldIds();
+
+		// A few passes: separating one pair can push a ball into a third.
+		for (let pass = 0; pass < SEPARATION_PASSES; pass++) {
+			let moved = false;
+			for (let i = 0; i < ids.length; i++) {
+				const heldA = held.has(ids[i]);
+				for (let j = i + 1; j < ids.length; j++) {
+					const heldB = held.has(ids[j]);
+					if (heldA && heldB) continue;
+					const c = contact(rects[i], rects[j], NODE_GAP);
+					if (!c) continue;
+					// Half each, unless one of them is not free to move.
+					const shareA = heldA ? 0 : heldB ? c.mag : c.mag / 2;
+					const shareB = heldB ? 0 : heldA ? c.mag : c.mag / 2;
+					if (shareA) {
+						translateNode(ids[i], c.ux * shareA, c.uy * shareA);
+						shift(rects[i], c.ux * shareA, c.uy * shareA);
+					}
+					if (shareB) {
+						translateNode(ids[j], -c.ux * shareB, -c.uy * shareB);
+						shift(rects[j], -c.ux * shareB, -c.uy * shareB);
+					}
+					moved = true;
+				}
+			}
+			if (!moved) break;
+		}
+	}
+
+	/**
+	 * Move overlapping containers, chips and loose nodes apart, by moving them
+	 * rather than by asking.
+	 *
+	 * The springs in `simulate` do the smooth work, but a force can only ever
 	 * reach the point where it balances whatever pulls the other way — and every
 	 * cluster is held to a slot on a ring whose radius knows nothing about how
-	 * big the cluster grew. Two service-heavy fleets on adjacent slots settle
-	 * with their boxes still a few units into each other, which is exactly the
-	 * overlap that keeps getting reported: the push was working, it just had an
-	 * opponent.
+	 * big the cluster grew, while an org-level service is held to that ring
+	 * harder than anything else on the map. Two service-heavy fleets on adjacent
+	 * slots settle with their boxes a few units into each other; a service
+	 * settles a little way off its ring and a little way inside a container.
+	 * Both pushes were working. They had an opponent, and drew.
 	 *
 	 * So the last word is positional. Boxes have just been rebuilt from the
-	 * positions this frame produced; any pair closer than `BOX_GAP` — touching
-	 * reads no better than overlapping — is separated by translating whole
-	 * clusters, and `draw` strokes the corrected rectangles. A contact
+	 * positions this frame produced; any pair closer than its clearance —
+	 * touching reads no better than overlapping — is separated by translating
+	 * whole clusters, and `draw` strokes the corrected rectangles. A contact
 	 * constraint cannot be out-pulled the way a force can.
+	 *
+	 * Three kinds of thing are separated, because all three make the same claim
+	 * when they lie on top of each other: a container, the chip a folded
+	 * container leaves behind, and a node that belongs to no open container —
+	 * an org-level service, the aggregate, an agent whose owner is off the map.
+	 * A *member* of a container is not one of them: its cluster's rectangle
+	 * already encloses it, so a member intruding on another container means the
+	 * two rectangles intersect, which is said here by moving both clusters whole
+	 * rather than by shearing one ball out of the fleet it is drawn with.
 	 *
 	 * `SEPARATION_SLOP` is what stops that from becoming a per-frame shimmer:
 	 * the ring spring pulls back a fraction of a unit each frame and would be
 	 * corrected right back out again forever. Below the slop the overlap is a
 	 * sliver no zoom level can show, and it is left alone.
 	 */
-	function separateBoxes() {
-		const open: { root: string; b: Box }[] = [];
-		for (const [root, b] of boxes) if (!b.collapsed) open.push({ root, b });
-		if (open.length < 2) return;
+	function separateShapes(live: Set<string>) {
+		const held = heldIds();
+		const shapes: Shape[] = [];
+		const boxed = new Set<string>();
 
-		// A cluster the human is holding does not move: they are the one placing
-		// it, and shoving it out from under the pointer is the map arguing back.
-		const held = (b: Box) =>
-			(!!pin && b.ids.includes(pin.id)) || (!!groupDrag && b.ids.includes(groupDrag.root));
+		for (const [root, b] of boxes) {
+			for (const id of b.ids) boxed.add(id);
+			const isHeld = b.ids.some((id) => held.has(id));
+			if (!b.collapsed) {
+				shapes.push({
+					cluster: true,
+					root,
+					b,
+					rect: { x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 },
+					held: isHeld
+				});
+				continue;
+			}
+			// A folded cluster *is* its chip. The box behind it is meaningless
+			// while collapsed, but the chip is a real thing on the map, left on
+			// whatever corner the cluster was folded from — and it can be left on
+			// top of a container. It counter-scales to stay readable, so its world
+			// size is the measured screen size over the zoom, and it hangs down and
+			// right from its anchor unless it has none yet and centres on the root.
+			const c = chipPx.get(root);
+			if (!c?.w) continue;
+			const w = c.w / view.k;
+			const h = c.h / view.k;
+			const x0 = b.centered ? b.lx - w / 2 : b.lx;
+			const y0 = b.centered ? b.ly - h / 2 : b.ly;
+			shapes.push({
+				cluster: true,
+				root,
+				b,
+				rect: { x0, y0, x1: x0 + w, y1: y0 + h },
+				held: isHeld
+			});
+		}
 
-		// A few passes: separating one pair can push a box into a third.
+		// An open container's own chip needs no rule: `computeBoxes` reserves the
+		// band it hangs in, so it is already inside the rectangle above.
+		for (const id of live) {
+			if (boxed.has(id) || leaving.has(id)) continue;
+			const rect = nodeRect(id);
+			if (!rect) continue;
+			shapes.push({ cluster: false, id, rect, held: held.has(id) });
+		}
+		if (shapes.length < 2) return;
+
+		// A few passes: separating one pair can push a shape into a third.
 		for (let pass = 0; pass < SEPARATION_PASSES; pass++) {
-			let worst = 0;
-			for (let i = 0; i < open.length; i++) {
-				for (let j = i + 1; j < open.length; j++) {
-					const A = open[i].b;
-					const B = open[j].b;
-					// How far they would have to move to sit `BOX_GAP` apart — the
-					// clearance, not the bare overlap. Two containers touching are
-					// as unreadable as two overlapping, so this is the same target
-					// the force uses, which likewise adds the gap before testing.
-					// The slop then applies to that shortfall: under two units of
-					// movement is not worth making.
-					const needX = Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0) + BOX_GAP;
-					const needY = Math.min(A.y1, B.y1) - Math.max(A.y0, B.y0) + BOX_GAP;
-					if (needX <= SEPARATION_SLOP || needY <= SEPARATION_SLOP) continue;
-					// Out by the cheaper axis, the same choice the force makes.
-					const alongX = needX < needY;
-					const mag = alongX ? needX : needY;
-					const aFirst = alongX
-						? (A.x0 + A.x1) / 2 <= (B.x0 + B.x1) / 2
-						: (A.y0 + A.y1) / 2 <= (B.y0 + B.y1) / 2;
-					const dir = aFirst ? -1 : 1;
-					const heldA = held(A);
-					const heldB = held(B);
-					// Half each, unless one of them is not free to move.
-					const shareA = heldA ? 0 : heldB ? mag : mag / 2;
-					const shareB = heldB ? 0 : heldA ? mag : mag / 2;
-					if (shareA) translateCluster(open[i].root, A, alongX ? dir * shareA : 0, alongX ? 0 : dir * shareA);
-					if (shareB) translateCluster(open[j].root, B, alongX ? -dir * shareB : 0, alongX ? 0 : -dir * shareB);
-					worst = Math.max(worst, mag);
+			let moved = false;
+			for (let i = 0; i < shapes.length; i++) {
+				const A = shapes[i];
+				for (let j = i + 1; j < shapes.length; j++) {
+					const B = shapes[j];
+					// Two loose balls are `separateNodes`' business, and it has
+					// already settled them on the same rendered extents.
+					if (!A.cluster && !B.cluster) continue;
+					if (A.held && B.held) continue;
+					// Containers insist on `BOX_GAP` from each other; a non-member
+					// keeps the smaller `STRAY_GAP` from one, which is the clearance
+					// the stray force asks for.
+					const c = contact(A.rect, B.rect, A.cluster && B.cluster ? BOX_GAP : STRAY_GAP);
+					if (!c) continue;
+					// Half each between two containers. Between a node and a
+					// container the node takes the bulk and the cluster takes
+					// `STRAY_REACTION` back: all of it on the cluster and one loose
+					// ball could walk a whole fleet across the map, and all of it on
+					// the node ignores that it got there by being pushed into.
+					const fracA =
+						A.cluster === B.cluster ? 0.5 : A.cluster ? STRAY_REACTION : 1 - STRAY_REACTION;
+					const shareA = A.held ? 0 : B.held ? c.mag : c.mag * fracA;
+					const shareB = B.held ? 0 : A.held ? c.mag : c.mag * (1 - fracA);
+					if (shareA) moveShape(A, c.ux * shareA, c.uy * shareA);
+					if (shareB) moveShape(B, -c.ux * shareB, -c.uy * shareB);
+					moved = true;
 				}
 			}
-			if (worst === 0) break;
+			if (!moved) break;
 		}
 	}
 
+	/** Move a shape, and the rectangle the pass is testing against with it. */
+	function moveShape(s: Shape, dx: number, dy: number) {
+		if (s.cluster) translateCluster(s.root, s.b, dx, dy);
+		else translateNode(s.id, dx, dy);
+		shift(s.rect, dx, dy);
+	}
+
 	/**
-	 * Slide a whole cluster, its members and the rectangle drawn around them.
+	 * Slide one node, position and target together.
 	 *
-	 * Targets move with the positions. Correcting only the position leaves the
-	 * ring spring pulling towards where the cluster used to be, and it creeps
-	 * back a fraction of a unit per frame until it crosses the slop and is
-	 * corrected out again — a settled map that twitches once a second forever.
-	 * Moving the target is what makes the correction hold, and it is what the
-	 * code already does for a cluster a human drags.
+	 * Correcting only the position leaves whatever spring holds this node
+	 * pulling towards where it used to be, and it creeps back a fraction of a
+	 * unit per frame until it crosses the slop and is corrected out again — a
+	 * settled map that twitches once a second forever. Moving the target is what
+	 * makes the correction hold, and it is what the code already does for a
+	 * cluster a human drags.
 	 *
 	 * Not added to `manualTargets`, though: that set exists so a *gesture*
 	 * outlives a fleet refetch. This is derived from the layout, so it should be
-	 * re-derived from the next one — `setGraph` re-seeds, and if the clusters
-	 * still overlap the next frame corrects them again.
+	 * re-derived from the next one — `setGraph` re-seeds, and if things still
+	 * overlap the next frame corrects them again.
 	 *
-	 * Velocities are left alone: this is a correction, not a shove, and handing
-	 * the cluster momentum would make it overshoot and swing back.
+	 * Velocity is left alone: this is a correction, not a shove, and handing the
+	 * node momentum would make it overshoot and swing back.
 	 */
+	function translateNode(id: string, dx: number, dy: number) {
+		const p = pos.get(id);
+		if (!p) return;
+		p.x += dx;
+		p.y += dy;
+		const t = target.get(id);
+		// A fresh object: `setGraph` stores the graph's own target objects by
+		// reference, and mutating one would edit `graph.targets` underneath
+		// everything else that reads it.
+		if (t) target.set(id, { x: t.x + dx, y: t.y + dy });
+	}
+
+	/** Slide a whole cluster: its members, the rectangle drawn around them, and
+	 *  the corner its name chip sits on. */
 	function translateCluster(root: string, b: Box, dx: number, dy: number) {
-		for (const id of b.ids) {
-			const p = pos.get(id);
-			if (!p) continue;
-			p.x += dx;
-			p.y += dy;
-			const t = target.get(id);
-			// A fresh object: `setGraph` stores the graph's own target objects by
-			// reference, and mutating one would edit `graph.targets` underneath
-			// everything else that reads it.
-			if (t) target.set(id, { x: t.x + dx, y: t.y + dy });
-		}
+		for (const id of b.ids) translateNode(id, dx, dy);
 		b.x0 += dx;
 		b.x1 += dx;
 		b.y0 += dy;
