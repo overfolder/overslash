@@ -64,6 +64,13 @@ const STRAY_PUSH = 6;
 const STRAY_REACTION = 0.25;
 /** Penetration below this is not worth keeping the whole layout awake for. */
 const SEPARATION_EPSILON = 4;
+/** Overlap the positional pass tolerates, in world units, so the ring spring
+ *  pulling back a fraction of a unit per frame is not corrected back out again
+ *  forever. Under a pixel at any zoom the map offers. */
+const SEPARATION_SLOP = 2;
+/** Separating one pair can push a box into a third; a handful of passes settles
+ *  the common cases without turning a frame into a solver. */
+const SEPARATION_PASSES = 4;
 /** Pointer slop, px, before a chip press counts as a drag rather than a click. */
 const DRAG_SLOP = 3;
 
@@ -707,6 +714,7 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		// so the outline `draw` strokes is never a frame behind its balls.
 		simulate(dt, now, edges);
 		computeBoxes(now, live);
+		separateBoxes();
 		draw(now, edges, edgeBusy, fadeOf, live);
 
 		uiAcc += dt;
@@ -1167,6 +1175,115 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 			});
 		}
 		for (const root of stale) boxes.delete(root);
+	}
+
+	/**
+	 * Move overlapping containers apart, by moving them rather than by asking.
+	 *
+	 * The spring in `simulate` does the smooth work, but a force can only ever
+	 * reach the point where it balances whatever pulls the other way — and every
+	 * cluster is held to a slot on a ring whose radius knows nothing about how
+	 * big the cluster grew. Two service-heavy fleets on adjacent slots settle
+	 * with their boxes still a few units into each other, which is exactly the
+	 * overlap that keeps getting reported: the push was working, it just had an
+	 * opponent.
+	 *
+	 * So the last word is positional. Boxes have just been rebuilt from the
+	 * positions this frame produced; any pair closer than `BOX_GAP` — touching
+	 * reads no better than overlapping — is separated by translating whole
+	 * clusters, and `draw` strokes the corrected rectangles. A contact
+	 * constraint cannot be out-pulled the way a force can.
+	 *
+	 * `SEPARATION_SLOP` is what stops that from becoming a per-frame shimmer:
+	 * the ring spring pulls back a fraction of a unit each frame and would be
+	 * corrected right back out again forever. Below the slop the overlap is a
+	 * sliver no zoom level can show, and it is left alone.
+	 */
+	function separateBoxes() {
+		const open: { root: string; b: Box }[] = [];
+		for (const [root, b] of boxes) if (!b.collapsed) open.push({ root, b });
+		if (open.length < 2) return;
+
+		// A cluster the human is holding does not move: they are the one placing
+		// it, and shoving it out from under the pointer is the map arguing back.
+		const held = (b: Box) =>
+			(!!pin && b.ids.includes(pin.id)) || (!!groupDrag && b.ids.includes(groupDrag.root));
+
+		// A few passes: separating one pair can push a box into a third.
+		for (let pass = 0; pass < SEPARATION_PASSES; pass++) {
+			let worst = 0;
+			for (let i = 0; i < open.length; i++) {
+				for (let j = i + 1; j < open.length; j++) {
+					const A = open[i].b;
+					const B = open[j].b;
+					// How far they would have to move to sit `BOX_GAP` apart — the
+					// clearance, not the bare overlap. Two containers touching are
+					// as unreadable as two overlapping, so this is the same target
+					// the force uses, which likewise adds the gap before testing.
+					// The slop then applies to that shortfall: under two units of
+					// movement is not worth making.
+					const needX = Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0) + BOX_GAP;
+					const needY = Math.min(A.y1, B.y1) - Math.max(A.y0, B.y0) + BOX_GAP;
+					if (needX <= SEPARATION_SLOP || needY <= SEPARATION_SLOP) continue;
+					// Out by the cheaper axis, the same choice the force makes.
+					const alongX = needX < needY;
+					const mag = alongX ? needX : needY;
+					const aFirst = alongX
+						? (A.x0 + A.x1) / 2 <= (B.x0 + B.x1) / 2
+						: (A.y0 + A.y1) / 2 <= (B.y0 + B.y1) / 2;
+					const dir = aFirst ? -1 : 1;
+					const heldA = held(A);
+					const heldB = held(B);
+					// Half each, unless one of them is not free to move.
+					const shareA = heldA ? 0 : heldB ? mag : mag / 2;
+					const shareB = heldB ? 0 : heldA ? mag : mag / 2;
+					if (shareA) translateCluster(open[i].root, A, alongX ? dir * shareA : 0, alongX ? 0 : dir * shareA);
+					if (shareB) translateCluster(open[j].root, B, alongX ? -dir * shareB : 0, alongX ? 0 : -dir * shareB);
+					worst = Math.max(worst, mag);
+				}
+			}
+			if (worst === 0) break;
+		}
+	}
+
+	/**
+	 * Slide a whole cluster, its members and the rectangle drawn around them.
+	 *
+	 * Targets move with the positions. Correcting only the position leaves the
+	 * ring spring pulling towards where the cluster used to be, and it creeps
+	 * back a fraction of a unit per frame until it crosses the slop and is
+	 * corrected out again — a settled map that twitches once a second forever.
+	 * Moving the target is what makes the correction hold, and it is what the
+	 * code already does for a cluster a human drags.
+	 *
+	 * Not added to `manualTargets`, though: that set exists so a *gesture*
+	 * outlives a fleet refetch. This is derived from the layout, so it should be
+	 * re-derived from the next one — `setGraph` re-seeds, and if the clusters
+	 * still overlap the next frame corrects them again.
+	 *
+	 * Velocities are left alone: this is a correction, not a shove, and handing
+	 * the cluster momentum would make it overshoot and swing back.
+	 */
+	function translateCluster(root: string, b: Box, dx: number, dy: number) {
+		for (const id of b.ids) {
+			const p = pos.get(id);
+			if (!p) continue;
+			p.x += dx;
+			p.y += dy;
+			const t = target.get(id);
+			// A fresh object: `setGraph` stores the graph's own target objects by
+			// reference, and mutating one would edit `graph.targets` underneath
+			// everything else that reads it.
+			if (t) target.set(id, { x: t.x + dx, y: t.y + dy });
+		}
+		b.x0 += dx;
+		b.x1 += dx;
+		b.y0 += dy;
+		b.y1 += dy;
+		b.lx += dx;
+		b.ly += dy;
+		const anchor = lastChipAnchor.get(root);
+		if (anchor) lastChipAnchor.set(root, { x: anchor.x + dx, y: anchor.y + dy });
 	}
 
 	/** One path for every open box: they never overlap, so a single nonzero
