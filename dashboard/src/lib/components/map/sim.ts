@@ -50,6 +50,10 @@ const BOX_PAD_X = 16;
 const BOX_PAD_TOP = 26;
 const BOX_PAD_BOTTOM = 22;
 const BOX_RADIUS = 14;
+/** How far in from the box's left edge the name chip sits. */
+const CHIP_INSET = 10;
+/** Gap left under the chip so it does not sit on the cluster's top row. */
+const CHIP_CLEARANCE = 4;
 /** Breathing room two containers insist on before they stop pushing apart. */
 const BOX_GAP = 18;
 const BOX_PUSH = 5;
@@ -145,6 +149,10 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 	let boxClosed: Record<string, boolean> = {};
 	const boxes = new Map<string, Box>();
 	const chipEls = new Map<string, HTMLElement>();
+	/** Chip size in *screen* pixels, measured at the UI cadence rather than per
+	 *  frame: reading `offsetWidth` right after writing transforms forces a
+	 *  synchronous layout, and the value only changes when the label does. */
+	const chipPx = new Map<string, { w: number; h: number }>();
 	/** Where each container's chip sat the last time its box was drawn open. */
 	const lastChipAnchor = new Map<string, { x: number; y: number }>();
 	/** Targets a human placed by hand. `setGraph` must not re-seed these, or a
@@ -251,7 +259,10 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 
 	function registerChip(root: string, el: HTMLElement | null) {
 		if (el) chipEls.set(root, el);
-		else chipEls.delete(root);
+		else {
+			chipEls.delete(root);
+			chipPx.delete(root);
+		}
 	}
 
 	/** Everything under a cluster root, excluding the root itself. */
@@ -1017,17 +1028,31 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 			}
 			x0 -= BOX_PAD_X;
 			x1 += BOX_PAD_X;
-			y0 -= BOX_PAD_TOP;
+			// A box has to be able to hold its own name. The chip counter-scales
+			// by `1/k` so its text stays readable, which means it *grows* in world
+			// units as the map zooms out, while the cluster it names does not — so
+			// a user with one ball under them ends up with a label wider than the
+			// container it belongs to, reading as though it had come loose. The
+			// padding constants are the k=1 case of this; below that the chip
+			// decides. Measured, not estimated: the label is an email whose length
+			// nothing here controls.
+			const chip = chipPx.get(root);
+			if (chip) {
+				x1 = Math.max(x1, x0 + CHIP_INSET + chip.w / view.k + BOX_PAD_X);
+				y0 -= Math.max(BOX_PAD_TOP, chip.h / view.k + CHIP_CLEARANCE);
+			} else {
+				y0 -= BOX_PAD_TOP;
+			}
 			y1 += BOX_PAD_BOTTOM;
 			// Remembered so folding leaves the chip on the corner it was already
 			// sitting on, instead of jumping to the middle of the cluster.
-			lastChipAnchor.set(root, { x: x0 + 10, y: y0 });
+			lastChipAnchor.set(root, { x: x0 + CHIP_INSET, y: y0 });
 			boxes.set(root, {
 				x0,
 				y0,
 				x1,
 				y1,
-				lx: x0 + 10,
+				lx: x0 + CHIP_INSET,
 				ly: y0,
 				ids: all,
 				collapsed: false,
@@ -1072,6 +1097,9 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 	function syncChips() {
 		const h = hits;
 		for (const [root, el] of chipEls) {
+			// Before the `b` check: a chip with no box yet still has to be measured,
+			// or the box that is about to want its width never gets one.
+			chipPx.set(root, { w: el.offsetWidth, h: el.offsetHeight });
 			const b = boxes.get(root);
 			if (!b) {
 				el.classList.remove('is-live');
