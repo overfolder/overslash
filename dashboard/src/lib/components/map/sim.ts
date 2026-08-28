@@ -1239,15 +1239,35 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		}
 	}
 
-	/** Slide a whole cluster, its members and the rectangle drawn around them.
-	 *  Velocities are left alone: this is a correction, not a shove, and handing
-	 *  the cluster momentum would make it overshoot and come back. */
+	/**
+	 * Slide a whole cluster, its members and the rectangle drawn around them.
+	 *
+	 * Targets move with the positions. Correcting only the position leaves the
+	 * ring spring pulling towards where the cluster used to be, and it creeps
+	 * back a fraction of a unit per frame until it crosses the slop and is
+	 * corrected out again — a settled map that twitches once a second forever.
+	 * Moving the target is what makes the correction hold, and it is what the
+	 * code already does for a cluster a human drags.
+	 *
+	 * Not added to `manualTargets`, though: that set exists so a *gesture*
+	 * outlives a fleet refetch. This is derived from the layout, so it should be
+	 * re-derived from the next one — `setGraph` re-seeds, and if the clusters
+	 * still overlap the next frame corrects them again.
+	 *
+	 * Velocities are left alone: this is a correction, not a shove, and handing
+	 * the cluster momentum would make it overshoot and swing back.
+	 */
 	function translateCluster(root: string, b: Box, dx: number, dy: number) {
 		for (const id of b.ids) {
 			const p = pos.get(id);
 			if (!p) continue;
 			p.x += dx;
 			p.y += dy;
+			const t = target.get(id);
+			// A fresh object: `setGraph` stores the graph's own target objects by
+			// reference, and mutating one would edit `graph.targets` underneath
+			// everything else that reads it.
+			if (t) target.set(id, { x: t.x + dx, y: t.y + dy });
 		}
 		b.x0 += dx;
 		b.x1 += dx;
