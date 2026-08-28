@@ -1189,9 +1189,10 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 	 * opponent.
 	 *
 	 * So the last word is positional. Boxes have just been rebuilt from the
-	 * positions this frame produced; anything still overlapping is separated by
-	 * translating whole clusters, and `draw` strokes the corrected rectangles.
-	 * A contact constraint cannot be out-pulled the way a force can.
+	 * positions this frame produced; any pair closer than `BOX_GAP` — touching
+	 * reads no better than overlapping — is separated by translating whole
+	 * clusters, and `draw` strokes the corrected rectangles. A contact
+	 * constraint cannot be out-pulled the way a force can.
 	 *
 	 * `SEPARATION_SLOP` is what stops that from becoming a per-frame shimmer:
 	 * the ring spring pulls back a fraction of a unit each frame and would be
@@ -1215,12 +1216,18 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 				for (let j = i + 1; j < open.length; j++) {
 					const A = open[i].b;
 					const B = open[j].b;
-					const ox = Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0) + BOX_GAP;
-					const oy = Math.min(A.y1, B.y1) - Math.max(A.y0, B.y0) + BOX_GAP;
-					if (ox <= SEPARATION_SLOP || oy <= SEPARATION_SLOP) continue;
+					// How far they would have to move to sit `BOX_GAP` apart — the
+					// clearance, not the bare overlap. Two containers touching are
+					// as unreadable as two overlapping, so this is the same target
+					// the force uses, which likewise adds the gap before testing.
+					// The slop then applies to that shortfall: under two units of
+					// movement is not worth making.
+					const needX = Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0) + BOX_GAP;
+					const needY = Math.min(A.y1, B.y1) - Math.max(A.y0, B.y0) + BOX_GAP;
+					if (needX <= SEPARATION_SLOP || needY <= SEPARATION_SLOP) continue;
 					// Out by the cheaper axis, the same choice the force makes.
-					const alongX = ox < oy;
-					const mag = alongX ? ox : oy;
+					const alongX = needX < needY;
+					const mag = alongX ? needX : needY;
 					const aFirst = alongX
 						? (A.x0 + A.x1) / 2 <= (B.x0 + B.x1) / 2
 						: (A.y0 + A.y1) / 2 <= (B.y0 + B.y1) / 2;
