@@ -947,6 +947,11 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 				if (nx1 <= b.x0 || nx0 >= b.x1 || ny1 <= b.y0 || ny0 >= b.y1) continue;
 				// Leave by the nearest edge — the shortest way out is the one that
 				// disturbs the layout least.
+				// How far the *inflated* rect has to move to clear the box, which
+				// is the distance still needed to reach the clearance: zero when
+				// the stray is already `STRAY_GAP` away (the guard above skips
+				// that case outright), `STRAY_GAP` when it is touching the box
+				// with nothing overlapping, more when it is genuinely inside.
 				const exits = [nx1 - b.x0, b.x1 - nx0, ny1 - b.y0, b.y1 - ny0];
 				const m = Math.min(...exits);
 				const ux = m === exits[0] ? -1 : m === exits[1] ? 1 : 0;
@@ -964,11 +969,13 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 				// held by their own ring targets.
 				const share = f * STRAY_REACTION;
 				pushCluster(acc, b.ids, -ux * share, -uy * share);
-				// The *penetration*, not the exit distance: `m` is measured from a
-				// rect already inflated by `STRAY_GAP`, so a stray resting exactly
-				// at its clearance still reports `m === STRAY_GAP` and would hold
-				// the whole layout above the cooling floor forever. Same
-				// convention as the box pair above, which reports `mag - BOX_GAP`.
+				// Penetration, which is a different question from the one the
+				// force asks. Taking the gap back off `m` turns it into how far
+				// the stray is actually *inside* the box — zero when it is merely
+				// touching. `separation` only drives the cooling override, and a
+				// stray sitting against a container is a resolved state: report it
+				// as unresolved and the layout never cools again. Same convention
+				// as the box pair above, which reports `mag - BOX_GAP`.
 				separation = Math.max(separation, m - STRAY_GAP);
 			}
 		}
