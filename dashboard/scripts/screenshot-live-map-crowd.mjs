@@ -242,6 +242,19 @@ try {
 	const before = await positions(page);
 	await page.waitForTimeout(5000);
 	const after = await positions(page);
+	// Paired by index, so the two snapshots have to be describing the same
+	// shapes in the same order — `.lm-node` comes off a keyed `{#each}`, so they
+	// are unless something entered or left. If something did, that is its own
+	// failure and has to be said out loud: a settled map does not change what it
+	// is drawing, and quietly reading past the end of the shorter array compares
+	// against `undefined`, which is a `NaN` that fails no threshold. Not keyed by
+	// label, because labels repeat — three users can each own a `notion`.
+	if (before.length !== after.length || before.some((s, i) => s.label !== after[i].label)) {
+		throw new Error(
+			`[crowd] the map changed what it was drawing while it was supposed to be settled: ` +
+				`${before.length} shapes became ${after.length}`
+		);
+	}
 	let worst = 0;
 	let who = '';
 	for (let i = 0; i < before.length; i++) {
