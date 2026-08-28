@@ -50,6 +50,10 @@ const BOX_PAD_X = 16;
 const BOX_PAD_TOP = 26;
 const BOX_PAD_BOTTOM = 22;
 const BOX_RADIUS = 14;
+/** How far in from the box's left edge the name chip sits. */
+const CHIP_INSET = 10;
+/** Gap left under the chip so it does not sit on the cluster's top row. */
+const CHIP_CLEARANCE = 4;
 /** Breathing room two containers insist on before they stop pushing apart. */
 const BOX_GAP = 18;
 const BOX_PUSH = 5;
@@ -145,6 +149,17 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 	let boxClosed: Record<string, boolean> = {};
 	const boxes = new Map<string, Box>();
 	const chipEls = new Map<string, HTMLElement>();
+	/** Chip size in *screen* pixels, measured at the UI cadence rather than per
+	 *  frame: reading `offsetWidth` right after writing transforms forces a
+	 *  synchronous layout, and the value only changes when the label does. */
+	const chipPx = new Map<string, { w: number; h: number }>();
+	/** A node's rendered extent in world units, as offsets from its anchor.
+	 *  A ball is only part of a node: the caption under it is a DOM element with
+	 *  its own width and its own `scale()`, and it is the wider of the two, so
+	 *  `radiusOf` describes a circle the node routinely sticks out of. Measured
+	 *  on the same cadence and for the same reason as `chipPx`; unlike a chip
+	 *  this rides the map's zoom, so the world offsets hold at any `k`. */
+	const nodeExtent = new Map<string, { dx0: number; dx1: number; dy0: number; dy1: number }>();
 	/** Where each container's chip sat the last time its box was drawn open. */
 	const lastChipAnchor = new Map<string, { x: number; y: number }>();
 	/** Targets a human placed by hand. `setGraph` must not re-seed these, or a
@@ -246,12 +261,18 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 
 	function registerNode(id: string, el: HTMLElement | null) {
 		if (el) nodeEls.set(id, el);
-		else nodeEls.delete(id);
+		else {
+			nodeEls.delete(id);
+			nodeExtent.delete(id);
+		}
 	}
 
 	function registerChip(root: string, el: HTMLElement | null) {
 		if (el) chipEls.set(root, el);
-		else chipEls.delete(root);
+		else {
+			chipEls.delete(root);
+			chipPx.delete(root);
+		}
 	}
 
 	/** Everything under a cluster root, excluding the root itself. */
@@ -689,6 +710,7 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 				el.classList.toggle('is-waiting', nodeState.get(id) === 'waiting');
 			}
 			syncChips();
+			measureNodes();
 			for (const [id, t] of leaving) if (now - t > 400) leaving.delete(id);
 			cb.onShownChange([...live, ...[...leaving.keys()].filter((i) => !live.has(i))]);
 			cb.onZoomChange(Math.round(view.k * 100));
@@ -1005,11 +1027,15 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 				if (id !== root && !live.has(id) && !leaving.has(id)) continue;
 				const p = pos.get(id);
 				if (!p) continue;
+				// The whole node, caption included — a box that hugs the balls
+				// leaves every label hanging over its edge. `radiusOf` is the
+				// fallback for a node the DOM has not laid out yet.
+				const e = nodeExtent.get(id);
 				const r = radiusOf(id);
-				x0 = Math.min(x0, p.x - r);
-				x1 = Math.max(x1, p.x + r);
-				y0 = Math.min(y0, p.y - r);
-				y1 = Math.max(y1, p.y + r);
+				x0 = Math.min(x0, p.x + (e ? e.dx0 : -r));
+				x1 = Math.max(x1, p.x + (e ? e.dx1 : r));
+				y0 = Math.min(y0, p.y + (e ? e.dy0 : -r));
+				y1 = Math.max(y1, p.y + (e ? e.dy1 : r));
 			}
 			if (!Number.isFinite(x0)) {
 				boxes.delete(root);
@@ -1017,17 +1043,31 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 			}
 			x0 -= BOX_PAD_X;
 			x1 += BOX_PAD_X;
-			y0 -= BOX_PAD_TOP;
+			// A box has to be able to hold its own name. The chip counter-scales
+			// by `1/k` so its text stays readable, which means it *grows* in world
+			// units as the map zooms out, while the cluster it names does not — so
+			// a user with one ball under them ends up with a label wider than the
+			// container it belongs to, reading as though it had come loose. The
+			// padding constants are the k=1 case of this; below that the chip
+			// decides. Measured, not estimated: the label is an email whose length
+			// nothing here controls.
+			const chip = chipPx.get(root);
+			if (chip) {
+				x1 = Math.max(x1, x0 + CHIP_INSET + chip.w / view.k + BOX_PAD_X);
+				y0 -= Math.max(BOX_PAD_TOP, chip.h / view.k + CHIP_CLEARANCE);
+			} else {
+				y0 -= BOX_PAD_TOP;
+			}
 			y1 += BOX_PAD_BOTTOM;
 			// Remembered so folding leaves the chip on the corner it was already
 			// sitting on, instead of jumping to the middle of the cluster.
-			lastChipAnchor.set(root, { x: x0 + 10, y: y0 });
+			lastChipAnchor.set(root, { x: x0 + CHIP_INSET, y: y0 });
 			boxes.set(root, {
 				x0,
 				y0,
 				x1,
 				y1,
-				lx: x0 + 10,
+				lx: x0 + CHIP_INSET,
 				ly: y0,
 				ids: all,
 				collapsed: false,
@@ -1067,11 +1107,52 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		ctx.restore();
 	}
 
+	/**
+	 * Read back what the browser actually laid out for each node.
+	 *
+	 * The alternative is arithmetic over the stylesheet — ball diameter, caption
+	 * `max-width`, the caption's own `scale()` — which is a copy of the CSS that
+	 * goes stale the first time someone changes it. Reading the rendered box is
+	 * self-maintaining, and it is the only way to know how wide a caption ended
+	 * up when it may have been ellipsised.
+	 *
+	 * The caption's `scale()` applies after layout, so it can spill past its
+	 * parent's border box: union the two rather than trusting the parent.
+	 */
+	function measureNodes() {
+		if (!nodeEls.size) return;
+		const stageRect = stage.getBoundingClientRect();
+		const k = view.k;
+		for (const [id, el] of nodeEls) {
+			const p = pos.get(id);
+			// A leaving node is mid-transition and translating; its rect right now
+			// describes where it is going, not how big it is.
+			if (!p || el.classList.contains('is-leaving')) continue;
+			const inner = el.querySelector('.lm-node-in');
+			if (!inner) continue;
+			const r = inner.getBoundingClientRect();
+			if (!r.width) continue;
+			const cap = inner.querySelector('.lm-cap');
+			const c = cap?.getBoundingClientRect();
+			const ax = stageRect.left + view.tx + p.x * k;
+			const ay = stageRect.top + view.ty + p.y * k;
+			nodeExtent.set(id, {
+				dx0: ((c ? Math.min(r.left, c.left) : r.left) - ax) / k,
+				dx1: ((c ? Math.max(r.right, c.right) : r.right) - ax) / k,
+				dy0: ((c ? Math.min(r.top, c.top) : r.top) - ay) / k,
+				dy1: ((c ? Math.max(r.bottom, c.bottom) : r.bottom) - ay) / k
+			});
+		}
+	}
+
 	/** Chip classes and text. Cheap enough at the UI cadence; the transform is
 	 *  separate, because that has to track the view every frame. */
 	function syncChips() {
 		const h = hits;
 		for (const [root, el] of chipEls) {
+			// Before the `b` check: a chip with no box yet still has to be measured,
+			// or the box that is about to want its width never gets one.
+			chipPx.set(root, { w: el.offsetWidth, h: el.offsetHeight });
 			const b = boxes.get(root);
 			if (!b) {
 				el.classList.remove('is-live');
