@@ -57,6 +57,13 @@ const CHIP_CLEARANCE = 4;
 /** Breathing room two containers insist on before they stop pushing apart. */
 const BOX_GAP = 18;
 const BOX_PUSH = 5;
+/** Clearance a non-member keeps from a container it is not in. */
+const STRAY_GAP = 10;
+const STRAY_PUSH = 6;
+/** How much of a stray's push the cluster it is intruding on takes back. */
+const STRAY_REACTION = 0.25;
+/** Penetration below this is not worth keeping the whole layout awake for. */
+const SEPARATION_EPSILON = 4;
 /** Pointer slop, px, before a chip press counts as a drag rather than a click. */
 const DRAG_SLOP = 3;
 
@@ -719,6 +726,24 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		raf = requestAnimationFrame(frame);
 	}
 
+	/** Move a whole cluster as one. Mass-scaled, so every member gets the same
+	 *  acceleration once the integrator divides mass back out — a flat force
+	 *  would shear the light nodes off the heavy ones it is meant to carry. */
+	function pushCluster(
+		acc: Map<string, [number, number]>,
+		ids: string[],
+		fx: number,
+		fy: number
+	) {
+		for (const id of ids) {
+			const a = acc.get(id);
+			if (!a) continue;
+			const mass = MASS[meta(id)?.kind ?? 'agent'] ?? 1;
+			a[0] += fx * mass;
+			a[1] += fy * mass;
+		}
+	}
+
 	// ── physics ──────────────────────────────────────────────────────────
 	function simulate(dt: number, now: number, edges: { from: string; to: string; tree: boolean }[]) {
 		if (!graph) return;
@@ -864,6 +889,8 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 		// member out only deforms the box it is drawn from.
 		const openBoxes: Box[] = [];
 		for (const b of boxes.values()) if (!b.collapsed) openBoxes.push(b);
+		/** Worst unresolved overlap this frame, in world units. */
+		let separation = 0;
 		for (let i = 0; i < openBoxes.length; i++) {
 			for (let j = i + 1; j < openBoxes.length; j++) {
 				const A = openBoxes[i];
@@ -883,20 +910,82 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 					mag = oy;
 				}
 				const f = mag * BOX_PUSH;
-				for (const id of A.ids) {
-					const a = acc.get(id);
-					if (!a) continue;
-					a[0] += nx * f;
-					a[1] += ny * f;
-				}
-				for (const id of B.ids) {
-					const a = acc.get(id);
-					if (!a) continue;
-					a[0] -= nx * f;
-					a[1] -= ny * f;
-				}
+				// Scaled by mass, because the integrator divides it back out. A
+				// flat force accelerates a mass-1 agent ten times harder than the
+				// mass-10 user it orbits, which pulls the cluster apart instead of
+				// moving it — the opposite of what pushing whole clusters is for.
+				pushCluster(acc, A.ids, nx * f, ny * f);
+				pushCluster(acc, B.ids, -nx * f, -ny * f);
+				separation = Math.max(separation, mag - BOX_GAP);
 			}
 		}
+
+		// Nothing that is not a member may sit inside a container. The box is a
+		// claim about who belongs to whom, and a ball parked inside one reads as
+		// membership — the more so since a service can now legitimately be a
+		// member, so "it is in the box" is no longer obviously false for one.
+		//
+		// The stray takes the push and the cluster takes a quarter of it back.
+		// All of it on the stray and a node held hard to its ring target would
+		// sit there shoving forever; all of it on the cluster and one loose ball
+		// could walk a whole fleet across the map.
+		for (const b of openBoxes) {
+			const members = new Set(b.ids);
+			for (const id of ids) {
+				if (members.has(id) || pin?.id === id) continue;
+				const p = pos.get(id);
+				const a = acc.get(id);
+				if (!p || !a) continue;
+				const e = nodeExtent.get(id);
+				const r = radiusOf(id);
+				// The caption counts: a label lying across a container's edge is
+				// the same visual claim as the ball would be.
+				const nx0 = p.x + (e ? e.dx0 : -r) - STRAY_GAP;
+				const nx1 = p.x + (e ? e.dx1 : r) + STRAY_GAP;
+				const ny0 = p.y + (e ? e.dy0 : -r) - STRAY_GAP;
+				const ny1 = p.y + (e ? e.dy1 : r) + STRAY_GAP;
+				if (nx1 <= b.x0 || nx0 >= b.x1 || ny1 <= b.y0 || ny0 >= b.y1) continue;
+				// Leave by the nearest edge — the shortest way out is the one that
+				// disturbs the layout least.
+				// How far the *inflated* rect has to move to clear the box, which
+				// is the distance still needed to reach the clearance: zero when
+				// the stray is already `STRAY_GAP` away (the guard above skips
+				// that case outright), `STRAY_GAP` when it is touching the box
+				// with nothing overlapping, more when it is genuinely inside.
+				const exits = [nx1 - b.x0, b.x1 - nx0, ny1 - b.y0, b.y1 - ny0];
+				const m = Math.min(...exits);
+				const ux = m === exits[0] ? -1 : m === exits[1] ? 1 : 0;
+				const uy = ux !== 0 ? 0 : m === exits[2] ? -1 : 1;
+				const f = m * STRAY_PUSH;
+				const mass = MASS[meta(id)?.kind ?? 'agent'] ?? 1;
+				a[0] += ux * f * mass;
+				a[1] += uy * f * mass;
+				// A flat share, not one divided among the members: `pushCluster`
+				// already mass-scales, so `share` is an acceleration, and dividing
+				// it by the member count would make a cluster progressively more
+				// immovable the bigger it got. Big clusters are the ones with big
+				// boxes, so that is exactly where the reaction is needed — it is
+				// what breaks the deadlock when both the stray and the cluster are
+				// held by their own ring targets.
+				const share = f * STRAY_REACTION;
+				pushCluster(acc, b.ids, -ux * share, -uy * share);
+				// Penetration, which is a different question from the one the
+				// force asks. Taking the gap back off `m` turns it into how far
+				// the stray is actually *inside* the box — zero when it is merely
+				// touching. `separation` only drives the cooling override, and a
+				// stray sitting against a container is a resolved state: report it
+				// as unresolved and the layout never cools again. Same convention
+				// as the box pair above, which reports `mag - BOX_GAP`.
+				separation = Math.max(separation, m - STRAY_GAP);
+			}
+		}
+
+		// A separation force that the cooling has already frozen out is no force
+		// at all: `sp < 5 && am < 30` locks a node in place, and at the alpha
+		// floor an overlap of a few tens of units cannot clear that bar. Keep the
+		// layout awake while anything is still overlapping, and let it settle the
+		// moment nothing is.
+		if (separation > SEPARATION_EPSILON) alpha.v = Math.max(alpha.v, 0.35);
 
 		// Cooling: forces ease off as the layout settles and slow nodes freeze
 		// outright. Without it the graph never stops shimmering.
