@@ -955,7 +955,14 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 				const mass = MASS[meta(id)?.kind ?? 'agent'] ?? 1;
 				a[0] += ux * f * mass;
 				a[1] += uy * f * mass;
-				const share = (f * STRAY_REACTION) / b.ids.length;
+				// A flat share, not one divided among the members: `pushCluster`
+				// already mass-scales, so `share` is an acceleration, and dividing
+				// it by the member count would make a cluster progressively more
+				// immovable the bigger it got. Big clusters are the ones with big
+				// boxes, so that is exactly where the reaction is needed — it is
+				// what breaks the deadlock when both the stray and the cluster are
+				// held by their own ring targets.
+				const share = f * STRAY_REACTION;
 				pushCluster(acc, b.ids, -ux * share, -uy * share);
 				// The *penetration*, not the exit distance: `m` is measured from a
 				// rect already inflated by `STRAY_GAP`, so a stray resting exactly
