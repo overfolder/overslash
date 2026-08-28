@@ -957,7 +957,12 @@ export function createSim(mounts: SimMounts, cb: SimCallbacks) {
 				a[1] += uy * f * mass;
 				const share = (f * STRAY_REACTION) / b.ids.length;
 				pushCluster(acc, b.ids, -ux * share, -uy * share);
-				separation = Math.max(separation, m);
+				// The *penetration*, not the exit distance: `m` is measured from a
+				// rect already inflated by `STRAY_GAP`, so a stray resting exactly
+				// at its clearance still reports `m === STRAY_GAP` and would hold
+				// the whole layout above the cooling floor forever. Same
+				// convention as the box pair above, which reports `mag - BOX_GAP`.
+				separation = Math.max(separation, m - STRAY_GAP);
 			}
 		}
 
