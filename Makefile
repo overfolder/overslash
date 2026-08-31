@@ -1,4 +1,4 @@
-.PHONY: local local-db local-down dev dev-api dev-dashboard down net test check line-count check-decisions diff-stats allocate-decision fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
+.PHONY: local local-db local-down dev dev-api dev-dashboard down net test require-services check line-count check-decisions diff-stats allocate-decision fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean \
        dashboard-static web-build web build install \
@@ -60,9 +60,14 @@ local dev: net
 # Stop the full local dev stack (alias of `down`).
 local-down: down
 
-# Start local infra only (postgres) — used by e2e-up.sh and worktree isolation.
+# Start the local backing services the test suite needs (postgres + valkey) —
+# used by e2e-up.sh and worktree isolation. Mirrors the `services:` block of
+# the CI test job: `cargo test --workspace` needs both, since `oversla-sh`'s
+# integration tests panic when VALKEY_URL is unreachable. In a worktree the
+# ports (and VALKEY_URL / REDIS_URL) come from .env.local; in the main repo
+# they are the compose defaults, 55432 and 6380.
 local-db:
-	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up -d postgres
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up -d postgres valkey
 
 # Start the e2e mail stack (GreenMail IMAP/SMTP + the overfwd gateway) — used
 # by e2e-up.sh so `services/email.yaml` has a real mailbox to talk to.
@@ -155,7 +160,9 @@ metabase-e2e: metabase-up
 	@set -a && . docker/metabase/.env.metabase && set +a && \
 	  cargo test -p overslash-api --features sql_policy --test api metabase -- --ignored --test-threads=1
 
-# Start the oversla.sh shortener dev stack (valkey + shortener on :8081)
+# Start the oversla.sh shortener dev stack (valkey + shortener on :8081).
+# The crate's integration tests do NOT need this — they talk to the Valkey
+# `make local-db` starts (VALKEY_URL). This stack runs the service itself.
 shortener-dev:
 	$(COMPOSE) -f docker/docker-compose.shortener.yml up --build
 
@@ -243,14 +250,31 @@ worktree-clean:
 	fi
 
 # Run all tests
-test:
-	cargo test --workspace
+# Needs the backing services up (`make local-db`): Postgres for the API crates,
+# Valkey for oversla-sh. In a worktree, `make` re-exports .env.local, so
+# DATABASE_URL / VALKEY_URL / REDIS_URL already point at this worktree's ports.
+# nextest when it's installed — it is what CI runs, it gives each test its own
+# process (a handful of env-var tests leak into each other under plain
+# `cargo test`), and its default concurrency is tuned per machine. The fallback
+# caps threads at 4, the number CLAUDE.md recommends for a plain cargo run.
+test: require-services
+	@if command -v cargo-nextest >/dev/null 2>&1; then \
+		cargo nextest run --workspace; \
+	else \
+		cargo test --workspace -- --test-threads=4; \
+	fi
+
+# Fail with a usable hint instead of a wall of connection errors when the
+# backing services aren't running.
+require-services:
+	@bash bin/worktree-env.sh >/dev/null
+	@bash scripts/check-test-services.sh
 
 # CI check: line counts + decision numbering + fmt + clippy + test
-check: line-count check-decisions
+check: line-count check-decisions require-services
 	cargo fmt --check
 	cargo clippy --workspace -- -D warnings
-	cargo test --workspace
+	@$(MAKE) --no-print-directory test
 
 # Every .rs under crates/*/src must stay under 1000 lines (mirrors CI).
 line-count:

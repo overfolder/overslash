@@ -7,12 +7,33 @@ services:
       POSTGRES_USER: overslash
       POSTGRES_PASSWORD: overslash
       POSTGRES_DB: overslash
+    # The test suite runs many tests concurrently, and each one holds two pools
+    # (the test's own and the in-process API server's) against a database it
+    # clones from a template. The stock 100 connections run out well before the
+    # suite finishes, and the result is dozens of unrelated-looking failures.
+    # CI raises the same knob to 500 (the "Tune Postgres" step in ci.yml).
+    command: ["postgres", "-c", "max_connections=500"]
     ports:
       - "127.0.0.1:${PG_HOST_PORT:-55432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: pg_isready -U overslash
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Valkey — the backing store the test suite talks to, mirroring the `valkey`
+  # service in CI (.github/workflows/ci.yml): `oversla-sh`'s integration tests
+  # (VALKEY_URL) and the API's resolver cache / rate limiter (REDIS_URL) both
+  # point at it. No volume: test data is disposable, and a fresh store on every
+  # bring-up is the point.
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "127.0.0.1:${VALKEY_HOST_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
