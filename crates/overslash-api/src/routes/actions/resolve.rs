@@ -203,6 +203,7 @@ pub(super) async fn resolve_request(
                 action_handoff_after_ms: None,
                 service_timeout_ms: svc.default_timeout_ms,
                 download: None,
+                upload: None,
                 params: HashMap::new(),
                 resolved: HashMap::new(),
                 canonical: HashMap::new(),
@@ -378,6 +379,23 @@ pub(super) async fn resolve_request(
             )
             .await;
 
+            // Ledger-backed resolvers, folded in after the runtime fork so one
+            // lookup path serves both. Later insert wins, but the two sets are
+            // disjoint by construction: `has_one_target` makes a param declare
+            // exactly one of `get`, `tool` or `source`.
+            let mut resolved = resolved;
+            resolved.display.extend(
+                crate::services::param_resolver::resolve_ledger_params(
+                    state.db(ext),
+                    scope.org_id(),
+                    instance.as_ref().map(|i| i.id),
+                    action,
+                    &req.params,
+                )
+                .await
+                .display,
+            );
+
             // Interpolate `{param}` placeholders in the action description
             // using the caller's supplied params, preferring a resolved
             // display name. Mirrors the HTTP path so approvals and audit rows
@@ -420,6 +438,7 @@ pub(super) async fn resolve_request(
                     action_pagination: action.pagination.clone(),
                     action_handoff_after_ms: action.handoff_after_ms,
                     download: action.download.clone(),
+                    upload: action.upload.clone(),
                     params: req.params.clone(),
                     resolved: resolved.display,
                     canonical: resolved.canonical,
@@ -431,7 +450,13 @@ pub(super) async fn resolve_request(
                         arguments,
                     }),
                     platform_target: None,
-                    instance_id: None,
+                    // Threaded on the MCP fork too, now that something reads it
+                    // here: the media ledger scopes references to the instance
+                    // that stores them, because a content address is only
+                    // meaningful on one host. Replay still resolves its own
+                    // credential from the payload, so this changes nothing
+                    // there.
+                    instance_id: instance.as_ref().map(|i| i.id),
                     binding: BindingFacts::new(instance.as_ref(), &svc, mcp_principal),
                 },
             ));
@@ -485,6 +510,7 @@ pub(super) async fn resolve_request(
                     // Platform actions dispatch in-process; nothing is dialed.
                     oauth_injected: false,
                     download: None,
+                    upload: None,
                     params: HashMap::new(),
                     resolved: HashMap::new(),
                     canonical: HashMap::new(),
@@ -839,6 +865,23 @@ pub(super) async fn resolve_request(
         )
         .await;
 
+        // Ledger-backed resolvers, folded in after the runtime fork so one
+        // lookup path serves both. Later insert wins, but the two sets are
+        // disjoint by construction: `has_one_target` makes a param declare
+        // exactly one of `get`, `tool` or `source`.
+        let mut resolved = resolved;
+        resolved.display.extend(
+            crate::services::param_resolver::resolve_ledger_params(
+                state.db(ext),
+                scope.org_id(),
+                instance.as_ref().map(|i| i.id),
+                action,
+                &req.params,
+            )
+            .await
+            .display,
+        );
+
         // The approval title and audit row use the short `summary` (falling
         // back to `description` when an action authors only the long form) —
         // the agent-facing `description` is free to run to a paragraph, which
@@ -883,6 +926,7 @@ pub(super) async fn resolve_request(
                 action_pagination: action.pagination.clone(),
                 action_handoff_after_ms: action.handoff_after_ms,
                 download: None,
+                upload: None,
                 params: req.params.clone(),
                 resolved: resolved.display,
                 canonical: resolved.canonical,

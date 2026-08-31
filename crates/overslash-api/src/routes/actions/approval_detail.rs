@@ -204,6 +204,7 @@ mod tests {
             redact: Vec::new(),
             oauth_injected: false,
             download: None,
+            upload: None,
             params: HashMap::new(),
             resolved: HashMap::new(),
             canonical: HashMap::new(),

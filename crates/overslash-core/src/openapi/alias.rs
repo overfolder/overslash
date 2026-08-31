@@ -59,6 +59,10 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
         canonical: "x-overslash-download",
     },
     Alias {
+        alias: "upload",
+        canonical: "x-overslash-upload",
+    },
+    Alias {
         alias: "timeout_ms",
         canonical: "x-overslash-timeout_ms",
     },

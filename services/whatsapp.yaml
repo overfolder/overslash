@@ -11,9 +11,12 @@
 #
 # Bytes never ride an MCP tool call in either direction. Media moves over
 # plain HTTP on the container's own port, behind the same bearer token as
-# /mcp: `GET /media/<sha256>` out (wrapped by download_media's `download`
-# block below) and `POST /media` in. The inbound half is NOT reachable
-# through this gateway — see the comment above send_file.
+# /mcp: `GET /media/<sha256>` out and `POST /media` in. Both halves are
+# wrapped here — `download_media`'s `download` block turns the outbound
+# reference into a capability URL, and `upload_media`'s `upload` block mints
+# one for the inbound push — so an agent can move files in either direction
+# without the bytes ever entering its context, and without ever being handed
+# the container's URL or its AUTH_TOKEN.
 openapi: 3.1.0
 info:
   title: WhatsApp
@@ -515,6 +518,10 @@ x-overslash-mcp:
         mime: .structured.mime
         size: .structured.size
         filename: .structured.filename
+        # Not used to fetch anything. It is what lets the gateway record this
+        # descriptor in its media ledger, so a later send_file that merely
+        # references these bytes can say what they are.
+        sha256: .structured.sha256
         auth: inherit
       disclose:
         - label: Chat
@@ -535,9 +542,81 @@ x-overslash-mcp:
             description: "Stanza id of the media message, as returned by get_conversation / list_messages."
         required: [chat_jid, message_id]
 
-    # Sending media is the mirror image, and the asymmetry matters. Both send
-    # tools take a `media_path` — a pointer to bytes ALREADY stored in the
-    # container — and there are exactly two ways to get one:
+    # Not a tool the container serves. `POST /media` is plain HTTP on the same
+    # origin and behind the same bearer as /mcp, so this entry exists to make
+    # the push a permission-checked, approvable, disclosed action like any
+    # other; the gateway intercepts it before it would ever reach tools/call.
+    #
+    # Handing an agent the container's URL and AUTH_TOKEN instead is the one
+    # thing the vault exists to prevent: that token is static and unscoped, so
+    # it authorizes every WhatsApp write this container can make, not just an
+    # upload. This capability is the narrower thing that did not otherwise
+    # exist.
+    - name: upload_media
+      risk: write
+      description: >-
+        Get a one-shot URL for pushing a file into this container. Returns an
+        upload_url with the method it takes, when it expires and the byte
+        ceiling — send the raw bytes there and you get back a
+        `/media/<sha256>` reference to pass to send_file or send_audio_message. The bytes never enter your context in either
+        direction. Declare sha256 and size_bytes when you know them: they are
+        verified while the bytes stream through, so a push that does not match
+        what was approved fails instead of being stored.
+      upload:
+        path: /media
+        method: POST
+        filename_param: filename
+        auth: inherit
+        # The container's own default (MEDIA_MAX_UPLOAD_BYTES). Stated here so
+        # the caller learns the limit at mint time rather than by hitting a 413
+        # after sending 100 MiB.
+        max_bytes: 104857600
+        result:
+          media_path: .media_path
+          sha256: .sha256
+          mime: .mime
+          size: .size
+          filename: .filename
+      input_schema:
+        type: object
+        properties:
+          filename:
+            type: string
+            description: "Name to advertise to the recipient when this is later sent as a document."
+          mime:
+            type: string
+            description: "Content type of the bytes, e.g. image/jpeg. Sniffed by the container when omitted."
+          size_bytes:
+            type: integer
+            minimum: 1
+            description: "Exact byte length. Enforced during the push: a transfer that exceeds it is cut off mid-stream."
+          sha256:
+            type: string
+            pattern: "^[0-9a-f]{64}$"
+            description: >-
+              Lowercase hex digest of the bytes. Binds this capability to one
+              specific file: the gateway hashes the stream and refuses to hand
+              back a media_path when the two disagree.
+        required: []
+      # An upload approval can only show what the caller DECLARED — the bytes
+      # have not been offered yet. That is not a decoration: a declared sha256
+      # is verified while they stream through, so what a reviewer approved is
+      # what gets stored. Without one, the approval genuinely authorizes "some
+      # bytes, to be chosen later", and should look like it.
+      disclose:
+        - label: "File"
+          primary: true
+          filter: '.arguments.filename // "unnamed upload"'
+        - label: "Size"
+          filter: ".arguments.size_bytes // empty"
+        - label: "Type"
+          filter: ".arguments.mime // empty"
+        - label: "SHA-256"
+          filter: ".arguments.sha256 // empty"
+
+    # Sending media is the mirror image. Both send tools take a `media_path` —
+    # a pointer to bytes ALREADY stored in the container — and there are three
+    # ways to get one:
     #
     #   * `download_media` called WITHOUT `deliver: "url"` returns the raw
     #     descriptor, `media_path` included. That is the whole forwarding
@@ -545,10 +624,11 @@ x-overslash-mcp:
     #     touching an agent's context. With `deliver: "url"` the gateway
     #     swaps `media_path` for a download_url of its own, which these tools
     #     cannot take.
-    #   * `POST /media` on the container, which needs the container's own URL
-    #     and AUTH_TOKEN. Overslash never hands either to a caller, so
-    #     ORIGINATING new bytes is out-of-band work for whoever operates the
-    #     container — not something an agent can do through this service.
+    #   * `upload_media` above, for originating new bytes.
+    #   * `POST /media` on the container directly, which needs its URL and
+    #     AUTH_TOKEN. Still out-of-band work for whoever operates the
+    #     container, and the one case the gateway cannot describe — see the
+    #     comment on media_path below.
     - name: send_file
       risk: write
       scope_param: recipient
@@ -576,7 +656,19 @@ x-overslash-mcp:
           media_path:
             type: string
             minLength: 1
-            description: "Reference to stored bytes: the `/media/<sha256>` path a download_media descriptor carries. A bare `<sha256>` is accepted too."
+            description: "Reference to stored bytes: the `/media/<sha256>` path a download_media or upload_media descriptor carries. A bare `<sha256>` is accepted too."
+            # Answered from the gateway's own ledger rather than the container,
+            # so an approval reads "invoice.pdf (application/pdf, 240912 bytes)"
+            # instead of asking a reviewer to sign off on a bare hash.
+            #
+            # Best-effort by design: bytes pushed to the container out of band
+            # were never seen here, so their references stay un-enriched and
+            # the filter below falls back to the raw path. That fallback is
+            # lossless — the reviewer still sees exactly what will be sent —
+            # so a miss is never misleading, only less helpful.
+            resolve:
+              source: media
+              display: '{filename}[ ({mime}, {size} bytes)]'
           media_type:
             type: string
             enum: [auto, image, video, audio, document, sticker]
@@ -599,7 +691,7 @@ x-overslash-mcp:
           filter: ".arguments.recipient"
         - label: "File"
           primary: true
-          filter: ".arguments.media_path"
+          filter: ".resolved.media_path // .arguments.media_path"
         - label: "Type"
           filter: '.arguments.media_type // "auto"'
         - label: "Caption"
@@ -635,7 +727,19 @@ x-overslash-mcp:
           media_path:
             type: string
             minLength: 1
-            description: "Reference to stored audio: the `/media/<sha256>` path a download_media descriptor carries. A bare `<sha256>` is accepted too."
+            description: "Reference to stored audio: the `/media/<sha256>` path a download_media or upload_media descriptor carries. A bare `<sha256>` is accepted too."
+            # Answered from the gateway's own ledger rather than the container,
+            # so an approval reads "invoice.pdf (application/pdf, 240912 bytes)"
+            # instead of asking a reviewer to sign off on a bare hash.
+            #
+            # Best-effort by design: bytes pushed to the container out of band
+            # were never seen here, so their references stay un-enriched and
+            # the filter below falls back to the raw path. That fallback is
+            # lossless — the reviewer still sees exactly what will be sent —
+            # so a miss is never misleading, only less helpful.
+            resolve:
+              source: media
+              display: '{filename}[ ({mime}, {size} bytes)]'
           reply_to_id:
             type: string
             description: "Optional stanza id of the message to quote-reply to."
@@ -647,7 +751,7 @@ x-overslash-mcp:
           filter: ".arguments.recipient"
         - label: "Voice note"
           primary: true
-          filter: ".arguments.media_path"
+          filter: ".resolved.media_path // .arguments.media_path"
         - label: "Reply to"
           filter: ".arguments.reply_to_id // empty"
 

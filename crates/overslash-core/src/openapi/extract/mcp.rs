@@ -14,7 +14,7 @@ use super::super::ext::{self, Ext, Pos};
 use super::{
     parse_aliases, parse_disclose, parse_download, parse_instance_config, parse_pagination,
     parse_redact, parse_resolver, parse_scope_params, parse_sql_policy, parse_timeout_ms,
-    parse_wait_mode,
+    parse_upload, parse_wait_mode,
 };
 
 // ── x-overslash-mcp → McpSpec + ServiceActions ───────────────────────
@@ -216,7 +216,14 @@ pub(crate) fn extract_mcp_actions(
                     }
                 }
                 None => {
-                    if autodiscover {
+                    // A gateway-served action is authored precisely *because*
+                    // the upstream has no such tool, so its absence from a
+                    // resync is the expected state rather than drift. Warning
+                    // on it would make this diagnostic permanently, wrongly
+                    // noisy for the one template that uses it — and a warning
+                    // that is always wrong is one operators learn to ignore.
+                    let gateway_served = obj.contains_key(Ext::Upload.key());
+                    if autodiscover && !gateway_served {
                         warnings.push(ValidationIssue::new(
                             "mcp_tool_not_discovered",
                             format!(
@@ -324,6 +331,20 @@ fn lower_mcp_tool(
     let disclose = parse_disclose(ext::get(obj, Pos::McpTool, Ext::Disclose), &base, errors);
     let redact = parse_redact(ext::get(obj, Pos::McpTool, Ext::Redact), &base, errors);
     let download = parse_download(ext::get(obj, Pos::McpTool, Ext::Download), &base, errors);
+    let upload = parse_upload(ext::get(obj, Pos::McpTool, Ext::Upload), &base, errors);
+    // A tool is one or the other. A tool that were both would be intercepted
+    // *and* dispatched, and there is no sensible order for that: the
+    // interception is what makes the action not reach the upstream at all.
+    if download.is_some() && upload.is_some() {
+        errors.push(ValidationIssue::new(
+            "upload_malformed",
+            "a tool declares either x-overslash-download or x-overslash-upload, not both: \
+             an upload action is served by the gateway and never reaches the upstream tool, \
+             so there is no result for a download block to point at",
+            base.clone(),
+        ));
+        return None;
+    }
     let timeout_ms = parse_timeout_ms(
         ext::get(obj, Pos::McpTool, Ext::TimeoutMs),
         Ext::TimeoutMs.key(),
@@ -390,6 +411,7 @@ fn lower_mcp_tool(
         output_schema,
         disabled,
         download,
+        upload,
         // Everything else defaults — notably `request_body`, since MCP tool
         // calls are framed by the MCP client (which sets its own JSON-RPC
         // content type) and never routed through `resolve`.

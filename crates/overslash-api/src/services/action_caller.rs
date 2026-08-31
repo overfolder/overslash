@@ -145,6 +145,26 @@ pub struct StoredMcpCall {
     /// and a replayed tool call is as entitled to a `next` as an inline one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pagination: Option<crate::services::pagination::StoredPagination>,
+    /// The action's upload declaration, when it has one.
+    ///
+    /// Carried on the payload for the same reason `pagination` is: replay
+    /// resolves nothing. It holds a URL and a tool name, not an action key, so
+    /// it cannot look the declaration back up — and an upload action that
+    /// arrived here without its spec would be dispatched as a tool call the
+    /// upstream has never heard of. A `risk: write` upload reaches this path
+    /// *first* for any gated agent, so the omission would not be an edge case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload: Option<overslash_core::types::UploadSpec>,
+    /// Which instance stores what an upload pushes. Needed to scope the media
+    /// ledger row, which replay cannot otherwise derive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_instance_id: Option<uuid::Uuid>,
+    /// Carried for the ledger and audit rows. `serde(default)` throughout so
+    /// rows written before these fields existed still parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_key: Option<String>,
 }
 
 /// Replay payload for a platform-runtime approval. Stored on

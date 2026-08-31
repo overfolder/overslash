@@ -189,6 +189,7 @@ mod test_fixtures {
                     disabled: false,
                     request_body: None,
                     download: None,
+                    upload: None,
                 },
             );
         }

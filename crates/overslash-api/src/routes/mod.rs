@@ -38,6 +38,7 @@ pub mod services;
 pub mod skill_md;
 pub mod templates;
 pub mod unsubscribe;
+pub mod uploads;
 pub mod util;
 pub mod version;
 pub mod webhooks;

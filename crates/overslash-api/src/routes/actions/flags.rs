@@ -178,9 +178,15 @@ pub(super) fn validate_resolved(
         .actions
         .get(action_key)
         .is_some_and(|a| a.response_type.as_deref() == Some("binary"));
+    let gateway_upload = resolved
+        .svc
+        .actions
+        .get(action_key)
+        .is_some_and(|a| a.upload.is_some());
     let blockers = wait_mode::Blockers {
         platform_runtime,
         binary_response,
+        gateway_upload,
         ..Default::default()
     };
 
@@ -210,6 +216,19 @@ pub(super) fn validate_resolved(
             "action '{}' on service '{}' returns binary; execution: \"{m}\" is not \
              supported — the bytes would be buffered into the execution row and \
              corrupted. Call it synchronously with deliver: \"url\".",
+            action_key, resolved.svc.key
+        )));
+    }
+
+    // The mirror of the `deliver: "url"` refusal, and for the same reason: an
+    // upload action's whole output is a capability with a lifetime, so
+    // deferring the call spends that lifetime in a queue. A caller who wants
+    // the URL later should ask for it later.
+    if gateway_upload {
+        return Err(AppError::BadRequest(format!(
+            "action '{}' on service '{}' mints an upload capability; execution: \"{m}\" \
+             is not supported — the upload URL would start expiring while the call \
+             waited in the queue. Call it synchronously.",
             action_key, resolved.svc.key
         )));
     }

@@ -17,7 +17,69 @@ use overslash_db::scopes::OrgScope;
 use super::call::UpstreamErrored;
 use super::*;
 use super::{approval_detail::*, dto::CallRequest, dto::ResolvedMeta};
-use crate::{AppState, extractors::AuthContext, services::audit_capture, services::mcp_caller};
+use crate::{
+    AppState, extractors::AuthContext, services::audit_capture, services::mcp_caller,
+    services::proxy_upload,
+};
+
+/// Audit a minted upload capability and render it as an ordinary call result.
+///
+/// No upstream call happened, so there is no `action.executed` row to write.
+/// Recording the mint instead is what keeps a gateway-served action from being
+/// a hole in the trail: without it, the only evidence would be a later
+/// `action.uploaded` with nothing before it explaining who was allowed to push.
+#[allow(clippy::too_many_arguments)]
+async fn mint_response(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    scope: &OrgScope,
+    result: overslash_core::types::ActionResult,
+    req: &CallRequest,
+    meta: &ResolvedMeta,
+    auth: &AuthContext,
+    identity_id: Uuid,
+    ip: Option<&str>,
+    call_tags: Vec<String>,
+) -> Result<Response, AppError> {
+    let _ = scope
+        .clone()
+        .log_audit_tagged(
+            AuditEntry {
+                org_id: auth.org_id,
+                identity_id: Some(identity_id),
+                action: "action.deferred",
+                resource_type: req.service.as_deref(),
+                resource_id: None,
+                detail: serde_json::json!({
+                    "runtime": "mcp",
+                    "service": req.service,
+                    "action": req.action,
+                    "cause": "upload_requested",
+                    // The descriptor, minus nothing: it carries a capability
+                    // URL, and the raw token in it is exactly what the audit
+                    // trail must not hand to whoever can read audit rows.
+                    "response": { "skipped": "capability" },
+                }),
+                description: meta.description.as_deref(),
+                ip_address: ip,
+            },
+            &tags::with_outcome(call_tags, false),
+        )
+        .await;
+
+    let rendered =
+        super::render_stored(state, ext, &result, req, meta, auth.org_id, identity_id).await;
+    Ok((
+        StatusCode::OK,
+        Json(CallResponse::Called {
+            result: rendered,
+            action_description: meta.description.clone(),
+            is_error: false,
+            execution_id: None,
+        }),
+    )
+        .into_response())
+}
 
 /// Dispatch an MCP-runtime action and build its response.
 #[allow(clippy::too_many_arguments)]
@@ -37,6 +99,44 @@ pub(super) async fn dispatch(
     audit_body_mode: audit_capture::AuditResponseBodyMode,
     deliver_url: bool,
 ) -> Result<Response, AppError> {
+    // Gateway-served actions never reach the upstream. An `x-overslash-upload`
+    // block says the byte route is plain HTTP on this origin, not a tool, so
+    // there is nothing to call — `tools/call` with this name would answer
+    // "unknown tool". The mirror of this test lives on the replay path in
+    // `stored_call::run_mcp`; both are needed, because a `risk: write` upload
+    // reaches the replay path first for any agent whose calls are gated.
+    if let Some(spec) = meta.upload.as_ref() {
+        let minted = proxy_upload::intercept_mint(
+            state,
+            ext,
+            proxy_upload::Mint {
+                org_id: auth.org_id,
+                identity_id,
+                service_instance_id: meta.instance_id,
+                service_key: req.service.as_deref(),
+                action_key: req.action.as_deref(),
+                mcp_url: &mcp_target.url,
+                mcp_auth: &mcp_target.auth,
+                spec,
+                arguments: &mcp_target.arguments,
+            },
+        )
+        .await?;
+        return mint_response(
+            state,
+            ext,
+            scope,
+            minted,
+            req,
+            meta,
+            auth,
+            identity_id,
+            ip,
+            call_tags,
+        )
+        .await;
+    }
+
     let mut result = match mcp_caller::invoke(
         state,
         scope,
@@ -164,6 +264,24 @@ pub(super) async fn dispatch(
             &tags::with_outcome(call_tags.clone(), is_error),
         )
         .await;
+
+    // Record what the tool said about the bytes it referenced, on *any*
+    // successful call rather than only a deferred one. The template's guidance
+    // is to call a download tool without `deliver` when the raw reference is
+    // what you want to forward, so gating this on the mint would leave the
+    // common path unrecorded and every later approval quoting a bare hash.
+    if !is_error && let Some(spec) = meta.download.as_ref() {
+        deferred::record_downloaded(
+            state,
+            ext,
+            auth.org_id,
+            meta.instance_id,
+            req.service.as_deref(),
+            spec,
+            &result,
+        )
+        .await;
+    }
 
     // Deferred delivery. See `deferred::swap_in_mcp_download` for why a
     // failed tool result is never minted from.

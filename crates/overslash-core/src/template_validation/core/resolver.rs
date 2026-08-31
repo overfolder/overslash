@@ -33,8 +33,17 @@ pub(super) fn check_resolver(
     if !resolver.has_one_target() {
         issues.err(
             "invalid_resolver_target",
-            "resolver must declare exactly one of `get` (HTTP) or `tool` (MCP)",
+            "resolver must declare exactly one of `get` (HTTP), `tool` (MCP), or \
+             `source` (answered from the gateway's own records)",
             format!("{base}.resolve"),
+        );
+    }
+    if resolver.source.is_some() && !resolver.args.is_empty() {
+        issues.err(
+            "invalid_resolver_target",
+            "resolver.args applies to `tool` resolvers only; a `source` resolver is \
+             answered from what the gateway already recorded about this param's value",
+            format!("{base}.resolve.args"),
         );
     }
     if resolver.get.is_some() && !resolver.args.is_empty() {
@@ -646,6 +655,7 @@ mod tests {
             disabled: false,
             request_body: None,
             download: None,
+            upload: None,
         }
     }
 }

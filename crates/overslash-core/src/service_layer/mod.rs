@@ -178,6 +178,7 @@ pub(crate) mod fixtures {
             disabled: false,
             request_body: None,
             download: None,
+            upload: None,
         }
     }
 

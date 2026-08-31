@@ -54,6 +54,19 @@ pub enum CallError {
     Timeout { timeout_ms: u64 },
 }
 
+/// What goes on the wire as the request body.
+///
+/// An enum rather than an `Option<&str>` alongside an out-of-band
+/// `reqwest::Body` because the *default content type* differs per arm, and that
+/// default is a contract rather than a convenience: JSON for a text body, and
+/// nothing at all for a stream, since a byte route that sniffs its input treats
+/// a stated `application/json` as a claim rather than a gap.
+enum OutgoingBody<'a> {
+    None,
+    Text(&'a str),
+    Stream(reqwest::Body),
+}
+
 /// Build a reqwest request from the given parameters.
 ///
 /// `total_timeout` is `Some` only for the buffered path — see the module docs
@@ -63,7 +76,7 @@ fn build_request(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
-    body: Option<&str>,
+    body: OutgoingBody<'_>,
     total_timeout: Option<Duration>,
 ) -> reqwest::RequestBuilder {
     let method = method
@@ -75,14 +88,23 @@ fn build_request(
         builder = builder.header(k.as_str(), v.as_str());
     }
 
-    if let Some(body) = body {
-        if !headers
-            .keys()
-            .any(|k| k.eq_ignore_ascii_case("content-type"))
-        {
-            builder = builder.header("Content-Type", "application/json");
+    match body {
+        OutgoingBody::None => {}
+        OutgoingBody::Text(body) => {
+            if !headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("content-type"))
+            {
+                builder = builder.header("Content-Type", "application/json");
+            }
+            builder = builder.body(body.to_string());
         }
-        builder = builder.body(body.to_string());
+        // No content-type default. The caller decides — and on the upload path
+        // it deliberately sends none when it has none, so the upstream sniffs
+        // the bytes instead of being told something untrue about them.
+        OutgoingBody::Stream(body) => {
+            builder = builder.body(body);
+        }
     }
 
     if let Some(t) = total_timeout {
@@ -109,10 +131,17 @@ pub async fn call(
     let start = Instant::now();
     let timeout_ms = timeout.as_millis() as u64;
 
-    let response = build_request(client, method, url, headers, body, Some(timeout))
-        .send()
-        .await
-        .map_err(|e| map_reqwest_timeout(e, timeout_ms))?;
+    let response = build_request(
+        client,
+        method,
+        url,
+        headers,
+        to_outgoing(body),
+        Some(timeout),
+    )
+    .send()
+    .await
+    .map_err(|e| map_reqwest_timeout(e, timeout_ms))?;
     let status_code = response.status().as_u16();
 
     // Fold rather than collect: a `HashMap` built straight from the iterator
@@ -197,13 +226,60 @@ pub async fn call_streaming(
     let timeout_ms = timeout.as_millis() as u64;
     match tokio::time::timeout(
         timeout,
-        build_request(client, method, url, headers, body, None).send(),
+        build_request(client, method, url, headers, to_outgoing(body), None).send(),
     )
     .await
     {
         Ok(res) => res.map_err(|e| map_reqwest_timeout(e, timeout_ms)),
         Err(_elapsed) => Err(CallError::Timeout { timeout_ms }),
     }
+}
+
+/// The `Option<&str>` both public buffered/streamed entry points still take,
+/// as the enum the builder now speaks.
+fn to_outgoing(body: Option<&str>) -> OutgoingBody<'_> {
+    match body {
+        Some(b) => OutgoingBody::Text(b),
+        None => OutgoingBody::None,
+    }
+}
+
+/// Send a **streamed request body** and return the upstream response.
+///
+/// The inbound mirror of [`call_streaming`], and the only path that can carry a
+/// body too large to hold: every other caller here materializes an owned
+/// `String`, which is fine for a JSON payload and impossible for a hundred
+/// megabytes of file.
+///
+/// # Why there is no timeout parameter
+///
+/// [`call_streaming`] bounds its header phase with a `tokio` timeout because on
+/// a GET, `send()` resolves as soon as the response headers arrive. On an
+/// upload it does not: `send()` waits for the last byte of the *request* body,
+/// so a deadline here is a cap on total transfer duration, and a legitimate
+/// large push over a slow link dies at it. That is the trap the module docs
+/// describe for response streaming, inverted, so the same answer applies —
+/// liveness is bounded per chunk, not in total. The caller meters the body (see
+/// [`crate::services::proxy_upload::metered_body`]) and that meter carries both
+/// the idle guard and the byte ceiling.
+pub async fn call_streaming_upload(
+    client: &reqwest::Client,
+    method: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+    body: reqwest::Body,
+) -> Result<reqwest::Response, CallError> {
+    build_request(
+        client,
+        method,
+        url,
+        headers,
+        OutgoingBody::Stream(body),
+        None,
+    )
+    .send()
+    .await
+    .map_err(CallError::Request)
 }
 
 /// Wrap a streamed response body so a *stall* is fatal but slowness is not.

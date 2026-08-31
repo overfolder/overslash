@@ -50,6 +50,11 @@ pub(super) fn build(
             tool: target.tool.clone(),
             arguments: target.arguments.clone(),
             pagination: stored_pagination(meta, req),
+            // Resolved once, here, because replay cannot resolve it again.
+            upload: meta.upload.clone(),
+            service_instance_id: meta.instance_id,
+            service_key: meta.service_scope.as_ref().map(|s| s.service_key.clone()),
+            action_key: req.action.clone(),
         })
         .ok();
     }
@@ -117,6 +122,7 @@ mod tests {
             redact: Vec::new(),
             oauth_injected: false,
             download: None,
+            upload: None,
             params: Default::default(),
             resolved: Default::default(),
             canonical: Default::default(),

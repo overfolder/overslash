@@ -192,6 +192,7 @@ mod tests {
             redact: Vec::new(),
             oauth_injected: false,
             download: None,
+            upload: None,
             params: Default::default(),
             resolved: Default::default(),
             canonical: Default::default(),

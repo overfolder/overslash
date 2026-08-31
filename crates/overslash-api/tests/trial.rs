@@ -142,6 +142,8 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),

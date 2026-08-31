@@ -137,6 +137,7 @@ mod tests {
                         disabled: false,
                         request_body: None,
                         download: None,
+                        upload: None,
                     },
                 );
                 m
@@ -233,6 +234,7 @@ mod tests {
                 disabled: false,
                 request_body: None,
                 download: None,
+                upload: None,
             },
         );
         ServiceDefinition {

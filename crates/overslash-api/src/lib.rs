@@ -346,6 +346,17 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     |n| tracing::info!("Expired {n} download_tokens"),
                 )
                 .await;
+                // The inbound half. Kept separate from the sweep above rather
+                // than folded into it because the tables are separate for a
+                // reason — an upload token is single-use, a download token is
+                // not — and a shared prune would be the first place that
+                // distinction quietly stopped mattering.
+                instrumented_step(
+                    "upload_token_expiry",
+                    async { overslash_db::repos::upload_token::prune_expired(&db).await },
+                    |n| tracing::info!("Expired {n} upload_tokens"),
+                )
+                .await;
                 // Stored results for truncated compact renders (D61). Ordering
                 // against the sweep above is irrelevant: the FK from
                 // `download_tokens.call_result_id` cascades, so pruning a
@@ -594,6 +605,10 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         // layer because that layer keys on an API-key prefix these requests
         // don't have — the handler throttles per-IP itself.
         .merge(routes::downloads::router())
+        // Upload redemption, and the same reasoning inverted: the process
+        // pushing the bytes is not the caller either, and the token is the sole
+        // authority for one push.
+        .merge(routes::uploads::router())
         .merge(stripe_webhook_routes)
         .merge(validate_routes)
         .merge(rate_limited_routes)

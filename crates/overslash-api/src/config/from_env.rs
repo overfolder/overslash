@@ -158,6 +158,20 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .filter(|n| *n > 0)
                 .unwrap_or(900), // 15 min
+            upload_token_ttl_secs: env::var("UPLOAD_TOKEN_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(900), // 15 min
+            // Matches the reference container's own default. Set it lower to
+            // bound what a redemption can push; raising it past what the
+            // upstream accepts only moves the rejection later, to a 413 from
+            // the upstream after the bytes have already crossed the wire.
+            upload_max_bytes: env::var("UPLOAD_MAX_BYTES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(100 * 1024 * 1024), // 100 MiB
             // No `.filter(|n| *n > 0)` here, unlike the TTL above: 0 is a
             // meaningful value — it turns result storage off — whereas a
             // zero-second token lifetime is only ever a misconfiguration.

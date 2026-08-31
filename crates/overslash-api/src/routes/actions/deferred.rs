@@ -95,7 +95,7 @@ async fn mint_mcp_download(
     action_key: Option<&str>,
     filter_timeout: std::time::Duration,
 ) -> Result<crate::services::deferred_download::Descriptor, AppError> {
-    use overslash_core::types::{DisclosureField, DownloadAuth, McpAuth};
+    use overslash_core::types::{DownloadAuth, McpAuth};
 
     let Some(spec) = spec else {
         return Err(AppError::BadRequest(format!(
@@ -105,54 +105,27 @@ async fn mint_mcp_download(
         )));
     };
 
-    // The MCP envelope, as jq sees it: {runtime, tool, structured, content,
-    // is_error}. Same input shape the `disclose` filters address.
-    let envelope: serde_json::Value =
-        serde_json::from_str(&result.body).unwrap_or(serde_json::Value::Null);
-
-    // Reuse the disclosure runner rather than a second jq harness: it already
-    // owns the timeout, the input-size ceiling, and spawn_blocking. Labels are
-    // the join key because it drops zero-yield filters, so positions shift.
-    let mut fields = vec![DisclosureField {
-        label: "url".into(),
-        filter: spec.url.clone(),
-        max_chars: None,
-        primary: false,
-    }];
-    for (label, filter) in [
-        ("mime", spec.mime.as_ref()),
-        ("size", spec.size.as_ref()),
-        ("filename", spec.filename.as_ref()),
-    ] {
-        if let Some(f) = filter {
-            fields.push(DisclosureField {
-                label: label.into(),
-                filter: f.clone(),
-                max_chars: None,
-                primary: false,
-            });
-        }
-    }
-
-    let disclosed =
-        crate::services::disclosure::run_disclosures(&fields, &envelope, filter_timeout)
-            .await
-            .map_err(|e| AppError::BadGateway(format!("download filters failed: {e}")))?;
+    let picked = evaluate_download(spec, result, filter_timeout)
+        .await
+        .map_err(AppError::BadGateway)?;
     let pick = |label: &str| -> Option<String> {
-        disclosed
-            .iter()
-            .find(|d| d.label == label)
-            .and_then(|d| d.value.clone())
+        match label {
+            "mime" => picked.mime.clone(),
+            "size" => picked.size.clone(),
+            "filename" => picked.filename.clone(),
+            _ => None,
+        }
     };
 
-    let Some(raw_url) = pick("url").filter(|s| !s.trim().is_empty()) else {
+    let Some(raw_url) = picked.url.clone() else {
         return Err(AppError::BadGateway(format!(
             "tool `{}` returned no value for the declared download url filter (`{}`)",
             mcp_target.tool, spec.url
         )));
     };
 
-    let url = resolve_download_url(&mcp_target.url, raw_url.trim())?;
+    let url =
+        crate::services::deferred_download::resolve_same_origin(&mcp_target.url, raw_url.trim())?;
 
     let secret_name = match (&mcp_target.auth, spec.auth) {
         (_, DownloadAuth::None) => None,
@@ -179,14 +152,14 @@ async fn mint_mcp_download(
         crate::services::deferred_download::Mint {
             org_id,
             identity_id,
-            // MCP resolution doesn't thread the instance id through
-            // `ResolvedMeta` (it's an HTTP-replay concern), and the token
-            // doesn't need it — `request` already names everything the fetch
-            // re-resolves.
+            // The token doesn't need it — `request` already names everything
+            // the fetch re-resolves — and leaving it unset keeps this row
+            // describing the fetch rather than the binding it came from.
             service_instance_id: None,
             service_key,
             action_key,
             request: Some(crate::services::deferred_download::bearer_request(
+                "GET",
                 url,
                 secret_name,
             )),
@@ -198,33 +171,6 @@ async fn mint_mcp_download(
         },
     )
     .await
-}
-
-/// Resolve a download location from a tool result against the MCP server's own
-/// URL, rejecting anything that would send the credential elsewhere.
-///
-/// Accepts a path (`/media/abc`) or an absolute URL on the same origin.
-/// Everything else — a different host, a different scheme, a non-URL — is an
-/// error rather than a best-effort fetch.
-fn resolve_download_url(mcp_url: &str, raw: &str) -> Result<String, AppError> {
-    let base = url::Url::parse(mcp_url)
-        .map_err(|e| AppError::Internal(format!("mcp instance url is not a url: {e}")))?;
-
-    let joined = base.join(raw).map_err(|e| {
-        AppError::BadGateway(format!("download url `{raw}` is not resolvable: {e}"))
-    })?;
-
-    let same_origin = joined.scheme() == base.scheme()
-        && joined.host_str() == base.host_str()
-        && joined.port_or_known_default() == base.port_or_known_default();
-    if !same_origin {
-        return Err(AppError::BadGateway(format!(
-            "download url `{raw}` points outside the MCP server's origin ({}); \
-             refusing to send this service's credential to another host",
-            base.origin().ascii_serialization()
-        )));
-    }
-    Ok(joined.to_string())
 }
 
 /// The call-handler context an HTTP-runtime mint reads from.
@@ -387,83 +333,127 @@ pub(super) async fn mint_http_descriptor(
     Ok(descriptor)
 }
 
-#[cfg(test)]
-mod download_url_tests {
-    use super::resolve_download_url;
+/// What a `x-overslash-download` block's filters yielded, evaluated once.
+///
+/// Extracted so the ledger and the mint read the *same* answer rather than
+/// running the filters twice and hoping jq is deterministic across two
+/// envelopes it was handed separately.
+pub(super) struct PickedDownload {
+    pub url: Option<String>,
+    pub mime: Option<String>,
+    pub size: Option<String>,
+    pub filename: Option<String>,
+    pub sha256: Option<String>,
+}
 
-    const MCP: &str = "https://wa.example.com:8443/mcp";
+/// Evaluate a download declaration against a completed tool result.
+///
+/// The MCP envelope, as jq sees it, is `{runtime, tool, structured, content,
+/// is_error}` — the same input shape `disclose` filters address. The disclosure
+/// runner is reused rather than a second jq harness because it already owns the
+/// timeout, the input-size ceiling and the `spawn_blocking`.
+pub(super) async fn evaluate_download(
+    spec: &overslash_core::types::DownloadSpec,
+    result: &overslash_core::types::ActionResult,
+    filter_timeout: std::time::Duration,
+) -> Result<PickedDownload, String> {
+    use overslash_core::types::DisclosureField;
 
-    /// The shape the shipped WhatsApp template uses: the tool hands back a
-    /// path, which resolves against the server that served the tool call.
-    #[test]
-    fn a_relative_path_resolves_against_the_mcp_server() {
-        let out = resolve_download_url(MCP, "/media/abc123").unwrap();
-        assert_eq!(out, "https://wa.example.com:8443/media/abc123");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&result.body).unwrap_or(serde_json::Value::Null);
+
+    let mut fields = vec![DisclosureField {
+        label: "url".into(),
+        filter: spec.url.clone(),
+        max_chars: None,
+        primary: false,
+    }];
+    for (label, filter) in [
+        ("mime", spec.mime.as_ref()),
+        ("size", spec.size.as_ref()),
+        ("filename", spec.filename.as_ref()),
+        ("sha256", spec.sha256.as_ref()),
+    ] {
+        if let Some(f) = filter {
+            fields.push(DisclosureField {
+                label: label.into(),
+                filter: f.clone(),
+                max_chars: None,
+                primary: false,
+            });
+        }
     }
 
-    #[test]
-    fn an_absolute_same_origin_url_is_accepted_verbatim() {
-        let out =
-            resolve_download_url(MCP, "https://wa.example.com:8443/media/abc123?x=1").unwrap();
-        assert_eq!(out, "https://wa.example.com:8443/media/abc123?x=1");
-    }
+    let disclosed =
+        crate::services::disclosure::run_disclosures(&fields, &envelope, filter_timeout)
+            .await
+            .map_err(|e| format!("download filters failed: {e}"))?;
+    // Joined on label because the runner drops zero-yield filters, so positions
+    // shift.
+    let pick = |label: &str| -> Option<String> {
+        disclosed
+            .iter()
+            .find(|d| d.label == label)
+            .and_then(|d| d.value.clone())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
 
-    /// The control that matters. The URL comes from the MCP server's own
-    /// response and the deferred fetch attaches that instance's credential —
-    /// so a hostile or compromised server naming another host must not be able
-    /// to have the gateway deliver the bearer to it.
-    #[test]
-    fn a_different_host_is_refused() {
-        let err = resolve_download_url(MCP, "http://169.254.169.254/latest/meta-data/")
-            .expect_err("off-origin must be refused");
-        assert!(
-            format!("{err:?}").contains("outside the MCP server's origin"),
-            "{err:?}"
-        );
-    }
+    Ok(PickedDownload {
+        url: pick("url"),
+        mime: pick("mime"),
+        size: pick("size"),
+        filename: pick("filename"),
+        sha256: pick("sha256"),
+    })
+}
 
-    #[test]
-    fn a_different_scheme_on_the_same_host_is_refused() {
-        // Downgrading https→http on the same host would put the credential on
-        // the wire in plaintext, so origin comparison includes the scheme.
-        resolve_download_url(MCP, "http://wa.example.com:8443/media/abc")
-            .expect_err("scheme change must be refused");
-    }
-
-    #[test]
-    fn a_different_port_on_the_same_host_is_refused() {
-        resolve_download_url(MCP, "https://wa.example.com:9999/media/abc")
-            .expect_err("port change must be refused");
-    }
-
-    /// Default ports compare equal to their explicit form — otherwise a server
-    /// configured as `https://host/mcp` returning `https://host:443/…` would
-    /// be rejected for no reason.
-    #[test]
-    fn an_implicit_default_port_matches_its_explicit_form() {
-        resolve_download_url(
-            "https://wa.example.com/mcp",
-            "https://wa.example.com:443/media/abc",
-        )
-        .expect("443 is https's default port");
-    }
-
-    #[test]
-    fn a_protocol_relative_url_cannot_smuggle_a_new_host() {
-        // `//evil.com/x` inherits the scheme but not the host — the classic
-        // way past a naive "starts with http" check.
-        resolve_download_url(MCP, "//evil.com/media/abc")
-            .expect_err("protocol-relative host swap must be refused");
-    }
-
-    /// The guarantee is "never leaves the origin", not "rejects anything odd".
-    /// A non-URL string joins as a relative path and stays on the MCP host, so
-    /// the worst case is a 404 upstream — and the control characters that could
-    /// otherwise smuggle a second request get percent-encoded on the way.
-    #[test]
-    fn a_non_url_string_stays_on_the_origin_and_is_escaped() {
-        let out = resolve_download_url(MCP, "not a url at all\n").unwrap();
-        assert!(out.starts_with("https://wa.example.com:8443/"), "{out}");
-        assert!(!out.contains('\n') && !out.contains(' '), "{out}");
+/// Record what a download tool said about the bytes it referenced.
+///
+/// Deliberately *not* gated on `deliver: "url"`. The template's own guidance
+/// tells agents to call a download tool without `deliver` when they want the
+/// raw reference to forward — which is the common case — so gating the write on
+/// the mint would leave exactly the paths that produce references to later
+/// approvals unrecorded, and every one of those approvals showing a bare hash.
+///
+/// Best-effort throughout: the call succeeded, and failing it because a
+/// descriptive row would not write trades a working call for a tidier ledger.
+pub(super) async fn record_downloaded(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: uuid::Uuid,
+    instance_id: Option<uuid::Uuid>,
+    service_key: Option<&str>,
+    spec: &overslash_core::types::DownloadSpec,
+    result: &overslash_core::types::ActionResult,
+) {
+    let filter_timeout = std::time::Duration::from_millis(state.config.filter_timeout_ms);
+    let picked = match evaluate_download(spec, result, filter_timeout).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "media ledger: download filters failed");
+            return;
+        }
+    };
+    let Some(media_path) = picked.url else {
+        return;
+    };
+    if let Err(e) = overslash_db::repos::media_descriptor::record(
+        state.db(ext),
+        overslash_db::repos::media_descriptor::NewMediaDescriptor {
+            org_id,
+            service_instance_id: instance_id,
+            service_key,
+            media_path: &media_path,
+            sha256: picked.sha256.as_deref(),
+            mime: picked.mime.as_deref(),
+            size_bytes: picked.size.as_deref().and_then(|s| s.parse::<i64>().ok()),
+            filename: picked.filename.as_deref(),
+            source: overslash_db::repos::media_descriptor::MediaSource::Download,
+        },
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "media ledger: download descriptor not recorded");
     }
 }
