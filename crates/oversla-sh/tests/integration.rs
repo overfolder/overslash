@@ -1,7 +1,8 @@
 //! Integration tests: full API flows against a real Valkey.
 //!
 //! Tests require a running Valkey reachable via `VALKEY_URL` (default:
-//! `redis://localhost:6380` — what `make shortener-dev` exposes). If Valkey
+//! `redis://localhost:6380` — what `make local-db` exposes; a worktree gets
+//! its own port and writes `VALKEY_URL` into `.env.local`). If Valkey
 //! is not reachable, tests **panic** so broken CI surfaces loudly rather
 //! than passing green on an empty run. Match the `overslash-api` pattern of
 //! failing hard when a required test dependency is missing.
@@ -26,7 +27,7 @@ async fn start() -> (SocketAddr, Client) {
     let storage = Storage::connect(&url).await.unwrap_or_else(|e| {
         panic!(
             "cannot connect to Valkey at {url}: {e}\n\
-             hint: run `make shortener-dev` or set VALKEY_URL to a reachable instance"
+             hint: run `make local-db` or set VALKEY_URL to a reachable instance"
         )
     });
     storage
