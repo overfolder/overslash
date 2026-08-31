@@ -42,7 +42,7 @@ serde_yaml = { version = "0.9", optional = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 strsim = "0.11"
-fastembed = { version = "5", optional = true }
+fastembed = { version = "6", optional = true }
 # Builds vendored libpg_query (C toolchain + libclang for bindgen). Kept
 # behind `sql_policy` so the default build never pays for it.
 pg_query = { version = "6", optional = true }
