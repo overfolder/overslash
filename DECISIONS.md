@@ -617,7 +617,7 @@ The gateway never follows a page. `gmail.yaml` is the only shipped template anno
 
 **One exemplar, not a sweep.** `gmail.yaml` was picked over the more urgent unbounded cases because it demonstrates both halves at once — `maxResults` declares no default, and `nextPageToken` sits after the `messages` array, the exact payload D74's key cap was ranked for. Annotating twenty templates in the same change would have made the mechanism hard to review and the template judgements impossible to argue with individually. The follow-up closes with a corpus gate shaped like `shipped_mutating_actions_declare_disclose`.
 
-## D-NEXT: Bytes move into a service the same way they move out — a capability the gateway proxies, never the service's own credential
+## D76: Bytes move into a service the same way they move out — a capability the gateway proxies, never the service's own credential
 
 **Date**: 2026-08-31
 **Decision**: An MCP action may declare `x-overslash-upload` (bare alias `upload:`), naming a plain-HTTP byte route on the service instance's own origin: `{path, method, filename_param, auth, max_bytes, result}`. An action carrying it is **served by the gateway** — the two dispatch sites intercept it before `mcp_caller::invoke`, so the upstream never sees a tool by that name — and what it returns is a one-shot `upload_url` on `POST|PUT /v1/uploads/{token}`. Redeeming that URL streams the request body through to the byte route with the instance's bearer re-resolved from the vault at that moment. `upload_tokens` is a **separate table** from `download_tokens` and its claim consumes.
