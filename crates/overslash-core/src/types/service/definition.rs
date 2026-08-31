@@ -441,6 +441,7 @@ mod tests {
                 disabled: false,
                 request_body: None,
                 download: None,
+                upload: None,
             },
         );
         let svc = ServiceDefinition {
@@ -510,6 +511,7 @@ mod tests {
             disabled: false,
             request_body: None,
             download: None,
+            upload: None,
         };
         let j = serde_json::to_value(&a).unwrap();
         assert!(j.get("disabled").is_none());

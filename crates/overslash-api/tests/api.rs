@@ -148,6 +148,7 @@ mod template_validation;
 mod templates;
 mod templates_import;
 mod trial;
+mod uploads;
 mod upstream_metrics;
 mod version;
 mod wait_mode;

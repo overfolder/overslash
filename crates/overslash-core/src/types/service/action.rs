@@ -173,6 +173,18 @@ pub struct ServiceAction {
     /// field of that descriptor is the object and what it looks like.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download: Option<DownloadSpec>,
+    /// `x-overslash-upload`: this action does not call a tool at all. It mints
+    /// a capability to push bytes at a plain-HTTP route on the MCP server's own
+    /// origin, and the gateway intercepts it before it would ever reach
+    /// `tools/call`.
+    ///
+    /// The inbound mirror of [`download`](Self::download), and deliberately not
+    /// the same shape. A download block is jq over a result that already
+    /// exists; at upload-mint time nothing has run, so there is no envelope to
+    /// address — the route half is static and only
+    /// [`result`](UploadSpec::result) is jq.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload: Option<UploadSpec>,
 }
 
 /// How to turn an MCP tool result into a downloadable object.
@@ -201,6 +213,13 @@ pub struct DownloadSpec {
     /// jq expression yielding a suggested filename.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    /// jq expression yielding the object's content hash, when the upstream
+    /// states one. Not used to fetch anything — it is what lets the gateway
+    /// record the descriptor in its media ledger, so a later approval that
+    /// merely *references* these bytes can say what they are instead of
+    /// showing a reviewer a bare hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
     /// Which credential the deferred fetch presents. See [`DownloadAuth`].
     #[serde(default)]
     pub auth: DownloadAuth,
@@ -221,6 +240,99 @@ pub enum DownloadAuth {
     None,
 }
 
+/// How to mint a capability for pushing bytes at an MCP server's byte route.
+///
+/// The declaration exists because `POST /media` is *not* a tool: bytes never
+/// ride a JSON-RPC call in either direction, so the inbound half is plain HTTP
+/// on the same origin and behind the same credential as `/mcp`. An action
+/// carrying this block is served by the gateway itself — it is in the template
+/// so that pushing bytes is a permission-checked, approvable, disclosed action
+/// like any other, not because the upstream serves a tool by that name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadSpec {
+    /// Path (`/media`) or same-origin absolute URL. Resolved against the
+    /// service instance's own URL by the same joiner the download path uses,
+    /// and for a sharper reason: on download the untrusted input is the MCP
+    /// server's *response*, while here it is the *template* — a lower-trust
+    /// surface once orgs author their own, and a higher-consequence one, since
+    /// a redemption sends the caller's bytes **and** the instance credential.
+    pub path: String,
+    /// Which verb the byte route takes. Parsed rather than free text so a typo
+    /// is a template error instead of a 405 at redemption.
+    #[serde(default)]
+    pub method: UploadMethod,
+    /// Query parameter carrying the declared filename, when the target takes
+    /// one. The value always comes from the token, never from whoever redeems
+    /// it — see the module docs on `routes::uploads`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename_param: Option<String>,
+    /// Which credential the redemption presents. Reuses [`DownloadAuth`]
+    /// verbatim: same two meanings, and — the point — the same one place for
+    /// the `McpAuth::OAuth` refusal to live, rather than two enums for it to
+    /// drift between.
+    #[serde(default)]
+    pub auth: DownloadAuth,
+    /// Advisory ceiling surfaced to the caller on the minted descriptor.
+    /// Always clamped by the deployment's `upload_max_bytes`; a template can
+    /// lower the limit, never raise it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+    /// jq filters over the byte route's JSON response. This is what makes the
+    /// block portable across services and what feeds the media ledger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<UploadResultSpec>,
+}
+
+/// How to read a byte route's response, as jq over its JSON body.
+///
+/// Only [`media_path`](Self::media_path) is required — it is the reference the
+/// send tools take, so an upload that cannot produce one has accomplished
+/// nothing the caller can use. The rest is what the gateway records so a later
+/// approval can describe these bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadResultSpec {
+    /// jq expression yielding the stored object's reference.
+    pub media_path: String,
+    /// jq expression yielding the content hash the upstream computed.
+    ///
+    /// Cross-checked against what the gateway measured on the way through, so
+    /// a disagreement between the two is caught rather than recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// jq expression yielding the stored MIME type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    /// jq expression yielding the stored byte length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    /// jq expression yielding the stored filename.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+}
+
+/// The verb a byte route accepts.
+///
+/// Two variants and no `Other`: an upload is a create-or-replace of one object,
+/// and a template naming anything else is describing a route this mechanism
+/// cannot serve.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum UploadMethod {
+    #[default]
+    Post,
+    Put,
+}
+
+impl UploadMethod {
+    /// The wire spelling, for handing to the HTTP caller.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UploadMethod::Post => "POST",
+            UploadMethod::Put => "PUT",
+        }
+    }
+}
+
 impl ServiceAction {
     /// The template to interpolate for human-facing surfaces (approval title,
     /// audit description). Prefers the short [`summary`](Self::summary) and
@@ -229,6 +341,20 @@ impl ServiceAction {
     pub fn label_template(&self) -> &str {
         self.summary.as_deref().unwrap_or(&self.description)
     }
+}
+
+/// A resolver target that is answered from the gateway's own records instead of
+/// from the upstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResolveSource {
+    /// The media ledger: what the gateway recorded about bytes it moved, keyed
+    /// by the reference the param carries. Enriches an approval that would
+    /// otherwise ask a reviewer to sign off on a bare content hash.
+    ///
+    /// Best-effort by construction — a reference the gateway never handled is
+    /// simply absent, and the disclose filter falls back to the raw argument.
+    Media,
 }
 
 /// An operation's declared `requestBody`, reduced to what routing needs: which
@@ -301,6 +427,13 @@ pub struct DisclosureField {
 /// With it both collapse to `recipient=+34600123456`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParamResolver {
+    /// Resolve against something the gateway already knows rather than the
+    /// upstream. Mutually exclusive with `get` and `tool`, and the reason it
+    /// exists: some params reference bytes, and asking the upstream to describe
+    /// them would mean a network round-trip and a credential use inside the
+    /// approval path, for a value the gateway already saw go past.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ResolveSource>,
     /// HTTP runtime: GET endpoint path with `{param}` placeholders, e.g.
     /// `/calendar/v3/calendars/{calendarId}`. Mutually exclusive with `tool`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -352,9 +485,20 @@ impl ParamResolver {
         }
     }
 
-    /// Whether exactly one runtime target is declared.
+    /// Whether exactly one target is declared.
+    ///
+    /// Three now, so this counts rather than comparing two bools — `a != b`
+    /// silently reads "both set" as valid the moment a third arrives.
     pub fn has_one_target(&self) -> bool {
-        self.get.is_some() != self.tool.is_some()
+        [
+            self.get.is_some(),
+            self.tool.is_some(),
+            self.source.is_some(),
+        ]
+        .iter()
+        .filter(|set| **set)
+        .count()
+            == 1
     }
 }
 

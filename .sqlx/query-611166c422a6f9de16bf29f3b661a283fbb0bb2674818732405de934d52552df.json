@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM upload_tokens WHERE expires_at < now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "611166c422a6f9de16bf29f3b661a283fbb0bb2674818732405de934d52552df"
+}

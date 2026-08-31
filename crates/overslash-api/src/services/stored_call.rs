@@ -245,6 +245,57 @@ async fn run_http(ctx: StoredCallCtx<'_>, stored: StoredCallRequest) -> StoredOu
 }
 
 async fn run_mcp(ctx: StoredCallCtx<'_>, call: StoredMcpCall) -> StoredOutcome {
+    // Gateway-served actions never reach the upstream — the twin of the test
+    // in `call_mcp::dispatch`, and the one that actually matters first: an
+    // upload is `risk: write`, so for any gated agent the *first* call lands
+    // here rather than inline. Without this the approval would be granted and
+    // the replay would answer "unknown tool", which is a failure that only
+    // appears once a human has said yes.
+    //
+    // The spec rides on the payload because replay resolves nothing: it holds
+    // a URL and a tool name, not an action key to look a declaration back up
+    // with. See `StoredMcpCall::upload`.
+    if let Some(spec) = call.upload.as_ref() {
+        return match crate::services::proxy_upload::intercept_mint(
+            ctx.state,
+            ctx.ext,
+            crate::services::proxy_upload::Mint {
+                org_id: ctx.org_id,
+                identity_id: ctx.identity_id,
+                service_instance_id: call.service_instance_id,
+                service_key: call.service_key.as_deref(),
+                action_key: call.action_key.as_deref(),
+                mcp_url: &call.url,
+                mcp_auth: &call.auth,
+                spec,
+                arguments: &call.arguments,
+            },
+        )
+        .await
+        {
+            Ok(result) => {
+                let value = serde_json::to_value(&result)
+                    .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
+                StoredOutcome::Executed {
+                    summary: serde_json::json!({
+                        "runtime": "mcp",
+                        "tool": call.tool,
+                        "cause": "upload_requested",
+                        "response": { "skipped": "capability" },
+                    }),
+                    result: value,
+                    typed: result,
+                    upstream_errored: false,
+                    is_error: false,
+                }
+            }
+            Err(e) => StoredOutcome::Failed {
+                message: format!("upload mint failed: {e}"),
+                error: Some(Box::new(e)),
+            },
+        };
+    }
+
     // Re-resolve OAuth fresh, for the same reason as the HTTP path: the stored
     // payload is credential-free (only the provider survives in `call.auth`),
     // so the token — which may have expired while the call waited — is minted

@@ -121,12 +121,7 @@ pub async fn mint(
     ext: &axum::http::Extensions,
     m: Mint<'_>,
 ) -> Result<Descriptor, AppError> {
-    // 32 random bytes → URL-safe token; only its SHA-256 is stored. Same
-    // construction as magic-link tokens.
-    let mut buf = [0u8; 32];
-    rand::rng().fill(&mut buf);
-    let raw_token = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, buf);
-    let token_hash = Sha256::digest(raw_token.as_bytes()).to_vec();
+    let (raw_token, token_hash) = new_token();
 
     let request = m
         .request
@@ -187,6 +182,21 @@ pub fn hash_token(raw: &str) -> Vec<u8> {
     Sha256::digest(raw.as_bytes()).to_vec()
 }
 
+/// Mint a fresh capability token: the raw value to put in a URL, and the hash
+/// to put in a row.
+///
+/// 32 random bytes, URL-safe base64, only the SHA-256 stored — the same
+/// construction as magic-link tokens. Shared by both byte directions so
+/// "the raw token exists only in the URL" is one fact rather than a convention
+/// two call sites happen to observe.
+pub fn new_token() -> (String, Vec<u8>) {
+    let mut buf = [0u8; 32];
+    rand::rng().fill(&mut buf);
+    let raw = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, buf);
+    let hash = hash_token(&raw);
+    (raw, hash)
+}
+
 /// Header names that carry a credential rather than describing the request.
 ///
 /// Not exhaustive, and can't be — an upstream is free to read a secret out of
@@ -238,9 +248,14 @@ pub fn reject_inline_credentials(request: &ActionRequest) -> Result<(), AppError
 /// ref whose `name` *is* the vault secret name, with the prefix carried
 /// literally. No new resolution path, no second place for credential handling
 /// to drift.
-pub fn bearer_request(url: String, secret_name: Option<&str>) -> ActionRequest {
+///
+/// `method` is a parameter rather than a constant because the byte routes come
+/// in both directions: a download is a GET, an upload a POST or PUT at the same
+/// origin behind the same bearer. `body` stays `None` either way — an upload's
+/// bytes are not in the row, they arrive when the capability is redeemed.
+pub fn bearer_request(method: &str, url: String, secret_name: Option<&str>) -> ActionRequest {
     ActionRequest {
-        method: "GET".into(),
+        method: method.into(),
         url,
         headers: HashMap::new(),
         body: None,
@@ -273,16 +288,7 @@ pub async fn open_upstream(
     service_key: Option<&str>,
     request: &ActionRequest,
 ) -> Result<reqwest::Response, AppError> {
-    let secret_values = crate::services::action_caller::resolve_credential_values(
-        state,
-        scope,
-        service_key,
-        request,
-    )
-    .await?;
-    let (resolved_url, resolved_headers) =
-        inject_secrets(request, &secret_values).map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let resolved_url = state.config.apply_base_overrides(&resolved_url);
+    let Resolved { url, headers } = resolve_for_replay(state, scope, service_key, request).await?;
 
     // The deployment default, not a D56-resolved budget: a token redemption
     // has no caller-supplied `timeout_ms` and no action key to read the
@@ -294,13 +300,88 @@ pub async fn open_upstream(
     http_caller::call_streaming(
         &state.http_client,
         &request.method,
-        &resolved_url,
-        &resolved_headers,
+        &url,
+        &headers,
         request.body.as_deref(),
         std::time::Duration::from_millis(state.config.call_timeout_ms),
     )
     .await
     .map_err(|e| AppError::BadGateway(format!("download upstream request failed: {e}")))
+}
+
+/// A stored request with its credentials resolved as they stand right now.
+pub struct Resolved {
+    pub url: String,
+    pub headers: HashMap<String, String>,
+}
+
+/// Re-resolve a stored request's credentials against the current vault.
+///
+/// Split out of [`open_upstream`] because the two byte directions share this
+/// half and nothing else: a download dials and streams the response, an upload
+/// dials and streams the *request*. Keeping one credential path means a
+/// rotated secret is picked up and a deleted one fails closed identically in
+/// both directions — the alternative is two resolutions that agree until
+/// someone changes one of them.
+pub async fn resolve_for_replay(
+    state: &AppState,
+    scope: &OrgScope,
+    service_key: Option<&str>,
+    request: &ActionRequest,
+) -> Result<Resolved, AppError> {
+    let secret_values = crate::services::action_caller::resolve_credential_values(
+        state,
+        scope,
+        service_key,
+        request,
+    )
+    .await?;
+    let (url, headers) =
+        inject_secrets(request, &secret_values).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    Ok(Resolved {
+        url: state.config.apply_base_overrides(&url),
+        headers,
+    })
+}
+
+/// Resolve a byte location against the origin that served the tool call,
+/// refusing anything that would send the credential elsewhere.
+///
+/// Accepts a path (`/media/abc`) or an absolute URL on the same origin.
+/// Everything else — a different host, a different scheme, a non-URL — is an
+/// error rather than a best-effort request.
+///
+/// # Why the origin is pinned
+///
+/// Both directions attach the service instance's credential to whatever this
+/// returns. On a download the untrusted input is the MCP server's own response,
+/// so an unconstrained URL lets a hostile or compromised server name
+/// `http://169.254.169.254/…` and have the gateway deliver the bearer to it. On
+/// an upload the untrusted input is the *template*, which is a lower-trust
+/// surface once orgs author their own and a higher-consequence one, since a
+/// redemption sends the caller's bytes as well as the credential. Requiring the
+/// route to live on the host we just talked to closes both, and costs nothing:
+/// "the bytes are on that host" is the actual contract.
+pub fn resolve_same_origin(base_url: &str, raw: &str) -> Result<String, AppError> {
+    let base = url::Url::parse(base_url).map_err(|e| {
+        AppError::BadGateway(format!(
+            "service instance url `{base_url}` is not a URL: {e}"
+        ))
+    })?;
+    let joined = base
+        .join(raw)
+        .map_err(|e| AppError::BadGateway(format!("byte location `{raw}` is not a URL: {e}")))?;
+    let same_origin = joined.scheme() == base.scheme()
+        && joined.host_str() == base.host_str()
+        && joined.port_or_known_default() == base.port_or_known_default();
+    if !same_origin {
+        return Err(AppError::BadGateway(format!(
+            "byte location `{raw}` points outside the MCP server's origin ({}); \
+             refusing to send this service's credential to another host",
+            base.origin().ascii_serialization()
+        )));
+    }
+    Ok(joined.to_string())
 }
 
 /// Pipe an upstream response straight through to the caller: raw bytes, the
@@ -331,4 +412,87 @@ pub fn stream_through(upstream: reqwest::Response, idle: std::time::Duration) ->
     builder
         .body(body)
         .expect("status + allowlisted headers always build a valid response")
+}
+
+/// Moved here with `resolve_same_origin` itself, unchanged: passing after the
+/// move is the evidence the upload path inherited exactly the download path's
+/// refusals rather than a re-derived approximation of them.
+#[cfg(test)]
+mod same_origin_tests {
+    use super::resolve_same_origin;
+
+    const MCP: &str = "https://wa.example.com:8443/mcp";
+
+    /// The shape the shipped WhatsApp template uses: the tool hands back a
+    /// path, which resolves against the server that served the tool call.
+    #[test]
+    fn a_relative_path_resolves_against_the_mcp_server() {
+        let out = resolve_same_origin(MCP, "/media/abc123").unwrap();
+        assert_eq!(out, "https://wa.example.com:8443/media/abc123");
+    }
+
+    #[test]
+    fn an_absolute_same_origin_url_is_accepted_verbatim() {
+        let out = resolve_same_origin(MCP, "https://wa.example.com:8443/media/abc123?x=1").unwrap();
+        assert_eq!(out, "https://wa.example.com:8443/media/abc123?x=1");
+    }
+
+    /// The control that matters. The URL comes from the MCP server's own
+    /// response and the deferred fetch attaches that instance's credential —
+    /// so a hostile or compromised server naming another host must not be able
+    /// to have the gateway deliver the bearer to it.
+    #[test]
+    fn a_different_host_is_refused() {
+        let err = resolve_same_origin(MCP, "http://169.254.169.254/latest/meta-data/")
+            .expect_err("off-origin must be refused");
+        assert!(
+            format!("{err:?}").contains("outside the MCP server's origin"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_different_scheme_on_the_same_host_is_refused() {
+        // Downgrading https→http on the same host would put the credential on
+        // the wire in plaintext, so origin comparison includes the scheme.
+        resolve_same_origin(MCP, "http://wa.example.com:8443/media/abc")
+            .expect_err("scheme change must be refused");
+    }
+
+    #[test]
+    fn a_different_port_on_the_same_host_is_refused() {
+        resolve_same_origin(MCP, "https://wa.example.com:9999/media/abc")
+            .expect_err("port change must be refused");
+    }
+
+    /// Default ports compare equal to their explicit form — otherwise a server
+    /// configured as `https://host/mcp` returning `https://host:443/…` would
+    /// be rejected for no reason.
+    #[test]
+    fn an_implicit_default_port_matches_its_explicit_form() {
+        resolve_same_origin(
+            "https://wa.example.com/mcp",
+            "https://wa.example.com:443/media/abc",
+        )
+        .expect("443 is https's default port");
+    }
+
+    #[test]
+    fn a_protocol_relative_url_cannot_smuggle_a_new_host() {
+        // `//evil.com/x` inherits the scheme but not the host — the classic
+        // way past a naive "starts with http" check.
+        resolve_same_origin(MCP, "//evil.com/media/abc")
+            .expect_err("protocol-relative host swap must be refused");
+    }
+
+    /// The guarantee is "never leaves the origin", not "rejects anything odd".
+    /// A non-URL string joins as a relative path and stays on the MCP host, so
+    /// the worst case is a 404 upstream — and the control characters that could
+    /// otherwise smuggle a second request get percent-encoded on the way.
+    #[test]
+    fn a_non_url_string_stays_on_the_origin_and_is_escaped() {
+        let out = resolve_same_origin(MCP, "not a url at all\n").unwrap();
+        assert!(out.starts_with("https://wa.example.com:8443/"), "{out}");
+        assert!(!out.contains('\n') && !out.contains(' '), "{out}");
+    }
 }

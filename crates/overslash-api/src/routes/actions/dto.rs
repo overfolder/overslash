@@ -342,6 +342,12 @@ pub(super) struct ResolvedMeta {
     /// it's how a tool result says "the bytes are over there". HTTP actions
     /// are their own download and leave this `None`.
     pub(super) download: Option<overslash_core::types::DownloadSpec>,
+    /// The action's `x-overslash-upload` block, when it declares one.
+    ///
+    /// Its presence is what makes an action gateway-served: the dispatch sites
+    /// mint a capability instead of forwarding a tool call, so the upstream
+    /// never sees a tool by this name.
+    pub(super) upload: Option<overslash_core::types::UploadSpec>,
     /// Whether this call authenticates via OAuth, mirroring
     /// `ResolvedAuth::oauth_injected`.
     ///

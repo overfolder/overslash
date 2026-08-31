@@ -2,10 +2,10 @@
 -- PostgreSQL database dump
 --
 
-\restrict Wa9cVbD20aiSD1mg8hdX4ucJSCAI1Zo8GH1ywdS2KyvkPycAg0afifQTGjdzEay
+\restrict ITpRAwCBQB1Eujdumlb2lXtfTcabr3ewsacbHizs9jNwJBpKN4XyV8oROCASLy3
 
--- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
--- Dumped by pg_dump version 16.14 (Ubuntu 16.14-0ubuntu0.24.04.1)
+-- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
+-- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -32,10 +32,6 @@ CREATE SCHEMA public;
 COMMENT ON SCHEMA public IS 'standard public schema';
 
 
-SET default_tablespace = '';
-
-SET default_table_access_method = heap;
-
 --
 -- Name: events_notify(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -49,6 +45,10 @@ BEGIN
 END;
 $$;
 
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
 
 --
 -- Name: api_keys; Type: TABLE; Schema: public; Owner: -
@@ -100,6 +100,13 @@ CREATE TABLE public.approvals (
 
 
 --
+-- Name: COLUMN approvals.tags; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.approvals.tags IS 'System-derived `namespace:value` metadata tags describing the gated call (sql:*, table:*, service:*, host:*, risk:*). Never caller-supplied.';
+
+
+--
 -- Name: audit_log; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -122,17 +129,24 @@ CREATE TABLE public.audit_log (
 
 
 --
+-- Name: COLUMN audit_log.tags; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.audit_log.tags IS 'System-derived `namespace:value` metadata tags. Searchable via GET /v1/audit?tag=. Populated on action/approval events; other events carry an empty array.';
+
+
+--
 -- Name: COLUMN audit_log.actor_name; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.audit_log.actor_name IS 'Name of identity_id as of write time. Historical by design (D56) — the row records the name the actor had when they acted, not their current one.';
+COMMENT ON COLUMN public.audit_log.actor_name IS 'Name of identity_id as of write time. Historical by design (D59) — the row records the name the actor had when they acted, not their current one.';
 
 
 --
 -- Name: COLUMN audit_log.owner_user_name; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.audit_log.owner_user_name IS 'Name of the root user of the actor''s identity chain, as of write time. Root, not direct parent: a sub-agent resolves to the human at the top, matching the audit table''s User column.';
+COMMENT ON COLUMN public.audit_log.owner_user_name IS 'Name of the owning user (identities.owner_id, a flattened pointer to the root user) as of write time, or the actor''s own name when the actor is a user. Historical by design (D59).';
 
 
 --
@@ -162,8 +176,16 @@ CREATE TABLE public.byoc_credentials (
     encrypted_client_id bytea NOT NULL,
     encrypted_client_secret bytea NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL
 );
+
+
+--
+-- Name: COLUMN byoc_credentials.metadata; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.byoc_credentials.metadata IS 'Opaque caller-supplied key/value claim (provenance tag). Echoed verbatim; cleared/rewritten whenever the encrypted client pair is replaced.';
 
 
 --
@@ -225,8 +247,23 @@ CREATE TABLE public.connections (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     keep boolean DEFAULT false NOT NULL,
+    reauth_required boolean DEFAULT false NOT NULL,
     account_picture text
 );
+
+
+--
+-- Name: COLUMN connections.keep; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.connections.keep IS 'When true, this connection is never auto-deleted by service deletion, even when no service references it.';
+
+
+--
+-- Name: COLUMN connections.reauth_required; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.connections.reauth_required IS 'When true, the connection must be re-authorized before use (e.g. its pinned BYOC client was replaced). Cleared when fresh tokens are written.';
 
 
 --
@@ -260,6 +297,27 @@ CREATE TABLE public.download_tokens (
 --
 
 COMMENT ON TABLE public.download_tokens IS 'Capability tokens for deferred (out-of-band) byte delivery. Minted by POST /v1/actions/call with deliver:"url", redeemed by GET /v1/downloads/{token}.';
+
+
+--
+-- Name: COLUMN download_tokens.token_hash; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.download_tokens.token_hash IS 'sha256 of the raw token; the raw value exists only in the minted URL.';
+
+
+--
+-- Name: COLUMN download_tokens.request; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.download_tokens.request IS 'Replayable upstream request {method,url,headers,body}. Names secrets rather than carrying them; inline credential headers are rejected at mint time.';
+
+
+--
+-- Name: COLUMN download_tokens.credential_ref; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.download_tokens.credential_ref IS 'How to re-resolve the upstream credential at fetch time. Never the credential itself.';
 
 
 --
@@ -399,6 +457,41 @@ CREATE TABLE public.executions (
 
 
 --
+-- Name: COLUMN executions.tags; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.executions.tags IS 'Copied verbatim from the originating approval at insert time — an execution can never disagree with what its approver saw.';
+
+
+--
+-- Name: COLUMN executions.request; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.executions.request IS 'Credential-free stored call payload, same shape as approvals.replay_payload. NOT NULL marks this row as worker-run (async).';
+
+
+--
+-- Name: COLUMN executions.lease_expires_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.executions.lease_expires_at IS 'While status=executing, the instant after which the claiming worker is presumed dead and the row may be reclaimed. Renewed by heartbeat.';
+
+
+--
+-- Name: COLUMN executions.attempts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.executions.attempts IS 'Attempts that ended by losing their lease. Incremented only by the reclaim sweep, never by the claim.';
+
+
+--
+-- Name: COLUMN executions.cancel_requested; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.executions.cancel_requested IS 'Cooperative cancel. Stops Overslash waiting on the upstream; does not cancel the upstream operation itself.';
+
+
+--
 -- Name: group_grants; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -420,7 +513,7 @@ CREATE TABLE public.group_grants (
 -- Name: COLUMN group_grants.auto_approve_reads; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.group_grants.auto_approve_reads IS 'DEPRECATED - derived mirror of (auto_approve_level <> ''none''). Read auto_approve_level instead; this column is dropped once the API alias is removed.';
+COMMENT ON COLUMN public.group_grants.auto_approve_reads IS 'DEPRECATED — derived mirror of (auto_approve_level <> ''none''). Read auto_approve_level instead; this column is dropped once the API alias is removed.';
 
 
 --
@@ -487,6 +580,21 @@ CREATE TABLE public.identity_groups (
     identity_id uuid NOT NULL,
     group_id uuid NOT NULL,
     assigned_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: magic_link_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.magic_link_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    token_hash bytea NOT NULL,
+    email text NOT NULL,
+    next_path text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    redeemed_at timestamp with time zone
 );
 
 
@@ -580,6 +688,34 @@ CREATE TABLE public.mcp_upstream_tokens (
 
 
 --
+-- Name: media_descriptors; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.media_descriptors (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    service_instance_id uuid,
+    service_key text,
+    media_path text NOT NULL,
+    sha256 text,
+    mime text,
+    size_bytes bigint,
+    filename text,
+    source text NOT NULL,
+    first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT media_descriptors_source_check CHECK ((source = ANY (ARRAY['download'::text, 'upload'::text])))
+);
+
+
+--
+-- Name: TABLE media_descriptors; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.media_descriptors IS 'What the gateway recorded about bytes it moved, so an approval that references them can describe them instead of showing a bare content hash. Best-effort: bytes that never passed through the gateway are simply absent.';
+
+
+--
 -- Name: oauth_connection_flows; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -600,7 +736,8 @@ CREATE TABLE public.oauth_connection_flows (
     created_user_agent text,
     return_url text,
     upgrade_connection_id uuid,
-    service_instance_id uuid
+    service_instance_id uuid,
+    pin_service_instance_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL
 );
 
 
@@ -641,6 +778,13 @@ CREATE TABLE public.oauth_mcp_clients (
     last_session_id uuid,
     org_id uuid
 );
+
+
+--
+-- Name: COLUMN oauth_mcp_clients.org_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.oauth_mcp_clients.org_id IS 'Org this DCR client is locked to (stamped from the subdomain at registration). NULL = root/multi-org: usable on any subdomain, absent from any org''s admin MCP-Clients list.';
 
 
 --
@@ -736,7 +880,6 @@ CREATE TABLE public.orgs (
     subagent_idle_timeout_secs integer DEFAULT 14400 NOT NULL,
     subagent_archive_retention_days integer DEFAULT 30 NOT NULL,
     approval_auto_bubble_secs integer DEFAULT 300 NOT NULL,
-    allow_user_templates boolean DEFAULT false NOT NULL,
     global_templates_enabled boolean DEFAULT true NOT NULL,
     allow_unsigned_secret_provide boolean DEFAULT true NOT NULL,
     is_personal boolean DEFAULT false NOT NULL,
@@ -746,14 +889,47 @@ CREATE TABLE public.orgs (
     creator_user_id uuid,
     audit_response_body_mode text DEFAULT 'off'::text NOT NULL,
     headless boolean DEFAULT false NOT NULL,
+    require_invite_admission boolean DEFAULT true NOT NULL,
+    managed_signin_allowed_domains text[] DEFAULT '{}'::text[] NOT NULL,
+    trial_ends_at timestamp with time zone,
     allow_services_outside_catalog boolean DEFAULT false NOT NULL,
+    user_template_policy text DEFAULT 'none'::text NOT NULL,
     call_timeout_ms integer,
     max_call_timeout_ms integer,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_audit_response_body_mode_check CHECK ((audit_response_body_mode = ANY (ARRAY['off'::text, 'errors_only'::text, 'all'::text]))),
     CONSTRAINT orgs_call_timeout_bounds CHECK ((((call_timeout_ms IS NULL) OR ((call_timeout_ms >= 1000) AND (call_timeout_ms <= 600000))) AND ((max_call_timeout_ms IS NULL) OR ((max_call_timeout_ms >= 1000) AND (max_call_timeout_ms <= 600000))) AND ((call_timeout_ms IS NULL) OR (max_call_timeout_ms IS NULL) OR (call_timeout_ms <= max_call_timeout_ms)))),
-    CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))
+    CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text, 'trial'::text]))),
+    CONSTRAINT orgs_user_template_policy_check CHECK ((user_template_policy = ANY (ARRAY['none'::text, 'restrictive'::text, 'full'::text])))
 );
+
+
+--
+-- Name: COLUMN orgs.allow_services_outside_catalog; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.orgs.allow_services_outside_catalog IS 'When false (default), non-admins cannot instantiate global templates outside the curated catalog.';
+
+
+--
+-- Name: COLUMN orgs.user_template_policy; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.orgs.user_template_policy IS 'Whether org members may create user-namespace layers: none | restrictive (reserved) | full.';
+
+
+--
+-- Name: COLUMN orgs.call_timeout_ms; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.orgs.call_timeout_ms IS 'Default upstream timeout in ms for action calls in this org. NULL inherits the deployment default (CALL_TIMEOUT_MS). Overridden per template action and per call.';
+
+
+--
+-- Name: COLUMN orgs.max_call_timeout_ms; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.orgs.max_call_timeout_ms IS 'Ceiling on any resolved call timeout in this org, in ms. NULL inherits CALL_TIMEOUT_MAX_MS. A caller asking for more is rejected; a template or org default above it is clamped.';
 
 
 --
@@ -910,6 +1086,7 @@ CREATE TABLE public.service_instances (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     is_system boolean DEFAULT false NOT NULL,
     url text,
+    use_default_connection boolean DEFAULT true NOT NULL,
     credentials jsonb DEFAULT '{}'::jsonb NOT NULL,
     discovered_tools jsonb,
     discovered_at timestamp with time zone,
@@ -917,6 +1094,27 @@ CREATE TABLE public.service_instances (
     CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text]))),
     CONSTRAINT service_instances_template_source_check CHECK ((template_source = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
 );
+
+
+--
+-- Name: COLUMN service_instances.credentials; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.service_instances.credentials IS 'Per-scheme secret bindings: {securityScheme key -> secret NAME in the org vault}. Names only, never values. Empty map falls back to legacy secret_name for the sole instance-source scheme.';
+
+
+--
+-- Name: COLUMN service_instances.discovered_tools; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.service_instances.discovered_tools IS 'MCP tools/list result for this instance (array of {name, description, input_schema, output_schema}). NULL = never resynced. Overlaid on the template''s authored tools at read time.';
+
+
+--
+-- Name: COLUMN service_instances.config; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.service_instances.config IS 'Per-instance non-secret param values: {param name -> scalar}. Only params the template marks x-overslash-instance-config may appear. Never secrets — those are vault references in credentials.';
 
 
 --
@@ -934,10 +1132,88 @@ CREATE TABLE public.service_templates (
     hosts text[] DEFAULT '{}'::text[] NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    openapi jsonb NOT NULL,
+    openapi jsonb,
     status text DEFAULT 'active'::text NOT NULL,
+    extends text,
+    delta jsonb,
+    CONSTRAINT service_templates_layer_shape CHECK ((((extends IS NULL) AND (delta IS NULL) AND (openapi IS NOT NULL)) OR ((extends IS NOT NULL) AND (delta IS NOT NULL)))),
     CONSTRAINT service_templates_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text])))
 );
+
+
+--
+-- Name: COLUMN service_templates.extends; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.service_templates.extends IS 'Base template key for a derived layer (delta over a live base). NULL = standalone full-doc layer.';
+
+
+--
+-- Name: COLUMN service_templates.delta; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.service_templates.delta IS 'Derived-layer content: masks (allowlist/denylist/action_patch/hidden/relabel) + extensions (actions/hosts). NULL = standalone.';
+
+
+--
+-- Name: upload_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.upload_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    token_hash bytea NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    service_instance_id uuid,
+    service_key text,
+    action_key text,
+    request jsonb NOT NULL,
+    credential_ref jsonb DEFAULT '{}'::jsonb NOT NULL,
+    declared_sha256 text,
+    declared_size_bytes bigint,
+    declared_mime text,
+    declared_filename text,
+    max_bytes bigint NOT NULL,
+    filename_param text,
+    result_spec jsonb,
+    stored_media_path text,
+    stored_sha256 text,
+    stored_size_bytes bigint,
+    stored_mime text,
+    stored_filename text,
+    completed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    consumed_at timestamp with time zone
+);
+
+
+--
+-- Name: TABLE upload_tokens; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.upload_tokens IS 'Single-use capability tokens for pushing bytes into a service. Minted by an action carrying x-overslash-upload, redeemed by POST /v1/uploads/{token}.';
+
+
+--
+-- Name: COLUMN upload_tokens.token_hash; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.upload_tokens.token_hash IS 'sha256 of the raw token; the raw value exists only in the minted URL.';
+
+
+--
+-- Name: COLUMN upload_tokens.declared_sha256; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.upload_tokens.declared_sha256 IS 'Content hash the caller declared at mint time. Verified against the stream during redemption; a mismatch refuses the descriptor so no later call can reference the bytes.';
+
+
+--
+-- Name: COLUMN upload_tokens.consumed_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.upload_tokens.consumed_at IS 'Set by the claim. A row with consumed_at but no completed_at is a push that started and did not land.';
 
 
 --
@@ -1211,6 +1487,22 @@ ALTER TABLE ONLY public.identity_groups
 
 
 --
+-- Name: magic_link_tokens magic_link_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.magic_link_tokens
+    ADD CONSTRAINT magic_link_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: magic_link_tokens magic_link_tokens_token_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.magic_link_tokens
+    ADD CONSTRAINT magic_link_tokens_token_hash_key UNIQUE (token_hash);
+
+
+--
 -- Name: mcp_client_agent_bindings mcp_client_agent_bindings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1264,6 +1556,14 @@ ALTER TABLE ONLY public.mcp_upstream_flows
 
 ALTER TABLE ONLY public.mcp_upstream_tokens
     ADD CONSTRAINT mcp_upstream_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: media_descriptors media_descriptors_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.media_descriptors
+    ADD CONSTRAINT media_descriptors_pkey PRIMARY KEY (id);
 
 
 --
@@ -1328,7 +1628,6 @@ ALTER TABLE ONLY public.org_idp_configs
 
 ALTER TABLE ONLY public.org_idp_configs
     ADD CONSTRAINT org_idp_configs_pkey PRIMARY KEY (id);
-
 
 
 --
@@ -1460,6 +1759,22 @@ ALTER TABLE ONLY public.service_templates
 
 
 --
+-- Name: upload_tokens upload_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upload_tokens
+    ADD CONSTRAINT upload_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: upload_tokens upload_tokens_token_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upload_tokens
+    ADD CONSTRAINT upload_tokens_token_hash_key UNIQUE (token_hash);
+
+
+--
 -- Name: user_org_memberships user_org_memberships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1514,13 +1829,6 @@ CREATE INDEX billing_email_log_user_id ON public.billing_email_log USING btree (
 
 
 --
--- Name: email_unsubscribe_tokens_user_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX email_unsubscribe_tokens_user_id ON public.email_unsubscribe_tokens USING btree (user_id);
-
-
---
 -- Name: call_results_expiry_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1532,6 +1840,13 @@ CREATE INDEX call_results_expiry_idx ON public.call_results USING btree (expires
 --
 
 CREATE INDEX download_tokens_expiry_idx ON public.download_tokens USING btree (expires_at);
+
+
+--
+-- Name: email_unsubscribe_tokens_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX email_unsubscribe_tokens_user_id ON public.email_unsubscribe_tokens USING btree (user_id);
 
 
 --
@@ -1794,6 +2109,13 @@ CREATE INDEX idx_identity_groups_identity ON public.identity_groups USING btree 
 
 
 --
+-- Name: idx_magic_link_tokens_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_magic_link_tokens_expires ON public.magic_link_tokens USING btree (expires_at);
+
+
+--
 -- Name: idx_mcp_client_agent_bindings_agent; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2053,6 +2375,13 @@ CREATE UNIQUE INDEX idx_service_instances_user_name ON public.service_instances 
 
 
 --
+-- Name: idx_service_templates_extends; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_service_templates_extends ON public.service_templates USING btree (org_id, extends) WHERE (extends IS NOT NULL);
+
+
+--
 -- Name: idx_service_templates_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2109,6 +2438,13 @@ CREATE INDEX idx_webhook_deliveries_retry ON public.webhook_deliveries USING btr
 
 
 --
+-- Name: media_descriptors_ref_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX media_descriptors_ref_idx ON public.media_descriptors USING btree (org_id, service_instance_id, media_path) NULLS NOT DISTINCT;
+
+
+--
 -- Name: org_idp_configs_one_default_per_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2141,6 +2477,13 @@ CREATE UNIQUE INDEX service_action_embeddings_org_unique ON public.service_actio
 --
 
 CREATE UNIQUE INDEX service_action_embeddings_user_unique ON public.service_action_embeddings USING btree (org_id, owner_identity_id, template_key, action_key) WHERE (tier = 'user'::text);
+
+
+--
+-- Name: upload_tokens_expiry_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX upload_tokens_expiry_idx ON public.upload_tokens USING btree (expires_at);
 
 
 --
@@ -2396,11 +2739,27 @@ ALTER TABLE ONLY public.executions
 
 
 --
+-- Name: executions executions_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.executions
+    ADD CONSTRAINT executions_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
 -- Name: executions executions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.executions
     ADD CONSTRAINT executions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: executions executions_service_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.executions
+    ADD CONSTRAINT executions_service_instance_id_fkey FOREIGN KEY (service_instance_id) REFERENCES public.service_instances(id) ON DELETE SET NULL;
 
 
 --
@@ -2585,6 +2944,22 @@ ALTER TABLE ONLY public.mcp_upstream_flows
 
 ALTER TABLE ONLY public.mcp_upstream_tokens
     ADD CONSTRAINT mcp_upstream_tokens_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES public.mcp_upstream_connections(id) ON DELETE CASCADE;
+
+
+--
+-- Name: media_descriptors media_descriptors_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.media_descriptors
+    ADD CONSTRAINT media_descriptors_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: media_descriptors media_descriptors_service_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.media_descriptors
+    ADD CONSTRAINT media_descriptors_service_instance_id_fkey FOREIGN KEY (service_instance_id) REFERENCES public.service_instances(id) ON DELETE CASCADE;
 
 
 --
@@ -2852,6 +3227,30 @@ ALTER TABLE ONLY public.service_templates
 
 
 --
+-- Name: upload_tokens upload_tokens_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upload_tokens
+    ADD CONSTRAINT upload_tokens_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: upload_tokens upload_tokens_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upload_tokens
+    ADD CONSTRAINT upload_tokens_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: upload_tokens upload_tokens_service_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upload_tokens
+    ADD CONSTRAINT upload_tokens_service_instance_id_fkey FOREIGN KEY (service_instance_id) REFERENCES public.service_instances(id) ON DELETE CASCADE;
+
+
+--
 -- Name: user_org_memberships user_org_memberships_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2903,5 +3302,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Wa9cVbD20aiSD1mg8hdX4ucJSCAI1Zo8GH1ywdS2KyvkPycAg0afifQTGjdzEay
+\unrestrict ITpRAwCBQB1Eujdumlb2lXtfTcabr3ewsacbHizs9jNwJBpKN4XyV8oROCASLy3
 

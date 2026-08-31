@@ -1,0 +1,162 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, org_id, service_instance_id, service_key, media_path,\n                sha256, mime, size_bytes, filename, source, first_seen_at, last_seen_at\n           FROM media_descriptors\n          WHERE org_id = $1\n            AND service_instance_id IS NOT DISTINCT FROM $2\n            AND media_path = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "service_instance_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "service_instance_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "service_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "service_key"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "media_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "media_path"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "mime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "mime"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "filename"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "first_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "first_seen_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "media_descriptors",
+            "name": "last_seen_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "59036059e060c78c025778ff57e335b4e7a41ca9fc4ebadb01324b2346026d8e"
+}

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
-use crate::types::{ActionParam, ParamLocation, ParamResolver, RequestBodySpec};
+use crate::types::{ActionParam, ParamLocation, ParamResolver, RequestBodySpec, ResolveSource};
 
 use super::super::ext::{self, Ext, Pos};
 use super::{parse_aliases, parse_instance_config, parse_sql_policy};
@@ -229,13 +229,48 @@ pub(super) fn parse_resolver(
         },
     };
 
+    // `source` names a target the gateway answers itself. Unknown values are
+    // reported rather than dropped: a typo'd source would otherwise leave a
+    // resolver with no target at all, which reads downstream as "the author
+    // forgot one" instead of "the author misspelled one".
+    let source = match obj.get("source").and_then(Value::as_str) {
+        None => None,
+        Some("media") => Some(ResolveSource::Media),
+        Some(other) => {
+            issues.push(ValidationIssue::new(
+                "invalid_resolver_source",
+                format!("`source` must be `media` (got {other:?})"),
+                format!("{base}.x-overslash-resolve.source"),
+            ));
+            None
+        }
+    };
+
+    // `scope` canonicalizes the *permission key*, and a ledger-resolved value
+    // describes bytes rather than naming a principal. Canonicalizing on it
+    // would collapse every file sharing a filename onto one grant — a silent
+    // authorization widening, so the combination is refused rather than
+    // half-honored.
+    let scope = text("scope");
+    if source.is_some() && scope.is_some() {
+        issues.push(ValidationIssue::new(
+            "invalid_resolver_source",
+            "`scope` cannot be combined with a `source` resolver: scope renames the \
+             permission a call is checked against, and a ledger lookup describes bytes \
+             rather than identifying a principal to scope to",
+            format!("{base}.x-overslash-resolve.scope"),
+        ));
+        return None;
+    }
+
     Some(ParamResolver {
+        source,
         get: text("get"),
         tool: text("tool"),
         args,
         pick: text("pick"),
         display: text("display"),
-        scope: text("scope"),
+        scope,
         cache_ttl,
     })
 }

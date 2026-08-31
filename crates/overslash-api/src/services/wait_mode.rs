@@ -66,6 +66,11 @@ pub struct Blockers {
     /// `response_type: "binary"` — the bytes would be mangled by
     /// `String::from_utf8_lossy` on their way into the execution row.
     pub binary_response: bool,
+    /// `x-overslash-upload` — the action mints a capability rather than
+    /// calling anything, and the token would start expiring while the call sat
+    /// in the queue. Same reasoning as `deliver_url`, which mints the outbound
+    /// half of the same mechanism.
+    pub gateway_upload: bool,
     /// `ASYNC_EXECUTION_ENABLED` is off, so nothing drains the queue. A
     /// caller-named mode is refused for this at the top of the handler; the
     /// template rung just never gets adopted.
@@ -93,6 +98,8 @@ impl Blockers {
             Some("platform_runtime")
         } else if self.binary_response {
             Some("binary_response")
+        } else if self.gateway_upload {
+            Some("gateway_upload")
         } else {
             None
         }
@@ -232,6 +239,7 @@ mod tests {
         return_url: false,
         platform_runtime: false,
         binary_response: false,
+        gateway_upload: false,
         async_disabled: false,
     };
 

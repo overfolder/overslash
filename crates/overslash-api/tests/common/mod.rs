@@ -663,6 +663,8 @@ where
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -755,6 +757,7 @@ where
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::icons::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
@@ -879,6 +882,8 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -962,6 +967,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::executions::router())
@@ -1040,6 +1046,8 @@ pub async fn start_api_with_auth_providers(
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -1126,6 +1134,7 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::executions::router())
@@ -1626,6 +1635,8 @@ where
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -1710,6 +1721,7 @@ where
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::executions::router())
@@ -1794,6 +1806,8 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -1880,6 +1894,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::search::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::auth::router())
@@ -1933,6 +1948,8 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -2016,6 +2033,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::executions::router())
@@ -2264,6 +2282,8 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),

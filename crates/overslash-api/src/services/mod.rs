@@ -46,6 +46,7 @@ pub mod platform_secrets;
 pub mod platform_services;
 pub mod platform_templates;
 pub mod principals;
+pub mod proxy_upload;
 pub mod rate_limit;
 pub mod resolve_cache;
 pub mod response_filter;

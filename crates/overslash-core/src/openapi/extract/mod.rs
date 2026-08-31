@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 use crate::template_validation::ValidationIssue;
 use crate::types::{
     DisclosureField, DownloadAuth, DownloadSpec, ExecutionMode, NextSpec, NextStyle, PageSize,
-    PaginationSpec, ScopeParams,
+    PaginationSpec, ScopeParams, UploadMethod, UploadResultSpec, UploadSpec,
 };
 
 use super::ext::{self, Ext, Pos};
@@ -226,7 +226,135 @@ fn parse_download(
         mime: pick("mime"),
         size: pick("size"),
         filename: pick("filename"),
+        sha256: pick("sha256"),
         auth,
+    })
+}
+
+/// Parse `x-overslash-upload` — the declaration that an action mints a
+/// capability to push bytes at a route on the MCP origin, rather than calling a
+/// tool at all.
+///
+/// `path` and `result.media_path` are mandatory, for the same reason
+/// `parse_download` insists on `url`: an upload with nowhere to put the bytes,
+/// or one that cannot hand back the reference the send tools take, is not a
+/// weaker upload but nothing at all. Everything else is optional metadata,
+/// dropped individually when blank so one typo doesn't take the block down.
+fn parse_upload(
+    v: Option<&Value>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<UploadSpec> {
+    let v = v?;
+    let p = format!("{base}.x-overslash-upload");
+    let Some(obj) = v.as_object() else {
+        issues.push(ValidationIssue::new(
+            "upload_malformed",
+            "x-overslash-upload must be an object with `path` and optional \
+             {method, filename_param, auth, max_bytes, result}",
+            p,
+        ));
+        return None;
+    };
+    let path = match obj.get("path").and_then(Value::as_str) {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => {
+            issues.push(ValidationIssue::new(
+                "upload_malformed",
+                "`path` must be a non-empty path or same-origin URL",
+                format!("{p}.path"),
+            ));
+            return None;
+        }
+    };
+    let method = match obj.get("method").and_then(Value::as_str) {
+        None => UploadMethod::default(),
+        Some(m) if m.eq_ignore_ascii_case("post") => UploadMethod::Post,
+        Some(m) if m.eq_ignore_ascii_case("put") => UploadMethod::Put,
+        Some(other) => {
+            issues.push(ValidationIssue::new(
+                "upload_malformed",
+                format!("`method` must be `POST` or `PUT` (got {other:?})"),
+                format!("{p}.method"),
+            ));
+            return None;
+        }
+    };
+    let auth = match obj.get("auth").and_then(Value::as_str) {
+        None | Some("inherit") => DownloadAuth::Inherit,
+        Some("none") => DownloadAuth::None,
+        Some(other) => {
+            issues.push(ValidationIssue::new(
+                "upload_malformed",
+                format!("`auth` must be `inherit` or `none` (got {other:?})"),
+                format!("{p}.auth"),
+            ));
+            return None;
+        }
+    };
+    // A non-positive or non-integer ceiling is refused rather than clamped: it
+    // reads as a deliberate limit, and silently substituting the deployment
+    // default would be the opposite of what the author wrote.
+    let max_bytes = match obj.get("max_bytes") {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_u64().filter(|n| *n > 0) {
+            Some(n) => Some(n),
+            None => {
+                issues.push(ValidationIssue::new(
+                    "upload_malformed",
+                    "`max_bytes` must be a positive integer",
+                    format!("{p}.max_bytes"),
+                ));
+                return None;
+            }
+        },
+    };
+    let result = match obj.get("result") {
+        None | Some(Value::Null) => None,
+        Some(r) => {
+            let Some(robj) = r.as_object() else {
+                issues.push(ValidationIssue::new(
+                    "upload_malformed",
+                    "`result` must be an object of jq expressions",
+                    format!("{p}.result"),
+                ));
+                return None;
+            };
+            let rpick = |key: &str| {
+                robj.get(key)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string)
+            };
+            let Some(media_path) = rpick("media_path") else {
+                issues.push(ValidationIssue::new(
+                    "upload_malformed",
+                    "`result.media_path` must be a non-empty jq expression string",
+                    format!("{p}.result.media_path"),
+                ));
+                return None;
+            };
+            Some(UploadResultSpec {
+                media_path,
+                sha256: rpick("sha256"),
+                mime: rpick("mime"),
+                size: rpick("size"),
+                filename: rpick("filename"),
+            })
+        }
+    };
+    let filename_param = obj
+        .get("filename_param")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string);
+    Some(UploadSpec {
+        path,
+        method,
+        filename_param,
+        auth,
+        max_bytes,
+        result,
     })
 }
 

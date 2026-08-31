@@ -143,6 +143,22 @@ pub struct Config {
     /// long enough that an agent can hand the URL to a shell and let a large
     /// file finish transferring, including a retry or two.
     pub download_token_ttl_secs: i64,
+    /// Lifetime of an upload capability token.
+    ///
+    /// Separate from the download TTL because it is bounding a different
+    /// thing. A download URL leaks read access to bytes that already exist; an
+    /// upload URL is a window in which someone can push bytes the gateway
+    /// already authorized, so the cost of a long window is that the *approved*
+    /// description and the *actual* payload drift further apart in time.
+    pub upload_token_ttl_secs: i64,
+    /// Hard ceiling on the bytes one upload redemption may push, whatever a
+    /// template declares.
+    ///
+    /// A template's own `max_bytes` can only lower this. The body is metered
+    /// chunk by chunk and the transfer is cut the moment it goes over, so this
+    /// bounds work actually done rather than work merely promised — a caller
+    /// that lies in `Content-Length` gets the same answer, just later.
+    pub upload_max_bytes: u64,
     /// Ceiling on the plaintext size of a stored call result.
     ///
     /// A truncated compact render stores the full `ActionResult` so the same
@@ -925,6 +941,8 @@ pub(crate) mod tests {
             audit_response_body_max_bytes: 0,
             filter_timeout_ms: 0,
             download_token_ttl_secs: 900,
+            upload_token_ttl_secs: 900,
+            upload_max_bytes: 100 * 1024 * 1024,
             call_result_max_bytes: 1024 * 1024,
             dashboard_url: "/".into(),
             dashboard_origin: "*".into(),

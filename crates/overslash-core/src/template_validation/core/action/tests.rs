@@ -563,6 +563,7 @@ fn platform_namespace_action_allowed() {
             disabled: false,
             request_body: None,
             download: None,
+            upload: None,
         },
     );
     let r = run(&d);
