@@ -44,7 +44,7 @@ async-trait = { workspace = true }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
 rand = { workspace = true }
-argon2 = "0.5"
+argon2 = "0.6"
 hmac = "0.13"
 sha2 = "0.11"
 hex = "0.4"
@@ -57,9 +57,9 @@ jsonwebtoken = { workspace = true }
 futures-util = "0.3"
 redis = { workspace = true }
 dashmap = { workspace = true }
-jaq-core = "=3.1.0"
-jaq-std = "=3.0.2"
-jaq-json = { version = "=2.0.2", features = ["serde"] }
+jaq-core = "=3.1.1"
+jaq-std = "=3.0.3"
+jaq-json = { version = "=2.0.3", features = ["serde"] }
 
 [dev-dependencies]
 overslash-fakes = { path = "../overslash-fakes" }
