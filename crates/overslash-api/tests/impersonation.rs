@@ -1152,3 +1152,126 @@ async fn name_header_rejects_an_agent_target() {
     .await;
     assert_eq!(status, 400);
 }
+
+// ── Activity tracking ────────────────────────────────────────────────────────
+
+/// Create a `sub_agent` under `parent_id` and return its id.
+async fn create_subagent(
+    base: &str,
+    client: &reqwest::Client,
+    admin_key: &str,
+    parent_id: Uuid,
+    name: &str,
+) -> Uuid {
+    let sub: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"name": name, "kind": "sub_agent", "parent_id": parent_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    sub["id"].as_str().unwrap().parse().unwrap()
+}
+
+/// The touch is fire-and-forget (`tokio::spawn`), so poll for it rather than
+/// racing it. Returns the observed `last_active_at`.
+async fn await_last_active_after(
+    pool: &PgPool,
+    id: Uuid,
+    floor: time::OffsetDateTime,
+) -> time::OffsetDateTime {
+    for _ in 0..50 {
+        let seen: time::OffsetDateTime =
+            sqlx::query_scalar("SELECT last_active_at FROM identities WHERE id = $1")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        if seen > floor {
+            return seen;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("last_active_at never advanced past {floor} for {id}");
+}
+
+#[tokio::test]
+async fn impersonation_touches_sub_agent_target_last_active() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, target_agent_id) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+    let sub_id = create_subagent(&base, &client, &admin_key, target_agent_id, "worker").await;
+
+    // Backdate activity so any advance is unambiguously ours.
+    let floor: time::OffsetDateTime = sqlx::query_scalar(
+        "UPDATE identities SET last_active_at = now() - interval '2 hours'
+         WHERE id = $1 RETURNING last_active_at",
+    )
+    .bind(sub_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", sub_id.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "impersonated call should succeed"
+    );
+
+    // Impersonation is the only route that reaches this identity — nobody
+    // holds a key for it — so if the header does not stamp it, nothing does.
+    await_last_active_after(&pool, sub_id, floor).await;
+}
+
+#[tokio::test]
+async fn impersonated_sub_agent_survives_the_idle_sweep() {
+    let (base, client, pool, org_id, admin_key, sa_id, _, target_agent_id) = setup().await;
+    let imp_key = create_impersonation_key(&base, &client, &admin_key, org_id, sa_id).await;
+    let sub_id = create_subagent(&base, &client, &admin_key, target_agent_id, "busy").await;
+
+    sqlx::query("UPDATE orgs SET subagent_idle_timeout_secs = 60 WHERE id = $1")
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let floor: time::OffsetDateTime = sqlx::query_scalar(
+        "UPDATE identities SET last_active_at = now() - interval '2 hours'
+         WHERE id = $1 RETURNING last_active_at",
+    )
+    .bind(sub_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {imp_key}"))
+        .header("X-Overslash-As", sub_id.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    await_last_active_after(&pool, sub_id, floor).await;
+
+    overslash_db::repos::identity::archive_idle_subagents(&pool)
+        .await
+        .unwrap();
+
+    let row = overslash_db::repos::identity::get_by_id(&pool, org_id, sub_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        row.archived_at.is_none(),
+        "a sub-agent used this second must not be reaped as idle (reason: {:?})",
+        row.archived_reason
+    );
+}
