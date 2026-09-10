@@ -1518,6 +1518,78 @@ async fn verb_shape_rejects_a_template_name() {
     assert_eq!(body["matched_template"], "gmail", "{body}");
 }
 
+/// The other half of "say what to do about it": an instance that exists but is
+/// missing config. `create_service` validates `url` and `secret_name` up front,
+/// so this only happens to rows that predate those checks — but when it does,
+/// the agent's only lever is the `overslash` meta-service, and the message used
+/// to say "set `secret_name` on the instance" without naming the call.
+#[tokio::test]
+async fn missing_instance_config_names_the_update_service_call() {
+    let (base, client, fixtures, pool) = bootstrap_full().await;
+
+    // whatsapp is MCP-runtime and defers both `url` and `secret_name` to the
+    // instance, so create with both, then strip one back out to reproduce a
+    // legacy row.
+    let created: Value = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&fixtures.admin_key).0, auth(&fixtures.admin_key).1)
+        .json(&json!({
+            "template_key": "whatsapp",
+            "name": "whatsapp_legacy",
+            "url": "https://whatsapp.example.com/mcp",
+            "secret_name": "whatsapp_token",
+            "user_level": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let instance_id: Uuid = created["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("create failed: {created}"))
+        .parse()
+        .unwrap();
+
+    sqlx::query!(
+        "UPDATE service_instances SET secret_name = NULL WHERE id = $1",
+        instance_id
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&fixtures.admin_key).0, auth(&fixtures.admin_key).1)
+        .json(&json!({
+            "service": "whatsapp_legacy",
+            "action": "pairing_start",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = body["error"].as_str().unwrap_or_else(|| panic!("{body}"));
+    assert!(
+        message.contains("action=\"update_service\""),
+        "must name the meta-service call that fixes it: {message}"
+    );
+    assert!(
+        message.contains(&instance_id.to_string()),
+        "the call must carry the instance id so it is copy-pastable: {message}"
+    );
+    assert!(
+        message.contains("secret_name"),
+        "the call must name the field that is missing: {message}"
+    );
+}
+
 /// `overslash` and `http` are named identically to their templates, which
 /// makes them the obvious way to break the guard. They don't break it:
 /// `bootstrap_org` seeds every org a system `service_instances` row for each,

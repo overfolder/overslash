@@ -13,6 +13,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{AppState, error::AppError, extractors::AuthContext, services::platform_connections};
 use overslash_core::types::{ActionRequest, ParamLocation, ResolvedActionRequest, Runtime};
 
+use super::errors::update_service_call;
 use super::*;
 use super::{
     auth_envelopes::*, auth_resolve::*, auth_scopes::*, resolve_encode::*, service_resolve::*,
@@ -490,8 +491,9 @@ pub(super) async fn resolve_request(
         let base = effective_base(Some(&instance), &svc).ok_or_else(|| {
             AppError::BadRequest(format!(
                 "service '{service_key}' has no endpoint: the template declares no host and \
-                 this instance sets no `url`. Set one on the instance, or org-wide on a \
-                 layer's `instance_defaults.url`."
+                 this instance sets no `url`. Set one with {}, or org-wide on a layer's \
+                 `instance_defaults.url`.",
+                update_service_call(instance.id, "url")
             ))
         })?;
         let base_url = format!("{base}{path}");

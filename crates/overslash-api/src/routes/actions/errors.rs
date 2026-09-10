@@ -112,8 +112,9 @@ pub(super) async fn mcp_missing_config_error(
         status: StatusCode::BAD_REQUEST,
         message: format!(
             "instance '{}' is missing `{missing_field}` configuration. \
-             Set `{missing_field}` on the instance, or pick a different instance.{extra}",
-            inst.name
+             Set it with {}, or pick a different instance.{extra}",
+            inst.name,
+            update_service_call(inst.id, missing_field)
         ),
         matched_template: Some(inst.template_key.clone()),
         available_instances: siblings,
@@ -132,6 +133,17 @@ pub(super) fn create_service_call(template_key: &str) -> String {
     format!(
         "overslash_call(service=\"overslash\", action=\"create_service\", \
          params={{\"template_key\": \"{template_key}\", \"name\": \"my_{template_key}\"}})"
+    )
+}
+
+/// The literal call that reconfigures an existing instance. The `overslash`
+/// meta-service is the only lever an agent has here — the dashboard link in
+/// `hint_url` is for the human — so a message that says "set `url` on the
+/// instance" and stops leaves the agent with nothing to try.
+pub(super) fn update_service_call(instance_id: Uuid, field: &str) -> String {
+    format!(
+        "overslash_call(service=\"overslash\", action=\"update_service\", \
+         params={{\"id\": \"{instance_id}\", \"{field}\": \"<value>\"}})"
     )
 }
 
