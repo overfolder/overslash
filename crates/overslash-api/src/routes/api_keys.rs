@@ -198,15 +198,12 @@ pub(crate) fn generate_api_key()
     let raw_key = format!("osk_{encoded}");
     let key_prefix = raw_key[..12].to_string();
 
-    let salt =
-        argon2::password_hash::SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
-    let hash = argon2::PasswordHasher::hash_password(
-        &argon2::Argon2::default(),
-        raw_key.as_bytes(),
-        &salt,
-    )
-    .map_err(|e| crate::error::AppError::Internal(format!("hash error: {e}")))?
-    .to_string();
+    // argon2 0.6 generates the salt itself (16 random bytes, the PHC
+    // recommended length) — the caller no longer threads one in.
+    let hash =
+        argon2::PasswordHasher::hash_password(&argon2::Argon2::default(), raw_key.as_bytes())
+            .map_err(|e| crate::error::AppError::Internal(format!("hash error: {e}")))?
+            .to_string();
 
     Ok((raw_key, hash, key_prefix))
 }

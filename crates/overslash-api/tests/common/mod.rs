@@ -2151,13 +2151,9 @@ pub async fn seed_org_user_key(pool: &PgPool, opts: SeedOptions) -> (Uuid, Uuid,
     let raw_key = format!("osk_{suffix}");
     let prefix = raw_key[..12].to_string();
 
-    use argon2::{
-        Argon2,
-        password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-    };
-    let salt = SaltString::generate(&mut OsRng);
+    use argon2::{Argon2, PasswordHasher};
     let hash = Argon2::default()
-        .hash_password(raw_key.as_bytes(), &salt)
+        .hash_password(raw_key.as_bytes())
         .unwrap()
         .to_string();
 
