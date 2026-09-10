@@ -58,6 +58,16 @@ Overall: the protocol surface is in good shape. The blockers for submission are 
 
 `crates/overslash-api/src/routes/mcp.rs` declares four tools, all carrying `title` and the appropriate annotation hints (MCP 2025-06-18 §Tool annotations). Asserted by the `tools/list` integration test in `crates/overslash-api/tests/mcp_oauth.rs`.
 
+`overslash_search`'s `description` is caller-derived: the static half is a
+const, and `tools/list` appends the template keys the caller has an active,
+visible service instance for (`crates/overslash-api/src/routes/mcp/roster.rs`).
+The `initialize` `instructions` field carries the same sentence. Nothing else
+about the catalog varies by caller except `overslash_approve_self`, which is
+gated on the MCP binding's `self_approve_enabled` flag. We do not advertise
+`tools.listChanged` and emit no `notifications/tools/list_changed` — the roster
+is rebuilt per `tools/list`, so a client that re-lists is always current and one
+that caches at handshake is at worst one redundant search behind.
+
 | Tool | `title` | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
 |---|---|---|---|---|---|
 | `overslash_search` | "Search Overslash services" | ✅ true | — | true | false |

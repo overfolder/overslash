@@ -95,6 +95,7 @@ mod mcp_inbox;
 mod mcp_oauth;
 mod mcp_replay;
 mod mcp_require_risk;
+mod mcp_roster;
 mod mcp_typed_errors;
 mod metabase;
 mod multi_org;

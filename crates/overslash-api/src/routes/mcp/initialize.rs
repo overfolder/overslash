@@ -1,5 +1,6 @@
 //! `initialize` handshake and the `tools/list` catalog response.
 
+use super::roster;
 use super::*;
 
 pub(super) async fn initialize_response(
@@ -43,6 +44,21 @@ pub(super) async fn initialize_response(
         }
     }
 
+    // Same caller-derived roster the tool descriptions carry. Clients that
+    // surface `instructions` but not per-tool descriptions get the answer to
+    // "what can Overslash reach for me" once, at handshake.
+    let roster = roster::connected_template_keys(state, ext, auth).await;
+    let instructions = format!(
+        "Overslash MCP server. Use overslash_search to discover services, \
+         overslash_read to invoke read-class actions (the server rejects \
+         writes/deletes routed through it), overslash_call to invoke any \
+         action or resume a pending approval, and overslash_auth for identity \
+         introspection (whoami, service_status). Prefer overslash_read when \
+         the action only reads data — clients can skip the confirmation \
+         prompt.{}",
+        roster::roster_sentence(&roster).unwrap_or_default()
+    );
+
     let body = json!({
         "jsonrpc": "2.0",
         "id": req.id,
@@ -53,13 +69,7 @@ pub(super) async fn initialize_response(
                 "name": "overslash",
                 "version": build_info().version,
             },
-            "instructions": "Overslash MCP server. Use overslash_search to discover \
-        services, overslash_read to invoke read-class actions (the server \
-        rejects writes/deletes routed through it), overslash_call to invoke \
-        any action or resume a pending approval, and overslash_auth for \
-        identity introspection (whoami, service_status). Prefer overslash_read \
-        when the action only reads data — clients can skip the confirmation \
-        prompt.",
+            "instructions": instructions,
         }
     });
     (
@@ -69,6 +79,10 @@ pub(super) async fn initialize_response(
     )
         .into_response()
 }
+
+/// Static half of `overslash_search`'s description. The caller's connected
+/// service types are appended at request time — see `roster`.
+const SEARCH_DESCRIPTION: &str = "Discover Overslash service instances and actions available to the caller. Each result's `service` field is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the `template` key. Templates with multiple connected instances fan out into one row per instance. Pass `include_catalog: true` to also surface un-connected templates; those rows are marked `setup_required: true` and have no `service` field — set them up with `overslash_auth.create_service_from_template` before calling. Pass `exclude` to drop specific services from the response (e.g. when retrying after one already failed). An empty `query` lists every callable instance without actions (browse mode). A row with `paginated: true` returns one page at a time — its result will carry a `_pagination.next` naming the call for the page after it, so you never have to fetch a whole collection to read the start of one.";
 
 pub(super) async fn tools_list_response(
     state: &AppState,
@@ -98,6 +112,15 @@ pub(super) async fn tools_list_response(
         self_approve_visible = binding.self_approve_enabled;
     }
 
+    // Name the caller's connected service types in the search description so
+    // an agent knows what Overslash can reach without having to probe for it.
+    // Best-effort: an empty roster leaves the static description untouched.
+    let roster = roster::connected_template_keys(state, ext, auth).await;
+    let search_description = match roster::roster_sentence(&roster) {
+        Some(sentence) => format!("{SEARCH_DESCRIPTION}{sentence}"),
+        None => SEARCH_DESCRIPTION.to_string(),
+    };
+
     let approve_input_schema = json!({
         "type": "object",
         "properties": {
@@ -125,7 +148,7 @@ pub(super) async fn tools_list_response(
         json!({
             "name": "overslash_search",
             "title": "Search Overslash services",
-            "description": "Discover Overslash service instances and actions available to the caller. Each result's `service` field is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the `template` key. Templates with multiple connected instances fan out into one row per instance. Pass `include_catalog: true` to also surface un-connected templates; those rows are marked `setup_required: true` and have no `service` field — set them up with `overslash_auth.create_service_from_template` before calling. Pass `exclude` to drop specific services from the response (e.g. when retrying after one already failed). An empty `query` lists every callable instance without actions (browse mode). A row with `paginated: true` returns one page at a time — its result will carry a `_pagination.next` naming the call for the page after it, so you never have to fetch a whole collection to read the start of one.",
+            "description": search_description,
             "inputSchema": {
                 "type": "object",
                 "properties": {
