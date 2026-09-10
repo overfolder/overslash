@@ -626,7 +626,7 @@ async fn resync_mcp_service(
         acl.identity_id,
         ceiling_user_id,
         &instance.template_key,
-        Some(&instance),
+        &instance,
         &mcp,
         def.instance_defaults
             .as_ref()

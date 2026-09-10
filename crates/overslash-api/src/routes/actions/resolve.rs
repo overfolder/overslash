@@ -15,8 +15,7 @@ use overslash_core::types::{ActionRequest, ParamLocation, ResolvedActionRequest,
 
 use super::*;
 use super::{
-    auth_envelopes::*, auth_resolve::*, auth_scopes::*, errors::*, resolve_encode::*,
-    service_resolve::*,
+    auth_envelopes::*, auth_resolve::*, auth_scopes::*, resolve_encode::*, service_resolve::*,
 };
 
 pub(super) use super::resolve_metadata::resolve_action_metadata;
@@ -102,7 +101,7 @@ pub(super) async fn resolve_request(
         let (instance, svc) = if let Some(pre) = pre_resolved_mode_c {
             (pre.instance, pre.svc)
         } else {
-            resolve_service_for_verb_shape(
+            resolve_service_for_call(
                 state,
                 ext,
                 auth,
@@ -125,37 +124,24 @@ pub(super) async fn resolve_request(
 
         let (path, url) = resolve_verb_host_and_path(&svc, service_key, &req.url, &req.path)?;
 
-        let resolved_auth = if let Some(ref inst) = instance {
-            resolve_instance_auth(
-                state,
-                ext,
-                scope,
-                ceiling_user_id,
-                inst,
-                &svc,
-                &req.secrets,
-                return_url_hint,
-            )
-            .await?
-        } else {
-            resolve_service_auth(
-                state,
-                ext,
-                scope,
-                ceiling_user_id,
-                &svc,
-                &req.secrets,
-                return_url_hint,
-            )
-            .await?
-        };
+        let resolved_auth = resolve_instance_auth(
+            state,
+            ext,
+            scope,
+            ceiling_user_id,
+            &instance,
+            &svc,
+            &req.secrets,
+            return_url_hint,
+        )
+        .await?;
 
         if let Some(err) = gate_missing_credentials(
             state,
             ext,
             scope.org_id(),
             &svc,
-            instance.as_ref(),
+            Some(&instance),
             service_key,
             &resolved_auth,
         )
@@ -209,8 +195,8 @@ pub(super) async fn resolve_request(
                 canonical: HashMap::new(),
                 mcp_target: None,
                 platform_target: None,
-                instance_id: instance.as_ref().map(|i| i.id),
-                binding: BindingFacts::new(instance.as_ref(), &svc, resolved_auth.principal),
+                instance_id: Some(instance.id),
+                binding: BindingFacts::new(Some(&instance), &svc, resolved_auth.principal),
             },
         ));
     }
@@ -223,56 +209,18 @@ pub(super) async fn resolve_request(
         let (instance, mut svc) = if let Some(pre) = pre_resolved_mode_c {
             (pre.instance, pre.svc)
         } else {
-            let instance = resolve_instance_for_call(
+            resolve_service_for_call(
+                state,
+                ext,
+                auth,
                 scope,
-                auth.identity_id,
                 ceiling_user_id,
                 req.service_id,
                 service_key,
             )
-            .await?;
-
-            let svc = if let Some(ref inst) = instance {
-                // Instance exists — resolve its template; propagate errors (don't fall back
-                // to global registry, which could match on the wrong key)
-                crate::routes::templates::resolve_template_definition(
-                    state,
-                    ext,
-                    auth.org_id,
-                    auth.identity_id,
-                    &inst.template_key,
-                )
-                .await?
-            } else {
-                // No instance — try unified resolution, then fall back to global registry.
-                // When neither matches, surface a structured ServiceResolution
-                // error that names a few instances the agent could call
-                // instead, so the agent doesn't dead-end on "service not found".
-                let from_template = crate::routes::templates::resolve_template_definition(
-                    state,
-                    ext,
-                    auth.org_id,
-                    auth.identity_id,
-                    service_key,
-                )
-                .await
-                .ok();
-                match from_template.or_else(|| state.registry.get(service_key).cloned()) {
-                    Some(s) => s,
-                    None => {
-                        let available = caller_visible_instance_names(
-                            scope,
-                            auth.identity_id,
-                            Some(ceiling_user_id),
-                        )
-                        .await?;
-                        return Err(unknown_service_error(service_key, available));
-                    }
-                }
-            };
-            (instance, svc)
+            .await?
         };
-        overlay_instance_discovered_tools(instance.as_ref(), &mut svc);
+        overlay_instance_discovered_tools(Some(&instance), &mut svc);
 
         let action = svc.actions.get(action_key).ok_or_else(|| {
             AppError::NotFound(format!(
@@ -318,7 +266,7 @@ pub(super) async fn resolve_request(
                 auth.identity_id,
                 ceiling_user_id,
                 service_key,
-                instance.as_ref(),
+                &instance,
                 &mcp_spec,
                 svc.instance_defaults
                     .as_ref()
@@ -352,7 +300,7 @@ pub(super) async fn resolve_request(
             let resolver_cache_scope = crate::services::resolve_cache::CacheScope {
                 org_id: scope.org_id(),
                 ceiling_user_id,
-                instance_id: instance.as_ref().map(|i| i.id),
+                instance_id: Some(instance.id),
                 credential_fingerprint: mcp_fingerprint,
                 service_key: service_key.to_string(),
                 runtime: "mcp",
@@ -388,7 +336,7 @@ pub(super) async fn resolve_request(
                 crate::services::param_resolver::resolve_ledger_params(
                     state.db(ext),
                     scope.org_id(),
-                    instance.as_ref().map(|i| i.id),
+                    Some(instance.id),
                     action,
                     &req.params,
                 )
@@ -456,8 +404,8 @@ pub(super) async fn resolve_request(
                     // meaningful on one host. Replay still resolves its own
                     // credential from the payload, so this changes nothing
                     // there.
-                    instance_id: instance.as_ref().map(|i| i.id),
-                    binding: BindingFacts::new(instance.as_ref(), &svc, mcp_principal),
+                    instance_id: Some(instance.id),
+                    binding: BindingFacts::new(Some(&instance), &svc, mcp_principal),
                 },
             ));
         }
@@ -520,7 +468,7 @@ pub(super) async fn resolve_request(
                         params: params_map,
                     }),
                     instance_id: None,
-                    binding: BindingFacts::new(instance.as_ref(), &svc, None),
+                    binding: BindingFacts::new(Some(&instance), &svc, None),
                 },
             ));
         }
@@ -539,7 +487,7 @@ pub(super) async fn resolve_request(
         // `kernel_create_service`) is a configuration gap the operator can
         // close, not a bug in the gateway — so say what to do rather than
         // returning an opaque 500.
-        let base = effective_base(instance.as_ref(), &svc).ok_or_else(|| {
+        let base = effective_base(Some(&instance), &svc).ok_or_else(|| {
             AppError::BadRequest(format!(
                 "service '{service_key}' has no endpoint: the template declares no host and \
                  this instance sets no `url`. Set one on the instance, or org-wide on a \
@@ -669,42 +617,28 @@ pub(super) async fn resolve_request(
             state,
             scope,
             ceiling_user_id,
-            instance.as_ref(),
+            Some(&instance),
             &svc,
             action,
             return_url_hint,
         )
         .await?;
 
-        // Auth resolution: if instance has a bound connection/secret, use that;
-        // otherwise fall back to auto-resolve from the template's auth config.
+        // Auth resolution: the instance's bound connection/secret.
         // RefreshFailed / NoRefreshToken from the resolver bubble up as
         // `ReauthRequired` (with a freshly-minted gated URL) instead of being
         // swallowed and surfaced as opaque upstream errors downstream.
-        let resolved_auth = if let Some(ref inst) = instance {
-            resolve_instance_auth(
-                state,
-                ext,
-                scope,
-                ceiling_user_id,
-                inst,
-                &svc,
-                &req.secrets,
-                return_url_hint,
-            )
-            .await?
-        } else {
-            resolve_service_auth(
-                state,
-                ext,
-                scope,
-                ceiling_user_id,
-                &svc,
-                &req.secrets,
-                return_url_hint,
-            )
-            .await?
-        };
+        let resolved_auth = resolve_instance_auth(
+            state,
+            ext,
+            scope,
+            ceiling_user_id,
+            &instance,
+            &svc,
+            &req.secrets,
+            return_url_hint,
+        )
+        .await?;
 
         // After resolution, if the template declares OAuth and *nothing*
         // was injected — no header, no secret, no connection — the
@@ -728,7 +662,7 @@ pub(super) async fn resolve_request(
                 ceiling_user_id,
                 &svc,
                 action,
-                instance.as_ref(),
+                Some(&instance),
                 service_key,
                 return_url_hint,
             )
@@ -744,7 +678,7 @@ pub(super) async fn resolve_request(
             ext,
             scope.org_id(),
             &svc,
-            instance.as_ref(),
+            Some(&instance),
             service_key,
             &resolved_auth,
         )
@@ -764,7 +698,7 @@ pub(super) async fn resolve_request(
         let resolver_cache_scope = crate::services::resolve_cache::CacheScope {
             org_id: scope.org_id(),
             ceiling_user_id,
-            instance_id: instance.as_ref().map(|i| i.id),
+            instance_id: Some(instance.id),
             credential_fingerprint: crate::services::resolve_cache::http_credential_fingerprint(
                 resolved_auth.principal.as_deref(),
                 &resolved_auth.secrets,
@@ -874,7 +808,7 @@ pub(super) async fn resolve_request(
             crate::services::param_resolver::resolve_ledger_params(
                 state.db(ext),
                 scope.org_id(),
-                instance.as_ref().map(|i| i.id),
+                Some(instance.id),
                 action,
                 &req.params,
             )
@@ -932,8 +866,8 @@ pub(super) async fn resolve_request(
                 canonical: resolved.canonical,
                 mcp_target: None,
                 platform_target: None,
-                instance_id: instance.as_ref().map(|i| i.id),
-                binding: BindingFacts::new(instance.as_ref(), &svc, resolved_auth.principal),
+                instance_id: Some(instance.id),
+                binding: BindingFacts::new(Some(&instance), &svc, resolved_auth.principal),
             },
         ));
     }

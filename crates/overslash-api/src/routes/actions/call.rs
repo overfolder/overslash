@@ -204,9 +204,7 @@ pub(super) async fn call_action_impl(
         identity,
         identity_id,
         ceiling_user_id,
-        pre_resolved_mode_c
-            .as_ref()
-            .and_then(|m| m.instance.as_ref()),
+        pre_resolved_mode_c.as_ref().map(|m| &m.instance),
         req.service_id.is_some(),
     )
     .await?;
