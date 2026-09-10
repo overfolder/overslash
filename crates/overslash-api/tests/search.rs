@@ -1518,6 +1518,53 @@ async fn verb_shape_rejects_a_template_name() {
     assert_eq!(body["matched_template"], "gmail", "{body}");
 }
 
+/// A stale `service_id` must be answered as a stale id, even when `service`
+/// happens to name a template.
+///
+/// The dashboard sends both fields — `service` for readability, `service_id`
+/// for resolution — so an instance deleted between page load and Call arrives
+/// here as a UUID that resolves to nothing. Without the explicit-id guard that
+/// falls through to the template check, and an instance named `gmail` comes
+/// back as "'gmail' is a service template": confidently wrong, and it hides
+/// the real cause. Name/template collisions are not hypothetical — the system
+/// `overslash` and `http` instances are named after their templates by
+/// construction.
+#[tokio::test]
+async fn stale_service_id_reports_the_id_not_the_template() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+    let missing = Uuid::new_v4();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "service": "gmail",
+            "service_id": missing.to_string(),
+            "action": "list_messages",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a stale id is a 404, not the template 400: {body}"
+    );
+    let message = body["error"].as_str().unwrap_or_else(|| panic!("{body}"));
+    assert!(
+        message.contains(&missing.to_string()),
+        "must name the id that missed: {message}"
+    );
+    assert!(
+        !message.contains("is a service template"),
+        "must not blame the template when the id is the problem: {message}"
+    );
+}
+
 /// The other half of "say what to do about it": an instance that exists but is
 /// missing config. `create_service` validates `url` and `secret_name` up front,
 /// so this only happens to rows that predate those checks — but when it does,

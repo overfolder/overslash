@@ -141,6 +141,19 @@ pub(super) async fn resolve_service_for_call(
         return Ok((inst, svc));
     }
 
+    // An explicit `service_id` is an exact address, so a miss there is about
+    // the id and nothing else. Falling through to the template check would
+    // answer a deleted instance named `gmail` with "'gmail' is a service
+    // template" — confidently wrong, and it hides the stale UUID that is the
+    // actual problem. Instance names routinely collide with template keys
+    // (the system `overslash` and `http` rows do by construction), so this is
+    // not a hypothetical pairing.
+    if let Some(id) = service_id {
+        return Err(AppError::NotFound(format!(
+            "no service instance with id '{id}' in this org"
+        )));
+    }
+
     // No instance under that name. Either the caller passed a template key —
     // the common mistake, and the one worth a precise error — or the name
     // matches nothing at all.
