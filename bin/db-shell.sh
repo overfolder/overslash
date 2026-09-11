@@ -84,22 +84,25 @@ DB_PASSWORD="$(gcloud secrets versions access latest --secret="$SECRET_NAME" --p
 # proxy does not refresh it: a session outliving the ~1h token drops new
 # connections. Fine for a shell, and the alternative (whitelisting the caller's
 # egress IP on a shared instance) is strictly worse.
-PROXY_AUTH=()
 if ! gcloud auth application-default print-access-token >/dev/null 2>&1; then
-  # Not inlined into the array assignment: under `set -e` a failing command
-  # substitution there aborts the script, so gcloud's raw stderr would be the
-  # last thing you saw instead of the line below telling you what to do.
+  # Not inlined into an assignment's command substitution: under `set -e` a
+  # failure there aborts the script, so gcloud's raw stderr would be the last
+  # thing you saw instead of the line below telling you what to do.
   ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" || ACCESS_TOKEN=""
   [ -n "$ACCESS_TOKEN" ] || err "No ADC, and no usable gcloud token either. Run \`gcloud auth login\` (or \`gcloud auth application-default login\`)."
   log "No ADC - authenticating the proxy as $(gcloud config get-value account 2>/dev/null)."
-  PROXY_AUTH=(--token "$ACCESS_TOKEN")
+  # Through the environment, never `--token`: /proc/<pid>/cmdline is readable by
+  # every local user, so a token on argv is a bearer credential on display for
+  # its whole lifetime. The proxy reads CSQL_PROXY_TOKEN for the same flag.
+  export CSQL_PROXY_TOKEN="$ACCESS_TOKEN"
 fi
 
 # Start proxy in background
 log "Starting cloud-sql-proxy on 127.0.0.1:${PORT} -> ${CONNECTION_NAME}..."
-cloud-sql-proxy ${PROXY_AUTH[@]+"${PROXY_AUTH[@]}"} --port="$PORT" "$CONNECTION_NAME" \
-  >/tmp/cloud-sql-proxy.${ENV_NAME}.log 2>&1 &
+cloud-sql-proxy --port="$PORT" "$CONNECTION_NAME" >/tmp/cloud-sql-proxy.${ENV_NAME}.log 2>&1 &
 PROXY_PID=$!
+# The proxy forked with its own copy; drop ours so psql never inherits it.
+unset CSQL_PROXY_TOKEN ACCESS_TOKEN
 trap 'kill $PROXY_PID 2>/dev/null || true' EXIT INT TERM
 
 # Wait until the proxy is accepting connections (max ~10s)
