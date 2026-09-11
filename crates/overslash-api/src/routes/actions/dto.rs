@@ -511,7 +511,7 @@ pub(super) struct ActionMetadata {
 /// path doesn't re-fetch them.
 pub(super) struct ResolvedModeC {
     pub(super) svc: overslash_core::types::ServiceDefinition,
-    pub(super) instance: Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
+    pub(super) instance: overslash_db::repos::service_instance::ServiceInstanceRow,
 }
 
 /// D42 SQL policy outcome for one call. `None` (from [`evaluate_sql_policy`])

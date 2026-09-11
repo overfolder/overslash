@@ -124,8 +124,8 @@ struct SearchResult {
     score: Option<f32>,
     /// `true` for catalog rows whose template has no configured instance for
     /// the caller. Only present when `include_catalog=true` in the request.
-    /// Agents must call `overslash_auth.create_service_from_template` before
-    /// this row becomes callable.
+    /// Agents must create an instance (`overslash_call` on the `overslash`
+    /// service, action `create_service`) before this row becomes callable.
     #[serde(skip_serializing_if = "Option::is_none")]
     setup_required: Option<bool>,
     /// Per-action OAuth scope coverage for a connected instance:

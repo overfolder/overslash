@@ -87,9 +87,23 @@ pub(super) async fn resolve_instance_for_call(
         .await?)
 }
 
-/// Look up the service template + instance for a Service + HTTP verb call.
-/// Mirrors the (service, action) arm's resolution, minus the action lookup.
-pub(super) async fn resolve_service_for_verb_shape(
+/// Look up the service template + instance for a call, and reject a template
+/// key used where an instance name belongs.
+///
+/// `service` names a **service instance**, never a template key. The two
+/// namespaces look alike, so an agent that reads `template: "gmail"` out of an
+/// `overslash_search` row and passes it as `service` used to sail straight
+/// through here on the template definition alone, then dead-end much later on
+/// `needs_authentication` — told to re-authenticate when the actual fix was to
+/// pass `gmail_work`. A key that matches a template but no instance is now
+/// refused up front, naming the instances the caller could have used (or how to
+/// create one, when there are none).
+///
+/// The system `overslash` and `http` services are not special cases here:
+/// `bootstrap_org` seeds every org an instance whose `name` equals its
+/// `template_key`, so both resolve in the instance arm and never reach the
+/// guard.
+pub(super) async fn resolve_service_for_call(
     state: &AppState,
     ext: &axum::http::Extensions,
     auth: &AuthContext,
@@ -99,7 +113,7 @@ pub(super) async fn resolve_service_for_verb_shape(
     service_key: &str,
 ) -> Result<
     (
-        Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
+        overslash_db::repos::service_instance::ServiceInstanceRow,
         overslash_core::types::ServiceDefinition,
     ),
     AppError,
@@ -113,36 +127,77 @@ pub(super) async fn resolve_service_for_verb_shape(
     )
     .await?;
 
-    let svc = if let Some(ref inst) = instance {
-        crate::routes::templates::resolve_template_definition(
+    // Instance exists — resolve its template; propagate errors rather than
+    // falling back to the global registry, which could match on the wrong key.
+    if let Some(inst) = instance {
+        let svc = crate::routes::templates::resolve_template_definition(
             state,
             ext,
             auth.org_id,
             auth.identity_id,
             &inst.template_key,
         )
-        .await?
-    } else {
-        let from_template = crate::routes::templates::resolve_template_definition(
-            state,
-            ext,
-            auth.org_id,
+        .await?;
+        return Ok((inst, svc));
+    }
+
+    // An explicit `service_id` is an exact address, so a miss there is about
+    // the id and nothing else. Falling through to the template check would
+    // answer a deleted instance named `gmail` with "'gmail' is a service
+    // template" — confidently wrong, and it hides the stale UUID that is the
+    // actual problem. Instance names routinely collide with template keys
+    // (the system `overslash` and `http` rows do by construction), so this is
+    // not a hypothetical pairing.
+    if let Some(id) = service_id {
+        return Err(AppError::NotFound(format!(
+            "no service instance with id '{id}' in this org"
+        )));
+    }
+
+    // No instance under that name. Either the caller passed a template key —
+    // the common mistake, and the one worth a precise error — or the name
+    // matches nothing at all.
+    let matches_template = crate::routes::templates::resolve_template_definition(
+        state,
+        ext,
+        auth.org_id,
+        auth.identity_id,
+        service_key,
+    )
+    .await
+    .is_ok()
+        || state.registry.get(service_key).is_some();
+
+    if matches_template {
+        // Best-effort: a failure to list siblings costs the hint, not the
+        // error — the caller still learns they named a template.
+        let available = instance_names_for_template(
+            scope,
             auth.identity_id,
+            Some(ceiling_user_id),
             service_key,
         )
         .await
-        .ok();
-        match from_template.or_else(|| state.registry.get(service_key).cloned()) {
-            Some(s) => s,
-            None => {
-                let available =
-                    caller_visible_instance_names(scope, auth.identity_id, Some(ceiling_user_id))
-                        .await?;
-                return Err(unknown_service_error(service_key, available));
-            }
-        }
-    };
-    Ok((instance, svc))
+        .unwrap_or_default();
+        // Headless (white-label) orgs have no dashboard to send anyone to, so
+        // they get the message and the create_service call, no link.
+        let hint_url =
+            (!super::auth::org_is_headless(state.db(ext), auth.org_id).await).then(|| {
+                state.config.dashboard_url_for(&format!(
+                    "/services/new?template={}",
+                    urlencoding::encode(service_key)
+                ))
+            });
+        return Err(template_without_instance_error(
+            service_key,
+            available,
+            hint_url,
+        ));
+    }
+
+    let available =
+        caller_visible_instance_names(scope, auth.identity_id, Some(ceiling_user_id)).await?;
+    Err(unknown_service_error(service_key, available))
 }
 
 /// The origin an instance's traffic lands on, most specific first (parity with

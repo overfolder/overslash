@@ -569,7 +569,7 @@ fn apply_instance_config(
     args: &mut std::collections::HashMap<String, serde_json::Value>,
 ) {
     let Some(resolved) = resolved else { return };
-    let instance_config = resolved.instance.as_ref().map(|i| &i.config.0);
+    let instance_config = Some(&resolved.instance.config.0);
     let layer_config = resolved
         .svc
         .instance_defaults
@@ -648,8 +648,9 @@ async fn evaluate_sql_policy(
     let entry = db_key.as_deref().and_then(|key| {
         let raw = resolved.and_then(|r| {
             r.instance
-                .as_ref()
-                .and_then(|i| i.config.0.get(sql_policy::SQL_DATABASES_CONFIG_KEY))
+                .config
+                .0
+                .get(sql_policy::SQL_DATABASES_CONFIG_KEY)
                 .or_else(|| {
                     r.svc
                         .instance_defaults

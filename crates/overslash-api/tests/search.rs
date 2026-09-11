@@ -1366,6 +1366,310 @@ async fn call_with_template_name_returns_structured_error() {
     );
 }
 
+/// The same guard for an ordinary HTTP/OAuth template. `whatsapp` above only
+/// tripped it because an MCP template with no URL fails config resolution;
+/// `gmail` resolves fine as a definition, so before the guard this call sailed
+/// through to template-level auth and came back `needs_authentication` — the
+/// agent was told to re-authenticate when the fix was to pass `gmail_work`.
+///
+/// Also pins the scoping: the listed names are that template's instances, not
+/// every instance the caller happens to have.
+#[tokio::test]
+async fn call_with_http_template_name_lists_that_templates_instances() {
+    let (base, client, fixtures, pool) = bootstrap_full().await;
+    let conn = seed_oauth_connection(
+        &pool,
+        fixtures.org_id,
+        fixtures.user_ids[0],
+        "google",
+        "alice@gmail.com",
+    )
+    .await;
+    create_oauth_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "gmail",
+        "gmail_work",
+        conn,
+    )
+    .await;
+    create_oauth_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "gmail",
+        "gmail_personal",
+        conn,
+    )
+    .await;
+    // A different template's instance — must not appear in the hint.
+    create_api_key_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "resend",
+        "resend_a",
+        "resend_key",
+    )
+    .await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&fixtures.admin_key).0, auth(&fixtures.admin_key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "list_messages",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected 400 for an HTTP template name, got {status}: {body}"
+    );
+    assert_eq!(body["matched_template"], "gmail", "{body}");
+    let available: Vec<&str> = body["available_instances"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{body}"))
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        available.contains(&"gmail_work") && available.contains(&"gmail_personal"),
+        "both gmail instances should be offered: {body}"
+    );
+    assert!(
+        !available.contains(&"resend_a"),
+        "another template's instance must not be offered: {body}"
+    );
+
+    let message = body["error"].as_str().unwrap_or_else(|| panic!("{body}"));
+    assert!(
+        message.contains("gmail_work") && message.contains("gmail_personal"),
+        "the message itself must name the instances: {message}"
+    );
+    assert!(
+        message.contains("action=\"create_service\""),
+        "the message must spell out how to add another: {message}"
+    );
+    assert!(
+        !message.contains("create_service_from_template"),
+        "that action was removed from the MCP surface: {message}"
+    );
+    assert!(
+        body["hint_url"]
+            .as_str()
+            .is_some_and(|u| u.ends_with("/services/new?template=gmail")),
+        "hint_url should deep-link the create-from-template form: {body}"
+    );
+}
+
+/// `/v1/actions/validate` shares `resolve_service_for_call` with `/call`, so a
+/// dry run must reject a template name identically — otherwise pre-flight
+/// green-lights a call that `/call` refuses.
+#[tokio::test]
+async fn validate_rejects_a_template_name_like_call_does() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/validate"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "service": "gmail",
+            "action": "list_messages",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["matched_template"], "gmail", "{body}");
+}
+
+/// The verb shape (`service` + `method`/`path`) resolves through the same
+/// helper, so it gets the same answer — a template key is not a place to send
+/// raw HTTP either.
+#[tokio::test]
+async fn verb_shape_rejects_a_template_name() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/validate"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "service": "gmail",
+            "method": "GET",
+            "path": "/gmail/v1/users/me/messages"
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["matched_template"], "gmail", "{body}");
+}
+
+/// A stale `service_id` must be answered as a stale id, even when `service`
+/// happens to name a template.
+///
+/// The dashboard sends both fields — `service` for readability, `service_id`
+/// for resolution — so an instance deleted between page load and Call arrives
+/// here as a UUID that resolves to nothing. Without the explicit-id guard that
+/// falls through to the template check, and an instance named `gmail` comes
+/// back as "'gmail' is a service template": confidently wrong, and it hides
+/// the real cause. Name/template collisions are not hypothetical — the system
+/// `overslash` and `http` instances are named after their templates by
+/// construction.
+#[tokio::test]
+async fn stale_service_id_reports_the_id_not_the_template() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+    let missing = Uuid::new_v4();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "service": "gmail",
+            "service_id": missing.to_string(),
+            "action": "list_messages",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a stale id is a 404, not the template 400: {body}"
+    );
+    let message = body["error"].as_str().unwrap_or_else(|| panic!("{body}"));
+    assert!(
+        message.contains(&missing.to_string()),
+        "must name the id that missed: {message}"
+    );
+    assert!(
+        !message.contains("is a service template"),
+        "must not blame the template when the id is the problem: {message}"
+    );
+}
+
+/// The other half of "say what to do about it": an instance that exists but is
+/// missing config. `create_service` validates `url` and `secret_name` up front,
+/// so this only happens to rows that predate those checks — but when it does,
+/// the agent's only lever is the `overslash` meta-service, and the message used
+/// to say "set `secret_name` on the instance" without naming the call.
+#[tokio::test]
+async fn missing_instance_config_names_the_update_service_call() {
+    let (base, client, fixtures, pool) = bootstrap_full().await;
+
+    // whatsapp is MCP-runtime and defers both `url` and `secret_name` to the
+    // instance, so create with both, then strip one back out to reproduce a
+    // legacy row.
+    let created: Value = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&fixtures.admin_key).0, auth(&fixtures.admin_key).1)
+        .json(&json!({
+            "template_key": "whatsapp",
+            "name": "whatsapp_legacy",
+            "url": "https://whatsapp.example.com/mcp",
+            "secret_name": "whatsapp_token",
+            "user_level": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let instance_id: Uuid = created["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("create failed: {created}"))
+        .parse()
+        .unwrap();
+
+    sqlx::query!(
+        "UPDATE service_instances SET secret_name = NULL WHERE id = $1",
+        instance_id
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&fixtures.admin_key).0, auth(&fixtures.admin_key).1)
+        .json(&json!({
+            "service": "whatsapp_legacy",
+            "action": "pairing_start",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = body["error"].as_str().unwrap_or_else(|| panic!("{body}"));
+    assert!(
+        message.contains("action=\"update_service\""),
+        "must name the meta-service call that fixes it: {message}"
+    );
+    assert!(
+        message.contains(&instance_id.to_string()),
+        "the call must carry the instance id so it is copy-pastable: {message}"
+    );
+    assert!(
+        message.contains("secret_name"),
+        "the call must name the field that is missing: {message}"
+    );
+}
+
+/// `overslash` and `http` are named identically to their templates, which
+/// makes them the obvious way to break the guard. They don't break it:
+/// `bootstrap_org` seeds every org a system `service_instances` row for each,
+/// so both resolve as instances and never reach the template branch.
+#[tokio::test]
+async fn system_service_instances_stay_callable_by_name() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+
+    for service in ["overslash", "http"] {
+        let resp = client
+            .post(format!("{base}/v1/actions/validate"))
+            .header(auth(&admin_key).0, auth(&admin_key).1)
+            .json(&match service {
+                "overslash" => json!({"service": service, "action": "list_services", "params": {}}),
+                _ => json!({"service": service, "method": "GET", "url": "https://example.com/x"}),
+            })
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap();
+        assert_ne!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "system service '{service}' must not be mistaken for a template: {body}"
+        );
+        assert!(
+            body.get("matched_template").is_none(),
+            "system service '{service}' resolved as a template: {body}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn exclude_param_drops_template_by_key() {
     // `exclude=gmail` removes every Gmail row regardless of how many

@@ -203,9 +203,12 @@ async fn verb_shape_gates_unbound_secret_instance() {
     assert!(sink.lock().unwrap().is_empty(), "must not dial the gateway");
 }
 
-/// A global template invoked by key with no instance row at all. There is
-/// nothing to point a credentials form at, so the hint sends the caller to the
-/// wizard that creates the instance in the first place.
+/// A global template invoked by key with no instance row at all. This used to
+/// fall through to template-level auth resolution and come back as
+/// `needs_authentication` — telling the agent to authenticate when the real
+/// problem was that it had named a template. Now the resolver refuses it up
+/// front, and the hint still sends the caller to the wizard that creates the
+/// instance in the first place.
 #[tokio::test]
 async fn secret_template_without_instance_points_at_create() {
     let pool = common::test_pool().await;
@@ -229,12 +232,25 @@ async fn secret_template_without_instance_points_at_create() {
     )
     .await;
 
-    assert_eq!(status, 401, "{body}");
-    assert_eq!(body["error"], "needs_authentication", "{body}");
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["matched_template"], "test_email", "{body}");
     assert_eq!(
-        body["missing_credentials"],
-        json!(["token"]),
-        "the template's one required slot: {body}"
+        body["available_instances"],
+        json!([]),
+        "the caller has none of this template: {body}"
+    );
+    let message = body["error"].as_str().unwrap_or_else(|| panic!("{body}"));
+    assert!(
+        message.contains("is a service template, not a configured instance"),
+        "must name the confusion, not ask for credentials: {message}"
+    );
+    assert!(
+        message.contains("action=\"create_service\"") && message.contains("test_email"),
+        "must spell out the call that fixes it: {message}"
+    );
+    assert!(
+        !message.contains("create_service_from_template"),
+        "that action was removed from the MCP surface: {message}"
     );
     let hint = body["hint_url"]
         .as_str()
@@ -242,10 +258,6 @@ async fn secret_template_without_instance_points_at_create() {
     assert!(
         hint.ends_with("/services/new?template=test_email"),
         "with no instance the fix is to create one: {hint}"
-    );
-    assert!(
-        body.get("service_instance_id").is_none(),
-        "there is no instance to name: {body}"
     );
 }
 

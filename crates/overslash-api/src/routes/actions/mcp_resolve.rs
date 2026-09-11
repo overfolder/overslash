@@ -107,14 +107,16 @@ pub(crate) async fn resolve_effective_mcp(
     identity_id: Option<Uuid>,
     ceiling_user_id: Uuid,
     service_key: &str,
-    instance: Option<&ServiceInstanceRow>,
+    instance: &ServiceInstanceRow,
     mcp: &McpSpec,
     layer_url: Option<&str>,
     return_url_hint: Option<&str>,
 ) -> Result<ResolvedMcp, AppError> {
     // URL: instance wins, then the org layer's default, then the template.
     let url = match instance
-        .and_then(|i| i.url.as_deref().map(str::to_string))
+        .url
+        .as_deref()
+        .map(str::to_string)
         .or_else(|| layer_url.map(str::to_string))
         .or_else(|| mcp.url.clone())
     {
@@ -142,10 +144,7 @@ pub(crate) async fn resolve_effective_mcp(
         McpAuth::Bearer {
             secret_name: tpl_sn,
         } => {
-            let sn = match instance
-                .and_then(|i| i.secret_name.as_deref())
-                .or(tpl_sn.as_deref())
-            {
+            let sn = match instance.secret_name.as_deref().or(tpl_sn.as_deref()) {
                 Some(s) => s.to_string(),
                 None => {
                     return Err(mcp_missing_config_error(
@@ -169,7 +168,7 @@ pub(crate) async fn resolve_effective_mcp(
                 ext,
                 scope,
                 ceiling_user_id,
-                instance,
+                Some(instance),
                 provider,
                 return_url_hint,
             )
@@ -196,7 +195,7 @@ pub(crate) async fn resolve_effective_mcp(
                     .await?;
                     return Err(AppError::NeedsAuthentication {
                         service: Some(service_key.to_string()),
-                        service_instance_id: instance.map(|i| i.id),
+                        service_instance_id: Some(instance.id),
                         connection_id: None,
                         auth_url: Some(urls.auth_url),
                         short: urls.short,

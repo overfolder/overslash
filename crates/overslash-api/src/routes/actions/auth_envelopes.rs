@@ -352,9 +352,8 @@ pub(super) async fn needs_credentials_for_service(
     // Prefer the resolver's own diagnosis: it walked the full chain (per-slot
     // binding → legacy scalar → org default → platform credential, plus the
     // D38 config pass) and knows exactly which rung came up empty. Fall back to
-    // deriving it from the template when there is none — the no-instance path,
-    // where a global template is called by key and `resolve_service_auth` ran
-    // alone.
+    // deriving it from the template when there is none — the MCP owner-default
+    // path, the only caller left that resolves auth without an instance.
     let keys = match missing.filter(|m| !m.is_empty()) {
         Some(m) => m.keys(),
         None => derive_missing_keys(svc, instance),

@@ -189,6 +189,11 @@ pub enum AppError {
         matched_template: Option<String>,
         available_instances: Vec<String>,
         hint: Option<String>,
+        /// Dashboard deep-link to the page that fixes this — the
+        /// create-from-template form. `None` on headless orgs, which have no
+        /// dashboard to point at. Same convention as `NeedsAuthentication`
+        /// and `CredentialMissing`.
+        hint_url: Option<String>,
     },
 
     /// The service the agent called has no live credentials yet (no
@@ -571,6 +576,7 @@ impl IntoResponse for AppError {
                 matched_template,
                 available_instances,
                 hint,
+                hint_url,
             } => {
                 let mut body = json!({ "error": message });
                 if let Some(t) = matched_template {
@@ -579,6 +585,9 @@ impl IntoResponse for AppError {
                 body["available_instances"] = json!(available_instances);
                 if let Some(h) = hint {
                     body["hint"] = json!(h);
+                }
+                if let Some(u) = hint_url {
+                    body["hint_url"] = json!(u);
                 }
                 return (*status, Json(body)).into_response();
             }

@@ -303,7 +303,7 @@ async fn mode_c_no_oauth_client_configured_returns_actionable_4xx() {
     client
         .post(format!("{base}/v1/permissions"))
         .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
-        .json(&json!({"identity_id": ident_id, "action_pattern": "google_calendar:*:*"}))
+        .json(&json!({"identity_id": ident_id, "action_pattern": "google-calendar:*:*"}))
         .send()
         .await
         .unwrap();
@@ -312,7 +312,9 @@ async fn mode_c_no_oauth_client_configured_returns_actionable_4xx() {
         .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&api_key).0, common::auth(&api_key).1)
         .json(&json!({
-            "service": "google_calendar",
+            // The instance name, not the `google_calendar` template key —
+            // a template key is refused before auth resolution ever runs.
+            "service": "google-calendar",
             "action": "list_calendars",
             "params": {},
         }))
