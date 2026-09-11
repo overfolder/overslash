@@ -45,6 +45,11 @@ const ROSTER_SUFFIX: &str = ". Those are template keys";
 /// Parsed out rather than substring-matched against the whole description:
 /// the static half already contains `gmail_work` and `whatsapp_angel` as
 /// examples, so `desc.contains("gmail")` is true before any instance exists.
+///
+/// A roster past `MAX_KEYS`/`MAX_BYTES` ends `…, svc039, and 5 more`. That
+/// tail is a count of what was dropped, not a key, so it does not come back
+/// as one — otherwise a test asserting on the set or its length would be
+/// reading a number as a service.
 fn roster_keys(desc: &str) -> Vec<String> {
     let Some(start) = desc.find(ROSTER_PREFIX) else {
         return Vec::new();
@@ -53,7 +58,20 @@ fn roster_keys(desc: &str) -> Vec<String> {
     let end = rest
         .find(ROSTER_SUFFIX)
         .expect("roster sentence is unterminated");
-    rest[..end].split(", ").map(str::to_string).collect()
+    rest[..end]
+        .split(", ")
+        .filter(|part| !is_overflow_marker(part))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Exactly `and <n> more`, the collapsed tail `roster_sentence` appends past
+/// the cap. Matched structurally rather than by prefix so that a template key
+/// is never mistaken for it.
+fn is_overflow_marker(part: &str) -> bool {
+    part.strip_prefix("and ")
+        .and_then(|rest| rest.strip_suffix(" more"))
+        .is_some_and(|n| n.parse::<usize>().is_ok())
 }
 
 /// `tools/list` as `key`, returning `overslash_search`'s description.
