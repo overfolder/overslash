@@ -28,6 +28,18 @@ paths:
   /v1/notes:
     get:
       operationId: list_notes
+      # Keep documents no ceiling for `pageSize`, so the block states only the
+      # bound to apply when the caller names none — which is the half that
+      # keeps a large notebook from arriving all at once.
+      pagination:
+        page_size:
+          param: pageSize
+          default: 50
+        next:
+          style: cursor
+          param: pageToken
+          from: nextPageToken
+        items: notes
       summary: List notes for the authenticated user
       risk: read
       parameters:

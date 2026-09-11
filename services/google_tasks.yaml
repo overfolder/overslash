@@ -21,6 +21,19 @@ paths:
   /tasks/v1/users/@me/lists:
     get:
       operationId: list_tasklists
+      # `maxResults` declared no `default:`, so omitting it left Google to
+      # decide, and no `pageToken` was declared at all — the rest of the
+      # collection was unreachable. Both are now named.
+      pagination:
+        page_size:
+          param: maxResults
+          default: 20
+          max: 100
+        next:
+          style: cursor
+          param: pageToken
+          from: nextPageToken
+        items: items
       summary: List all task lists for the authenticated user
       risk: read
       security:
@@ -32,6 +45,11 @@ paths:
           description: Maximum number of task lists returned (default 20, max 100)
           schema:
             type: integer
+        - name: pageToken
+          in: query
+          description: Continuation token from a previous response's `nextPageToken`.
+          schema:
+            type: string
     post:
       operationId: create_tasklist
       summary: "Create task list '{title}'"
@@ -118,6 +136,17 @@ paths:
           pick: title
     get:
       operationId: list_tasks
+      # Same shape as list_tasklists, one collection over.
+      pagination:
+        page_size:
+          param: maxResults
+          default: 20
+          max: 100
+        next:
+          style: cursor
+          param: pageToken
+          from: nextPageToken
+        items: items
       summary: "List tasks in list {tasklist}"
       risk: read
       scope_param: tasklist
@@ -140,6 +169,11 @@ paths:
           description: Maximum number of tasks returned (default 20, max 100)
           schema:
             type: integer
+        - name: pageToken
+          in: query
+          description: Continuation token from a previous response's `nextPageToken`.
+          schema:
+            type: string
         - name: dueMin
           in: query
           description: Lower bound (RFC3339 timestamp) for a task's due date

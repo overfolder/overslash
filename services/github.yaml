@@ -41,6 +41,18 @@ paths:
   /user/installations:
     get:
       operationId: list_installations
+      # GitHub pages with an RFC 8288 `Link` header, so `next` names no
+      # parameter of its own — the header carries the whole next URL and the
+      # gateway lifts out the query keys this action declares. `page` is
+      # declared (and defaulted) for exactly that reason: a key the call did
+      # not send is not a key the continuation can change, so without it
+      # GitHub's `?page=2` is dropped and every call reports `has_more: false`.
+      pagination:
+        page_size:
+          param: per_page
+          max: 100
+        next:
+          style: link
       summary: List GitHub App installations accessible to the authenticated user
       description: >-
         Diagnostic for "app not installed" failures: lists the installations
@@ -54,9 +66,22 @@ paths:
           schema:
             type: integer
             default: 30
+        - name: page
+          in: query
+          description: Page number, counting from 1.
+          schema:
+            type: integer
+            default: 1
   /user/repos:
     get:
       operationId: list_repos
+      # Same shape as list_installations — see the comment there.
+      pagination:
+        page_size:
+          param: per_page
+          max: 100
+        next:
+          style: link
       summary: "List repositories for the authenticated user[, sorted by {sort}]"
       risk: read
       parameters:
@@ -72,6 +97,12 @@ paths:
           schema:
             type: integer
             default: 30
+        - name: page
+          in: query
+          description: Page number, counting from 1.
+          schema:
+            type: integer
+            default: 1
   /repos/{repo}:
     get:
       operationId: get_repo
@@ -95,6 +126,13 @@ paths:
           type: string
     get:
       operationId: list_issues
+      # Same shape as list_installations — see the comment there.
+      pagination:
+        page_size:
+          param: per_page
+          max: 100
+        next:
+          style: link
       summary: "List issues on {repo}[ (state={state})]"
       risk: read
       scope_param: repo
@@ -111,6 +149,12 @@ paths:
           schema:
             type: integer
             default: 30
+        - name: page
+          in: query
+          description: Page number, counting from 1.
+          schema:
+            type: integer
+            default: 1
     post:
       operationId: create_issue
       summary: "Create issue '{title}' on {repo}"

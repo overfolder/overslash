@@ -75,6 +75,19 @@ x-overslash-mcp:
     # ── channels (read) ──
     - name: list_channels
       risk: read
+      # `limit` already declares `default: 100`, so the block names it and
+      # restates nothing. `from` addresses the tool's own payload, not the
+      # gateway's MCP envelope — the projection is D55's, the same one
+      # `resolve:` paths use.
+      pagination:
+        page_size:
+          param: limit
+          max: 1000
+        next:
+          style: cursor
+          param: cursor
+          from: response_metadata.next_cursor
+        items: channels
       description: "List channels in the Slack workspace"
       input_schema:
         type: object
@@ -96,6 +109,18 @@ x-overslash-mcp:
     - name: read_channel_history
       risk: read
       scope_param: channel
+      # Same shape as list_channels; conversations.history also sends its own
+      # `has_more`, which outranks any inference from the row count.
+      pagination:
+        page_size:
+          param: limit
+          max: 1000
+        next:
+          style: cursor
+          param: cursor
+          from: response_metadata.next_cursor
+        items: messages
+        has_more: has_more
       description: "Read recent message history for {channel}"
       input_schema:
         type: object
@@ -136,6 +161,18 @@ x-overslash-mcp:
     # ── search (read) — Slack MCP's headline capability ──
     - name: search_messages
       risk: read
+      # Search is the one Slack surface that pages by ordinal rather than
+      # cursor, and it spells the page size `count`. `page` is declared with
+      # `default: 1` because that default is the only place this template can
+      # say Slack counts pages from one rather than zero.
+      pagination:
+        page_size:
+          param: count
+          max: 100
+        next:
+          style: page
+          param: page
+        items: messages.matches
       description: "Search Slack messages matching {query}"
       input_schema:
         type: object
@@ -149,4 +186,9 @@ x-overslash-mcp:
             minimum: 1
             maximum: 100
             default: 20
+          page:
+            type: integer
+            minimum: 1
+            default: 1
+            description: "1-based page of search results."
         required: [query]

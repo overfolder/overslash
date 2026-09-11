@@ -490,3 +490,290 @@ async fn an_unannotated_action_gains_nothing() {
         .unwrap_or_else(|| panic!("action row missing: {rows}"));
     assert!(row.get("paginated").is_none(), "{row}");
 }
+
+// ── MCP runtime ─────────────────────────────────────────────────────────
+//
+// An MCP action's `ActionResult.body` is the gateway's own envelope
+// (`{runtime, tool, structured, content, is_error}`), not the tool's payload.
+// A declaration names the payload, so the envelope is unwrapped first — with
+// D55's projection, the one `resolve:` paths already use: `structuredContent`
+// when the server sends it, otherwise the first text block parsed as JSON.
+//
+// Both halves are tested here because servers genuinely differ on which they
+// emit for the same tool, and a template author writing `from:` cannot be
+// asked to know which.
+
+/// A one-tool MCP stub that pages by cursor, in `structuredContent` or in a
+/// text block depending on `structured`.
+async fn start_paging_mcp(structured: bool) -> std::net::SocketAddr {
+    use axum::{Json, Router, extract::State, routing::post};
+    use tokio::net::TcpListener;
+
+    async fn rpc(State(structured): State<bool>, Json(req): Json<Value>) -> Json<Value> {
+        let id = req.get("id").cloned().unwrap_or(Value::Null);
+        let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+        let result = match method {
+            "initialize" => json!({
+                "protocolVersion": "2025-06-18",
+                "serverInfo": {"name": "paging-stub", "version": "0"},
+                "capabilities": {}
+            }),
+            "tools/list" => json!({"tools": []}),
+            "tools/call" => {
+                let cursor = req
+                    .get("params")
+                    .and_then(|p| p.get("arguments"))
+                    .and_then(|a| a.get("cursor"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                // Page one hands out a cursor; page two is the last.
+                let payload = if cursor.is_empty() {
+                    json!({
+                        "channels": [{"id": "C1"}],
+                        "response_metadata": {"next_cursor": "dGVhbTpD"}
+                    })
+                } else {
+                    json!({"channels": [{"id": "C2"}], "response_metadata": {"next_cursor": ""}})
+                };
+                if structured {
+                    json!({
+                        "content": [{"type": "text", "text": "ok"}],
+                        "structuredContent": payload,
+                        "isError": false
+                    })
+                } else {
+                    json!({
+                        "content": [{"type": "text", "text": payload.to_string()}],
+                        "isError": false
+                    })
+                }
+            }
+            _ => json!({}),
+        };
+        Json(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+    }
+
+    common::allow_loopback_ssrf();
+    let app = Router::new()
+        .route("/mcp", post(rpc))
+        .with_state(structured);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
+/// Stand up an MCP-runtime template whose single tool declares a cursor block,
+/// plus the grants a call needs. Returns `(base, agent_key, client)`.
+async fn mcp_setup(
+    pool: sqlx::PgPool,
+    key: &str,
+    structured: bool,
+) -> (String, String, reqwest::Client) {
+    let stub = start_paging_mcp(structured).await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, ident_id, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let openapi = format!(
+        r#"openapi: 3.1.0
+info:
+  title: Paged MCP
+  key: {key}
+x-overslash-runtime: mcp
+paths: {{}}
+x-overslash-mcp:
+  url: http://{stub}/mcp
+  auth: {{ kind: none }}
+  autodiscover: false
+  tools:
+    - name: list_channels
+      risk: read
+      description: List channels
+      pagination:
+        page_size:
+          param: limit
+          default: 10
+        next:
+          style: cursor
+          param: cursor
+          from: response_metadata.next_cursor
+        items: channels
+      input_schema:
+        type: object
+        properties:
+          limit: {{ type: integer }}
+          cursor: {{ type: string }}
+        required: []
+"#
+    );
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "openapi": openapi, "user_level": false }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "template rejected: {:?}",
+        resp.text().await
+    );
+
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "identity_id": ident_id,
+            "action_pattern": format!("{key}:**"),
+            "effect": "allow",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let owner_id = common::owner_user_id(&pool, org_id).await;
+    let groups: Value = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins = groups
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["name"] == "Admins")
+        .expect("Admins group")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client
+        .post(format!("{base}/v1/groups/{admins}/members"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "identity_id": owner_id }))
+        .send()
+        .await
+        .unwrap();
+
+    let inst: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "name": key,
+            "template_key": key,
+            "url": format!("http://{stub}/mcp"),
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let inst_id = inst["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("instance create failed: {inst}"))
+        .to_string();
+    client
+        .post(format!("{base}/v1/groups/{admins}/grants"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "service_instance_id": inst_id, "access_level": "write" }))
+        .send()
+        .await
+        .unwrap();
+
+    (base, agent_key, client)
+}
+
+async fn call_tool(
+    base: &str,
+    client: &reqwest::Client,
+    key: &str,
+    service: &str,
+    params: Value,
+) -> Value {
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&json!({
+            "service": service,
+            "action": "list_channels",
+            "verbose": false,
+            "params": params,
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let text = resp.text().await.unwrap();
+    assert_eq!(status, 200, "call failed: {text}");
+    serde_json::from_str(&text).unwrap()
+}
+
+#[tokio::test]
+async fn an_mcp_tool_pages_from_its_structured_content() {
+    let pool = common::test_pool().await;
+    let (base, key, client) = mcp_setup(pool, "pagemcps", true).await;
+
+    let body = call_tool(&base, &client, &key, "pagemcps", json!({})).await;
+    assert_eq!(
+        body["result"]["_pagination"],
+        json!({
+            "has_more": true,
+            "next": {
+                "service": "pagemcps",
+                "action": "list_channels",
+                // `limit` rides along because the declaration seeded the
+                // parameter's own default and `apply_defaults` put it on the
+                // wire — so page two is the same size as page one.
+                "params": {"cursor": "dGVhbTpD", "limit": 10}
+            }
+        }),
+        "{}",
+        body["result"]
+    );
+}
+
+/// The same tool, the same declaration, a server that sends its JSON only as
+/// text. Without the projection this reports `has_more: false` — a collection
+/// with more in it, described as complete.
+#[tokio::test]
+async fn an_mcp_tool_pages_from_a_json_text_block() {
+    let pool = common::test_pool().await;
+    let (base, key, client) = mcp_setup(pool, "pagemcpt", false).await;
+
+    let body = call_tool(&base, &client, &key, "pagemcpt", json!({})).await;
+    assert_eq!(
+        body["result"]["_pagination"]["has_more"],
+        json!(true),
+        "{}",
+        body["result"]
+    );
+    assert_eq!(
+        body["result"]["_pagination"]["next"]["params"]["cursor"],
+        json!("dGVhbTpD")
+    );
+
+    // And following it terminates: page two's empty cursor is the last page.
+    let last = call_tool(
+        &base,
+        &client,
+        &key,
+        "pagemcpt",
+        json!({"cursor": "dGVhbTpD"}),
+    )
+    .await;
+    assert_eq!(
+        last["result"]["_pagination"],
+        json!({"has_more": false}),
+        "{}",
+        last["result"]
+    );
+}
