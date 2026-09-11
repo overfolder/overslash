@@ -1,6 +1,7 @@
 # Generic pagination
 
-**Status:** Implemented (D75)
+**Status:** Implemented (D75); swept onto the shipped corpus and extended to
+the MCP runtime in D-NEXT
 
 Companion to [large-file-handling.md](large-file-handling.md), which bounds a
 response *after* it is too big. This bounds it before.
@@ -11,7 +12,10 @@ Overslash had no notion of a page. Every template spelled paging however its
 upstream did, the gateway read none of it, and nothing anywhere in the codebase
 parsed a `Link` header, followed a `nextPageToken`, or looped.
 
-Six spellings of page size across the shipped corpus:
+Eight spellings of page size across the shipped corpus — six were visible when
+this was written, and the sweep turned up two more, which is the argument for
+`page_size.param` naming whatever the parameter is called rather than the
+vocabulary trying to enumerate them:
 
 | spelling | templates |
 |---|---|
@@ -21,6 +25,8 @@ Six spellings of page size across the shipped corpus:
 | `maxResults` | gmail, google_calendar, google_tasks |
 | `pageSize` | google_drive, google_keep |
 | `$top` | outlook (OData) |
+| `count` | slack `search_messages` |
+| `max_results` | x |
 
 Six for continuation: `cursor` (slack), `start_cursor` (notion), `pageToken`
 (gmail, drive, keep), `offset` (hubspot, metabase), `$skip` (outlook), `page`
@@ -33,9 +39,9 @@ HTTP-runtime list operations declared no bound whatsoever.
 
 The failure that prompted this: an agent asked which Metabase cards were
 popular, found `run_card` (one card) and `list_cards` (all 2,033), and blew the
-5 MB transport cap. D57 fixed that template. The same shape is still waiting in
+5 MB transport cap. D57 fixed that template. The same shape was waiting in
 `eventbrite.list_event_attendees` — an unbounded collection of rich objects,
-which is the severe form.
+which is the severe form — until the corpus sweep below reached it.
 
 ## The extension
 
@@ -172,6 +178,55 @@ so there is no upstream page to be on.
 - **`deliver: "url"` / `Prefer: stream`.** Both return before the render funnel,
   so neither carries `_pagination`. That envelope holds a download token rather
   than rows.
-- **The corpus sweep.** `gmail.yaml` is the only shipped template annotated.
-  See the follow-up issue; it closes with a gate shaped like
-  `registry::tests::shipped_mutating_actions_declare_disclose`.
+- **Auto-following, still.** The sweep annotated the corpus; it did not change
+  who decides when to stop.
+
+## An MCP tool's paths address the tool, not the envelope
+
+`mcp_caller::invoke` packs every tool result into a stable frame —
+`{runtime, tool, structured, content, is_error}` — so for an MCP action the
+bytes `next_page` parses are the gateway's bookkeeping, not the payload the
+template author is looking at. `next_page` therefore unwraps it first, with the
+projection D55 already settled for `x-overslash-resolve`: `structuredContent`
+when the server sends it, otherwise the first text content block parsed as
+JSON. `pick:` and `from:` mean the same thing against the same server, which is
+the only rule a template author can hold in their head.
+
+The alternative — making every MCP template spell `structured.` — asks authors
+to know a frame no upstream documents, and still fails on the servers that emit
+only a text block. D55's own rationale is that servers differ on which they emit
+*for the same tool*, so a template cannot be authored against it.
+
+All three frame keys are required before anything is unwrapped: an HTTP body
+that happens to carry `runtime` is a body like any other.
+
+## The sweep, and the two shapes it could not express
+
+Every shipped list action now declares the key or appears in
+`registry::tests::shipped_list_actions_declare_pagination`'s `ALLOW_MISSING`
+with a comment naming the upstream reason. The gate calls an action list-shaped
+on either of two signals: the key (`list_*`, `search*`, `query_*`, plus
+Metabase's two activity feeds), or a declared numeric parameter under one of the
+seven page-size spellings. The second is what catches the actions that read as
+single-object gets — `slack.read_channel_history`, `whatsapp.get_conversation`,
+`x.get_user_tweets`.
+
+Two upstreams do not fit, and neither widened the vocabulary:
+
+- **Stripe** continues with `starting_after=<id of the last object on the
+  page>`. That is an array-indexed body position, and `dotted` takes no indices
+  on purpose. `list_charges` and `list_customers` are bounded by `limit` and
+  declare `starting_after`, so a caller can walk them; the gateway cannot
+  compute the next call and says so in the description.
+- **`email.search`** has a page size and no continuation whatsoever. That is
+  what `parse_pagination` refuses by design — a page size with no way to reach
+  page two is a limit. `limit` gained a `default: 50`, and `total` is what tells
+  a caller what it has not seen.
+
+Nine actions declare a style and no `items`: seven WhatsApp tools and two
+HubSpot ones, whose result shapes belong to a container an operator runs or a
+vendor's server, and are not verifiable from this repo. A guessed path behaves
+exactly like an absent one — `structural_has_more` treats a path resolving to
+nothing as a fact about the template — so guessing asserts something false and
+buys nothing. The cost is one empty call at the end of a traversal, and a
+`pagination_unbounded_end` warning that says so.

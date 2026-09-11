@@ -38,6 +38,15 @@ paths:
   /user/repos:
     get:
       operationId: list_repos
+      # GitHub pages with an RFC 8288 `Link` header — `page` is declared so the
+      # gateway has a key to lift the next page's ordinal into. Mirrors
+      # `github.yaml`; see the longer comment there.
+      pagination:
+        page_size:
+          param: per_page
+          max: 100
+        next:
+          style: link
       summary: "List repositories for the authenticated user[, sorted by {sort}]"
       risk: read
       parameters:
@@ -53,6 +62,12 @@ paths:
           schema:
             type: integer
             default: 30
+        - name: page
+          in: query
+          description: Page number, counting from 1.
+          schema:
+            type: integer
+            default: 1
   /repos/{repo}:
     get:
       operationId: get_repo
@@ -76,6 +91,15 @@ paths:
           type: string
     get:
       operationId: list_issues
+      # GitHub pages with an RFC 8288 `Link` header — `page` is declared so the
+      # gateway has a key to lift the next page's ordinal into. Mirrors
+      # `github.yaml`; see the longer comment there.
+      pagination:
+        page_size:
+          param: per_page
+          max: 100
+        next:
+          style: link
       summary: "List issues on {repo}[ (state={state})]"
       risk: read
       scope_param: repo
@@ -92,6 +116,12 @@ paths:
           schema:
             type: integer
             default: 30
+        - name: page
+          in: query
+          description: Page number, counting from 1.
+          schema:
+            type: integer
+            default: 1
     post:
       operationId: create_issue
       summary: "Create issue '{title}' on {repo}"

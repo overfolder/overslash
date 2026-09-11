@@ -56,7 +56,15 @@ paths:
   /gmail/v1/users/{userId}/labels:
     get:
       operationId: list_labels
+      # No `pagination:` block: Gmail's labels endpoint takes no page size and
+      # mints no page token — it returns the mailbox's whole label set, which
+      # is tens of entries, not thousands. The paged collections in this
+      # template are list_messages / list_threads / list_drafts.
       summary: "List Gmail labels for {userId}"
+      description: >-
+        Every label on the mailbox, in one response. Gmail does not page this
+        endpoint and there is nothing to bound — the set is small by
+        construction. To page mail itself use list_messages or list_threads.
       risk: read
       scope_param: userId
       security:

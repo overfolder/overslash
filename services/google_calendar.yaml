@@ -23,9 +23,31 @@ paths:
   /calendar/v3/users/me/calendarList:
     get:
       operationId: list_calendars
+      # Neither half was declared: no bound, and no way to ask for the rest.
+      # Both parameters exist upstream — the template simply never named them.
+      pagination:
+        page_size:
+          param: maxResults
+          default: 100
+          max: 250
+        next:
+          style: cursor
+          param: pageToken
+          from: nextPageToken
+        items: items
       summary: List all calendars for the authenticated user
       risk: read
       parameters:
+        - name: maxResults
+          in: query
+          description: Maximum number of calendars returned (max 250)
+          schema:
+            type: integer
+        - name: pageToken
+          in: query
+          description: Continuation token from a previous response's `nextPageToken`.
+          schema:
+            type: string
         - name: minAccessRole
           in: query
           description: "Filter by minimum access role: freeBusyReader, reader, writer, owner"
@@ -51,6 +73,19 @@ paths:
           pick: summary
     get:
       operationId: list_events
+      # `maxResults` was declared without a `default:`, so omitting it left
+      # Google to decide — 250 on a busy calendar, and unbounded in the sense
+      # that mattered: there was no `pageToken`, so the rest was unreachable.
+      pagination:
+        page_size:
+          param: maxResults
+          default: 250
+          max: 2500
+        next:
+          style: cursor
+          param: pageToken
+          from: nextPageToken
+        items: items
       summary: "List events on calendar {calendarId}"
       risk: read
       scope_param: calendarId
@@ -86,6 +121,11 @@ paths:
           description: Whether to expand recurring events into instances
           schema:
             type: boolean
+        - name: pageToken
+          in: query
+          description: Continuation token from a previous response's `nextPageToken`.
+          schema:
+            type: string
     post:
       operationId: create_event
       summary: "Create event '{summary}' on calendar {calendarId}"

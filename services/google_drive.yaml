@@ -36,6 +36,20 @@ paths:
   /drive/v3/files:
     get:
       operationId: list_files
+      # Drive decides the page itself when `pageSize` is omitted, and a Drive
+      # with tens of thousands of files is exactly where that costs a caller
+      # the whole response. `page_size.default` seeds the parameter, which
+      # declares none of its own.
+      pagination:
+        page_size:
+          param: pageSize
+          default: 100
+          max: 1000
+        next:
+          style: cursor
+          param: pageToken
+          from: nextPageToken
+        items: files
       summary: "List files in the user's Drive[ matching query {q}]"
       risk: read
       parameters:
@@ -291,6 +305,17 @@ paths:
           pick: name
     get:
       operationId: list_permissions
+      # Same shape as list_files; Drive caps a permissions page at 100.
+      pagination:
+        page_size:
+          param: pageSize
+          default: 100
+          max: 100
+        next:
+          style: cursor
+          param: pageToken
+          from: nextPageToken
+        items: permissions
       summary: "List permissions on file {fileId}"
       risk: read
       scope_param: fileId

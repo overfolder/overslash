@@ -310,6 +310,25 @@ x-overslash-mcp:
     # ── contacts ──
     - name: search_contacts
       risk: read
+      # WhatsApp is the corpus's one `page` upstream: an ordinal the caller
+      # increments, not a cursor it echoes. `page` already declares
+      # `default: 0`, and that default is the whole reason the gateway can ask
+      # for page two — it is the only place this template says WhatsApp counts
+      # from zero rather than one. `limit` likewise declares its own default,
+      # so the block names it and restates nothing.
+      #
+      # No `items`: the container's result shape is the operator's, not this
+      # template's to assert, and a path that names nothing is a claim about
+      # the template rather than the collection. The cost of leaving it out is
+      # one empty call at the end of a traversal, which is the cheaper mistake
+      # than stopping a page early and reporting a partial answer as complete.
+      pagination:
+        page_size:
+          param: limit
+          max: 200
+        next:
+          style: page
+          param: page
       description: "Search cached contacts by substring {query} across name, push name, business name, nickname, and phone"
       input_schema:
         type: object
@@ -330,6 +349,14 @@ x-overslash-mcp:
 
     - name: list_all_contacts
       risk: read
+      # Same shape as search_contacts — see the comment there.
+      pagination:
+        page_size:
+          param: limit
+          max: 500
+        next:
+          style: page
+          param: page
       description: "List all cached contacts, paginated, in display-name order"
       input_schema:
         type: object
@@ -411,6 +438,14 @@ x-overslash-mcp:
     # `[RAW]` power-user fallbacks.
     - name: list_conversations
       risk: read
+      # Same shape as search_contacts — see the comment there.
+      pagination:
+        page_size:
+          param: limit
+          max: 200
+        next:
+          style: page
+          param: page
       description: >-
         List WhatsApp conversations cached locally — the de-duplicated overview and the
         front door for "show me my recent conversations". Like list_chats but collapses a
@@ -456,6 +491,14 @@ x-overslash-mcp:
 
     - name: get_conversation
       risk: read
+      # Same shape as search_contacts — see the comment there.
+      pagination:
+        page_size:
+          param: limit
+          max: 200
+        next:
+          style: page
+          param: page
       scope_param: contact
       description: >-
         get_conversation(contact): the canonical front door for "what's the latest with
@@ -758,6 +801,14 @@ x-overslash-mcp:
     # ── chats (read-side, cache-backed) — [RAW] power-user fallbacks ──
     - name: list_chats
       risk: read
+      # Same shape as search_contacts — see the comment there.
+      pagination:
+        page_size:
+          param: limit
+          max: 200
+        next:
+          style: page
+          param: page
       description: >-
         [RAW] Low-level single-chat/JID access — prefer list_conversations (overview) or
         get_conversation (one person's full timeline), which merge a contact's phone JID + @lid
@@ -826,6 +877,14 @@ x-overslash-mcp:
 
     - name: list_messages
       risk: read
+      # Same shape as search_contacts — see the comment there.
+      pagination:
+        page_size:
+          param: limit
+          max: 200
+        next:
+          style: page
+          param: page
       description: >-
         [RAW] Low-level single-chat/JID access — prefer list_conversations (overview) or
         get_conversation (one person's full timeline), which merge a contact's phone JID + @lid
@@ -930,6 +989,14 @@ x-overslash-mcp:
 
     - name: get_contact_chats
       risk: read
+      # Same shape as search_contacts — see the comment there.
+      pagination:
+        page_size:
+          param: limit
+          max: 200
+        next:
+          style: page
+          param: page
       scope_param: contact_jid
       description: >-
         [RAW] Low-level single-chat/JID access — prefer list_conversations (overview) or

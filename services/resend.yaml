@@ -19,7 +19,13 @@ paths:
   /domains:
     get:
       operationId: list_domains
+      # No `pagination:` block: Resend's /domains takes no page size and mints
+      # no cursor. The collection is an account's own sending domains — a
+      # handful — so there is nothing to bound.
       summary: List verified sending domains
+      description: >-
+        Every sending domain on the account, in one response. Resend does not
+        page this endpoint; the list is small by construction.
       risk: read
   /emails:
     post:

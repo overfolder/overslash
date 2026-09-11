@@ -34,7 +34,16 @@ x-overslash-mcp:
     - name: read_wiki_contents
       risk: read
       scope_param: repoName
-      description: "Read the full wiki for {repoName}"
+      # No `pagination:` block: this is one large document, not a collection,
+      # and DeepWiki offers no page size or cursor to bound it with. The
+      # bounded ways in are the two siblings named in the description.
+      description: >-
+        Read the full wiki for {repoName}. This returns the whole wiki in one
+        response and DeepWiki offers no way to ask for less, so on a large
+        repository it can exceed the response size cap. Prefer
+        read_wiki_structure for the table of contents, or ask_question for a
+        specific answer; reach for this only when you genuinely need the
+        whole text.
       input_schema:
         type: object
         properties:

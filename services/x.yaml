@@ -70,6 +70,19 @@ paths:
   /2/users/{user_id}/tweets:
     get:
       operationId: get_user_tweets
+      # `max_results` is a seventh spelling of page size, and it already
+      # declares its own `default: 10` — so the block names the parameter and
+      # restates nothing. What was missing is the continuation: X mints a
+      # `meta.next_token` and the template declared nowhere to send it back.
+      pagination:
+        page_size:
+          param: max_results
+          max: 100
+        next:
+          style: cursor
+          param: pagination_token
+          from: meta.next_token
+        items: data
       summary: "Get tweets for user {user_id}"
       risk: read
       scope_param: user_id
@@ -86,3 +99,8 @@ paths:
           schema:
             type: integer
             default: 10
+        - name: pagination_token
+          in: query
+          description: Continuation token from a previous response's `meta.next_token`.
+          schema:
+            type: string

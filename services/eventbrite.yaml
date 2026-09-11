@@ -24,13 +24,49 @@ paths:
   /v3/users/me/orders/:
     get:
       operationId: list_my_orders
+      # Eventbrite pages every list endpoint in fixed groups of 50 and does not
+      # let a caller choose the size, so there is no `page_size` half to
+      # declare — the bound is the upstream's. What was missing is the other
+      # half: `continuation` was never declared, so a caller could read the
+      # first 50 and had no way to ask for the rest.
+      pagination:
+        next:
+          style: cursor
+          param: continuation
+          from: pagination.continuation
+        items: orders
+        has_more: pagination.has_more_items
       summary: List orders (registrations) placed by the authenticated user
       risk: read
+      parameters:
+        - name: continuation
+          in: query
+          description: >-
+            Continuation token from a previous response's
+            `pagination.continuation`. Absent from the last page.
+          schema:
+            type: string
   /v3/users/me/organizations/:
     get:
       operationId: list_organizations
+      # Same shape as list_my_orders — a fixed 50 per page, plus a continuation.
+      pagination:
+        next:
+          style: cursor
+          param: continuation
+          from: pagination.continuation
+        items: organizations
+        has_more: pagination.has_more_items
       summary: List organizations the user belongs to
       risk: read
+      parameters:
+        - name: continuation
+          in: query
+          description: >-
+            Continuation token from a previous response's
+            `pagination.continuation`. Absent from the last page.
+          schema:
+            type: string
   /v3/events/{event_id}/:
     get:
       operationId: get_event
@@ -47,6 +83,14 @@ paths:
   /v3/events/{event_id}/ticket_classes/:
     get:
       operationId: list_ticket_classes
+      # Same shape as list_my_orders — a fixed 50 per page, plus a continuation.
+      pagination:
+        next:
+          style: cursor
+          param: continuation
+          from: pagination.continuation
+        items: ticket_classes
+        has_more: pagination.has_more_items
       summary: "List ticket types for event {event_id}"
       risk: read
       scope_param: event_id
@@ -57,9 +101,28 @@ paths:
           description: The event ID
           schema:
             type: string
+        - name: continuation
+          in: query
+          description: >-
+            Continuation token from a previous response's
+            `pagination.continuation`. Absent from the last page.
+          schema:
+            type: string
   /v3/events/{event_id}/attendees/:
     get:
       operationId: list_event_attendees
+      # The severe one: attendee records are rich objects, and a popular event
+      # has thousands. Before this the action read every one of them into a
+      # single response — the shape that blew the transport cap on Metabase's
+      # `list_cards`. Eventbrite's own 50-per-page is the bound; `continuation`
+      # is what makes the rest reachable rather than merely absent.
+      pagination:
+        next:
+          style: cursor
+          param: continuation
+          from: pagination.continuation
+        items: attendees
+        has_more: pagination.has_more_items
       summary: "List attendees for event {event_id}[ with status {status}]"
       risk: read
       scope_param: event_id
@@ -68,6 +131,13 @@ paths:
           in: path
           required: true
           description: The event ID
+          schema:
+            type: string
+        - name: continuation
+          in: query
+          description: >-
+            Continuation token from a previous response's
+            `pagination.continuation`. Absent from the last page.
           schema:
             type: string
         - name: status

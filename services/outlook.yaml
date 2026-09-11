@@ -47,6 +47,20 @@ paths:
   /v1.0/me/messages:
     get:
       operationId: list_messages
+      # OData spells a page `$top` + `$skip`, which is the `offset` style: the
+      # next skip is the previous one plus the page actually used, so nothing
+      # is read out of the response. `items` names Graph's collection wrapper
+      # so an underfull page is recognised as the last one instead of costing
+      # the caller an empty call.
+      pagination:
+        page_size:
+          param: "$top"
+          default: 25
+          max: 1000
+        next:
+          style: offset
+          param: "$skip"
+        items: value
       summary: Search and list mail messages
       risk: read
       security:
@@ -350,6 +364,15 @@ paths:
   /v1.0/me/mailFolders:
     get:
       operationId: list_folders
+      # Same shape as list_messages; folders are small, so the page is larger.
+      pagination:
+        page_size:
+          param: "$top"
+          default: 100
+        next:
+          style: offset
+          param: "$skip"
+        items: value
       summary: List mail folders
       risk: read
       security:
