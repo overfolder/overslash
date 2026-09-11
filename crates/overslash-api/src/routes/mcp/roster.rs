@@ -96,6 +96,15 @@ async fn load_keys(
         if row.status != "active" {
             continue;
         }
+        // `overslash` and `http` are seeded into every org by `org_bootstrap`
+        // and granted to Everyone, so naming them says nothing about what this
+        // caller has connected. They are also the *only* rows a fresh org has,
+        // which would make the roster claim two things are connected when
+        // nothing is — the case `roster_sentence` returns `None` for, and the
+        // one a new caller most needs told straight.
+        if row.is_system {
+            continue;
+        }
         // Shipped templates marked `x-overslash-hidden` stay out of the
         // agent-facing catalog. In-memory lookup, no DB cost. Org- and
         // user-tier templates would need their layered definition resolved to

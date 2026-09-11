@@ -111,15 +111,59 @@ async fn create_user_level_service(
         .expect("create service body")
 }
 
+/// A fresh org already owns two `is_system` instances — `overslash` and
+/// `http`, seeded by `org_bootstrap` and granted to Everyone. Naming them
+/// would make every roster identical at the front and would tell a brand-new
+/// caller that two things are connected when nothing is, so they are filtered
+/// out and the sentence is omitted entirely.
+#[tokio::test]
+async fn system_instances_are_not_named_and_leave_no_sentence() {
+    let fx = bootstrap().await;
+
+    // The seeded instances really are there and really are callable — the
+    // roster's silence is a filter, not an empty org.
+    let services: Vec<Value> = fx
+        .client
+        .get(format!("{}/v1/services", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.fixtures.admin_key))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let system: Vec<&str> = services
+        .iter()
+        .filter(|s| s["is_system"].as_bool() == Some(true))
+        .filter_map(|s| s["template_key"].as_str())
+        .collect();
+    assert!(
+        system.contains(&"overslash") && system.contains(&"http"),
+        "expected the bootstrap system instances: {system:?}"
+    );
+
+    let desc = search_description(&fx, &fx.agent_key).await;
+    assert!(
+        roster_keys(&desc).is_empty(),
+        "system instances leaked into the roster: {desc}"
+    );
+    // Not just an empty list — the whole sentence is gone, so the description
+    // never reads "Connected service types for this caller: .".
+    assert!(
+        !desc.contains(ROSTER_PREFIX),
+        "roster sentence rendered with nothing to say: {desc}"
+    );
+}
+
 #[tokio::test]
 async fn roster_names_the_callers_connected_template_keys() {
     let fx = bootstrap().await;
 
-    // Baseline: nothing of this template is wired up yet.
+    // Baseline: nothing is wired up yet, so there is no roster at all.
     let before = search_description(&fx, &fx.agent_key).await;
     assert!(
-        !roster_keys(&before).contains(&"google_calendar".to_string()),
-        "template named before any instance exists: {before}"
+        roster_keys(&before).is_empty(),
+        "fresh org named something as connected: {before}"
     );
     // The static half is always there.
     assert!(
