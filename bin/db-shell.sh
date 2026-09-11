@@ -90,7 +90,12 @@ if ! gcloud auth application-default print-access-token >/dev/null 2>&1; then
   # thing you saw instead of the line below telling you what to do.
   ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" || ACCESS_TOKEN=""
   [ -n "$ACCESS_TOKEN" ] || err "No ADC, and no usable gcloud token either. Run \`gcloud auth login\` (or \`gcloud auth application-default login\`)."
-  log "No ADC - authenticating the proxy as $(gcloud config get-value account 2>/dev/null)."
+  # warn, not log: this is an identity switch. The probe cannot tell "no ADC
+  # configured" from "ADC broken" (e.g. GOOGLE_APPLICATION_CREDENTIALS pointing
+  # at a bad file) without parsing gcloud's prose, which breaks on upgrades --
+  # so say plainly which identity is being used and let the reader judge.
+  warn "No usable ADC - authenticating the proxy as the active gcloud identity instead:"
+  warn "  $(gcloud config get-value account 2>/dev/null) (may differ from your ADC identity)"
   # Through the environment, never `--token`: /proc/<pid>/cmdline is readable by
   # every local user, so a token on argv is a bearer credential on display for
   # its whole lifetime. The proxy reads CSQL_PROXY_TOKEN for the same flag.
