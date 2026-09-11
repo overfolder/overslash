@@ -86,8 +86,13 @@ DB_PASSWORD="$(gcloud secrets versions access latest --secret="$SECRET_NAME" --p
 # egress IP on a shared instance) is strictly worse.
 PROXY_AUTH=()
 if ! gcloud auth application-default print-access-token >/dev/null 2>&1; then
+  # Not inlined into the array assignment: under `set -e` a failing command
+  # substitution there aborts the script, so gcloud's raw stderr would be the
+  # last thing you saw instead of the line below telling you what to do.
+  ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" || ACCESS_TOKEN=""
+  [ -n "$ACCESS_TOKEN" ] || err "No ADC, and no usable gcloud token either. Run \`gcloud auth login\` (or \`gcloud auth application-default login\`)."
   log "No ADC - authenticating the proxy as $(gcloud config get-value account 2>/dev/null)."
-  PROXY_AUTH=(--token "$(gcloud auth print-access-token)")
+  PROXY_AUTH=(--token "$ACCESS_TOKEN")
 fi
 
 # Start proxy in background
