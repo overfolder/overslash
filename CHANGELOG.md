@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.10.0](https://github.com/overfolder/overslash/compare/v0.9.0...v0.10.0) (2026-09-14)
+
+
+### Features
+
+* **actions:** a template key used as `service` names the instances you can call ([#597](https://github.com/overfolder/overslash/issues/597)) ([2ee4ceb](https://github.com/overfolder/overslash/commit/2ee4ceba32aba88a0e6930ceddbbc45f61610560))
+* **actions:** one vocabulary for paging, and the gateway hands back the next call ([#578](https://github.com/overfolder/overslash/issues/578)) ([36362c7](https://github.com/overfolder/overslash/commit/36362c7572feb9005f70c27cac0291a02bc21620))
+* **dashboard:** qualify other users' services with their owner email ([#576](https://github.com/overfolder/overslash/issues/576)) ([29a2c11](https://github.com/overfolder/overslash/commit/29a2c1156a3c8a8e12a56522a399a46c879e7e2c))
+* **map:** a service belongs to whoever owns it, and folds with their cluster ([#582](https://github.com/overfolder/overslash/issues/582)) ([8e42767](https://github.com/overfolder/overslash/commit/8e4276754895f9a3ee085085184143238efe2e42))
+* **map:** ownership containers, and a cluster folds into its name chip ([#579](https://github.com/overfolder/overslash/issues/579)) ([522a1ab](https://github.com/overfolder/overslash/commit/522a1abbe5dd29e021fcb3134d7dcb5d00c9338e))
+* **mcp:** name the caller's connected service types in the tool catalog ([#596](https://github.com/overfolder/overslash/issues/596)) ([f6aaab4](https://github.com/overfolder/overslash/commit/f6aaab4898e3abac8ecba907c202222cc8680dd7))
+* **services:** sweep the corpus onto x-overslash-pagination, and page MCP tools ([#599](https://github.com/overfolder/overslash/issues/599)) ([d0df034](https://github.com/overfolder/overslash/commit/d0df034059492fd6f27ac8ff4eb27d588db06263))
+* **uploads:** proxy bytes into a service instead of handing out its credential ([#590](https://github.com/overfolder/overslash/issues/590)) ([2397428](https://github.com/overfolder/overslash/commit/23974286e40c4a100794a3e757ba6382f03c0e61))
+
+
+### Bug Fixes
+
+* **auth:** impersonation records activity on the identity it acts as ([#595](https://github.com/overfolder/overslash/issues/595)) ([ae986a5](https://github.com/overfolder/overslash/commit/ae986a5e7e17dba52eb5fe319f871e95ba47a512))
+* **auth:** one actor per human per org ([#581](https://github.com/overfolder/overslash/issues/581)) ([5a5ab34](https://github.com/overfolder/overslash/commit/5a5ab34c1fbfcedda36cd718b026e99e5be5a2d9))
+* **db-shell:** fall back to a bearer token when ADC is absent ([#601](https://github.com/overfolder/overslash/issues/601)) ([5cd6507](https://github.com/overfolder/overslash/commit/5cd6507ad7bc5e4ee26b33b92e60b29235e9032d))
+* **map:** a container has to be big enough for its own name ([#583](https://github.com/overfolder/overslash/issues/583)) ([2c455d2](https://github.com/overfolder/overslash/commit/2c455d21d69e7f5e8e04b42d6f181d5282fee3d3))
+* **map:** a container pushes out what does not belong in it ([#584](https://github.com/overfolder/overslash/issues/584)) ([5a22804](https://github.com/overfolder/overslash/commit/5a228044f35319a13ef65e3308459f239c0da6bd))
+* **map:** every overlap is resolved, not negotiated ([#586](https://github.com/overfolder/overslash/issues/586)) ([34ca1ce](https://github.com/overfolder/overslash/commit/34ca1ce323312dd648df9ba01cc80ee81e9cb53f))
+* **map:** overlap between containers is resolved, not negotiated ([#585](https://github.com/overfolder/overslash/issues/585)) ([576f716](https://github.com/overfolder/overslash/commit/576f7168c593c43624f154a59db048cab31fd97e))
+* **mcp:** keep system service instances out of the caller roster ([#598](https://github.com/overfolder/overslash/issues/598)) ([5a50d38](https://github.com/overfolder/overslash/commit/5a50d3861c411e7153e1aafdee5ef0f10eba4536))
+* **mcp:** sweep pending_mcp_elicitations in two phases ([#605](https://github.com/overfolder/overslash/issues/605)) ([993cba3](https://github.com/overfolder/overslash/commit/993cba34528fc588228267405700e3ca217fa6ec)), closes [#600](https://github.com/overfolder/overslash/issues/600)
+
 ## [0.9.0](https://github.com/overfolder/overslash/compare/v0.8.0...v0.9.0) (2026-08-27)
 
 
