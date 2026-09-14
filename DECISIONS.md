@@ -647,7 +647,7 @@ A `media_descriptors` ledger records every descriptor the gateway sees — in *b
 **Bytes the gateway never handled stay un-enriched, and that is the correct outcome.** A `media_path` pushed to the container out of band is not in the ledger and the File row falls back to the raw path. Probing the upstream at approval time would put a network round-trip and a credential use inside the approval path for a cosmetic gain. The fallback is lossless — the reviewer still sees exactly the string the call will send — so a miss is less helpful, never misleading.
 
 
-## D-NEXT: A `service` is an instance name; a template key is refused, not resolved
+## D77: A `service` is an instance name; a template key is refused, not resolved
 
 **Date**: 2026-09-10
 **Decision**: `service` on `/v1/actions/call` and `/v1/actions/validate` names a **service instance**, and nothing else. A key that resolves to no instance but does match a template — `gmail`, `github`, `hubspot` — is now a `ServiceResolution` 400 naming the instances of that template the caller can actually reach, the `create_service` call that adds one, and a dashboard deep-link to the form. The instance-less fallback that used to resolve such a call against the template definition and auto-pick a connection by provider is **removed**; `resolve_service_for_call` is the one place all three call shapes (service+action, verb shape, `/validate`) resolve through, so they cannot drift on it.
@@ -666,7 +666,7 @@ A `media_descriptors` ledger records every descriptor the gateway sees — in *b
 
 **Every "fix the instance" message names the call, not just the field.** The `overslash` meta-service is the only lever an agent has — `hint_url` is a dashboard link, which is useful to a human and inert to an agent — so "instance 'x' is missing `secret_name` configuration. Set `secret_name` on the instance" was a dead end of the same shape as the one above. The two config gaps (the MCP `url`/`secret_name` resolver and its HTTP `effective_base` twin) now name `update_service` with the instance id and the missing field filled in. Both are legacy-row paths, since `create_service` validates those fields up front, which is exactly why the message has to carry its own instructions: nobody hitting it is holding the docs.
 
-## D-NEXT: An MCP tool's pagination paths address the tool's own payload, not the gateway's envelope
+## D78: An MCP tool's pagination paths address the tool's own payload, not the gateway's envelope
 
 **Date**: 2026-09-11
 **Decision**: `services::pagination::next_page` unwraps the MCP result envelope before resolving `from` / `items` / `has_more`, using the projection D55 already settled for `x-overslash-resolve`: `structuredContent` when the server sends it, otherwise the first text content block parsed as JSON. A template therefore writes `from: response_metadata.next_cursor` on a Slack tool and `items: results` on a HubSpot one — the paths a person reading the vendor's docs would write. The unwrap requires all three envelope keys (`runtime: "mcp"`, `tool`, `is_error`), so an HTTP body that happens to carry a `runtime` field is left exactly as it arrived.

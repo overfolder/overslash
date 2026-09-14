@@ -116,20 +116,26 @@ if [ -n "$BASE_REF" ]; then
     base_nums=$(sed -n 's/^## D\([0-9][0-9]*\):.*/\1/p' <<<"$base_file")
 
     # An allocation legitimately turns a placeholder into a numbered heading.
-    # Recognise it by shape — the base had one and the working tree does not —
-    # so `make allocate-decision` followed by a commit is not blocked by the
-    # pre-commit hook on the manual-recovery path.
+    # Recognise it by shape — the base had placeholders and the working tree
+    # has none — so `make allocate-decision` followed by a commit is not
+    # blocked by the pre-commit hook on the manual-recovery path.
+    #
+    # Counted, not assumed to be one: allocate-decision.sh refuses to resolve
+    # two placeholders, and the runbook's by-hand recovery numbers them in
+    # file order. That is max+1..max+N, so accept exactly that run and nothing
+    # else — a hardcoded entry riding along with an allocation still fails.
     allocated=""
-    if grep -q "^## $DECISION_PLACEHOLDER:" <<<"$base_file" \
+    base_placeholders=$(grep -c "^## $DECISION_PLACEHOLDER:" <<<"$base_file" || true)
+    if [ "$base_placeholders" -gt 0 ] \
        && ! grep -q "^## $DECISION_PLACEHOLDER:" "$DECISIONS_FILE"; then
-        allocated=$(( $(sort -n <<<"$base_nums" | tail -1) + 1 ))
+        base_max=$(sort -n <<<"$base_nums" | tail -1)
+        allocated=$(seq $(( base_max + 1 )) $(( base_max + base_placeholders )))
     fi
     added=$(git diff "$BASE_REF" -- "$DECISIONS_FILE" \
         | sed -n 's/^+## D\([0-9][0-9]*\):.*/\1/p' || true)
     for n in $added; do
-        # Exactly the number the allocator would have assigned, and no other:
-        # a hardcoded entry riding along with an allocation still fails.
-        [ "$n" = "$allocated" ] && continue
+        # Only a number the allocation would have assigned.
+        grep -qxF "$n" <<<"$allocated" && continue
         if ! grep -qxF "$n" <<<"$base_nums"; then
             err "new decision D$n hardcodes a number; write '## $DECISION_PLACEHOLDER:' instead"
             detail "  The number is only valid at merge time. See docs/runbooks/decision-numbering.md."
