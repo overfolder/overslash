@@ -69,6 +69,11 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(30),
+            sweep_grace_secs: env::var("SWEEP_GRACE_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(60),
             call_timeout_ms: env::var("CALL_TIMEOUT_MS")
                 .ok()
                 .and_then(|s| s.parse().ok())

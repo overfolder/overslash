@@ -238,6 +238,8 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         let async_cfg = state.config.async_execution.clone();
         let async_queue_ttl = state.config.execution_pending_ttl_secs as i64;
         let async_wall = state.config.async_orphan_grace_secs();
+        let elicit_reap_after = state.config.mcp_elicitation_reap_after_secs();
+        let elicit_retention = state.config.mcp_elicitation_retention_secs();
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
@@ -365,6 +367,36 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     "call_result_expiry",
                     async { overslash_db::repos::call_result::prune_expired(&db).await },
                     |n| tracing::info!("Expired {n} call_results"),
+                )
+                .await;
+                // `pending_mcp_elicitations` in two phases, for the same
+                // reason `subagent_archive` precedes `subagent_purge`: the two
+                // halves retire a row for different reasons and want separate
+                // counters. First cancel rows whose originator pod died —
+                // until they reach a terminal status they keep suppressing
+                // auto-call on their approval. Then delete terminal rows,
+                // which is what actually bounds the table: `final_response`
+                // holds an `ApprovalResponse` snapshot, `disclosed_fields`
+                // included, and nothing reads it once the SSE stream is gone.
+                instrumented_step(
+                    "mcp_elicitation_reap",
+                    async {
+                        overslash_db::repos::mcp_elicitation::cancel_orphaned(
+                            &db,
+                            elicit_reap_after,
+                        )
+                        .await
+                    },
+                    |n| tracing::info!("Cancelled {n} orphaned MCP elicitations"),
+                )
+                .await;
+                instrumented_step(
+                    "mcp_elicitation_purge",
+                    async {
+                        overslash_db::repos::mcp_elicitation::purge_terminal(&db, elicit_retention)
+                            .await
+                    },
+                    |n| tracing::info!("Purged {n} stale MCP elicitations"),
                 )
                 .await;
             }

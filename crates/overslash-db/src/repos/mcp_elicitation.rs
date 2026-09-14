@@ -192,11 +192,50 @@ pub async fn cancel_for_agent(pool: &PgPool, agent_identity_id: Uuid) -> Result<
     Ok(r.rows_affected())
 }
 
-/// Periodic cleanup — drop rows older than `older_than_secs`.
-pub async fn purge_older_than(pool: &PgPool, older_than_secs: i64) -> Result<u64, sqlx::Error> {
+/// Phase one of the periodic cleanup: cancel `pending`/`claimed` rows older
+/// than `older_than_secs`.
+///
+/// A row still live past the originator's poll ceiling lost its originator pod
+/// — nobody will ever read it, and until it reaches a terminal status
+/// [`has_active_for_approval`] keeps reporting its approval as mid-elicitation,
+/// which suppresses auto-call on that approval forever. Cancelling rather than
+/// deleting is the same retirement `cancel_for_agent` performs on disconnect,
+/// and it leaves the row for [`purge_terminal`] to collect on a later tick.
+pub async fn cancel_orphaned(pool: &PgPool, older_than_secs: i64) -> Result<u64, sqlx::Error> {
+    let r = sqlx::query!(
+        "UPDATE pending_mcp_elicitations
+            SET status = $1, completed_at = now()
+          WHERE status IN ($2, $3)
+            AND created_at < now() - make_interval(secs => $4)",
+        STATUS_CANCELLED,
+        STATUS_PENDING,
+        STATUS_CLAIMED,
+        older_than_secs as f64,
+    )
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// Phase two: drop terminal rows older than `older_than_secs`.
+///
+/// These are what make the table unbounded. `final_response` is not scratch —
+/// it is a full `ApprovalResponse` snapshot, `disclosed_fields` included — and
+/// nothing reads it once the originator's SSE stream has closed, so it should
+/// not outlive that stream by much.
+///
+/// Keyed on `created_at` rather than `completed_at` so the predicate rides
+/// `idx_pending_mcp_elicit_status (status, created_at)` instead of seq-scanning.
+/// `created_at <= completed_at`, so a window comfortably past the originator's
+/// poll ceiling is conservative either way.
+pub async fn purge_terminal(pool: &PgPool, older_than_secs: i64) -> Result<u64, sqlx::Error> {
     let r = sqlx::query!(
         "DELETE FROM pending_mcp_elicitations
-          WHERE created_at < now() - make_interval(secs => $1)",
+          WHERE status IN ($1, $2, $3)
+            AND created_at < now() - make_interval(secs => $4)",
+        STATUS_COMPLETED,
+        STATUS_FAILED,
+        STATUS_CANCELLED,
         older_than_secs as f64,
     )
     .execute(pool)
