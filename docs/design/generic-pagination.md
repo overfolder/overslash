@@ -1,7 +1,7 @@
 # Generic pagination
 
 **Status:** Implemented (D75); swept onto the shipped corpus and extended to
-the MCP runtime in D-NEXT
+the MCP runtime in D78
 
 Companion to [large-file-handling.md](large-file-handling.md), which bounds a
 response *after* it is too big. This bounds it before.
