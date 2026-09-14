@@ -32,6 +32,21 @@ paths:
           default: "2022-06-28"
     post:
       operationId: search
+      # `page_size` and `start_cursor` are body properties on a POST, which the
+      # extension does not care about: it names parameters, and a body property
+      # is one. Notion sends `next_cursor` and `has_more` beside `results`, so
+      # the last page is stated rather than inferred.
+      pagination:
+        page_size:
+          param: page_size
+          default: 100
+          max: 100
+        next:
+          style: cursor
+          param: start_cursor
+          from: next_cursor
+        items: results
+        has_more: has_more
       summary: "Search all pages and databases shared with the integration[ matching '{query}']"
       risk: read
       requestBody:
@@ -72,6 +87,18 @@ paths:
           default: "2022-06-28"
     post:
       operationId: query_database
+      # Same shape as search, one collection over.
+      pagination:
+        page_size:
+          param: page_size
+          default: 100
+          max: 100
+        next:
+          style: cursor
+          param: start_cursor
+          from: next_cursor
+        items: results
+        has_more: has_more
       summary: "Query rows of database {database_id}"
       risk: read
       scope_param: database_id

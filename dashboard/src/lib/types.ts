@@ -545,6 +545,26 @@ export interface ActionSummary {
    *  caller names none. Absent for almost every action — present only where
    *  the template declares that a call may not answer inline. */
   wait_mode?: 'sync' | 'async' | 'hybrid';
+  /** `x-overslash-pagination`: this action returns one page of a larger
+   *  collection, and its result carries a `_pagination.next` naming the call
+   *  for the page after it. Absent where nobody has declared how it pages —
+   *  which is not the same as "it returns everything". */
+  pagination?: ActionPagination;
+}
+
+export interface ActionPagination {
+  /** Which continuation family: an opaque cursor, an advancing offset or page
+   *  ordinal, or an RFC 8288 `Link: rel="next"` header. */
+  style: 'cursor' | 'offset' | 'page' | 'link';
+  /** The parameter that bounds a page, when the action lets a caller choose. */
+  page_size_param?: string;
+  /** What a caller gets by saying nothing — the gateway injects it. */
+  page_size_default?: number;
+  /** The largest page the upstream documents. */
+  page_size_max?: number;
+  /** The parameter carrying the continuation. Absent for `link`, whose next
+   *  URL arrives in a response header. */
+  next_param?: string;
 }
 
 export type ServiceRuntime = 'http' | 'mcp';

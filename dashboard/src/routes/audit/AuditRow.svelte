@@ -230,6 +230,29 @@
 	// use_count well past 1 is the signal that a download URL leaked.
 	const download = $derived(downloadSummary(entry));
 
+	// Upload rows describe a file too, but the useful thing to show is
+	// different: declared vs measured. The gateway verifies what was pushed
+	// against what was approved, and a divergence between the two columns is
+	// the entire signal — this row is the only place it survives.
+	const upload = $derived(uploadSummary(entry));
+
+	function uploadSummary(e: AuditEntry) {
+		if (e.action !== 'action.uploaded') return null;
+		const d = (e.detail ?? {}) as Record<string, unknown>;
+		const str = (k: string) => (typeof d[k] === 'string' ? (d[k] as string) : null);
+		const num = (k: string) => (typeof d[k] === 'number' ? (d[k] as number) : null);
+		return {
+			filename: str('declared_filename'),
+			mime: str('declared_mime'),
+			storedPath: str('stored_media_path'),
+			declaredSize: num('declared_size_bytes'),
+			measuredSize: num('measured_size_bytes'),
+			declaredSha: str('declared_sha256'),
+			measuredSha: str('measured_sha256'),
+			error: str('error')
+		};
+	}
+
 	function downloadSummary(e: AuditEntry) {
 		if (e.action !== 'action.downloaded') return null;
 		const d = (e.detail ?? {}) as Record<string, unknown>;
@@ -496,7 +519,43 @@
 						{/if}
 					</dl>
 				{/if}
-				{#if response && !download}
+				{#if upload}
+					<dl class="disclosed">
+						<dt>File</dt>
+						<dd class="mono">{upload.filename ?? '—'}</dd>
+						{#if upload.mime}
+							<dt>Type</dt>
+							<dd class="mono">{upload.mime}</dd>
+						{/if}
+						{#if upload.measuredSize !== null || upload.declaredSize !== null}
+							<dt>Size</dt>
+							<dd>
+								{upload.measuredSize !== null ? formatBytes(upload.measuredSize) : '—'}
+								{#if upload.declaredSize !== null && upload.declaredSize !== upload.measuredSize}
+									<span class="trunc"> (declared {formatBytes(upload.declaredSize)})</span>
+								{/if}
+							</dd>
+						{/if}
+						{#if upload.measuredSha || upload.declaredSha}
+							<dt>SHA-256</dt>
+							<dd class="mono">
+								{upload.measuredSha ?? '—'}
+								{#if upload.declaredSha && upload.declaredSha !== upload.measuredSha}
+									<span class="trunc"> (declared {upload.declaredSha})</span>
+								{/if}
+							</dd>
+						{/if}
+						{#if upload.storedPath}
+							<dt>Stored as</dt>
+							<dd class="mono">{upload.storedPath}</dd>
+						{/if}
+						{#if upload.error}
+							<dt>Refused</dt>
+							<dd>{upload.error}</dd>
+						{/if}
+					</dl>
+				{/if}
+				{#if response && !download && !upload}
 					<div class="json-block">
 						<div class="json-label">
 							response body

@@ -229,6 +229,64 @@ pub(crate) struct ActionSummary {
     /// The response-shape consequence is invisible in every other listing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) wait_mode: Option<overslash_core::types::service::ExecutionMode>,
+    /// `x-overslash-pagination` — that this action returns one page of a larger
+    /// collection, and how.
+    ///
+    /// Same argument as `wait_mode` above: a property of the *response shape*
+    /// that no other column in a listing reveals. Unlike the `/v1/search` row,
+    /// which pays for every byte in a model's context and settles for a
+    /// boolean, this one is read by a person deciding whether an action is the
+    /// right one — so it carries enough to write a sentence with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) pagination: Option<PaginationSummary>,
+}
+
+/// The dashboard-facing projection of an action's pagination declaration.
+///
+/// Not `PaginationSpec` itself: the response paths (`items`, `has_more`,
+/// `next.from`) describe how the gateway reads an upstream body, which is
+/// plumbing nobody looking at an action list is deciding anything with.
+#[derive(Serialize, Clone)]
+pub(crate) struct PaginationSummary {
+    /// The `cursor` / `offset` / `page` / `link` family this action belongs to.
+    pub(super) style: &'static str,
+    /// The parameter that bounds a page, when the action lets a caller choose.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) page_size_param: Option<String>,
+    /// What that parameter defaults to — the bound a caller gets by saying
+    /// nothing, which is the number worth showing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) page_size_default: Option<i64>,
+    /// The largest page the upstream documents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) page_size_max: Option<i64>,
+    /// The parameter that carries the continuation. Absent for `link`, which
+    /// takes the whole next URL from a response header.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) next_param: Option<String>,
+}
+
+impl PaginationSummary {
+    pub(super) fn of(action: &overslash_core::types::ServiceAction) -> Option<Self> {
+        let spec = action.pagination.as_ref()?;
+        // The page size the caller actually gets is the parameter's own
+        // default — the compiler seeded it from the extension, and an org layer
+        // may since have patched it — so read it from the parameter, not from
+        // the declaration it came from.
+        let declared = spec
+            .page_size
+            .as_ref()
+            .and_then(|p| action.params.get(&p.param))
+            .and_then(|p| p.default.as_ref())
+            .and_then(serde_json::Value::as_i64);
+        Some(PaginationSummary {
+            style: spec.next.style.as_str(),
+            page_size_param: spec.page_size.as_ref().map(|p| p.param.clone()),
+            page_size_default: declared.or_else(|| spec.page_size.as_ref().and_then(|p| p.default)),
+            page_size_max: spec.page_size.as_ref().and_then(|p| p.max),
+            next_param: spec.next.param.clone(),
+        })
+    }
 }
 
 /// Full action details including the parameter schema — used by the API

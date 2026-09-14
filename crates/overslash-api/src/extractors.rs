@@ -440,6 +440,24 @@ impl FromRequestParts<AppState> for AuthContext {
                     .await?;
                 }
 
+                // Impersonation is the one authentication route that leaves
+                // no trace on the identity it acts as: the touch above stamps
+                // the *key's* identity, and an org service key is never a
+                // sub-agent. Without this, a sub-agent reached only through
+                // this header has `last_active_at` frozen at creation and the
+                // idle sweep archives it however busy it actually is.
+                //
+                // Only the leaf needs stamping — the sweep skips any identity
+                // with a live child, so a live leaf holds its ancestors up.
+                if target.kind == "sub_agent" {
+                    let touch_scope =
+                        OrgScope::new(key_row.org_id, state.db_pool(&parts.extensions));
+                    let target_id = target.identity_id;
+                    tokio::spawn(async move {
+                        let _ = touch_scope.touch_identity_last_active(target_id).await;
+                    });
+                }
+
                 (Some(target.identity_id), Some(key_row.identity_id))
             }
             Some(_) => {

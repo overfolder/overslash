@@ -61,6 +61,7 @@ use crate::{
 mod dispatch;
 mod elicitation;
 mod initialize;
+mod roster;
 mod tools_call;
 
 use initialize::{initialize_response, tools_list_response};

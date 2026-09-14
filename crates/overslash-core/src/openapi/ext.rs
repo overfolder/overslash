@@ -68,6 +68,8 @@ pub enum Ext {
     WaitMode,
     HandoffAfterMs,
     Download,
+    Upload,
+    Pagination,
     // Parameters, body properties, tool properties, platform-action params
     Resolve,
     Aliases,
@@ -107,6 +109,8 @@ impl Ext {
             Ext::WaitMode => "x-overslash-wait-mode",
             Ext::HandoffAfterMs => "x-overslash-handoff_after_ms",
             Ext::Download => "x-overslash-download",
+            Ext::Upload => "x-overslash-upload",
+            Ext::Pagination => "x-overslash-pagination",
             Ext::Resolve => "x-overslash-resolve",
             Ext::Aliases => "x-overslash-aliases",
             Ext::InstanceConfig => "x-overslash-instance-config",
@@ -160,6 +164,8 @@ pub(super) const ALL: &[Ext] = &[
     Ext::WaitMode,
     Ext::HandoffAfterMs,
     Ext::Download,
+    Ext::Upload,
+    Ext::Pagination,
     Ext::Resolve,
     Ext::Aliases,
     Ext::InstanceConfig,
@@ -334,6 +340,23 @@ pub(super) const READS: &[(Ext, &[Pos])] = &[
     // is its own download, since `deliver: "url"` mints a token from the
     // resolved request (see the comment at actions.rs:160).
     (Ext::Download, &[Pos::McpTool, Pos::McpToolDiscovered]),
+    // mcp.rs. Same positions as Download, for a sharper reason: the block names
+    // a *route on the MCP origin*, which exists only because an MCP instance
+    // URL does. `McpToolDiscovered` is required even though a discovered entry
+    // never authors one — `lower_mcp_tool` is shared with
+    // `overlay_discovered_tools`, so the read genuinely happens at that
+    // position after the merge, and omitting it fires the `debug_assert!` in
+    // `get` from the overlay path.
+    (Ext::Upload, &[Pos::McpTool, Pos::McpToolDiscovered]),
+    // actions.rs · mcp.rs. Wherever an action is authored, minus the platform
+    // runtime: a platform action answers from this process, so there is no
+    // upstream page to be on. `NextStyle::Link` is refused at `Pos::McpTool`
+    // for a narrower reason — an MCP tool result carries no response headers,
+    // so a Link-styled continuation there would parse and then find nothing.
+    (
+        Ext::Pagination,
+        &[Pos::Operation, Pos::McpTool, Pos::McpToolDiscovered],
+    ),
     // params.rs:31,129 · mcp.rs:436. NOT on a platform-action param:
     // `parse_platform_params` reads the other four and no resolver.
     (
@@ -445,7 +468,7 @@ mod tests {
     fn every_variant_is_in_all() {
         // `ALL` drives name resolution and did-you-mean suggestions, so a
         // variant missing from it is invisible to the lint.
-        assert_eq!(ALL.len(), 30, "ALL has drifted from the enum");
+        assert_eq!(ALL.len(), 32, "ALL has drifted from the enum");
         let mut keys: Vec<&str> = ALL.iter().map(|e| e.key()).collect();
         keys.sort_unstable();
         let before = keys.len();
@@ -492,6 +515,10 @@ mod tests {
         // normalizes at a position that then ignores it.
         assert!(!reads_at(Ext::Download, Pos::Operation));
         assert!(reads_at(Ext::Download, Pos::McpTool));
+        // Upload rides the same MCP-only positions as Download: the route it
+        // names only exists because an MCP instance URL does.
+        assert!(!reads_at(Ext::Upload, Pos::Operation));
+        assert!(reads_at(Ext::Upload, Pos::McpTool));
         assert!(!reads_at(
             Ext::Template,
             Pos::SecurityScheme(SchemeKind::Http)

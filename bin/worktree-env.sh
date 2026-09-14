@@ -48,6 +48,10 @@ WEB_BASE=$(( (HASH % 9000) + 18000 ))
 # REST API + SMTP submission port, and the overfwd gateway. Only the ports the
 # host reaches are published — overfwd talks to GreenMail's IMAP over the
 # compose network, so 3143 needs no host mapping.
+# Valkey for the test suite (oversla-sh integration tests via VALKEY_URL, the
+# API's resolver cache / rate limiter via REDIS_URL). Same store, two names —
+# exactly how CI wires its `valkey` service.
+VALKEY_BASE=$(( (HASH % 9000) + 46000 ))
 GREENMAIL_API_BASE=$(( (HASH % 9000) + 38000 ))
 GREENMAIL_SMTP_BASE=$(( (HASH % 9000) + 33000 ))
 OVERFWD_BASE=$(( (HASH % 9000) + 41000 ))
@@ -71,6 +75,7 @@ PG_PORT=$(find_free_port "$PG_BASE" postgres) || exit 1
 API_PORT=$(find_free_port "$API_BASE" api) || exit 1
 DASH_PORT=$(find_free_port "$DASH_BASE" dashboard) || exit 1
 WEB_PORT=$(find_free_port "$WEB_BASE" web) || exit 1
+VALKEY_PORT=$(find_free_port "$VALKEY_BASE" valkey) || exit 1
 GREENMAIL_API_PORT=$(find_free_port "$GREENMAIL_API_BASE" greenmail-api) || exit 1
 GREENMAIL_SMTP_PORT=$(find_free_port "$GREENMAIL_SMTP_BASE" greenmail-smtp) || exit 1
 OVERFWD_PORT=$(find_free_port "$OVERFWD_BASE" overfwd) || exit 1
@@ -89,10 +94,13 @@ PG_HOST_PORT=${PG_PORT}
 API_HOST_PORT=${API_PORT}
 DASH_HOST_PORT=${DASH_PORT}
 OVERSLASH_WEB_PORT=${WEB_PORT}
+VALKEY_HOST_PORT=${VALKEY_PORT}
+VALKEY_URL=redis://localhost:${VALKEY_PORT}
+REDIS_URL=redis://localhost:${VALKEY_PORT}
 GREENMAIL_API_PORT=${GREENMAIL_API_PORT}
 GREENMAIL_SMTP_PORT=${GREENMAIL_SMTP_PORT}
 OVERFWD_PORT=${OVERFWD_PORT}
 DATABASE_URL=postgres://overslash:overslash@localhost:${PG_PORT}/overslash
 EOF
 
-echo "Worktree env: project=${PROJECT_NAME} pg=${PG_PORT} api=${API_PORT} dashboard=${DASH_PORT} web=${WEB_PORT} greenmail=${GREENMAIL_API_PORT} overfwd=${OVERFWD_PORT}"
+echo "Worktree env: project=${PROJECT_NAME} pg=${PG_PORT} api=${API_PORT} dashboard=${DASH_PORT} web=${WEB_PORT} valkey=${VALKEY_PORT} greenmail=${GREENMAIL_API_PORT} overfwd=${OVERFWD_PORT}"

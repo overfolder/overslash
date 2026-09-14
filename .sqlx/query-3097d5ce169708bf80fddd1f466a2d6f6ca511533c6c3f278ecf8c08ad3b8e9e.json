@@ -1,0 +1,331 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO upload_tokens (\n             token_hash, org_id, identity_id, service_instance_id,\n             service_key, action_key, request, credential_ref,\n             declared_sha256, declared_size_bytes, declared_mime, declared_filename,\n             max_bytes, filename_param, result_spec, expires_at\n         )\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,\n                 now() + make_interval(secs => $16))\n         RETURNING id, token_hash, org_id, identity_id, service_instance_id,\n                   service_key, action_key, request, credential_ref,\n                   declared_sha256, declared_size_bytes, declared_mime, declared_filename,\n                   max_bytes, filename_param, result_spec, stored_media_path, stored_sha256,\n                   stored_size_bytes,\n                   stored_mime, stored_filename, completed_at,\n                   created_at, expires_at, consumed_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "token_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "service_instance_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "service_instance_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "service_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "service_key"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "action_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "action_key"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "request",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "request"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "credential_ref",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "credential_ref"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "declared_sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "declared_sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "declared_size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "declared_size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "declared_mime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "declared_mime"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "declared_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "declared_filename"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "max_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "max_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "filename_param",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "filename_param"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "result_spec",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "result_spec"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "stored_media_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "stored_media_path"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "stored_sha256",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "stored_sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "stored_size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "stored_size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "stored_mime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "stored_mime"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "stored_filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "stored_filename"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "completed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "completed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 22,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 23,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 24,
+        "name": "consumed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "consumed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Jsonb",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "3097d5ce169708bf80fddd1f466a2d6f6ca511533c6c3f278ecf8c08ad3b8e9e"
+}

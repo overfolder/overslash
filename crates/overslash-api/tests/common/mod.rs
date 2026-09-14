@@ -651,6 +651,7 @@ where
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
         execution_replay_timeout_secs: 30,
+        sweep_grace_secs: 60,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -663,6 +664,8 @@ where
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -755,6 +758,7 @@ where
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::icons::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
@@ -867,6 +871,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
         execution_replay_timeout_secs: 30,
+        sweep_grace_secs: 60,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -879,6 +884,8 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -962,6 +969,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::executions::router())
@@ -1028,6 +1036,7 @@ pub async fn start_api_with_auth_providers(
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
         execution_replay_timeout_secs: 30,
+        sweep_grace_secs: 60,
         services_dir: "services".into(),
         google_auth_client_id: google_creds.as_ref().map(|(id, _)| id.clone()),
         google_auth_client_secret: google_creds.map(|(_, s)| s),
@@ -1040,6 +1049,8 @@ pub async fn start_api_with_auth_providers(
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -1126,6 +1137,7 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::executions::router())
@@ -1614,6 +1626,7 @@ where
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
         execution_replay_timeout_secs: 30,
+        sweep_grace_secs: 60,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -1626,6 +1639,8 @@ where
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -1710,6 +1725,7 @@ where
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::executions::router())
@@ -1782,6 +1798,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
         execution_replay_timeout_secs: 30,
+        sweep_grace_secs: 60,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -1794,6 +1811,8 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -1880,6 +1899,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::search::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::auth::router())
@@ -1921,6 +1941,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
         execution_replay_timeout_secs: 30,
+        sweep_grace_secs: 60,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -1933,6 +1954,8 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -2016,6 +2039,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::downloads::router())
+        .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::executions::router())
@@ -2133,13 +2157,9 @@ pub async fn seed_org_user_key(pool: &PgPool, opts: SeedOptions) -> (Uuid, Uuid,
     let raw_key = format!("osk_{suffix}");
     let prefix = raw_key[..12].to_string();
 
-    use argon2::{
-        Argon2,
-        password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-    };
-    let salt = SaltString::generate(&mut OsRng);
+    use argon2::{Argon2, PasswordHasher};
     let hash = Argon2::default()
-        .hash_password(raw_key.as_bytes(), &salt)
+        .hash_password(raw_key.as_bytes())
         .unwrap()
         .to_string();
 
@@ -2252,6 +2272,7 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
         execution_replay_timeout_secs: 30,
+        sweep_grace_secs: 60,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -2264,6 +2285,8 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),

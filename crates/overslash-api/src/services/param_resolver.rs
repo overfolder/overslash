@@ -87,6 +87,81 @@ fn project(
     (display, canonical)
 }
 
+/// Resolve display names for params that declare `source:` — answered from the
+/// gateway's own records rather than from the upstream.
+///
+/// Runtime-agnostic on purpose, and called once after both runtime forks rather
+/// than inside either: the ledger is a database read, so it shares nothing with
+/// the HTTP fan-out's client or the MCP fork's pinned-client preamble. Folding
+/// it into one of them would tie a lookup that needs neither to whichever
+/// runtime happened to host it.
+///
+/// Not cached. The ledger *is* the cache — it is local, org-scoped, and
+/// authoritative — so a second layer in front of it would add staleness and
+/// nothing else.
+pub async fn resolve_ledger_params(
+    pool: &sqlx::PgPool,
+    org_id: uuid::Uuid,
+    service_instance_id: Option<uuid::Uuid>,
+    action: &ServiceAction,
+    params: &HashMap<String, serde_json::Value>,
+) -> ResolvedParams {
+    use overslash_core::types::ResolveSource;
+
+    let mut out = ResolvedParams::default();
+    for (name, param) in &action.params {
+        let Some(resolver) = param.resolve.as_ref() else {
+            continue;
+        };
+        if resolver.source != Some(ResolveSource::Media) {
+            continue;
+        }
+        let Some(reference) = params
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let row = match overslash_db::repos::media_descriptor::find(
+            pool,
+            org_id,
+            service_instance_id,
+            reference,
+        )
+        .await
+        {
+            Ok(Some(row)) => row,
+            // A reference the gateway never handled is simply absent, and the
+            // disclose filter falls back to the raw argument. That fallback is
+            // lossless — the reviewer still sees exactly the string the call
+            // will send — so a miss is never worth a warning.
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(error = %e, "media ledger lookup failed");
+                continue;
+            }
+        };
+        // The same projection every other resolver goes through, over a body
+        // shaped like the descriptor a template already knows how to address.
+        let body = serde_json::json!({
+            "media_path": row.media_path,
+            "sha256": row.sha256,
+            "mime": row.mime,
+            "size": row.size_bytes,
+            "filename": row.filename,
+            "source": row.source,
+        });
+        // `scope` is refused on a `source` resolver at parse time, so the
+        // canonical half is always `None` here — a ledger lookup describes
+        // bytes, it does not name a principal to scope a grant to.
+        let (display, _canonical) = project(resolver, &body);
+        out.insert_resolution(name, display.as_deref(), None);
+    }
+    out
+}
+
 /// Resolve display names for HTTP-runtime action params that declare `get:`.
 ///
 /// Makes concurrent GET requests to the same service host using the already-

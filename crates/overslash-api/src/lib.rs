@@ -238,6 +238,8 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         let async_cfg = state.config.async_execution.clone();
         let async_queue_ttl = state.config.execution_pending_ttl_secs as i64;
         let async_wall = state.config.async_orphan_grace_secs();
+        let elicit_reap_after = state.config.mcp_elicitation_reap_after_secs();
+        let elicit_retention = state.config.mcp_elicitation_retention_secs();
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
@@ -346,6 +348,17 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     |n| tracing::info!("Expired {n} download_tokens"),
                 )
                 .await;
+                // The inbound half. Kept separate from the sweep above rather
+                // than folded into it because the tables are separate for a
+                // reason — an upload token is single-use, a download token is
+                // not — and a shared prune would be the first place that
+                // distinction quietly stopped mattering.
+                instrumented_step(
+                    "upload_token_expiry",
+                    async { overslash_db::repos::upload_token::prune_expired(&db).await },
+                    |n| tracing::info!("Expired {n} upload_tokens"),
+                )
+                .await;
                 // Stored results for truncated compact renders (D61). Ordering
                 // against the sweep above is irrelevant: the FK from
                 // `download_tokens.call_result_id` cascades, so pruning a
@@ -354,6 +367,36 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     "call_result_expiry",
                     async { overslash_db::repos::call_result::prune_expired(&db).await },
                     |n| tracing::info!("Expired {n} call_results"),
+                )
+                .await;
+                // `pending_mcp_elicitations` in two phases, for the same
+                // reason `subagent_archive` precedes `subagent_purge`: the two
+                // halves retire a row for different reasons and want separate
+                // counters. First cancel rows whose originator pod died —
+                // until they reach a terminal status they keep suppressing
+                // auto-call on their approval. Then delete terminal rows,
+                // which is what actually bounds the table: `final_response`
+                // holds an `ApprovalResponse` snapshot, `disclosed_fields`
+                // included, and nothing reads it once the SSE stream is gone.
+                instrumented_step(
+                    "mcp_elicitation_reap",
+                    async {
+                        overslash_db::repos::mcp_elicitation::cancel_orphaned(
+                            &db,
+                            elicit_reap_after,
+                        )
+                        .await
+                    },
+                    |n| tracing::info!("Cancelled {n} orphaned MCP elicitations"),
+                )
+                .await;
+                instrumented_step(
+                    "mcp_elicitation_purge",
+                    async {
+                        overslash_db::repos::mcp_elicitation::purge_terminal(&db, elicit_retention)
+                            .await
+                    },
+                    |n| tracing::info!("Purged {n} stale MCP elicitations"),
                 )
                 .await;
             }
@@ -594,6 +637,10 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         // layer because that layer keys on an API-key prefix these requests
         // don't have — the handler throttles per-IP itself.
         .merge(routes::downloads::router())
+        // Upload redemption, and the same reasoning inverted: the process
+        // pushing the bytes is not the caller either, and the token is the sole
+        // authority for one push.
+        .merge(routes::uploads::router())
         .merge(stripe_webhook_routes)
         .merge(validate_routes)
         .merge(rate_limited_routes)

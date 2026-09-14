@@ -118,6 +118,7 @@ mod tests {
                     ServiceAction {
                         wait_mode: None,
                         handoff_after_ms: None,
+                        pagination: None,
                         timeout_ms: None,
                         method: "GET".into(),
                         path: "/items".into(),
@@ -136,6 +137,7 @@ mod tests {
                         disabled: false,
                         request_body: None,
                         download: None,
+                        upload: None,
                     },
                 );
                 m
@@ -194,6 +196,7 @@ mod tests {
             ServiceAction {
                 wait_mode: None,
                 handoff_after_ms: None,
+                pagination: None,
                 timeout_ms: None,
                 method: String::new(),
                 path: String::new(),
@@ -231,6 +234,7 @@ mod tests {
                 disabled: false,
                 request_body: None,
                 download: None,
+                upload: None,
             },
         );
         ServiceDefinition {

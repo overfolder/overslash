@@ -5,10 +5,14 @@ name: oversla-sh
 # can start it alongside `make dev` without collisions.
 
 services:
+  # Its own port variable and default: this stack runs the shortener *service*,
+  # while the test suite's Valkey comes from `make local-db` (VALKEY_HOST_PORT,
+  # 6380 by default). Sharing one variable meant the two stacks could not be up
+  # at the same time.
   valkey:
     image: valkey/valkey:8-alpine
     ports:
-      - "127.0.0.1:${VALKEY_HOST_PORT:-6380}:6379"
+      - "127.0.0.1:${SHORTENER_VALKEY_HOST_PORT:-6390}:6379"
     volumes:
       - valkey-data:/data
     healthcheck:

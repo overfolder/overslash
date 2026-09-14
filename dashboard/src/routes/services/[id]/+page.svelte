@@ -19,6 +19,7 @@
 	import { groupsApi, type Group, type GroupGrantPick } from '$lib/api/groups';
 	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
 	import type {
+		ActionPagination,
 		ActionSummary,
 		ConnectionSummary,
 		Identity,
@@ -41,11 +42,13 @@
 	import { cleanServiceMap } from '$lib/service-maps';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import AutoApproveSelect from '$lib/components/AutoApproveSelect.svelte';
+	import { resolveOwner, ownerLabel, ownerTitle } from '$lib/ownerLabel';
 
 
 	const id = $derived($page.params.id ?? '');
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
 
 	let svc = $state<ServiceInstanceDetail | null>(null);
 	let template = $state<TemplateDetail | null>(null);
@@ -132,6 +135,28 @@
 	// off → the backend cleans up the connection if nothing else uses it.
 	let keepConnection = $state(false);
 	type Tab = 'overview' | 'credentials' | 'actions';
+	/// One sentence for the "pages" pill, written from what the action declares
+	/// rather than from a template. The page size is the number a caller gets by
+	/// saying nothing, which is the fact worth surfacing: it is why this action
+	/// cannot return ten thousand rows into somebody's context.
+	function paginationTitle(p: ActionPagination): string {
+		const parts: string[] = [];
+		if (p.page_size_param) {
+			const bound = p.page_size_default
+				? `${p.page_size_param} defaults to ${p.page_size_default}`
+				: `bounded by ${p.page_size_param}`;
+			parts.push(p.page_size_max ? `${bound} (max ${p.page_size_max})` : bound);
+		}
+		parts.push(
+			p.style === 'link'
+				? 'the next page arrives as a Link header'
+				: p.next_param
+					? `follow it with ${p.next_param}`
+					: `paged by ${p.style}`
+		);
+		return `This action returns one page at a time — ${parts.join(', ')}. A call's result carries _pagination.next with the arguments for the page after it.`;
+	}
+
 	const TABS: Tab[] = ['overview', 'credentials', 'actions'];
 
 	// `?tab=` deep-link. The API's `needs_authentication` envelope hands agents a
@@ -200,15 +225,13 @@
 	const editUrlRequired = $derived(
 		(template?.hosts?.length ?? 0) === 0 && !inheritedUrl
 	);
-	const ownerDisplay = $derived.by(() => {
-		const s = svc;
-		if (!s) return '';
-		const ownerId = s.owner_identity_id;
-		if (!ownerId) return 'Org';
-		if (currentUserId && ownerId === currentUserId) return 'You';
-		const match = identities.find((i) => i.id === ownerId);
-		return match?.name ?? 'user';
-	});
+	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
+	// Same labelling as the services list an admin arrives from: a user owner is
+	// named by their (domain-stripped) email, an agent by its name.
+	const ownerScope = $derived(
+		resolveOwner(svc?.owner_identity_id, identityById, currentUserId, allowedDomains)
+	);
+	const ownerDisplay = $derived(svc ? ownerLabel(ownerScope) : '');
 	const assignedGroupIds = $derived(new Set(serviceGroups.map((g) => g.group_id)));
 	// Filter out Myself groups for the "add a group" picker — Myself grants are
 	// auto-managed and only ever target their owner's services. Surfacing them
@@ -873,7 +896,7 @@
 				{/if}
 				<div class="row">
 					<span class="label">Owner</span>
-					<span title={svc.owner_identity_id ?? ''}>{ownerDisplay}</span>
+					<span title={ownerTitle(ownerScope)}>{ownerDisplay}</span>
 				</div>
 				<div class="row">
 					<span class="label">Created</span>
@@ -1194,6 +1217,10 @@
 											title="This action declares execution: &quot;{a.wait_mode}&quot;. A call that names no execution mode of its own may answer 202 accepted with an execution to poll, rather than the result. Pass execution: &quot;sync&quot; to insist on the answer inline."
 											>{a.wait_mode}</span
 										>{/if}
+										{#if a.pagination}<span
+											class="pill pill-page"
+											title={paginationTitle(a.pagination)}>pages</span
+										>{/if}
 									</td>
 								</tr>
 							{/each}
@@ -1228,6 +1255,10 @@
 											class="pill pill-defer"
 											title="This action declares execution: &quot;{a.wait_mode}&quot;. A call that names no execution mode of its own may answer 202 accepted with an execution to poll, rather than the result. Pass execution: &quot;sync&quot; to insist on the answer inline."
 											>{a.wait_mode}</span
+										>{/if}
+										{#if a.pagination}<span
+											class="pill pill-page"
+											title={paginationTitle(a.pagination)}>pages</span
 										>{/if}</td
 									>
 								</tr>
@@ -1431,6 +1462,14 @@
 		background: rgba(90, 140, 220, 0.12);
 		color: var(--color-text-muted);
 		border-color: rgba(90, 140, 220, 0.35);
+		margin-left: 0.35rem;
+	}
+	/* Same register as .pill-defer: a declaration about the response shape,
+	   not a problem. This one is good news — the action is bounded. */
+	.pill-page {
+		background: rgba(90, 190, 140, 0.12);
+		color: var(--color-text-muted);
+		border-color: rgba(90, 190, 140, 0.35);
 		margin-left: 0.35rem;
 	}
 	.actions {

@@ -86,6 +86,18 @@ x-overslash-mcp:
     - name: search_crm_objects
       risk: read
       scope_param: objectType
+      # `limit` already declares `default: 100`, so the block names it and
+      # restates nothing. The paths address the tool's own payload — HubSpot's
+      # MCP server answers `{results, total, offset}` — not the gateway's
+      # envelope, which is unwrapped first (D55's projection).
+      pagination:
+        page_size:
+          param: limit
+          max: 200
+        next:
+          style: offset
+          param: offset
+        items: results
       description: "Search {objectType} records by filters or free text"
       input_schema:
         type: object
@@ -127,7 +139,13 @@ x-overslash-mcp:
     - name: get_crm_objects
       risk: read
       scope_param: objectType
-      description: "Read up to 100 {objectType} records by id"
+      # No `pagination:` block: a batch read by id, bounded by `objectIds`
+      # (1-100), not a collection with a page to be on. `search_crm_objects`
+      # is the paged way to enumerate records.
+      description: >-
+        Read up to 100 {objectType} records by id. Bounded by the ids you
+        pass, so there is nothing to page — use search_crm_objects to
+        enumerate records.
       input_schema:
         type: object
         properties:
@@ -148,7 +166,11 @@ x-overslash-mcp:
 
     - name: query_crm_data
       risk: read
-      description: "Query CRM data with SQL"
+      # No `pagination:` block: the page lives in the SQL the caller writes.
+      description: >-
+        Query CRM data with SQL. There is no page-size argument — bound the
+        result with LIMIT (and walk it with OFFSET) inside the query itself,
+        or the whole result set comes back in one response.
       input_schema:
         type: object
         properties:
@@ -168,7 +190,12 @@ x-overslash-mcp:
     - name: get_properties
       risk: read
       scope_param: objectType
-      description: "Get property definitions for {objectType}"
+      # No `pagination:` block: property definitions are schema, a bounded
+      # set per object type, and HubSpot offers no page size for them.
+      description: >-
+        Get property definitions for {objectType}. Returns the whole set in
+        one response; pass propertyNames to narrow it, or use
+        search_properties to find the relevant few by keyword.
       input_schema:
         type: object
         properties:
@@ -185,7 +212,12 @@ x-overslash-mcp:
     - name: search_properties
       risk: read
       scope_param: objectType
-      description: "Find relevant {objectType} property definitions by keyword"
+      # No `pagination:` block: HubSpot exposes no page size here. The
+      # keywords are the bound.
+      description: >-
+        Find relevant {objectType} property definitions by keyword. Returns
+        every match in one response; the keywords are the only bound, so pass
+        them rather than listing all definitions.
       input_schema:
         type: object
         properties:
@@ -201,6 +233,17 @@ x-overslash-mcp:
 
     - name: search_owners
       risk: read
+      # Answers `{owners, hasMore, offset}`, so the last page is stated by the
+      # upstream rather than inferred from the row count.
+      pagination:
+        page_size:
+          param: limit
+          max: 100
+        next:
+          style: offset
+          param: offset
+        items: owners
+        has_more: hasMore
       description: "List or search owners assignable to CRM records"
       input_schema:
         type: object
@@ -227,7 +270,11 @@ x-overslash-mcp:
     # ── campaign & content analytics (read) ─────────────────────────────
     - name: get_campaign_analytics
       risk: read
-      description: "Get engagement analytics for campaigns"
+      # No `pagination:` block: bounded by `requests` (max 20), which is a
+      # batch size rather than a page.
+      description: >-
+        Get engagement analytics for campaigns. Bounded by the requests you
+        pass (max 20), so there is nothing to page.
       input_schema:
         type: object
         properties:
@@ -242,6 +289,19 @@ x-overslash-mcp:
 
     - name: get_campaign_contacts_by_type
       risk: read
+      # `offset` is documented zero-based, which is what the `offset` style
+      # assumes. No `items`: the shape of this tool's result is HubSpot's to
+      # decide and is not verified here, and a path that names nothing is a
+      # claim about the template rather than the collection. The cost of
+      # leaving it out is one empty call at the end of a traversal — the
+      # cheaper mistake than stopping a page early.
+      pagination:
+        page_size:
+          param: limit
+          max: 500
+        next:
+          style: offset
+          param: offset
       description: "Get contact IDs for a campaign by attribution type"
       input_schema:
         type: object
@@ -272,7 +332,12 @@ x-overslash-mcp:
 
     - name: get_campaign_asset_metrics
       risk: read
-      description: "Get metrics for a campaign's associated assets"
+      # No `pagination:` block: HubSpot exposes no page size or offset for
+      # this tool. `crmObjectIds` is the only bound available.
+      description: >-
+        Get metrics for a campaign's associated assets. HubSpot offers no
+        page size here, so a campaign with many assets returns them all in
+        one response — pass crmObjectIds to scope it.
       input_schema:
         type: object
         properties:
@@ -297,6 +362,17 @@ x-overslash-mcp:
 
     - name: get_content_analytics_report
       risk: read
+      # The one HubSpot tool whose `limit` declares no default of its own, so
+      # this is the one where `page_size.default` actually seeds something —
+      # without it, omitting `limit` left the row count to HubSpot. No
+      # `items`, for the reason given on get_campaign_contacts_by_type.
+      pagination:
+        page_size:
+          param: limit
+          default: 100
+        next:
+          style: offset
+          param: offset
       description: "Run a content analytics report ({mode})"
       input_schema:
         type: object

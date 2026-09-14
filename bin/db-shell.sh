@@ -11,10 +11,13 @@
 #   bin/db-shell.sh dev -c 'select 1'  # forwarded to psql
 #
 # Requirements:
-#   - cloud-sql-proxy on PATH (ships with gcloud SDK)
+#   - cloud-sql-proxy on PATH. It does NOT ship with the gcloud SDK - grab the
+#     static binary from https://github.com/GoogleCloudPlatform/cloud-sql-proxy
 #   - psql on PATH
-#   - gcloud auth: ADC (`gcloud auth application-default login`) +
-#     `roles/cloudsql.client` and Secret Manager accessor on the instance.
+#   - gcloud auth with `roles/cloudsql.client` and Secret Manager accessor on
+#     the instance. ADC (`gcloud auth application-default login`) is preferred;
+#     without it we fall back to the active gcloud identity's bearer token, so
+#     this works from a service account, CI, or an agent sandbox too.
 #
 # Env vars:
 #   PORT=<n>      pin the local proxy port (default: random in 55500–55599)
@@ -45,7 +48,7 @@ warn() { echo -e "${YELLOW}[db-shell:${ENV_NAME}]${NC} $1"; }
 err()  { echo -e "${RED}[db-shell:${ENV_NAME}]${NC} $1" >&2; exit 1; }
 
 command -v gcloud          >/dev/null || err "gcloud not on PATH"
-command -v cloud-sql-proxy >/dev/null || err "cloud-sql-proxy not on PATH (ships with gcloud SDK)"
+command -v cloud-sql-proxy >/dev/null || err "cloud-sql-proxy not on PATH (it does not ship with gcloud; see the header)"
 command -v psql            >/dev/null || err "psql not on PATH (install postgresql-client)"
 
 # Prod safety
@@ -75,10 +78,36 @@ PORT="${PORT:-$(( 55500 + RANDOM % 100 ))}"
 log "Fetching DB password from Secret Manager..."
 DB_PASSWORD="$(gcloud secrets versions access latest --secret="$SECRET_NAME" --project="$PROJECT")"
 
+# The proxy reads ADC by default. A service account activated with plain
+# `gcloud auth` has none, which is the usual shape in CI and agent sandboxes --
+# so hand it a bearer token for the active identity instead. Static, and the
+# proxy does not refresh it: a session outliving the ~1h token drops new
+# connections. Fine for a shell, and the alternative (whitelisting the caller's
+# egress IP on a shared instance) is strictly worse.
+if ! gcloud auth application-default print-access-token >/dev/null 2>&1; then
+  # Not inlined into an assignment's command substitution: under `set -e` a
+  # failure there aborts the script, so gcloud's raw stderr would be the last
+  # thing you saw instead of the line below telling you what to do.
+  ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" || ACCESS_TOKEN=""
+  [ -n "$ACCESS_TOKEN" ] || err "No ADC, and no usable gcloud token either. Run \`gcloud auth login\` (or \`gcloud auth application-default login\`)."
+  # warn, not log: this is an identity switch. The probe cannot tell "no ADC
+  # configured" from "ADC broken" (e.g. GOOGLE_APPLICATION_CREDENTIALS pointing
+  # at a bad file) without parsing gcloud's prose, which breaks on upgrades --
+  # so say plainly which identity is being used and let the reader judge.
+  warn "No usable ADC - authenticating the proxy as the active gcloud identity instead:"
+  warn "  $(gcloud config get-value account 2>/dev/null) (may differ from your ADC identity)"
+  # Through the environment, never `--token`: /proc/<pid>/cmdline is readable by
+  # every local user, so a token on argv is a bearer credential on display for
+  # its whole lifetime. The proxy reads CSQL_PROXY_TOKEN for the same flag.
+  export CSQL_PROXY_TOKEN="$ACCESS_TOKEN"
+fi
+
 # Start proxy in background
 log "Starting cloud-sql-proxy on 127.0.0.1:${PORT} -> ${CONNECTION_NAME}..."
 cloud-sql-proxy --port="$PORT" "$CONNECTION_NAME" >/tmp/cloud-sql-proxy.${ENV_NAME}.log 2>&1 &
 PROXY_PID=$!
+# The proxy forked with its own copy; drop ours so psql never inherits it.
+unset CSQL_PROXY_TOKEN ACCESS_TOKEN
 trap 'kill $PROXY_PID 2>/dev/null || true' EXIT INT TERM
 
 # Wait until the proxy is accepting connections (max ~10s)

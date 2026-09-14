@@ -3,12 +3,14 @@
 //! This module owns the [`Config`] struct, [`PlatformCredential`] and the
 //! accessor/derivation half of `impl Config`. The env-var parsing helpers
 //! live in the private `parse` submodule; `Config::from_env` /
-//! `Config::validate_env` live in the private `from_env` submodule.
+//! `Config::validate_env` live in the private `from_env` submodule; the
+//! derived wall clocks and background-sweep windows live in `sweeps`.
 
 use std::collections::HashMap;
 
 mod from_env;
 mod parse;
+mod sweeps;
 
 pub use parse::default_public_url;
 
@@ -86,6 +88,17 @@ pub struct Config {
     /// the largest per-call timeout the resolver can hand out. Read it through
     /// [`Config::replay_wall_clock`], never directly.
     pub execution_replay_timeout_secs: u64,
+    /// Slack a sweeper allows past a deadline that *should* already have
+    /// fired before it calls the row abandoned. One knob, because every
+    /// sweeper is asking the same question — how long after the deadline do we
+    /// conclude the process holding this row is gone? — and answering it three
+    /// different ways would only invite the three to drift. Default 60.
+    ///
+    /// Read it through the accessors below ([`Self::orphan_execution_grace_secs`],
+    /// [`Self::async_orphan_grace_secs`], [`Self::mcp_elicitation_reap_after_secs`]),
+    /// never directly: each adds it to its *own* subsystem's deadline, which
+    /// is what keeps a deploy from having to know any of them.
+    pub sweep_grace_secs: u64,
     /// Default upstream timeout, in milliseconds, for an action call that
     /// names no timeout of its own and whose template and org say nothing.
     /// The bottom rung of the D56 cascade.
@@ -143,6 +156,22 @@ pub struct Config {
     /// long enough that an agent can hand the URL to a shell and let a large
     /// file finish transferring, including a retry or two.
     pub download_token_ttl_secs: i64,
+    /// Lifetime of an upload capability token.
+    ///
+    /// Separate from the download TTL because it is bounding a different
+    /// thing. A download URL leaks read access to bytes that already exist; an
+    /// upload URL is a window in which someone can push bytes the gateway
+    /// already authorized, so the cost of a long window is that the *approved*
+    /// description and the *actual* payload drift further apart in time.
+    pub upload_token_ttl_secs: i64,
+    /// Hard ceiling on the bytes one upload redemption may push, whatever a
+    /// template declares.
+    ///
+    /// A template's own `max_bytes` can only lower this. The body is metered
+    /// chunk by chunk and the transfer is cut the moment it goes over, so this
+    /// bounds work actually done rather than work merely promised — a caller
+    /// that lies in `Content-Length` gets the same answer, just later.
+    pub upload_max_bytes: u64,
     /// Ceiling on the plaintext size of a stored call result.
     ///
     /// A truncated compact render stores the full `ActionResult` so the same
@@ -417,59 +446,7 @@ impl Default for AsyncExecutionConfig {
     }
 }
 
-/// Slack added to [`Config::call_timeout_max_ms`] to get the replay wall.
-///
-/// Covers what the replay future does *after* the upstream answers — secret
-/// decryption, jq filtering, finalising the execution row — so the wall never
-/// fires on a call that merely used its full, legitimate budget.
-const REPLAY_WALL_SLACK_MS: u64 = 5_000;
-
 impl Config {
-    /// Outer wall-clock guard for `POST /v1/approvals/{id}/call`.
-    ///
-    /// Derived rather than configured, so a per-call timeout can never be
-    /// silently shadowed by the wall and an operator never has to bump two env
-    /// vars in lockstep. Always at least the largest timeout the D56 resolver
-    /// can return, plus slack for the post-call work.
-    pub fn replay_wall_clock(&self) -> std::time::Duration {
-        let floor_ms = self.call_timeout_max_ms + REPLAY_WALL_SLACK_MS;
-        std::time::Duration::from_millis((self.execution_replay_timeout_secs * 1_000).max(floor_ms))
-    }
-
-    /// Grace before the sweeper reclaims an `executing` execution row as
-    /// orphaned. One minute past the wall: if the wall had been going to fire,
-    /// it already would have, so anything still `executing` lost its process.
-    pub fn orphan_execution_grace_secs(&self) -> i64 {
-        self.replay_wall_clock().as_secs() as i64 + 60
-    }
-
-    /// How often a worker renews its lease. Derived as a third of the TTL, so
-    /// a job gets three chances to renew before it is presumed dead — and so
-    /// the two can never be configured into contradiction.
-    ///
-    /// This interval also bounds cancel latency: the heartbeat's
-    /// `RETURNING cancel_requested` *is* the cancel poll, deliberately, so
-    /// "I still own this row" and "I should stop" are one atomic observation.
-    pub fn async_heartbeat_interval(&self) -> std::time::Duration {
-        std::time::Duration::from_secs((self.async_execution.lease_ttl_secs / 3).max(1))
-    }
-
-    /// Outer wall-clock guard for one async job. Mirrors [`Self::replay_wall_clock`]:
-    /// the largest budget the resolver can hand out, plus slack for the work
-    /// after the upstream answers.
-    pub fn async_wall_clock(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(
-            self.async_execution.call_timeout_max_ms + REPLAY_WALL_SLACK_MS,
-        )
-    }
-
-    /// Grace before the sweeper fails an async row that is still `executing`
-    /// past its wall. One minute past, on the same reasoning as
-    /// [`Self::orphan_execution_grace_secs`].
-    pub fn async_orphan_grace_secs(&self) -> i64 {
-        self.async_wall_clock().as_secs() as i64 + 60
-    }
-
     /// Build the [`Keyring`](overslash_core::crypto::Keyring) used by every
     /// encrypt/decrypt call. Returns a single-key keyring at rest and a
     /// dual-key (active + previous) one during a rotation.
@@ -912,6 +889,7 @@ pub(crate) mod tests {
             approval_expiry_secs: 1800,
             execution_pending_ttl_secs: 900,
             execution_replay_timeout_secs: 30,
+            sweep_grace_secs: 60,
             services_dir: "services".into(),
             google_auth_client_id: None,
             google_auth_client_secret: None,
@@ -925,6 +903,8 @@ pub(crate) mod tests {
             audit_response_body_max_bytes: 0,
             filter_timeout_ms: 0,
             download_token_ttl_secs: 900,
+            upload_token_ttl_secs: 900,
+            upload_max_bytes: 100 * 1024 * 1024,
             call_result_max_bytes: 1024 * 1024,
             dashboard_url: "/".into(),
             dashboard_origin: "*".into(),

@@ -192,7 +192,8 @@ pub(super) async fn start(
         }) => {
             overslash_metrics::actions::record_hybrid_outcome(upstream_tpl, "inline");
             let rendered =
-                super::render_stored(state, ext, &result, req, auth.org_id, identity_id).await;
+                super::render_stored(state, ext, &result, req, meta, auth.org_id, identity_id)
+                    .await;
             let mut resp = (
                 axum::http::StatusCode::OK,
                 axum::Json(CallResponse::Called {

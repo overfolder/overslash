@@ -19,8 +19,17 @@ paths:
   /v1/charges:
     get:
       operationId: list_charges
+      # No `pagination:` block, deliberately. Stripe's continuation is
+      # `starting_after=<id of the last object on this page>`, which lives at
+      # an array-indexed position in the body, and the dotted-path grammar
+      # takes no indices on purpose. So the gateway cannot compute the next
+      # call — but a caller can, which is why `starting_after` is declared.
       summary: List recent charges
       risk: read
+      description: >-
+        One page of charges, newest first, bounded by `limit` (default 10, max
+        100). The response carries `has_more`; to read the next page pass
+        `starting_after` set to the `id` of the last charge in this one.
       parameters:
         - name: limit
           in: query
@@ -28,6 +37,14 @@ paths:
           schema:
             type: integer
             default: 10
+        - name: starting_after
+          in: query
+          description: >-
+            Cursor for the next page: the `id` of the last object in the page
+            you just read. Stripe's list responses carry `has_more`, so keep
+            going while it is true.
+          schema:
+            type: string
     post:
       operationId: create_charge
       summary: "Create charge for {amount} {currency}"
@@ -63,5 +80,27 @@ paths:
   /v1/customers:
     get:
       operationId: list_customers
+      # Same shape as list_charges, and the same reason for no block. `limit`
+      # is declared here for the first time: before it, this action read every
+      # customer in the account into one response.
       summary: List customers
       risk: read
+      description: >-
+        One page of customers, newest first, bounded by `limit` (default 10,
+        max 100). The response carries `has_more`; to read the next page pass
+        `starting_after` set to the `id` of the last customer in this one.
+      parameters:
+        - name: limit
+          in: query
+          description: Number of customers to return (max 100)
+          schema:
+            type: integer
+            default: 10
+        - name: starting_after
+          in: query
+          description: >-
+            Cursor for the next page: the `id` of the last object in the page
+            you just read. Stripe's list responses carry `has_more`, so keep
+            going while it is true.
+          schema:
+            type: string

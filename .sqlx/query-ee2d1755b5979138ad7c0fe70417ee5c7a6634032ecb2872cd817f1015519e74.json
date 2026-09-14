@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE upload_tokens\n         SET completed_at = now(), stored_media_path = $2, stored_sha256 = $3,\n             stored_size_bytes = $4, stored_mime = $5, stored_filename = $6\n         WHERE id = $1 AND completed_at IS NULL\n         RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "upload_tokens",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ee2d1755b5979138ad7c0fe70417ee5c7a6634032ecb2872cd817f1015519e74"
+}

@@ -190,6 +190,7 @@ mod tests {
             action_timeout_ms: None,
             action_wait_mode: None,
             action_handoff_after_ms: None,
+            action_pagination: None,
             service_timeout_ms: None,
             description: None,
             service_scope: Some(ServiceScope {
@@ -203,6 +204,7 @@ mod tests {
             redact: Vec::new(),
             oauth_injected: false,
             download: None,
+            upload: None,
             params: HashMap::new(),
             resolved: HashMap::new(),
             canonical: HashMap::new(),

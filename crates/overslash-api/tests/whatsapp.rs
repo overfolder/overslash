@@ -1631,6 +1631,20 @@ const INTENTIONALLY_NOT_EXPOSED: &[&str] = &[
     "ping",
 ];
 
+/// Actions the gateway *serves itself* rather than forwarding.
+///
+/// They are in the template so they carry a permission key, a risk class and a
+/// disclose block; they are not in tools/list because the container has no such
+/// tool. Direction 1 skips them — that assertion means "nothing we forward can
+/// 404", and nothing here is forwarded. Direction 2 is unaffected: these names
+/// are not in the container catalog to begin with.
+const GATEWAY_SYNTHESIZED: &[&str] = &[
+    // `POST /media` is plain HTTP on the container's own origin behind the same
+    // bearer, not a JSON-RPC tool. The entry exists so pushing bytes is
+    // permission-checked and approvable.
+    "upload_media",
+];
+
 #[tokio::test]
 async fn shipped_template_matches_the_container_catalog() {
     let pool = common::test_pool().await;
@@ -1670,6 +1684,9 @@ async fn shipped_template_matches_the_container_catalog() {
     // that moved or was renamed upstream answers -32603 "Unknown tool" at
     // call time, which is a 502 the caller can do nothing about.
     for name in &exposed {
+        if GATEWAY_SYNTHESIZED.contains(name) {
+            continue;
+        }
         assert!(
             CONTAINER_CATALOG_V0_7_0.contains(name),
             "template exposes `{name}`, which whatsapp-mcp-docker v0.7.0 does not serve — \

@@ -331,10 +331,23 @@ pub(super) struct ResolvedMeta {
     /// the resolved mode is hybrid, and clamped rather than refused — see
     /// [`crate::services::hybrid::resolve_handoff`].
     pub(super) action_handoff_after_ms: Option<u64>,
+    /// `x-overslash-pagination` on the resolved action — how this action
+    /// pages, if anyone has said.
+    ///
+    /// `None` for verb / `http` shapes for the same reason as the two fields
+    /// above: a raw HTTP call has no action template, so there is no
+    /// declaration to read and nothing to say about the next page.
+    pub(super) action_pagination: Option<overslash_core::types::PaginationSpec>,
     /// `x-overslash-download` from the action template. MCP actions only —
     /// it's how a tool result says "the bytes are over there". HTTP actions
     /// are their own download and leave this `None`.
     pub(super) download: Option<overslash_core::types::DownloadSpec>,
+    /// The action's `x-overslash-upload` block, when it declares one.
+    ///
+    /// Its presence is what makes an action gateway-served: the dispatch sites
+    /// mint a capability instead of forwarding a tool call, so the upstream
+    /// never sees a tool by this name.
+    pub(super) upload: Option<overslash_core::types::UploadSpec>,
     /// Whether this call authenticates via OAuth, mirroring
     /// `ResolvedAuth::oauth_injected`.
     ///
@@ -498,7 +511,7 @@ pub(super) struct ActionMetadata {
 /// path doesn't re-fetch them.
 pub(super) struct ResolvedModeC {
     pub(super) svc: overslash_core::types::ServiceDefinition,
-    pub(super) instance: Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
+    pub(super) instance: overslash_db::repos::service_instance::ServiceInstanceRow,
 }
 
 /// D42 SQL policy outcome for one call. `None` (from [`evaluate_sql_policy`])

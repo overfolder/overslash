@@ -37,6 +37,13 @@ use crate::error::AppError;
 pub struct ResolvedTarget {
     /// The effective identity to act as — the leaf of the path.
     pub identity_id: Uuid,
+    /// The kind of the effective identity (`user`, `agent`, `sub_agent`).
+    ///
+    /// Carried out so the extractor can stamp `last_active_at` on a
+    /// `sub_agent` target without a second lookup: impersonation is the one
+    /// authentication route that produces activity on an identity nobody
+    /// holds a key for, and the idle sweep reaps whatever it cannot see.
+    pub kind: String,
     /// The root user whose display name the caller may still refresh, set only
     /// when a name was supplied for a user root that already existed.
     ///
@@ -194,6 +201,7 @@ pub async fn resolve_target(
 
     Ok(ResolvedTarget {
         identity_id: current.id,
+        kind: current.kind,
         renameable_root,
     })
 }

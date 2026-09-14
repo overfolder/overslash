@@ -422,6 +422,7 @@ mod tests {
             ServiceAction {
                 wait_mode: None,
                 handoff_after_ms: None,
+                pagination: None,
                 timeout_ms: None,
                 method: "".into(),
                 path: "".into(),
@@ -440,6 +441,7 @@ mod tests {
                 disabled: false,
                 request_body: None,
                 download: None,
+                upload: None,
             },
         );
         let svc = ServiceDefinition {
@@ -490,6 +492,7 @@ mod tests {
         let a = ServiceAction {
             wait_mode: None,
             handoff_after_ms: None,
+            pagination: None,
             timeout_ms: None,
             method: "GET".into(),
             path: "/foo".into(),
@@ -508,6 +511,7 @@ mod tests {
             disabled: false,
             request_body: None,
             download: None,
+            upload: None,
         };
         let j = serde_json::to_value(&a).unwrap();
         assert!(j.get("disabled").is_none());

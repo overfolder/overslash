@@ -1871,13 +1871,19 @@ async fn group_granted_instance_is_callable_by_name() {
         .unwrap();
     let neg_status = negative_call.status().as_u16();
     let neg_body = negative_call.text().await.unwrap();
-    // Either 404 (no instance resolved) or 403 (template resolved but no
-    // group grant covers it) is correct — the point is the agent without a
-    // group grant cannot call. 200 (and the request reaching the executor)
-    // would mean the fix had leaked visibility too widely.
+    // 404 (nothing resolved), 403 (template resolved but no group grant
+    // covers it), or 400 (`shared_svc` is also the template key, so the
+    // template-vs-instance guard answers first — and tells this agent it has
+    // no instances of it, never that someone else does) are all correct. The
+    // point is the agent without a group grant cannot call. 200 (and the
+    // request reaching the executor) would mean visibility had leaked.
     assert!(
-        neg_status == 404 || neg_status == 403,
+        neg_status == 404 || neg_status == 403 || neg_status == 400,
         "agent without a group grant should be denied (got status={neg_status} body={neg_body})"
+    );
+    assert!(
+        !neg_body.contains(r#""available_instances":["shared_svc"]"#),
+        "must not name the instance it cannot see: {neg_body}"
     );
 }
 

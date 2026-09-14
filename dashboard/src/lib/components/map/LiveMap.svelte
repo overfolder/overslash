@@ -2,16 +2,23 @@
 	import { onMount } from 'svelte';
 	import { onEvent, eventStream, type StreamEvent } from '$lib/stores/events.svelte';
 	import type { Identity, ServiceInstanceSummary } from '$lib/types';
-	import { buildGraph, serviceNodeId, type CollapseState, type MapNode } from './graph';
+	import { buildGraph, type CollapseState, type MapNode } from './graph';
+	import { resolveOwner, ownerLabel } from '$lib/ownerLabel';
 	import { createSim, SIZES, type CallOutcome, type Sim, type TooltipCall } from './sim';
 
 	let {
 		identities = [],
 		services = [],
+		currentUserId = undefined,
+		allowedDomains = [],
 		onUnknownActor = () => {}
 	}: {
 		identities?: Identity[];
 		services?: ServiceInstanceSummary[];
+		/** The viewer, so their own services read "You" rather than their email. */
+		currentUserId?: string;
+		/** Org sign-in domains, stripped off owner emails by `$lib/ownerLabel`. */
+		allowedDomains?: string[];
 		/** An event named an identity we have never heard of — the fleet
 		 *  snapshot is stale. The page decides whether to refetch. */
 		onUnknownActor?: () => void;
@@ -32,6 +39,9 @@
 	let collapse = $state<CollapseState>({ users: false, agents: false, subagents: true });
 	/** Per-node open/closed, overriding the global chips. */
 	let overrides = $state<Record<string, boolean>>({});
+	/** Cluster root → folded into its container chip. A plain record rather than
+	 *  a Set: `$state` deep-proxies objects and arrays, not Sets. */
+	let boxClosed = $state<Record<string, boolean>>({});
 	let hideIdle = $state(true);
 	let query = $state('');
 	let shown = $state<string[]>([]);
@@ -56,9 +66,16 @@
 	let stage: HTMLElement;
 	let canvas: HTMLCanvasElement;
 	let layer: HTMLElement;
+	let chipLayer: HTMLElement;
 	let sim: Sim | null = null;
+	/** The simulation exists. Node elements arrive through `shown`, which is
+	 *  empty until it does — but the container chips would otherwise render on
+	 *  the very first pass and register against a `sim` that is still null. */
+	let ready = $state(false);
 
-	const graph = $derived(buildGraph(identities, services, extraServices, collapse, overrides));
+	const graph = $derived(
+		buildGraph(identities, services, extraServices, collapse, overrides, allowedDomains)
+	);
 
 	const counts = $derived.by(() => {
 		let users = 0;
@@ -84,13 +101,48 @@
 		if (!q) return null;
 		const s = new Set<string>();
 		for (const n of graph.byId.values()) {
-			if (n.label.toLowerCase().includes(q)) s.add(graph.resolve(n.id));
+			// `title` too: a user's label is their domain-stripped email, and
+			// nobody who types the full address expects to find nothing.
+			const hay = `${n.label} ${n.title ?? ''}`.toLowerCase();
+			if (hay.includes(q)) s.add(graph.resolve(n.id));
 		}
 		return s;
 	});
 
+	/**
+	 * Cluster roots worth drawing a container around: a user (or the org
+	 * aggregate) with at least one agent, subagent or owned service standing
+	 * under it.
+	 *
+	 * Folding the Agents lane leaves a root with only its services, and a user
+	 * who owns neither drops out entirely — which is right, since there is
+	 * nothing left to enclose.
+	 */
+	const boxRoots = $derived.by(() => {
+		const roots: string[] = [];
+		const seen = new Set<string>();
+		for (const n of graph.structural) {
+			const root = graph.rootOf.get(n.id);
+			if (!root || root === n.id || seen.has(root)) continue;
+			seen.add(root);
+			roots.push(root);
+		}
+		return roots;
+	});
+
+	/** Folded away inside a collapsed container. Mirrors the simulation's own
+	 *  test, so a fold takes effect on the click rather than on the next
+	 *  `onShownChange` up to 220ms later. */
+	function hiddenByBox(n: MapNode): boolean {
+		if (n.kind === 'user' || n.kind === 'org') return !!boxClosed[n.id];
+		const root = graph.rootOf.get(n.id);
+		return !!root && root !== n.id && !!boxClosed[root];
+	}
+
 	const shownNodes = $derived(
-		shown.map((id) => graph.byId.get(id)).filter((n): n is MapNode => !!n)
+		shown
+			.map((id) => graph.byId.get(id))
+			.filter((n): n is MapNode => !!n && !hiddenByBox(n))
 	);
 
 	// ── approval bookkeeping ─────────────────────────────────────────────
@@ -124,7 +176,9 @@
 	function handleAction(e: StreamEvent<ActionEventData>) {
 		const { call_id: callId, actor_identity_id: actor } = e.data;
 		if (!callId || !actor) return;
-		const to = serviceNodeId(e.data.service);
+		// Instance names are unique per owner, so which ball the traffic lands on
+		// depends on the actor — see `Graph.serviceIdFor`.
+		const to = graph.serviceIdFor(e.data.service, actor);
 		// Both endpoints may be new to us. A service gets a node on the spot;
 		// an identity has to come from the API, so ask the page to refetch.
 		if (!graph.byId.has(to) && !extraServices.includes(to)) {
@@ -137,7 +191,7 @@
 
 	onMount(() => {
 		sim = createSim(
-			{ stage, canvas, layer },
+			{ stage, canvas, layer, chipLayer },
 			{
 				onShownChange: (ids) => {
 					// Fires four times a second whether or not anything moved.
@@ -152,6 +206,7 @@
 			}
 		);
 		sim.setGraph(graph);
+		ready = true;
 
 		const offAction = onEvent<ActionEventData>(['action.called', 'action.completed'], handleAction);
 		const offApproval = onEvent<ApprovalEventData>(
@@ -175,6 +230,7 @@
 		});
 
 		return () => {
+			ready = false;
 			offAction();
 			offApproval();
 			offResync();
@@ -192,6 +248,11 @@
 	$effect(() => {
 		sim?.setHideIdle(hideIdle);
 	});
+	$effect(() => {
+		// Spread rather than hand over the `$state` proxy: the simulation reads
+		// this on every frame, and it is deliberately outside Svelte.
+		sim?.setBoxClosed({ ...boxClosed });
+	});
 
 	/** Registers the element with the simulation, which moves it every frame. */
 	function tracked(node: HTMLElement, id: string) {
@@ -201,6 +262,20 @@
 				sim?.registerNode(id, null);
 			}
 		};
+	}
+
+	/** The same, for a container's name chip. */
+	function trackedChip(node: HTMLElement, root: string) {
+		sim?.registerChip(root, node);
+		return {
+			destroy() {
+				sim?.registerChip(root, null);
+			}
+		};
+	}
+
+	function toggleBox(root: string) {
+		boxClosed = { ...boxClosed, [root]: !boxClosed[root] };
 	}
 
 	function hasChildren(n: MapNode): boolean {
@@ -234,8 +309,24 @@
 		};
 	}
 
+	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
+
+	/** How a service ball names its owner. The same resolver the services list,
+	 *  the service detail header and the API Explorer picker use, so the map
+	 *  agrees with them on what an owner is called. */
+	function serviceOwnership(n: MapNode): string {
+		if (!n.owner) return 'Org-wide';
+		const scope = resolveOwner(n.owner, identityById, currentUserId, allowedDomains);
+		return scope.kind === 'self' ? 'Yours' : `Owned by ${ownerLabel(scope)}`;
+	}
+
 	function tipSubtitle(n: MapNode): string {
-		if (n.kind === 'service') return n.status ?? 'Service';
+		if (n.kind === 'service') {
+			const status = n.status ?? 'Service';
+			// A node invented from traffic has no listing behind it: its owner is
+			// unknown, not absent, so the status is the whole of what we know.
+			return n.unlisted ? status : `${serviceOwnership(n)} · ${status}`;
+		}
 		if (n.kind === 'org') return 'All users';
 		if (n.kind === 'user') return `Owner · ${n.sub ?? 0} agents`;
 		const kind = n.kind === 'agent' ? 'Agent' : 'Subagent';
@@ -267,6 +358,7 @@
 				{@const badge = graph.hidden.get(n.id) ?? 0}
 				<div
 					class="lm-node k-{n.kind}"
+					class:is-org={n.kind === 'service' && !n.owner && !n.unlisted}
 					class:is-dim={hits && !hits.has(n.id)}
 					class:is-hit={hits?.has(n.id)}
 					use:tracked={n.id}
@@ -353,6 +445,32 @@
 			{/each}
 		</div>
 
+		<!-- Container name chips. Outside `.lm-layer` because they must not take
+		     its zoom: the simulation counter-scales each one so its text stays
+		     the same size however far out the map is. -->
+		<div class="lm-chiplayer" bind:this={chipLayer}>
+			{#each ready ? boxRoots : [] as root (root)}
+				{@const label = graph.byId.get(root)?.label ?? root}
+				<button
+					class="lm-boxchip"
+					use:trackedChip={root}
+					title="{boxClosed[root] ? 'Expand' : 'Collapse'} {label} · drag to move"
+					onpointerdown={(e) => sim?.onChipPointerDown(e, root)}
+					onclick={() => {
+						// A drag ends in a click too. Swallow that one so moving a
+						// cluster does not also fold it.
+						if (sim?.consumeGroupDrag()) return;
+						toggleBox(root);
+					}}
+				>
+					<span class="lm-chip-caret" aria-hidden="true">▼</span>
+					<span class="lm-chip-name">{label}</span>
+					<span class="lm-chip-count"></span>
+					<span class="lm-chip-act"></span>
+				</button>
+			{/each}
+		</div>
+
 		<div class="lm-panel lm-tl">
 			<div class="lm-search">
 				<input bind:value={query} placeholder="Search agents, services…" />
@@ -405,7 +523,7 @@
 
 		{#if tip}
 			<div class="lm-tip" style:left="{tip.x}px" style:top="{tip.y}px">
-				<div class="lm-tip-id">{tip.node.label}</div>
+				<div class="lm-tip-id" title={tip.node.title}>{tip.node.title ?? tip.node.label}</div>
 				<div class="lm-tip-sub">{tipSubtitle(tip.node)}</div>
 				<div class="lm-tip-rows">
 					{#if tip.rows.length === 0}

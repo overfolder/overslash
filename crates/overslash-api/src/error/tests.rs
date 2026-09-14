@@ -20,6 +20,14 @@ async fn body_json(resp: axum::response::Response) -> (StatusCode, serde_json::V
 /// Build a `response_too_large` in each of the three states its hint
 /// distinguishes.
 fn too_large(offer_prefer_stream: bool, minted: bool) -> AppError {
+    too_large_paged(offer_prefer_stream, minted, None)
+}
+
+fn too_large_paged(
+    offer_prefer_stream: bool,
+    minted: bool,
+    page_size_param: Option<&str>,
+) -> AppError {
     AppError::ResponseTooLarge {
         content_length: Some(31_457_280),
         content_type: Some("application/json".into()),
@@ -27,7 +35,28 @@ fn too_large(offer_prefer_stream: bool, minted: bool) -> AppError {
         offer_prefer_stream,
         download_url: minted.then(|| "https://api.example/v1/downloads/tok".to_string()),
         expires_at: minted.then(|| "2026-08-11T12:15:00Z".to_string()),
+        page_size_param: page_size_param.map(str::to_string),
     }
+}
+
+/// "Narrow the call with the action's own paging parameters" is a direction.
+/// Naming the parameter makes it an instruction, and an action that declares
+/// `x-overslash-pagination` is exactly the case where we know which one.
+#[tokio::test]
+async fn response_too_large_names_the_page_size_parameter_when_there_is_one() {
+    let (_, body) =
+        body_json(too_large_paged(false, true, Some("maxResults")).into_response()).await;
+    let hint = body["hint"].as_str().unwrap();
+    assert!(hint.contains("`maxResults`"), "{hint}");
+
+    // And falls back to the old wording where nobody has said how it pages,
+    // rather than inventing a parameter name.
+    let (_, body) = body_json(too_large(false, true).into_response()).await;
+    let hint = body["hint"].as_str().unwrap();
+    assert!(
+        hint.contains("the action's own paging parameters"),
+        "{hint}"
+    );
 }
 
 /// The one rule behind all three hint forms: never name a recovery the

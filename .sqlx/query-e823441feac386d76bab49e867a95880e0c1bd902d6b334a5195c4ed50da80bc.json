@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE upload_tokens SET expires_at = now() - interval '1 hour'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "e823441feac386d76bab49e867a95880e0c1bd902d6b334a5195c4ed50da80bc"
+}

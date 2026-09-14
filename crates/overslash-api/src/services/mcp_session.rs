@@ -33,7 +33,14 @@ pub enum ElicitOutcome {
 }
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long the originator polls its row before giving up and cancelling it.
+///
+/// `pub(crate)` because it is also the ceiling the background sweeper derives
+/// its reap window from ([`crate::config::Config::mcp_elicitation_reap_after_secs`]):
+/// no row older than this can still have anybody listening, and no reap window
+/// shorter than this is safe.
+pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Insert a fresh `pending_mcp_elicitations` row. Called by the originator
 /// pod just before it emits `elicitation/create` on its SSE stream.

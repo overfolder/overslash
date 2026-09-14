@@ -204,9 +204,7 @@ pub(super) async fn call_action_impl(
         identity,
         identity_id,
         ceiling_user_id,
-        pre_resolved_mode_c
-            .as_ref()
-            .and_then(|m| m.instance.as_ref()),
+        pre_resolved_mode_c.as_ref().map(|m| &m.instance),
         req.service_id.is_some(),
     )
     .await?;
@@ -629,7 +627,8 @@ pub(super) async fn call_action_impl(
             )
             .await;
 
-        let rendered = render_stored(&state, &ext, &result, &req, auth.org_id, identity_id).await;
+        let rendered =
+            render_stored(&state, &ext, &result, &req, &meta, auth.org_id, identity_id).await;
         return Ok((
             StatusCode::OK,
             Json(CallResponse::Called {
@@ -712,6 +711,7 @@ pub(super) async fn call_action_impl(
                     call_timeout,
                     transport.offers_prefer_stream(),
                     None,
+                    page_size_param(&meta),
                 ));
             }
         };
@@ -867,6 +867,7 @@ pub(super) async fn call_action_impl(
                 call_timeout,
                 transport.offers_prefer_stream(),
                 download,
+                page_size_param(&meta),
             ));
         }
     };
@@ -970,7 +971,8 @@ pub(super) async fn call_action_impl(
         return Err(err);
     }
 
-    let rendered = render_stored(&state, &ext, &result, &req, auth.org_id, identity_id).await;
+    let rendered =
+        render_stored(&state, &ext, &result, &req, &meta, auth.org_id, identity_id).await;
 
     let mut resp = (
         StatusCode::OK,

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO media_descriptors (\n             org_id, service_instance_id, service_key, media_path,\n             sha256, mime, size_bytes, filename, source\n         )\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n         ON CONFLICT (org_id, service_instance_id, media_path) DO UPDATE\n         SET sha256      = COALESCE(EXCLUDED.sha256, media_descriptors.sha256),\n             mime        = COALESCE(EXCLUDED.mime, media_descriptors.mime),\n             size_bytes  = COALESCE(EXCLUDED.size_bytes, media_descriptors.size_bytes),\n             filename    = COALESCE(EXCLUDED.filename, media_descriptors.filename),\n             service_key = COALESCE(EXCLUDED.service_key, media_descriptors.service_key),\n             last_seen_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "40a800fc3ba2e0365df92e2bf82221d56594ea8a556547a10c32e9b34733b712"
+}

@@ -159,6 +159,17 @@ paths:
   /api/search:
     get:
       operationId: search
+      # `limit` already declares its own `default: 50`, which is the more
+      # specific statement and the one an org layer patches — so the block
+      # names the parameter without restating the number. `total` sits beside
+      # `data`, so an underfull page is recognised as the last one.
+      pagination:
+        page_size:
+          param: limit
+        next:
+          style: offset
+          param: offset
+        items: data
       summary: "Search Metabase for '{q}'"
       risk: read
       description: >-
@@ -244,8 +255,10 @@ paths:
         Items the *current user* (the identity behind this Metabase API key)
         recently viewed or selected. Scoped to one user, so it answers "what
         was I just looking at", not "what is popular" — use `popular_items`
-        for the instance-wide view. Params: context — required, either views
-        (things opened) or selections (things picked in a picker).
+        for the instance-wide view. Metabase caps this list itself and offers
+        no page size or offset, so there is nothing to page; `search` is the
+        paged way to enumerate content. Params: context — required, either
+        views (things opened) or selections (things picked in a picker).
       parameters:
         - name: context
           in: query

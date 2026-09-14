@@ -14,8 +14,8 @@ use overslash_db::scopes::OrgScope;
 use crate::{AppState, error::AppError, extractors::AuthContext};
 use overslash_core::types::Runtime;
 
+use super::service_resolve::*;
 use super::*;
-use super::{errors::*, service_resolve::*};
 
 pub(crate) async fn resolve_action_metadata(
     state: &AppState,
@@ -47,7 +47,7 @@ pub(crate) async fn resolve_action_metadata(
                     .into(),
             )
         })?;
-        let (instance, svc) = resolve_service_for_verb_shape(
+        let (instance, svc) = resolve_service_for_call(
             state,
             ext,
             auth,
@@ -70,10 +70,8 @@ pub(crate) async fn resolve_action_metadata(
         }
         let (path, raw_url) = resolve_verb_host_and_path(&svc, service_key, &req.url, &req.path)?;
         let auth_injected_estimate = !svc.auth.is_empty()
-            || instance
-                .as_ref()
-                .map(|i| i.connection_id.is_some() || i.secret_name.is_some())
-                .unwrap_or(false);
+            || instance.connection_id.is_some()
+            || instance.secret_name.is_some();
         let metadata = ActionMetadata {
             validation_params: HashMap::new(),
             service_scope: Some(ServiceScope {
@@ -96,48 +94,17 @@ pub(crate) async fn resolve_action_metadata(
     // Service + defined action: load template, look up action, expose
     // schema + scope for validation and permission derivation.
     if let (Some(service_key), Some(action_key)) = (&req.service, &req.action) {
-        let instance = resolve_instance_for_call(
+        let (instance, mut svc) = resolve_service_for_call(
+            state,
+            ext,
+            auth,
             scope,
-            auth.identity_id,
             ceiling_user_id,
             req.service_id,
             service_key,
         )
         .await?;
-
-        let mut svc = if let Some(ref inst) = instance {
-            crate::routes::templates::resolve_template_definition(
-                state,
-                ext,
-                auth.org_id,
-                auth.identity_id,
-                &inst.template_key,
-            )
-            .await?
-        } else {
-            let from_template = crate::routes::templates::resolve_template_definition(
-                state,
-                ext,
-                auth.org_id,
-                auth.identity_id,
-                service_key,
-            )
-            .await
-            .ok();
-            match from_template.or_else(|| state.registry.get(service_key).cloned()) {
-                Some(s) => s,
-                None => {
-                    let available = caller_visible_instance_names(
-                        scope,
-                        auth.identity_id,
-                        Some(ceiling_user_id),
-                    )
-                    .await?;
-                    return Err(unknown_service_error(service_key, available));
-                }
-            }
-        };
-        overlay_instance_discovered_tools(instance.as_ref(), &mut svc);
+        overlay_instance_discovered_tools(Some(&instance), &mut svc);
 
         let action = svc.actions.get(action_key).ok_or_else(|| {
             AppError::NotFound(format!(
@@ -183,10 +150,8 @@ pub(crate) async fn resolve_action_metadata(
             Runtime::Mcp | Runtime::Platform => true,
             Runtime::Http => {
                 !svc.auth.is_empty()
-                    || instance
-                        .as_ref()
-                        .map(|i| i.connection_id.is_some() || i.secret_name.is_some())
-                        .unwrap_or(false)
+                    || instance.connection_id.is_some()
+                    || instance.secret_name.is_some()
             }
         };
 

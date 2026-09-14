@@ -59,6 +59,10 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
         canonical: "x-overslash-download",
     },
     Alias {
+        alias: "upload",
+        canonical: "x-overslash-upload",
+    },
+    Alias {
         alias: "timeout_ms",
         canonical: "x-overslash-timeout_ms",
     },
@@ -69,6 +73,10 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
     Alias {
         alias: "handoff_after_ms",
         canonical: "x-overslash-handoff_after_ms",
+    },
+    Alias {
+        alias: "pagination",
+        canonical: "x-overslash-pagination",
     },
 ];
 
@@ -123,6 +131,10 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
     Alias {
         alias: "handoff_after_ms",
         canonical: "x-overslash-handoff_after_ms",
+    },
+    Alias {
+        alias: "pagination",
+        canonical: "x-overslash-pagination",
     },
 ];
 

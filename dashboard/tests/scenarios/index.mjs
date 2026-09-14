@@ -32,6 +32,7 @@ export {
 	seedGroup,
 	seedGroupGrant,
 	seedGroupMember,
+	promoteToOrgAdmin,
 	seedApproval,
 	seedApprovalCall,
 	seedApprovalResolution,

@@ -1139,14 +1139,190 @@ async fn await_completion_returns_cancelled_on_timeout() {
     assert_eq!(row.status, db::mcp_elicitation::STATUS_CANCELLED);
 }
 
+// ─── Background sweep (issue #600) ─────────────────────────────────────────
+
+/// Seed one elicitation row per `(status, age_secs)` pair, backdating
+/// `created_at`, and return the ids in the order given.
+async fn seed_aged_rows(fx: &McpFixture, rows: &[(&str, i64)]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for (status, age_secs) in rows {
+        let approval_id: Uuid = sqlx::query(
+            "INSERT INTO approvals (org_id, identity_id, action_summary, token,
+                                    expires_at, current_resolver_identity_id)
+             VALUES ($1, $2, 'noop', $3, now() + interval '1 hour', $2)
+             RETURNING id",
+        )
+        .bind(fx.org_id)
+        .bind(fx.agent_id)
+        .bind(format!("apr_{}", Uuid::new_v4()))
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap()
+        .get("id");
+
+        let elicit_id = format!("elicit_{}", Uuid::new_v4());
+        db::mcp_elicitation::insert(
+            &fx.pool,
+            &elicit_id,
+            Uuid::new_v4(),
+            fx.agent_id,
+            approval_id,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE pending_mcp_elicitations
+                SET status = $1, created_at = now() - make_interval(secs => $2)
+              WHERE elicit_id = $3",
+        )
+        .bind(*status)
+        .bind(*age_secs as f64)
+        .bind(&elicit_id)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+        ids.push(elicit_id);
+    }
+    ids
+}
+
+async fn status_of(fx: &McpFixture, elicit_id: &str) -> Option<String> {
+    db::mcp_elicitation::get(&fx.pool, elicit_id)
+        .await
+        .unwrap()
+        .map(|r| r.status)
+}
+
+/// Both sweep phases, in one test on purpose: they operate on the whole table,
+/// so splitting them into separate `#[tokio::test]`s would let one test's
+/// backdated rows be swept by the other's call while it was still asserting on
+/// them. Nothing else in the suite backdates `created_at`, so a sweep here
+/// cannot reach another test's rows.
+#[tokio::test]
+async fn background_sweep_reaps_orphans_then_purges_terminal_rows() {
+    let fx = bootstrap_mcp(false).await;
+
+    // Ages are chosen to sit either side of the two windows used below
+    // (reap 360s, purge 720s) without ever landing in both.
+    let ids = seed_aged_rows(
+        &fx,
+        &[
+            (db::mcp_elicitation::STATUS_PENDING, 400),
+            (db::mcp_elicitation::STATUS_CLAIMED, 400),
+            (db::mcp_elicitation::STATUS_PENDING, 10),
+            (db::mcp_elicitation::STATUS_COMPLETED, 400),
+            (db::mcp_elicitation::STATUS_COMPLETED, 3_600),
+            (db::mcp_elicitation::STATUS_FAILED, 3_600),
+            (db::mcp_elicitation::STATUS_CANCELLED, 3_600),
+        ],
+    )
+    .await;
+    let orphan_approval = db::mcp_elicitation::get(&fx.pool, &ids[1])
+        .await
+        .unwrap()
+        .unwrap()
+        .approval_id;
+
+    // Until an orphan reaches a terminal status it keeps its approval looking
+    // mid-elicitation, which suppresses auto-call on that approval forever.
+    assert!(
+        db::mcp_elicitation::has_active_for_approval(&fx.pool, orphan_approval)
+            .await
+            .unwrap(),
+        "a live row should read as active before the reap"
+    );
+
+    // ── Phase one: cancel live rows past the reap window ──────────────────
+    let reaped = db::mcp_elicitation::cancel_orphaned(&fx.pool, 360)
+        .await
+        .unwrap();
+    assert!(
+        reaped >= 2,
+        "expected at least the two aged live rows, got {reaped}"
+    );
+
+    assert_eq!(
+        status_of(&fx, &ids[0]).await.as_deref(),
+        Some(db::mcp_elicitation::STATUS_CANCELLED),
+        "aged pending row should be cancelled"
+    );
+    assert_eq!(
+        status_of(&fx, &ids[1]).await.as_deref(),
+        Some(db::mcp_elicitation::STATUS_CANCELLED),
+        "aged claimed row should be cancelled"
+    );
+    assert_eq!(
+        status_of(&fx, &ids[2]).await.as_deref(),
+        Some(db::mcp_elicitation::STATUS_PENDING),
+        "a row inside the window is still being polled — leave it"
+    );
+    assert_eq!(
+        status_of(&fx, &ids[3]).await.as_deref(),
+        Some(db::mcp_elicitation::STATUS_COMPLETED),
+        "the reap must not touch terminal rows"
+    );
+    assert!(
+        !db::mcp_elicitation::has_active_for_approval(&fx.pool, orphan_approval)
+            .await
+            .unwrap(),
+        "the reap should stop an orphan suppressing auto-call"
+    );
+
+    // ── Phase two: delete terminal rows past the retention window ─────────
+    let purged = db::mcp_elicitation::purge_terminal(&fx.pool, 720)
+        .await
+        .unwrap();
+    assert!(
+        purged >= 3,
+        "expected at least the three aged terminal rows, got {purged}"
+    );
+
+    for (i, label) in [(4, "completed"), (5, "failed"), (6, "cancelled")] {
+        assert!(
+            status_of(&fx, &ids[i]).await.is_none(),
+            "aged {label} row should be gone"
+        );
+    }
+    assert_eq!(
+        status_of(&fx, &ids[3]).await.as_deref(),
+        Some(db::mcp_elicitation::STATUS_COMPLETED),
+        "a terminal row inside the window may still be read by its originator"
+    );
+    assert_eq!(
+        status_of(&fx, &ids[2]).await.as_deref(),
+        Some(db::mcp_elicitation::STATUS_PENDING),
+        "the purge must never delete a live row — that is the reap's job"
+    );
+}
+
+/// The two windows have to stay ordered, or a row would be deleted before it
+/// was ever cancelled, and the reap window can never drop below the
+/// originator's own poll ceiling.
+#[test]
+fn sweep_windows_are_ordered_and_clear_the_poll_ceiling() {
+    for grace in [1, 60, 600] {
+        let c = overslash_api::config::Config {
+            sweep_grace_secs: grace,
+            ..build_config_shape()
+        };
+        assert!(
+            c.mcp_elicitation_reap_after_secs() > 300,
+            "reap window must clear the 300s originator poll ceiling (grace {grace})"
+        );
+        assert!(
+            c.mcp_elicitation_retention_secs() > c.mcp_elicitation_reap_after_secs(),
+            "retention must outlast the reap window (grace {grace})"
+        );
+    }
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-/// Reconstruct an `AppState` whose `public_url` matches the running test API
-/// so `mcp_session::complete_from_elicitation` can self-loopback the
-/// resolve+call without reaching a different origin. Reuses the same pool +
-/// signing key as `start_api`, so JWTs minted here are accepted there.
-async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
-    let config = overslash_api::config::Config {
+/// The `Config` shape every helper in this file starts from. Extracted so a
+/// plain `#[test]` can assert on the derived sweep windows without needing a
+/// live fixture — `empty_test_config()` is `pub(crate)` and out of reach here.
+fn build_config_shape() -> overslash_api::config::Config {
+    overslash_api::config::Config {
         async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
@@ -1168,18 +1344,21 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
         execution_replay_timeout_secs: 30,
+        sweep_grace_secs: 60,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: fx.base.clone(),
+        public_url: String::new(),
         dev_auth_enabled: false,
         magic_link_enabled: true,
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         download_token_ttl_secs: 900,
+        upload_token_ttl_secs: 900,
+        upload_max_bytes: 100 * 1024 * 1024,
         call_result_max_bytes: 1024 * 1024,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -1218,6 +1397,17 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         preview_origin_allowlist: None,
         overslash_env: None,
         connection_return_url_allowed_hosts: Vec::new(),
+    }
+}
+
+/// Reconstruct an `AppState` whose `public_url` matches the running test API
+/// so `mcp_session::complete_from_elicitation` can self-loopback the
+/// resolve+call without reaching a different origin. Reuses the same pool +
+/// signing key as `start_api`, so JWTs minted here are accepted there.
+async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
+    let config = overslash_api::config::Config {
+        public_url: fx.base.clone(),
+        ..build_config_shape()
     };
 
     overslash_api::AppState {

@@ -10,8 +10,8 @@ use crate::types::{ActionParam, DeclaredRisk, ParamLocation, Risk, ServiceAction
 use super::super::ext::{self, Ext, Pos};
 use super::params::{collect_body_parameters, collect_parameters, parse_request_body};
 use super::{
-    parse_aliases, parse_disclose, parse_instance_config, parse_redact, parse_scope_params,
-    parse_sql_policy, parse_timeout_ms, parse_wait_mode,
+    parse_aliases, parse_disclose, parse_instance_config, parse_pagination, parse_redact,
+    parse_scope_params, parse_sql_policy, parse_timeout_ms, parse_wait_mode,
 };
 
 // ── paths.*.* → ServiceAction ────────────────────────────────────────
@@ -164,6 +164,11 @@ pub(crate) fn extract_http_action(
         &base,
         &mut disclose_errors,
     );
+    let pagination = parse_pagination(
+        ext::get(op, Pos::Operation, Ext::Pagination),
+        &base,
+        &mut disclose_errors,
+    );
     if !disclose_errors.is_empty() {
         return Err(disclose_errors);
     }
@@ -180,6 +185,7 @@ pub(crate) fn extract_http_action(
             timeout_ms,
             wait_mode,
             handoff_after_ms,
+            pagination,
             params,
             scope_param,
             required_scopes,

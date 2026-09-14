@@ -57,6 +57,9 @@ pub fn router(state: SharedState) -> Router {
             get(echo).post(echo).put(echo).delete(echo).patch(echo),
         )
         .route("/large-file", get(large_file))
+        .route("/paged/cursor", get(paged_cursor))
+        .route("/paged/offset", get(paged_offset))
+        .route("/paged/link", get(paged_link))
         .route("/slow", get(slow).post(slow))
         .route("/slow-stream", get(slow_stream))
         .route("/things/{id}", get(thing_display))
@@ -249,4 +252,91 @@ async fn drive_content(Query(params): Query<HashMap<String, String>>) -> axum::r
         .unwrap_or(4096);
     let data = vec![0xCDu8; size];
     ([("content-type", "application/pdf")], data).into_response()
+}
+
+// ── Paged collections ────────────────────────────────────────────────
+//
+// Three endpoints, one per continuation family the generic-pagination
+// extension names. Each serves a fixed 25-row collection so a test can walk it
+// to the end and see the last page announce itself, rather than only ever
+// asserting on page one — which is where every off-by-one in this area lives.
+
+const PAGED_TOTAL: usize = 25;
+
+/// Rows `[start, start + size)` of the fixed collection, clamped to its end.
+fn paged_rows(start: usize, size: usize) -> Vec<Value> {
+    (start..PAGED_TOTAL.min(start + size))
+        .map(|i| json!({"id": format!("row-{i}"), "name": format!("Row {i}")}))
+        .collect()
+}
+
+fn paged_size(q: &HashMap<String, String>, key: &str, default: usize) -> usize {
+    q.get(key)
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(default)
+        .clamp(1, PAGED_TOTAL)
+}
+
+/// Opaque-cursor paging, Google-shaped: `nextPageToken` sits *after* the rows,
+/// and is absent on the last page rather than empty.
+async fn paged_cursor(Query(q): Query<HashMap<String, String>>) -> impl IntoResponse {
+    let size = paged_size(&q, "maxResults", 10);
+    let start: usize = q
+        .get("pageToken")
+        .and_then(|t| t.strip_prefix("tok-"))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    let rows = paged_rows(start, size);
+    let mut body = json!({"items": rows});
+    let next = start + size;
+    if next < PAGED_TOTAL {
+        body["nextPageToken"] = json!(format!("tok-{next}"));
+    }
+    Json(body)
+}
+
+/// Offset paging with an explicit `has_more`, Stripe-shaped.
+async fn paged_offset(Query(q): Query<HashMap<String, String>>) -> impl IntoResponse {
+    let size = paged_size(&q, "limit", 10);
+    let start: usize = q.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let rows = paged_rows(start, size);
+    let has_more = start + rows.len() < PAGED_TOTAL;
+    Json(json!({"data": rows, "has_more": has_more}))
+}
+
+/// RFC 8288 paging, GitHub-shaped: the rows are a bare array and the way
+/// forward is a header. Emits `prev` before `next` on purpose, so a reader
+/// that stops at the first link finds the wrong one.
+async fn paged_link(Query(q): Query<HashMap<String, String>>) -> impl IntoResponse {
+    let size = paged_size(&q, "per_page", 10);
+    let page: usize = q
+        .get("page")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1);
+    let rows = paged_rows((page - 1) * size, size);
+
+    let base = "https://upstream.example/paged/link";
+    let mut links = Vec::new();
+    if page > 1 {
+        links.push(format!(
+            "<{base}?page={}&per_page={size}>; rel=\"prev\"",
+            page - 1
+        ));
+    }
+    if page * size < PAGED_TOTAL {
+        links.push(format!(
+            "<{base}?page={}&per_page={size}>; rel=\"next\"",
+            page + 1
+        ));
+    }
+
+    let mut headers = HeaderMap::new();
+    if !links.is_empty() {
+        headers.insert(
+            axum::http::header::LINK,
+            links.join(", ").parse().expect("ascii link header"),
+        );
+    }
+    (headers, Json(Value::Array(rows)))
 }

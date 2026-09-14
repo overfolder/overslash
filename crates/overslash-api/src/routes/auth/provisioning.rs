@@ -288,6 +288,7 @@ async fn provision_org_subdomain(
     )
     .await?
     {
+        refuse_if_archived(&existing)?;
         let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
         let metadata = userinfo_metadata(userinfo);
         let _ = scope
@@ -308,6 +309,71 @@ async fn provision_org_subdomain(
         return Ok((target_org.id, existing.id, user_id, userinfo.email.clone()));
     }
 
+    let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
+
+    // The Overslash-backed account behind this subject, if any. Resolved once
+    // and threaded through the three branches below — adopt-by-user needs it
+    // as a lookup key, and the other two would otherwise re-query it.
+    let overslash_user = user_repo::find_by_overslash_idp(
+        state.db(ext),
+        &userinfo.provider_key,
+        &userinfo.external_id,
+    )
+    .await?;
+
+    // Adopt-by-user, BEFORE adopt-by-email. The subject missed, but this human
+    // may already be an actor in this org under a *different* address: the
+    // founder identity minted by `POST /v1/orgs` carries `external_id = NULL`
+    // and the account email as of signup, so a later org-subdomain login whose
+    // IdP reports a different address misses both the subject and the email
+    // key, and both missing used to mean "mint a new actor". #487's
+    // adopt-by-email converges the two only when the address still matches —
+    // see the duplicate actors migration 115 cleans up.
+    //
+    // Ordering matters. If adopt-by-email ran first it could land on a pending
+    // invite for the new address and link THAT row to a user who already owns
+    // an identity here, which is the same fork by another route — and now a
+    // violation of `identities_org_user_unique`. Checking the account first
+    // makes the existing actor win, which is right: they have the agents, the
+    // grants and the audit trail, and the redundant invite row is the thing
+    // worth orphaning. Membership is already established, so this returns
+    // ahead of the admission gate — an existing member whose email changed
+    // must not be re-admitted (or rejected with `not_invited`).
+    if let Some(user) = &overslash_user
+        && let Some(existing) = overslash_db::repos::identity::find_by_org_and_user(
+            state.db(ext),
+            target_org.id,
+            user.id,
+        )
+        .await?
+    {
+        refuse_if_archived(&existing)?;
+        let metadata = userinfo_metadata(userinfo);
+        // Claim the subject on first adoption only — same rule as the
+        // adopt-by-email branch below: `external_id` records who originally
+        // claimed this identity and must not flip-flop between IdPs.
+        if existing.external_id.is_none() {
+            overslash_db::repos::identity::set_external_id(
+                state.db(ext),
+                target_org.id,
+                existing.id,
+                &userinfo.external_id,
+            )
+            .await?;
+        }
+        let _ = scope
+            .update_identity_profile(existing.id, display_name, metadata)
+            .await;
+        let _ = user_repo::refresh_profile(
+            state.db(ext),
+            user.id,
+            Some(&userinfo.email),
+            Some(display_name),
+        )
+        .await;
+        return Ok((target_org.id, existing.id, user.id, userinfo.email.clone()));
+    }
+
     // Adopt-by-email. A user identity with this email but a *different* (or
     // no) IdP subject is the pre-created member — minted by an invite, by
     // name-based impersonation, or by a prior sign-in through another IdP.
@@ -316,7 +382,6 @@ async fn provision_org_subdomain(
     // real sign-in converge on one identity — with its agents, connections,
     // and audit history. `require_invite_admission` keeps its meaning: the
     // pre-created identity is the invite.
-    let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
     if let Some(existing) = scope
         .find_user_identity_by_email_in_org(&userinfo.email)
         .await?
@@ -337,13 +402,10 @@ async fn provision_org_subdomain(
                 .await;
                 uid
             }
-            None => match user_repo::find_by_overslash_idp(
-                state.db(ext),
-                &userinfo.provider_key,
-                &userinfo.external_id,
-            )
-            .await?
-            {
+            // The adopt-by-user branch above already proved this account has
+            // no identity in this org, so linking it here can't collide with
+            // `identities_org_user_unique`.
+            None => match &overslash_user {
                 Some(u) => {
                     let _ = user_repo::refresh_profile(
                         state.db(ext),
@@ -520,14 +582,10 @@ async fn provision_org_subdomain(
     // Fresh admission for a brand-new email. Attach to an existing
     // Overslash-backed user when the `(provider, subject)` already matches
     // (SINGLE_ORG_MODE: the env-var IdP is both the Overslash IdP and the org
-    // IdP), otherwise mint a fresh org-only user.
-    let user_id = match user_repo::find_by_overslash_idp(
-        state.db(ext),
-        &userinfo.provider_key,
-        &userinfo.external_id,
-    )
-    .await?
-    {
+    // IdP), otherwise mint a fresh org-only user. Adopt-by-user already
+    // established that such an account holds no identity in this org, so the
+    // fresh row below is this human's first actor here.
+    let user_id = match &overslash_user {
         Some(u) => {
             let _ = user_repo::refresh_profile(
                 state.db(ext),
@@ -602,6 +660,31 @@ async fn provision_org_subdomain(
         user_id,
         userinfo.email.clone(),
     ))
+}
+
+/// An archived actor is a revoked one. Archiving a user identity revokes its
+/// API keys (`revoked_reason = identity_archived`) and there is no restore for
+/// `kind = 'user'` — `restore_identity` is sub-agent-only — so handing the
+/// same human a fresh session at the next sign-in would give back by the front
+/// door exactly the access an admin took away.
+///
+/// The two lookups this guards resolve by IdP subject and by account, neither
+/// of which can express "live" in SQL the way `find_user_by_email_in_org`
+/// does with its `archived_at IS NULL`; this is that filter, applied in the
+/// one place the row is already in hand.
+///
+/// Refuse rather than fall through to the admission gate: only `remove_user`
+/// detaches `user_id`, so a plain archive leaves this row still holding the
+/// `(org, human)` slot, and minting a second actor would collide with
+/// `identities_org_user_unique`. Re-admission is an admin action — remove the
+/// member and re-invite them, which detaches the tombstone on the way out.
+fn refuse_if_archived(
+    existing: &overslash_db::repos::identity::IdentityRow,
+) -> Result<(), AppError> {
+    if existing.archived_at.is_some() {
+        return Err(AppError::Forbidden("identity_archived".into()));
+    }
+    Ok(())
 }
 
 fn userinfo_metadata(userinfo: &NormalizedUserInfo) -> serde_json::Value {

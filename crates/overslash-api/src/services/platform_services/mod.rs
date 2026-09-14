@@ -170,6 +170,7 @@ mod test_fixtures {
                 ServiceAction {
                     wait_mode: None,
                     handoff_after_ms: None,
+                    pagination: None,
                     timeout_ms: None,
                     method: "GET".into(),
                     path: "/".into(),
@@ -188,6 +189,7 @@ mod test_fixtures {
                     disabled: false,
                     request_body: None,
                     download: None,
+                    upload: None,
                 },
             );
         }

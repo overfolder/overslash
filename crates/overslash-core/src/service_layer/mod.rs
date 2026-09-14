@@ -159,6 +159,7 @@ pub(crate) mod fixtures {
         ServiceAction {
             wait_mode: None,
             handoff_after_ms: None,
+            pagination: None,
             timeout_ms: None,
             method: "GET".into(),
             path: "/x".into(),
@@ -177,6 +178,7 @@ pub(crate) mod fixtures {
             disabled: false,
             request_body: None,
             download: None,
+            upload: None,
         }
     }
 

@@ -53,6 +53,9 @@ import { api } from './api.mjs';
  *   credentials?: Record<string, string>,
  *   config?: Record<string, string>,
  *   url?: string,
+ *   userLevel?: boolean,
+ *   groups?: { group_id: string, access_level?: string }[],
+ *   bearer?: string,
  * }} SeedServiceInput
  *
  * @typedef {{
@@ -185,11 +188,21 @@ export async function seedService(session, input) {
 	if (input.credentials) body.credentials = input.credentials;
 	if (input.config) body.config = input.config;
 	if (input.url) body.url = input.url;
+	// Ownership. The API defaults `user_level` to true, so a plain create is
+	// owned by the caller's ceiling user — pass `bearer` to create it as
+	// somebody else entirely, which is how a fixture gives each seeded user
+	// services of their own. `userLevel: false` makes it org-level instead,
+	// which is admin-only *and* requires a non-empty `groups`: an org-level
+	// instance with no grant is unreachable, since the group ceiling is the
+	// only path to a service nobody owns.
+	if (input.userLevel != null) body.user_level = input.userLevel;
+	if (input.groups) body.groups = input.groups;
 
 	try {
 		return await api(session, '/v1/services', {
 			method: 'POST',
 			body,
+			bearer: input.bearer,
 			expect: [200, 201]
 		});
 	} catch (err) {
@@ -197,7 +210,7 @@ export async function seedService(session, input) {
 		// screenshot scripts stay re-runnable against the same stack.
 		if (err instanceof Error && /409/.test(err.message)) {
 			/** @type {ServiceInstance[]} */
-			const existing = await api(session, '/v1/services');
+			const existing = await api(session, '/v1/services', { bearer: input.bearer });
 			const want = input.name ?? input.templateKey;
 			const match = existing.find((s) => s.template_key === input.templateKey && s.name === want);
 			if (match) return match;
@@ -269,6 +282,32 @@ export async function seedGroupMember(session, groupId, identityId) {
 		method: 'POST',
 		body: { identity_id: identityId },
 		expect: [200, 201, 204]
+	});
+}
+
+// ── Org membership ──────────────────────────────────────────────────────
+
+/**
+ * Promote a member to org admin — the `identities.is_org_admin` column, not
+ * just Admins-group membership.
+ *
+ * The dev `admin` profile lands in the Admins group, so `/auth/me/identity`
+ * already reports `is_org_admin: true` and the dashboard renders every admin
+ * control. But the admin-view query params (`?include_user_level=true` on
+ * services and connections) are gated on the *column*, which dev seeding
+ * leaves false — so without this the toggle flips and nothing new appears.
+ * Any scenario that exercises an all-users view has to promote first.
+ *
+ * Idempotent: re-promoting an existing admin is a no-op 200.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {string} [identityId] defaults to the session's own identity
+ */
+export async function promoteToOrgAdmin(session, identityId) {
+	await api(session, `/v1/org-members/${identityId ?? session.identityId}`, {
+		method: 'PATCH',
+		body: { role: 'admin' },
+		expect: [200, 204]
 	});
 }
 

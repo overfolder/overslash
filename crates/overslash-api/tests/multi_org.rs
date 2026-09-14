@@ -1598,3 +1598,55 @@ async fn connect_gate_admin_without_membership_denied() {
     );
     assert!(!flow_consumed(&pool, &flow).await);
 }
+
+/// One actor per human per org, enforced in the schema (migration 115) rather
+/// than only in the provisioning code. `find_by_org_and_user` and the three
+/// call sites behind it (org switch, connect gate, OAuth consent target,
+/// billing ownership) read a single row with `fetch_optional`, which returns
+/// the first row and silently discards the rest — so a second linked identity
+/// would not error anywhere, it would just make all four planner-order
+/// dependent. The constraint is what keeps that unrepresentable.
+#[tokio::test]
+async fn a_human_cannot_hold_two_actors_in_one_org() {
+    let pool = common::test_pool().await;
+    let (org_id, _, user_id) = seed_user_with_single_org(&pool).await;
+
+    let second = identity::create_with_email(
+        &pool,
+        org_id,
+        "Alice (again)",
+        "user",
+        None,
+        Some("alice.other@multiorg.test"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+
+    let err = identity::set_user_id(&pool, org_id, second.id, Some(user_id))
+        .await
+        .expect_err("linking a second actor to the same human must be rejected");
+    assert!(
+        matches!(&err, sqlx::Error::Database(e) if e.is_unique_violation()),
+        "expected a unique violation, got: {err}"
+    );
+
+    // The partial predicate keeps the rows it should: unlinked members (an
+    // invite, or an impersonation-provisioned member) are many per org, and
+    // the same human legitimately holds one actor in each org they belong to.
+    let (other_org, _, _) = seed_user_with_single_org(&pool).await;
+    let elsewhere = identity::create_with_email(
+        &pool,
+        other_org,
+        "Alice",
+        "user",
+        None,
+        Some("alice@multiorg.test"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    identity::set_user_id(&pool, other_org, elsewhere.id, Some(user_id))
+        .await
+        .expect("the same human is an actor in every org they belong to");
+}

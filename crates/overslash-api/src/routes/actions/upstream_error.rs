@@ -27,6 +27,7 @@ pub(super) fn map_call_error(
     timeout: CallTimeout,
     offer_prefer_stream: bool,
     download: Option<crate::services::deferred_download::Descriptor>,
+    page_size_param: Option<String>,
 ) -> AppError {
     match e {
         http_caller::CallError::ResponseTooLarge {
@@ -40,6 +41,7 @@ pub(super) fn map_call_error(
             offer_prefer_stream,
             download_url: download.as_ref().map(|d| d.download_url.clone()),
             expires_at: download.map(|d| d.expires_at),
+            page_size_param,
         },
         // `timeout_ms` comes from the transport (what was actually applied),
         // the rest from the resolver (who set it, and what the caller would

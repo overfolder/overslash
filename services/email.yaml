@@ -175,7 +175,9 @@ paths:
         Defaults to ALL. Returns `{results, total, truncated}` — `total` is the
         true match count, so `total: 0` means "no such mail", not "the response
         was cut". Results are newest-first by IMAP UID (arrival order, not the
-        Date header). Use `limit` to bound large folders.
+        Date header). `limit` defaults to 50 and there is no continuation
+        token — narrow `criteria` (a date range, a sender) rather than raising
+        `limit` to walk a large folder.
       risk: read
       requestBody:
         # Every field is optional — a bare "search my inbox" is a legitimate
@@ -217,10 +219,21 @@ paths:
                     description for the syntax and examples. Defaults to ALL.
                 limit:
                   type: integer
+                  # A bound with no `default:` bounds nothing: `apply_defaults`
+                  # is what puts a value on the wire, and an agent that has
+                  # never called this action does not know it should pass one.
+                  # Omitting it used to fetch every match in the folder.
+                  #
+                  # No `x-overslash-pagination` block, deliberately: the
+                  # mailbox gateway sends no continuation, and a page size with
+                  # no way to reach page two is a limit, not pagination.
+                  # `total` is what tells a caller what it has not seen.
+                  default: 50
                   description: >-
-                    Cap on summaries returned, newest-first by UID. Omitting it
-                    fetches every match in the folder; the response's `total`
-                    and `truncated` report what was actually found either way.
+                    Cap on summaries returned, newest-first by UID. Defaults to
+                    50; the response's `total` and `truncated` report what was
+                    actually found either way, so a `total` above `limit` means
+                    there is more mail than you asked for.
   /email/get:
     parameters: *mailbox_endpoint
     post:

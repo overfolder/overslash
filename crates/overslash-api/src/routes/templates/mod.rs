@@ -247,6 +247,7 @@ fn actions_from_definition_inner(
                 scope_coverage,
                 missing_scopes,
                 wait_mode: a.wait_mode,
+                pagination: super::templates::dto::PaginationSummary::of(a),
             }
         })
         .collect();
