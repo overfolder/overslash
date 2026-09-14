@@ -130,6 +130,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
         execution_replay_timeout_secs: 30,
+        sweep_grace_secs: 60,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,

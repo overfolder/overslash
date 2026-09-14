@@ -221,6 +221,7 @@
 - Tools annotated for client UX and `overslash_call` split into `overslash_read` (read-class fast-path, prompt-skip) + `overslash_call` (general) (PR #235).
 - Metaservice bridge: service-instance kernels (PR #244), template-authoring (PR #246), `create_connection` (PR #253), `request_secret` kernel with signed-provide handshake (PR #252), capability-gated connection settings on OAuth consent (PR #215).
 - Fan-out search per instance, actionable template-vs-instance errors (PR #243); nested OAuth for upstream MCP servers (PR #220); MCP Inspector CORS (PR #232).
+- `pending_mcp_elicitations` is swept in two phases on the existing 60s background loop (issue #600). `mcp_elicitation_reap` cancels `pending`/`claimed` rows whose originator pod died — until they go terminal they keep suppressing auto-call on their approval — and `mcp_elicitation_purge` then deletes terminal rows, which is what bounds the table: `final_response` holds a full `ApprovalResponse` snapshot, `disclosed_fields` included. Both windows derive from the originator's own 300s poll ceiling plus `SWEEP_GRACE_SECS` (default 60), one knob now shared with the `executions` and async orphan graces, so no window can be configured below the ceiling it guards. Both predicates lead with `status`, so they ride `idx_pending_mcp_elicit_status (status, created_at)` rather than seq-scanning.
 
 ### Not Yet Built
 
