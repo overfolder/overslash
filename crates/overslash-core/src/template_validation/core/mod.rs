@@ -39,6 +39,7 @@ pub fn validate_service_definition(
     }
     check_mcp(def, &mut issues);
     check_duplicate_action_keys(raw_action_keys, &mut issues);
+    check_single_test_action(def, &mut issues);
     check_resolver_targets(def, &mut issues);
 
     // Iterate actions in a deterministic order so test assertions can match
@@ -55,6 +56,37 @@ pub fn validate_service_definition(
     }
 
     issues.finish()
+}
+
+// --- test action -----------------------------------------------------------
+
+/// At most one action per template may carry `x-overslash-test`.
+///
+/// The probe has exactly one consumer — a single "Test service" button — so a
+/// second candidate is not a richer template, it is an unanswerable question
+/// about which one the button means. `ServiceDefinition::test_action` does pick
+/// deterministically when it finds several, but that exists to keep a template
+/// already in the database renderable, not to bless authoring one.
+fn check_single_test_action(def: &ServiceDefinition, issues: &mut Issues) {
+    let mut marked: Vec<&str> = def
+        .actions
+        .iter()
+        .filter(|(_, a)| a.test.is_some())
+        .map(|(key, _)| key.as_str())
+        .collect();
+    if marked.len() < 2 {
+        return;
+    }
+    marked.sort_unstable();
+    issues.err(
+        "multiple_test_actions",
+        format!(
+            "{} actions are marked as the test action ({}) — a template has at most one credential probe",
+            marked.len(),
+            marked.join(", ")
+        ),
+        "actions".to_string(),
+    );
 }
 
 // --- duplicate action keys -------------------------------------------------
@@ -138,6 +170,7 @@ mod tests {
                         request_body: None,
                         download: None,
                         upload: None,
+                        test: None,
                     },
                 );
                 m
@@ -235,6 +268,7 @@ mod tests {
                 request_body: None,
                 download: None,
                 upload: None,
+                test: None,
             },
         );
         ServiceDefinition {

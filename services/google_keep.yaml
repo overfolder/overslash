@@ -42,6 +42,7 @@ paths:
         items: notes
       summary: List notes for the authenticated user
       risk: read
+      test: true
       parameters:
         - name: pageSize
           in: query

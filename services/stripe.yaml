@@ -26,6 +26,9 @@ paths:
       # call — but a caller can, which is why `starting_after` is declared.
       summary: List recent charges
       risk: read
+      test:
+        params:
+          limit: 1
       description: >-
         One page of charges, newest first, bounded by `limit` (default 10, max
         100). The response carries `has_more`; to read the next page pass

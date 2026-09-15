@@ -34,6 +34,7 @@ paths:
       operationId: get_profile
       summary: "Get Gmail profile for {userId}"
       risk: read
+      test: true
       scope_param: userId
       security:
         - oauth:

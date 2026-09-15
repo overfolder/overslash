@@ -3,7 +3,7 @@
 //! checks are short and the cases against them are not.
 
 use crate::template_validation::core::tests::{minimal_mcp, minimal_valid, param, run};
-use crate::types::{McpAuth, Risk, Runtime, ServiceAction, ServiceDefinition};
+use crate::types::{McpAuth, Risk, Runtime, ServiceAction, ServiceDefinition, TestSpec};
 use std::collections::HashMap;
 
 #[test]
@@ -600,6 +600,7 @@ fn platform_namespace_action_allowed() {
             request_body: None,
             download: None,
             upload: None,
+            test: None,
         },
     );
     let r = run(&d);
@@ -631,4 +632,82 @@ fn http_description_still_required() {
             .iter()
             .any(|e| e.code == "missing_field" && e.path.contains("description"))
     );
+}
+
+// --- test action (x-overslash-test) ----------------------------------------
+
+#[test]
+fn test_action_must_be_read_risk() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.risk = Risk::Write.into();
+    a.test = Some(TestSpec::default());
+    let r = run(&d);
+    assert!(r.errors.iter().any(|e| e.code == "test_action_not_read"));
+}
+
+#[test]
+fn read_risk_test_action_is_clean() {
+    let mut d = minimal_valid();
+    d.actions.get_mut("list").unwrap().test = Some(TestSpec::default());
+    let r = run(&d);
+    assert!(r.valid, "errors: {:?}", r.errors);
+}
+
+#[test]
+fn test_params_must_name_defined_params() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.test = Some(TestSpec {
+        params: HashMap::from([("nope".into(), serde_json::json!(1))]),
+    });
+    let r = run(&d);
+    assert!(r.errors.iter().any(|e| e.code == "unknown_test_param"));
+}
+
+/// The probe runs unattended, so a missing required param would surface as
+/// "your credential is broken" when the truth is that the template is.
+#[test]
+fn test_must_cover_required_params() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.params.insert("cursor".into(), param("string", true));
+    a.test = Some(TestSpec::default());
+    let r = run(&d);
+    assert!(r.errors.iter().any(|e| e.code == "missing_test_param"));
+
+    // …and supplying it clears the finding.
+    let a = d.actions.get_mut("list").unwrap();
+    a.test = Some(TestSpec {
+        params: HashMap::from([("cursor".into(), serde_json::json!("0"))]),
+    });
+    let r = run(&d);
+    assert!(r.valid, "errors: {:?}", r.errors);
+}
+
+/// A required param carrying a `default` is filled in by `apply_defaults`
+/// before the required check on both `/call` and `/validate`, so the probe
+/// need not restate it. Gmail's `userId: me` is the shipped instance.
+#[test]
+fn defaulted_required_param_needs_no_test_value() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    let mut cursor = param("string", true);
+    cursor.default = Some(serde_json::json!("0"));
+    a.params.insert("cursor".into(), cursor);
+    a.test = Some(TestSpec::default());
+    let r = run(&d);
+    assert!(r.valid, "errors: {:?}", r.errors);
+}
+
+#[test]
+fn two_test_actions_is_an_error() {
+    let mut d = minimal_valid();
+    d.actions.get_mut("list").unwrap().test = Some(TestSpec::default());
+    let mut second = d.actions["list"].clone();
+    second.path = "/others".into();
+    second.test = Some(TestSpec::default());
+    d.actions.insert("list_others".into(), second);
+    let r = run(&d);
+    assert!(r.errors.iter().any(|e| e.code == "multiple_test_actions"));
 }

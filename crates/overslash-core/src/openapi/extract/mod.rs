@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 use crate::template_validation::ValidationIssue;
 use crate::types::{
     DisclosureField, DownloadAuth, DownloadSpec, ExecutionMode, NextSpec, NextStyle, PageSize,
-    PaginationSpec, ScopeParams, UploadMethod, UploadResultSpec, UploadSpec,
+    PaginationSpec, ScopeParams, TestSpec, UploadMethod, UploadResultSpec, UploadSpec,
 };
 
 use super::ext::{self, Ext, Pos};
@@ -456,6 +456,51 @@ pub(in crate::openapi) fn parse_pagination(
         items,
         has_more,
     })
+}
+
+/// `x-overslash-test` → [`TestSpec`].
+///
+/// Owns the boolean spelling: `true` is the zero-argument probe every shipped
+/// template writes, and `false` is an absent one. Honouring `false` rather
+/// than treating any presence of the key as a marker is what lets a template
+/// switch a probe off without deleting the line — and it keeps
+/// [`TestSpec`] itself a plain object, so the persisted round-trip needs no
+/// hand-rolled deserializer.
+///
+/// Structural shape only, exactly like [`parse_pagination`] above: that the
+/// named params exist on the action, that only one action in the template
+/// carries the key, and that its risk is `read` are all cross-field questions
+/// and live in `template_validation::core::action`.
+pub(in crate::openapi) fn parse_test(
+    v: Option<&Value>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<TestSpec> {
+    let v = v?;
+    let key = Ext::Test.key();
+    match v {
+        Value::Bool(true) => Some(TestSpec::default()),
+        Value::Bool(false) => None,
+        Value::Object(_) => match serde_json::from_value::<TestSpec>(v.clone()) {
+            Ok(spec) => Some(spec),
+            Err(e) => {
+                issues.push(ValidationIssue::new(
+                    "test_invalid",
+                    format!("{key} object is malformed: {e}"),
+                    format!("{base}.{key}"),
+                ));
+                None
+            }
+        },
+        _ => {
+            issues.push(ValidationIssue::new(
+                "test_invalid",
+                format!("{key} must be `true` or an object with a `params` map"),
+                format!("{base}.{key}"),
+            ));
+            None
+        }
+    }
 }
 
 fn parse_next_spec(
