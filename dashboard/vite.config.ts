@@ -61,6 +61,13 @@ export default defineConfig(({ mode }) => {
 					target: apiTarget,
 					changeOrigin: true
 				},
+				// The MCP endpoint. Proxied so the `claude mcp add …` command the
+				// Agents view renders (dashboard origin + /mcp, for any host we
+				// don't recognise as the managed cloud) actually works locally.
+				'/mcp': {
+					target: apiTarget,
+					changeOrigin: true
+				},
 				// Agent-facing enrollment instructions, served by the API at /SKILL.md.
 				'/SKILL.md': {
 					target: apiTarget,

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import {
@@ -27,9 +28,11 @@
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import ApprovalRow from '$lib/components/approval/ApprovalRow.svelte';
 	import ExpiryControl from '$lib/components/approval/ExpiryControl.svelte';
+	import ConnectAgentTip from '$lib/components/ConnectAgentTip.svelte';
 	import { collapse, motionDuration } from '$lib/utils/motion';
 	import { flip } from 'svelte/animate';
 	import { ttlRemaining } from '$lib/utils/time';
+	import { ownMcpUrlFor } from '$lib/env';
 
 	// User identities are labelled by email, not by the IdP display name — see
 	// `$lib/identityDisplay`. The org's allowed sign-in domains come from the
@@ -152,6 +155,42 @@
 	const isAdmin = $derived(
 		($page.data as { user?: { is_org_admin?: boolean } })?.user?.is_org_admin === true
 	);
+
+	// The MCP endpoint to hand the operator, with this org's slug already in it.
+	// Rendering it live (rather than a `<your-org>` placeholder) is the point:
+	// enrolling through the org subdomain is what pins the new agent to this
+	// org.
+	//
+	// The slug only goes in when we can *positively* confirm this is a
+	// non-personal org. `memberships` is absent on pre-multi-org sessions (see
+	// `MeIdentity`) and the API sends an empty vec for a session with no
+	// user_id, so a missing row means "don't know", not "not personal" —
+	// and a personal org does carry a slug, so guessing wrong produces a
+	// command that 404s with nothing in the UI to say why.
+	const mcpUrl = $derived.by(() => {
+		const user = ($page.data as {
+			user?: {
+				org_id?: string;
+				org_slug?: string | null;
+				personal_org_id?: string | null;
+				memberships?: { org_id: string; is_personal: boolean }[];
+			};
+		})?.user;
+		const membership = user?.memberships?.find((m) => m.org_id === user?.org_id);
+		const slugUsable = membership
+			? !membership.is_personal
+			: // No membership row. `personal_org_id` is the other signal, but it is
+				// filled in the same branch that fills `memberships`, so if it is
+				// absent too we genuinely don't know — fall back to the origin,
+				// which works for every org.
+				user?.personal_org_id != null && user.personal_org_id !== user.org_id;
+		// `ssr = false` on the root layout, so this only ever runs in the
+		// browser — but keep the guard so the helper stays pure and SSR-safe.
+		// An empty origin makes the helper degrade to a relative `/mcp` rather
+		// than silently inventing a production URL.
+		const origin = browser ? window.location.origin : '';
+		return ownMcpUrlFor(origin, user?.org_slug ?? null, slugUsable);
+	});
 	// `?user=<id>` (admin-only) scopes the forest to one user's subtree. Set when
 	// an admin drills in from the Users list. Ignored for non-admins or an
 	// unknown id — the page then shows the full org forest as before.
@@ -607,10 +646,6 @@
 		}
 	}
 
-	function copy(text: string) {
-		void navigator.clipboard.writeText(text);
-	}
-
 	// Eligible parents for the create form — any live identity can be a parent.
 	// Archived identities are excluded: the server rejects creating a child under
 	// an archived parent.
@@ -1009,7 +1044,13 @@
 					</div>
 				{/if}
 			{:else}
-				<p class="muted detail-empty">Select an agent to view details.</p>
+				<div class="detail-empty">
+					<p class="muted">Select an agent to view details.</p>
+					<div class="empty-tip">
+						<h3 class="section-title">Connect an agent</h3>
+						<ConnectAgentTip {mcpUrl} />
+					</div>
+				</div>
 			{/if}
 		</main>
 	</div>
@@ -1154,6 +1195,8 @@
 					<button type="submit" class="btn-new">Create Agent</button>
 				</div>
 			</form>
+			<div class="modal-or"><span>or</span></div>
+			<ConnectAgentTip {mcpUrl} variant="modal" />
 		</div>
 	</div>
 {/if}
@@ -1502,8 +1545,49 @@
 	/* ── Detail panel ── */
 	.detail-empty {
 		padding: 2rem;
-		text-align: center;
 		font-size: 0.9rem;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 1.5rem;
+	}
+	.detail-empty .muted {
+		margin: 0;
+		text-align: center;
+	}
+	/* The tip is a left-aligned block of commands, so it opts out of the
+	   centred prose above it — only the card itself is centred in the panel. */
+	.empty-tip {
+		width: 100%;
+		max-width: 520px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		padding: 16px;
+		background: var(--color-surface);
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+	.empty-tip .section-title {
+		margin: 0;
+	}
+	/* "or" rule between the create form and the connect-a-client alternative. */
+	.modal-or {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin: 16px 0 12px;
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--color-text-muted);
+	}
+	.modal-or::before,
+	.modal-or::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: var(--color-border);
 	}
 	.detail-header {
 		display: flex;
@@ -1702,6 +1786,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
+		padding: 24px;
+		box-sizing: border-box;
 		z-index: 100;
 	}
 	.modal {
@@ -1709,10 +1795,15 @@
 		border: 1px solid var(--color-border);
 		border-radius: 16px;
 		padding: 28px;
-		min-width: 400px;
+		min-width: 0;
 		max-width: 520px;
 		width: 100%;
 		box-shadow: var(--shadow-xl);
+		/* The form plus the connect-a-client alternative is tall enough to run
+		   past a short viewport — scroll inside the dialog rather than clip. */
+		max-height: 100%;
+		overflow-y: auto;
+		box-sizing: border-box;
 	}
 	.modal-head {
 		display: flex;
