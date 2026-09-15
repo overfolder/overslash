@@ -808,7 +808,12 @@ async fn mint_setup_links(
                 target_identity: owner_identity_id,
                 requested_by,
                 secret_name: &slot.default_secret_name,
-                reason: Some(&slot.label),
+                // The slot's authored label, when it has one. `x-overslash-label`
+                // is optional and most shipped templates omit it, so this is
+                // usually `None` — and `None` is what the pages branch on to
+                // omit the Reason row entirely. Passing `Some("")` would render
+                // an empty row instead.
+                reason: Some(slot.label.trim()).filter(|l| !l.is_empty()),
                 ttl_seconds: SETUP_LINK_TTL_SECS,
                 require_user_session,
                 service_instance_id: Some(service_instance_id),
