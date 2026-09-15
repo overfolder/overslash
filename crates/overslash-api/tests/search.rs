@@ -1371,6 +1371,37 @@ async fn catalog_rows_name_the_calls_that_make_them_callable() {
             "a callable row must omit auth.setup: {connected}"
         );
     }
+
+    // The invariant that makes these steps *followable*, asserted over every
+    // row in the catalog rather than one hand-picked template: each step names
+    // a real platform action, and every parameter it pre-fills is a scalar of
+    // the type that action declares. A template with two instance-source slots
+    // gets two `request_secret` steps, never one naming both — `secret_name`
+    // is declared `string`, so an array would deserialize-fail the moment an
+    // agent did what the hint told it to.
+    for row in results {
+        let Some(setup) = row["auth"].get("setup").and_then(Value::as_array) else {
+            continue;
+        };
+        for step in setup {
+            let action = step["action"]
+                .as_str()
+                .expect("step.action must be a string");
+            assert!(
+                ["create_service", "create_connection", "request_secret"].contains(&action),
+                "unknown setup action {action} on {row}"
+            );
+            for (key, value) in step["params"]
+                .as_object()
+                .expect("step.params is an object")
+            {
+                assert!(
+                    value.is_string(),
+                    "setup param {key} must be a scalar string, got {value} on {row}"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]

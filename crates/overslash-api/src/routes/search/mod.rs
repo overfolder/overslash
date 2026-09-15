@@ -22,11 +22,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_core::search::{Candidate, MIN_SCORE, apply_post_bonuses, keyword_fuzzy_score};
-use overslash_core::types::{
-    DeclaredRisk, SecretSource, ServiceAction, ServiceAuth, ServiceDefinition,
-};
+use overslash_core::types::{DeclaredRisk, ServiceAction, ServiceDefinition};
 use overslash_db::repos::{org as org_repo, service_action_embedding, service_template};
 use overslash_db::scopes::{OrgScope, UserScope};
+
+mod setup_hint;
+use setup_hint::{AuthStatus, build_auth_status};
 
 use crate::{
     AppState,
@@ -237,51 +238,6 @@ fn clamp_chars(s: &str, max: usize) -> String {
         Some((cut, _)) => format!("{}…", &s[..cut]),
         None => s.to_string(),
     }
-}
-
-#[derive(Serialize, Clone)]
-struct AuthStatus {
-    /// `"oauth"` or `"secret"`. Mirrors `ServiceAuth` so agents don't have
-    /// to crack open the template themselves.
-    ///
-    /// This string is hand-built, not derived from `ServiceAuth`'s serde
-    /// tag, so `ServiceAuth::Secret`'s `alias = "api_key"` does NOT apply:
-    /// it only rescues *inbound* parsing. Outbound, this field emits
-    /// `"secret"` where it used to emit `"api_key"` — a deliberate break for
-    /// any client branching on the old discriminant. Agents read the current
-    /// vocabulary from SKILL.md, and the dashboard ships with the API.
-    #[serde(rename = "type")]
-    kind: String,
-    /// OAuth provider key when `kind == "oauth"`. Absent for secret-based auth.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
-    /// `true` when this row represents a configured instance the caller can
-    /// call now; `false` for `setup_required` catalog rows.
-    connected: bool,
-    /// The calls that turn this row into something callable, in order.
-    /// Present only when `connected` is false — i.e. exactly when an agent
-    /// has found the thing it wants and cannot yet use it.
-    ///
-    /// Without this, discovery dead-ends: the row says a credential is
-    /// missing and names neither the call that supplies one nor the fact that
-    /// the agent may make it itself. In practice agents fell back to asking
-    /// their human to go to the dashboard. Each step is directly callable as
-    /// `overslash_call(service="overslash", action=<action>, params=<params>)`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    setup: Option<Vec<SetupStep>>,
-}
-
-/// One call in an [`AuthStatus::setup`] chain.
-#[derive(Serialize, Clone)]
-struct SetupStep {
-    /// A platform action key on the `overslash` service.
-    action: &'static str,
-    /// Pre-filled arguments. Partial by nature — `create_service` also takes a
-    /// `name`, which is the caller's to choose.
-    params: serde_json::Map<String, serde_json::Value>,
-    /// What to do with what the call returns, when that is not obvious.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    note: Option<&'static str>,
 }
 
 /// Per-instance data carried from `collect_visible_templates` into the
@@ -880,93 +836,6 @@ async fn collect_visible_templates(
 struct TemplateCandidate {
     tier: &'static str,
     def: ServiceDefinition,
-}
-
-fn build_auth_status(def: &ServiceDefinition, connected: bool) -> AuthStatus {
-    // Pick the first declared auth method as the primary face the caller
-    // sees. Templates that mix auth methods (rare) still surface here with
-    // the preferred one first — exactly how the dashboard displays them.
-    let (kind, provider) = match def.auth.first() {
-        Some(ServiceAuth::OAuth { provider, .. }) => ("oauth".into(), Some(provider.clone())),
-        Some(ServiceAuth::Secret { .. }) => ("secret".into(), None),
-        None => ("none".into(), None),
-    };
-    let setup = (!connected).then(|| build_setup_steps(def));
-    AuthStatus {
-        kind,
-        provider,
-        connected,
-        setup,
-    }
-}
-
-/// The ordered calls that take an un-connected template to a callable
-/// instance: always `create_service`, then whichever credential step the
-/// template's auth implies.
-fn build_setup_steps(def: &ServiceDefinition) -> Vec<SetupStep> {
-    let mut steps = vec![SetupStep {
-        action: "create_service",
-        params: serde_json::Map::from_iter([(
-            "template_key".to_string(),
-            serde_json::Value::String(def.key.clone()),
-        )]),
-        note: Some("pick any `name`; it becomes the `service` you call afterwards"),
-    }];
-
-    match def.auth.first() {
-        Some(ServiceAuth::OAuth { provider, .. }) => steps.push(SetupStep {
-            action: "create_connection",
-            params: serde_json::Map::from_iter([(
-                "provider".to_string(),
-                serde_json::Value::String(provider.clone()),
-            )]),
-            note: Some("hand the returned `auth_url` to your user verbatim"),
-        }),
-        Some(ServiceAuth::Secret { .. }) => {
-            // Which vault name to ask for. The instance-source slots are the
-            // ones an operator binds per instance — `slots_for` owns that
-            // rule, so read it rather than re-deriving from the auth entry.
-            // Several slots means `create_service` wants a `credentials` map
-            // and no single `secret_name` answers, so name the slots instead
-            // of guessing one.
-            let slots: Vec<_> = def
-                .all_slots()
-                .into_iter()
-                .filter(|s| s.source == SecretSource::Instance && !s.key.is_empty())
-                .collect();
-            let mut params = serde_json::Map::new();
-            match slots.as_slice() {
-                [only] => {
-                    params.insert(
-                        "secret_name".to_string(),
-                        serde_json::Value::String(only.default_secret_name.clone()),
-                    );
-                }
-                [] => {}
-                many => {
-                    params.insert(
-                        "secret_name".to_string(),
-                        serde_json::Value::Array(
-                            many.iter()
-                                .map(|s| serde_json::Value::String(s.default_secret_name.clone()))
-                                .collect(),
-                        ),
-                    );
-                }
-            }
-            steps.push(SetupStep {
-                action: "request_secret",
-                params,
-                note: Some(
-                    "one call per secret; hand the returned `provide_url` to your user — \
-                     you never see the value",
-                ),
-            });
-        }
-        None => {}
-    }
-
-    steps
 }
 
 // Reproduce the global-template visibility filter used by routes/templates.rs.
