@@ -42,6 +42,13 @@ pub struct CreateServiceInput {
     /// pinned or when the template is not OAuth-backed.
     #[serde(default)]
     pub skip_connect: Option<bool>,
+    /// Twin of [`Self::skip_connect`] for the secret path. With this `true`
+    /// the kernel creates the instance with whatever bindings were supplied
+    /// and mints no setup links — the caller intends to write the vault
+    /// secrets itself, or to bind them later via `PUT /v1/services/{id}/manage`.
+    /// Ignored when every per-instance slot is already bound.
+    #[serde(default)]
+    pub skip_credentials: Option<bool>,
     /// When `false`, this instance must never fall back to the identity's
     /// default connection for the provider at execution time — it requires an
     /// explicit `connection_id`. Defaults to `true` (legacy fallback). White-
@@ -159,6 +166,11 @@ pub struct ServiceInstanceSummary {
     pub groups: Vec<ServiceGroupRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials_status: Option<CredentialsStatus>,
+    /// The template's credential probe, when it declares one. Set by the
+    /// caller, which is where the resolved template is in hand — same as
+    /// `credentials_status` and `icon_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_action: Option<crate::routes::actions::probe::TestActionRef>,
 }
 
 #[derive(Serialize, Clone)]
@@ -235,6 +247,10 @@ pub struct ServiceInstanceDetail {
     pub discovered_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials_status: Option<CredentialsStatus>,
+    /// The template's credential probe, when it declares one. What the
+    /// dashboard reads to decide whether to offer a Test button.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_action: Option<crate::routes::actions::probe::TestActionRef>,
     /// Present on the response to `POST /v1/services` when the kernel
     /// auto-initiated an OAuth flow as part of setting up the instance.
     /// The caller hands `auth_url` to the user and the OAuth callback
@@ -242,6 +258,12 @@ pub struct ServiceInstanceDetail {
     /// finishes. Omitted on every other code path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connect: Option<ConnectBundle>,
+    /// Present on the response to `POST /v1/services` when the kernel minted
+    /// setup links for the instance's unbound credential slots. The secret
+    /// twin of [`Self::connect`] — the caller hands `setup.setup_url` to its
+    /// user exactly as it hands over `connect.auth_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup: Option<crate::services::service_setup::SetupBundle>,
 }
 
 /// OAuth bootstrap bundle returned alongside a freshly-created service

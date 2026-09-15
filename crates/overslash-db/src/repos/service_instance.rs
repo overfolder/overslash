@@ -195,6 +195,40 @@ where
     .await
 }
 
+/// Bind one credential slot to a vault secret name.
+///
+/// The twin of [`bind_connection_with`] for the secret path: what the public
+/// setup-link handler calls once it has written the value into the vault.
+///
+/// `jsonb_set` rather than a read-modify-write of the whole map, and for the
+/// same reason `bind_connection_with` is a single statement: two slots of the
+/// same instance can be fulfilled concurrently (a template with two setup
+/// links outstanding, two browser tabs), and a whole-map replace would let the
+/// later write erase the earlier binding.
+pub(crate) async fn bind_credential_slot(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+    slot_key: &str,
+    secret_name: &str,
+) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ServiceInstanceRow,
+        "UPDATE service_instances \
+         SET credentials = jsonb_set(COALESCE(credentials, '{}'::jsonb), ARRAY[$3], to_jsonb($4::text), true), \
+             updated_at = now() \
+         WHERE id = $1 AND org_id = $2 \
+         RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", config as \"config: Json<ConfigMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at",
+        id,
+        org_id,
+        slot_key,
+        secret_name,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// Get a service instance by name within a specific scope (org or user).
 pub(crate) async fn get_by_name(
     pool: &PgPool,

@@ -20,6 +20,16 @@ pub struct SecretRequestRow {
     /// is rejected. Forward-only: flipping the org setting does not mutate
     /// this row.
     pub require_user_session: bool,
+    /// Service instance this request provisions a credential for, when the
+    /// request was minted as part of setting one up. `None` is a plain secret
+    /// request: a vault name and nothing else.
+    pub service_instance_id: Option<Uuid>,
+    /// The template securityScheme slot key to bind on fulfilment. Validated
+    /// against the template at *mint* time, by the caller that held
+    /// `manage_services_own`; fulfilment carries only a capability token and
+    /// re-derives nothing. Always `Some` exactly when `service_instance_id`
+    /// is — the `secret_requests_service_binding_complete` check enforces it.
+    pub credential_key: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -34,12 +44,14 @@ pub async fn create(
     token_hash: &[u8],
     expires_at: OffsetDateTime,
     require_user_session: bool,
+    service_instance_id: Option<Uuid>,
+    credential_key: Option<&str>,
 ) -> Result<SecretRequestRow, sqlx::Error> {
     sqlx::query_as!(
         SecretRequestRow,
-        "INSERT INTO secret_requests (id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at, require_user_session)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at, fulfilled_at, created_at, require_user_session",
+        "INSERT INTO secret_requests (id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at, require_user_session, service_instance_id, credential_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at, fulfilled_at, created_at, require_user_session, service_instance_id, credential_key",
         id,
         org_id,
         identity_id,
@@ -49,6 +61,8 @@ pub async fn create(
         token_hash,
         expires_at,
         require_user_session,
+        service_instance_id,
+        credential_key,
     )
     .fetch_one(pool)
     .await
@@ -57,7 +71,7 @@ pub async fn create(
 pub async fn get(pool: &PgPool, id: &str) -> Result<Option<SecretRequestRow>, sqlx::Error> {
     sqlx::query_as!(
         SecretRequestRow,
-        "SELECT id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at, fulfilled_at, created_at, require_user_session
+        "SELECT id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at, fulfilled_at, created_at, require_user_session, service_instance_id, credential_key
          FROM secret_requests WHERE id = $1",
         id,
     )
@@ -74,4 +88,32 @@ pub async fn mark_fulfilled(pool: &PgPool, id: &str) -> Result<bool, sqlx::Error
     .execute(pool)
     .await?;
     Ok(r.rows_affected() > 0)
+}
+
+/// The credential slot keys this instance still has an unfulfilled, unexpired
+/// setup request outstanding for.
+///
+/// The setup screen renders this as "still needed" after a submit, and the
+/// fulfilment handler reads it to decide whether setup is finished. Scoped by
+/// org even though `id` is already unique, so a leaked instance id from
+/// another tenant reads as an empty list rather than a slot inventory.
+pub async fn outstanding_slots_for_service(
+    pool: &PgPool,
+    org_id: Uuid,
+    service_instance_id: Uuid,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT credential_key AS \"credential_key!\"
+         FROM secret_requests
+         WHERE org_id = $1
+           AND service_instance_id = $2
+           AND credential_key IS NOT NULL
+           AND fulfilled_at IS NULL
+           AND expires_at > now()
+         ORDER BY created_at",
+        org_id,
+        service_instance_id,
+    )
+    .fetch_all(pool)
+    .await
 }

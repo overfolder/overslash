@@ -25,6 +25,7 @@ pub fn row_to_summary(
         use_default_connection: row.use_default_connection,
         groups,
         credentials_status: None,
+        test_action: None,
     }
 }
 
@@ -50,6 +51,8 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
         updated_at: fmt_time(row.updated_at),
         discovered_at: row.discovered_at.map(fmt_time),
         credentials_status: None,
+        test_action: None,
         connect: None,
+        setup: None,
     }
 }

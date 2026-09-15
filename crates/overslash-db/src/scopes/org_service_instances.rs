@@ -153,6 +153,27 @@ impl OrgScope {
         service_instance::update(self.db(), self.org_id(), id, input).await
     }
 
+    /// Bind one credential slot on an instance to a vault secret name, scoped
+    /// to this org. Returns `None` if the id belongs to another tenant.
+    ///
+    /// Deliberately narrower than [`Self::update_service_instance`], which is
+    /// what `kernel_update_service` reaches for: that path re-derives the
+    /// template's slot set and checks the caller may manage the instance. The
+    /// public setup-link handler has no caller identity to check — it holds a
+    /// signed capability token — and the slot key it passes was already
+    /// validated against the template at *mint* time, by the caller that did
+    /// hold `manage_services_own`. Re-entering the kernel there would mean
+    /// inventing an identity to satisfy a check that has already happened.
+    pub async fn bind_credential_slot(
+        &self,
+        id: Uuid,
+        slot_key: &str,
+        secret_name: &str,
+    ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
+        service_instance::bind_credential_slot(self.db(), self.org_id(), id, slot_key, secret_name)
+            .await
+    }
+
     /// Overwrite a service instance's MCP discovery result, scoped to this org.
     /// Returns `false` if the id belongs to another tenant. Used by the
     /// instance-scoped MCP resync route.
