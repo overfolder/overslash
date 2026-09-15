@@ -394,33 +394,7 @@ async fn get_setup(
     )
     .await?;
 
-    let slots: Vec<SetupSlotView> = crate::services::service_setup::instance_slots(&def)
-        .into_iter()
-        .map(|s| SetupSlotView {
-            bound: instance.credentials.0.contains_key(&s.key),
-            // `x-overslash-label` is optional, and most shipped templates
-            // omit it — an implicit slot inherits the scheme's label, which is
-            // empty. This page *leads* with the label (it names the field and
-            // completes the sentence "…needs its ___"), so an empty one is not
-            // a missing nicety, it is a blank in the middle of a prompt.
-            label: slot_label(&s),
-            key: s.key,
-            description: s.description,
-        })
-        .collect();
-    // The slot this link fills, as the template describes it. Falling back to
-    // the bare key keeps the page renderable if the template dropped the slot
-    // after the link was minted — the binding still works, the row names it.
-    let slot = slots
-        .iter()
-        .find(|s| s.key == credential_key)
-        .cloned()
-        .unwrap_or_else(|| SetupSlotView {
-            label: humanize(&credential_key),
-            key: credential_key.clone(),
-            description: String::new(),
-            bound: false,
-        });
+    let (slot, slots) = slot_views(&def, &instance, &credential_key);
 
     let provide = provide_metadata(&state, &scope, &headers, row).await?;
     Ok(Json(SetupMetadata {
@@ -531,59 +505,16 @@ async fn submit_provide(
     // a secret that does not exist; the reverse — a stored secret with no
     // binding — is recoverable from the dashboard, and the request row is
     // already burned either way.
-    //
-    // The slot key was validated against the template at *mint* time, by a
-    // caller holding `manage_services_own`. Nothing is re-derived here: this
-    // route carries a capability token and no identity to check.
-    let service = match (row.service_instance_id, row.credential_key.as_deref()) {
-        (Some(service_id), Some(credential_key)) => {
-            let bound = scope
-                .bind_credential_slot(service_id, credential_key, &stored.name)
-                .await?;
-            match bound {
-                Some(instance) => {
-                    let _ = scope
-                        .log_audit(AuditEntry {
-                            org_id: row.org_id,
-                            identity_id: provisioned_by_user_id.or(Some(row.identity_id)),
-                            action: "service.credential_bound",
-                            resource_type: Some("service_instance"),
-                            resource_id: Some(service_id),
-                            detail: serde_json::json!({
-                                "request_id": &row.id,
-                                "credential_key": credential_key,
-                                "secret_name": &stored.name,
-                            }),
-                            description: None,
-                            ip_address: ip.0.as_deref(),
-                        })
-                        .await;
-                    // Propagated, not defaulted. An *empty* list is the
-                    // positive verdict — it is what the page reads to say
-                    // "connected" and what tells a waiting agent the instance
-                    // is fully provisioned — so swallowing a query failure
-                    // would announce a false "done" on both surfaces.
-                    let remaining_slots = secret_request::outstanding_slots_for_service(
-                        state.db(&ext),
-                        row.org_id,
-                        service_id,
-                    )
-                    .await?;
-                    Some(SubmitServiceOutcome {
-                        id: service_id,
-                        name: instance.name,
-                        credential_key: credential_key.to_string(),
-                        remaining_slots,
-                    })
-                }
-                // The instance was deleted between mint and submit. The value
-                // is in the vault under its own name and the row is spent;
-                // say nothing about a service rather than inventing one.
-                None => None,
-            }
-        }
-        _ => None,
-    };
+    let service = bind_setup_slot(
+        &state,
+        &ext,
+        &scope,
+        &row,
+        &stored.name,
+        provisioned_by_user_id,
+        ip.0.as_deref(),
+    )
+    .await?;
 
     // When a session is present, attribute the audit entry to the human who
     // pasted the value. Otherwise fall back to the target identity (the one
@@ -655,10 +586,49 @@ async fn submit_provide(
     }))
 }
 
+/// Every per-instance slot of `def` with its bound state, plus the one this
+/// link fills.
+///
+/// The named slot falls back to a view built from the key alone, which keeps
+/// the page renderable if the template dropped the slot after the link was
+/// minted — the binding still works, because the row names it.
+fn slot_views(
+    def: &overslash_core::types::ServiceDefinition,
+    instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
+    credential_key: &str,
+) -> (SetupSlotView, Vec<SetupSlotView>) {
+    let slots: Vec<SetupSlotView> = crate::services::service_setup::instance_slots(def)
+        .into_iter()
+        .map(|s| SetupSlotView {
+            bound: instance.credentials.0.contains_key(&s.key),
+            label: slot_label(&s),
+            key: s.key,
+            description: s.description,
+        })
+        .collect();
+    let slot = slots
+        .iter()
+        .find(|s| s.key == credential_key)
+        .cloned()
+        .unwrap_or_else(|| SetupSlotView {
+            label: humanize(credential_key),
+            key: credential_key.to_string(),
+            description: String::new(),
+            bound: false,
+        });
+    (slot, slots)
+}
+
 /// A human-facing name for a credential slot.
 ///
 /// The template's own `x-overslash-label` when it authored one, else the slot
-/// key made readable (`api_key` → "API key"). Never the vault secret name:
+/// key made readable (`api_key` → "API key"). The key is optional and most
+/// shipped templates omit it — an implicit slot inherits the scheme's label,
+/// which is empty — and the setup page *leads* with this string (it names the
+/// field and completes the sentence "…needs its ___"), so an empty one is not
+/// a missing nicety but a blank in the middle of a prompt.
+///
+/// Never the vault secret name:
 /// that is an org-chosen identifier (`puppet_resend_key_1789…`), and reading
 /// it back to the person pasting a value tells them nothing about what to
 /// paste.
@@ -699,6 +669,71 @@ fn humanize(key: &str) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => out,
     }
+}
+
+/// Bind the credential slot a *setup* request names, once its value is in the
+/// vault.
+///
+/// `None` for a plain secret request, which names no service, and also when
+/// the instance was deleted between mint and submit: the value is stored under
+/// its own name and the row is spent, so the honest answer is to say nothing
+/// about a service rather than invent one.
+///
+/// Nothing is re-derived here. The slot key was validated against the template
+/// at *mint* time by a caller holding `manage_services_own`; this route
+/// carries a capability token and no identity to check one against.
+async fn bind_setup_slot(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    scope: &OrgScope,
+    row: &overslash_db::repos::secret_request::SecretRequestRow,
+    secret_name: &str,
+    provisioned_by_user_id: Option<Uuid>,
+    ip: Option<&str>,
+) -> Result<Option<SubmitServiceOutcome>> {
+    let (Some(service_id), Some(credential_key)) =
+        (row.service_instance_id, row.credential_key.as_deref())
+    else {
+        return Ok(None);
+    };
+    let Some(instance) = scope
+        .bind_credential_slot(service_id, credential_key, secret_name)
+        .await?
+    else {
+        return Ok(None);
+    };
+
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: row.org_id,
+            identity_id: provisioned_by_user_id.or(Some(row.identity_id)),
+            action: "service.credential_bound",
+            resource_type: Some("service_instance"),
+            resource_id: Some(service_id),
+            detail: serde_json::json!({
+                "request_id": &row.id,
+                "credential_key": credential_key,
+                "secret_name": secret_name,
+            }),
+            description: None,
+            ip_address: ip,
+        })
+        .await;
+
+    // Propagated, not defaulted. An *empty* list is the positive verdict — it
+    // is what the page reads to say "connected" and what tells a waiting agent
+    // the instance is fully provisioned — so swallowing a query failure would
+    // announce a false "done" on both surfaces.
+    let remaining_slots =
+        secret_request::outstanding_slots_for_service(state.db(ext), row.org_id, service_id)
+            .await?;
+
+    Ok(Some(SubmitServiceOutcome {
+        id: service_id,
+        name: instance.name,
+        credential_key: credential_key.to_string(),
+        remaining_slots,
+    }))
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────
