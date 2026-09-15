@@ -47,7 +47,7 @@ updates:
     ignore:
       # TypeScript 7 (the native port) drops the JS compiler API that tsup's
       # .d.ts generation (rollup-plugin-dts) builds on, so `npm run build`
-      # dies before emitting types — stay on 5.x.
+      # dies before emitting types — stay on 6.x.
       - dependency-name: "typescript"
         versions: ["7.x"]
 
