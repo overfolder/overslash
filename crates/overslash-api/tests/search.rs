@@ -1314,6 +1314,65 @@ async fn setup_required_rows_appear_under_include_catalog() {
     );
 }
 
+/// The row an agent sees when it finds a service it wants and cannot use yet
+/// has to name what fixes it. Before `auth.setup` existed the trail ended at
+/// `{"connected": false, "type": "secret"}` and agents fell back to telling
+/// their human to open a dashboard.
+///
+/// Metabase is the canonical case — a secret-auth template whose sole
+/// instance-source slot defaults to `metabase_api_key`.
+#[tokio::test]
+async fn catalog_rows_name_the_calls_that_make_them_callable() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+
+    let body: Value = client
+        .get(format!("{base}/v1/search?q=&include_catalog=true"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+
+    // Secret-auth: create_service, then request_secret naming the vault key.
+    let metabase = results
+        .iter()
+        .find(|r| r["template"] == "metabase")
+        .expect("metabase missing under include_catalog=true");
+    let setup = metabase["auth"]["setup"]
+        .as_array()
+        .unwrap_or_else(|| panic!("metabase row must carry auth.setup: {metabase}"));
+    assert_eq!(setup[0]["action"], "create_service");
+    assert_eq!(setup[0]["params"]["template_key"], "metabase");
+    assert_eq!(setup[1]["action"], "request_secret");
+    assert_eq!(
+        setup[1]["params"]["secret_name"], "metabase_api_key",
+        "the secret step must name the slot's default vault key: {setup:?}"
+    );
+
+    // OAuth: the credential step is create_connection, carrying the provider.
+    let oauth_row = results.iter().find(|r| r["auth"]["type"] == "oauth");
+    if let Some(row) = oauth_row {
+        let setup = row["auth"]["setup"]
+            .as_array()
+            .unwrap_or_else(|| panic!("oauth catalog row must carry auth.setup: {row}"));
+        assert_eq!(setup[0]["action"], "create_service");
+        assert_eq!(setup[1]["action"], "create_connection");
+        assert_eq!(setup[1]["params"]["provider"], row["auth"]["provider"]);
+    }
+
+    // A connected instance has nothing to set up, so the key is absent
+    // entirely rather than emitted empty.
+    if let Some(connected) = results.iter().find(|r| r["auth"]["connected"] == true) {
+        assert!(
+            connected["auth"].get("setup").is_none(),
+            "a callable row must omit auth.setup: {connected}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn call_with_template_name_returns_structured_error() {
     // The whole point of the MCP-clarity rewrite: when an agent passes a
