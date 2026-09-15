@@ -42,8 +42,16 @@ export type {
   SecretNameRow,
   SecretSummary,
   SubmitProvideResponse,
+  SubmitServiceOutcome,
   ViewerInfo,
 } from './secrets.js';
+
+export type {
+  ServiceTestResponse,
+  SetupBundle,
+  SetupRequestRef,
+  TestActionRef,
+} from './services.js';
 
 export type {
   ApprovalEventData,

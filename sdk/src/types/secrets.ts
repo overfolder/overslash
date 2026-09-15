@@ -36,6 +36,22 @@ export interface CreateSecretRequest {
   reason?: string;
   /** URL lifetime. Clamped to [60, 86400]; defaults to 3600. */
   ttl_seconds?: number;
+  /**
+   * Bind the value to a service instance on fulfilment. The minted URL then
+   * opens the setup page (`/services/setup/…`) naming that service instead of
+   * the bare provide page, and submitting it makes the instance callable.
+   *
+   * Rarely needed directly: `POST /v1/services` already mints these for a
+   * new instance's unbound slots and returns them as `setup`. Reach for this
+   * when adding a credential to an instance that already exists.
+   */
+  service_id?: string;
+  /**
+   * Which credential slot to bind. Optional when the template declares a
+   * single per-instance slot, which is every shipped template; required when
+   * it declares several, since there is no safe default.
+   */
+  credential_key?: string;
 }
 
 export interface CreateSecretRequestResponse {
@@ -51,6 +67,11 @@ export interface CreateSecretRequestResponse {
   /** Best-effort short URL. Absent when the shortener is not configured. */
   short_url?: string;
   expires_at: string;
+  /** Echoed when the request was bound to a service instance. */
+  service_id?: string;
+  /** The slot that will be bound — resolved, so a caller that omitted
+   * `credential_key` learns which one was inferred. */
+  credential_key?: string;
 }
 
 /**
@@ -86,6 +107,22 @@ export interface SubmitProvideResponse {
   ok: boolean;
   name: string;
   version: number;
+  /** Present when the request was bound to a service instance. */
+  service?: SubmitServiceOutcome;
+}
+
+/** What a setup-link submission did to the service it named. */
+export interface SubmitServiceOutcome {
+  id: string;
+  name: string;
+  /** The slot this submission bound. */
+  credential_key: string;
+  /**
+   * Slot keys that still have an outstanding setup link. Empty means the
+   * instance is fully provisioned — which is when a caller can offer to test
+   * it.
+   */
+  remaining_slots: string[];
 }
 
 /** Response to `PUT /v1/secrets/{name}`. */
