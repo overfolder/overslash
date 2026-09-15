@@ -12,6 +12,9 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "skipLibCheck": true,
+    // tsup's .d.ts build hard-codes `baseUrl` (deprecated in TS 6) and reads
+    // this file, so the opt-out lives here. Drop it once tsup stops setting it.
+    "ignoreDeprecations": "6.0",
     "noEmit": true,
     "types": ["vitest/globals"]
   },
