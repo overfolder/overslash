@@ -299,12 +299,23 @@ pub async fn bootstrap_agent_in_org(
                    AND i.kind = 'agent'
                    AND i.depth = 1
                    AND i.archived_at IS NULL)
+            -- Allow rules only, not merely any rule for the pattern: a deny
+            -- is not the anchor wearing a different hat, it is the opposite
+            -- claim. Treating one as coverage would let an explicit deny
+            -- suppress the allow for good, so that revoking the deny later
+            -- leaves the agent holding neither rule -- silently short of the
+            -- anchors every one of its peers has. Seeding the allow beside a
+            -- deny changes no answer today: check_permissions sweeps denies
+            -- first and returns on the first match, whatever the order or
+            -- specificity of the rules, which is D79 saying a deny rule still
+            -- overrides every allow, including this one.
             AND NOT EXISTS (
                 SELECT 1
                   FROM permission_rules r
                  WHERE r.org_id = $1
                    AND r.identity_id = $2
                    AND r.action_pattern = pattern
+                   AND r.effect = 'allow'
                    AND (r.expires_at IS NULL OR r.expires_at > now()))",
         org_id,
         identity_id,
@@ -345,12 +356,16 @@ pub async fn count_agents_missing_self_setup(
             AND EXISTS (
                 SELECT 1
                   FROM unnest($2::text[]) AS pattern
+                 -- Allow-only, matching the two writers: a pattern the
+                 -- agent is denied is a pattern it still lacks, so the
+                 -- button's count and the insert agree about who is missing.
                  WHERE NOT EXISTS (
                        SELECT 1
                          FROM permission_rules r
                         WHERE r.org_id = $1
                           AND r.identity_id = i.id
                           AND r.action_pattern = pattern
+                          AND r.effect = 'allow'
                           AND (r.expires_at IS NULL OR r.expires_at > now())))",
         org_id,
         &patterns,
@@ -427,12 +442,15 @@ pub async fn backfill_agent_self_setup(
             AND EXISTS (
                 SELECT 1 FROM orgs o
                  WHERE o.id = $1 AND o.default_agent_self_setup)
+            -- Allow-only, for `bootstrap_agent_in_org`'s reason: a deny is
+            -- the opposite claim, not coverage.
             AND NOT EXISTS (
                 SELECT 1
                   FROM permission_rules r
                  WHERE r.org_id = $1
                    AND r.identity_id = i.id
                    AND r.action_pattern = pattern
+                   AND r.effect = 'allow'
                    AND (r.expires_at IS NULL OR r.expires_at > now()))
          RETURNING identity_id",
         org_id,

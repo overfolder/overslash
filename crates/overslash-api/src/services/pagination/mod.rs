@@ -431,12 +431,12 @@ fn split_links(value: &str) -> Vec<&str> {
 /// down, and which `check_pagination` has already refused unless the action
 /// declares it.
 ///
-/// `None` means the continuation was found and refused — empty, or past the
-/// ceiling. That is a wholesale answer rather than a missing key, for the
-/// reason [`NextStyle::Cursor`] bails out of `continuation_params` entirely
-/// in the same situation: a marker offering the *other* keys the next URL
-/// happened to change, minus the cursor, is a marker whose `next` re-issues
-/// the page just fetched.
+/// `None` means the continuation was found and refused — empty, past the
+/// ceiling, or the one just spent. That is a wholesale answer rather than a
+/// missing key, for the reason [`NextStyle::Cursor`] bails out of
+/// `continuation_params` entirely in the same situation: a marker offering the
+/// *other* keys the next URL happened to change, minus the cursor, is a marker
+/// whose `next` re-issues the page just fetched.
 fn declared_query_params(
     url: &str,
     sent: &HashMap<String, Value>,
@@ -475,10 +475,18 @@ fn declared_query_params(
             let value = json!(v);
             // An upstream handing back the token it was just given is at the
             // end of the collection or looping; either way the next call is the
-            // one just made, so there is no delta to offer.
-            if sent.get(&k) != Some(&value) {
-                out.insert(k, value);
+            // one just made. `None` wholesale rather than merely omitting the
+            // key, for the reason stated above: the other keys this next URL
+            // happens to have changed -- a clamped `page_size`, say -- would
+            // otherwise still compose a marker, and a marker whose
+            // continuation is the one already spent re-issues the page just
+            // fetched. Omitting the key does not even lose it from that call:
+            // from page two on the caller has merged the spent token into its
+            // own arguments, and a marker is a delta over those.
+            if sent.get(&k) == Some(&value) {
+                return None;
             }
+            out.insert(k, value);
             continue;
         }
 
