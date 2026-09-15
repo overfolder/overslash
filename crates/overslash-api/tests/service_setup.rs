@@ -310,6 +310,135 @@ async fn an_unknown_credential_key_is_rejected_at_mint() {
     );
 }
 
+/// A minted setup link is a live capability to *write* an instance's
+/// credential binding, so minting one has to be gated on managing that
+/// instance — not merely on being in its org. `get_service_instance` filters
+/// by tenant alone, which is what makes this the security boundary rather
+/// than a formality.
+///
+/// `NotFound`, not `Forbidden`: a caller with no reach on the row should not
+/// be able to probe which instance ids exist in the org.
+#[tokio::test]
+async fn a_stranger_cannot_mint_a_setup_link_for_someone_elses_service() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    // Owned by admin-user.
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-private",
+               "skip_credentials": true, "user_level": true}),
+    )
+    .await;
+
+    // write-user is in the same org, holds write access, and owns nothing here.
+    let resp = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.write_key).0, common::auth(&fx.write_key).1)
+        .json(&json!({"secret_name": "resend_key", "service_id": svc["id"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "a stranger must not mint a binding link"
+    );
+}
+
+/// An org-level instance is owned by nobody, so it matches no ceiling and
+/// always requires admin — the same conclusion the update kernel reaches.
+#[tokio::test]
+async fn a_non_admin_cannot_mint_a_setup_link_for_an_org_level_service() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let groups: Value = client
+        .get(format!("{base}/v1/groups"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone = groups
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["name"] == "Everyone")
+        .expect("Everyone group");
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": format!("resend-org-{}", Uuid::new_v4().simple()),
+               "skip_credentials": true, "user_level": false,
+               "groups": [{"group_id": everyone["id"], "access_level": "write"}]}),
+    )
+    .await;
+    assert!(svc["id"].is_string(), "org-level create failed: {svc}");
+
+    let resp = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.write_key).0, common::auth(&fx.write_key).1)
+        .json(&json!({"secret_name": "resend_key", "service_id": svc["id"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+/// An OAuth template has no per-instance secret slot, so there is nothing to
+/// name — refuse rather than invent a binding.
+#[tokio::test]
+async fn a_template_with_no_instance_slot_is_rejected_at_mint() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "google_calendar", "name": "gcal-noslot", "user_level": true}),
+    )
+    .await;
+
+    let resp = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"secret_name": "anything", "service_id": svc["id"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body.to_string().contains("no per-instance credential slot"),
+        "the error must say why: {body}"
+    );
+}
+
+/// An instance id from another tenant reads as absent, never as a slot
+/// inventory.
+#[tokio::test]
+async fn a_cross_tenant_service_id_is_not_found() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let resp = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"secret_name": "resend_key", "service_id": Uuid::new_v4()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
 // ── The credential probe ──────────────────────────────────────────────────
 
 async fn run_probe(base: &str, client: &Client, key: &str, service_id: &str) -> (u16, Value) {
