@@ -234,6 +234,16 @@
 - `pending_approval` envelopes carry `next_step` (`get_result` | `call_pending`), so an agent stops guessing and stops hitting `409 execution has already completed`.
 - **Backfill (D80).** `POST /v1/orgs/{id}/agent-self-setup/backfill` grants the four anchors to every live first-level agent lacking them — admin-only, audited, idempotent, and refused with a `409` while the org toggle is off. Surfaced as a *Grant to N agents* button beside the toggle on `/org`, behind a confirm dialog. Revocation stays per agent; there is no bulk undo.
 
+### Service setup links + credential probe (D-NEXT)
+
+- `POST /v1/services` auto-mints a signed, single-use setup link for every unbound per-instance credential slot and returns it as `setup.setup_url` — the twin of the `connect.auth_url` an OAuth template already gets. `skip_credentials: true` opts out. The three mint paths (REST `POST /v1/secrets/requests`, the MCP `request_secret` kernel, this auto-mint) now share one `services::service_setup::mint`.
+- Migration 118 adds `service_instance_id` + `credential_key` to `secret_requests`, both-or-neither by check constraint. Fulfilling such a request writes the vault secret *and* binds the instance's credential slot via `OrgScope::bind_credential_slot` (a single `jsonb_set`, so two outstanding links on one instance cannot erase each other). The pair is validated against the template at mint time; fulfilment carries only a capability token and re-derives nothing.
+- `GET /public/services/setup/{req_id}` backs the standalone `/services/setup/[req_id]` page — the service-shaped sibling of `/secrets/provide/[req_id]`, submitting to the *same* POST endpoint. Registered in both dashboard gate lists (`+layout.ts` for the session, `+layout.svelte` for the shell).
+- `x-overslash-test` (unprefixed `test:`) nominates one read action per template as its credential probe; declared on 18 shipped templates (`deepwiki` has none — every tool needs a repo name and it authenticates with nothing). Validation: at most one per template, `risk: read`, params covering every required one without a `default`.
+- `POST /v1/services/{id}/test` runs it through the ordinary call path — no approval bypass — and returns a verdict with status, latency and the truncated upstream error, never the body. A transport failure is `failed`, not a gateway `502`. Owner-or-admin gated.
+- Dashboard: the create wizard stops on a "Check it works" step instead of navigating away (covering the OAuth "Connect & create" path too), the service detail page's credentials tab gains a Test button, and the setup page runs the probe on submit for a signed-in visitor. Shared `TestResult.svelte` + `SecretValueField.svelte`.
+- Knock-on: the `overslash_search` setup hint collapses from "create_service, then one `request_secret` per slot" to a single step naming the field the URL arrives on.
+
 ### Not Yet Built
 
 **Launch blockers** — tracked in [TODO.md](TODO.md):
