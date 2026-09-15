@@ -305,6 +305,120 @@ pub async fn bootstrap_agent_in_org(
     Ok(result.rows_affected())
 }
 
+/// How many live first-level agents in this org are missing at least one of
+/// [`AGENT_SELF_SETUP_PATTERNS`].
+///
+/// Drives the label on the backfill control, so an admin sees how many
+/// identities a click would touch *before* clicking. Deliberately counts
+/// agents, not rules: "grant to 7 agents" is the sentence an admin reasons
+/// about, and an agent holding three of the four still counts as one.
+///
+/// Does not consult `default_agent_self_setup`. The count is a fact about the
+/// org either way; whether the button is live is the route's call.
+pub async fn count_agents_missing_self_setup(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<i64, sqlx::Error> {
+    let patterns: Vec<String> = AGENT_SELF_SETUP_PATTERNS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+    let row = sqlx::query!(
+        "SELECT count(*) AS \"n!\"
+           FROM identities i
+          WHERE i.org_id = $1
+            AND i.kind = 'agent'
+            AND i.depth = 1
+            AND i.archived_at IS NULL
+            AND EXISTS (
+                SELECT 1
+                  FROM unnest($2::text[]) AS pattern
+                 WHERE NOT EXISTS (
+                       SELECT 1
+                         FROM permission_rules r
+                        WHERE r.org_id = $1
+                          AND r.identity_id = i.id
+                          AND r.action_pattern = pattern))",
+        org_id,
+        &patterns,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(row.n)
+}
+
+/// What a backfill actually did.
+pub struct SelfSetupBackfill {
+    /// Distinct agents that gained at least one rule.
+    pub agents_granted: i64,
+    /// Rules written. Not `agents_granted * 4` — an agent that already held
+    /// two of the four contributes two.
+    pub rules_written: i64,
+}
+
+/// Grant [`AGENT_SELF_SETUP_PATTERNS`] to every live first-level agent in the
+/// org that is missing them.
+///
+/// The bulk counterpart to [`bootstrap_agent_in_org`], for agents that predate
+/// the default (D79 seeds at creation time and is never retroactive, so an org
+/// that existed before it shipped has a population of agents the policy never
+/// reached). Idempotent: re-running it writes nothing.
+///
+/// Carries the same `default_agent_self_setup` guard as the per-agent seed, so
+/// the two cannot disagree about what the org's policy is — a backfill that
+/// worked while the toggle was off would grant a privilege the org has
+/// explicitly declined for new agents.
+///
+/// Set-based on purpose: one statement over N agents rather than N statements,
+/// so an org with hundreds of agents is one round trip, and every row lands or
+/// none does.
+pub async fn backfill_agent_self_setup(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<SelfSetupBackfill, sqlx::Error> {
+    let patterns: Vec<String> = AGENT_SELF_SETUP_PATTERNS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+    let rows = sqlx::query!(
+        "INSERT INTO permission_rules (org_id, identity_id, action_pattern, effect)
+         SELECT $1, i.id, pattern, 'allow'
+           FROM identities i
+          CROSS JOIN unnest($2::text[]) AS pattern
+          WHERE i.org_id = $1
+            AND i.kind = 'agent'
+            AND i.depth = 1
+            AND i.archived_at IS NULL
+            AND EXISTS (
+                SELECT 1 FROM orgs o
+                 WHERE o.id = $1 AND o.default_agent_self_setup)
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM permission_rules r
+                 WHERE r.org_id = $1
+                   AND r.identity_id = i.id
+                   AND r.action_pattern = pattern)
+         RETURNING identity_id",
+        org_id,
+        &patterns,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let rules_written = rows.len() as i64;
+    let mut agents: Vec<Uuid> = rows.into_iter().map(|r| r.identity_id).collect();
+    agents.sort_unstable();
+    agents.dedup();
+
+    Ok(SelfSetupBackfill {
+        agents_granted: agents.len() as i64,
+        rules_written,
+    })
+}
+
 /// Add an identity to the org's Admins group. Idempotent. Used when an
 /// already-admin user signs in via a second IdP — the new identity row
 /// must inherit the admin's group membership, otherwise the session JWT

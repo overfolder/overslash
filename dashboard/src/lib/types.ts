@@ -92,6 +92,10 @@ export interface ExecutionSettings {
    * services it needs without an approval per call. Applies at agent-creation
    * time only — flipping it never touches an agent that already exists. */
   default_agent_self_setup: boolean;
+  /** Live first-level agents missing at least one of the four self-setup
+   * rules — what a backfill would touch. Recomputed per request, so it drops
+   * to 0 immediately after a successful backfill. */
+  agents_missing_self_setup: number;
   /** Default upstream timeout for action calls, in ms. `null` inherits the
    * deployment default. A template action or an individual call overrides it. */
   call_timeout_ms: number | null;
