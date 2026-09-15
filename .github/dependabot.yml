@@ -44,6 +44,12 @@ updates:
     groups:
       sdk-deps:
         patterns: ["*"]
+    ignore:
+      # TypeScript 7 (the native port) drops the JS compiler API that tsup's
+      # .d.ts generation (rollup-plugin-dts) builds on, so `npm run build`
+      # dies before emitting types — stay on 5.x.
+      - dependency-name: "typescript"
+        versions: ["7.x"]
 
   # GitHub Actions — pinned to full commit SHAs (see DECISIONS D31); Dependabot
   # maintains SHA + version comment, and cooldown gates every bump like cargo/npm.
