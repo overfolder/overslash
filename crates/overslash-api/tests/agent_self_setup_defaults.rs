@@ -403,3 +403,390 @@ async fn seeded_agent_cannot_touch_another_users_instance() {
         .unwrap();
     assert_eq!(after["url"], "https://victim.example.com");
 }
+
+// ── Backfill ────────────────────────────────────────────────────────────
+//
+// The seed is deliberately never retroactive, which leaves every org that
+// predates D79 with agents the policy never reached. The backfill endpoint is
+// the admin's one-click catch-up for exactly that population.
+
+async fn backfill(
+    client: &reqwest::Client,
+    base: &str,
+    key: &str,
+    org_id: Uuid,
+) -> reqwest::Response {
+    client
+        .post(format!("{base}/v1/orgs/{org_id}/agent-self-setup/backfill"))
+        .header("Authorization", format!("Bearer {key}"))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// An agent created while the flag was off stays unseeded (pinned above by
+/// `flipping_the_flag_on_does_not_backfill`) — until an admin asks for it.
+#[tokio::test]
+async fn backfill_grants_the_four_anchors_to_pre_existing_agents() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+
+    assert!(overslash_rules(&pool, agent_id).await.is_empty());
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+
+    let resp = backfill(&client, &base, &admin_key, org_id).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+
+    assert_eq!(body["agents_granted"], 1);
+    assert_eq!(body["rules_written"], 4);
+    assert_eq!(body["agents_missing_self_setup"], 0);
+    assert_eq!(overslash_rules(&pool, agent_id).await, EXPECTED.to_vec());
+}
+
+/// A second click must not double-write. `permission_rules` has no unique
+/// index (two writers legitimately re-insert the same pattern with a fresh
+/// expiry), so idempotency is the statement's `NOT EXISTS`, not the schema's.
+#[tokio::test]
+async fn backfill_is_idempotent() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let resp = backfill(&client, &base, &admin_key, org_id).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["agents_granted"], 0, "already seeded at creation");
+    assert_eq!(body["rules_written"], 0);
+    assert_eq!(overslash_rules(&pool, agent_id).await, EXPECTED.to_vec());
+}
+
+/// Partial coverage is the interesting case: an agent holding some of the four
+/// gets only the missing ones, and the rule count reflects that rather than
+/// `agents * 4`.
+#[tokio::test]
+async fn backfill_fills_only_the_missing_rules() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+
+    // Hand-grant one of the four, the way an admin would have before D79.
+    let resp = client
+        .post(format!("{base}/v1/permissions"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "identity_id": agent_id,
+            "action_pattern": "overslash:manage_services_own:*",
+            "effect": "allow"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "seed grant: {:?}",
+        resp.text().await
+    );
+
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+    let body: Value = backfill(&client, &base, &admin_key, org_id)
+        .await
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(body["agents_granted"], 1);
+    assert_eq!(body["rules_written"], 3, "the held rule is not rewritten");
+    assert_eq!(overslash_rules(&pool, agent_id).await, EXPECTED.to_vec());
+}
+
+/// Sub-agents are outside the policy, so they are outside the catch-up too.
+#[tokio::test]
+async fn backfill_skips_sub_agents() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+
+    let sub = create_identity(
+        &client,
+        &base,
+        &admin_key,
+        json!({"name": "sub", "kind": "sub_agent", "parent_id": agent_id}),
+    )
+    .await;
+    let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
+
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+    backfill(&client, &base, &admin_key, org_id).await;
+
+    assert_eq!(overslash_rules(&pool, agent_id).await, EXPECTED.to_vec());
+    assert!(
+        overslash_rules(&pool, sub_id).await.is_empty(),
+        "a sub-agent must not be caught by the backfill"
+    );
+}
+
+/// The toggle and the button cannot disagree about the org's policy: granting
+/// against a default the org has declined would hand out exactly what it opted
+/// out of. Refused with a 409 that says so, not a silent no-op.
+#[tokio::test]
+async fn backfill_refuses_while_the_default_is_off() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+
+    let resp = backfill(&client, &base, &admin_key, org_id).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
+    assert!(overslash_rules(&pool, agent_id).await.is_empty());
+}
+
+/// Bulk privilege grant ⇒ admin only. A seeded agent holds
+/// `manage_services_own`, which must not be a route to granting it to everyone.
+#[tokio::test]
+async fn backfill_is_admin_only() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, _agent_id, agent_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let resp = backfill(&client, &base, &agent_key, org_id).await;
+    assert!(
+        resp.status().is_client_error(),
+        "a non-admin must not backfill: {}",
+        resp.status()
+    );
+}
+
+/// The count that labels the button has to mean "agents a click would touch",
+/// so it drops to zero once they are covered.
+#[tokio::test]
+async fn pending_count_tracks_the_backfill() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool, None).await;
+    let (org_id, _agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+
+    let settings: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}/execution-settings"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settings["agents_missing_self_setup"], 1);
+
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+    backfill(&client, &base, &admin_key, org_id).await;
+
+    let settings: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}/execution-settings"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settings["agents_missing_self_setup"], 0);
+}
+
+/// Two admins clicking at once, or one request retried, must not double the
+/// rule list — and the thing that prevents it is a per-org advisory lock, so
+/// that is what this asserts.
+///
+/// `permission_rules` has no unique index on
+/// `(org_id, identity_id, action_pattern)` and deliberately must not grow one:
+/// `POST /v1/permissions` and "Allow & Remember" both legitimately re-insert an
+/// existing pattern with a fresh `expires_at`. So `NOT EXISTS` alone is only as
+/// good as the statement's snapshot — under READ COMMITTED two overlapping
+/// backfills each see the rule missing and each insert it.
+///
+/// Racing two real requests does **not** test this: they reliably fail to
+/// overlap in the window that matters, so such a test passes with the lock
+/// removed (checked). Instead, hold the lock externally and assert the backfill
+/// blocks on it — which is deterministic, and fails immediately if the lock is
+/// ever dropped from the query.
+#[tokio::test]
+async fn backfill_serializes_on_a_per_org_advisory_lock() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+
+    // Take the same lock the backfill takes, on its own connection, and hold it.
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        format!("agent_self_setup_backfill:{org_id}")
+    )
+    .execute(&mut *holder)
+    .await
+    .unwrap();
+
+    // The backfill must now block rather than proceed on a stale snapshot.
+    let blocked = tokio::time::timeout(
+        std::time::Duration::from_millis(1500),
+        backfill(&client, &base, &admin_key, org_id),
+    )
+    .await;
+    assert!(
+        blocked.is_err(),
+        "backfill completed while the per-org lock was held — the lock is not being taken"
+    );
+
+    // Release it, and the same call goes through and writes exactly four.
+    holder.rollback().await.unwrap();
+    let body: Value = backfill(&client, &base, &admin_key, org_id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["rules_written"], 4);
+    assert_eq!(overslash_rules(&pool, agent_id).await, EXPECTED.to_vec());
+}
+
+/// Two concurrent requests leave exactly one set of rules behind. Weaker than
+/// the lock assertion above — it does not reliably reproduce the interleaving —
+/// but it pins the user-visible invariant: whatever the scheduling, the rule
+/// list is never doubled.
+#[tokio::test]
+async fn concurrent_backfills_write_one_set_of_rules() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+
+    let (a, b) = tokio::join!(
+        backfill(&client, &base, &admin_key, org_id),
+        backfill(&client, &base, &admin_key, org_id),
+    );
+    assert_eq!(a.status(), reqwest::StatusCode::OK);
+    assert_eq!(b.status(), reqwest::StatusCode::OK);
+
+    let a: Value = a.json().await.unwrap();
+    let b: Value = b.json().await.unwrap();
+    assert_eq!(
+        a["rules_written"].as_i64().unwrap() + b["rules_written"].as_i64().unwrap(),
+        4,
+        "between them the two calls must write the four rules once"
+    );
+
+    let rows: Vec<String> = sqlx::query_scalar!(
+        "SELECT action_pattern FROM permission_rules
+          WHERE identity_id = $1 AND action_pattern LIKE 'overslash:%'",
+        agent_id
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut deduped = rows.clone();
+    deduped.sort();
+    deduped.dedup();
+    assert_eq!(
+        rows.len(),
+        deduped.len(),
+        "duplicate rule rows after concurrent backfills: {rows:?}"
+    );
+    assert_eq!(deduped, EXPECTED.to_vec());
+}
+
+/// "Already has this rule" has to mean what the permission check means.
+///
+/// `permission_rule::list_by_identity` filters `expires_at <= now()`, so an
+/// agent whose `manage_services_own` grant was time-limited and has lapsed is
+/// ungranted at runtime. If the backfill's `NOT EXISTS` ignores expiry, that
+/// agent reads as covered, gets skipped, and stays broken — the one agent that
+/// actually needed the catch-up is the one it misses. The seeded rows never
+/// expire, so this only arises for a rule on one of the four patterns that came
+/// from `POST /v1/permissions` or "Allow & Remember" with a TTL.
+#[tokio::test]
+async fn backfill_replaces_a_lapsed_rule() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+
+    // A grant on one of the four that has already lapsed.
+    sqlx::query!(
+        "INSERT INTO permission_rules (org_id, identity_id, action_pattern, effect, expires_at)
+         VALUES ($1, $2, 'overslash:manage_services_own:*', 'allow', now() - interval '1 hour')",
+        org_id,
+        agent_id
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+
+    // It must be counted as pending despite the row existing...
+    let settings: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}/execution-settings"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        settings["agents_missing_self_setup"], 1,
+        "a lapsed rule must not read as coverage"
+    );
+
+    // ...and the backfill must write all four, not three.
+    let body: Value = backfill(&client, &base, &admin_key, org_id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["rules_written"], 4);
+
+    // The live rules are the full set; the lapsed row is still there, inert.
+    let live: Vec<String> = sqlx::query_scalar!(
+        "SELECT action_pattern FROM permission_rules
+          WHERE identity_id = $1 AND action_pattern LIKE 'overslash:%'
+            AND (expires_at IS NULL OR expires_at > now())
+          ORDER BY action_pattern",
+        agent_id
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(live, EXPECTED.to_vec());
+}
+
+/// Bulk grants leave a trail naming who ran it and how much it touched.
+#[tokio::test]
+async fn backfill_is_audited() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, _agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+    backfill(&client, &base, &admin_key, org_id).await;
+
+    let detail: serde_json::Value = sqlx::query_scalar!(
+        "SELECT detail FROM audit_log
+          WHERE org_id = $1 AND action = 'org.agent_self_setup.backfilled'
+          ORDER BY created_at DESC LIMIT 1",
+        org_id
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("backfill must write an audit row");
+
+    assert_eq!(detail["agents_granted"], 1);
+    assert_eq!(detail["rules_written"], 4);
+}

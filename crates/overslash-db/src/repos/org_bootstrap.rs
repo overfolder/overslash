@@ -237,6 +237,16 @@ pub async fn bootstrap_user_in_org(
 /// call's permission key from an action's `permission:` field, so one
 /// `overslash:manage_templates_own:*` rule covers `list_templates`,
 /// `get_template`, `create_template`, `import_template` and `delete_template`.
+///
+/// **"Already has this rule" must mean what the permission check means.** Every
+/// `NOT EXISTS` below carries `expires_at IS NULL OR expires_at > now()`,
+/// matching `permission_rule::list_by_identity`. Without it an agent whose
+/// `manage_services_own` grant was time-limited and has since lapsed reads as
+/// covered here while the runtime — which filters expired rows — treats it as
+/// ungranted: the backfill skips the one agent that actually needs it, and the
+/// pending count under-reports. The seeded rows themselves never expire, so
+/// this only bites where a rule on one of these four patterns came from
+/// somewhere else with a TTL — `POST /v1/permissions`, or "Allow & Remember".
 pub const AGENT_SELF_SETUP_PATTERNS: [&str; 4] = [
     "overslash:manage_services_own:*",
     "overslash:manage_templates_own:*",
@@ -294,7 +304,8 @@ pub async fn bootstrap_agent_in_org(
                   FROM permission_rules r
                  WHERE r.org_id = $1
                    AND r.identity_id = $2
-                   AND r.action_pattern = pattern)",
+                   AND r.action_pattern = pattern
+                   AND (r.expires_at IS NULL OR r.expires_at > now()))",
         org_id,
         identity_id,
         &patterns,
@@ -303,6 +314,143 @@ pub async fn bootstrap_agent_in_org(
     .await?;
 
     Ok(result.rows_affected())
+}
+
+/// How many live first-level agents in this org are missing at least one of
+/// [`AGENT_SELF_SETUP_PATTERNS`].
+///
+/// Drives the label on the backfill control, so an admin sees how many
+/// identities a click would touch *before* clicking. Deliberately counts
+/// agents, not rules: "grant to 7 agents" is the sentence an admin reasons
+/// about, and an agent holding three of the four still counts as one.
+///
+/// Does not consult `default_agent_self_setup`. The count is a fact about the
+/// org either way; whether the button is live is the route's call.
+pub async fn count_agents_missing_self_setup(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<i64, sqlx::Error> {
+    let patterns: Vec<String> = AGENT_SELF_SETUP_PATTERNS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+    let row = sqlx::query!(
+        "SELECT count(*) AS \"n!\"
+           FROM identities i
+          WHERE i.org_id = $1
+            AND i.kind = 'agent'
+            AND i.depth = 1
+            AND i.archived_at IS NULL
+            AND EXISTS (
+                SELECT 1
+                  FROM unnest($2::text[]) AS pattern
+                 WHERE NOT EXISTS (
+                       SELECT 1
+                         FROM permission_rules r
+                        WHERE r.org_id = $1
+                          AND r.identity_id = i.id
+                          AND r.action_pattern = pattern
+                          AND (r.expires_at IS NULL OR r.expires_at > now())))",
+        org_id,
+        &patterns,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(row.n)
+}
+
+/// What a backfill actually did.
+pub struct SelfSetupBackfill {
+    /// Distinct agents that gained at least one rule.
+    pub agents_granted: i64,
+    /// Rules written. Not `agents_granted * 4` — an agent that already held
+    /// two of the four contributes two.
+    pub rules_written: i64,
+}
+
+/// Grant [`AGENT_SELF_SETUP_PATTERNS`] to every live first-level agent in the
+/// org that is missing them.
+///
+/// The bulk counterpart to [`bootstrap_agent_in_org`], for agents that predate
+/// the default (D79 seeds at creation time and is never retroactive, so an org
+/// that existed before it shipped has a population of agents the policy never
+/// reached). Idempotent: re-running it writes nothing.
+///
+/// Carries the same `default_agent_self_setup` guard as the per-agent seed, so
+/// the two cannot disagree about what the org's policy is — a backfill that
+/// worked while the toggle was off would grant a privilege the org has
+/// explicitly declined for new agents.
+///
+/// Set-based on purpose: one statement over N agents rather than N statements,
+/// so an org with hundreds of agents is one round trip, and every row lands or
+/// none does.
+///
+/// Serialized per org by a transaction-scoped advisory lock, the same device
+/// `identity::provision` uses and for the same reason: `permission_rules` has
+/// no unique index on `(org_id, identity_id, action_pattern)` and deliberately
+/// must not grow one — the two other writers (`POST /v1/permissions` and
+/// "Allow & Remember") legitimately re-insert an existing pattern with a fresh
+/// `expires_at`. Without the lock, `NOT EXISTS` is only as good as the
+/// statement's snapshot: under `READ COMMITTED` two concurrent backfills on
+/// one org — two admins, or one retried request — both see the rule missing
+/// and both insert it, leaving a visibly doubled rule list that nothing later
+/// cleans up. The lock releases on commit or rollback, so a panicking request
+/// cannot strand it.
+pub async fn backfill_agent_self_setup(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<SelfSetupBackfill, sqlx::Error> {
+    let patterns: Vec<String> = AGENT_SELF_SETUP_PATTERNS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+    let mut tx = pool.begin().await?;
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        format!("agent_self_setup_backfill:{org_id}"),
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let rows = sqlx::query!(
+        "INSERT INTO permission_rules (org_id, identity_id, action_pattern, effect)
+         SELECT $1, i.id, pattern, 'allow'
+           FROM identities i
+          CROSS JOIN unnest($2::text[]) AS pattern
+          WHERE i.org_id = $1
+            AND i.kind = 'agent'
+            AND i.depth = 1
+            AND i.archived_at IS NULL
+            AND EXISTS (
+                SELECT 1 FROM orgs o
+                 WHERE o.id = $1 AND o.default_agent_self_setup)
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM permission_rules r
+                 WHERE r.org_id = $1
+                   AND r.identity_id = i.id
+                   AND r.action_pattern = pattern
+                   AND (r.expires_at IS NULL OR r.expires_at > now()))
+         RETURNING identity_id",
+        org_id,
+        &patterns,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let rules_written = rows.len() as i64;
+    let mut agents: Vec<Uuid> = rows.into_iter().map(|r| r.identity_id).collect();
+    agents.sort_unstable();
+    agents.dedup();
+
+    Ok(SelfSetupBackfill {
+        agents_granted: agents.len() as i64,
+        rules_written,
+    })
 }
 
 /// Add an identity to the org's Admins group. Idempotent. Used when an

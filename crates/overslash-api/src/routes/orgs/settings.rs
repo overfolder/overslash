@@ -304,6 +304,23 @@ pub(super) struct ExecutionSettingsResponse {
     /// `default_deferred_execution`, it applies at identity-creation time
     /// only: flipping it never touches an agent that already exists.
     default_agent_self_setup: bool,
+    /// Live first-level agents in this org missing at least one of the four
+    /// self-setup rules — i.e. how many identities a backfill would touch.
+    ///
+    /// It rides this response rather than a GET of its own because the one
+    /// surface that reads it is the same settings card, which already fetches
+    /// this endpoint: a second round trip to label one button is not worth a
+    /// route. Recomputed per request, so it goes to 0 right after a backfill
+    /// and climbs again only if agents are created while the default is off.
+    ///
+    /// Absent — rather than wrong — when the count could not be taken. On the
+    /// read path it is always present: nothing has been written, so an
+    /// incomplete answer is just an incomplete answer and the GET fails. On
+    /// PATCH it is best-effort, because the settings write has already
+    /// committed by then and failing the request over a label would tell the
+    /// caller their change was lost when it was not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agents_missing_self_setup: Option<i64>,
     /// Default upstream timeout for action calls in this org, in ms.
     /// `null` inherits the deployment default (`CALL_TIMEOUT_MS`).
     /// A template action or an individual call still overrides it.
@@ -363,9 +380,13 @@ pub(super) async fn get_execution_settings(
     let timeouts = overslash_db::repos::org::get_call_settings(state.db(&ext), id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    let missing =
+        overslash_db::repos::org_bootstrap::count_agents_missing_self_setup(state.db(&ext), id)
+            .await?;
     Ok(Json(ExecutionSettingsResponse {
         default_deferred_execution: value,
         default_agent_self_setup: self_setup,
+        agents_missing_self_setup: Some(missing),
         call_timeout_ms: timeouts.call_timeout_ms,
         max_call_timeout_ms: timeouts.max_call_timeout_ms,
     }))
@@ -463,11 +484,111 @@ pub(super) async fn patch_execution_settings(
         })
         .await;
 
+    // Best-effort: the settings write is already committed. A stale label
+    // costs the caller one stale number; a 500 would tell them a change that
+    // landed did not. Same reasoning as the audit call above.
+    let missing =
+        overslash_db::repos::org_bootstrap::count_agents_missing_self_setup(state.db(&ext), id)
+            .await
+            .ok();
+
     Ok(Json(ExecutionSettingsResponse {
         default_deferred_execution: next_deferred,
         default_agent_self_setup: next_self_setup,
+        agents_missing_self_setup: missing,
         call_timeout_ms: next_call,
         max_call_timeout_ms: next_max,
+    }))
+}
+
+// ─── Agent self-setup backfill ──────────────────────────────────────────
+
+#[derive(Serialize)]
+pub(super) struct SelfSetupBackfillResponse {
+    /// Agents that gained at least one rule.
+    agents_granted: i64,
+    /// Rules written. Not `agents_granted * 4` — an agent holding two of the
+    /// four already contributes two.
+    rules_written: i64,
+    /// Agents still missing a rule afterwards. Zero on success; non-zero only
+    /// if an agent was created between the write and this read. Absent when
+    /// the count could not be taken — the grant above has already committed,
+    /// so a failure to re-count must not be reported as a failed backfill.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agents_missing_self_setup: Option<i64>,
+}
+
+/// `POST /v1/orgs/{id}/agent-self-setup/backfill` — grant the four self-setup
+/// rules to every live first-level agent in the org that lacks them.
+///
+/// D79 seeds at identity-creation time and is deliberately never retroactive,
+/// which leaves every agent that predates the default without it. This is the
+/// one-click catch-up, for an admin who wants the policy to apply to the
+/// agents they already have.
+///
+/// Admin-gated and audited: it is a bulk privilege grant, so it leaves a row
+/// naming who ran it and how many identities it touched. Idempotent — a second
+/// click writes nothing and reports zeroes.
+///
+/// Refuses while `default_agent_self_setup` is off. The guard lives in the repo
+/// statement (so the policy cannot be worked around by calling the endpoint
+/// directly) and is re-checked here only to answer with a 409 that says why,
+/// rather than a silent success that granted nothing.
+pub(super) async fn backfill_agent_self_setup(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    AdminAcl(acl): AdminAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+) -> Result<Json<SelfSetupBackfillResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot mutate another org's config".into(),
+        ));
+    }
+
+    let enabled = overslash_db::repos::org::get_default_agent_self_setup(state.db(&ext), id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    if !enabled {
+        return Err(AppError::Conflict(
+            "default_agent_self_setup is off for this org; turn it on before backfilling              existing agents"
+                .into(),
+        ));
+    }
+
+    let outcome =
+        overslash_db::repos::org_bootstrap::backfill_agent_self_setup(state.db(&ext), id).await?;
+
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: acl.identity_id,
+            action: "org.agent_self_setup.backfilled",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "agents_granted": outcome.agents_granted,
+                "rules_written": outcome.rules_written,
+                "patterns": overslash_db::repos::org_bootstrap::AGENT_SELF_SETUP_PATTERNS,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    // Best-effort, like the audit write above: the rules are already committed,
+    // and a 500 here would report a backfill that succeeded as one that failed
+    // — which an admin would reasonably respond to by clicking again.
+    let remaining =
+        overslash_db::repos::org_bootstrap::count_agents_missing_self_setup(state.db(&ext), id)
+            .await
+            .ok();
+
+    Ok(Json(SelfSetupBackfillResponse {
+        agents_granted: outcome.agents_granted,
+        rules_written: outcome.rules_written,
+        agents_missing_self_setup: remaining,
     }))
 }
 

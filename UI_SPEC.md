@@ -878,6 +878,8 @@ One card, admin-only, holding the org policies applied to an agent **at creation
 
 All three patch the same `PATCH /v1/orgs/{id}/execution-settings` endpoint, one key at a time.
 
+**Backfill control.** Because the self-setup default applies at agent-creation time only, an org that predates it has agents the policy never reached. A row under that toggle says how many (`agents_missing_self_setup`, carried on the same settings response) and offers a button labelled *Grant to N agents*, which `POST`s to `/v1/orgs/{id}/agent-self-setup/backfill` behind a confirm dialog. It is **disabled while the toggle is off**, with a tooltip saying to turn the default on first — granting against a declined policy would hand out what the org just opted out of. When nothing is pending the row reads "Every first-level agent in this org already has these rules" and offers no button. There is no bulk undo; the confirm dialog says so, and revocation stays per agent in the Permission Rules table.
+
 The self-setup default is **disclosed at both points where an agent is created**, because otherwise the grant is invisible until someone opens the agent's Permission Rules table:
 
 - *`/agents` create modal* — one line under the Inherits Permissions toggle, shown only when the chosen parent is a user and the org flag is on.

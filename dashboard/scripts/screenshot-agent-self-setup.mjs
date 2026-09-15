@@ -38,6 +38,46 @@ try {
 	console.log('[scenarios] wrote screenshots/agent-self-setup-org-card.png');
 	await ctx.close();
 
+	// ── 1b. The backfill control, in both of its states ─────────────────
+	//
+	// Needs an agent the policy never reached, which means creating one while
+	// the default is off — the seed is read at creation time, so flipping the
+	// flag afterwards leaves it unseeded. That is exactly the population the
+	// button exists for.
+	await setAgentSelfSetup(session, false);
+	await seedAgent(session, {
+		name: `self-setup-legacy-${Date.now()}`,
+		inheritPermissions: false
+	});
+	await setAgentSelfSetup(session, true);
+
+	const { page: bfPage, ctx: bfCtx } = await snap.navigateAndSnap(
+		'agent-self-setup-backfill-page',
+		'/org',
+		{
+			viewport: { width: 1400, height: 1100 },
+			fullPage: false,
+			waitFor: async (p) => {
+				await p.locator('.backfill-row button').first().waitFor({ timeout: 20_000 });
+				await p.locator('section.card', { hasText: CARD }).first().scrollIntoViewIfNeeded();
+				await p.waitForTimeout(400);
+			}
+		}
+	);
+	const bfCard = bfPage.locator('section.card', { hasText: CARD }).first();
+	await bfCard.screenshot({ path: 'screenshots/agent-self-setup-backfill-pending.png' });
+	console.log('[scenarios] wrote screenshots/agent-self-setup-backfill-pending.png');
+
+	// Run it through the UI, so the "after" state is produced by the real
+	// round trip rather than a seeded row.
+	await bfPage.locator('.backfill-row button').first().click();
+	await bfPage.getByRole('button', { name: 'Grant' }).last().click();
+	await bfPage.locator('.backfill-ok').waitFor({ timeout: 20_000 });
+	await bfPage.waitForTimeout(300);
+	await bfCard.screenshot({ path: 'screenshots/agent-self-setup-backfill-done.png' });
+	console.log('[scenarios] wrote screenshots/agent-self-setup-backfill-done.png');
+	await bfCtx.close();
+
 	// ── 2. A first-level agent, and the rules it was born with ──────────
 	const agent = await seedAgent(session, {
 		name: `self-setup-demo-${Date.now()}`,
