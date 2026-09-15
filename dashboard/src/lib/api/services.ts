@@ -248,18 +248,52 @@ export const testService = (id: string, signal?: AbortSignal) =>
  * `testService`, but a failure to *run* the probe comes back as a verdict too.
  *
  * From the operator's seat "I pressed Test and it did not work" is one
- * outcome, and splitting it across a verdict panel and a thrown error means
- * every caller re-decides how to render half of it. The three surfaces that
- * offer a Test button all want this, and when they each had their own copy
- * they had already drifted on the failure string.
+ * outcome, and splitting it across a verdict panel and a thrown error leaves
+ * every caller to re-decide how to render half of it.
+ *
+ * `bounceOnExpiry: false` is for the two public, session-less pages. They are
+ * designed to stay open on a burned single-use row, and `session`'s 401 branch
+ * assigns `window.location.href` *before* throwing — so an expired session
+ * would hard-navigate the visitor away from a page they can never get back to,
+ * copying its `?token=` capability into the login URL's `return_to` on the way
+ * out. Those callers get a plain fetch and a rendered verdict instead.
  */
-export async function runProbe(id: string, signal?: AbortSignal): Promise<ServiceTestResponse> {
+export async function runProbe(
+	id: string,
+	opts: { signal?: AbortSignal; bounceOnExpiry?: boolean } = {}
+): Promise<ServiceTestResponse> {
+	const path = `/v1/services/${id}/test`;
+	if (opts.bounceOnExpiry === false) {
+		try {
+			const r = await fetch(path, {
+				method: 'POST',
+				credentials: 'same-origin',
+				signal: opts.signal
+			});
+			if (!r.ok) {
+				return {
+					status: 'failed',
+					error:
+						r.status === 401
+							? 'Your session expired. Sign in again to test this service.'
+							: `Could not run the test (${r.status})`
+				};
+			}
+			return (await r.json()) as ServiceTestResponse;
+		} catch {
+			return { status: 'failed', error: 'Could not run the test' };
+		}
+	}
 	try {
-		return await testService(id, signal);
+		return await testService(id, opts.signal);
 	} catch (e) {
 		return {
 			status: 'failed',
-			error: e instanceof ApiError ? apiErrorReason(e) : 'Could not run the test'
+			// `apiErrorReason` yields `undefined` for a body that is not the
+			// typed error shape (a 500 with an HTML body, say), and a verdict
+			// with no detail renders as a bare "Test failed".
+			error:
+				(e instanceof ApiError ? apiErrorReason(e) : undefined) ?? 'Could not run the test'
 		};
 	}
 }

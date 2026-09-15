@@ -28,8 +28,9 @@ ALTER TABLE secret_requests
     ADD CONSTRAINT secret_requests_service_binding_complete
     CHECK ((service_instance_id IS NULL) = (credential_key IS NULL));
 
--- The setup screen asks "what else does this instance still need?", and the
--- fulfilment handler asks it again to decide whether setup is finished.
+-- "Which links are outstanding for this instance?" — asked by the audit trail
+-- and by anything reconciling a half-finished setup. Partial, because the
+-- column is NULL for every plain secret request.
 CREATE INDEX idx_secret_requests_service
     ON secret_requests(service_instance_id)
     WHERE service_instance_id IS NOT NULL;

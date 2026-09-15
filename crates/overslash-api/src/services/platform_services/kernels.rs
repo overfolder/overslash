@@ -644,7 +644,16 @@ pub async fn kernel_create_service(
     let row_id = row.id;
     let mut detail = row_to_detail(row);
     detail.credentials_status = credentials_status;
+    // Set from the definition already in hand rather than through
+    // `template_view`, which would resolve the template a second time — but
+    // *both* fields, or this reproduces the drift that helper exists to
+    // prevent. The dashboard assigns this response straight onto the row it
+    // renders.
     detail.test_action = crate::routes::actions::probe::describe(&template_def);
+    detail.icon_url = crate::services::icon_url::resolve_icon_url(
+        template_def.icon.as_ref(),
+        &ctx.config.public_url,
+    );
 
     // Auto-connect orchestration: when the template is OAuth-backed and the
     // caller didn't pin or opt out, kick off the OAuth flow now and surface
@@ -918,8 +927,8 @@ pub async fn kernel_update_service(
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     // The dashboard assigns this response straight onto the row it renders, so
-    // omitting these made saving a credential hide the instance's own icon and
-    // Test button until a reload — the moment a user most wants to press it.
+    // an undecorated one hides the instance's own icon and Test button until a
+    // reload — the moment a user most wants to press it.
     let tv = template_view(
         &ctx.db,
         &ctx.registry,

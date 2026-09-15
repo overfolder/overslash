@@ -893,8 +893,12 @@ fn shipped_github_templates_auth() {
 }
 
 /// Every shipped template's declared credential probe must resolve to a real,
-/// enabled, read-risk action — and the catalogue must keep most templates
-/// carrying one at all.
+/// read-risk action whose params exist — and the catalogue must keep most
+/// templates carrying one at all.
+///
+/// Nothing asserts `!disabled` here because `test_action()` already filters
+/// disabled actions out: such a template would read as having no probe and
+/// fall to the count assertion below instead.
 ///
 /// The first half duplicates `check_test` on purpose: that rule runs over a
 /// *parsed* definition, while this one runs over the registry the gateway
@@ -929,11 +933,6 @@ fn shipped_test_actions_resolve_to_read_actions() {
             "{}: test action {key} is risk {:?}, not read",
             def.key,
             action.risk
-        );
-        assert!(
-            !action.disabled,
-            "{}: test action {key} is disabled",
-            def.key
         );
         for name in action.test.as_ref().unwrap().params.keys() {
             assert!(

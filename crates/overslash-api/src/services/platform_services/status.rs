@@ -39,11 +39,9 @@ pub async fn compute_credentials_status(
 /// template to a credential, so its icon is the template's, and the same is
 /// true of the action its Test button runs.
 ///
-/// One call rather than two lookups per site. They resolve from the same
-/// definition and are always wanted together, and when they were set
-/// site-by-site the probe ended up on three of the seven paths that return an
-/// instance view — so saving a credential on the detail page made its own Test
-/// button disappear until a reload.
+/// One call rather than two lookups per site: they resolve from the same
+/// definition and are always wanted together, so setting them separately means
+/// every path that returns an instance view has to remember both.
 pub struct TemplateView {
     pub icon_url: Option<String>,
     pub test_action: Option<crate::routes::actions::probe::TestActionRef>,

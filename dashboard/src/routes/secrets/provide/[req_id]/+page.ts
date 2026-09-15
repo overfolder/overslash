@@ -1,32 +1,13 @@
 import type { PageLoad } from './$types';
 import { mapPublicRequestError, type PublicRequestState } from '$lib/public-request';
+import type { ProvideMetadata } from '$lib/public-request';
 
 export const ssr = false;
 export const prerender = false;
 
-export type { ViewerInfo } from '$lib/public-request';
-import type { ViewerInfo } from '$lib/public-request';
-
-export interface ProvideMetadata {
-	id: string;
-	secret_name: string;
-	identity_label: string;
-	requested_by_label: string;
-	reason: string | null;
-	expires_at: string;
-	created_at: string;
-	/**
-	 * True iff the request was minted while the org had
-	 * `allow_unsigned_secret_provide = false`. When set, submission requires
-	 * a same-org session and the page must gate the input accordingly.
-	 */
-	require_user_session: boolean;
-	/**
-	 * Opportunistic session binding: populated iff the visitor already
-	 * holds a valid `oss_session` cookie for this request's org.
-	 */
-	viewer: ViewerInfo | null;
-}
+// Re-exported: this page's `+page.svelte` and the SDK's `ProvideController`
+// both import these from the route module.
+export type { ProvideMetadata, ViewerInfo } from '$lib/public-request';
 
 type LoadResult =
 	| { state: 'ready'; req_id: string; token: string; meta: ProvideMetadata }
