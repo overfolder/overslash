@@ -533,7 +533,17 @@
 				`/v1/orgs/${org.id}/execution-settings`,
 				patch
 			);
-			executionSettings = updated;
+			// The server omits `agents_missing_self_setup` when it could not
+			// re-count after the (already committed) write. Replacing the object
+			// wholesale would drop it to undefined, and the card would then claim
+			// "every first-level agent already has these rules" — a false
+			// statement, and a worse failure than a stale number. Carry the
+			// previous value forward instead.
+			executionSettings = {
+				...updated,
+				agents_missing_self_setup:
+					updated.agents_missing_self_setup ?? executionSettings.agents_missing_self_setup
+			};
 		} catch (err) {
 			executionError = asMessage(err);
 		} finally {
@@ -2116,7 +2126,7 @@
 <ConfirmModal
 	open={backfillConfirmOpen}
 	title="Grant self-setup permissions to existing agents?"
-	message={`This grants four permission rules — create services, author templates, start OAuth connections, request secrets — to every first-level agent in this org that lacks them${executionSettings ? ` (${executionSettings.agents_missing_self_setup})` : ''}. Sub-agents are not touched, and nothing gains the sharing half of any of those. You can revoke per agent afterwards on the agent detail page; there is no bulk undo.`}
+	message={`This grants four permission rules — create services, author templates, start OAuth connections, request secrets — to every first-level agent in this org that lacks them${executionSettings?.agents_missing_self_setup !== undefined ? ` (${executionSettings.agents_missing_self_setup})` : ''}. Sub-agents are not touched, and nothing gains the sharing half of any of those. You can revoke per agent afterwards on the agent detail page; there is no bulk undo.`}
 	confirmLabel="Grant"
 	busy={backfillBusy}
 	error={backfillError}

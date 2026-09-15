@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO permission_rules (org_id, identity_id, action_pattern, effect, expires_at)\n         VALUES ($1, $2, 'overslash:manage_services_own:*', 'allow', now() - interval '1 hour')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0a26fef0df5bbaa61ef0ad3286d57459d05d40152ca101bcd2bdf6995215d9ed"
+}

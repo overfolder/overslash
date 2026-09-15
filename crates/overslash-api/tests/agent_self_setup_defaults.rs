@@ -700,6 +700,72 @@ async fn concurrent_backfills_write_one_set_of_rules() {
     assert_eq!(deduped, EXPECTED.to_vec());
 }
 
+/// "Already has this rule" has to mean what the permission check means.
+///
+/// `permission_rule::list_by_identity` filters `expires_at <= now()`, so an
+/// agent whose `manage_services_own` grant was time-limited and has lapsed is
+/// ungranted at runtime. If the backfill's `NOT EXISTS` ignores expiry, that
+/// agent reads as covered, gets skipped, and stays broken — the one agent that
+/// actually needed the catch-up is the one it misses. The seeded rows never
+/// expire, so this only arises for a rule on one of the four patterns that came
+/// from `POST /v1/permissions` or "Allow & Remember" with a TTL.
+#[tokio::test]
+async fn backfill_replaces_a_lapsed_rule() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+
+    // A grant on one of the four that has already lapsed.
+    sqlx::query!(
+        "INSERT INTO permission_rules (org_id, identity_id, action_pattern, effect, expires_at)
+         VALUES ($1, $2, 'overslash:manage_services_own:*', 'allow', now() - interval '1 hour')",
+        org_id,
+        agent_id
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+
+    // It must be counted as pending despite the row existing...
+    let settings: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}/execution-settings"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        settings["agents_missing_self_setup"], 1,
+        "a lapsed rule must not read as coverage"
+    );
+
+    // ...and the backfill must write all four, not three.
+    let body: Value = backfill(&client, &base, &admin_key, org_id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["rules_written"], 4);
+
+    // The live rules are the full set; the lapsed row is still there, inert.
+    let live: Vec<String> = sqlx::query_scalar!(
+        "SELECT action_pattern FROM permission_rules
+          WHERE identity_id = $1 AND action_pattern LIKE 'overslash:%'
+            AND (expires_at IS NULL OR expires_at > now())
+          ORDER BY action_pattern",
+        agent_id
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(live, EXPECTED.to_vec());
+}
+
 /// Bulk grants leave a trail naming who ran it and how much it touched.
 #[tokio::test]
 async fn backfill_is_audited() {

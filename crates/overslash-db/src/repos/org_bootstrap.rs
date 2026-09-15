@@ -237,6 +237,16 @@ pub async fn bootstrap_user_in_org(
 /// call's permission key from an action's `permission:` field, so one
 /// `overslash:manage_templates_own:*` rule covers `list_templates`,
 /// `get_template`, `create_template`, `import_template` and `delete_template`.
+///
+/// **"Already has this rule" must mean what the permission check means.** Every
+/// `NOT EXISTS` below carries `expires_at IS NULL OR expires_at > now()`,
+/// matching `permission_rule::list_by_identity`. Without it an agent whose
+/// `manage_services_own` grant was time-limited and has since lapsed reads as
+/// covered here while the runtime — which filters expired rows — treats it as
+/// ungranted: the backfill skips the one agent that actually needs it, and the
+/// pending count under-reports. The seeded rows themselves never expire, so
+/// this only bites where a rule on one of these four patterns came from
+/// somewhere else with a TTL — `POST /v1/permissions`, or "Allow & Remember".
 pub const AGENT_SELF_SETUP_PATTERNS: [&str; 4] = [
     "overslash:manage_services_own:*",
     "overslash:manage_templates_own:*",
@@ -294,7 +304,8 @@ pub async fn bootstrap_agent_in_org(
                   FROM permission_rules r
                  WHERE r.org_id = $1
                    AND r.identity_id = $2
-                   AND r.action_pattern = pattern)",
+                   AND r.action_pattern = pattern
+                   AND (r.expires_at IS NULL OR r.expires_at > now()))",
         org_id,
         identity_id,
         &patterns,
@@ -339,7 +350,8 @@ pub async fn count_agents_missing_self_setup(
                          FROM permission_rules r
                         WHERE r.org_id = $1
                           AND r.identity_id = i.id
-                          AND r.action_pattern = pattern))",
+                          AND r.action_pattern = pattern
+                          AND (r.expires_at IS NULL OR r.expires_at > now())))",
         org_id,
         &patterns,
     )
@@ -420,7 +432,8 @@ pub async fn backfill_agent_self_setup(
                   FROM permission_rules r
                  WHERE r.org_id = $1
                    AND r.identity_id = i.id
-                   AND r.action_pattern = pattern)
+                   AND r.action_pattern = pattern
+                   AND (r.expires_at IS NULL OR r.expires_at > now()))
          RETURNING identity_id",
         org_id,
         &patterns,
