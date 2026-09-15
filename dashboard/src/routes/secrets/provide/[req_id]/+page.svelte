@@ -2,7 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import PublicRequestCard from '$lib/components/secrets/PublicRequestCard.svelte';
 	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
-	import { fmtCountdown, loginUrl, submitErrorMessage } from '$lib/public-request';
+	import { fmtCountdown, loginUrl, submitPublicRequest } from '$lib/public-request';
 
 	let { data } = $props();
 
@@ -37,30 +37,14 @@
 		if (data.state !== 'ready' || !value) return;
 		submitting = true;
 		errorMsg = null;
-		try {
-			// `same-origin` so the dashboard session cookie travels if the
-			// visitor is signed in. Server still validates the URL JWT; the
-			// session is a purely additive identity attestation (see SPEC §11
-			// User Signed Mode).
-			const r = await fetch(`/public/secrets/provide/${encodeURIComponent(data.req_id)}`, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				credentials: 'same-origin',
-				body: JSON.stringify({ token: data.token, value })
-			});
-			if (!r.ok) {
-				const body = await r.json().catch(() => null);
-				const code = (body && (body as { error?: string }).error) || '';
-				errorMsg = submitErrorMessage(r.status, code);
-				return;
-			}
-			submitted = true;
-			value = '';
-		} catch {
-			errorMsg = 'Network error. Please try again.';
-		} finally {
-			submitting = false;
+		const outcome = await submitPublicRequest(data.req_id, data.token, value);
+		submitting = false;
+		if (!outcome.ok) {
+			errorMsg = outcome.message;
+			return;
 		}
+		submitted = true;
+		value = '';
 	}
 
 </script>

@@ -19,7 +19,12 @@
 	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
 	import TestResult from '$lib/components/services/TestResult.svelte';
 	import { runProbe } from '$lib/api/services';
-	import { fmtCountdown, loginUrl, submitErrorMessage } from '$lib/public-request';
+	import {
+		fmtCountdown,
+		loginUrl,
+		probeRejected,
+		submitPublicRequest
+	} from '$lib/public-request';
 	import type { ServiceTestResponse } from '$lib/types';
 
 	let { data } = $props();
@@ -56,52 +61,28 @@
 		if (data.state !== 'ready' || !value) return;
 		submitting = true;
 		errorMsg = null;
-		try {
-			// `same-origin` so the dashboard session cookie travels if the
-			// visitor is signed in. The server still validates the URL JWT; the
-			// session is a purely additive identity attestation (SPEC §11 User
-			// Signed Mode).
-			const r = await fetch(`/public/secrets/provide/${encodeURIComponent(data.req_id)}`, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				credentials: 'same-origin',
-				body: JSON.stringify({ token: data.token, value })
-			});
-			if (!r.ok) {
-				const body = await r.json().catch(() => null);
-				const code = (body && (body as { error?: string }).error) || '';
-				errorMsg = submitErrorMessage(r.status, code);
-				return;
-			}
-			// Guarded like the error path above: by this point the secret is in
-			// the vault and the single-use row is burned, so a body that will
-			// not parse must not throw into the catch below and re-offer the
-			// form — the retry would answer "already fulfilled".
-			const body = (await r.json().catch(() => null)) as {
-				service?: { remaining_slots?: string[] };
-			} | null;
-			const outcome = body?.service;
-			remainingSlots = outcome?.remaining_slots ?? [];
-			submitted = true;
-			value = '';
-			// Verify immediately when we can. The point of this page is that the
-			// person holding the key finds out here whether it was the right one.
-			//
-			// Not while a sibling slot is still unfilled, though: the probe's
-			// answer would be a foregone "no usable credential yet", and the
-			// headline branch below would report it over the truer "still needs
-			// N more". Same guard the create wizard applies.
-			//
-			// An unparseable body means we do not *know* whether slots remain,
-			// which is not the same as knowing none do — so it does not probe
-			// either, rather than risk reporting a rejection that is really an
-			// unfilled slot.
-			if (canTest && outcome && remainingSlots.length === 0) await runTest();
-		} catch {
-			errorMsg = 'Network error. Please try again.';
-		} finally {
-			submitting = false;
+		const outcome = await submitPublicRequest<{
+			service?: { remaining_slots?: string[] };
+		}>(data.req_id, data.token, value);
+		submitting = false;
+		if (!outcome.ok) {
+			errorMsg = outcome.message;
+			return;
 		}
+		const svcOutcome = outcome.body?.service;
+		remainingSlots = svcOutcome?.remaining_slots ?? [];
+		submitted = true;
+		value = '';
+
+		// Verify immediately when we can. The point of this page is that the
+		// person holding the key finds out here whether it was the right one.
+		//
+		// Not while a sibling slot is still unfilled: the probe's answer would
+		// be a foregone "no usable credential yet", and the headline would
+		// report it over the truer "still needs N more". Same guard the create
+		// wizard applies. And not when the server could not say what remains
+		// (`remaining_slots` absent) — "not known" is not "none left".
+		if (canTest && svcOutcome?.remaining_slots?.length === 0) await runTest();
 	}
 
 	// The probe runs through the authenticated call path, so it needs a session.
@@ -163,7 +144,11 @@
 		     report, and claiming success above a red box is worse than
 		     saying less. -->
 		<p class="lead">
-			{#if testResult && testResult.status !== 'ok' && testResult.status !== 'not_supported'}
+			{#if testing}
+				<!-- Nothing conclusive to say yet, and "connected" over a panel
+				     that is about to turn red is worse than silence. -->
+				Saved. Checking it works…
+			{:else if probeRejected(testResult)}
 				Saved. {svc.display_name} did not accept it — see below.
 			{:else if remainingSlots.length > 0}
 				Saved. {svc.display_name} still needs {remainingSlots.length} more credential{remainingSlots.length ===

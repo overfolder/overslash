@@ -123,6 +123,51 @@ async fn skip_credentials_suppresses_the_setup_link() {
     assert!(svc["setup"].is_null(), "unexpected setup bundle on {svc}");
 }
 
+/// An org-level instance is owned by nobody, so the mint has no identity to
+/// store the secret under and the bundle is suppressed. This is why the search
+/// setup hint names a `request_secret` fallback rather than promising a
+/// `setup_url` unconditionally.
+#[tokio::test]
+async fn an_org_level_service_gets_no_setup_link() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let groups: Value = client
+        .get(format!("{base}/v1/groups"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone = groups
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["name"] == "Everyone")
+        .expect("Everyone group");
+
+    // Note: no `skip_credentials`. That flag would suppress the bundle on its
+    // own and confound what this asserts.
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend",
+               "name": format!("resend-orglevel-{}", Uuid::new_v4().simple()),
+               "user_level": false,
+               "groups": [{"group_id": everyone["id"], "access_level": "write"}]}),
+    )
+    .await;
+    assert!(svc["id"].is_string(), "org-level create failed: {svc}");
+    assert!(
+        svc["owner_identity_id"].is_null(),
+        "an org-level instance is owned by nobody: {svc}"
+    );
+    assert!(svc["setup"].is_null(), "unexpected setup bundle on {svc}");
+}
+
 /// An OAuth template gets the `connect` bundle it always got, and no `setup`
 /// one — the two paths are twins, not alternatives that can both fire.
 #[tokio::test]
@@ -532,6 +577,49 @@ async fn a_template_without_a_probe_is_not_supported() {
         run_probe(&base, &client, &fx.admin_key, svc["id"].as_str().unwrap()).await;
     assert_eq!(status, 200, "probe: {verdict}");
     assert_eq!(verdict["status"], "not_supported");
+}
+
+/// The arm that keeps a gateway error from masquerading as one: an upstream
+/// that cannot be reached is the service being broken, not Overslash, so the
+/// probe answers `failed` rather than propagating a 502.
+#[tokio::test]
+async fn an_unreachable_upstream_is_a_verdict_not_a_gateway_error() {
+    // A port nothing is listening on. Bound and dropped so the OS has handed
+    // it out at least once and is unlikely to reissue it mid-test.
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{dead}")).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-dead",
+               "secret_name": "resend_key", "user_level": true}),
+    )
+    .await;
+    let put = client
+        .put(format!("{base}/v1/secrets/resend_key"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"value": "re_live_key"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success(), "seed secret: {}", put.status());
+
+    let (status, verdict) =
+        run_probe(&base, &client, &fx.admin_key, svc["id"].as_str().unwrap()).await;
+    assert_eq!(status, 200, "a 502 here would blame the gateway: {verdict}");
+    assert_eq!(verdict["status"], "failed", "{verdict}");
+    assert!(
+        verdict["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("service"),
+        "the error must name the service, not the gateway: {verdict}"
+    );
 }
 
 #[tokio::test]

@@ -1,9 +1,13 @@
 //! Standalone "Provide Secret" flow.
 //!
-//! Three endpoints:
+//! Four endpoints:
 //! - `POST /v1/secrets/requests` (authenticated): mint a request + signed URL.
 //! - `GET  /public/secrets/provide/{req_id}?token=...`: render-time metadata.
-//! - `POST /public/secrets/provide/{req_id}`: submit value, encrypt, store.
+//! - `POST /public/secrets/provide/{req_id}`: submit value, encrypt, store,
+//!   and — when the request names a service — bind its credential slot.
+//! - `GET  /public/services/setup/{req_id}?token=...`: the same metadata plus
+//!   the service, for the setup page. Metadata only: that page submits to the
+//!   POST above, because there is one write path.
 //!
 //! Public endpoints take no auth extractor — security comes from the JWT in
 //! the URL plus a server-side `secret_requests` row that enforces single-use
@@ -397,9 +401,14 @@ struct SubmitServiceOutcome {
     name: String,
     /// The slot this submission just bound.
     credential_key: String,
-    /// Slot keys that still have an outstanding setup link. Empty means the
-    /// instance is fully provisioned and the page can offer the test.
-    remaining_slots: Vec<String>,
+    /// Credential slots this instance still needs a value for. Empty means it
+    /// is fully provisioned, which is when the page can offer the test.
+    ///
+    /// Absent — not empty — when the template would not resolve, because "not
+    /// known" and "none left" are different answers and only one of them means
+    /// the service is ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remaining_slots: Option<Vec<String>>,
 }
 
 async fn submit_provide(
@@ -528,7 +537,7 @@ async fn submit_provide(
                 "service_id": service.as_ref().map(|s| s.id),
                 "service_name": service.as_ref().map(|s| s.name.as_str()),
                 "credential_key": service.as_ref().map(|s| s.credential_key.as_str()),
-                "remaining_slots": service.as_ref().map(|s| s.remaining_slots.clone()),
+                "remaining_slots": service.as_ref().and_then(|s| s.remaining_slots.clone()),
             }),
             audience,
         },
@@ -630,10 +639,12 @@ fn humanize(key: &str) -> String {
 /// Bind the credential slot a *setup* request names, once its value is in the
 /// vault.
 ///
-/// `None` for a plain secret request, which names no service, and also when
-/// the instance was deleted between mint and submit: the value is stored under
-/// its own name and the row is spent, so the honest answer is to say nothing
-/// about a service rather than invent one.
+/// `None` for a plain secret request, which names no service, and for the
+/// narrow case where the bind itself finds no row: the value is stored under
+/// its own name and the request is spent, so the honest answer is to say
+/// nothing about a service rather than invent one. (Deletion is *not* that
+/// case — `service_instance_id` cascades, so a deleted instance takes the
+/// request row with it and `load_and_validate` 404s long before here.)
 ///
 /// Nothing is re-derived here. The slot key was validated against the template
 /// at *mint* time by a caller holding `manage_services_own`; this route
@@ -681,26 +692,42 @@ async fn bind_setup_slot(
     // slots can be filled one at a time via `request_secret`, and counting
     // requests would then report "done" over a half-bound instance — which is
     // what the page reads to say "connected" and what tells a waiting agent
-    // the service is callable. This is the same source the page's pre-submit
-    // half reads (`slots[].bound`), so the two halves cannot disagree.
+    // the service is callable. Same source the page's pre-submit half reads
+    // (`slots[].bound`), so the two halves cannot disagree.
     //
-    // Propagated, not defaulted: an empty list *is* the positive verdict.
-    let template = crate::services::platform_services::resolve_template_definition(
+    // Degraded, never propagated. Everything above this point is already
+    // committed — the row is burned, the vault version written, the slot
+    // bound — so a failed template lookup (a deleted layer, key drift, a DB
+    // blip) must not turn a succeeded submit into "Submission failed. Please
+    // try again." over a link whose retry answers `410 already_fulfilled`.
+    // `None` means "not known", which the page and the event both render as
+    // silence rather than as completion.
+    let remaining_slots = match crate::services::platform_services::resolve_template_definition(
         state.db(ext),
         &state.registry,
         row.org_id,
         instance.owner_identity_id,
         &instance.template_key,
     )
-    .await?;
-    let remaining_slots: Vec<String> = crate::services::service_setup::unbound_instance_slots(
-        &template,
-        &instance.credentials.0,
-        instance.secret_name.as_deref(),
-    )
-    .into_iter()
-    .map(|s| s.key)
-    .collect();
+    .await
+    {
+        Ok(template) => Some(
+            crate::services::service_setup::unprovisioned_instance_slots(
+                &template,
+                &instance.credentials.0,
+                instance.secret_name.as_deref(),
+            ),
+        ),
+        Err(e) => {
+            tracing::warn!(
+                service_instance_id = %service_id,
+                template_key = %instance.template_key,
+                error = %e,
+                "credential bound, but the template would not resolve to report remaining slots"
+            );
+            None
+        }
+    };
 
     Ok(Some(SubmitServiceOutcome {
         id: service_id,

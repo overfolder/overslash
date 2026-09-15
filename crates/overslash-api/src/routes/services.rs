@@ -365,11 +365,17 @@ async fn test_service(
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     require_owner_or_admin(&scope, &instance, &acl).await?;
 
+    // Resolved as the instance's *owner*, not the caller. The user tier is
+    // keyed on that identity, so resolving as an admin probing someone else's
+    // instance would miss the user-tier template it is actually built from —
+    // and a caller who happens to own a same-key template of their own would
+    // shadow the instance's real one. Every other instance-view path passes
+    // `owner_identity_id` for the same reason.
     let def = platform_services::resolve_template_definition(
         state.db(&ext),
         &state.registry,
         acl.org_id,
-        acl.identity_id,
+        instance.owner_identity_id,
         &instance.template_key,
     )
     .await?;
