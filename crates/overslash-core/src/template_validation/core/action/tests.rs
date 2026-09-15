@@ -359,6 +359,42 @@ fn a_continuation_naming_no_declared_param_is_an_error() {
     );
 }
 
+/// `link` lost its "a `param` here reads nothing" rejection when D81 gave the
+/// style a `param` to name the one key a next URL may introduce. What it did
+/// not lose is this: the key still has to be one the action declares, or the
+/// gateway would lift an undeclared argument out of an upstream's next URL and
+/// carry it into the marker, past the very intersection `declared_query_params`
+/// performs to stop exactly that. The check is style-agnostic — `named()` runs
+/// as the let-chain's scrutinee, before the numeric arm it guards — and this
+/// pins that for `link`, which no test covered.
+#[test]
+fn a_link_continuation_naming_no_declared_param_is_an_error() {
+    let mut spec = cursor_spec();
+    spec.next.style = crate::types::NextStyle::Link;
+    spec.next.from = Some("next".into());
+    spec.next.param = Some("injected".into());
+    let r = run(&paged(spec));
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.code == "unknown_pagination_param"),
+        "{:?}",
+        r.errors
+    );
+}
+
+/// The same spec with a declared param is fine — so the test above is failing
+/// on the name, not on `link` carrying a `param` at all.
+#[test]
+fn a_link_continuation_naming_a_declared_param_validates() {
+    let mut spec = cursor_spec();
+    spec.next.style = crate::types::NextStyle::Link;
+    spec.next.from = Some("next".into());
+    spec.next.param = Some("cursor".into());
+    let r = run(&paged(spec));
+    assert!(r.valid, "errors: {:?}", r.errors);
+}
+
 #[test]
 fn a_non_numeric_page_size_is_an_error() {
     let mut spec = cursor_spec();

@@ -504,6 +504,77 @@ async fn backfill_fills_only_the_missing_rules() {
     assert_eq!(overslash_rules(&pool, agent_id).await, EXPECTED.to_vec());
 }
 
+/// A deny is not coverage. `NOT EXISTS` originally matched any rule for the
+/// pattern, so an explicit deny read as "this agent already has it": the
+/// pattern was skipped, the count did not report it, and deleting the deny
+/// later would have left the agent holding neither rule while every peer held
+/// the anchor. Seeding the allow beside the deny changes no answer now —
+/// `check_permissions` sweeps denies first and returns on the first match —
+/// which is exactly why the allow is safe to write.
+#[tokio::test]
+async fn a_denied_anchor_still_counts_as_missing_and_is_granted() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/permissions"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "identity_id": agent_id,
+            "action_pattern": "overslash:manage_templates_own:*",
+            "effect": "deny"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "deny: {:?}", resp.text().await);
+
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+
+    // The count the button is labelled with sees the denied pattern as absent.
+    let settings: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}/execution-settings"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settings["agents_missing_self_setup"], 1);
+
+    let body: Value = backfill(&client, &base, &admin_key, org_id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["agents_granted"], 1);
+    assert_eq!(
+        body["rules_written"], 4,
+        "the denied pattern is granted too"
+    );
+    assert_eq!(overslash_rules(&pool, agent_id).await, EXPECTED.to_vec());
+
+    // And the deny still wins, which is the whole reason writing the allow is
+    // not a widening: the agent is refused the action it was denied.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({"service": "overslash", "action": "list_templates"}))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        status,
+        reqwest::StatusCode::FORBIDDEN,
+        "the deny outranks the freshly-seeded allow: {body}"
+    );
+}
+
 /// Sub-agents are outside the policy, so they are outside the catch-up too.
 #[tokio::test]
 async fn backfill_skips_sub_agents() {
