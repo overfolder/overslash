@@ -13,6 +13,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AuthContext, ClientIp, OrgAcl, ReqExt, WriteAcl},
+    routes::actions::probe,
     services::{
         group_ceiling,
         platform_caller::PlatformCallContext,
@@ -35,6 +36,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/services/{id}/manage", put(update_service))
         .route("/v1/services/{id}/status", patch(update_service_status))
         .route("/v1/services/{id}/groups", get(list_service_groups))
+        .route("/v1/services/{id}/test", post(test_service))
 }
 
 // -- Request types --
@@ -319,6 +321,60 @@ async fn require_owner_or_admin(
         return Ok(());
     }
     Err(AppError::Forbidden("admin access required".into()))
+}
+
+/// Run this instance's template-declared credential probe.
+///
+/// The endpoint exists so no caller has to know which action the probe is —
+/// the template says (`x-overslash-test`) and this resolves it. The call
+/// itself is ordinary: same permission chain, same approval gate. See
+/// [`crate::routes::actions::probe`] for why that is not a bypass in the
+/// case it was built for.
+///
+/// Gated by `require_owner_or_admin` rather than by execute access: pressing
+/// this is a management act on the instance ("are its credentials good?"),
+/// and the owner is who is being asked.
+// Eight extractors: the probe delegates to `call_action_impl`, which needs
+// the same six the `/v1/actions/call` handler does, plus this route's own
+// path id and the ACL the ownership check reads.
+#[allow(clippy::too_many_arguments)]
+async fn test_service(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    auth: AuthContext,
+    WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    transport: crate::extractors::CallerTransport,
+    Path(id): Path<Uuid>,
+) -> Result<Json<probe::ServiceTestResponse>> {
+    let instance = scope
+        .get_service_instance(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    require_owner_or_admin(&scope, &instance, &acl).await?;
+
+    let def = platform_services::resolve_template_definition(
+        state.db(&ext),
+        &state.registry,
+        acl.org_id,
+        acl.identity_id,
+        &instance.template_key,
+    )
+    .await?;
+
+    let verdict = probe::run(
+        state.clone(),
+        ext,
+        auth,
+        scope,
+        ip,
+        transport,
+        &instance,
+        &def,
+    )
+    .await?;
+    Ok(Json(verdict))
 }
 
 async fn update_service(

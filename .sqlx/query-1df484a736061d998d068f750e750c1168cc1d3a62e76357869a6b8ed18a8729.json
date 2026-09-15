@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT credential_key AS \"credential_key!\"\n         FROM secret_requests\n         WHERE org_id = $1\n           AND service_instance_id = $2\n           AND credential_key IS NOT NULL\n           AND fulfilled_at IS NULL\n           AND expires_at > now()\n         ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "credential_key!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "secret_requests",
+            "name": "credential_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "1df484a736061d998d068f750e750c1168cc1d3a62e76357869a6b8ed18a8729"
+}

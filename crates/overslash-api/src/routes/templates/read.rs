@@ -241,6 +241,7 @@ pub(super) async fn get_template(
         hidden: svc.hidden,
         configurable_url: configurable_url(svc),
         instance_config_params: instance_config_params(svc),
+        test_action: crate::routes::actions::probe::describe(svc),
         // A global template is never a layer, so it never carries defaults.
         instance_defaults: None,
         extends: None,

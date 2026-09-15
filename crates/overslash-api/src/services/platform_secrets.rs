@@ -16,17 +16,15 @@
 
 use serde::Deserialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use overslash_core::permissions::AccessLevel;
-use overslash_db::repos::{audit::AuditEntry, secret_request};
+use overslash_db::repos::audit::AuditEntry;
 use overslash_db::scopes::OrgScope;
 
-use super::jwt::{self, SECRET_REQUEST_KIND, SecretRequestClaims};
 use super::permission_chain;
 use super::platform_caller::PlatformCallContext;
-use super::short_url;
+use super::service_setup;
 use crate::error::AppError;
 use crate::routes::util::fmt_time;
 
@@ -46,6 +44,20 @@ pub struct RequestSecretInput {
     /// what they're being asked to paste.
     #[serde(default)]
     pub purpose: Option<String>,
+    /// Service instance this value is for. When set, fulfilling the request
+    /// also binds the instance's credential slot and the minted URL is the
+    /// setup page rather than the bare provide page — the agent hands over
+    /// one link that finishes the whole setup.
+    ///
+    /// Rarely needed by hand: `create_service` already mints these itself and
+    /// returns them as `setup.setup_url`. This is the path for binding a
+    /// credential to an instance that already exists.
+    #[serde(default)]
+    pub service_id: Option<Uuid>,
+    /// Which credential slot to bind. Optional when the template declares a
+    /// single per-instance slot, which is every shipped template.
+    #[serde(default)]
+    pub credential_key: Option<String>,
 }
 
 pub async fn kernel_request_secret(
@@ -84,10 +96,22 @@ pub async fn kernel_request_secret(
         ));
     }
 
-    let now = time::OffsetDateTime::now_utc();
-    let expires_at = now + time::Duration::seconds(DEFAULT_TTL_SECS);
-
-    let req_id = format!("req_{}", Uuid::new_v4().simple());
+    // Resolve the service binding before anything is written — fulfilment
+    // runs from a public route holding only a capability token, so this is
+    // the only place the pair is checked.
+    let binding = match input.service_id {
+        Some(service_id) => Some(
+            service_setup::validate_binding(
+                &scope,
+                &ctx.registry,
+                Some(caller_identity),
+                service_id,
+                input.credential_key.as_deref(),
+            )
+            .await?,
+        ),
+        None => None,
+    };
 
     // Capture the org's User-Signed-Mode policy at mint time so flipping the
     // toggle later never retroactively breaks in-flight URLs.
@@ -97,44 +121,29 @@ pub async fn kernel_request_secret(
             .unwrap_or(true);
     let require_user_session = !allow_unsigned;
 
-    let signing_key = jwt::signing_key_bytes(&ctx.config.signing_key);
-    let claims = SecretRequestClaims {
-        req: req_id.clone(),
-        org: ctx.org_id,
-        iat: now.unix_timestamp(),
-        exp: expires_at.unix_timestamp(),
-        kind: SECRET_REQUEST_KIND.into(),
-    };
-    let token = jwt::mint_secret_request(&signing_key, &claims)
-        .map_err(|e| AppError::Internal(format!("jwt mint: {e}")))?;
-    let token_hash = sha256(&token);
-
-    secret_request::create(
+    let minted = service_setup::mint(
         &ctx.db,
-        &req_id,
-        ctx.org_id,
-        target,
-        input.secret_name.trim(),
-        caller_identity,
-        input.purpose.as_deref(),
-        &token_hash,
-        expires_at,
-        require_user_session,
+        &ctx.http_client,
+        &ctx.config,
+        service_setup::MintRequest {
+            org_id: ctx.org_id,
+            target_identity: target,
+            requested_by: caller_identity,
+            secret_name: input.secret_name.trim(),
+            reason: input.purpose.as_deref(),
+            ttl_seconds: DEFAULT_TTL_SECS,
+            require_user_session,
+            service_instance_id: binding.as_ref().map(|(row, _)| row.id),
+            credential_key: binding.as_ref().map(|(_, key)| key.as_str()),
+        },
     )
     .await?;
-
-    let url = ctx
-        .config
-        .dashboard_url_for(&format!("/secrets/provide/{req_id}?token={token}"));
-    let short_url = match (
-        ctx.config.oversla_sh_base_url.as_deref(),
-        ctx.config.oversla_sh_api_key.as_deref(),
-    ) {
-        (Some(base), Some(key)) => {
-            short_url::mint_with_client(&ctx.http_client, base, key, &url, expires_at).await
-        }
-        _ => None,
-    };
+    let (req_id, url, short_url, expires_at) = (
+        minted.request_id,
+        minted.url,
+        minted.short_url,
+        minted.expires_at,
+    );
 
     let _ = scope
         .log_audit(AuditEntry {
@@ -148,6 +157,8 @@ pub async fn kernel_request_secret(
                 "secret_name": input.secret_name.trim(),
                 "target_identity_id": target,
                 "require_user_session": require_user_session,
+                "service_instance_id": binding.as_ref().map(|(row, _)| row.id),
+                "credential_key": binding.as_ref().map(|(_, key)| key.as_str()),
                 "via": "mcp",
             }),
             description: None,
@@ -180,14 +191,13 @@ pub async fn kernel_request_secret(
 
     Ok(serde_json::json!({
         "request_id": req_id,
+        // Named `provide_url` on both shapes: an agent that learned the key
+        // before setup links existed keeps working, and the URL is still the
+        // thing you hand your user either way.
         "provide_url": url,
         "short_url": short_url,
         "expires_at": fmt_time(expires_at),
+        "service_id": binding.as_ref().map(|(row, _)| row.id),
+        "credential_key": binding.map(|(_, key)| key),
     }))
-}
-
-fn sha256(s: &str) -> Vec<u8> {
-    let mut h = Sha256::new();
-    h.update(s.as_bytes());
-    h.finalize().to_vec()
 }

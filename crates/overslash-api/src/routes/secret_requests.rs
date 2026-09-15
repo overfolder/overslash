@@ -18,7 +18,6 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use overslash_db::repos::{audit::AuditEntry, secret_request};
@@ -30,9 +29,9 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{ClientIp, ReqExt, WriteAcl},
-    services::jwt::{self, SECRET_REQUEST_KIND, SecretRequestClaims},
+    services::jwt,
+    services::service_setup::{self, sha256},
     services::session::extract_session,
-    services::short_url,
 };
 use overslash_core::crypto;
 
@@ -43,6 +42,10 @@ pub fn router() -> Router<AppState> {
             "/public/secrets/provide/{req_id}",
             get(get_provide).post(submit_provide),
         )
+        // Metadata only. The setup page submits to the provide endpoint
+        // above — the write path is identical, and duplicating it would put
+        // the credential-binding step in two places.
+        .route("/public/services/setup/{req_id}", get(get_setup))
 }
 
 // ─── 1. Mint (authenticated) ──────────────────────────────────────────
@@ -56,6 +59,13 @@ struct CreateSecretRequestBody {
     reason: Option<String>,
     /// Time-to-live for the URL, in seconds. Capped at 24h, defaults to 1h.
     ttl_seconds: Option<u64>,
+    /// Service instance this value is for. When set, fulfilling the request
+    /// also binds the instance's credential slot, and the minted URL points
+    /// at the setup page rather than the bare provide page.
+    service_id: Option<Uuid>,
+    /// Which credential slot to bind. Optional when the template declares a
+    /// single per-instance slot, which is every shipped template.
+    credential_key: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +79,12 @@ struct CreateSecretRequestResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     short_url: Option<String>,
     expires_at: String,
+    /// Echoed back when the request was bound to a service instance, so a
+    /// caller that omitted `credential_key` learns which slot was inferred.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential_key: Option<String>,
 }
 
 const DEFAULT_TTL: u64 = 3600;
@@ -98,11 +114,24 @@ async fn create_secret_request(
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
 
-    let ttl = req.ttl_seconds.unwrap_or(DEFAULT_TTL).clamp(60, MAX_TTL) as i64;
-    let now = time::OffsetDateTime::now_utc();
-    let expires_at = now + time::Duration::seconds(ttl);
+    // Resolve the service binding, if any, before anything is written. This
+    // is the only place the `(service_id, credential_key)` pair is checked —
+    // fulfilment runs from a public route with no caller to re-check.
+    let binding = match req.service_id {
+        Some(service_id) => Some(
+            service_setup::validate_binding(
+                &scope,
+                &state.registry,
+                Some(caller_identity),
+                service_id,
+                req.credential_key.as_deref(),
+            )
+            .await?,
+        ),
+        None => None,
+    };
 
-    let req_id = format!("req_{}", Uuid::new_v4().simple());
+    let ttl = req.ttl_seconds.unwrap_or(DEFAULT_TTL).clamp(60, MAX_TTL) as i64;
 
     // Capture the org's User-Signed-Mode policy at *mint* time so flipping
     // the toggle later never retroactively breaks in-flight URLs. Default to
@@ -114,37 +143,30 @@ async fn create_secret_request(
             .unwrap_or(true);
     let require_user_session = !allow_unsigned;
 
-    // Mint the JWT first so we can hash it before persisting.
-    let signing_key = jwt::signing_key_bytes(&state.config.signing_key);
-    let claims = SecretRequestClaims {
-        req: req_id.clone(),
-        org: acl.org_id,
-        iat: now.unix_timestamp(),
-        exp: expires_at.unix_timestamp(),
-        kind: SECRET_REQUEST_KIND.into(),
-    };
-    let token = jwt::mint_secret_request(&signing_key, &claims)
-        .map_err(|e| AppError::Internal(format!("jwt mint: {e}")))?;
-    let token_hash = sha256(&token);
-
-    secret_request::create(
+    let minted = service_setup::mint(
         state.db(&ext),
-        &req_id,
-        acl.org_id,
-        target_identity,
-        req.secret_name.trim(),
-        caller_identity,
-        req.reason.as_deref(),
-        &token_hash,
-        expires_at,
-        require_user_session,
+        &state.http_client,
+        &state.config,
+        service_setup::MintRequest {
+            org_id: acl.org_id,
+            target_identity,
+            requested_by: caller_identity,
+            secret_name: req.secret_name.trim(),
+            reason: req.reason.as_deref(),
+            ttl_seconds: ttl,
+            require_user_session,
+            service_instance_id: binding.as_ref().map(|(row, _)| row.id),
+            credential_key: binding.as_ref().map(|(_, key)| key.as_str()),
+        },
     )
     .await?;
-
-    let url = state
-        .config
-        .dashboard_url_for(&format!("/secrets/provide/{req_id}?token={token}"));
-    let short_url = short_url::mint(&state, &url, expires_at).await;
+    let (req_id, token, url, short_url, expires_at) = (
+        minted.request_id,
+        minted.token,
+        minted.url,
+        minted.short_url,
+        minted.expires_at,
+    );
 
     let audit_scope = OrgScope::new(acl.org_id, state.db_pool(&ext));
     let _ = audit_scope
@@ -159,6 +181,8 @@ async fn create_secret_request(
                 "secret_name": &req.secret_name,
                 "target_identity_id": target_identity,
                 "require_user_session": require_user_session,
+                "service_instance_id": binding.as_ref().map(|(row, _)| row.id),
+                "credential_key": binding.as_ref().map(|(_, key)| key.as_str()),
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -197,6 +221,8 @@ async fn create_secret_request(
         url,
         short_url,
         expires_at: fmt_time(expires_at),
+        service_id: binding.as_ref().map(|(row, _)| row.id),
+        credential_key: binding.map(|(_, key)| key),
     }))
 }
 
@@ -241,8 +267,19 @@ async fn get_provide(
     Query(q): Query<TokenQuery>,
 ) -> Result<Json<ProvideMetadata>> {
     let row = load_and_validate(&state, &ext, &req_id, &q.token).await?;
-
     let scope = OrgScope::new(row.org_id, state.db_pool(&ext));
+    Ok(Json(provide_metadata(&state, &scope, &headers, row).await?))
+}
+
+/// Render the request-level half of a public page's metadata. Shared by the
+/// bare provide page and the service setup page, which differ only in what
+/// they wrap around it.
+async fn provide_metadata(
+    state: &AppState,
+    scope: &OrgScope,
+    headers: &HeaderMap,
+    row: overslash_db::repos::secret_request::SecretRequestRow,
+) -> Result<ProvideMetadata> {
     let identity_label = scope
         .get_identity(row.identity_id)
         .await?
@@ -258,14 +295,14 @@ async fn get_provide(
     // signed in to the same org, surface that so the page can show a banner.
     // Cross-tenant sessions are discarded — never echo identity from another
     // tenant on a public page.
-    let viewer = extract_session(&state, &headers)
+    let viewer = extract_session(state, headers)
         .filter(|s| s.org == row.org_id)
         .map(|s| ViewerInfo {
             identity_id: s.sub,
             email: s.email,
         });
 
-    Ok(Json(ProvideMetadata {
+    Ok(ProvideMetadata {
         id: row.id,
         secret_name: row.secret_name,
         identity_label,
@@ -275,6 +312,128 @@ async fn get_provide(
         created_at: fmt_time(row.created_at),
         require_user_session: row.require_user_session,
         viewer,
+    })
+}
+
+// ─── 2b. Public GET (service setup page metadata) ─────────────────────
+
+/// What the standalone setup page renders.
+///
+/// A superset of [`ProvideMetadata`] rather than a separate shape: the page
+/// still needs the countdown, the requester label and the user-signed-mode
+/// gate, and the two pages are the same handshake wearing different clothes.
+#[derive(Serialize)]
+struct SetupMetadata {
+    #[serde(flatten)]
+    provide: ProvideMetadata,
+    service: SetupService,
+}
+
+#[derive(Serialize)]
+struct SetupService {
+    id: Uuid,
+    name: String,
+    template_key: String,
+    /// The template's display name — "Resend", not "resend".
+    display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon_url: Option<String>,
+    /// The slot this link fills, with the label and help text the template
+    /// authored for it.
+    slot: SetupSlotView,
+    /// Every per-instance slot on the template and whether it is already
+    /// bound, so the page can say "1 of 2" honestly instead of implying this
+    /// link finishes the job.
+    slots: Vec<SetupSlotView>,
+    /// The template's credential probe. Present means the page may offer a
+    /// Test button — to a signed-in visitor, since the probe runs through the
+    /// authenticated call path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    test_action: Option<crate::routes::actions::probe::TestActionRef>,
+}
+
+#[derive(Serialize, Clone)]
+struct SetupSlotView {
+    key: String,
+    label: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    description: String,
+    /// True when the instance already has a secret bound to this slot.
+    bound: bool,
+}
+
+async fn get_setup(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    headers: HeaderMap,
+    Path(req_id): Path<String>,
+    Query(q): Query<TokenQuery>,
+) -> Result<Json<SetupMetadata>> {
+    let row = load_and_validate(&state, &ext, &req_id, &q.token).await?;
+
+    // A request with no service binding belongs on `/secrets/provide`. Refuse
+    // rather than render a service-shaped page around a missing service.
+    let (Some(service_id), Some(credential_key)) =
+        (row.service_instance_id, row.credential_key.clone())
+    else {
+        return Err(AppError::NotFound("not_found".into()));
+    };
+
+    let scope = OrgScope::new(row.org_id, state.db_pool(&ext));
+    let instance = scope
+        .get_service_instance(service_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("not_found".into()))?;
+    let def = crate::services::platform_services::resolve_template_definition(
+        state.db(&ext),
+        &state.registry,
+        row.org_id,
+        instance.owner_identity_id,
+        &instance.template_key,
+    )
+    .await?;
+
+    let slots: Vec<SetupSlotView> = def
+        .all_slots()
+        .into_iter()
+        .filter(|s| s.source == overslash_core::types::SecretSource::Instance && !s.key.is_empty())
+        .map(|s| SetupSlotView {
+            bound: instance.credentials.0.contains_key(&s.key),
+            key: s.key,
+            label: s.label,
+            description: s.description,
+        })
+        .collect();
+    // The slot this link fills, as the template describes it. Falling back to
+    // the bare key keeps the page renderable if the template dropped the slot
+    // after the link was minted — the binding still works, the row names it.
+    let slot = slots
+        .iter()
+        .find(|s| s.key == credential_key)
+        .cloned()
+        .unwrap_or_else(|| SetupSlotView {
+            key: credential_key.clone(),
+            label: credential_key.clone(),
+            description: String::new(),
+            bound: false,
+        });
+
+    let provide = provide_metadata(&state, &scope, &headers, row).await?;
+    Ok(Json(SetupMetadata {
+        provide,
+        service: SetupService {
+            id: instance.id,
+            name: instance.name,
+            template_key: instance.template_key,
+            display_name: def.display_name.clone(),
+            icon_url: crate::services::icon_url::resolve_icon_url(
+                def.icon.as_ref(),
+                &state.config.public_url,
+            ),
+            slot,
+            slots,
+            test_action: crate::routes::actions::probe::describe(&def),
+        },
     }))
 }
 
@@ -291,6 +450,22 @@ struct SubmitResponse {
     ok: bool,
     name: String,
     version: i32,
+    /// Present when this request was bound to a service instance. Lets the
+    /// setup page decide what to render next without a second round-trip:
+    /// run the test action, or name the slots still outstanding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service: Option<SubmitServiceOutcome>,
+}
+
+#[derive(Serialize)]
+struct SubmitServiceOutcome {
+    id: Uuid,
+    name: String,
+    /// The slot this submission just bound.
+    credential_key: String,
+    /// Slot keys that still have an outstanding setup link. Empty means the
+    /// instance is fully provisioned and the page can offer the test.
+    remaining_slots: Vec<String>,
 }
 
 async fn submit_provide(
@@ -347,6 +522,61 @@ async fn submit_provide(
         )
         .await?;
 
+    // Bind the credential slot when this was a setup request. Ordered after
+    // the vault write so a failure here cannot leave an instance pointing at
+    // a secret that does not exist; the reverse — a stored secret with no
+    // binding — is recoverable from the dashboard, and the request row is
+    // already burned either way.
+    //
+    // The slot key was validated against the template at *mint* time, by a
+    // caller holding `manage_services_own`. Nothing is re-derived here: this
+    // route carries a capability token and no identity to check.
+    let service = match (row.service_instance_id, row.credential_key.as_deref()) {
+        (Some(service_id), Some(credential_key)) => {
+            let bound = scope
+                .bind_credential_slot(service_id, credential_key, &stored.name)
+                .await?;
+            match bound {
+                Some(instance) => {
+                    let _ = scope
+                        .log_audit(AuditEntry {
+                            org_id: row.org_id,
+                            identity_id: provisioned_by_user_id.or(Some(row.identity_id)),
+                            action: "service.credential_bound",
+                            resource_type: Some("service_instance"),
+                            resource_id: Some(service_id),
+                            detail: serde_json::json!({
+                                "request_id": &row.id,
+                                "credential_key": credential_key,
+                                "secret_name": &stored.name,
+                            }),
+                            description: None,
+                            ip_address: ip.0.as_deref(),
+                        })
+                        .await;
+                    let remaining_slots = secret_request::outstanding_slots_for_service(
+                        state.db(&ext),
+                        row.org_id,
+                        service_id,
+                    )
+                    .await
+                    .unwrap_or_default();
+                    Some(SubmitServiceOutcome {
+                        id: service_id,
+                        name: instance.name,
+                        credential_key: credential_key.to_string(),
+                        remaining_slots,
+                    })
+                }
+                // The instance was deleted between mint and submit. The value
+                // is in the vault under its own name and the row is spent;
+                // say nothing about a service rather than inventing one.
+                None => None,
+            }
+        }
+        _ => None,
+    };
+
     // When a session is present, attribute the audit entry to the human who
     // pasted the value. Otherwise fall back to the target identity (the one
     // that owns the secret slot) to keep the audit row anchored to *some*
@@ -366,6 +596,8 @@ async fn submit_provide(
                 "provisioned_by_user_id": provisioned_by_user_id,
                 "user_signed": provisioned_by_user_id.is_some(),
                 "require_user_session": row.require_user_session,
+                "service_instance_id": row.service_instance_id,
+                "credential_key": row.credential_key.as_deref(),
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -396,6 +628,12 @@ async fn submit_provide(
                 "requested_by": row.requested_by,
                 "provisioned_by_user_id": provisioned_by_user_id,
                 "user_signed": provisioned_by_user_id.is_some(),
+                // The agent that minted a setup link is blocked on exactly
+                // this: its service is now callable.
+                "service_id": service.as_ref().map(|s| s.id),
+                "service_name": service.as_ref().map(|s| s.name.as_str()),
+                "credential_key": service.as_ref().map(|s| s.credential_key.as_str()),
+                "remaining_slots": service.as_ref().map(|s| s.remaining_slots.clone()),
             }),
             audience,
         },
@@ -405,6 +643,7 @@ async fn submit_provide(
         ok: true,
         name: stored.name,
         version: stored.current_version,
+        service,
     }))
 }
 
@@ -446,10 +685,4 @@ async fn load_and_validate(
         return Err(AppError::Gone("already_fulfilled".into()));
     }
     Ok(row)
-}
-
-fn sha256(s: &str) -> Vec<u8> {
-    let mut h = Sha256::new();
-    h.update(s.as_bytes());
-    h.finalize().to_vec()
 }

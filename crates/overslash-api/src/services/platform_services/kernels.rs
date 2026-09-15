@@ -191,9 +191,11 @@ pub async fn kernel_list_services(
                 )
             });
             let groups = groups_by_service.remove(&row.id).unwrap_or_default();
+            let test_action = template.and_then(crate::routes::actions::probe::describe);
             let mut summary = row_to_summary(row, groups);
             summary.credentials_status = credentials_status;
             summary.icon_url = icon_url;
+            summary.test_action = test_action;
             summary
         })
         .collect();
@@ -247,9 +249,21 @@ pub async fn kernel_get_service(
         &ctx.config.public_url,
     )
     .await;
+    let template_key = row.template_key.clone();
+    let template_owner = row.owner_identity_id;
     let mut detail = row_to_detail(row);
     detail.credentials_status = credentials_status;
     detail.icon_url = icon_url;
+    detail.test_action = resolve_template_definition(
+        &ctx.db,
+        &ctx.registry,
+        ctx.org_id,
+        template_owner,
+        &template_key,
+    )
+    .await
+    .ok()
+    .and_then(|def| crate::routes::actions::probe::describe(&def));
     Ok(detail)
 }
 
@@ -638,6 +652,7 @@ pub async fn kernel_create_service(
     let row_id = row.id;
     let mut detail = row_to_detail(row);
     detail.credentials_status = credentials_status;
+    detail.test_action = crate::routes::actions::probe::describe(&template_def);
 
     // Auto-connect orchestration: when the template is OAuth-backed and the
     // caller didn't pin or opt out, kick off the OAuth flow now and surface
@@ -723,7 +738,106 @@ pub async fn kernel_create_service(
         }
     }
 
+    // Auto-setup orchestration: the secret-path twin of auto-connect above,
+    // and best-effort for the same reason. A secret-backed template whose
+    // per-instance slots nobody bound leaves the instance uncallable and the
+    // caller — typically an agent, which must never see the value — with no
+    // way to fix it except asking its user to visit the dashboard. Minting
+    // the links here means one `create_service` call yields one URL to hand
+    // over, exactly as the OAuth path already does.
+    //
+    // Org-level instances are skipped alongside auto-connect, and for the
+    // same reason: `mint` needs a target identity to store the secret under,
+    // and an instance nobody owns names none.
+    if !input.skip_credentials.unwrap_or(false)
+        && let Some(owner) = owner_identity_id
+    {
+        let pending = crate::services::service_setup::unbound_instance_slots(
+            &template_def,
+            &detail.credentials,
+            detail.secret_name.as_deref(),
+        );
+        if !pending.is_empty() {
+            match mint_setup_links(&ctx, owner, auth_identity, row_id, &pending).await {
+                Ok(bundle) => detail.setup = Some(bundle),
+                Err(err) => tracing::warn!(
+                    service_instance_id = %row_id,
+                    template_key = %input.template_key,
+                    error = %err,
+                    "setup-link mint failed; instance created without setup bundle"
+                ),
+            }
+        }
+    }
+
     Ok(detail)
+}
+
+/// Mint one setup link per unbound credential slot.
+///
+/// All-or-nothing by construction: the first failure returns, and the caller
+/// drops the whole bundle rather than handing over a partial set of links that
+/// silently cannot finish the setup. Rows already written stay — they are
+/// single-use, expire on their own, and burning them would need a transaction
+/// this path does not hold.
+async fn mint_setup_links(
+    ctx: &PlatformCallContext,
+    owner_identity_id: Uuid,
+    requested_by: Uuid,
+    service_instance_id: Uuid,
+    slots: &[overslash_core::types::SecretSlot],
+) -> Result<crate::services::service_setup::SetupBundle, AppError> {
+    use crate::services::service_setup::{MintRequest, SetupBundle, SetupRequestRef, mint};
+
+    // Captured once for the whole bundle so every link in it agrees, the way
+    // the single-request mint paths capture it.
+    let require_user_session =
+        !overslash_db::repos::org::get_allow_unsigned_secret_provide(&ctx.db, ctx.org_id)
+            .await?
+            .unwrap_or(true);
+
+    let mut requests = Vec::with_capacity(slots.len());
+    let mut first: Option<(String, Option<String>, time::OffsetDateTime)> = None;
+    for slot in slots {
+        let minted = mint(
+            &ctx.db,
+            &ctx.http_client,
+            &ctx.config,
+            MintRequest {
+                org_id: ctx.org_id,
+                target_identity: owner_identity_id,
+                requested_by,
+                secret_name: &slot.default_secret_name,
+                reason: Some(&slot.label),
+                ttl_seconds: SETUP_LINK_TTL_SECS,
+                require_user_session,
+                service_instance_id: Some(service_instance_id),
+                credential_key: Some(&slot.key),
+            },
+        )
+        .await?;
+        if first.is_none() {
+            first = Some((
+                minted.url.clone(),
+                minted.short_url.clone(),
+                minted.expires_at,
+            ));
+        }
+        requests.push(SetupRequestRef {
+            request_id: minted.request_id,
+            credential_key: slot.key.clone(),
+            secret_name: slot.default_secret_name.clone(),
+            setup_url: minted.url,
+        });
+    }
+
+    let (setup_url, short_url, expires_at) = first.expect("slots is non-empty");
+    Ok(SetupBundle {
+        setup_url,
+        short_url,
+        requests,
+        expires_at: fmt_time(expires_at),
+    })
 }
 
 pub async fn kernel_update_service(

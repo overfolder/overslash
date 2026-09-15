@@ -29,6 +29,15 @@ use super::platform_caller::PlatformCallContext;
 use crate::error::AppError;
 use crate::routes::util::fmt_time;
 
+/// TTL for an auto-minted setup link.
+///
+/// One hour, matching the MCP `request_secret` default. A setup link is
+/// handed straight to a human who is expected to act on it now; a longer
+/// window mostly means more live bearer URLs sitting in chat transcripts.
+/// A caller who needs longer mints its own via `POST /v1/secrets/requests`,
+/// which takes `ttl_seconds`.
+const SETUP_LINK_TTL_SECS: i64 = 3600;
+
 mod group_grants;
 mod kernels;
 mod reconcile;
