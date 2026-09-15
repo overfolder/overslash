@@ -28,7 +28,7 @@ use super::*;
 /// surface exists to serve. Org-level rows (`owner_identity_id IS NULL`) match
 /// nobody's ceiling and so always require admin — the same conclusion
 /// `caller_may_manage_owned` reaches for them.
-async fn require_owned_by_ceiling_or_admin(
+pub(crate) async fn require_owned_by_ceiling_or_admin(
     scope: &OrgScope,
     row: &overslash_db::repos::service_instance::ServiceInstanceRow,
     auth_identity: Uuid,
@@ -758,7 +758,18 @@ pub async fn kernel_create_service(
             detail.secret_name.as_deref(),
         );
         if !pending.is_empty() {
-            match mint_setup_links(&ctx, owner, auth_identity, row_id, &pending).await {
+            match crate::services::service_setup::mint_bundle(
+                &ctx.db,
+                &ctx.http_client,
+                &ctx.config,
+                ctx.org_id,
+                owner,
+                auth_identity,
+                row_id,
+                &pending,
+            )
+            .await
+            {
                 Ok(bundle) => detail.setup = Some(bundle),
                 Err(err) => tracing::warn!(
                     service_instance_id = %row_id,
@@ -771,78 +782,6 @@ pub async fn kernel_create_service(
     }
 
     Ok(detail)
-}
-
-/// Mint one setup link per unbound credential slot.
-///
-/// All-or-nothing by construction: the first failure returns, and the caller
-/// drops the whole bundle rather than handing over a partial set of links that
-/// silently cannot finish the setup. Rows already written stay — they are
-/// single-use, expire on their own, and burning them would need a transaction
-/// this path does not hold.
-async fn mint_setup_links(
-    ctx: &PlatformCallContext,
-    owner_identity_id: Uuid,
-    requested_by: Uuid,
-    service_instance_id: Uuid,
-    slots: &[overslash_core::types::SecretSlot],
-) -> Result<crate::services::service_setup::SetupBundle, AppError> {
-    use crate::services::service_setup::{MintRequest, SetupBundle, SetupRequestRef, mint};
-
-    // Captured once for the whole bundle so every link in it agrees, the way
-    // the single-request mint paths capture it.
-    let require_user_session =
-        !overslash_db::repos::org::get_allow_unsigned_secret_provide(&ctx.db, ctx.org_id)
-            .await?
-            .unwrap_or(true);
-
-    let mut requests = Vec::with_capacity(slots.len());
-    let mut first: Option<(String, Option<String>, time::OffsetDateTime)> = None;
-    for slot in slots {
-        let minted = mint(
-            &ctx.db,
-            &ctx.http_client,
-            &ctx.config,
-            MintRequest {
-                org_id: ctx.org_id,
-                target_identity: owner_identity_id,
-                requested_by,
-                secret_name: &slot.default_secret_name,
-                // The slot's authored label, when it has one. `x-overslash-label`
-                // is optional and most shipped templates omit it, so this is
-                // usually `None` — and `None` is what the pages branch on to
-                // omit the Reason row entirely. Passing `Some("")` would render
-                // an empty row instead.
-                reason: Some(slot.label.trim()).filter(|l| !l.is_empty()),
-                ttl_seconds: SETUP_LINK_TTL_SECS,
-                require_user_session,
-                service_instance_id: Some(service_instance_id),
-                credential_key: Some(&slot.key),
-            },
-        )
-        .await?;
-        if first.is_none() {
-            first = Some((
-                minted.url.clone(),
-                minted.short_url.clone(),
-                minted.expires_at,
-            ));
-        }
-        requests.push(SetupRequestRef {
-            request_id: minted.request_id,
-            credential_key: slot.key.clone(),
-            secret_name: slot.default_secret_name.clone(),
-            setup_url: minted.url,
-        });
-    }
-
-    let (setup_url, short_url, expires_at) = first.expect("slots is non-empty");
-    Ok(SetupBundle {
-        setup_url,
-        short_url,
-        requests,
-        expires_at: fmt_time(expires_at),
-    })
 }
 
 pub async fn kernel_update_service(

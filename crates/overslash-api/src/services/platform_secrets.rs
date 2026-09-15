@@ -105,6 +105,7 @@ pub async fn kernel_request_secret(
                 &scope,
                 &ctx.registry,
                 Some(caller_identity),
+                ctx.access_level,
                 service_id,
                 input.credential_key.as_deref(),
             )

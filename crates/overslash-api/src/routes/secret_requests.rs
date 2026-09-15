@@ -123,6 +123,7 @@ async fn create_secret_request(
                 &scope,
                 &state.registry,
                 Some(caller_identity),
+                acl.access_level,
                 service_id,
                 req.credential_key.as_deref(),
             )

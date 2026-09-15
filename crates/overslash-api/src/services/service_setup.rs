@@ -24,6 +24,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use overslash_core::permissions::AccessLevel;
 use overslash_core::types::{SecretSlot, SecretSource, ServiceDefinition};
 use overslash_db::repos::secret_request;
 use overslash_db::repos::service_instance::{CredentialsMap, ServiceInstanceRow};
@@ -37,6 +38,15 @@ use crate::services::short_url;
 /// Dashboard route the minted URL points at when the request names a service.
 /// A bare secret request keeps the older, service-less page.
 const SETUP_PATH: &str = "/services/setup";
+
+/// TTL for an auto-minted setup link.
+///
+/// One hour, matching the MCP `request_secret` default. A setup link is handed
+/// straight to a human who is expected to act on it now; a longer window
+/// mostly means more live bearer URLs sitting in chat transcripts. A caller
+/// who needs longer mints its own via `POST /v1/secrets/requests`, which takes
+/// `ttl_seconds`.
+const SETUP_LINK_TTL_SECS: i64 = 3600;
 const PROVIDE_PATH: &str = "/secrets/provide";
 
 // ── Bundle returned to the minting caller ────────────────────────────────
@@ -172,6 +182,86 @@ pub async fn mint(
     })
 }
 
+// ── Bundle ────────────────────────────────────────────────────────────────
+
+/// Mint one setup link per unbound credential slot and assemble the bundle.
+///
+/// All-or-nothing from the caller's side: the first failure returns, and
+/// `kernel_create_service` drops the whole bundle rather than handing over a
+/// partial set of links that silently cannot finish the setup. Rows already
+/// written stay — they are single-use, expire on their own, and burning them
+/// would need a transaction this path does not hold.
+#[allow(clippy::too_many_arguments)]
+pub async fn mint_bundle(
+    db: &sqlx::PgPool,
+    http_client: &reqwest::Client,
+    config: &Config,
+    org_id: Uuid,
+    owner_identity_id: Uuid,
+    requested_by: Uuid,
+    service_instance_id: Uuid,
+    slots: &[SecretSlot],
+) -> Result<SetupBundle, AppError> {
+    // Captured once for the whole bundle so every link in it agrees, the way
+    // the single-request mint paths capture it.
+    let require_user_session =
+        !overslash_db::repos::org::get_allow_unsigned_secret_provide(db, org_id)
+            .await?
+            .unwrap_or(true);
+
+    let mut requests = Vec::with_capacity(slots.len());
+    let mut first: Option<(String, Option<String>, time::OffsetDateTime)> = None;
+    for slot in slots {
+        let minted = mint(
+            db,
+            http_client,
+            config,
+            MintRequest {
+                org_id,
+                target_identity: owner_identity_id,
+                requested_by,
+                secret_name: &slot.default_secret_name,
+                // The slot's authored label, when it has one.
+                // `x-overslash-label` is optional and most shipped templates
+                // omit it, so this is usually `None` — and `None` is what the
+                // pages branch on to omit the Reason row entirely. Passing
+                // `Some("")` would render an empty row instead.
+                reason: Some(slot.label.trim()).filter(|l| !l.is_empty()),
+                ttl_seconds: SETUP_LINK_TTL_SECS,
+                require_user_session,
+                service_instance_id: Some(service_instance_id),
+                credential_key: Some(&slot.key),
+            },
+        )
+        .await?;
+        if first.is_none() {
+            first = Some((
+                minted.url.clone(),
+                minted.short_url.clone(),
+                minted.expires_at,
+            ));
+        }
+        requests.push(SetupRequestRef {
+            request_id: minted.request_id,
+            credential_key: slot.key.clone(),
+            secret_name: slot.default_secret_name.clone(),
+            setup_url: minted.url,
+        });
+    }
+
+    let (setup_url, short_url, expires_at) = first.ok_or_else(|| {
+        // Unreachable from `kernel_create_service`, which checks first. A
+        // caller that asks for a bundle over no slots has asked for nothing.
+        AppError::Internal("mint_bundle called with no slots".into())
+    })?;
+    Ok(SetupBundle {
+        setup_url,
+        short_url,
+        requests,
+        expires_at: crate::routes::util::fmt_time(expires_at),
+    })
+}
+
 // ── Slots ─────────────────────────────────────────────────────────────────
 
 /// The instance-source credential slots this instance has no binding for yet.
@@ -218,12 +308,25 @@ pub fn unbound_instance_slots(
 /// This is the *only* place the pair is checked. Fulfilment runs from a public
 /// route holding nothing but a capability token, so it binds the slot the row
 /// names without re-deriving anything — which is exactly why the check here
-/// has to be complete: the instance is in the caller's org and reachable by
-/// them, and the key names a real instance-source slot of its template.
+/// has to be complete: the caller may manage the instance, and the key names a
+/// real instance-source slot of its template.
+///
+/// The authorization half is not optional and not a formality. A minted link
+/// is a live capability to *write* `service_instances.credentials[key]`, and
+/// `OrgScope::get_service_instance` filters by tenant alone — so without the
+/// ceiling check any org member could mint a link that rebinds another user's
+/// credential slot, or an org-level instance's, and hand themselves the URL.
+///
+/// The test is the **ceiling user**, matching `kernel_update_service` rather
+/// than `routes::services::require_owner_or_admin`'s ancestry: instances are
+/// owned by users, and an agent is deliberately not an ancestor of its own
+/// owner-user, so ancestry would refuse an agent the instance it just created
+/// — the flow this whole surface exists to serve.
 pub async fn validate_binding(
     scope: &OrgScope,
     registry: &overslash_core::registry::ServiceRegistry,
     identity_id: Option<Uuid>,
+    access_level: AccessLevel,
     service_id: Uuid,
     credential_key: Option<&str>,
 ) -> Result<(ServiceInstanceRow, String), AppError> {
@@ -231,6 +334,16 @@ pub async fn validate_binding(
         .get_service_instance(service_id)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    let auth_identity = identity_id.ok_or_else(|| {
+        AppError::BadRequest("binding a credential to a service requires an identity".into())
+    })?;
+    crate::services::platform_services::require_owned_by_ceiling_or_admin(
+        scope,
+        &row,
+        auth_identity,
+        access_level,
+    )
+    .await?;
 
     let template = crate::services::platform_services::resolve_template_definition(
         scope.db(),
