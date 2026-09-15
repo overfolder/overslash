@@ -154,6 +154,6 @@ An agent that has the Overslash permission still gets Claude Code's always-ask o
 ## Out of scope
 
 - Automated permission-grant flows (an agent requesting a new Overslash permission for itself, or minting one for anyone else). An agent still cannot write a `permission_rules` row: the only writers are the admin-gated `POST /v1/permissions` and "Allow & Remember" on an approval a human resolved.
-  - **Amended.** One narrow exception now exists, and it is a human act rather than an agent one: creating a first-level agent seeds it with the four `_own` anchors from §1, gated by the org's `default_agent_self_setup` flag. The person creating the agent is the one in the loop, once, instead of four times in the minutes that follow. See the `D-NEXT` entry in DECISIONS.md.
+  - **Amended.** One narrow exception now exists, and it is a human act rather than an agent one: creating a first-level agent seeds it with the four `_own` anchors from §1, gated by the org's `default_agent_self_setup` flag. The person creating the agent is the one in the loop, once, instead of four times in the minutes that follow. See the `D79` entry in DECISIONS.md.
 - Cross-tenant self-management. Everything above is scoped within a single org.
 - Service template *marketplaces* (publishing templates to a public registry). The `manage_templates_publish` permission is dashboard-only precisely to keep this a human act.

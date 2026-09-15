@@ -1,4 +1,4 @@
-// Real-stack screenshots for the agent self-setup default (D-NEXT): the org
+// Real-stack screenshots for the agent self-setup default (D79): the org
 // policy card, the disclosure on the agent create modal, and the permission
 // rules a freshly-created first-level agent is actually born holding.
 //
