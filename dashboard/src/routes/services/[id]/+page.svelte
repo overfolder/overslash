@@ -147,17 +147,19 @@
 				: `bounded by ${p.page_size_param}`;
 			parts.push(p.page_size_max ? `${bound} (max ${p.page_size_max})` : bound);
 		}
-		// `link` says the upstream names a whole next URL; `next_param` says
-		// where that URL came from. With one, it was in the response body and
-		// the caller forwards that key; without, it was a Link header, which
-		// names its own parameters and leaves the caller nothing to carry.
-		parts.push(
-			p.style === 'link' && !p.next_param
-				? 'the next page arrives as a Link header'
-				: p.next_param
-					? `follow it with ${p.next_param}`
-					: `paged by ${p.style}`
-		);
+		// Two independent facts on a `link` style, so two independent reads:
+		// `next_from` says where the upstream puts the next URL, `next_param`
+		// says which key the caller forwards out of it. Either can be absent.
+		if (p.style === 'link') {
+			parts.push(
+				p.next_from
+					? 'the next page arrives as a URL in the response body'
+					: 'the next page arrives as a Link header'
+			);
+			if (p.next_param) parts.push(`follow it with ${p.next_param}`);
+		} else {
+			parts.push(p.next_param ? `follow it with ${p.next_param}` : `paged by ${p.style}`);
+		}
 		return `This action returns one page at a time — ${parts.join(', ')}. A call's result carries _pagination.next with the arguments for the page after it.`;
 	}
 

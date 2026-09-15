@@ -414,12 +414,13 @@ paths:
           max_chars: 2000
         - label: Type
           filter: .body.story_type // empty
-        # `null` here means "unfile from its epic", which is a change worth
-        # showing — and one `//` would hide.
+        # Plain `//` here, unlike `update_story`: a create has nothing to
+        # unfile, so these ids are either given or absent and `null` carries no
+        # meaning this schema declares.
         - label: Epic
-          filter: 'if .body | has("epic_id") then (.body.epic_id // "none") else empty end'
+          filter: .body.epic_id // empty
         - label: Iteration
-          filter: 'if .body | has("iteration_id") then (.body.iteration_id // "none") else empty end'
+          filter: .body.iteration_id // empty
         - label: Team
           filter: .body.group_id // empty
         - label: Owners
@@ -1066,7 +1067,7 @@ paths:
             type: integer
   # --- Workspace metadata -------------------------------------------------
   #
-  # The id sources every write action above refers to. All four are small,
+  # The id sources every write action above refers to. All small,
   # workspace-wide sets that Shortcut returns whole: no page size, no cursor,
   # nothing to page.
   /api/v3/epic-workflow:

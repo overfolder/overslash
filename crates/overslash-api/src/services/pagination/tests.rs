@@ -893,3 +893,106 @@ fn a_body_next_url_is_read_through_the_mcp_envelope() {
     );
     assert_eq!(marker["next"]["params"], json!({"next": "tok"}));
 }
+
+// --- the continuation is checked on every hop, not just the first ----------
+//
+// Which side of `declared_query_params`' sent/unsent split the continuation
+// falls on changes with the hop: page one never sent it, page two merged it
+// back in. These pin the second hop, where an earlier version of the guard
+// did not run at all.
+
+/// Shortcut's last page ends `…&next=`. On hop one that is caught as "no more
+/// pages spelled awkwardly"; on hop two the key *has* been sent, and an empty
+/// value that merely differs from the previous token must not read as a page.
+#[test]
+fn an_emptied_continuation_is_the_last_page_on_the_second_hop_too() {
+    assert_eq!(
+        next_page(
+            &body_link_spec(),
+            None,
+            None,
+            &sent(&[("query", json!("x")), ("next", json!("tok1"))]),
+            &result(
+                200,
+                json!({"data": [{"id": 9}], "next": "/api/v3/search/stories?query=x&next="}),
+                &[],
+            ),
+        ),
+        json!({"has_more": false}),
+    );
+}
+
+/// Same for the ceiling.
+#[test]
+fn an_oversized_continuation_is_refused_on_the_second_hop_too() {
+    let url = format!("/api/v3/search/stories?query=x&next={}", "y".repeat(2000));
+    assert_eq!(
+        next_page(
+            &body_link_spec(),
+            None,
+            None,
+            &sent(&[("query", json!("x")), ("next", json!("tok1"))]),
+            &result(200, json!({"data": [], "next": url}), &[]),
+        ),
+        json!({"has_more": false}),
+    );
+}
+
+/// A refused continuation stops the traversal whole. Offering the other keys
+/// the next URL happened to change — an upstream-clamped `page_size`, say —
+/// would hand back a `next` that re-issues the page just fetched.
+#[test]
+fn a_refused_continuation_takes_the_whole_marker_with_it() {
+    assert_eq!(
+        next_page(
+            &body_link_spec(),
+            None,
+            None,
+            &sent(&[("page_size", json!(25)), ("next", json!("tok1"))]),
+            &result(
+                200,
+                json!({"data": [{"id": 9}], "next": "/api/v3/search/stories?page_size=100&next="}),
+                &[],
+            ),
+        ),
+        json!({"has_more": false}),
+        "page_size changed, but without a cursor the next call is this one"
+    );
+}
+
+/// An upstream handing back the token it was just given is at the end or
+/// looping. Either way the next call is the one just made.
+#[test]
+fn a_repeated_continuation_is_not_a_next_page() {
+    assert_eq!(
+        next_page(
+            &body_link_spec(),
+            None,
+            None,
+            &sent(&[("query", json!("x")), ("next", json!("tok1"))]),
+            &result(
+                200,
+                json!({"data": [{"id": 9}], "next": "/api/v3/search/stories?query=x&next=tok1"}),
+                &[],
+            ),
+        ),
+        json!({"has_more": false}),
+    );
+}
+
+/// The ordinary case it all sits around: hop two advancing to hop three.
+#[test]
+fn a_fresh_continuation_pages_on_from_the_second_hop() {
+    let marker = next_page(
+        &body_link_spec(),
+        None,
+        None,
+        &sent(&[("query", json!("x")), ("next", json!("tok1"))]),
+        &result(
+            200,
+            json!({"data": [{"id": 9}], "next": "/api/v3/search/stories?query=x&next=tok2"}),
+            &[],
+        ),
+    );
+    assert_eq!(marker["next"]["params"], json!({"next": "tok2"}));
+}

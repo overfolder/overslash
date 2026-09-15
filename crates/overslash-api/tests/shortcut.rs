@@ -457,6 +457,56 @@ async fn updating_a_story_discloses_its_id_name_and_the_text_it_would_write() {
     );
 }
 
+/// jq's `//` yields its right-hand side for `false` as well as `null`, and a
+/// filter that yields nothing drops the row — so `.body.archived // empty`
+/// disclosed *nothing* for the one write a reviewer most needs to see. The
+/// mirror image: `[]` is truthy, so clearing the owner set rendered an empty
+/// row instead of no row.
+#[tokio::test]
+async fn a_disclosure_survives_the_falsy_half_of_every_field() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_shortcut().await;
+    let (base, client, agent_key, _admin) = setup(pool, mock, "admin").await;
+
+    let body = call(
+        &base,
+        &client,
+        &agent_key,
+        "update_story",
+        json!({
+            "story_id": 12345,
+            "archived": false,
+            "epic_id": Value::Null,
+            "owner_ids": [],
+        }),
+    )
+    .await;
+    assert_eq!(body["status"], json!("pending_approval"), "{body}");
+
+    let fields = body["disclosed_fields"]
+        .as_array()
+        .cloned()
+        .expect("inline disclosed_fields present");
+    let labelled = |label: &str| -> Option<Value> {
+        fields.iter().find(|f| f["label"] == json!(label)).cloned()
+    };
+
+    let archived = labelled("Archived").expect("un-archiving must be disclosed, not swallowed");
+    assert!(
+        serde_json::to_string(&archived).unwrap().contains("false"),
+        "the Archived row must carry `false`: {archived}"
+    );
+    let epic = labelled("Epic").expect("unfiling from an epic must be disclosed");
+    assert!(
+        serde_json::to_string(&epic).unwrap().contains("none"),
+        "a null epic_id must read as an unfile, not vanish: {epic}"
+    );
+    assert!(
+        labelled("Owners").is_none(),
+        "an empty owner set must omit the row, not render an empty one: {fields:?}"
+    );
+}
+
 /// The permission key a story write mints is bound to that story, so approving
 /// one is not approving every story.
 #[tokio::test]

@@ -578,9 +578,11 @@ export interface ActionPagination {
   /** The largest page the upstream documents. */
   page_size_max?: number;
   /** The parameter carrying the continuation. On `link` it is the key lifted
-   *  out of the next URL that page one never sent — present when that URL
-   *  arrives in the response body, absent when it arrives in a header. */
+   *  out of the next URL that page one never sent. */
   next_param?: string;
+  /** Where a `link` style finds the next URL: a dotted response-body path, or
+   *  absent for the RFC 8288 header. Orthogonal to `next_param`. */
+  next_from?: string;
 }
 
 export type ServiceRuntime = 'http' | 'mcp';

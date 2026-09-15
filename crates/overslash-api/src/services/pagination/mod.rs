@@ -274,7 +274,7 @@ fn continuation_params(
             // it past any ceiling and stop the traversal with `has_more: false`
             // — a partial answer that reads as a complete one, which is the
             // failure this module exists to end.
-            params = declared_query_params(&url, sent, spec.next.param.as_deref());
+            params = declared_query_params(&url, sent, spec.next.param.as_deref())?;
             if params.is_empty() {
                 return None;
             }
@@ -418,7 +418,7 @@ fn split_links(value: &str) -> Vec<&str> {
 }
 
 /// Lift out of a next URL only the query parameters the caller could have sent
-/// in the first place, plus the one continuation key `allow_unsent` names.
+/// in the first place, plus the one continuation key `continuation` names.
 ///
 /// The upstream's next-URL is a second way to address the same endpoint, and
 /// adopting it wholesale would let a response introduce arguments the action
@@ -426,45 +426,66 @@ fn split_links(value: &str) -> Vec<&str> {
 /// continuation inside the action's own contract — and keeps a parameter whose
 /// value did not change out of the marker.
 ///
-/// `allow_unsent` is the deliberate hole in that intersection, and it is one
+/// `continuation` is the deliberate hole in that intersection, and it is one
 /// key wide: `next.param` on a `link` spec, which the template author wrote
 /// down, and which `check_pagination` has already refused unless the action
 /// declares it.
+///
+/// `None` means the continuation was found and refused — empty, or past the
+/// ceiling. That is a wholesale answer rather than a missing key, for the
+/// reason [`NextStyle::Cursor`] bails out of `continuation_params` entirely
+/// in the same situation: a marker offering the *other* keys the next URL
+/// happened to change, minus the cursor, is a marker whose `next` re-issues
+/// the page just fetched.
 fn declared_query_params(
     url: &str,
     sent: &HashMap<String, Value>,
-    allow_unsent: Option<&str>,
-) -> Map<String, Value> {
+    continuation: Option<&str>,
+) -> Option<Map<String, Value>> {
     let mut out = Map::new();
     let Some((_, query)) = url.split_once('?') else {
-        return out;
+        return Some(out);
     };
     for pair in query.split('&') {
         let Some((k, v)) = pair.split_once('=') else {
             continue;
         };
         let (k, v) = (percent_decode(k), percent_decode(v));
+
+        // The continuation is checked on every hop, before the sent/unsent
+        // split — because which side of that split it falls on changes with
+        // the hop. On page one it was never sent, so it lands in the `else`
+        // branch below; from page two on the caller has merged it back in, so
+        // it lands in the `previous` branch. Guarding only one of them would
+        // guard only the first page of a traversal.
+        //
+        // The rules are the cursor arm's, for the cursor arm's reasons: an
+        // upstream at the end of a collection commonly sends the key with an
+        // empty value rather than omitting it, and a value past the ceiling is
+        // not a page token but a payload wearing one's name.
+        if continuation == Some(k.as_str()) {
+            if v.is_empty() || v.chars().count() > MAX_CURSOR_VALUE_CHARS {
+                return None;
+            }
+            // Stays a string rather than being parsed like the branch below,
+            // for the reason that branch cannot apply on the hop that matters:
+            // on page one there is no previously-sent value to take a type
+            // from. `coerce_args` parses it back on replay if the parameter is
+            // numeric.
+            let value = json!(v);
+            // An upstream handing back the token it was just given is at the
+            // end of the collection or looping; either way the next call is the
+            // one just made, so there is no delta to offer.
+            if sent.get(&k) != Some(&value) {
+                out.insert(k, value);
+            }
+            continue;
+        }
+
         let Some(previous) = sent.get(&k) else {
             // A key the call did not send is a key the next URL would be
             // *introducing*, and an upstream does not get to add arguments the
-            // caller never chose. The one exception is the continuation the
-            // declaration names: it appears for the first time on page two by
-            // definition, so requiring it to have been sent would be requiring
-            // the cursor to predate itself.
-            //
-            // This is the one value here that reaches the marker without the
-            // caller having chosen it, so it carries the cursor arm's ceiling:
-            // past that it is not a continuation, it is a payload wearing one's
-            // name. It also stays a string rather than being parsed like the
-            // branch below, and for the reason that branch cannot apply — there
-            // is no previously-sent value to take a type from. `coerce_args`
-            // parses it back on replay if the parameter is numeric.
-            if allow_unsent == Some(k.as_str())
-                && !v.is_empty()
-                && v.chars().count() <= MAX_CURSOR_VALUE_CHARS
-            {
-                out.insert(k, json!(v));
-            }
+            // caller never chose.
             continue;
         };
         // Numbers stay numbers: `page=2` coming back as `"2"` would be typed
@@ -478,7 +499,7 @@ fn declared_query_params(
             out.insert(k, value);
         }
     }
-    out
+    Some(out)
 }
 
 /// Query-string decoding: `+` is a space before percent-decoding runs, so a
