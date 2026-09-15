@@ -363,18 +363,22 @@ fn lower_mcp_tool(
         &base,
         errors,
     );
-    // `link` is the one style an MCP tool cannot wear. A tool result is a
-    // JSON-RPC envelope with no response headers, so a Link-styled spec here
-    // would parse cleanly and then find nothing to read — the silent no-op
-    // D67's lint exists to catch, except one layer too deep for the lint to
-    // see, since the key *is* read at this position.
+    // `link` reads a whole next URL, and an MCP tool has only one of the two
+    // places that URL can live. A tool result is a JSON-RPC envelope with no
+    // response headers at all, so the header form would parse cleanly and then
+    // find nothing to read — the silent no-op D67's lint exists to catch,
+    // except one layer too deep for the lint to see, since the key *is* read at
+    // this position. The body form has no such problem: `next_page` projects an
+    // MCP result through `mcp_payload` before it walks a dotted path, exactly
+    // as it does for a `cursor` spec's `from`, so `link` + `from` addresses the
+    // tool's own payload and is allowed here.
     let pagination = parse_pagination(ext::get(obj, Pos::McpTool, Ext::Pagination), &base, errors)
         .filter(|spec| {
-            if spec.next.style == NextStyle::Link {
+            if spec.next.style == NextStyle::Link && spec.next.from.is_none() {
                 errors.push(ValidationIssue::new(
                     "pagination_invalid_style",
                     format!(
-                        "{} style \"link\" needs a response header, and an MCP tool result has none",
+                        "{} style \"link\" reads the `Link` response header, and an MCP tool result has none — name the body path holding the next URL with `from` instead",
                         Ext::Pagination.key()
                     ),
                     format!("{base}.{}.next.style", Ext::Pagination.key()),

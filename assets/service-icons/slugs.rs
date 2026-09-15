@@ -26,6 +26,7 @@ pub const BUILTIN_ICON_SLUGS: &[&str] = &[
     "notion",
     "overslash",
     "resend",
+    "shortcut",
     "stripe",
     "telegram",
     "test_email",

@@ -568,7 +568,8 @@ export interface ActionSummary {
 
 export interface ActionPagination {
   /** Which continuation family: an opaque cursor, an advancing offset or page
-   *  ordinal, or an RFC 8288 `Link: rel="next"` header. */
+   *  ordinal, or a whole next URL (`link`) — from an RFC 8288 `Link: rel="next"`
+   *  header, or from the response body when `next_param` is set. */
   style: 'cursor' | 'offset' | 'page' | 'link';
   /** The parameter that bounds a page, when the action lets a caller choose. */
   page_size_param?: string;
@@ -576,9 +577,12 @@ export interface ActionPagination {
   page_size_default?: number;
   /** The largest page the upstream documents. */
   page_size_max?: number;
-  /** The parameter carrying the continuation. Absent for `link`, whose next
-   *  URL arrives in a response header. */
+  /** The parameter carrying the continuation. On `link` it is the key lifted
+   *  out of the next URL that page one never sent. */
   next_param?: string;
+  /** Where a `link` style finds the next URL: a dotted response-body path, or
+   *  absent for the RFC 8288 header. Orthogonal to `next_param`. */
+  next_from?: string;
 }
 
 export type ServiceRuntime = 'http' | 'mcp';
