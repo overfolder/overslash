@@ -118,11 +118,14 @@ export interface SubmitServiceOutcome {
   /** The slot this submission bound. */
   credential_key: string;
   /**
-   * Slot keys that still have an outstanding setup link. Empty means the
-   * instance is fully provisioned — which is when a caller can offer to test
-   * it.
+   * Credential slots this instance still needs a value for. Empty means it is
+   * fully provisioned, which is when a caller can offer to test it.
+   *
+   * Absent — not empty — when the template would not resolve, because "not
+   * known" and "none left" are different answers and only one of them means
+   * the service is ready.
    */
-  remaining_slots: string[];
+  remaining_slots?: string[];
 }
 
 /** Response to `PUT /v1/secrets/{name}`. */

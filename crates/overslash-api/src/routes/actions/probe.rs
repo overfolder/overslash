@@ -35,8 +35,10 @@ use crate::AppState;
 use crate::error::AppError;
 use crate::extractors::{AuthContext, CallerTransport, ClientIp, ReqExt};
 
-/// How much of an upstream error message to keep on the verdict.
-const ERROR_CHARS: usize = 300;
+/// How much of an upstream error message to keep on the verdict, in bytes.
+/// `truncate` snaps down to a char boundary, so the rendered string can be
+/// shorter — never longer.
+const ERROR_BYTES: usize = 300;
 
 /// Cap on the envelope this reads back.
 ///
@@ -208,6 +210,21 @@ pub(crate) async fn run(
                 format!("the service did not respond within {timeout_ms} ms"),
             ));
         }
+        // The secret-bag twin of `needs_authentication`: a slot is bound to a
+        // vault name that holds no value. `wrap_auth_error_as_ok` does not
+        // cover it (it is a 400, not a 401), but "there is no usable
+        // credential" is the same verdict, and a probe answering 400 would
+        // read as a broken request rather than as the answer it asked for.
+        Err(AppError::CredentialMissing { secret_name, .. }) => {
+            let mut out = ServiceTestResponse::bare("needs_authentication");
+            out.action = Some(action_key.to_string());
+            out.latency_ms = Some(latency_ms);
+            out.error = Some(truncate(
+                &format!("no value stored for secret `{secret_name}`"),
+                ERROR_BYTES,
+            ));
+            return Ok(out);
+        }
         Err(err) => match super::wrap_auth_error_as_ok(&err) {
             Some(resp) => resp,
             None => return Err(err),
@@ -294,12 +311,22 @@ fn classify(action_key: &str, latency_ms: u64, body: &Value) -> ServiceTestRespo
         // `Err`, so it reaches here rather than the propagation arm above —
         // and it is a genuine verdict anyway: the probe did not run, and the
         // reason is the thing the operator needs.
+        //
+        // Not integration-tested, because it is currently unreachable
+        // *through this endpoint* and contorting a test into reaching it would
+        // assert the contortion rather than the behaviour. Two rules combine:
+        // `permission_gate` skips Layer 2 entirely for `kind == "user"`
+        // ("users are gated by groups only — they are their own approvers"),
+        // and `require_owner_or_admin` admits only the owner user or an admin.
+        // The arm stays because `CallResponse::Denied` is a real variant of the
+        // shared call path: leaving it in the catch-all below would turn a
+        // gating change into a silent "the gateway returned no verdict".
         Some("denied") => {
             out.status = "denied";
             out.error = body
                 .get("reason")
                 .and_then(Value::as_str)
-                .map(|r| truncate(r, ERROR_CHARS));
+                .map(|r| truncate(r, ERROR_BYTES));
         }
         // `accepted` (a deferred call) and anything unrecognised: the probe
         // produced no verdict. Say so rather than guessing at one.
@@ -315,7 +342,7 @@ fn transport_verdict(action_key: &str, latency_ms: u64, reason: String) -> Servi
     let mut out = ServiceTestResponse::bare("failed");
     out.action = Some(action_key.to_string());
     out.latency_ms = Some(latency_ms);
-    out.error = Some(truncate(&reason, ERROR_CHARS));
+    out.error = Some(truncate(&reason, ERROR_BYTES));
     out
 }
 
@@ -349,7 +376,7 @@ fn upstream_error(result: Option<&Value>, http_status: Option<u16>) -> String {
             None => "upstream rejected the call".into(),
         };
     }
-    truncate(text.trim(), ERROR_CHARS)
+    truncate(text.trim(), ERROR_BYTES)
 }
 
 /// Truncate on a char boundary. Upstream error text is exactly the string

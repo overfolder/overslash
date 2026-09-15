@@ -84,8 +84,13 @@ pub(super) fn build_auth_status(def: &ServiceDefinition, connected: bool) -> Aut
 fn build_setup_steps(def: &ServiceDefinition) -> Vec<SetupStep> {
     let note = match def.auth.first() {
         Some(ServiceAuth::OAuth { .. }) => {
+            // Hedged for the same reason as the secret arm below:
+            // `want_auto_connect` needs an owner, so an org-level create gets
+            // no bundle, and a failed connect is swallowed into a warning.
             "pick any `name`; it becomes the `service` you call afterwards. \
-             Hand the returned `connect.auth_url` to your user verbatim"
+             Hand the returned `connect.auth_url` to your user verbatim. If \
+             the response carries no `connect`, start the flow with \
+             `create_connection` passing the new `service_id`"
         }
         Some(ServiceAuth::Secret { .. }) => {
             // Hedged on purpose. `create_service` attaches `setup` only for an

@@ -39,6 +39,7 @@
 	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
 	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
 	import { cleanServiceMap } from '$lib/service-maps';
+	import { probeRejected } from '$lib/public-request';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
 	import type { Group, GroupGrantPick } from '$lib/api/groups';
@@ -701,11 +702,13 @@
 			<div class="actions">
 				<button type="button" class="btn primary" onclick={() => goto(`/services/${created?.id}`)}>
 					<!-- "anyway" only where something actually went wrong. With no
-					     verdict yet there is nothing to push past. -->
-					{#if !testResult || testResult.status === 'ok'}
-						Done
-					{:else}
+					     verdict, or one in which the upstream was never asked
+					     (approval, missing credential, deny rule), there is
+					     nothing to push past. -->
+					{#if probeRejected(testResult)}
 						Continue anyway
+					{:else}
+						Done
 					{/if}
 				</button>
 			</div>

@@ -354,35 +354,70 @@ pub fn instance_slots(template: &ServiceDefinition) -> Vec<SecretSlot> {
         .collect()
 }
 
-/// The instance-source credential slots this instance has no binding for yet.
+/// Every required credential slot this instance still needs a value for.
 ///
-/// [`instance_slots`] minus the ones nobody needs to be asked for: already
-/// bound, optional, or carrying no `default_secret_name` to store the value
-/// under. A slot with no default name is a supported shape —
-/// `template_validation::core::auth` requires a default only for org-source
-/// slots — but there is no name to mint a request for, so it surfaces at call
-/// time in `credential_missing` instead.
+/// "Is this service provisioned?" — the question the setup page's *remaining*
+/// list and the fulfilment event both answer. Deliberately includes a slot
+/// with no `default_secret_name`: nothing can mint a link for it, but it is
+/// still missing, and reporting an instance as complete because the one
+/// outstanding credential happens to be unmintable is the worst of the
+/// available answers.
+pub fn unprovisioned_instance_slots(
+    template: &ServiceDefinition,
+    credentials: &CredentialsMap,
+    legacy_secret_name: Option<&str>,
+) -> Vec<String> {
+    // The legacy scalar `secret_name` binds the *sole* instance slot, which is
+    // how every pre-slots instance is stored. Treat it as a binding for that
+    // one slot so an instance created the old way is not reported as missing a
+    // value it already has.
+    //
+    // Counted over *all* instance-source slots, unkeyed ones included, which
+    // is what `derive_credentials_status` counts. `instance_slots` drops the
+    // unkeyed slot because nothing can key a binding by it — but the scalar
+    // alias stood for that credential too, so a template with one keyed and
+    // one unkeyed slot is not the single-slot shape the alias can vouch for.
+    // Counting only keyed slots here would report "provisioned" while the
+    // badge reads `NeedsAuthentication`.
+    let sole_instance_slot = template
+        .all_slots()
+        .iter()
+        .filter(|s| s.source == SecretSource::Instance)
+        .count()
+        <= 1;
+    let legacy_covers_sole_slot =
+        legacy_secret_name.is_some_and(|n| !n.is_empty()) && sole_instance_slot;
+    if legacy_covers_sole_slot {
+        return Vec::new();
+    }
+
+    instance_slots(template)
+        .into_iter()
+        .filter(|s| !s.optional && !is_bound(credentials, &s.key))
+        .map(|s| s.key)
+        .collect()
+}
+
+/// The slots a setup link can be minted for.
+///
+/// [`unprovisioned_instance_slots`] minus the ones carrying no
+/// `default_secret_name` to store the value under. A slot with no default name
+/// is a supported shape — `template_validation::core::auth` requires a default
+/// only for org-source slots — but there is no vault name to mint a request
+/// against, so it surfaces at call time in `credential_missing` instead.
+///
+/// Narrower than "what is still missing" on purpose: the two are different
+/// questions, and answering the second with the first is what lets an instance
+/// read as complete while a credential is outstanding.
 pub fn unbound_instance_slots(
     template: &ServiceDefinition,
     credentials: &CredentialsMap,
     legacy_secret_name: Option<&str>,
 ) -> Vec<SecretSlot> {
-    let instance_slots = instance_slots(template);
-    // The legacy scalar `secret_name` binds the *sole* instance slot, which is
-    // how every pre-slots instance is stored. Treat it as a binding for that
-    // one slot so an instance created the old way is not asked to provide a
-    // value it already has.
-    let legacy_covers_sole_slot =
-        legacy_secret_name.is_some_and(|n| !n.is_empty()) && instance_slots.len() == 1;
-
-    instance_slots
+    let missing = unprovisioned_instance_slots(template, credentials, legacy_secret_name);
+    instance_slots(template)
         .into_iter()
-        .filter(|s| {
-            !s.optional
-                && !s.default_secret_name.is_empty()
-                && !is_bound(credentials, &s.key)
-                && !legacy_covers_sole_slot
-        })
+        .filter(|s| !s.default_secret_name.is_empty() && missing.contains(&s.key))
         .collect()
 }
 
@@ -450,8 +485,21 @@ pub async fn validate_binding(
     )
     .await?;
 
-    let slots = instance_slots(&template);
+    let key = resolve_slot_key(&template, credential_key)?;
+    Ok((row, key))
+}
 
+/// Pick the slot a binding names, or infer it.
+///
+/// Split out of [`validate_binding`] because it is the whole of that
+/// function's *logic* and none of its I/O: the multi-slot arm produces a
+/// user-facing 400 that no integration test can reach, since no shipped
+/// template declares two instance slots.
+fn resolve_slot_key(
+    template: &ServiceDefinition,
+    credential_key: Option<&str>,
+) -> Result<String, AppError> {
+    let slots = instance_slots(template);
     let key = match credential_key {
         Some(k) => k.to_string(),
         // No key named: only unambiguous when the template has exactly one
@@ -462,13 +510,13 @@ pub async fn validate_binding(
             [] => {
                 return Err(AppError::BadRequest(format!(
                     "template '{}' declares no per-instance credential slot to bind",
-                    row.template_key
+                    template.key
                 )));
             }
             many => {
                 return Err(AppError::BadRequest(format!(
                     "template '{}' declares several credential slots ({}); name one with `credential_key`",
-                    row.template_key,
+                    template.key,
                     many.iter()
                         .map(|s| s.key.as_str())
                         .collect::<Vec<_>>()
@@ -481,11 +529,10 @@ pub async fn validate_binding(
     if !slots.iter().any(|s| s.key == key) {
         return Err(AppError::BadRequest(format!(
             "credential_key '{key}' is not a per-instance credential slot of template '{}'",
-            row.template_key
+            template.key
         )));
     }
-
-    Ok((row, key))
+    Ok(key)
 }
 
 pub(crate) fn sha256(s: &str) -> Vec<u8> {
@@ -698,6 +745,92 @@ mod tests {
             vec!["acme_pass", "acme_user"],
             "the scalar alias is ambiguous with several slots and covers none"
         );
+    }
+
+    // ── resolve_slot_key ───────────────────────────────────────────────
+
+    fn err_message(e: AppError) -> String {
+        match e {
+            AppError::BadRequest(m) => m,
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    /// The documented happy path: every shipped template declares one
+    /// instance slot, so a caller never has to name it.
+    #[test]
+    fn a_sole_slot_is_inferred() {
+        let d = def(
+            vec![secret_auth("token", "acme_api_key", Vec::new())],
+            Vec::new(),
+        );
+        assert_eq!(resolve_slot_key(&d, None).unwrap(), "token");
+    }
+
+    /// Two slots is a coin flip, and a link that binds the wrong credential is
+    /// worse than one that was never minted. No shipped template declares two,
+    /// which is exactly why this is a unit test.
+    #[test]
+    fn several_slots_refuse_to_be_guessed_and_name_both() {
+        let d = def(
+            vec![secret_auth(
+                "basic",
+                "acme_user",
+                vec!["acme_user".into(), "acme_pass".into()],
+            )],
+            vec![
+                slot("acme_user", "acme_user", SecretSource::Instance),
+                slot("acme_pass", "acme_pass", SecretSource::Instance),
+            ],
+        );
+        let msg = err_message(resolve_slot_key(&d, None).unwrap_err());
+        assert!(msg.contains("acme_user"), "{msg}");
+        assert!(msg.contains("acme_pass"), "{msg}");
+        assert!(msg.contains("credential_key"), "{msg}");
+        // Naming one resolves it.
+        assert_eq!(
+            resolve_slot_key(&d, Some("acme_pass")).unwrap(),
+            "acme_pass"
+        );
+    }
+
+    /// An OAuth template has nothing per-instance to bind.
+    #[test]
+    fn no_instance_slot_is_refused() {
+        let d = def(Vec::new(), Vec::new());
+        let msg = err_message(resolve_slot_key(&d, None).unwrap_err());
+        assert!(msg.contains("no per-instance credential slot"), "{msg}");
+    }
+
+    /// Fulfilment re-derives nothing, so a key that names no slot has to be
+    /// refused here or it is never refused at all.
+    #[test]
+    fn an_unknown_key_is_refused() {
+        let d = def(
+            vec![secret_auth("token", "acme_api_key", Vec::new())],
+            Vec::new(),
+        );
+        let msg = err_message(resolve_slot_key(&d, Some("nope")).unwrap_err());
+        assert!(msg.contains("nope"), "{msg}");
+    }
+
+    /// An `org` slot is admin-provisioned org-wide; a setup link must not be
+    /// able to name one even explicitly.
+    #[test]
+    fn an_org_slot_cannot_be_named() {
+        let d = def(
+            vec![secret_auth(
+                "basic",
+                "acme_user",
+                vec!["acme_user".into(), "acme_shared".into()],
+            )],
+            vec![
+                slot("acme_user", "acme_user", SecretSource::Instance),
+                slot("acme_shared", "acme_shared", SecretSource::Org),
+            ],
+        );
+        assert!(resolve_slot_key(&d, Some("acme_shared")).is_err());
+        assert_eq!(resolve_slot_key(&d, None).unwrap(), "acme_user");
     }
 
     /// One bound, one not: only the gap is asked for. This is the state the

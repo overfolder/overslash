@@ -1,7 +1,7 @@
 import type { PageLoad } from './$types';
 import type { TestActionRef } from '$lib/types';
-import { mapPublicRequestError, type PublicRequestState } from '$lib/public-request';
-import type { ProvideMetadata } from '$lib/public-request';
+import { loadPublicRequest } from '$lib/public-request';
+import type { ProvideMetadata, PublicRequestLoad } from '$lib/public-request';
 
 export const ssr = false;
 export const prerender = false;
@@ -37,26 +37,13 @@ export interface SetupMetadata extends ProvideMetadata {
 	service: SetupService;
 }
 
-type LoadResult =
-	| { state: 'ready'; req_id: string; token: string; meta: SetupMetadata }
-	| { state: Exclude<PublicRequestState, 'ready'>; req_id: string };
+type LoadResult = PublicRequestLoad<SetupMetadata>;
 
-export const load: PageLoad = async ({ params, url, fetch }): Promise<LoadResult> => {
-	const req_id = params.req_id;
-	const token = url.searchParams.get('token');
-	if (!token) return { state: 'missing_token', req_id };
-
-	// `same-origin` (not `omit`) so the dashboard session cookie travels when
-	// the visitor already has one. The cookie is purely additive — the URL JWT
-	// is still the capability gate — but it is what unlocks the Test button.
-	const r = await fetch(
-		`/public/services/setup/${encodeURIComponent(req_id)}?token=${encodeURIComponent(token)}`,
-		{ method: 'GET', credentials: 'same-origin' }
+export const load: PageLoad = ({ params, url, fetch }): Promise<LoadResult> =>
+	loadPublicRequest<SetupMetadata>(
+		fetch,
+		(id, token) =>
+			`/public/services/setup/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`,
+		params.req_id,
+		url.searchParams.get('token')
 	);
-	if (!r.ok) {
-		const body = await r.json().catch(() => null);
-		return { state: mapPublicRequestError(r.status, body), req_id } as LoadResult;
-	}
-	const meta: SetupMetadata = await r.json();
-	return { state: 'ready', req_id, token, meta };
-};

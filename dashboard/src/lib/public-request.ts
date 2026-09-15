@@ -120,3 +120,93 @@ export function submitErrorMessage(status: number, code: string): string {
 	if (status === 400) return 'This link is invalid or tampered.';
 	return 'Submission failed. Please try again.';
 }
+
+/**
+ * Whether a verdict means the *upstream* rejected the credential.
+ *
+ * Narrower than "not ok" on purpose. `pending_approval`, `needs_authentication`
+ * and `denied` are all real verdicts in which the upstream was never asked, so
+ * reporting them as a rejection is simply untrue — and `TestResult` already
+ * tones those amber rather than red, so a page branching on `!== 'ok'`
+ * contradicts the component it renders.
+ *
+ * `null` (no verdict yet, or one still in flight) is not a rejection either.
+ */
+export function probeRejected(result: { status: string } | null | undefined): boolean {
+	return result?.status === 'failed';
+}
+
+/** A public request page's load outcome, parameterised on its metadata shape. */
+export type PublicRequestLoad<M> =
+	| { state: 'ready'; req_id: string; token: string; meta: M }
+	| { state: Exclude<PublicRequestState, 'ready'>; req_id: string };
+
+/**
+ * Fetch a public request's metadata and map the outcome onto a page state.
+ *
+ * `path` is the metadata endpoint — the two pages differ only in that and in
+ * what shape comes back. `credentials: 'same-origin'` (not `omit`) so the
+ * dashboard session cookie travels when the visitor already has one: the URL
+ * JWT is still the capability gate, but the session is what records who
+ * provided the value, and on the setup page what unlocks the Test button.
+ */
+export async function loadPublicRequest<M>(
+	fetchFn: typeof fetch,
+	path: (reqId: string, token: string) => string,
+	reqId: string,
+	token: string | null
+): Promise<PublicRequestLoad<M>> {
+	if (!token) return { state: 'missing_token', req_id: reqId };
+	const r = await fetchFn(path(reqId, token), {
+		method: 'GET',
+		credentials: 'same-origin'
+	});
+	if (!r.ok) {
+		const body = await r.json().catch(() => null);
+		const state = mapPublicRequestError(r.status, body);
+		return { state: state as Exclude<PublicRequestState, 'ready'>, req_id: reqId };
+	}
+	return { state: 'ready', req_id: reqId, token, meta: (await r.json()) as M };
+}
+
+/** What a submit did, as the caller needs to branch on it. */
+export type SubmitOutcome<B> =
+	| { ok: true; body: B | null }
+	/** `message` is ready to render; the page does not re-derive it. */
+	| { ok: false; message: string };
+
+/**
+ * Submit a value to `POST /public/secrets/provide/{req_id}`.
+ *
+ * Both pages post here — there is one write path, and the setup page's extra
+ * behaviour (binding the credential slot) is the server's, not a second
+ * endpoint.
+ *
+ * A 200 whose body will not parse is still a success: by then the vault write
+ * is committed and the single-use row is burned, so reporting failure would
+ * send the visitor into a retry that answers `410 already_fulfilled`. The body
+ * comes back as `null` in that case, which callers read as "saved, details
+ * unknown" rather than as a positive result.
+ */
+export async function submitPublicRequest<B>(
+	reqId: string,
+	token: string,
+	value: string
+): Promise<SubmitOutcome<B>> {
+	try {
+		const r = await fetch(`/public/secrets/provide/${encodeURIComponent(reqId)}`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			credentials: 'same-origin',
+			body: JSON.stringify({ token, value })
+		});
+		if (!r.ok) {
+			const body = await r.json().catch(() => null);
+			const code = (body && (body as { error?: string }).error) || '';
+			return { ok: false, message: submitErrorMessage(r.status, code) };
+		}
+		return { ok: true, body: (await r.json().catch(() => null)) as B | null };
+	} catch {
+		return { ok: false, message: 'Network error. Please try again.' };
+	}
+}

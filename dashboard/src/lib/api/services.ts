@@ -241,8 +241,10 @@ export const listServiceGroups = (serviceId: string, signal?: AbortSignal) =>
  * error. `not_supported` means the template declares no probe, which is why
  * callers check `test_action` before offering the button.
  */
+const testPath = (id: string) => `/v1/services/${encodeURIComponent(id)}/test`;
+
 export const testService = (id: string, signal?: AbortSignal) =>
-	session.post<ServiceTestResponse>(`/v1/services/${id}/test`, undefined, signal);
+	session.post<ServiceTestResponse>(testPath(id), undefined, signal);
 
 /**
  * `testService`, but a failure to *run* the probe comes back as a verdict too.
@@ -262,10 +264,9 @@ export async function runProbe(
 	id: string,
 	opts: { signal?: AbortSignal; bounceOnExpiry?: boolean } = {}
 ): Promise<ServiceTestResponse> {
-	const path = `/v1/services/${id}/test`;
 	if (opts.bounceOnExpiry === false) {
 		try {
-			const r = await fetch(path, {
+			const r = await fetch(testPath(id), {
 				method: 'POST',
 				credentials: 'same-origin',
 				signal: opts.signal
