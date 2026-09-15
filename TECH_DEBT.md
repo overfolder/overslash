@@ -4,6 +4,35 @@ Known workarounds and deferred improvements.
 
 ---
 
+## SDK pins esbuild past tsup's declared range via an npm `override`
+
+`sdk/package.json` carries `overrides: { "esbuild": "^0.28.1" }`. It exists to
+clear GHSA-g7r4-m6w7-qqqr (path traversal in esbuild's own dev server on
+Windows, fixed in 0.28.1): `vite` already accepts `^0.27.0 || ^0.28.0`, but
+`tsup` — 8.5.1, the latest — still declares `esbuild: "^0.27.0"`, so nothing in
+the tree can resolve the patched version on its own.
+
+We are not actually exposed. The advisory is specific to `esbuild --servedir`
+on Windows; we only use esbuild through tsup's build pipeline and vite's
+transform, on Linux and macOS. The override is there to keep the alert list at
+zero rather than to fix a reachable bug, and it forces tsup onto a major it has
+not declared support for — `npm run build`, `npm run check` and the 133-test
+suite all pass on 0.28.2, but that is verification, not a guarantee from
+upstream.
+
+`esbuild` is the only key in the block, deliberately. `nanoid` needed a patch
+in the same sweep (GHSA-2v37-7h3g-55p8), but its requester `postcss` already
+declares `^3.3.16`, so an ordinary resolve picks up 3.3.19 and an override
+there would have been dead weight. Nothing else rides on this block, so
+removing it when tsup catches up is safe.
+
+Drop the override once tsup widens its range to `^0.28.0`
+(evanw/esbuild bumps land in tsup within a release or two, historically). If a
+future esbuild minor breaks the tsup build before then, pin the override to the
+last working `0.28.x` rather than removing it, or the alert comes back.
+
+---
+
 ## CI seeds ort-sys binaries from a release asset (cdn.pyke.io outage)
 
 Since 2026-07-03, `cdn.pyke.io` answers HTTP 403 (Cloudflare bot challenge) to non-browser clients, so any CI job compiling `ort-sys` 2.0.0-rc.12 (pulled in via `fastembed` for semantic search) from a cold cache fails at the build script's binary download. Workaround: `.github/actions/seed-ort-cache` pre-populates `~/.cache/ort.pyke.io` in the `lint`, `coverage`, and `e2e` jobs from the `ort-sys-cache-ms-1.24.2` release asset (the build script's own hash-verified extraction, re-hosted), which makes the build script skip the download entirely. Remove the action and the release once the CDN is reliable again, and refresh the asset + dist hash whenever `ort-sys` is bumped (`build/download/dist.txt` in the crate lists the current hashes). `release.yml` is not covered — it builds non-Linux targets too and needs per-target assets if the outage persists into a release.

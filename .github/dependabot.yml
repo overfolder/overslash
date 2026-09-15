@@ -30,6 +30,21 @@ updates:
       - dependency-name: "typescript"
         versions: ["7.x"]
 
+  # npm (SDK) — @overslash/sdk. Dev-only dependency tree (vitest, tsup, vite),
+  # but it still ships a published package, so keep it on the same cadence as
+  # the dashboard rather than letting the toolchain drift.
+  - package-ecosystem: "npm"
+    directory: "/sdk"
+    schedule:
+      interval: "weekly"
+    target-branch: "dev"
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+    groups:
+      sdk-deps:
+        patterns: ["*"]
+
   # GitHub Actions — pinned to full commit SHAs (see DECISIONS D31); Dependabot
   # maintains SHA + version comment, and cooldown gates every bump like cargo/npm.
   - package-ecosystem: "github-actions"
