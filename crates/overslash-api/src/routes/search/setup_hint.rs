@@ -88,9 +88,16 @@ fn build_setup_steps(def: &ServiceDefinition) -> Vec<SetupStep> {
              Hand the returned `connect.auth_url` to your user verbatim"
         }
         Some(ServiceAuth::Secret { .. }) => {
+            // Hedged on purpose. `create_service` attaches `setup` only for an
+            // instance with an owner and an unbound slot, and drops the bundle
+            // on a mint failure — so an org-level create (`user_level: false`)
+            // reaches this step and gets no URL. Naming the fallback here is
+            // what keeps that from being a dead end.
             "pick any `name`; it becomes the `service` you call afterwards. \
              Hand the returned `setup.setup_url` to your user verbatim — they \
-             paste the credential there and you never see it"
+             paste the credential there and you never see it. If the response \
+             carries no `setup`, mint one with `request_secret` passing the \
+             new `service_id`"
         }
         // No auth declared: nothing to provision, the instance is callable as
         // soon as it exists.

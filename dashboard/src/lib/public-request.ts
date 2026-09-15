@@ -17,6 +17,38 @@ export interface ViewerInfo {
 	email: string;
 }
 
+/**
+ * The request-level half of either public page's metadata.
+ *
+ * The backend models the setup page's shape as a superset of this one
+ * (`#[serde(flatten)] provide: ProvideMetadata`), so the TS mirror extends it
+ * rather than re-declaring nine fields that must then be kept in step by hand.
+ */
+export interface ProvideMetadata {
+	id: string;
+	secret_name: string;
+	identity_label: string;
+	requested_by_label: string;
+	reason: string | null;
+	expires_at: string;
+	created_at: string;
+	/**
+	 * True iff the request was minted while the org had
+	 * `allow_unsigned_secret_provide = false`. When set, submission requires a
+	 * same-org session and the page must gate the input accordingly. Captured
+	 * at mint time, so flipping the org setting never retroactively breaks an
+	 * in-flight URL.
+	 */
+	require_user_session: boolean;
+	/**
+	 * Opportunistic session binding: populated iff the visitor already holds a
+	 * valid `oss_session` cookie for this request's org. Also what decides
+	 * whether a Test button can be offered on the setup page, since the probe
+	 * runs through the authenticated call path.
+	 */
+	viewer: ViewerInfo | null;
+}
+
 /** Everything a public request page can be, once its load has run. */
 export type PublicRequestState =
 	| 'ready'

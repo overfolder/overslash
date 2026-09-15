@@ -19,7 +19,6 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use overslash_core::permissions::AccessLevel;
-use overslash_db::repos::audit::AuditEntry;
 use overslash_db::scopes::OrgScope;
 
 use super::permission_chain;
@@ -136,9 +135,14 @@ pub async fn kernel_request_secret(
             require_user_session,
             service_instance_id: binding.as_ref().map(|(row, _)| row.id),
             credential_key: binding.as_ref().map(|(_, key)| key.as_str()),
+            via: "mcp",
+            // The platform runtime is transport-agnostic and carries no
+            // client IP down to the kernel.
+            ip_address: None,
         },
     )
     .await?;
+    crate::services::events::emit(ctx.db.clone(), ctx.http_client.clone(), minted.event);
     let (req_id, url, short_url, expires_at) = (
         minted.request_id,
         minted.url,
@@ -146,51 +150,7 @@ pub async fn kernel_request_secret(
         minted.expires_at,
     );
 
-    let _ = scope
-        .log_audit(AuditEntry {
-            org_id: ctx.org_id,
-            identity_id: Some(caller_identity),
-            action: "secret_request.created",
-            resource_type: Some("secret_request"),
-            resource_id: None,
-            detail: serde_json::json!({
-                "id": &req_id,
-                "secret_name": input.secret_name.trim(),
-                "target_identity_id": target,
-                "require_user_session": require_user_session,
-                "service_instance_id": binding.as_ref().map(|(row, _)| row.id),
-                "credential_key": binding.as_ref().map(|(_, key)| key.as_str()),
-                "via": "mcp",
-            }),
-            description: None,
-            ip_address: None,
-        })
-        .await;
-
-    // Same payload as the REST mint path, and for the same reason it omits the
-    // provide URL: that URL is a bearer capability.
-    let audience =
-        crate::services::events::audience::for_secret_request(&scope, caller_identity, target)
-            .await;
-    crate::services::events::emit(
-        ctx.db.clone(),
-        ctx.http_client.clone(),
-        crate::services::events::EventDraft {
-            org_id: ctx.org_id,
-            event_type: crate::services::events::EventType::SecretRequestCreated,
-            payload: serde_json::json!({
-                "request_id": &req_id,
-                "secret_name": input.secret_name.trim(),
-                "identity_id": target,
-                "requested_by": caller_identity,
-                "expires_at": fmt_time(expires_at),
-                "via": "mcp",
-            }),
-            audience,
-        },
-    );
-
-    Ok(serde_json::json!({
+    let mut out = serde_json::json!({
         "request_id": req_id,
         // Named `provide_url` on both shapes: an agent that learned the key
         // before setup links existed keeps working, and the URL is still the
@@ -198,7 +158,15 @@ pub async fn kernel_request_secret(
         "provide_url": url,
         "short_url": short_url,
         "expires_at": fmt_time(expires_at),
-        "service_id": binding.as_ref().map(|(row, _)| row.id),
-        "credential_key": binding.map(|(_, key)| key),
-    }))
+    });
+    // Inserted only when there is a binding, matching the REST shape's
+    // `skip_serializing_if`. Emitting them as `null` otherwise would give an
+    // agent branching on key presence a different answer per transport.
+    if let Some((row, key)) = binding
+        && let Some(obj) = out.as_object_mut()
+    {
+        obj.insert("service_id".into(), serde_json::json!(row.id));
+        obj.insert("credential_key".into(), serde_json::json!(key));
+    }
+    Ok(out)
 }

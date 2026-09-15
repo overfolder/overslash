@@ -158,62 +158,18 @@ async fn create_secret_request(
             require_user_session,
             service_instance_id: binding.as_ref().map(|(row, _)| row.id),
             credential_key: binding.as_ref().map(|(_, key)| key.as_str()),
+            via: "rest",
+            ip_address: ip.0.as_deref(),
         },
     )
     .await?;
+    crate::services::events::emit(state.db_pool(&ext), state.http_client.clone(), minted.event);
     let (req_id, token, url, short_url, expires_at) = (
         minted.request_id,
         minted.token,
         minted.url,
         minted.short_url,
         minted.expires_at,
-    );
-
-    let audit_scope = OrgScope::new(acl.org_id, state.db_pool(&ext));
-    let _ = audit_scope
-        .log_audit(AuditEntry {
-            org_id: acl.org_id,
-            identity_id: Some(caller_identity),
-            action: "secret_request.created",
-            resource_type: Some("secret_request"),
-            resource_id: None,
-            detail: serde_json::json!({
-                "id": &req_id,
-                "secret_name": &req.secret_name,
-                "target_identity_id": target_identity,
-                "require_user_session": require_user_session,
-                "service_instance_id": binding.as_ref().map(|(row, _)| row.id),
-                "credential_key": binding.as_ref().map(|(_, key)| key.as_str()),
-            }),
-            description: None,
-            ip_address: ip.0.as_deref(),
-        })
-        .await;
-
-    // Deliberately no `token`, `url` or `short_url` in the payload: those are
-    // bearer capabilities that would let any webhook subscriber — or any
-    // stream subscriber in the audience — fulfil the request themselves.
-    let audience = crate::services::events::audience::for_secret_request(
-        &audit_scope,
-        caller_identity,
-        target_identity,
-    )
-    .await;
-    crate::services::events::emit(
-        state.db_pool(&ext),
-        state.http_client.clone(),
-        crate::services::events::EventDraft {
-            org_id: acl.org_id,
-            event_type: crate::services::events::EventType::SecretRequestCreated,
-            payload: serde_json::json!({
-                "request_id": &req_id,
-                "secret_name": req.secret_name.trim(),
-                "identity_id": target_identity,
-                "requested_by": caller_identity,
-                "expires_at": fmt_time(expires_at),
-            }),
-            audience,
-        },
     );
 
     Ok(Json(CreateSecretRequestResponse {
@@ -600,7 +556,7 @@ fn slot_views(
     let slots: Vec<SetupSlotView> = crate::services::service_setup::instance_slots(def)
         .into_iter()
         .map(|s| SetupSlotView {
-            bound: instance.credentials.0.contains_key(&s.key),
+            bound: crate::services::service_setup::is_bound(&instance.credentials.0, &s.key),
             label: slot_label(&s),
             key: s.key,
             description: s.description,
@@ -720,13 +676,31 @@ async fn bind_setup_slot(
         })
         .await;
 
-    // Propagated, not defaulted. An *empty* list is the positive verdict — it
-    // is what the page reads to say "connected" and what tells a waiting agent
-    // the instance is fully provisioned — so swallowing a query failure would
-    // announce a false "done" on both surfaces.
-    let remaining_slots =
-        secret_request::outstanding_slots_for_service(state.db(ext), row.org_id, service_id)
-            .await?;
+    // Which slots are still *unbound*, not which still have an outstanding
+    // link. They are not the same question: a sibling link can expire, or the
+    // slots can be filled one at a time via `request_secret`, and counting
+    // requests would then report "done" over a half-bound instance — which is
+    // what the page reads to say "connected" and what tells a waiting agent
+    // the service is callable. This is the same source the page's pre-submit
+    // half reads (`slots[].bound`), so the two halves cannot disagree.
+    //
+    // Propagated, not defaulted: an empty list *is* the positive verdict.
+    let template = crate::services::platform_services::resolve_template_definition(
+        state.db(ext),
+        &state.registry,
+        row.org_id,
+        instance.owner_identity_id,
+        &instance.template_key,
+    )
+    .await?;
+    let remaining_slots: Vec<String> = crate::services::service_setup::unbound_instance_slots(
+        &template,
+        &instance.credentials.0,
+        instance.secret_name.as_deref(),
+    )
+    .into_iter()
+    .map(|s| s.key)
+    .collect();
 
     Ok(Some(SubmitServiceOutcome {
         id: service_id,

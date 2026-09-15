@@ -42,10 +42,11 @@ const ERROR_CHARS: usize = 300;
 ///
 /// `to_bytes` *errors* past this rather than truncating, and an unreadable
 /// body classifies as `failed` — so the cap can turn a healthy probe into a
-/// reported failure, which is why it is far above anything the call can
-/// produce. `verbose: Some(false)` caps the compact render at
-/// `COMPACT_BUDGET_BYTES` (8 KiB), so a real probe is two orders of magnitude
-/// under it and the limit exists only to bound a pathological response.
+/// reported failure, which is why it is far above anything a probe should
+/// produce. The verbose render is uncapped (see `verbose` in [`run`]), so
+/// this is the only bound on it: a read action returning more than a megabyte
+/// is not a liveness check, and reporting that as "no verdict" is the honest
+/// outcome.
 const MAX_BODY_BYTES: usize = 1 << 20;
 
 /// A template's declared credential probe, as clients see it.
@@ -149,9 +150,15 @@ pub(crate) async fn run(
         service_id: Some(instance.id),
         action: Some(action_key.to_string()),
         params,
-        // Compact: the body is discarded, so there is no reason to pay for
-        // the verbose shape (raw body string + headers) on the way past.
-        verbose: Some(false),
+        // Verbose, counter-intuitively, because the body is discarded.
+        // Compact-and-truncated is the one combination `render_stored`
+        // persists: past the 8 KiB compact budget it writes a `call_results`
+        // row and mints a download URL. This drops the whole envelope, so
+        // every probe of a chatty read action would leave behind a row and a
+        // stored object nothing can ever reach. Verbose renders larger and
+        // stores nothing, which is the cheaper trade when the render is read
+        // for four fields and thrown away.
+        verbose: Some(true),
         ..CallRequest::default()
     };
 
@@ -361,9 +368,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The compact render shape, which is what `run` asks for
-    /// (`verbose: Some(false)`). `status_code` is the key both shapes use —
-    /// feeding `status` here instead would have exercised nothing, since the
+    /// A `called` envelope. `status_code` is the key both render shapes use —
+    /// feeding `status` here instead would exercise nothing, since the
     /// envelope never carries one.
     fn called(is_error: bool, status_code: u64, body: Value) -> Value {
         json!({
@@ -444,8 +450,8 @@ mod tests {
     }
 
     /// A Layer-2 refusal comes back as `Ok(403 + body)`, not an `Err`, so it
-    /// lands in `classify` rather than propagating. Without its own arm it
-    /// fell into the catch-all and the reason was dropped.
+    /// lands in `classify` rather than propagating — and the reason is the
+    /// part the operator needs, so it must survive the classification.
     #[test]
     fn a_denial_keeps_its_reason() {
         let v = classify(

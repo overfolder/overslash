@@ -1,7 +1,7 @@
 import type { PageLoad } from './$types';
 import type { TestActionRef } from '$lib/types';
 import { mapPublicRequestError, type PublicRequestState } from '$lib/public-request';
-import type { ViewerInfo } from '$lib/public-request';
+import type { ProvideMetadata } from '$lib/public-request';
 
 export const ssr = false;
 export const prerender = false;
@@ -30,29 +30,10 @@ export interface SetupService {
 
 /**
  * The setup page's metadata: the provide-request half, flattened server-side,
- * plus the service the request is for.
+ * plus the service the request is for. Mirrors the backend's
+ * `#[serde(flatten)] provide: ProvideMetadata`.
  */
-export interface SetupMetadata {
-	id: string;
-	secret_name: string;
-	identity_label: string;
-	requested_by_label: string;
-	reason: string | null;
-	expires_at: string;
-	created_at: string;
-	/**
-	 * True iff the request was minted while the org had
-	 * `allow_unsigned_secret_provide = false`. When set, submission requires a
-	 * same-org session and the page must gate the input accordingly.
-	 */
-	require_user_session: boolean;
-	/**
-	 * Opportunistic session binding: populated iff the visitor already holds a
-	 * valid `oss_session` cookie for this request's org. Also what decides
-	 * whether the Test button can be offered — the probe runs through the
-	 * authenticated call path.
-	 */
-	viewer: ViewerInfo | null;
+export interface SetupMetadata extends ProvideMetadata {
 	service: SetupService;
 }
 

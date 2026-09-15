@@ -89,31 +89,3 @@ pub async fn mark_fulfilled(pool: &PgPool, id: &str) -> Result<bool, sqlx::Error
     .await?;
     Ok(r.rows_affected() > 0)
 }
-
-/// The credential slot keys this instance still has an unfulfilled, unexpired
-/// setup request outstanding for.
-///
-/// The setup screen renders this as "still needed" after a submit, and the
-/// fulfilment handler reads it to decide whether setup is finished. Scoped by
-/// org even though `id` is already unique, so a leaked instance id from
-/// another tenant reads as an empty list rather than a slot inventory.
-pub async fn outstanding_slots_for_service(
-    pool: &PgPool,
-    org_id: Uuid,
-    service_instance_id: Uuid,
-) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar!(
-        "SELECT credential_key AS \"credential_key!\"
-         FROM secret_requests
-         WHERE org_id = $1
-           AND service_instance_id = $2
-           AND credential_key IS NOT NULL
-           AND fulfilled_at IS NULL
-           AND expires_at > now()
-         ORDER BY created_at",
-        org_id,
-        service_instance_id,
-    )
-    .fetch_all(pool)
-    .await
-}

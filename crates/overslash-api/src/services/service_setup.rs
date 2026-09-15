@@ -35,8 +35,9 @@ use crate::services::jwt::{self, SECRET_REQUEST_KIND, SecretRequestClaims};
 use crate::services::short_url;
 
 /// Dashboard route the minted URL points at when the request names a service.
-/// A bare secret request keeps the older, service-less page.
 const SETUP_PATH: &str = "/services/setup";
+/// …and when it does not: a bare secret request keeps the service-less page.
+const PROVIDE_PATH: &str = "/secrets/provide";
 
 /// TTL for an auto-minted setup link.
 ///
@@ -46,7 +47,6 @@ const SETUP_PATH: &str = "/services/setup";
 /// who needs longer mints its own via `POST /v1/secrets/requests`, which takes
 /// `ttl_seconds`.
 const SETUP_LINK_TTL_SECS: i64 = 3600;
-const PROVIDE_PATH: &str = "/secrets/provide";
 
 // ── Bundle returned to the minting caller ────────────────────────────────
 
@@ -92,6 +92,13 @@ pub struct MintedRequest {
     pub url: String,
     pub short_url: Option<String>,
     pub expires_at: time::OffsetDateTime,
+    /// The `secret_request.created` event to publish.
+    ///
+    /// Returned rather than emitted so a caller minting several can publish
+    /// them with one `emit_all` — two `emit` calls each spawn their own task
+    /// and the inserts race, which would deliver a two-slot bundle's events
+    /// out of authoring order.
+    pub event: crate::services::events::EventDraft,
 }
 
 /// What a mint needs to know that is not derivable from the config.
@@ -108,6 +115,11 @@ pub struct MintRequest<'a> {
     /// [`validate_binding`] is what establishes it for a caller-supplied pair.
     pub service_instance_id: Option<Uuid>,
     pub credential_key: Option<&'a str>,
+    /// Which surface minted this, for the audit row and the event payload:
+    /// `"rest"`, `"mcp"` or `"create_service"`.
+    pub via: &'static str,
+    /// Caller IP for the audit row. `None` on paths that have none.
+    pub ip_address: Option<&'a str>,
 }
 
 // ── Mint ──────────────────────────────────────────────────────────────────
@@ -172,12 +184,64 @@ pub async fn mint(
         _ => None,
     };
 
+    // Audited here rather than at each call site: the three mint paths had
+    // three copies of this block and had already drifted, so one
+    // `EventType::SecretRequestCreated` was shipping three payload shapes.
+    //
+    // Deliberately no token, `url` or `short_url` on either: those are bearer
+    // capabilities, and anyone in the audience could otherwise fulfil the
+    // request themselves.
+    let scope = OrgScope::new(req.org_id, db.clone());
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: req.org_id,
+            identity_id: Some(req.requested_by),
+            action: "secret_request.created",
+            resource_type: Some("secret_request"),
+            resource_id: None,
+            detail: serde_json::json!({
+                "id": &request_id,
+                "secret_name": req.secret_name,
+                "target_identity_id": req.target_identity,
+                "require_user_session": req.require_user_session,
+                "service_instance_id": req.service_instance_id,
+                "credential_key": req.credential_key,
+                "via": req.via,
+            }),
+            description: None,
+            ip_address: req.ip_address,
+        })
+        .await;
+
+    let audience = crate::services::events::audience::for_secret_request(
+        &scope,
+        req.requested_by,
+        req.target_identity,
+    )
+    .await;
+    let event = crate::services::events::EventDraft {
+        org_id: req.org_id,
+        event_type: crate::services::events::EventType::SecretRequestCreated,
+        payload: serde_json::json!({
+            "request_id": &request_id,
+            "secret_name": req.secret_name,
+            "identity_id": req.target_identity,
+            "requested_by": req.requested_by,
+            "service_id": req.service_instance_id,
+            "credential_key": req.credential_key,
+            "expires_at": crate::routes::util::fmt_time(expires_at),
+            "via": req.via,
+        }),
+        audience,
+    };
+
     Ok(MintedRequest {
         request_id,
         token,
         url,
         short_url,
         expires_at,
+        event,
     })
 }
 
@@ -209,6 +273,7 @@ pub async fn mint_bundle(
             .unwrap_or(true);
 
     let mut requests = Vec::with_capacity(slots.len());
+    let mut events = Vec::with_capacity(slots.len());
     let mut first: Option<(String, Option<String>, time::OffsetDateTime)> = None;
     for slot in slots {
         let minted = mint(
@@ -230,6 +295,8 @@ pub async fn mint_bundle(
                 require_user_session,
                 service_instance_id: Some(service_instance_id),
                 credential_key: Some(&slot.key),
+                via: "create_service",
+                ip_address: None,
             },
         )
         .await?;
@@ -240,63 +307,7 @@ pub async fn mint_bundle(
                 minted.expires_at,
             ));
         }
-        // Audited and announced like the two single-request mint paths.
-        // `create_service` is now where most setup links come into existence,
-        // so without this an admin asking "who minted a credential-collection
-        // link for this instance?" would see nothing for the path that mints
-        // most of them, and `secret_request` stream subscribers would miss
-        // them entirely.
-        //
-        // Deliberately no token / URL on either payload: they are bearer
-        // capabilities, and anyone in the audience could otherwise fulfil the
-        // request themselves. The single-request paths omit them for the same
-        // reason.
-        let scope = OrgScope::new(org_id, db.clone());
-        let _ = scope
-            .log_audit(AuditEntry {
-                org_id,
-                identity_id: Some(requested_by),
-                action: "secret_request.created",
-                resource_type: Some("secret_request"),
-                resource_id: None,
-                detail: serde_json::json!({
-                    "id": &minted.request_id,
-                    "secret_name": &slot.default_secret_name,
-                    "target_identity_id": owner_identity_id,
-                    "require_user_session": require_user_session,
-                    "service_instance_id": service_instance_id,
-                    "credential_key": &slot.key,
-                    "via": "create_service",
-                }),
-                description: None,
-                ip_address: None,
-            })
-            .await;
-        let audience = crate::services::events::audience::for_secret_request(
-            &scope,
-            requested_by,
-            owner_identity_id,
-        )
-        .await;
-        crate::services::events::emit(
-            db.clone(),
-            http_client.clone(),
-            crate::services::events::EventDraft {
-                org_id,
-                event_type: crate::services::events::EventType::SecretRequestCreated,
-                payload: serde_json::json!({
-                    "request_id": &minted.request_id,
-                    "secret_name": &slot.default_secret_name,
-                    "identity_id": owner_identity_id,
-                    "requested_by": requested_by,
-                    "service_id": service_instance_id,
-                    "credential_key": &slot.key,
-                    "expires_at": crate::routes::util::fmt_time(minted.expires_at),
-                    "via": "create_service",
-                }),
-                audience,
-            },
-        );
+        events.push(minted.event);
 
         requests.push(SetupRequestRef {
             request_id: minted.request_id,
@@ -305,6 +316,10 @@ pub async fn mint_bundle(
             setup_url: minted.url,
         });
     }
+
+    // One call, so a two-slot bundle's events land in the order they were
+    // authored rather than racing each other's inserts.
+    crate::services::events::emit_all(db.clone(), http_client.clone(), events);
 
     let (setup_url, short_url, expires_at) = first.ok_or_else(|| {
         // Unreachable from `kernel_create_service`, which checks first. A
@@ -323,9 +338,14 @@ pub async fn mint_bundle(
 
 /// Every credential slot an *instance* binds: `source: instance`, with a key.
 ///
-/// The one place this predicate is written. An `org` slot is provisioned once,
-/// org-wide, by an admin — never by whoever clicks a setup link — and a slot
-/// with an empty key cannot key a binding at all.
+/// The one place the *slot-selection* predicate is written. An `org` slot is
+/// provisioned once, org-wide, by an admin — never by whoever clicks a setup
+/// link — and a slot with an empty key cannot key a binding at all.
+///
+/// Whether a slot is *bound* is a separate question with its own subtleties
+/// (the legacy scalar alias, composed credentials) that
+/// `status::derive_credentials_status` owns for the badge; [`is_bound`] is the
+/// single-slot half of it, shared so the two cannot disagree.
 pub fn instance_slots(template: &ServiceDefinition) -> Vec<SecretSlot> {
     template
         .all_slots()
@@ -360,10 +380,21 @@ pub fn unbound_instance_slots(
         .filter(|s| {
             !s.optional
                 && !s.default_secret_name.is_empty()
-                && !credentials.contains_key(&s.key)
+                && !is_bound(credentials, &s.key)
                 && !legacy_covers_sole_slot
         })
         .collect()
+}
+
+/// Whether a slot's binding is one the *call path* would resolve.
+///
+/// Present-and-non-empty, matching `derive_credentials_status` and
+/// `auth_envelopes`. Key presence alone is not enough: an empty-string value
+/// would read as bound here — so no setup link gets minted — while execution
+/// reports `credential_missing`, leaving an uncallable service with no link to
+/// fix it.
+pub fn is_bound(credentials: &CredentialsMap, key: &str) -> bool {
+    credentials.get(key).is_some_and(|n| !n.is_empty())
 }
 
 // ── Mint-time validation of a caller-supplied binding ─────────────────────

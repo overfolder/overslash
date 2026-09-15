@@ -76,7 +76,6 @@
 		}
 	});
 
-	// A retry only makes sense for an outcome that could come out differently.
 	// Retry only where the outcome could come out differently. A template with
 	// no probe and a standing deny rule both answer the same way every time.
 	const canRetry = $derived(
