@@ -1319,8 +1319,10 @@ async fn setup_required_rows_appear_under_include_catalog() {
 /// `{"connected": false, "type": "secret"}` and agents fell back to telling
 /// their human to open a dashboard.
 ///
-/// Metabase is the canonical case — a secret-auth template whose sole
-/// instance-source slot defaults to `metabase_api_key`.
+/// It is one step for every auth kind: `create_service` mints whichever
+/// credential handshake the template implies and returns the URL to hand over
+/// — `setup.setup_url` for a secret, `connect.auth_url` for OAuth. The step's
+/// `note` is what names the field, so that is what this asserts on.
 #[tokio::test]
 async fn catalog_rows_name_the_calls_that_make_them_callable() {
     let (base, client, _, admin_key, _) = bootstrap().await;
@@ -1336,7 +1338,8 @@ async fn catalog_rows_name_the_calls_that_make_them_callable() {
         .unwrap();
     let results = body["results"].as_array().unwrap();
 
-    // Secret-auth: create_service, then request_secret naming the vault key.
+    // Secret-auth. Metabase is the canonical case — a secret-auth template
+    // whose sole instance-source slot defaults to `metabase_api_key`.
     let metabase = results
         .iter()
         .find(|r| r["template"] == "metabase")
@@ -1344,23 +1347,32 @@ async fn catalog_rows_name_the_calls_that_make_them_callable() {
     let setup = metabase["auth"]["setup"]
         .as_array()
         .unwrap_or_else(|| panic!("metabase row must carry auth.setup: {metabase}"));
+    assert_eq!(setup.len(), 1, "one call sets up a service: {setup:?}");
     assert_eq!(setup[0]["action"], "create_service");
     assert_eq!(setup[0]["params"]["template_key"], "metabase");
-    assert_eq!(setup[1]["action"], "request_secret");
-    assert_eq!(
-        setup[1]["params"]["secret_name"], "metabase_api_key",
-        "the secret step must name the slot's default vault key: {setup:?}"
+    assert!(
+        setup[0]["note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("setup.setup_url"),
+        "the secret note must name the field the URL arrives on: {setup:?}"
     );
 
-    // OAuth: the credential step is create_connection, carrying the provider.
+    // OAuth: same single step, pointing at the connect bundle instead.
     let oauth_row = results.iter().find(|r| r["auth"]["type"] == "oauth");
     if let Some(row) = oauth_row {
         let setup = row["auth"]["setup"]
             .as_array()
             .unwrap_or_else(|| panic!("oauth catalog row must carry auth.setup: {row}"));
+        assert_eq!(setup.len(), 1, "one call sets up a service: {setup:?}");
         assert_eq!(setup[0]["action"], "create_service");
-        assert_eq!(setup[1]["action"], "create_connection");
-        assert_eq!(setup[1]["params"]["provider"], row["auth"]["provider"]);
+        assert!(
+            setup[0]["note"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("connect.auth_url"),
+            "the OAuth note must name the field the URL arrives on: {setup:?}"
+        );
     }
 
     // A connected instance has nothing to set up, so the key is absent
@@ -1375,10 +1387,7 @@ async fn catalog_rows_name_the_calls_that_make_them_callable() {
     // The invariant that makes these steps *followable*, asserted over every
     // row in the catalog rather than one hand-picked template: each step names
     // a real platform action, and every parameter it pre-fills is a scalar of
-    // the type that action declares. A template with two instance-source slots
-    // gets two `request_secret` steps, never one naming both — `secret_name`
-    // is declared `string`, so an array would deserialize-fail the moment an
-    // agent did what the hint told it to.
+    // the type that action declares.
     for row in results {
         let Some(setup) = row["auth"].get("setup").and_then(Value::as_array) else {
             continue;
