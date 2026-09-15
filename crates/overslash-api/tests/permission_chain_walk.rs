@@ -1084,13 +1084,25 @@ async fn cross_tenant_walk_cannot_see_other_org_rules() {
         leaked.len()
     );
 
-    // Sanity: org B's scope does see its own rule.
+    // Sanity: org B's scope does see its own rule. Asserted by presence and
+    // ownership rather than by count — agent_b is a first-level agent, so it
+    // also carries the four `overslash:*_own` rules seeded at creation, and a
+    // count would be measuring that instead of the isolation under test.
     let scope_b = overslash_db::OrgScope::new(org_id_b, pool.clone());
     let own = scope_b
         .list_permission_rules_for_identity(agent_b)
         .await
         .unwrap();
-    assert_eq!(own.len(), 1, "org_b should still see its own rule");
+    assert!(
+        own.iter()
+            .any(|r| r.action_pattern == format!("http:**:{mock_addr}/**")),
+        "org_b should still see its own rule (got {:?})",
+        own.iter().map(|r| &r.action_pattern).collect::<Vec<_>>()
+    );
+    assert!(
+        own.iter().all(|r| r.org_id == org_id_b),
+        "org_b's scope must return only org_b rows"
+    );
 
     // Same for the batch variant — org A cannot hydrate a rule by passing
     // org B's identity id in a list.

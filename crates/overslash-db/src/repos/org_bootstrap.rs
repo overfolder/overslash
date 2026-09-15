@@ -223,6 +223,88 @@ pub async fn bootstrap_user_in_org(
     Ok(())
 }
 
+/// The self-setup permission anchors a first-level agent is born holding.
+///
+/// Deliberately the four `_own` halves and nothing else. The paired
+/// `manage_services_share`, `manage_templates_publish` and
+/// `request_secrets_share` anchors stay unseeded, because the dangerous half of
+/// each permission is the socialisation step, not the creation step — see
+/// `docs/design/agent-self-management.md` §1. `request_secrets_share` in
+/// particular is annotated in `services/overslash.yaml` as never
+/// auto-grantable to agents.
+///
+/// These are the anchors, not the action keys: the platform runtime derives a
+/// call's permission key from an action's `permission:` field, so one
+/// `overslash:manage_templates_own:*` rule covers `list_templates`,
+/// `get_template`, `create_template`, `import_template` and `delete_template`.
+pub const AGENT_SELF_SETUP_PATTERNS: [&str; 4] = [
+    "overslash:manage_services_own:*",
+    "overslash:manage_templates_own:*",
+    "overslash:manage_connections_own:*",
+    "overslash:request_secrets_own:*",
+];
+
+/// Bootstrap a newly-created **first-level** agent: seed the four
+/// [`AGENT_SELF_SETUP_PATTERNS`] allow rules so it can set up its own services
+/// without an approval round-trip per call. Idempotent.
+///
+/// The counterpart to [`bootstrap_user_in_org`], and it carries the same
+/// contract: **both guards live in here**, so every identity-creation path can
+/// call it unconditionally without first working out whether it applies.
+///
+/// The guards are:
+/// - the org's `default_agent_self_setup` flag is on (read here rather than by
+///   the caller, mirroring how `identity::create` reads
+///   `orgs.default_deferred_execution` inline);
+/// - the identity is `kind = 'agent'` at `depth = 1`, i.e. a direct child of a
+///   user. `depth` is load-bearing and `kind` alone is not enough: the MCP
+///   enrollment path always writes `kind = 'agent'` but lets the user pick one
+///   of their existing agents as the parent, which mints a `kind = 'agent'`
+///   row at depth 2. Those are sub-agents in everything but name and are not
+///   seeded.
+pub async fn bootstrap_agent_in_org(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+) -> Result<u64, sqlx::Error> {
+    let patterns: Vec<String> = AGENT_SELF_SETUP_PATTERNS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+    // One statement so the guards and the insert cannot race a concurrent
+    // archive or a flag flip: an org/identity that stops qualifying between a
+    // separate SELECT and this INSERT would otherwise still get the rules.
+    let result = sqlx::query!(
+        "INSERT INTO permission_rules (org_id, identity_id, action_pattern, effect)
+         SELECT $1, $2, pattern, 'allow'
+           FROM unnest($3::text[]) AS pattern
+          WHERE EXISTS (
+                SELECT 1
+                  FROM orgs o
+                  JOIN identities i ON i.org_id = o.id
+                 WHERE o.id = $1
+                   AND i.id = $2
+                   AND o.default_agent_self_setup
+                   AND i.kind = 'agent'
+                   AND i.depth = 1
+                   AND i.archived_at IS NULL)
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM permission_rules r
+                 WHERE r.org_id = $1
+                   AND r.identity_id = $2
+                   AND r.action_pattern = pattern)",
+        org_id,
+        identity_id,
+        &patterns,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
 /// Add an identity to the org's Admins group. Idempotent. Used when an
 /// already-admin user signs in via a second IdP — the new identity row
 /// must inherit the admin's group membership, otherwise the session JWT

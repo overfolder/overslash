@@ -524,13 +524,18 @@ async fn agent_read_on_owners_service_skips_layer_2() {
 
     // Verify no permission rule was created for the agent (the win this
     // refactor delivers: read-bypass leaves the agent's rule list clean).
-    let count: i64 =
-        sqlx::query("SELECT COUNT(*) AS c FROM permission_rules WHERE identity_id = $1")
-            .bind(agent_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap()
-            .get("c");
+    // Scoped to this service: a first-level agent is seeded with the four
+    // `overslash:*_own` self-setup rules when it is created, so a bare count
+    // on the identity no longer isolates what this call did.
+    let count: i64 = sqlx::query(
+        "SELECT COUNT(*) AS c FROM permission_rules
+          WHERE identity_id = $1 AND action_pattern LIKE 'owners-svc:%'",
+    )
+    .bind(agent_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap()
+    .get("c");
     assert_eq!(
         count, 0,
         "no permission_rules row should be created by a read-bypass call"
@@ -703,13 +708,16 @@ async fn auto_approve_level_gates_the_write_bypass() {
     );
 
     // And the bypass leaves the agent's rule list clean, same as reads.
-    let count: i64 =
-        sqlx::query("SELECT COUNT(*) AS c FROM permission_rules WHERE identity_id = $1")
-            .bind(agent_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap()
-            .get("c");
+    // Scoped for the same reason as the read case above.
+    let count: i64 = sqlx::query(
+        "SELECT COUNT(*) AS c FROM permission_rules
+          WHERE identity_id = $1 AND action_pattern LIKE 'laddered:%'",
+    )
+    .bind(agent_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap()
+    .get("c");
     assert_eq!(
         count, 0,
         "an auto-approved call should never write a permission_rules row"

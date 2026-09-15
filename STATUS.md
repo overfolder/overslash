@@ -223,6 +223,14 @@
 - Fan-out search per instance, actionable template-vs-instance errors (PR #243); nested OAuth for upstream MCP servers (PR #220); MCP Inspector CORS (PR #232).
 - `pending_mcp_elicitations` is swept in two phases on the existing 60s background loop (issue #600). `mcp_elicitation_reap` cancels `pending`/`claimed` rows whose originator pod died — until they go terminal they keep suppressing auto-call on their approval — and `mcp_elicitation_purge` then deletes terminal rows, which is what bounds the table: `final_response` holds a full `ApprovalResponse` snapshot, `disclosed_fields` included. Both windows derive from the originator's own 300s poll ceiling plus `SWEEP_GRACE_SECS` (default 60), one knob now shared with the `executions` and async orphan graces, so no window can be configured below the ceiling it guards. Both predicates lead with `status`, so they ride `idx_pending_mcp_elicit_status (status, created_at)` rather than seq-scanning.
 
+### Agent self-setup defaults (D-NEXT)
+
+- A first-level agent (`kind = 'agent'`, `depth = 1`) is seeded at creation with four allow rules — `overslash:{manage_services_own,manage_templates_own,manage_connections_own,request_secrets_own}:*` — so the `SKILL.md` "bootstrap a service from a template" flow runs with no approval clicks. `repos::org_bootstrap::bootstrap_agent_in_org` holds both guards (the org flag and the kind/depth test); the REST identity route, MCP enrollment consent, and impersonation provisioning all call it unconditionally.
+- Gated by `orgs.default_agent_self_setup` (migration 117, default `true`), on the existing execution-settings endpoint and surfaced as the **Agent defaults** card on `/org`. Read at creation time only — flipping it never touches an existing agent, and there was no backfill. Disclosed on both agent-creation surfaces (`/agents` create modal, `/oauth/consent` enrollment form).
+- Never widens to the `_share`/`_publish` half. `kernel_update_service` and the by-id branch of `kernel_get_service` gained the ownership guard that previously lived only in the REST route — without it a seeded agent could rebind any non-system instance in the org by id, `url` included.
+- Discoverability shipped alongside: `overslash_search` rows for an un-connected service carry `auth.setup` (the ordered calls that make them callable), the handshake `instructions` and search description say the agent may run those itself, and `credential_missing` / secret-backed `needs_authentication` carry `self_serve` beside `hint_url`.
+- `pending_approval` envelopes carry `next_step` (`get_result` | `call_pending`), so an agent stops guessing and stops hitting `409 execution has already completed`.
+
 ### Not Yet Built
 
 **Launch blockers** — tracked in [TODO.md](TODO.md):

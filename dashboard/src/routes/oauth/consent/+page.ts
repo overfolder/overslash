@@ -50,6 +50,11 @@ export interface ConsentContext {
 	suggested_agent_name: string;
 	parents: ConsentParentOption[];
 	groups: ConsentGroupOption[];
+	/** Org default: a new agent created directly under the user starts with the
+	 *  four `overslash:*_own` self-setup permission rules. Drives the
+	 *  disclosure line on the form — only applies when the chosen parent is the
+	 *  user themselves. */
+	default_agent_self_setup: boolean;
 }
 
 export interface MembershipSummary {

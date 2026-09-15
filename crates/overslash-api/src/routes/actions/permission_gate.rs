@@ -309,6 +309,16 @@ pub(super) async fn enforce_permission_chain(
                             relationship: "self".into(),
                             suggested_tiers: suggest_tiers(&keys),
                             auto_call_on_approve: identity.auto_call_on_approve,
+                            // Same bit, rendered as the call to make. The
+                            // auto-call path wins the execution claim race
+                            // against a replay, so an agent that guesses
+                            // `approval_id` here collects a 409 instead of its
+                            // own result.
+                            next_step: if identity.auto_call_on_approve {
+                                "get_result"
+                            } else {
+                                "call_pending"
+                            },
                             // The merged (SQL-classified) risk when the shape
                             // declares one; verb/http shapes keep the "med"
                             // default risk_class(None) has always produced.

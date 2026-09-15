@@ -362,6 +362,42 @@ pub async fn set_default_deferred_execution(
     Ok(result.rows_affected() > 0)
 }
 
+/// Read the `default_agent_self_setup` org default. When `true` (the column
+/// default), a newly-created *first-level* agent is seeded with the four
+/// `overslash:*_own` self-setup permission rules — see
+/// [`crate::repos::org_bootstrap::bootstrap_agent_in_org`]. Like
+/// `default_deferred_execution`, this is read at identity-creation time only:
+/// flipping it never touches agents that already exist. Returns `None` if the
+/// org doesn't exist.
+pub async fn get_default_agent_self_setup(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT default_agent_self_setup FROM orgs WHERE id = $1",
+        id
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.default_agent_self_setup))
+}
+
+/// Update the `default_agent_self_setup` setting for an org.
+pub async fn set_default_agent_self_setup(
+    pool: &PgPool,
+    id: Uuid,
+    value: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET default_agent_self_setup = $2, updated_at = now() WHERE id = $1",
+        id,
+        value,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// The org-level inputs the action-call pipeline needs, in one round trip.
 ///
 /// Both paths that execute an action (inline `/v1/actions/call` and the
@@ -415,6 +451,7 @@ pub enum ExecutionSettingsUpdate {
     },
     Applied {
         default_deferred_execution: bool,
+        default_agent_self_setup: bool,
         call_timeout_ms: Option<i32>,
         max_call_timeout_ms: Option<i32>,
     },
@@ -422,11 +459,12 @@ pub enum ExecutionSettingsUpdate {
 
 /// Partial-patch the org's execution settings.
 ///
-/// Each field is three-valued — absent, explicit `null`, or a value — which is
-/// why the two timeout columns take a paired `set_*` flag rather than riding a
+/// Each timeout field is three-valued — absent, explicit `null`, or a value —
+/// which is why they ride a nested `Option<Option<i32>>` rather than a
 /// `COALESCE`: `COALESCE` cannot distinguish "leave it alone" from "clear it
 /// back to the deployment default", and clearing is the only way back off an
-/// org-specific timeout.
+/// org-specific timeout. The booleans are plainly two-valued, so `None` there
+/// just means "not mentioned".
 ///
 /// Reads, validates and writes inside one transaction with the org row locked.
 /// The cross-field rule (`call_timeout_ms <= max_call_timeout_ms`) spans a
@@ -434,19 +472,40 @@ pub enum ExecutionSettingsUpdate {
 /// the write would let two concurrent patches — one lowering the maximum, one
 /// raising the default — each pass on stale state and leave the second to trip
 /// the DB `CHECK` as a 500.
+#[derive(Default)]
+pub struct ExecutionSettingsPatch {
+    /// `None` leaves the column alone.
+    pub default_deferred_execution: Option<bool>,
+    /// `None` leaves the column alone.
+    pub default_agent_self_setup: Option<bool>,
+    /// Outer `None` leaves the column alone; `Some(None)` clears it back to the
+    /// deployment default. The nesting is the whole point — see the note above
+    /// about `COALESCE`.
+    pub call_timeout_ms: Option<Option<i32>>,
+    /// Same three-valued shape as `call_timeout_ms`.
+    pub max_call_timeout_ms: Option<Option<i32>>,
+}
+
 pub async fn update_execution_settings(
     pool: &PgPool,
     id: Uuid,
-    default_deferred_execution: Option<bool>,
-    set_call_timeout: bool,
-    call_timeout_ms: Option<i32>,
-    set_max_call_timeout: bool,
-    max_call_timeout_ms: Option<i32>,
+    patch: ExecutionSettingsPatch,
 ) -> Result<ExecutionSettingsUpdate, sqlx::Error> {
+    let ExecutionSettingsPatch {
+        default_deferred_execution,
+        default_agent_self_setup,
+        call_timeout_ms,
+        max_call_timeout_ms,
+    } = patch;
+    let (set_call_timeout, call_timeout_ms) =
+        (call_timeout_ms.is_some(), call_timeout_ms.flatten());
+    let (set_max_call_timeout, max_call_timeout_ms) =
+        (max_call_timeout_ms.is_some(), max_call_timeout_ms.flatten());
+
     let mut tx = pool.begin().await?;
 
     let Some(current) = sqlx::query!(
-        "SELECT default_deferred_execution, call_timeout_ms, max_call_timeout_ms
+        "SELECT default_deferred_execution, default_agent_self_setup, call_timeout_ms, max_call_timeout_ms
            FROM orgs WHERE id = $1 FOR UPDATE",
         id,
     )
@@ -467,6 +526,7 @@ pub async fn update_execution_settings(
         current.max_call_timeout_ms
     };
     let next_deferred = default_deferred_execution.unwrap_or(current.default_deferred_execution);
+    let next_self_setup = default_agent_self_setup.unwrap_or(current.default_agent_self_setup);
 
     if let (Some(call), Some(max)) = (next_call, next_max)
         && call > max
@@ -481,12 +541,14 @@ pub async fn update_execution_settings(
     sqlx::query!(
         "UPDATE orgs
             SET default_deferred_execution = $2,
-                call_timeout_ms = $3,
-                max_call_timeout_ms = $4,
+                default_agent_self_setup = $3,
+                call_timeout_ms = $4,
+                max_call_timeout_ms = $5,
                 updated_at = now()
           WHERE id = $1",
         id,
         next_deferred,
+        next_self_setup,
         next_call,
         next_max,
     )
@@ -496,6 +558,7 @@ pub async fn update_execution_settings(
 
     Ok(ExecutionSettingsUpdate::Applied {
         default_deferred_execution: next_deferred,
+        default_agent_self_setup: next_self_setup,
         call_timeout_ms: next_call,
         max_call_timeout_ms: next_max,
     })

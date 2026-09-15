@@ -1199,6 +1199,30 @@ pub async fn owner_user_id(pool: &PgPool, org_id: Uuid) -> Uuid {
 /// Bootstrap org + identity + identity-bound API key.
 /// Returns (org_id, identity_id, agent_api_key, org_admin_api_key).
 pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid, String, String) {
+    bootstrap_org_identity_inner(base, client, true).await
+}
+
+/// [`bootstrap_org_identity`] with the org's `default_agent_self_setup` turned
+/// off *before* the agent is created, so the returned agent holds **zero**
+/// permission rules.
+///
+/// For the handful of tests whose subject is the permission gate itself — they
+/// assert that an ungranted platform call files an approval, which is only
+/// observable on an agent that was never seeded. Everything else should keep
+/// using `bootstrap_org_identity` and run against the production default, so
+/// the suite stays able to notice this feature over-granting.
+pub async fn bootstrap_org_identity_no_seed(
+    base: &str,
+    client: &Client,
+) -> (Uuid, Uuid, String, String) {
+    bootstrap_org_identity_inner(base, client, false).await
+}
+
+async fn bootstrap_org_identity_inner(
+    base: &str,
+    client: &Client,
+    seed_agent_permissions: bool,
+) -> (Uuid, Uuid, String, String) {
     let org: Value = client
         .post(format!("{base}/v1/orgs"))
         .json(&json!({"name": "TestOrg", "slug": format!("test-{}", Uuid::new_v4())}))
@@ -1236,6 +1260,18 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .await
         .unwrap();
     let user_id: Uuid = user_ident["id"].as_str().unwrap().parse().unwrap();
+
+    // Must happen before the agent row exists: the seed runs at creation time
+    // and is never retroactive, so flipping this afterwards would be a no-op.
+    if !seed_agent_permissions {
+        client
+            .patch(format!("{base}/v1/orgs/{org_id}/execution-settings"))
+            .header("Authorization", format!("Bearer {org_api_key}"))
+            .json(&json!({"default_agent_self_setup": false}))
+            .send()
+            .await
+            .unwrap();
+    }
 
     let ident: Value = client
         .post(format!("{base}/v1/identities"))

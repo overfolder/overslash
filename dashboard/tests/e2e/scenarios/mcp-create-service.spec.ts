@@ -52,8 +52,11 @@ test('agent with manage_services_own creates a service from a shipped template v
 	const memberSession = await login('member');
 
 	// The agent is owned by the (non-admin) member user. inheritPermissions:
-	// false strips parent inheritance; the explicit permission rule below is
-	// the only thing letting the agent call `create_service`.
+	// false strips parent inheritance. A first-level agent is now also seeded
+	// with `manage_services_own` at creation (org flag `default_agent_self_setup`,
+	// default on), so the explicit grant below is belt-and-braces — kept on
+	// purpose so this spec asserts the permission, not the org default, and
+	// keeps passing against a stack where an admin turned the default off.
 	const agent = await seedAgent(memberSession, {
 		name: `mcp-puppet-create-svc-${Date.now()}`,
 		inheritPermissions: false
@@ -143,7 +146,7 @@ test('agent with manage_services_own creates a service from a shipped template v
 	expect(myselfGrant.access_level).toBe('admin');
 	expect(myselfGrant.auto_approve_level).toBe('read');
 
-	// Permission split assertion: the agent has only `manage_services_own`. The
+	// Permission split assertion: the agent holds the `_own` half only. The
 	// "share" half (granting to non-Myself groups) requires admin and is the
 	// social action — see docs/design/agent-self-management.md §1. Try to grant
 	// the service to a freshly-created non-system group; the agent must be

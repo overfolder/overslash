@@ -73,6 +73,12 @@ pub(super) struct ConsentContextResponse {
     suggested_agent_name: String,
     parents: Vec<ConsentParentOption>,
     groups: Vec<ConsentGroupOption>,
+    /// The org's `default_agent_self_setup`. Drives one line of disclosure on
+    /// the consent card: this is the screen where a person authorizes a brand-
+    /// new agent, so it is where a default-on privilege grant has to be named.
+    /// Only meaningful when the selected parent is the user themselves — a
+    /// deeper parent yields a depth-2 row, which is never seeded.
+    default_agent_self_setup: bool,
 }
 
 #[derive(Deserialize)]
@@ -197,6 +203,11 @@ pub(super) async fn consent_context(
     )
     .await?;
 
+    let default_agent_self_setup =
+        overslash_db::repos::org::get_default_agent_self_setup(state.db(&ext), pending.org_id)
+            .await?
+            .unwrap_or(true);
+
     let suggested_agent_name = client
         .client_name
         .clone()
@@ -307,6 +318,7 @@ pub(super) async fn consent_context(
         suggested_agent_name,
         parents,
         groups,
+        default_agent_self_setup,
     }))
 }
 
@@ -535,6 +547,18 @@ pub(super) async fn consent_finish(
                 parent.depth + 1,
                 user.id,
                 body.inherit_permissions,
+            )
+            .await?;
+
+            // Seed the self-setup rules when this enrollment produced a
+            // first-level agent. Unconditional by design: the parent above may
+            // be the user *or* one of their existing agents, and the second
+            // case mints a `kind = 'agent'` row at depth 2 that must not be
+            // seeded — `bootstrap_agent_in_org` makes that call, not this site.
+            overslash_db::repos::org_bootstrap::bootstrap_agent_in_org(
+                state.db(&ext),
+                pending.org_id,
+                agent.id,
             )
             .await?;
 

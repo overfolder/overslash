@@ -294,6 +294,16 @@ pub(super) struct ExecutionSettingsResponse {
     /// approval. Existing agents are not touched when this flag flips;
     /// per-agent overrides win for them. Default: `false` (auto-call on).
     default_deferred_execution: bool,
+    /// When `true` (the default), a newly-created *first-level* agent — one
+    /// created directly under a user — is seeded with allow rules for the four
+    /// `overslash:*_own` self-setup anchors: `manage_services_own`,
+    /// `manage_templates_own`, `manage_connections_own` and
+    /// `request_secrets_own`. It lets an agent stand up the services it needs
+    /// without an approval round-trip per call, and never includes the
+    /// `_share` / `_publish` half of any of those splits. Like
+    /// `default_deferred_execution`, it applies at identity-creation time
+    /// only: flipping it never touches an agent that already exists.
+    default_agent_self_setup: bool,
     /// Default upstream timeout for action calls in this org, in ms.
     /// `null` inherits the deployment default (`CALL_TIMEOUT_MS`).
     /// A template action or an individual call still overrides it.
@@ -315,6 +325,8 @@ pub(super) struct ExecutionSettingsResponse {
 pub(super) struct PatchExecutionSettingsRequest {
     #[serde(default)]
     default_deferred_execution: Option<bool>,
+    #[serde(default)]
+    default_agent_self_setup: Option<bool>,
     #[serde(default, deserialize_with = "double_option")]
     call_timeout_ms: Option<Option<i32>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -345,11 +357,15 @@ pub(super) async fn get_execution_settings(
     let value = overslash_db::repos::org::get_default_deferred_execution(state.db(&ext), id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    let self_setup = overslash_db::repos::org::get_default_agent_self_setup(state.db(&ext), id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
     let timeouts = overslash_db::repos::org::get_call_settings(state.db(&ext), id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
     Ok(Json(ExecutionSettingsResponse {
         default_deferred_execution: value,
+        default_agent_self_setup: self_setup,
         call_timeout_ms: timeouts.call_timeout_ms,
         max_call_timeout_ms: timeouts.max_call_timeout_ms,
     }))
@@ -392,16 +408,17 @@ pub(super) async fn patch_execution_settings(
     let outcome = overslash_db::repos::org::update_execution_settings(
         state.db(&ext),
         id,
-        req.default_deferred_execution,
-        req.call_timeout_ms.is_some(),
-        req.call_timeout_ms.flatten(),
-        req.max_call_timeout_ms.is_some(),
-        req.max_call_timeout_ms.flatten(),
+        overslash_db::repos::org::ExecutionSettingsPatch {
+            default_deferred_execution: req.default_deferred_execution,
+            default_agent_self_setup: req.default_agent_self_setup,
+            call_timeout_ms: req.call_timeout_ms,
+            max_call_timeout_ms: req.max_call_timeout_ms,
+        },
     )
     .await?;
 
     use overslash_db::repos::org::ExecutionSettingsUpdate;
-    let (next_deferred, next_call, next_max) = match outcome {
+    let (next_deferred, next_self_setup, next_call, next_max) = match outcome {
         ExecutionSettingsUpdate::NotFound => {
             return Err(AppError::NotFound("org not found".into()));
         }
@@ -417,10 +434,12 @@ pub(super) async fn patch_execution_settings(
         }
         ExecutionSettingsUpdate::Applied {
             default_deferred_execution,
+            default_agent_self_setup,
             call_timeout_ms,
             max_call_timeout_ms,
         } => (
             default_deferred_execution,
+            default_agent_self_setup,
             call_timeout_ms,
             max_call_timeout_ms,
         ),
@@ -435,6 +454,7 @@ pub(super) async fn patch_execution_settings(
             resource_id: Some(id),
             detail: serde_json::json!({
                 "default_deferred_execution": next_deferred,
+                "default_agent_self_setup": next_self_setup,
                 "call_timeout_ms": next_call,
                 "max_call_timeout_ms": next_max,
             }),
@@ -445,6 +465,7 @@ pub(super) async fn patch_execution_settings(
 
     Ok(Json(ExecutionSettingsResponse {
         default_deferred_execution: next_deferred,
+        default_agent_self_setup: next_self_setup,
         call_timeout_ms: next_call,
         max_call_timeout_ms: next_max,
     }))

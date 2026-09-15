@@ -14,6 +14,7 @@
 		type CreateIdentityRequest
 	} from '$lib/identityApi';
 	import type {
+		ExecutionSettings,
 		Identity,
 		McpConnection,
 		PermissionRule
@@ -98,6 +99,10 @@
 	let createOpen = $state(false);
 	let createParentId = $state<string | null>(null);
 	let createInherit = $state(false);
+	// Org default for the self-setup seed, so the create form can disclose what
+	// a new first-level agent will be born holding. Best-effort: a failed read
+	// leaves it null and the form simply says nothing rather than guessing.
+	let agentSelfSetupDefault = $state<boolean | null>(null);
 	let kebabFor = $state<string | null>(null);
 	let moveOpen = $state(false);
 	// Opt-in reveal of archived identities in the tree (hidden by default).
@@ -142,6 +147,7 @@
 	});
 
 	const meIdentityId = $derived(($page.data as { user?: { identity_id?: string } })?.user?.identity_id ?? null);
+	const meOrgId = $derived(($page.data as { user?: { org_id?: string } })?.user?.org_id ?? null);
 
 	const isAdmin = $derived(
 		($page.data as { user?: { is_org_admin?: boolean } })?.user?.is_org_admin === true
@@ -193,11 +199,25 @@
 			const [ids, apr] = await Promise.all([listIdentities(), listApprovals()]);
 			identities = ids;
 			approvals = apr;
+			void loadAgentSelfSetupDefault();
 			if (selectedId && !ids.find((i) => i.id === selectedId)) selectedId = null;
 		} catch (e) {
 			loadError = e instanceof Error ? e.message : String(e);
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function loadAgentSelfSetupDefault() {
+		if (!meOrgId) return;
+		try {
+			const settings = await session.get<ExecutionSettings>(
+				`/v1/orgs/${meOrgId}/execution-settings`
+			);
+			agentSelfSetupDefault = settings.default_agent_self_setup;
+		} catch {
+			// Disclosure is a nicety; never let it break the page.
+			agentSelfSetupDefault = null;
 		}
 	}
 
@@ -731,7 +751,13 @@
 							<thead>
 								<tr>
 									<th>Rule</th>
-									<th>Source</th>
+									<!-- "Effect", not "Source": this column renders `effect`, and the
+									     table carries no provenance. It used to say "Source" and print
+									     "Approval" for every allow rule — a plausible guess back when an
+									     allow could only come from an approval or an admin grant, and
+									     plainly wrong now that a first-level agent is seeded with four
+									     rules that came from neither. -->
+									<th>Effect</th>
 									<th>Expires</th>
 									<th></th>
 								</tr>
@@ -750,7 +776,7 @@
 											{/if}
 										</td>
 										<td>
-											<span class="pill pill-source">{r.effect === 'allow' ? 'Approval' : r.effect}</span>
+											<span class="pill pill-source">{r.effect}</span>
 										</td>
 										<td>
 											<ExpiryControl
@@ -1115,6 +1141,14 @@
 					/>
 					<span id="create-inherit-label">Inherits Permissions — inherit parent's current and future rules</span>
 				</div>
+				{#if agentSelfSetupDefault && identities.find((i) => i.id === createParentId)?.kind === 'user'}
+					<p class="create-note">
+						This agent will start with permission to set up its own services —
+						create instances from templates, author templates, start OAuth
+						connections, and request secrets. Sharing any of them still needs an
+						admin. Revocable below once created.
+					</p>
+				{/if}
 				<div class="modal-actions">
 					<button type="button" class="btn-secondary" onclick={() => (createOpen = false)}>Cancel</button>
 					<button type="submit" class="btn-new">Create Agent</button>
@@ -1730,6 +1764,15 @@
 		font-weight: 400;
 		font-size: 14px;
 		color: var(--color-text-secondary);
+	}
+	.modal .create-note {
+		margin: 0;
+		font: var(--text-body-sm);
+		color: var(--color-text-secondary);
+		background: var(--color-bg);
+		border: 1px solid var(--color-border-subtle);
+		border-radius: var(--radius-sm);
+		padding: 8px 10px;
 	}
 	.modal-actions {
 		display: flex;

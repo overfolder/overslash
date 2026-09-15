@@ -158,8 +158,12 @@ async fn list_templates_with_permission_returns_array() {
 async fn permission_key_uses_anchor_not_action_key() {
     let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_registry(pool, None).await;
+    // `_no_seed`: this test's subject *is* an agent with no rules, and a
+    // first-level agent is otherwise born holding
+    // `overslash:manage_templates_own:*`, which is exactly the key whose
+    // absence produces the approval being inspected here.
     let (_org_id, _agent_id, agent_key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
 
     // No grant — we want the approval bubble.
     let resp = call(

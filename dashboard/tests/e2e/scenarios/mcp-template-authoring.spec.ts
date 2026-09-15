@@ -8,7 +8,7 @@
 //      includes that template at `tier:'user'`.
 //   3. `overslash_read(service:'overslash', action:'get_template',
 //        params:{key})` returns the same row.
-//   4. The same agent — holding only `manage_templates_own` — gets a
+//   4. The same agent — holding the `_own` half only — gets a
 //      403 when it tries to publish org-wide
 //      (`create_template { user_level:false }`). Verifies the
 //      `manage_templates_own` vs `manage_templates_publish` split.

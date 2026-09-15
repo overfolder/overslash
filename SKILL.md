@@ -68,8 +68,16 @@ See `SPEC.md` for the full API reference.
 ## Bootstrapping a service from a template
 
 When `overslash_search` returns a useful **template** but no live `service`,
-you can instantiate it yourself — no dashboard click needed (provided your
-identity holds `overslash:manage_services_own:*`).
+you can instantiate it yourself — no dashboard click needed. A first-level
+agent (one created directly under a person) holds
+`overslash:manage_services_own:*` by default, so this normally just works; if
+your org turned that default off the call returns `pending_approval` instead
+and your user approves once.
+
+An un-connected row tells you what to do next: its `auth.setup` array lists the
+calls, in order, that turn it into something callable. Run them yourself rather
+than sending your user to a dashboard — the only thing they have to do is open
+the one URL the credential step returns.
 
 **Step 1 — discover.**
 
@@ -143,7 +151,8 @@ through the standard approval flow described below.
 
 If `overslash_search` returns **neither** a live `service` **nor** a `template`
 for the API you need, author the template yourself, then instantiate it as in
-the section above. Requires your identity to hold `overslash:manage_templates_own:*`.
+the section above. Needs `overslash:manage_templates_own:*`, which a
+first-level agent also holds by default.
 
 A service is an **OpenAPI 3.1 YAML** document plus a few `x-overslash-*` vendor
 extensions that tell the gateway how to gate and authenticate each action (the
@@ -273,11 +282,16 @@ the required secret is absent, calling the action returns a `400`:
 { "error": "credential_missing",
   "secret_name": "RESEND_API_KEY",
   "service": "resend",
+  "self_serve": [{ "action": "request_secret",
+                   "params": { "secret_name": "RESEND_API_KEY" } }],
   "hint_url": "https://app.overslash.com/secrets?name=RESEND_API_KEY" }
 ```
 
 Mint a one-time provisioning link with the `request_secret` platform action and
-surface it to the user — they paste the value on the page; **you never see it**:
+surface it to the user — they paste the value on the page; **you never see it**.
+The `credential_missing` body above carries this call ready-made in its
+`self_serve` field, and a first-level agent holds
+`overslash:request_secrets_own:*` by default, so you can make it without asking:
 
 ```
 overslash_call {
@@ -303,6 +317,8 @@ When `overslash_call` hits a permission gap it does not execute — it returns:
   "status": "pending_approval",
   "approval_id": "abc-123",
   "approval_url": "https://app.overslash.com/approvals/abc-123",
+  "auto_call_on_approve": true,
+  "next_step": "get_result",
   "expires_at": "…"
 }
 ```
@@ -324,7 +340,10 @@ It returns an array of events. The two that concern you here:
 
 Which one you get depends on your identity's `auto_call_on_approve` setting. It
 is **on by default**, meaning the gateway runs the action for you the moment it
-is approved and you collect the output afterwards.
+is approved and you collect the output afterwards. You do not have to work this
+out: the `pending_approval` envelope above carries `next_step`, either
+`"get_result"` or `"call_pending"` — both are platform action keys, so the
+field is the call to make.
 
 An empty array means nothing has changed yet — sleep briefly and poll again.
 The approval itself expires, so this is not an infinite wait.
