@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/overfolder/overslash/compare/v0.10.0...v0.10.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* **dashboard:** route /oauth/* on org subdomains to the API ([#609](https://github.com/overfolder/overslash/issues/609)) ([cb105b8](https://github.com/overfolder/overslash/commit/cb105b8a7133b97f0e7de4b38365d14faadd55ee))
+
 ## [0.10.0](https://github.com/overfolder/overslash/compare/v0.9.0...v0.10.0) (2026-09-14)
 
 
