@@ -431,12 +431,12 @@ fn split_links(value: &str) -> Vec<&str> {
 /// down, and which `check_pagination` has already refused unless the action
 /// declares it.
 ///
-/// `None` means the continuation was found and refused — empty, past the
-/// ceiling, or the one just spent. That is a wholesale answer rather than a
-/// missing key, for the reason [`NextStyle::Cursor`] bails out of
-/// `continuation_params` entirely in the same situation: a marker offering the
-/// *other* keys the next URL happened to change, minus the cursor, is a marker
-/// whose `next` re-issues the page just fetched.
+/// `None` means the declared continuation is not there to be had — absent from
+/// the URL, empty, past the ceiling, or the one just spent. That is a wholesale
+/// answer rather than a missing key, for the reason [`NextStyle::Cursor`] bails
+/// out of `continuation_params` entirely in the same situation: a marker
+/// offering the *other* keys the next URL happened to change, minus the cursor,
+/// is a marker whose `next` re-issues the page just fetched.
 fn declared_query_params(
     url: &str,
     sent: &HashMap<String, Value>,
@@ -444,8 +444,15 @@ fn declared_query_params(
 ) -> Option<Map<String, Value>> {
     let mut out = Map::new();
     let Some((_, query)) = url.split_once('?') else {
-        return Some(out);
+        // No query string at all, so a declared continuation has nowhere to
+        // be. Same answer as the post-loop check below, reached earlier.
+        return if continuation.is_some() {
+            None
+        } else {
+            Some(out)
+        };
     };
+    let mut saw_continuation = false;
     for pair in query.split('&') {
         let Some((k, v)) = pair.split_once('=') else {
             continue;
@@ -486,6 +493,7 @@ fn declared_query_params(
             if sent.get(&k) == Some(&value) {
                 return None;
             }
+            saw_continuation = true;
             out.insert(k, value);
             continue;
         }
@@ -506,6 +514,24 @@ fn declared_query_params(
         if &value != previous {
             out.insert(k, value);
         }
+    }
+
+    // A next URL that never names the declared continuation is not a next
+    // page, whatever else it changed. The spec having a `param` is the
+    // template author saying *this* key is what advances the collection, so
+    // its absence is the same statement as the empty value handled above --
+    // and the two must not answer differently, or `?query=x&next=` stops the
+    // traversal while the strictly emptier `?query=x` composes a marker. That
+    // marker would carry someone else's delta and no continuation: replayed,
+    // it re-issues the page just fetched, because from page two on the caller
+    // still holds the spent token in its own arguments.
+    //
+    // Only when a `param` was declared. A bare `link` reading the RFC 8288
+    // header names no continuation key -- GitHub's next URL advances through
+    // `page`, an ordinary declared parameter -- and demanding one there would
+    // stop every header-style traversal on page one.
+    if continuation.is_some() && !saw_continuation {
+        return None;
     }
     Some(out)
 }
