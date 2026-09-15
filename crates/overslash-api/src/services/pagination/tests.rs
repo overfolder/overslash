@@ -791,9 +791,11 @@ fn a_null_body_next_is_the_last_page() {
     );
 }
 
-/// Same ceiling a cursor gets, and for the same reason.
+/// The ceiling is on the key that reaches the marker, not on the URL it came
+/// out of. An implausibly long *continuation* is refused, for the cursor arm's
+/// reason: past that it is a payload wearing a cursor's name.
 #[test]
-fn an_implausibly_long_body_next_url_is_refused_whole() {
+fn an_implausibly_long_lifted_continuation_is_refused() {
     let url = format!("/api/v3/search/stories?next={}", "x".repeat(2000));
     assert_eq!(
         next_page(
@@ -805,6 +807,44 @@ fn an_implausibly_long_body_next_url_is_refused_whole() {
         ),
         json!({"has_more": false})
     );
+}
+
+/// …but a *long URL* carrying a short continuation still pages. Shortcut
+/// echoes the caller's whole search expression back inside its next URL, so a
+/// ceiling on the URL would stop a traversal because the query was wordy —
+/// reporting a partial answer as a complete one.
+#[test]
+fn a_long_next_url_with_a_short_continuation_still_pages() {
+    let long_query = "x".repeat(4000);
+    let sent = sent(&[
+        ("query", json!(long_query.clone())),
+        ("page_size", json!(25)),
+    ]);
+    let url = format!("/api/v3/search/stories?query={long_query}&page_size=25&next=tok");
+    let marker = next_page(
+        &body_link_spec(),
+        None,
+        None,
+        &sent,
+        &result(200, json!({"data": [{"id": 1}], "next": url}), &[]),
+    );
+    assert_eq!(marker["next"]["params"], json!({"next": "tok"}));
+}
+
+/// The header arm never had a ceiling and must not have grown one: GitHub's
+/// `Link` URLs carry whatever query the caller sent.
+#[test]
+fn a_long_link_header_url_still_pages() {
+    let long_q = "x".repeat(4000);
+    let link = format!("<https://api.github.com/s?q={long_q}&page=2>; rel=\"next\"");
+    let marker = next_page(
+        &link_spec(),
+        None,
+        None,
+        &sent(&[("page", json!(1)), ("q", json!(long_q))]),
+        &result(200, json!([]), &[("link", &link)]),
+    );
+    assert_eq!(marker["next"]["params"], json!({"page": 2}));
 }
 
 /// `from` only redirects where the URL is read from. With none, `link` is the

@@ -350,9 +350,11 @@ pub(super) const READS: &[(Ext, &[Pos])] = &[
     (Ext::Upload, &[Pos::McpTool, Pos::McpToolDiscovered]),
     // actions.rs · mcp.rs. Wherever an action is authored, minus the platform
     // runtime: a platform action answers from this process, so there is no
-    // upstream page to be on. `NextStyle::Link` is refused at `Pos::McpTool`
-    // for a narrower reason — an MCP tool result carries no response headers,
-    // so a Link-styled continuation there would parse and then find nothing.
+    // upstream page to be on. A header-form `NextStyle::Link` is refused at
+    // `Pos::McpTool` for a narrower reason — an MCP tool result carries no
+    // response headers, so it would parse and then find nothing. `link` with
+    // `from` is allowed there: it reads the next URL out of the tool's own
+    // payload, the same projection a `cursor` spec's `from` gets.
     (
         Ext::Pagination,
         &[Pos::Operation, Pos::McpTool, Pos::McpToolDiscovered],

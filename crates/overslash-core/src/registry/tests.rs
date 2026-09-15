@@ -701,8 +701,9 @@ fn shipped_list_actions_declare_pagination() {
         "telegram:search_messages_globally",
         "telegram:get_messages",
         "telegram:find_chats",
-        // Shortcut pages its two search endpoints and nothing else. Every
-        // one of these takes no page size and mints no continuation: the
+        // Shortcut pages three actions — both searches and the `/epics/
+        // paginated` endpoint — and offers nothing to page on the rest.
+        // Every one of these takes no page size and mints no continuation: the
         // workspace-wide sets (workflows, members, teams, labels,
         // iterations) are tens of rows by construction, and the rest are
         // bounded by the parent entity named in the path — one epic's

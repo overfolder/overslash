@@ -260,8 +260,10 @@ pub(crate) struct PaginationSummary {
     /// The largest page the upstream documents.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) page_size_max: Option<i64>,
-    /// The parameter that carries the continuation. Absent for `link`, which
-    /// takes the whole next URL from a response header.
+    /// The parameter that carries the continuation. On `link` it is the key
+    /// lifted out of the next URL that page one never sent — present when the
+    /// URL arrives in the response body, absent when the action relies on the
+    /// RFC 8288 header naming its own parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) next_param: Option<String>,
 }

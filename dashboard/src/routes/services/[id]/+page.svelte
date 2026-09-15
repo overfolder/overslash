@@ -147,8 +147,12 @@
 				: `bounded by ${p.page_size_param}`;
 			parts.push(p.page_size_max ? `${bound} (max ${p.page_size_max})` : bound);
 		}
+		// `link` says the upstream names a whole next URL; `next_param` says
+		// where that URL came from. With one, it was in the response body and
+		// the caller forwards that key; without, it was a Link header, which
+		// names its own parameters and leaves the caller nothing to carry.
 		parts.push(
-			p.style === 'link'
+			p.style === 'link' && !p.next_param
 				? 'the next page arrives as a Link header'
 				: p.next_param
 					? `follow it with ${p.next_param}`

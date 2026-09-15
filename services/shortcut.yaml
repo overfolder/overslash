@@ -290,14 +290,20 @@ paths:
           max_chars: 2000
         - label: Workflow state
           filter: .body.workflow_state_id // empty
+        # `null` here means "unfile from its epic", which is a change worth
+        # showing — and one `//` would hide.
         - label: Epic
-          filter: .body.epic_id // empty
+          filter: 'if .body | has("epic_id") then (.body.epic_id // "none") else empty end'
         - label: Iteration
-          filter: .body.iteration_id // empty
+          filter: 'if .body | has("iteration_id") then (.body.iteration_id // "none") else empty end'
         - label: Owners
-          filter: '.body.owner_ids // empty | join(", ")'
+          filter: '.body.owner_ids // [] | select(length > 0) | join(", ")'
+        # `false` is the interesting half of this field — it un-archives —
+        # and jq's `//` yields its right-hand side for `false` as well as for
+        # `null`, so `// empty` would disclose nothing for exactly the write a
+        # reviewer most needs to see. Test presence instead of truthiness.
         - label: Archived
-          filter: .body.archived // empty
+          filter: 'if .body | has("archived") then .body.archived else empty end'
       parameters:
         - name: story_id
           in: path
@@ -408,14 +414,16 @@ paths:
           max_chars: 2000
         - label: Type
           filter: .body.story_type // empty
+        # `null` here means "unfile from its epic", which is a change worth
+        # showing — and one `//` would hide.
         - label: Epic
-          filter: .body.epic_id // empty
+          filter: 'if .body | has("epic_id") then (.body.epic_id // "none") else empty end'
         - label: Iteration
-          filter: .body.iteration_id // empty
+          filter: 'if .body | has("iteration_id") then (.body.iteration_id // "none") else empty end'
         - label: Team
           filter: .body.group_id // empty
         - label: Owners
-          filter: '.body.owner_ids // empty | join(", ")'
+          filter: '.body.owner_ids // [] | select(length > 0) | join(", ")'
       requestBody:
         required: true
         content:
@@ -463,6 +471,11 @@ paths:
                 deadline:
                   type: string
                   description: Due date, ISO 8601.
+                parent_story_id:
+                  type: integer
+                  description: >-
+                    Make this a sub-story of the given story. Unlike a task, a
+                    sub-story has its own state, owners and estimate.
                 tasks:
                   type: array
                   description: 'Sub-tasks as [{"description": "..."}].'
@@ -597,8 +610,10 @@ paths:
           primary: true
           filter: .body.description
           max_chars: 500
+        # Presence, not truthiness — see the note on `archived` above:
+        # un-ticking a task sends `false`, which `//` would swallow.
         - label: Complete
-          filter: .body.complete // empty
+          filter: 'if .body | has("complete") then .body.complete else empty end'
       parameters:
         - name: story_id
           in: path
@@ -646,8 +661,10 @@ paths:
           primary: true
           filter: .body.description // empty
           max_chars: 500
+        # Presence, not truthiness — see the note on `archived` above:
+        # un-ticking a task sends `false`, which `//` would swallow.
         - label: Complete
-          filter: .body.complete // empty
+          filter: 'if .body | has("complete") then .body.complete else empty end'
       parameters:
         - name: story_id
           in: path
@@ -798,8 +815,12 @@ paths:
           max_chars: 2000
         - label: State
           filter: .body.state // empty
+        # `false` is the interesting half of this field — it un-archives —
+        # and jq's `//` yields its right-hand side for `false` as well as for
+        # `null`, so `// empty` would disclose nothing for exactly the write a
+        # reviewer most needs to see. Test presence instead of truthiness.
         - label: Archived
-          filter: .body.archived // empty
+          filter: 'if .body | has("archived") then .body.archived else empty end'
       parameters:
         - name: epic_id
           in: path
@@ -983,7 +1004,7 @@ paths:
           filter: .body.description // empty
           max_chars: 1000
         - label: Teams
-          filter: '.body.group_ids // empty | join(", ")'
+          filter: '.body.group_ids // [] | select(length > 0) | join(", ")'
       requestBody:
         required: true
         content:
@@ -1048,6 +1069,17 @@ paths:
   # The id sources every write action above refers to. All four are small,
   # workspace-wide sets that Shortcut returns whole: no page size, no cursor,
   # nothing to page.
+  /api/v3/epic-workflow:
+    get:
+      operationId: get_epic_workflow
+      summary: Get the epic workflow and its states
+      risk: read
+      description: >-
+        The workspace's epic workflow with its states in order. This is where
+        `epic_state_id` comes from — the id an epic is moved to in a workspace
+        that has customised its epic states beyond the default to do / in
+        progress / done that `state` accepts. One workflow per workspace, so
+        there is nothing to page.
   /api/v3/workflows:
     get:
       operationId: list_workflows

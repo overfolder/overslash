@@ -250,17 +250,30 @@ fn continuation_params(
             // the RFC 8288 header. Either way what comes back is a URL, and the
             // same extraction runs over it.
             let url = match spec.next.from.as_ref() {
-                Some(path) => scalar(dotted(body, path)?)?,
+                Some(path) => {
+                    let url = scalar(dotted(body, path)?)?;
+                    // An upstream at the end of a collection commonly sends the
+                    // key as an empty string rather than omitting it — "no more
+                    // pages" spelled awkwardly, not a URL. (The header arm needs
+                    // no such check: `link_next` only returns a URL it found.)
+                    if url.is_empty() {
+                        return None;
+                    }
+                    url
+                }
                 None => link_next(result.headers.iter())?,
             };
-            // Same ceiling as a cursor, for the same reason: past this it is
-            // not a continuation, it is a payload wearing one's name. An
-            // upstream at the end of a collection commonly sends the key as an
-            // empty string rather than omitting it — "no more pages" spelled
-            // awkwardly, not a URL.
-            if url.is_empty() || url.chars().count() > MAX_CURSOR_VALUE_CHARS {
-                return None;
-            }
+            // Deliberately no length ceiling on the URL itself, in either arm.
+            // `MAX_CURSOR_VALUE_CHARS` bounds a value that is *carried into the
+            // marker*; a next URL is parsed and thrown away, and only the keys
+            // lifted out of it survive — so the cap belongs on those, and
+            // `declared_query_params` applies it there. Capping the URL would
+            // have punished exactly the callers this style serves: Shortcut
+            // echoes the caller's whole percent-encoded search expression back
+            // inside its next URL, so a long-but-legitimate `query` would push
+            // it past any ceiling and stop the traversal with `has_more: false`
+            // — a partial answer that reads as a complete one, which is the
+            // failure this module exists to end.
             params = declared_query_params(&url, sent, spec.next.param.as_deref());
             if params.is_empty() {
                 return None;
@@ -438,7 +451,18 @@ fn declared_query_params(
             // declaration names: it appears for the first time on page two by
             // definition, so requiring it to have been sent would be requiring
             // the cursor to predate itself.
-            if allow_unsent == Some(k.as_str()) && !v.is_empty() {
+            //
+            // This is the one value here that reaches the marker without the
+            // caller having chosen it, so it carries the cursor arm's ceiling:
+            // past that it is not a continuation, it is a payload wearing one's
+            // name. It also stays a string rather than being parsed like the
+            // branch below, and for the reason that branch cannot apply — there
+            // is no previously-sent value to take a type from. `coerce_args`
+            // parses it back on replay if the parameter is numeric.
+            if allow_unsent == Some(k.as_str())
+                && !v.is_empty()
+                && v.chars().count() <= MAX_CURSOR_VALUE_CHARS
+            {
                 out.insert(k, json!(v));
             }
             continue;

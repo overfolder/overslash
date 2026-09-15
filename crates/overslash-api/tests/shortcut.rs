@@ -15,10 +15,6 @@
 //! The real-workspace test at the bottom is `#[ignore]`d and needs
 //! `SHORTCUT_TEST_API_TOKEN` (Settings → API Tokens). It only reads.
 
-// Mirrors metabase.rs: the mock records requests with runtime-checked shapes
-// and there is nothing typed to assert against.
-#![allow(clippy::disallowed_methods)]
-
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -75,6 +71,7 @@ fn shortcut_yaml_parses() {
         "get_iteration",
         "create_iteration",
         "list_iteration_stories",
+        "get_epic_workflow",
         "list_workflows",
         "list_members",
         "get_current_member",
@@ -86,7 +83,7 @@ fn shortcut_yaml_parses() {
             "missing action '{action}'"
         );
     }
-    assert_eq!(svc.actions.len(), 28, "curated surface changed size");
+    assert_eq!(svc.actions.len(), 29, "curated surface changed size");
 
     // Risk classes are what the approval chain gates on, so the destructive
     // one is asserted by name rather than left to the method default.

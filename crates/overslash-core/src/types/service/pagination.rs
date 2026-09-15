@@ -93,8 +93,8 @@ pub struct PageSize {
 pub struct NextSpec {
     pub style: NextStyle,
     /// The request parameter the continuation value goes into. Required for
-    /// every style but [`NextStyle::Link`], which carries a whole URL and
-    /// therefore names its own parameters.
+    /// [`NextStyle::Cursor`], [`NextStyle::Offset`] and [`NextStyle::Page`],
+    /// each of which has exactly one value to place.
     ///
     /// Optional on `link`, where it means something narrower: the one query key
     /// that may be lifted out of the next URL *although the call just made did
@@ -145,8 +145,9 @@ pub enum NextStyle {
     /// `/api/v3/search/stories?query=…&next=abc` as if it *were* the token
     /// sends the upstream a page token that is really a URL.
     ///
-    /// Needs a response header, and therefore a `from`, on an MCP tool: a tool
-    /// result is a JSON-RPC envelope and carries no headers at all.
+    /// On an MCP tool, `from` is not optional: a tool result is a JSON-RPC
+    /// envelope and carries no headers at all, so the body is the only place
+    /// the URL can be.
     Link,
 }
 
