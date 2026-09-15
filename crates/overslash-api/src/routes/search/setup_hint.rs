@@ -107,10 +107,23 @@ fn build_setup_steps(def: &ServiceDefinition) -> Vec<SetupStep> {
             // the instruction — a setup hint that breaks the setup. A template
             // with two slots therefore gets two `request_secret` steps, and the
             // agent hands its user one provide URL per secret.
+            // The emptiness guard is on `default_secret_name`, the field this
+            // step actually pre-fills — not on `key`, which is what
+            // `reconcile::instance_slot_keys` guards because *it* keys a
+            // binding by it. An instance-source slot with no default name is a
+            // deliberately supported shape (`template_validation::core::auth`
+            // requires a default only for org-source slots, since an instance
+            // slot resolves from the instance's own binding), so this is a
+            // real template, not a malformed one. There is simply no name to
+            // pre-fill for it, and `secret_name: ""` is worse than no step:
+            // `kernel_request_secret` rejects a blank name with a 400, so the
+            // hint would break the setup it describes. Such a slot still
+            // surfaces at call time, by name, in `credential_missing`'s
+            // `missing_credentials` + `self_serve`.
             for slot in def
                 .all_slots()
                 .into_iter()
-                .filter(|s| s.source == SecretSource::Instance && !s.key.is_empty())
+                .filter(|s| s.source == SecretSource::Instance && !s.default_secret_name.is_empty())
             {
                 steps.push(SetupStep {
                     action: "request_secret",
@@ -246,6 +259,33 @@ mod tests {
         }
         assert_eq!(secret_steps[0].params["secret_name"], "acme_user");
         assert_eq!(secret_steps[1].params["secret_name"], "acme_pass");
+    }
+
+    /// An instance-source slot may legitimately declare no `default_secret_name`
+    /// — validation only requires one for org-source slots. There is no name to
+    /// pre-fill, and `secret_name: ""` would 400 in `kernel_request_secret`, so
+    /// the step is omitted rather than emitted broken.
+    #[test]
+    fn instance_slot_without_a_default_name_yields_no_request_step() {
+        let d = def(
+            vec![secret_auth(
+                "acme",
+                "unused_fallback",
+                vec!["named".into(), "unnamed".into()],
+            )],
+            vec![
+                slot("named", "acme_key", SecretSource::Instance),
+                slot("unnamed", "", SecretSource::Instance),
+            ],
+        );
+        let steps = build_setup_steps(&d);
+
+        let secret_steps: Vec<_> = steps
+            .iter()
+            .filter(|s| s.action == "request_secret")
+            .collect();
+        assert_eq!(secret_steps.len(), 1, "only the named slot is requestable");
+        assert_eq!(secret_steps[0].params["secret_name"], "acme_key");
     }
 
     /// Org-source slots are the deployment's to set, not the caller's, so they
