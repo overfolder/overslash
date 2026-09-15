@@ -723,7 +723,7 @@ With that, the corpus sweep D75 deferred lands: every shipped list action either
 
 **No bulk undo ships with it.** Asymmetric on purpose: the grant is bounded (four known patterns, first-level agents, never the `_share` half) and the per-agent table already revokes. A bulk revoke is the more dangerous of the two directions — it would need to distinguish a seeded rule from an identical one an admin wrote or an approval remembered, and `permission_rules` records no provenance to distinguish them by. Better absent than wrong.
 
-## D-NEXT: `link` pagination reads the next URL from a header *or* the body
+## D81: `link` pagination reads the next URL from a header *or* the body
 
 **Date**: 2026-09-15
 **Decision**: `x-overslash-pagination`'s `link` style keeps its meaning — "the response names the whole next URL; lift out the query parameters the action declares" — and gains two optional fields that say *where* the URL is and *which* key it may introduce. `next.from` is a dotted body path holding the URL; absent, the RFC 8288 `Link` header is read exactly as before. `next.param` names the one query key `declared_query_params` will lift although the call just made did not send it. An MCP tool may now declare `link` provided it declares `from`: a JSON-RPC result has no headers, but it has a payload, and `next_page` already projects it through D78's `mcp_payload` before walking a dotted path.
