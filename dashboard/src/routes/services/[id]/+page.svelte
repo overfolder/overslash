@@ -15,7 +15,7 @@
 		setServiceStatus,
 		deleteService,
 		upgradeConnectionScopes,
-		testService
+		runProbe
 	} from '$lib/api/services';
 	import { groupsApi, type Group, type GroupGrantPick } from '$lib/api/groups';
 	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
@@ -90,15 +90,7 @@
 		testing = true;
 		testResult = null;
 		try {
-			testResult = await testService(svc.id);
-		} catch (e) {
-			// Render a failure to *run* the probe as a verdict too — from the
-			// operator's seat "I pressed Test and it did not work" is one
-			// outcome, and splitting it across two UI shapes helps nobody.
-			testResult = {
-				status: 'failed',
-				error: e instanceof ApiError ? apiErrorReason(e) : 'Could not run the test'
-			};
+			testResult = await runProbe(svc.id);
 		} finally {
 			testing = false;
 		}

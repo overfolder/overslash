@@ -29,7 +29,13 @@ export interface TestActionRef {
  * on reads gets an approval instead of a result.
  */
 export interface ServiceTestResponse {
-  status: 'ok' | 'failed' | 'pending_approval' | 'needs_authentication' | 'not_supported';
+  status:
+    | 'ok'
+    | 'failed'
+    | 'denied'
+    | 'pending_approval'
+    | 'needs_authentication'
+    | 'not_supported';
   action?: string;
   /** Upstream HTTP status, when the call reached an upstream. */
   http_status?: number;
