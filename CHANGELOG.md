@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.2](https://github.com/overfolder/overslash/compare/v0.10.1...v0.10.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* **pagination:** a next URL that never names the continuation is not a next page ([#624](https://github.com/overfolder/overslash/issues/624)) ([fdca9a3](https://github.com/overfolder/overslash/commit/fdca9a3c76a9b1c3312964678a1866e2c72f7c2f))
+* **permissions,pagination:** a deny is not coverage, and a spent cursor is not a page ([#623](https://github.com/overfolder/overslash/issues/623)) ([a71b1b0](https://github.com/overfolder/overslash/commit/a71b1b052b81ba5b611e3a34ac48c4d80574be21))
+
 ## [0.10.1](https://github.com/overfolder/overslash/compare/v0.10.0...v0.10.1) (2026-09-15)
 
 
