@@ -112,6 +112,9 @@ x-overslash-mcp:
 
     - name: find_chats
       risk: read
+      test:
+        params:
+          limit: 1
       description: "Find users/groups/channels by name, username, or phone {query}; filter by chat type, activity dates, or folder"
       input_schema:
         type: object

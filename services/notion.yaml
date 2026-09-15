@@ -49,6 +49,7 @@ paths:
         has_more: has_more
       summary: "Search all pages and databases shared with the integration[ matching '{query}']"
       risk: read
+      test: true
       requestBody:
         content:
           application/json:

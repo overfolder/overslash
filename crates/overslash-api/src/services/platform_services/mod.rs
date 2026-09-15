@@ -190,6 +190,7 @@ mod test_fixtures {
                     request_body: None,
                     download: None,
                     upload: None,
+                    test: None,
                 },
             );
         }

@@ -891,3 +891,61 @@ fn shipped_github_templates_auth() {
         _ => panic!("github_legacy_oauth template must declare OAuth auth"),
     }
 }
+
+/// Every shipped template's declared credential probe must resolve to a real,
+/// enabled, read-risk action — and the catalogue must keep most templates
+/// carrying one at all.
+///
+/// The first half duplicates `check_test` on purpose: that rule runs over a
+/// *parsed* definition, while this one runs over the registry the gateway
+/// actually serves, so it also catches a probe lost to a layer fold or an
+/// action renamed out from under its marker.
+///
+/// The second half is the one a reviewer should weigh. A count assertion
+/// noticing a *drop* is what keeps "declare a probe" from quietly becoming
+/// optional as templates are added; the floor is deliberately well under the
+/// current number so adding an unprobeable template (deepwiki — every tool
+/// needs a repo name, and it authenticates with nothing) is not a failure.
+#[test]
+fn shipped_test_actions_resolve_to_read_actions() {
+    let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("services");
+    let reg =
+        ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+            .unwrap();
+
+    let mut with_probe = 0;
+    for def in reg.all() {
+        let Some((key, action)) = def.test_action() else {
+            continue;
+        };
+        with_probe += 1;
+        assert!(
+            action.risk == crate::types::Risk::Read,
+            "{}: test action {key} is risk {:?}, not read",
+            def.key,
+            action.risk
+        );
+        assert!(
+            !action.disabled,
+            "{}: test action {key} is disabled",
+            def.key
+        );
+        for name in action.test.as_ref().unwrap().params.keys() {
+            assert!(
+                action.params.contains_key(name),
+                "{}: test param {name:?} is not a param of {key}",
+                def.key
+            );
+        }
+    }
+    assert!(
+        with_probe >= 15,
+        "only {with_probe} shipped templates declare a test action; \
+         a new template should declare one unless it genuinely cannot be probed"
+    );
+}

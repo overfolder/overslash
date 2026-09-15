@@ -35,6 +35,7 @@ paths:
       operationId: get_profile
       summary: Get the signed-in user's Outlook profile
       risk: read
+      test: true
       security:
         - oauth:
             - https://graph.microsoft.com/User.Read

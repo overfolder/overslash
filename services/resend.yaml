@@ -27,6 +27,7 @@ paths:
         Every sending domain on the account, in one response. Resend does not
         page this endpoint; the list is small by construction.
       risk: read
+      test: true
   /emails:
     post:
       operationId: send_email

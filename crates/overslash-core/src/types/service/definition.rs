@@ -246,6 +246,21 @@ impl ServiceDefinition {
         }
         out
     }
+
+    /// The action this template nominates as its credential probe — what the
+    /// dashboard's "Test service" button calls.
+    ///
+    /// Template validation guarantees at most one, so the `min_by_key` here is
+    /// a tiebreak that should never fire; it is a stable pick rather than
+    /// `HashMap` iteration order for the case where a template predating that
+    /// rule is read out of the database.
+    pub fn test_action(&self) -> Option<(&str, &ServiceAction)> {
+        self.actions
+            .iter()
+            .filter(|(_, a)| a.test.is_some() && !a.disabled)
+            .min_by_key(|(key, _)| *key)
+            .map(|(key, action)| (key.as_str(), action))
+    }
 }
 
 /// Alias: a service template is the same as a service definition.
@@ -442,6 +457,7 @@ mod tests {
                 request_body: None,
                 download: None,
                 upload: None,
+                test: None,
             },
         );
         let svc = ServiceDefinition {
@@ -512,6 +528,7 @@ mod tests {
             request_body: None,
             download: None,
             upload: None,
+            test: None,
         };
         let j = serde_json::to_value(&a).unwrap();
         assert!(j.get("disabled").is_none());

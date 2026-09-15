@@ -45,6 +45,7 @@ paths:
         `email_verified`, `locale`). The member URN used as the `author` of a
         post is `urn:li:person:{sub}`.
       risk: read
+      test: true
       security:
         - oauth:
             - openid
