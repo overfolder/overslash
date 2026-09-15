@@ -701,6 +701,24 @@ fn shipped_list_actions_declare_pagination() {
         "telegram:search_messages_globally",
         "telegram:get_messages",
         "telegram:find_chats",
+        // Shortcut pages its two search endpoints and nothing else. Every
+        // one of these takes no page size and mints no continuation: the
+        // workspace-wide sets (workflows, members, teams, labels,
+        // iterations) are tens of rows by construction, and the rest are
+        // bounded by the parent entity named in the path — one epic's
+        // stories, one iteration's stories, one story's comments.
+        // `query_stories` is the structured-filter twin of `search_stories`
+        // and is bounded by how narrow the filters are; a caller who needs
+        // to page reaches for `search_stories`, which says so.
+        "shortcut:query_stories",
+        "shortcut:list_story_comments",
+        "shortcut:list_epic_stories",
+        "shortcut:list_iterations",
+        "shortcut:list_iteration_stories",
+        "shortcut:list_workflows",
+        "shortcut:list_members",
+        "shortcut:list_groups",
+        "shortcut:list_labels",
         // The httpbin echo fixture used by the dev/e2e stack. It returns
         // whatever was sent, not a collection.
         "test_email:list_messages",

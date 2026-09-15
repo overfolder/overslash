@@ -92,6 +92,7 @@
       "note": "Our own mark, derived from the dashboard logo."
     },
     "resend": { "source": "simple-icons:resend" },
+    "shortcut": { "source": "simple-icons:shortcut" },
     "slack": {
       "source": "pending",
       "owner": "Slack Technologies, LLC (Salesforce)",

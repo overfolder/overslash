@@ -95,11 +95,24 @@ pub struct NextSpec {
     /// The request parameter the continuation value goes into. Required for
     /// every style but [`NextStyle::Link`], which carries a whole URL and
     /// therefore names its own parameters.
+    ///
+    /// Optional on `link`, where it means something narrower: the one query key
+    /// that may be lifted out of the next URL *although the call just made did
+    /// not send it*. Every other key has to have been sent, so that a next URL
+    /// cannot introduce arguments the caller never chose — but a continuation
+    /// key appears for the first time on page two by definition. Without this,
+    /// an upstream whose continuation has no sensible page-one value has to
+    /// invent one (`services/github.yaml` declares `page: 1` for exactly this
+    /// reason) or lose the cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub param: Option<String>,
     /// Dotted path to the continuation value in the response body. Required
-    /// for [`NextStyle::Cursor`] and meaningless for the others, whose value
-    /// is computed from the request rather than read from the response.
+    /// for [`NextStyle::Cursor`] and meaningless for the arithmetic styles,
+    /// whose value is computed from the request rather than read from the
+    /// response.
+    ///
+    /// Optional on [`NextStyle::Link`], where it names where the *next URL*
+    /// lives in the body. Absent there means the RFC 8288 `Link` header.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
 }
@@ -117,12 +130,23 @@ pub enum NextStyle {
     Offset,
     /// A page ordinal the caller increments. WhatsApp's `page`.
     Page,
-    /// RFC 8288 `Link: <…>; rel="next"`. The response names the whole next
-    /// URL; the gateway lifts out the query parameters the action declares and
-    /// leaves the rest, so the continuation stays inside the action's own
-    /// contract instead of becoming a second way to address the upstream.
+    /// The response names the whole next URL, and the gateway lifts out the
+    /// query parameters the action declares and leaves the rest — so the
+    /// continuation stays inside the action's own contract instead of becoming
+    /// a second way to address the upstream.
     ///
-    /// Impossible on an MCP tool, which has no response headers.
+    /// Two places carry that URL, and the corpus needs both. An RFC 8288
+    /// `Link: <…>; rel="next"` **header** is the default, and what GitHub
+    /// sends. [`NextSpec::from`] moves the read into the **body** instead, at a
+    /// dotted path: Shortcut's `next`, Zendesk's `next_page`, Twilio's
+    /// `next_page_uri`, Salesforce's `nextRecordsUrl` all put a whole URL
+    /// there. That is not [`Cursor`](Self::Cursor) wearing a different name —
+    /// a cursor is echoed back verbatim, and echoing back
+    /// `/api/v3/search/stories?query=…&next=abc` as if it *were* the token
+    /// sends the upstream a page token that is really a URL.
+    ///
+    /// Needs a response header, and therefore a `from`, on an MCP tool: a tool
+    /// result is a JSON-RPC envelope and carries no headers at all.
     Link,
 }
 
@@ -138,7 +162,8 @@ impl NextStyle {
 
     /// Whether the continuation value is read out of the response (`cursor`)
     /// or computed from the request that was just sent (`offset`, `page`).
-    /// [`NextStyle::Link`] is neither: it reads a header and rewrites params.
+    /// [`NextStyle::Link`] is neither: it reads a whole URL — from a header or
+    /// from the body — and rewrites params out of it.
     pub fn is_arithmetic(self) -> bool {
         matches!(self, NextStyle::Offset | NextStyle::Page)
     }

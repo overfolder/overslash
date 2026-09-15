@@ -245,8 +245,23 @@ fn continuation_params(
             params.insert(param.clone(), json!(current + 1));
         }
         NextStyle::Link => {
-            let url = link_next(result.headers.iter())?;
-            params = declared_query_params(&url, sent);
+            // Two places a whole next URL can live, and the declaration picks
+            // one: `from` reads it out of the body at that path, absent reads
+            // the RFC 8288 header. Either way what comes back is a URL, and the
+            // same extraction runs over it.
+            let url = match spec.next.from.as_ref() {
+                Some(path) => scalar(dotted(body, path)?)?,
+                None => link_next(result.headers.iter())?,
+            };
+            // Same ceiling as a cursor, for the same reason: past this it is
+            // not a continuation, it is a payload wearing one's name. An
+            // upstream at the end of a collection commonly sends the key as an
+            // empty string rather than omitting it — "no more pages" spelled
+            // awkwardly, not a URL.
+            if url.is_empty() || url.chars().count() > MAX_CURSOR_VALUE_CHARS {
+                return None;
+            }
+            params = declared_query_params(&url, sent, spec.next.param.as_deref());
             if params.is_empty() {
                 return None;
             }
@@ -389,15 +404,24 @@ fn split_links(value: &str) -> Vec<&str> {
     out
 }
 
-/// Lift out of a `rel="next"` URL only the query parameters the caller could
-/// have sent in the first place.
+/// Lift out of a next URL only the query parameters the caller could have sent
+/// in the first place, plus the one continuation key `allow_unsent` names.
 ///
 /// The upstream's next-URL is a second way to address the same endpoint, and
 /// adopting it wholesale would let a response introduce arguments the action
 /// never declared. Intersecting it with what was actually sent keeps the
 /// continuation inside the action's own contract — and keeps a parameter whose
 /// value did not change out of the marker.
-fn declared_query_params(url: &str, sent: &HashMap<String, Value>) -> Map<String, Value> {
+///
+/// `allow_unsent` is the deliberate hole in that intersection, and it is one
+/// key wide: `next.param` on a `link` spec, which the template author wrote
+/// down, and which `check_pagination` has already refused unless the action
+/// declares it.
+fn declared_query_params(
+    url: &str,
+    sent: &HashMap<String, Value>,
+    allow_unsent: Option<&str>,
+) -> Map<String, Value> {
     let mut out = Map::new();
     let Some((_, query)) = url.split_once('?') else {
         return out;
@@ -408,6 +432,15 @@ fn declared_query_params(url: &str, sent: &HashMap<String, Value>) -> Map<String
         };
         let (k, v) = (percent_decode(k), percent_decode(v));
         let Some(previous) = sent.get(&k) else {
+            // A key the call did not send is a key the next URL would be
+            // *introducing*, and an upstream does not get to add arguments the
+            // caller never chose. The one exception is the continuation the
+            // declaration names: it appears for the first time on page two by
+            // definition, so requiring it to have been sent would be requiring
+            // the cursor to predate itself.
+            if allow_unsent == Some(k.as_str()) && !v.is_empty() {
+                out.insert(k, json!(v));
+            }
             continue;
         };
         // Numbers stay numbers: `page=2` coming back as `"2"` would be typed

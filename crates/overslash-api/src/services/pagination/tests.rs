@@ -666,3 +666,190 @@ fn an_mcp_result_with_no_json_payload_is_simply_unpaged() {
         json!({"has_more": false})
     );
 }
+
+// ---------------------------------------------------------------------------
+// `link` with the next URL in the body.
+//
+// Shortcut's search answers `{total, data, next}`, where `next` is a whole URL
+// path and query string — `/api/v3/search/stories?query=…&page_size=25&next=<token>`
+// — while the `next` *request* parameter takes only the bare token. Echoing the
+// body value back the way a cursor would sends a URL where a token belongs, so
+// the URL is parsed and the declared keys lifted out of it, exactly as for a
+// `Link` header.
+// ---------------------------------------------------------------------------
+
+/// `from` names the body path; `param` names the one key the URL may introduce
+/// that page one never sent.
+fn body_link_spec() -> PaginationSpec {
+    PaginationSpec {
+        page_size: Some(PageSize {
+            param: "page_size".into(),
+            default: Some(25),
+            max: Some(250),
+        }),
+        next: NextSpec {
+            style: NextStyle::Link,
+            param: Some("next".into()),
+            from: Some("next".into()),
+        },
+        items: Some("data".into()),
+        has_more: None,
+    }
+}
+
+#[test]
+fn link_reads_the_next_url_out_of_the_body_when_from_names_a_path() {
+    let marker = next_page(
+        &body_link_spec(),
+        Some("shortcut"),
+        Some("search_stories"),
+        &sent(&[("query", json!("state:open")), ("page_size", json!(25))]),
+        &result(
+            200,
+            json!({
+                "total": 812,
+                "data": [{"id": 1}],
+                "next": "/api/v3/search/stories?query=state%3Aopen&page_size=25&next=a8acc65~24",
+            }),
+            &[],
+        ),
+    );
+    assert_eq!(
+        marker,
+        json!({
+            "has_more": true,
+            "next": {
+                "service": "shortcut",
+                "action": "search_stories",
+                "params": {"next": "a8acc65~24"}
+            }
+        }),
+        "only the continuation changed — query and page_size came back identical"
+    );
+}
+
+/// The whole point of `next.param` on a `link` spec: the continuation key is
+/// absent from page one's request by definition, and the ordinary
+/// "must have been sent" rule would drop it and report the collection finished.
+#[test]
+fn link_lifts_the_declared_continuation_although_page_one_never_sent_it() {
+    let mut spec = body_link_spec();
+    spec.next.param = None;
+    let sent = sent(&[("query", json!("state:open")), ("page_size", json!(25))]);
+    let result = result(
+        200,
+        json!({"data": [{"id": 1}], "next": "/api/v3/search/stories?query=state%3Aopen&page_size=25&next=a8acc65~24"}),
+        &[],
+    );
+
+    assert_eq!(
+        next_page(&spec, None, None, &sent, &result),
+        json!({"has_more": false}),
+        "without `param` the unsent key is dropped and nothing is left to change"
+    );
+    assert_eq!(
+        next_page(&body_link_spec(), None, None, &sent, &result)["next"]["params"],
+        json!({"next": "a8acc65~24"}),
+    );
+}
+
+/// `allow_unsent` is one key wide. A next URL that tries to introduce anything
+/// else the caller did not send is still ignored.
+#[test]
+fn a_body_next_url_cannot_introduce_arguments_the_caller_never_chose() {
+    let marker = next_page(
+        &body_link_spec(),
+        None,
+        None,
+        &sent(&[("query", json!("state:open")), ("page_size", json!(25))]),
+        &result(
+            200,
+            json!({"data": [], "next": "/api/v3/search/stories?query=state%3Aopen&detail=full&owner_id=someone&next=tok"}),
+            &[],
+        ),
+    );
+    assert_eq!(
+        marker["next"]["params"],
+        json!({"next": "tok"}),
+        "detail and owner_id were never sent and are not the declared continuation"
+    );
+}
+
+/// Shortcut sends `next: null` on the last page. Nothing to parse is the end of
+/// the collection, however full `data` looks.
+#[test]
+fn a_null_body_next_is_the_last_page() {
+    assert_eq!(
+        next_page(
+            &body_link_spec(),
+            None,
+            None,
+            &sent(&[("page_size", json!(25))]),
+            &result(200, json!({"data": [{"id": 1}], "next": null}), &[]),
+        ),
+        json!({"has_more": false})
+    );
+}
+
+/// Same ceiling a cursor gets, and for the same reason.
+#[test]
+fn an_implausibly_long_body_next_url_is_refused_whole() {
+    let url = format!("/api/v3/search/stories?next={}", "x".repeat(2000));
+    assert_eq!(
+        next_page(
+            &body_link_spec(),
+            None,
+            None,
+            &sent(&[("page_size", json!(25))]),
+            &result(200, json!({"data": [], "next": url}), &[]),
+        ),
+        json!({"has_more": false})
+    );
+}
+
+/// `from` only redirects where the URL is read from. With none, `link` is the
+/// header style it has always been — a body key called `next` is just data.
+#[test]
+fn a_link_spec_without_from_still_reads_the_header_and_ignores_the_body() {
+    let spec = link_spec();
+    assert_eq!(
+        next_page(
+            &spec,
+            None,
+            None,
+            &sent(&[("page", json!(1))]),
+            &result(200, json!({"next": "/nope?page=9"}), &[]),
+        ),
+        json!({"has_more": false})
+    );
+    let marker = next_page(
+        &spec,
+        None,
+        None,
+        &sent(&[("page", json!(1))]),
+        &result(
+            200,
+            json!({"next": "/nope?page=9"}),
+            &[("link", "<https://api.github.com/r?page=2>; rel=\"next\"")],
+        ),
+    );
+    assert_eq!(marker["next"]["params"], json!({"page": 2}));
+}
+
+/// An MCP tool has no headers, but it does have a payload — so the body form
+/// works there, addressing the tool's own JSON exactly as a `cursor` `from`
+/// would.
+#[test]
+fn a_body_next_url_is_read_through_the_mcp_envelope() {
+    let marker = next_page(
+        &body_link_spec(),
+        Some("some_mcp"),
+        Some("search_things"),
+        &sent(&[("query", json!("x"))]),
+        &envelope(
+            json!({"data": [{"id": 1}], "next": "/things?query=x&next=tok"}),
+            json!([]),
+        ),
+    );
+    assert_eq!(marker["next"]["params"], json!({"next": "tok"}));
+}

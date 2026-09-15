@@ -144,6 +144,7 @@ mod services_admin_view;
 mod services_auto_connect;
 mod shared_router_isolation;
 mod short_url;
+mod shortcut;
 mod slack;
 mod subdomain_oauth_as;
 mod template_validation;
