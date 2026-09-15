@@ -14,7 +14,8 @@
 		updateService,
 		setServiceStatus,
 		deleteService,
-		upgradeConnectionScopes
+		upgradeConnectionScopes,
+		testService
 	} from '$lib/api/services';
 	import { groupsApi, type Group, type GroupGrantPick } from '$lib/api/groups';
 	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
@@ -29,11 +30,13 @@
 		ServiceGroupRef,
 		ServiceInstanceDetail,
 		ServiceStatus,
+		ServiceTestResponse,
 		TemplateDetail
 	} from '$lib/types';
 	import { listSecrets } from '$lib/api/secrets';
 	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
+	import TestResult from '$lib/components/services/TestResult.svelte';
 	import ConnectionAvatar from '$lib/components/connections/ConnectionAvatar.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
@@ -78,6 +81,28 @@
 	let reconnectAbort: AbortController | null = null;
 	let resyncing = $state(false);
 	let resyncError = $state<string | null>(null);
+	let testing = $state(false);
+	let testResult = $state<ServiceTestResponse | null>(null);
+
+	/// Run the template's declared credential probe against this instance.
+	async function runTest() {
+		if (!svc) return;
+		testing = true;
+		testResult = null;
+		try {
+			testResult = await testService(svc.id);
+		} catch (e) {
+			// Render a failure to *run* the probe as a verdict too — from the
+			// operator's seat "I pressed Test and it did not work" is one
+			// outcome, and splitting it across two UI shapes helps nobody.
+			testResult = {
+				status: 'failed',
+				error: e instanceof ApiError ? apiErrorReason(e) : 'Could not run the test'
+			};
+		} finally {
+			testing = false;
+		}
+	}
 
 	function isNeedsAuth(e: unknown): boolean {
 		return (
@@ -1028,6 +1053,22 @@
 			</div>
 		{:else if activeTab === 'credentials'}
 			<div class="card">
+				{#if svc?.test_action}
+					<!-- The whole credentials tab answers "is this wired up?"; this
+					     is the only part that answers it by asking the upstream.
+					     Works for both auth kinds, which is what makes a
+					     reconnected OAuth service verifiable too. -->
+					<div class="row test-row">
+						<span class="label">Test</span>
+						<div class="test-body">
+							<button type="button" class="btn" onclick={runTest} disabled={testing}
+								title={svc.test_action.summary ?? `Runs ${svc.test_action.action}`}>
+								{testing ? 'Testing…' : 'Test service'}
+							</button>
+							<TestResult result={testResult} running={testing} onRetry={runTest} />
+						</div>
+					</div>
+				{/if}
 				{#if usesOAuth}
 					<div class="row">
 						<span class="label">Provider</span>
@@ -1606,5 +1647,15 @@
 	.scope-warning ul {
 		margin: 0.3rem 0;
 		padding-left: 1.2rem;
+	}
+	.test-row {
+		align-items: flex-start;
+	}
+	.test-body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		flex: 1;
+		min-width: 0;
 	}
 </style>

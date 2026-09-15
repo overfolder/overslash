@@ -21,6 +21,7 @@ import type {
 	ServiceInstanceDetail,
 	ServiceInstanceSummary,
 	ServiceStatus,
+	ServiceTestResponse,
 	AdminTemplateSummary,
 	TemplateDetail,
 	TemplateSettings,
@@ -228,6 +229,20 @@ export const getServiceActions = (name: string, signal?: AbortSignal) =>
 
 export const listServiceGroups = (serviceId: string, signal?: AbortSignal) =>
 	session.get<ServiceGroupRef[]>(`/v1/services/${serviceId}/groups`, signal);
+
+// -- Credential probe --
+
+/**
+ * Run the instance's template-declared test action and get back a verdict.
+ *
+ * Always pass the instance UUID. Gated server-side on owning the instance (or
+ * org admin), and the call itself goes through the ordinary permission and
+ * approval path — a `pending_approval` verdict is a real outcome, not an
+ * error. `not_supported` means the template declares no probe, which is why
+ * callers check `test_action` before offering the button.
+ */
+export const testService = (id: string, signal?: AbortSignal) =>
+	session.post<ServiceTestResponse>(`/v1/services/${id}/test`, undefined, signal);
 
 // -- OAuth connections --
 

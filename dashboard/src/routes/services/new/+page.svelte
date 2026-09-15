@@ -9,7 +9,8 @@
 		listConnections,
 		initiateOAuth,
 		createService,
-		createByocCredential
+		createByocCredential,
+		testService
 	} from '$lib/api/services';
 	import type {
 		ConnectionSummary,
@@ -17,6 +18,8 @@
 		SecretSummary,
 		SecretSlot,
 		ServiceAuth,
+		ServiceInstanceDetail,
+		ServiceTestResponse,
 		TemplateDetail,
 		TemplateSummary
 	} from '$lib/types';
@@ -25,6 +28,7 @@
 	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import TemplateCard from '$lib/components/services/TemplateCard.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
+	import TestResult from '$lib/components/services/TestResult.svelte';
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
 	import SearchBar, {
 		emptySearch,
@@ -76,6 +80,15 @@
 	let submitting = $state(false);
 	let connectingOAuth = $state(false);
 	let oauthAbort: AbortController | null = null;
+
+	// Post-create verification. The wizard stops on this step rather than
+	// navigating away, so a wrong key surfaces here instead of on the user's
+	// first real call. `created` doubles as the "we are past creation" flag —
+	// once it is set the service exists and the only remaining question is
+	// whether its credentials work.
+	let created = $state<ServiceInstanceDetail | null>(null);
+	let testing = $state(false);
+	let testResult = $state<ServiceTestResponse | null>(null);
 
 	let availableSecrets = $state<SecretSummary[]>([]);
 	let secretsLoading = $state(false);
@@ -499,7 +512,7 @@
 				schemeKeyed && !usesOAuth && Object.keys(cleanedCredentials).length > 0;
 			const cleanedConfig = cleanServiceMap(configInput);
 			const sendConfig = Object.keys(cleanedConfig).length > 0;
-			const created = await createService({
+			const instance = await createService({
 				template_key: selectedDetail.key,
 				name: nameInput.trim() || undefined,
 				connection_id: connectionId || undefined,
@@ -512,12 +525,39 @@
 				groups: userLevel ? undefined : groupGrants,
 				use_default_connection: useDefaultConnection
 			});
-			await goto(`/services/${created.id}`);
+			created = instance;
+			submitting = false;
+			// Nothing to verify: no probe declared, or no credential bound yet
+			// for one to exercise. Go straight to the service.
+			if (!instance.test_action) {
+				await goto(`/services/${instance.id}`);
+				return;
+			}
+			await runTest();
 		} catch (e) {
 			error = e instanceof ApiError
 				? `Failed to create service (${e.status}): ${JSON.stringify(e.body)}`
 				: 'Failed to create service';
 			submitting = false;
+		}
+	}
+
+	async function runTest() {
+		if (!created) return;
+		testing = true;
+		testResult = null;
+		try {
+			testResult = await testService(created.id);
+		} catch (e) {
+			// A transport-level failure is still a verdict for the person
+			// looking at it — render it as one rather than replacing the whole
+			// page with a create error the create did not have.
+			testResult = {
+				status: 'failed',
+				error: e instanceof ApiError ? `Could not run the test (${e.status})` : 'Could not run the test'
+			};
+		} finally {
+			testing = false;
 		}
 	}
 
@@ -538,7 +578,15 @@
 
 <div class="page">
 	<a href="/services" class="back">← Back to services</a>
-	<h1>{step === 'pick' ? 'Choose a template' : 'Configure service'}</h1>
+	<h1>
+		{#if created}
+			Check it works
+		{:else if step === 'pick'}
+			Choose a template
+		{:else}
+			Configure service
+		{/if}
+	</h1>
 
 	{#if error}
 		<div class="error">{error}</div>
@@ -613,6 +661,44 @@
 					<p class="muted">Select a template to preview its actions and auth requirements.</p>
 				{/if}
 			</aside>
+		</div>
+	{:else if created}
+		<!-- Post-create verification. The service already exists — this step
+		     only answers whether its credentials work, so both ways out lead
+		     to it and neither undoes anything. -->
+		<div class="form-card">
+			<div class="row">
+				<span class="label">Service</span>
+				<span class="mono">{created.name}</span>
+				<StatusBadge variant="active" />
+			</div>
+
+			<TestResult result={testResult} running={testing} onRetry={runTest} />
+
+			{#if created.setup}
+				<!-- A credential slot nobody filled in. The link is the same one
+				     an agent would be handed, so the person who holds the key
+				     can finish setup without a dashboard account. -->
+				<div class="setup-link">
+					<p class="label">Still needs a credential</p>
+					<p>
+						Send this single-use link to whoever holds the key. It expires on its
+						own and the value never passes through you.
+					</p>
+					<input
+						type="text"
+						readonly
+						value={created.setup.short_url ?? created.setup.setup_url}
+						onfocus={(e) => e.currentTarget.select()}
+					/>
+				</div>
+			{/if}
+
+			<div class="actions">
+				<button type="button" class="btn primary" onclick={() => goto(`/services/${created?.id}`)}>
+					{testResult?.status === 'ok' ? 'Done' : 'Continue anyway'}
+				</button>
+			</div>
 		</div>
 	{:else if selectedDetail}
 		<div class="form-card">
@@ -1161,5 +1247,23 @@
 		margin: 0;
 		font-size: 0.9rem;
 		color: var(--color-text-muted);
+	}
+	.setup-link {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		padding: 0.75rem 0.85rem;
+	}
+	.setup-link input {
+		width: 100%;
+		padding: 0.5rem 0.65rem;
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		background: var(--color-bg);
+		color: var(--color-text);
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
 	}
 </style>
