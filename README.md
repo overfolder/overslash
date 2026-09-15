@@ -185,8 +185,13 @@ without touching your own account.
 ### Claude Code (one command)
 
 ```bash
-claude mcp add --transport http overslash https://<your-overslash>/mcp
+claude mcp add --transport http --scope user overslash https://<your-overslash>/mcp
 ```
+
+`--scope user` registers the server once for your whole machine rather than for
+a single project; drop it to scope the server to the current project instead.
+This is the command the dashboard's Agents view renders, with your org's URL
+already filled in.
 
 Run any Overslash tool (`overslash_search`, `overslash_auth whoami`, …) and
 Claude Code handles the OAuth dance. For local dev, the URL is
@@ -208,12 +213,19 @@ config format (Cursor, Windsurf, etc. with their equivalent file names):
 }
 ```
 
-### `npx` (if your client supports it)
+### `npx` (clients that only speak stdio)
 
-Some MCP clients accept an `npx`-style launcher. The ecosystem's canonical
-launcher for adding an HTTP MCP server is still settling — check your client's
-docs for the current incantation. If yours doesn't advertise one, stick to the
-two options above; no Overslash-specific `npx` package is published.
+For a client that takes an `npx`-style launcher but not Streamable-HTTP, the
+community's generic stdio↔HTTP bridge works:
+
+```bash
+npx -y mcp-remote https://<your-overslash>/mcp
+```
+
+`mcp-remote` is a third-party package, not ours — no Overslash-specific `npx`
+package is published. If your client speaks HTTP, prefer the two options above;
+if it ships its own launcher, prefer that. The dashboard's Agents view renders
+this command too, with your org's URL already filled in.
 
 ### Stdio fallback
 
