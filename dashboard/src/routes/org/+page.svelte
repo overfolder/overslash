@@ -921,10 +921,9 @@
 				<div class="backfill-row">
 					{#if executionSettings.agents_missing_self_setup > 0}
 						<span class="backfill-count">
-							{executionSettings.agents_missing_self_setup} existing agent{executionSettings.agents_missing_self_setup ===
-							1
-								? ''
-								: 's'} predate this and have none of these rules.
+							{executionSettings.agents_missing_self_setup === 1
+								? '1 existing agent predates this and is missing some of these rules.'
+								: `${executionSettings.agents_missing_self_setup} existing agents predate this and are missing some of these rules.`}
 						</span>
 						<button
 							class="btn-secondary"
