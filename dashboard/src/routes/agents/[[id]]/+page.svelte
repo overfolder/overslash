@@ -751,7 +751,13 @@
 							<thead>
 								<tr>
 									<th>Rule</th>
-									<th>Source</th>
+									<!-- "Effect", not "Source": this column renders `effect`, and the
+									     table carries no provenance. It used to say "Source" and print
+									     "Approval" for every allow rule — a plausible guess back when an
+									     allow could only come from an approval or an admin grant, and
+									     plainly wrong now that a first-level agent is seeded with four
+									     rules that came from neither. -->
+									<th>Effect</th>
 									<th>Expires</th>
 									<th></th>
 								</tr>
@@ -770,7 +776,7 @@
 											{/if}
 										</td>
 										<td>
-											<span class="pill pill-source">{r.effect === 'allow' ? 'Approval' : r.effect}</span>
+											<span class="pill pill-source">{r.effect}</span>
 										</td>
 										<td>
 											<ExpiryControl

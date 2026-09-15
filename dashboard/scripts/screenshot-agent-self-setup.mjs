@@ -73,7 +73,10 @@ try {
 			viewport: { width: 1400, height: 1000 },
 			fullPage: false,
 			waitFor: async (p) => {
-				await p.getByRole('button', { name: /new agent/i }).first().click();
+				// The sidebar's "+ Add agent…" button; it seeds createParentId to
+				// the selected node, or the signed-in user when nothing is selected —
+				// which is the case the disclosure line renders for.
+				await p.locator('button.add-row').first().click();
 				await p.locator('.modal').first().waitFor({ timeout: 15_000 });
 				// The hint renders only once the chosen parent is a user.
 				await p.locator('.modal .create-note').waitFor({ timeout: 15_000 });
