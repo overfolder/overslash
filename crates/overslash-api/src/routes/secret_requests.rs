@@ -399,8 +399,13 @@ async fn get_setup(
         .filter(|s| s.source == overslash_core::types::SecretSource::Instance && !s.key.is_empty())
         .map(|s| SetupSlotView {
             bound: instance.credentials.0.contains_key(&s.key),
+            // `x-overslash-label` is optional, and most shipped templates
+            // omit it — an implicit slot inherits the scheme's label, which is
+            // empty. This page *leads* with the label (it names the field and
+            // completes the sentence "…needs its ___"), so an empty one is not
+            // a missing nicety, it is a blank in the middle of a prompt.
+            label: slot_label(&s),
             key: s.key,
-            label: s.label,
             description: s.description,
         })
         .collect();
@@ -412,8 +417,8 @@ async fn get_setup(
         .find(|s| s.key == credential_key)
         .cloned()
         .unwrap_or_else(|| SetupSlotView {
+            label: humanize(&credential_key),
             key: credential_key.clone(),
-            label: credential_key.clone(),
             description: String::new(),
             bound: false,
         });
@@ -647,6 +652,52 @@ async fn submit_provide(
     }))
 }
 
+/// A human-facing name for a credential slot.
+///
+/// The template's own `x-overslash-label` when it authored one, else the slot
+/// key made readable (`api_key` → "API key"). Never the vault secret name:
+/// that is an org-chosen identifier (`puppet_resend_key_1789…`), and reading
+/// it back to the person pasting a value tells them nothing about what to
+/// paste.
+fn slot_label(slot: &overslash_core::types::SecretSlot) -> String {
+    let authored = slot.label.trim();
+    if !authored.is_empty() {
+        return authored.to_string();
+    }
+    humanize(&slot.key)
+}
+
+/// `api_key` → "API key", `token` → "Token", `mailbox_pass` → "Mailbox pass".
+///
+/// Sentence case, not title case, and the only special rule is that a short
+/// *leading* word is read as an acronym (`api_key`, `sql_dsn`). Restricting it
+/// to the first word is what keeps "key" from becoming "KEY".
+///
+/// Deliberately tiny: the good answer is a template that authors a label, and
+/// a cleverer transformation here would make the poor one look deliberate.
+fn humanize(key: &str) -> String {
+    let words: Vec<&str> = key.split(['_', '-']).filter(|w| !w.is_empty()).collect();
+    let rendered: Vec<String> = words
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let acronym =
+                i == 0 && words.len() > 1 && w.len() <= 3 && w.chars().all(|c| c.is_alphabetic());
+            if acronym {
+                w.to_uppercase()
+            } else {
+                w.to_lowercase()
+            }
+        })
+        .collect();
+    let out = rendered.join(" ");
+    let mut chars = out.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => out,
+    }
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────
 
 /// Validate the JWT, look up the row, and check expiry / fulfillment / token
@@ -685,4 +736,27 @@ async fn load_and_validate(
         return Err(AppError::Gone("already_fulfilled".into()));
     }
     Ok(row)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::humanize;
+
+    #[test]
+    fn humanize_makes_a_slot_key_readable() {
+        assert_eq!(humanize("token"), "Token");
+        assert_eq!(humanize("api_key"), "API key");
+        assert_eq!(humanize("mailbox_pass"), "Mailbox pass");
+        // A hyphenated key reads the same as an underscored one.
+        assert_eq!(humanize("client-secret"), "Client secret");
+    }
+
+    /// A blank never reaches the page: the label completes a sentence there,
+    /// so the fallback has to produce *something*.
+    #[test]
+    fn humanize_never_returns_empty_for_a_real_key() {
+        for key in ["x", "a_b", "__token__"] {
+            assert!(!humanize(key).is_empty(), "{key} humanized to nothing");
+        }
+    }
 }

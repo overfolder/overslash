@@ -73,8 +73,12 @@ export default defineConfig(({ mode }) => {
 					target: apiTarget,
 					changeOrigin: true
 				},
-				// Standalone "Provide Secret" page (unauthenticated, JWT-scoped)
-				'/public/secrets': {
+				// The unauthenticated, JWT-scoped standalone pages: "Provide
+				// Secret" and its service-shaped sibling. Matched on the whole
+				// `/public` namespace rather than per-page — it belongs entirely
+				// to the API, and the narrower `/public/secrets` rule silently
+				// 404'd the setup page against its own origin when that shipped.
+				'/public': {
 					target: apiTarget,
 					changeOrigin: true
 				}
