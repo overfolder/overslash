@@ -113,7 +113,7 @@ the required check on both `/call` and `/validate`, so demanding a probe
 restate Gmail's `userId: me` would make the template say the same thing twice
 and drift the moment the default changed.
 
-Declared on 19 of the 23 shipped templates. The four without one are each
+Declared on 20 of the 24 shipped templates. The four without one are each
 deliberate:
 
 | template | why not |
