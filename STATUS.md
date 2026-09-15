@@ -230,7 +230,7 @@
 - Never widens to the `_share`/`_publish` half. `kernel_update_service` and the by-id branch of `kernel_get_service` gained the ownership guard that previously lived only in the REST route — without it a seeded agent could rebind any non-system instance in the org by id, `url` included.
 - Discoverability shipped alongside: `overslash_search` rows for an un-connected service carry `auth.setup` (the ordered calls that make them callable), the handshake `instructions` and search description say the agent may run those itself, and `credential_missing` / secret-backed `needs_authentication` carry `self_serve` beside `hint_url`.
 - `pending_approval` envelopes carry `next_step` (`get_result` | `call_pending`), so an agent stops guessing and stops hitting `409 execution has already completed`.
-- **Backfill (D-NEXT).** `POST /v1/orgs/{id}/agent-self-setup/backfill` grants the four anchors to every live first-level agent lacking them — admin-only, audited, idempotent, and refused with a `409` while the org toggle is off. Surfaced as a *Grant to N agents* button beside the toggle on `/org`, behind a confirm dialog. Revocation stays per agent; there is no bulk undo.
+- **Backfill (D80).** `POST /v1/orgs/{id}/agent-self-setup/backfill` grants the four anchors to every live first-level agent lacking them — admin-only, audited, idempotent, and refused with a `409` while the org toggle is off. Surfaced as a *Grant to N agents* button beside the toggle on `/org`, behind a confirm dialog. Revocation stays per agent; there is no bulk undo.
 
 ### Not Yet Built
 
