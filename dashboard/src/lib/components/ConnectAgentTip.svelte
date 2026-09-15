@@ -50,8 +50,7 @@
 	}
 	.tip-note {
 		margin: 0;
-		font-size: 0.74rem;
-		line-height: 1.5;
+		font: var(--text-body-sm);
 		color: var(--color-text-muted);
 	}
 	.tip-link {

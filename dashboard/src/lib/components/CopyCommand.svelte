@@ -47,7 +47,7 @@
 		min-width: 0;
 	}
 	.cmd-key {
-		font-size: 0.72rem;
+		font: var(--text-label-sm);
 		color: var(--color-text-muted);
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
@@ -59,7 +59,7 @@
 		gap: 0.4rem;
 		padding: 0.4rem 0.5rem;
 		border: 1px solid var(--color-border);
-		border-radius: 6px;
+		border-radius: var(--radius-sm);
 		background: var(--color-bg);
 		min-width: 0;
 	}
@@ -76,7 +76,7 @@
 		line-height: 1.45;
 	}
 	.mono {
-		font-family: var(--font-mono);
+		font: var(--text-code);
 		font-size: 0.74rem;
 	}
 	.dense .cmd-val {
