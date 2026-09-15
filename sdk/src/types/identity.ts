@@ -1,3 +1,5 @@
+import type { TestActionRef } from './services.js';
+
 /**
  * Identity and service wire types.
  *
@@ -28,4 +30,10 @@ export interface ServiceSummary {
   template_key: string | null;
   status: string;
   description?: string | null;
+  /**
+   * The template's credential probe, when it declares one. Absent means
+   * `services.test()` on this instance answers `not_supported` — check here
+   * before offering a Test control.
+   */
+  test_action?: TestActionRef;
 }

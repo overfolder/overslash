@@ -1,13 +1,10 @@
 import type { PageLoad } from './$types';
 import type { TestActionRef } from '$lib/types';
+import { mapPublicRequestError, type PublicRequestState } from '$lib/public-request';
+import type { ViewerInfo } from '$lib/public-request';
 
 export const ssr = false;
 export const prerender = false;
-
-export interface ViewerInfo {
-	identity_id: string;
-	email: string;
-}
 
 export interface SetupSlot {
 	key: string;
@@ -61,25 +58,7 @@ export interface SetupMetadata {
 
 type LoadResult =
 	| { state: 'ready'; req_id: string; token: string; meta: SetupMetadata }
-	| { state: 'expired'; req_id: string }
-	| { state: 'already_fulfilled'; req_id: string }
-	| { state: 'invalid'; req_id: string }
-	| { state: 'missing_token'; req_id: string }
-	| { state: 'server_error'; req_id: string };
-
-// Mirrors `/secrets/provide/[req_id]`: the GET handler never returns 401 —
-// `require_user_session` is a flag on the 200 body, not a load-time error — so
-// the `ready` branch can render the request and inline a sign-in CTA. A 404
-// here also means "this request names no service", which from the visitor's
-// seat is the same dead link as a bad id.
-function mapError(status: number, body: { error?: string } | null): LoadResult['state'] {
-	const code = body?.error ?? '';
-	if (status === 410 && code.includes('already_fulfilled')) return 'already_fulfilled';
-	if (status === 410) return 'expired';
-	if (status === 400) return 'invalid';
-	if (status >= 500) return 'server_error';
-	return 'invalid';
-}
+	| { state: Exclude<PublicRequestState, 'ready'>; req_id: string };
 
 export const load: PageLoad = async ({ params, url, fetch }): Promise<LoadResult> => {
 	const req_id = params.req_id;
@@ -95,7 +74,7 @@ export const load: PageLoad = async ({ params, url, fetch }): Promise<LoadResult
 	);
 	if (!r.ok) {
 		const body = await r.json().catch(() => null);
-		return { state: mapError(r.status, body), req_id } as LoadResult;
+		return { state: mapPublicRequestError(r.status, body), req_id } as LoadResult;
 	}
 	const meta: SetupMetadata = await r.json();
 	return { state: 'ready', req_id, token, meta };

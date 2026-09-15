@@ -115,7 +115,8 @@ For a **secret-based** template the same response also carries `setup`:
 { "setup": {
     "setup_url": "https://app.overslash.com/services/setup/req_ab12…?token=…",
     "short_url": "https://oversla.sh/xY3",
-    "requests": [{ "credential_key": "token", "secret_name": "resend_key", "setup_url": "…" }],
+    "requests": [{ "request_id": "req_ab12…", "credential_key": "token",
+                   "secret_name": "resend_key", "setup_url": "…" }],
     "expires_at": "…" } }
 ```
 
@@ -324,7 +325,10 @@ overslash_call {
 }
 ```
 
-Returns `{ request_id, provide_url, short_url, expires_at }`. Show `short_url`
+Returns `{ request_id, provide_url, short_url, expires_at }`, plus
+`service_id` and `credential_key` when you passed a `service_id` — the latter
+is the slot that was *inferred* when you named none, so it is how you learn
+which credential the link will bind. Show `short_url`
 (the oversla.sh link, present when the shortener is configured) or `provide_url`
 verbatim. This is the secret-bag analogue of `create_connection`'s `auth_url`.
 Once the user submits the value, retry the action.

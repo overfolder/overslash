@@ -18,6 +18,7 @@
 	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
 	import TestResult from '$lib/components/services/TestResult.svelte';
 	import { runProbe } from '$lib/api/services';
+	import { fmtCountdown, loginUrl, submitErrorMessage } from '$lib/public-request';
 	import type { ServiceTestResponse } from '$lib/types';
 
 	let { data } = $props();
@@ -43,16 +44,6 @@
 		if (timer) clearInterval(timer);
 	});
 
-	function fmtCountdown(expiresAt: string): string {
-		const t = Date.parse(expiresAt);
-		if (!Number.isFinite(t)) return expiresAt;
-		const ms = t - now;
-		if (ms <= 0) return 'expired';
-		const s = Math.floor(ms / 1000);
-		const m = Math.floor(s / 60);
-		return `${m}m ${(s % 60).toString().padStart(2, '0')}s`;
-	}
-
 	/** Slots this link does not fill and that nothing has bound yet. */
 	const otherUnbound = $derived(
 		data.state === 'ready'
@@ -77,18 +68,8 @@
 			});
 			if (!r.ok) {
 				const body = await r.json().catch(() => null);
-				const code = (body && (body as { error?: string }).error) || `error_${r.status}`;
-				if (r.status === 410 && code.includes('already_fulfilled')) {
-					errorMsg = 'This request was already fulfilled.';
-				} else if (r.status === 410) {
-					errorMsg = 'This link has expired.';
-				} else if (r.status === 401 && code.includes('user_session_required')) {
-					errorMsg = 'This organization requires you to be signed in to provide this secret.';
-				} else if (r.status === 400) {
-					errorMsg = 'This link is invalid or tampered.';
-				} else {
-					errorMsg = 'Submission failed. Please try again.';
-				}
+				const code = (body && (body as { error?: string }).error) || '';
+				errorMsg = submitErrorMessage(r.status, code);
 				return;
 			}
 			// Guarded like the error path above: by this point the secret is in
@@ -133,13 +114,6 @@
 		}
 	}
 
-	function loginUrl(): string {
-		// Round-trip back to this page after signing in. The visitor's original
-		// URL (with token) is already in their tab history, and after login
-		// SvelteKit re-runs this load.
-		if (typeof window === 'undefined') return '/login';
-		return `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
-	}
 </script>
 
 <svelte:head>
@@ -275,7 +249,7 @@
 					</div>
 				{/if}
 
-				<p class="footnote">Expires in {fmtCountdown(m.expires_at)}</p>
+				<p class="footnote">Expires in {fmtCountdown(m.expires_at, now)}</p>
 				<p class="note">
 					Providing a credential does not grant the agent permission to use it. A separate
 					approval is still required.

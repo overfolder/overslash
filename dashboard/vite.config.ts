@@ -75,9 +75,10 @@ export default defineConfig(({ mode }) => {
 				},
 				// The unauthenticated, JWT-scoped standalone pages: "Provide
 				// Secret" and its service-shaped sibling. Matched on the whole
-				// `/public` namespace rather than per-page — it belongs entirely
-				// to the API, and the narrower `/public/secrets` rule silently
-				// 404'd the setup page against its own origin when that shipped.
+				// `/public` namespace rather than per-page: it belongs entirely
+				// to the API, and a per-page rule means the next public
+				// endpoint resolves against the dashboard's own origin and
+				// 404s with nothing to point at. Mirrored in vercel.json.
 				'/public': {
 					target: apiTarget,
 					changeOrigin: true

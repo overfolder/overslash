@@ -11,9 +11,7 @@
 //! shape, the JWT-and-row handshake, and the "which slots still need a
 //! value" question — so the REST endpoint (`POST /v1/secrets/requests`), the
 //! MCP kernel (`overslash.request_secret`) and the auto-mint inside
-//! `kernel_create_service` cannot drift apart. Before this they each rebuilt
-//! the mint by hand, which is how the TTL came to differ between the first
-//! two.
+//! `kernel_create_service` cannot drift apart.
 //!
 //! The OAuth half of setup has no equivalent here on purpose: it is already
 //! carried end to end by `oauth_flows` + `service_instances.connection_id`,
@@ -26,6 +24,7 @@ use uuid::Uuid;
 
 use overslash_core::permissions::AccessLevel;
 use overslash_core::types::{SecretSlot, SecretSource, ServiceDefinition};
+use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::secret_request;
 use overslash_db::repos::service_instance::{CredentialsMap, ServiceInstanceRow};
 use overslash_db::scopes::OrgScope;
@@ -241,6 +240,64 @@ pub async fn mint_bundle(
                 minted.expires_at,
             ));
         }
+        // Audited and announced like the two single-request mint paths.
+        // `create_service` is now where most setup links come into existence,
+        // so without this an admin asking "who minted a credential-collection
+        // link for this instance?" would see nothing for the path that mints
+        // most of them, and `secret_request` stream subscribers would miss
+        // them entirely.
+        //
+        // Deliberately no token / URL on either payload: they are bearer
+        // capabilities, and anyone in the audience could otherwise fulfil the
+        // request themselves. The single-request paths omit them for the same
+        // reason.
+        let scope = OrgScope::new(org_id, db.clone());
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id,
+                identity_id: Some(requested_by),
+                action: "secret_request.created",
+                resource_type: Some("secret_request"),
+                resource_id: None,
+                detail: serde_json::json!({
+                    "id": &minted.request_id,
+                    "secret_name": &slot.default_secret_name,
+                    "target_identity_id": owner_identity_id,
+                    "require_user_session": require_user_session,
+                    "service_instance_id": service_instance_id,
+                    "credential_key": &slot.key,
+                    "via": "create_service",
+                }),
+                description: None,
+                ip_address: None,
+            })
+            .await;
+        let audience = crate::services::events::audience::for_secret_request(
+            &scope,
+            requested_by,
+            owner_identity_id,
+        )
+        .await;
+        crate::services::events::emit(
+            db.clone(),
+            http_client.clone(),
+            crate::services::events::EventDraft {
+                org_id,
+                event_type: crate::services::events::EventType::SecretRequestCreated,
+                payload: serde_json::json!({
+                    "request_id": &minted.request_id,
+                    "secret_name": &slot.default_secret_name,
+                    "identity_id": owner_identity_id,
+                    "requested_by": requested_by,
+                    "service_id": service_instance_id,
+                    "credential_key": &slot.key,
+                    "expires_at": crate::routes::util::fmt_time(minted.expires_at),
+                    "via": "create_service",
+                }),
+                audience,
+            },
+        );
+
         requests.push(SetupRequestRef {
             request_id: minted.request_id,
             credential_key: slot.key.clone(),
@@ -264,25 +321,33 @@ pub async fn mint_bundle(
 
 // ── Slots ─────────────────────────────────────────────────────────────────
 
+/// Every credential slot an *instance* binds: `source: instance`, with a key.
+///
+/// The one place this predicate is written. An `org` slot is provisioned once,
+/// org-wide, by an admin — never by whoever clicks a setup link — and a slot
+/// with an empty key cannot key a binding at all.
+pub fn instance_slots(template: &ServiceDefinition) -> Vec<SecretSlot> {
+    template
+        .all_slots()
+        .into_iter()
+        .filter(|s| s.source == SecretSource::Instance && !s.key.is_empty())
+        .collect()
+}
+
 /// The instance-source credential slots this instance has no binding for yet.
 ///
-/// The same filter the search setup-hint used to apply inline: `source:
-/// instance` (an `org` slot is provisioned once, org-wide, by an admin — not
-/// by whoever clicks a setup link), not already bound, and carrying a
-/// `default_secret_name` to store the value under. A slot with no default
-/// name is a supported shape — `template_validation::core::auth` requires a
-/// default only for org-source slots — but there is no name to mint a request
-/// for, so it surfaces at call time in `credential_missing` instead.
+/// [`instance_slots`] minus the ones nobody needs to be asked for: already
+/// bound, optional, or carrying no `default_secret_name` to store the value
+/// under. A slot with no default name is a supported shape —
+/// `template_validation::core::auth` requires a default only for org-source
+/// slots — but there is no name to mint a request for, so it surfaces at call
+/// time in `credential_missing` instead.
 pub fn unbound_instance_slots(
     template: &ServiceDefinition,
     credentials: &CredentialsMap,
     legacy_secret_name: Option<&str>,
 ) -> Vec<SecretSlot> {
-    let instance_slots: Vec<SecretSlot> = template
-        .all_slots()
-        .into_iter()
-        .filter(|s| s.source == SecretSource::Instance && !s.key.is_empty())
-        .collect();
+    let instance_slots = instance_slots(template);
     // The legacy scalar `secret_name` binds the *sole* instance slot, which is
     // how every pre-slots instance is stored. Treat it as a binding for that
     // one slot so an instance created the old way is not asked to provide a
@@ -354,11 +419,7 @@ pub async fn validate_binding(
     )
     .await?;
 
-    let slots: Vec<SecretSlot> = template
-        .all_slots()
-        .into_iter()
-        .filter(|s| s.source == SecretSource::Instance && !s.key.is_empty())
-        .collect();
+    let slots = instance_slots(&template);
 
     let key = match credential_key {
         Some(k) => k.to_string(),
@@ -400,4 +461,233 @@ pub(crate) fn sha256(s: &str) -> Vec<u8> {
     let mut h = Sha256::new();
     h.update(s.as_bytes());
     h.finalize().to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use overslash_core::types::service::{SecretSlot, TokenInjection};
+    use overslash_core::types::{Runtime, ServiceAuth};
+    use std::collections::HashMap;
+
+    fn injection() -> TokenInjection {
+        TokenInjection {
+            inject_as: "header".into(),
+            header_name: Some("Authorization".into()),
+            query_param: None,
+            prefix: None,
+        }
+    }
+
+    fn slot(key: &str, secret_name: &str, source: SecretSource) -> SecretSlot {
+        SecretSlot {
+            key: key.into(),
+            label: key.into(),
+            description: String::new(),
+            default_secret_name: secret_name.into(),
+            source,
+            optional: false,
+        }
+    }
+
+    fn secret_auth(scheme: &str, default_secret_name: &str, slots: Vec<String>) -> ServiceAuth {
+        ServiceAuth::Secret {
+            template: None,
+            slots,
+            config_keys: Vec::new(),
+            scheme: scheme.into(),
+            label: scheme.into(),
+            description: String::new(),
+            default_secret_name: default_secret_name.into(),
+            injection: injection(),
+            secret_source: SecretSource::Instance,
+            optional: false,
+        }
+    }
+
+    fn def(auth: Vec<ServiceAuth>, secrets: Vec<SecretSlot>) -> ServiceDefinition {
+        ServiceDefinition {
+            key: "acme".into(),
+            display_name: "Acme".into(),
+            description: None,
+            hosts: vec!["api.acme.test".into()],
+            category: None,
+            hidden: false,
+            icon: None,
+            auth,
+            secrets,
+            config: Vec::new(),
+            actions: HashMap::new(),
+            default_timeout_ms: None,
+            runtime: Runtime::Http,
+            mcp: None,
+            instance_defaults: None,
+        }
+    }
+
+    fn keys(slots: Vec<SecretSlot>) -> Vec<String> {
+        slots.into_iter().map(|s| s.key).collect()
+    }
+
+    /// The common shape: one implicit slot named after the scheme.
+    #[test]
+    fn a_single_unbound_slot_is_asked_for() {
+        let d = def(
+            vec![secret_auth("token", "acme_api_key", Vec::new())],
+            Vec::new(),
+        );
+        assert_eq!(
+            keys(unbound_instance_slots(&d, &CredentialsMap::new(), None)),
+            vec!["token"]
+        );
+    }
+
+    #[test]
+    fn a_bound_slot_is_not_asked_for_again() {
+        let d = def(
+            vec![secret_auth("token", "acme_api_key", Vec::new())],
+            Vec::new(),
+        );
+        let bound = CredentialsMap::from([("token".to_string(), "acme_api_key".to_string())]);
+        assert!(unbound_instance_slots(&d, &bound, None).is_empty());
+    }
+
+    /// The legacy scalar `secret_name` is how every pre-slots instance stores
+    /// its one credential. Asking for a value the instance already has would
+    /// be a setup link nobody needs to open.
+    #[test]
+    fn the_legacy_scalar_covers_a_sole_slot() {
+        let d = def(
+            vec![secret_auth("token", "acme_api_key", Vec::new())],
+            Vec::new(),
+        );
+        assert!(
+            unbound_instance_slots(&d, &CredentialsMap::new(), Some("acme_api_key")).is_empty()
+        );
+        // …and an empty one covers nothing.
+        assert_eq!(
+            keys(unbound_instance_slots(&d, &CredentialsMap::new(), Some(""))),
+            vec!["token"]
+        );
+    }
+
+    /// An `org` slot is provisioned once, org-wide, by an admin — never by
+    /// whoever clicks a setup link.
+    #[test]
+    fn org_source_slots_are_never_asked_for() {
+        let d = def(
+            vec![secret_auth(
+                "basic",
+                "acme_user",
+                vec!["acme_user".into(), "acme_shared".into()],
+            )],
+            vec![
+                slot("acme_user", "acme_user", SecretSource::Instance),
+                slot("acme_shared", "acme_shared", SecretSource::Org),
+            ],
+        );
+        assert_eq!(
+            keys(unbound_instance_slots(&d, &CredentialsMap::new(), None)),
+            vec!["acme_user"]
+        );
+    }
+
+    /// No default name means no vault name to mint a request for. The slot is
+    /// a supported shape and surfaces at call time in `credential_missing`
+    /// instead.
+    #[test]
+    fn a_slot_without_a_default_name_is_not_asked_for() {
+        let d = def(
+            vec![secret_auth(
+                "basic",
+                "acme_user",
+                vec!["acme_user".into(), "acme_nameless".into()],
+            )],
+            vec![
+                slot("acme_user", "acme_user", SecretSource::Instance),
+                slot("acme_nameless", "", SecretSource::Instance),
+            ],
+        );
+        assert_eq!(
+            keys(unbound_instance_slots(&d, &CredentialsMap::new(), None)),
+            vec!["acme_user"]
+        );
+    }
+
+    #[test]
+    fn an_optional_slot_is_not_asked_for() {
+        let mut optional = slot("acme_extra", "acme_extra", SecretSource::Instance);
+        optional.optional = true;
+        let d = def(
+            vec![secret_auth(
+                "basic",
+                "acme_user",
+                vec!["acme_user".into(), "acme_extra".into()],
+            )],
+            vec![
+                slot("acme_user", "acme_user", SecretSource::Instance),
+                optional,
+            ],
+        );
+        assert_eq!(
+            keys(unbound_instance_slots(&d, &CredentialsMap::new(), None)),
+            vec!["acme_user"]
+        );
+    }
+
+    /// Two unbound slots means two links. No shipped template declares two,
+    /// which is exactly why this is a unit test — and the legacy scalar must
+    /// *not* be read as covering one of them, since it is only unambiguous
+    /// when there is a single slot to cover.
+    #[test]
+    fn two_unbound_slots_are_both_asked_for() {
+        let d = def(
+            vec![secret_auth(
+                "basic",
+                "acme_user",
+                vec!["acme_user".into(), "acme_pass".into()],
+            )],
+            vec![
+                slot("acme_user", "acme_user", SecretSource::Instance),
+                slot("acme_pass", "acme_pass", SecretSource::Instance),
+            ],
+        );
+        let mut got = keys(unbound_instance_slots(&d, &CredentialsMap::new(), None));
+        got.sort();
+        assert_eq!(got, vec!["acme_pass", "acme_user"]);
+
+        let mut with_legacy = keys(unbound_instance_slots(
+            &d,
+            &CredentialsMap::new(),
+            Some("acme_user"),
+        ));
+        with_legacy.sort();
+        assert_eq!(
+            with_legacy,
+            vec!["acme_pass", "acme_user"],
+            "the scalar alias is ambiguous with several slots and covers none"
+        );
+    }
+
+    /// One bound, one not: only the gap is asked for. This is the state the
+    /// setup page's "still needs N more" copy renders.
+    #[test]
+    fn a_partially_bound_template_asks_only_for_the_gap() {
+        let d = def(
+            vec![secret_auth(
+                "basic",
+                "acme_user",
+                vec!["acme_user".into(), "acme_pass".into()],
+            )],
+            vec![
+                slot("acme_user", "acme_user", SecretSource::Instance),
+                slot("acme_pass", "acme_pass", SecretSource::Instance),
+            ],
+        );
+        let bound = CredentialsMap::from([("acme_user".to_string(), "acme_user".to_string())]);
+        assert_eq!(
+            keys(unbound_instance_slots(&d, &bound, None)),
+            vec!["acme_pass"]
+        );
+    }
 }

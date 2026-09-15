@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
+	import { fmtCountdown, loginUrl, submitErrorMessage } from '$lib/public-request';
 
 	let { data } = $props();
 
@@ -18,16 +19,6 @@
 	onDestroy(() => {
 		if (timer) clearInterval(timer);
 	});
-
-	function fmtCountdown(expiresAt: string): string {
-		const t = Date.parse(expiresAt);
-		if (!Number.isFinite(t)) return expiresAt;
-		const ms = t - now;
-		if (ms <= 0) return 'expired';
-		const s = Math.floor(ms / 1000);
-		const m = Math.floor(s / 60);
-		return `${m}m ${(s % 60).toString().padStart(2, '0')}s`;
-	}
 
 	function fmtRelative(iso: string): string {
 		const t = Date.parse(iso);
@@ -58,19 +49,8 @@
 			});
 			if (!r.ok) {
 				const body = await r.json().catch(() => null);
-				const code = (body && (body as { error?: string }).error) || `error_${r.status}`;
-				if (r.status === 410 && code.includes('already_fulfilled')) {
-					errorMsg = 'This request was already fulfilled.';
-				} else if (r.status === 410) {
-					errorMsg = 'This link has expired.';
-				} else if (r.status === 401 && code.includes('user_session_required')) {
-					errorMsg =
-						'This organization requires you to be signed in to provide this secret.';
-				} else if (r.status === 400) {
-					errorMsg = 'This link is invalid or tampered.';
-				} else {
-					errorMsg = 'Submission failed. Please try again.';
-				}
+				const code = (body && (body as { error?: string }).error) || '';
+				errorMsg = submitErrorMessage(r.status, code);
 				return;
 			}
 			submitted = true;
@@ -82,14 +62,6 @@
 		}
 	}
 
-	function loginUrl(): string {
-		// Round-trip back to this page after signing in. We intentionally
-		// don't try to preserve the query string via the redirect layer —
-		// the visitor's original URL (with token) is already in their tab
-		// history, and after login SvelteKit will re-run this load.
-		if (typeof window === 'undefined') return '/login';
-		return `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
-	}
 </script>
 
 <svelte:head>
@@ -184,7 +156,7 @@
 			{/if}
 
 			<p class="footnote">
-				Requested {fmtRelative(m.created_at)} · Expires in {fmtCountdown(m.expires_at)}
+				Requested {fmtRelative(m.created_at)} · Expires in {fmtCountdown(m.expires_at, now)}
 			</p>
 			<p class="note">
 				Providing a secret does not grant the agent permission to use it. A separate approval is

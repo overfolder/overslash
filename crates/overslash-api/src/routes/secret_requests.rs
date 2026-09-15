@@ -394,10 +394,8 @@ async fn get_setup(
     )
     .await?;
 
-    let slots: Vec<SetupSlotView> = def
-        .all_slots()
+    let slots: Vec<SetupSlotView> = crate::services::service_setup::instance_slots(&def)
         .into_iter()
-        .filter(|s| s.source == overslash_core::types::SecretSource::Instance && !s.key.is_empty())
         .map(|s| SetupSlotView {
             bound: instance.credentials.0.contains_key(&s.key),
             // `x-overslash-label` is optional, and most shipped templates
