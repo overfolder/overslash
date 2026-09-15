@@ -100,6 +100,13 @@ export interface PendingApproval {
    * may omit it — treat `undefined` as true.
    */
   auto_call_on_approve?: boolean;
+  /**
+   * The same bit as `auto_call_on_approve`, spelled as the call to make once
+   * this approval is resolved. `"get_result"` when the gateway replays the
+   * call itself (replaying with `approval_id` instead answers 409);
+   * `"call_pending"` in deferred-execution mode. Older builds may omit it.
+   */
+  next_step?: 'get_result' | 'call_pending';
   disclosed_fields?: DisclosedField[];
   risk: Risk;
   permission_keys: string[];

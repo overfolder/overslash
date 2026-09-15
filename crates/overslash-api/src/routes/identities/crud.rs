@@ -509,6 +509,16 @@ pub(super) async fn create_identity(
         .await?;
     }
 
+    // Seed a first-level agent with the self-setup rules. Called
+    // unconditionally — `bootstrap_agent_in_org` carries both guards (the org
+    // flag and the kind/depth test) so this site does not have to restate them.
+    let seeded_permissions = overslash_db::repos::org_bootstrap::bootstrap_agent_in_org(
+        state.db(&ext),
+        auth.org_id,
+        row.id,
+    )
+    .await?;
+
     let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: auth.org_id,
@@ -522,6 +532,7 @@ pub(super) async fn create_identity(
                 "email": &row.email,
                 "parent_id": row.parent_id,
                 "depth": row.depth,
+                "seeded_permissions": seeded_permissions,
             }),
             description: None,
             ip_address: ip.0.as_deref(),

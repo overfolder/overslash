@@ -307,6 +307,16 @@
 						</div>
 					</div>
 
+					{#if ctx.default_agent_self_setup && ctx.parents.find((p) => p.id === parentId)?.is_you}
+						<div class="self-setup-note">
+							This agent will be able to create services from templates, author
+							templates, start OAuth connections, and ask you for secrets — on its
+							own, without an approval each time. It will still need an admin to
+							share any of them with anyone else. You can revoke this on the
+							agent's page at any time.
+						</div>
+					{/if}
+
 					<div class="field">
 						<label for="groups">Groups</label>
 						<GroupSearch available={ctx.groups} bind:value={groupNames} />
@@ -696,6 +706,15 @@
 		flex-direction: column;
 		gap: 6px;
 	}
+	.self-setup-note {
+		font: var(--text-body-sm);
+		color: var(--color-text-secondary);
+		background: var(--color-bg);
+		border: 1px solid var(--color-border-subtle);
+		border-radius: var(--radius-sm);
+		padding: 0.625rem 0.75rem;
+	}
+
 	.field label {
 		font: var(--text-label);
 		color: var(--color-text);

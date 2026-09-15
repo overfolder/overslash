@@ -9,6 +9,43 @@ use super::*;
 
 // ── Kernels ───────────────────────────────────────────────────────────────
 
+/// Owner-or-admin gate for an instance addressed **by id** through the
+/// platform runtime.
+///
+/// The REST twins call `routes::services::require_owner_or_admin` before they
+/// reach these kernels; the platform/MCP bridge calls the kernel directly
+/// (`services::platform_registry`), so without this the guard simply was not
+/// there on that path. An agent holding `overslash:manage_services_own:*`
+/// could rebind any non-system instance in the org by id — including its
+/// `url`, which turns another owner's injected credential into a request
+/// aimed at a host the caller picked.
+///
+/// The test is the **ceiling user**, not `caller_may_manage_owned`'s ancestry:
+/// instances are owned by users (`kernel_create_service` resolves the owner to
+/// `on_behalf_of` or the caller's ceiling user), and an agent is deliberately
+/// not an ancestor of its own owner-user. Ancestry would therefore refuse an
+/// agent the very instance it just created, which is the flow this whole
+/// surface exists to serve. Org-level rows (`owner_identity_id IS NULL`) match
+/// nobody's ceiling and so always require admin — the same conclusion
+/// `caller_may_manage_owned` reaches for them.
+async fn require_owned_by_ceiling_or_admin(
+    scope: &OrgScope,
+    row: &overslash_db::repos::service_instance::ServiceInstanceRow,
+    auth_identity: Uuid,
+    access_level: AccessLevel,
+) -> Result<(), AppError> {
+    if access_level >= AccessLevel::Admin {
+        return Ok(());
+    }
+    let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(scope, auth_identity).await?;
+    if row.owner_identity_id == Some(ceiling_user_id) {
+        return Ok(());
+    }
+    // `NotFound`, not `Forbidden`: a caller with no reach on this row should
+    // not be able to probe which ids exist in the org.
+    Err(AppError::NotFound("service instance not found".into()))
+}
+
 /// List service instances visible to the caller.
 ///
 /// When `admin_view_all` is true, the group ceiling is bypassed and every
@@ -174,7 +211,13 @@ pub async fn kernel_get_service(
     })?;
 
     let row = if let Ok(uuid) = input.name.parse::<Uuid>() {
-        scope.get_service_instance(uuid).await?
+        // The by-id branch skips the ceiling-scoped resolvers the name branch
+        // uses below, so it has to re-impose the same reach itself.
+        let row = scope.get_service_instance(uuid).await?;
+        if let Some(ref row) = row {
+            require_owned_by_ceiling_or_admin(&scope, row, auth_identity, ctx.access_level).await?;
+        }
+        row
     } else {
         let ceiling = Some(group_ceiling::resolve_ceiling_user_id(&scope, auth_identity).await?);
         if input.include_inactive {
@@ -700,6 +743,7 @@ pub async fn kernel_update_service(
     if existing.is_system {
         return Err(AppError::BadRequest("cannot modify system service".into()));
     }
+    require_owned_by_ceiling_or_admin(&scope, &existing, auth_identity, ctx.access_level).await?;
 
     // Reconcile credential changes against the template. Any of: a whole-map
     // `credentials` replace, the legacy `secret_name` alias (set or clear), or

@@ -194,6 +194,18 @@ pub async fn resolve_target(
         path_label.push('/');
         path_label.push_str(name);
         if created {
+            // Same self-setup seed the REST and enrollment paths apply, so an
+            // agent provisioned by header does not start life more restricted
+            // than the identical agent created through the dashboard. The
+            // kind/depth guard inside makes this a no-op for the `sub_agent`
+            // levels of the descent.
+            overslash_db::repos::org_bootstrap::bootstrap_agent_in_org(
+                scope.db(),
+                scope.org_id(),
+                child.id,
+            )
+            .await
+            .map_err(db_err)?;
             log_provisioned(scope, caller_identity_id, ip, &path_label, &child.id, None).await;
         }
         current = child;

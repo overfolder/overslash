@@ -868,6 +868,23 @@ See SPEC §11 *Standalone Pages → User Signed Mode* for the full policy spec a
 - **Created** — timestamp
 - **Plan / billing** — placeholder for future
 
+#### Agent defaults
+
+One card, admin-only, holding the org policies applied to an agent **at creation time**. Both are read when the identity row is written and are never retroactive, which the card's description says outright — an admin flipping either one should not expect existing agents to change.
+
+- **New agents can set up their own services** (`default_agent_self_setup`, default **on**) — a first-level agent is seeded with the four `overslash:*_own` self-setup rules. The help text names what it does *not* include (the `_share`/`_publish` half) and warns that an agent owned by an org admin inherits admin reach through its owner's groups regardless.
+- **Deferred execution by default for new agents** (`default_deferred_execution`, default off).
+- **Upstream call timeouts** — default and maximum, blank to inherit the deployment value.
+
+All three patch the same `PATCH /v1/orgs/{id}/execution-settings` endpoint, one key at a time.
+
+The self-setup default is **disclosed at both points where an agent is created**, because otherwise the grant is invisible until someone opens the agent's Permission Rules table:
+
+- *`/agents` create modal* — one line under the Inherits Permissions toggle, shown only when the chosen parent is a user and the org flag is on.
+- *`/oauth/consent` enrollment form* — same, between the Inherit Permissions toggle and the Groups picker, gated on the selected parent being the user themselves (a deeper parent yields a depth-2 agent, which is never seeded).
+
+Neither is a control — the org toggle is the only place the policy is set. The seeded rows are revocable individually in the agent detail Permission Rules table.
+
 ## Secrets view
 
 A dedicated nav item at `/secrets`. Manages secrets owned by the user and their agents. Users see only secrets in their own subtree. Org admins see all secrets across the org.

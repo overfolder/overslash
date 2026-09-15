@@ -12,6 +12,7 @@
 //! on its own).
 
 mod agent_icons;
+mod agent_self_setup_defaults;
 mod common;
 
 mod account_invitations;

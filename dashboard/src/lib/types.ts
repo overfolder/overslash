@@ -87,6 +87,11 @@ export interface SecretRequestSettings {
  */
 export interface ExecutionSettings {
   default_deferred_execution: boolean;
+  /** When true (default), a newly-created first-level agent is seeded with the
+   * four `overslash:*_own` self-setup permission rules, so it can stand up the
+   * services it needs without an approval per call. Applies at agent-creation
+   * time only — flipping it never touches an agent that already exists. */
+  default_agent_self_setup: boolean;
   /** Default upstream timeout for action calls, in ms. `null` inherits the
    * deployment default. A template action or an individual call overrides it. */
   call_timeout_ms: number | null;
@@ -1082,6 +1087,12 @@ export type CallResponse =
        *  explicitly. Backend may omit on older builds — treat undefined as
        *  true. */
       auto_call_on_approve?: boolean;
+      /** The same bit as auto_call_on_approve, spelled as the call to make
+       *  once this approval is resolved. `get_result` when the gateway will
+       *  replay the call itself (replaying with approval_id instead answers
+       *  409); `call_pending` in deferred-execution mode, where nothing runs
+       *  until the caller dispatches it. Backend may omit on older builds. */
+      next_step?: 'get_result' | 'call_pending';
       /** Render-form fields mirroring ApprovalResponse so a white-label caller
        *  can draw the same approval card the dashboard does without a second
        *  GET /v1/approvals/{id}. */

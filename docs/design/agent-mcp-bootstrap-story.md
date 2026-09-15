@@ -191,12 +191,13 @@ Independent of the bridge but tightly coupled to the agent UX. Today, calling an
 - **Tests:** add cases to the existing MCP integration tests that exercise each error type.
 - **Spec link:** [agent-self-management.md §5](agent-self-management.md).
 
-#### PR 5 — Permission grants for new agent-bootstrap scopes
+#### PR 5 — Permission grants for new agent-bootstrap scopes *(shipped)*
 
-The `_own` vs `_share`/`_publish` split from [agent-self-management.md §1](agent-self-management.md) needs to land at the permission-rule level so an agent can be granted `manage_services_own` without inheriting `manage_services_share`. This is a one-time schema/permission-key change in the dashboard + REST layer.
+The `_own` vs `_share`/`_publish` split from [agent-self-management.md §1](agent-self-management.md) landed at the permission-rule level, so an agent can hold `manage_services_own` without inheriting `manage_services_share` (migrations `058` and `061` renamed the pre-split patterns).
 
-- **Files:** permission key parsing (likely under `crates/overslash-core/src/permissions/`), template normalization, default permission seeds.
-- **Tests:** unit tests on permission resolution; one integration test asserting an agent with only `_own` cannot call `_share` actions.
+The "default permission seeds" half shipped later, under the `D-NEXT` decision in DECISIONS.md: a first-level agent (`depth = 1`) is seeded at creation with all four `_own` anchors — `manage_services_own`, `manage_templates_own`, `manage_connections_own`, `request_secrets_own` — gated by the org flag `default_agent_self_setup` (default on, never retroactive). `crates/overslash-db/src/repos/org_bootstrap.rs::bootstrap_agent_in_org` owns both guards; the three creation paths call it unconditionally. With that, Mira's story runs end to end with no approval click: steps 1, 2, 3 and 5 are all covered by the seed.
+
+- **Tests:** `crates/overslash-api/tests/agent_self_setup_defaults.rs`, including the negative half — a seeded agent still cannot reach any `_share` action, nor another user's service instance.
 
 #### PR 6 — Documentation update
 

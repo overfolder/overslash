@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT action_pattern FROM permission_rules\n          WHERE identity_id = $1 AND effect = 'allow' AND action_pattern LIKE 'overslash:%'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "action_pattern",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "permission_rules",
+            "name": "action_pattern"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ea72d7ff3cfeff3eae3f1fa41a23a776763f375d95e6a6f3150867044362b9e6"
+}

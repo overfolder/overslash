@@ -205,6 +205,12 @@ pub async fn set_org_member_admin(
 /// AccessLevel, so the impersonation cap at the auth layer treats it as
 /// admin-level when an impersonate-capable key is presented.
 ///
+/// Deliberately **not** seeded with the first-level-agent self-setup rules
+/// ([`crate::repos::org_bootstrap::bootstrap_agent_in_org`]): this row has no
+/// parent, so it sits at `depth = 0` and the guard declines it anyway, and its
+/// Admins membership above already resolves a higher ceiling than those rules
+/// would grant. The omission is intentional, not an oversight.
+///
 /// Returns `(row, created)` so the caller can emit a one-time
 /// `org_service_agent.created` audit row.
 pub async fn get_or_create_org_service_agent(

@@ -546,6 +546,12 @@
 		return patchExecutionSettings({ default_deferred_execution: next });
 	}
 
+	function toggleDefaultAgentSelfSetup(nextValue?: boolean) {
+		if (!executionSettings) return;
+		const next = nextValue ?? !executionSettings.default_agent_self_setup;
+		return patchExecutionSettings({ default_agent_self_setup: next });
+	}
+
 	// Blank clears the override; anything else must parse to a positive
 	// integer. Reject locally rather than round-tripping a 400 for a typo.
 	function commitTimeout(
@@ -834,15 +840,40 @@
 			{/if}
 		</section>
 
-		<!-- Execution defaults (deferred-execution policy) -->
+		<!-- Agent defaults (self-setup permissions + deferred-execution policy) -->
 		<section class="card">
-			<h2>Approval execution</h2>
+			<h2>Agent defaults</h2>
 			<p class="section-desc">
-				Default behavior when an approval is allowed. Existing agents are not
-				touched when this flips — they keep their per-agent override on the
-				agent detail page.
+				Applied to agents at creation time. Existing agents are not touched when
+				these flip — they keep whatever they were born with, editable per agent
+				on the agent detail page.
 			</p>
 			{#if executionSettings}
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">New agents can set up their own services</div>
+						<div class="toggle-help">
+							When on (default), an agent created directly under a person starts
+							with permission to create services from templates, author
+							templates, start OAuth connections, and mint secret-request links
+							— the four setup steps that otherwise cost an approval each. It
+							never includes the sharing half: publishing a template org-wide,
+							granting a service to a group other than its owner's, or
+							requesting a secret from someone else still needs an admin. Note
+							that an agent owned by an org admin inherits admin reach on these
+							calls through its owner's groups, so those limits do not bind it.
+							Sub-agents are never seeded, and the rules are ordinary
+							permission rules you can revoke per agent.
+						</div>
+					</div>
+					<ToggleSwitch
+						checked={executionSettings.default_agent_self_setup}
+						onchange={toggleDefaultAgentSelfSetup}
+						disabled={executionSaving}
+						label="New agents can set up their own services"
+					/>
+				</div>
+
 				<div class="toggle-row">
 					<div class="toggle-body">
 						<div class="toggle-label">Deferred execution by default for new agents</div>
