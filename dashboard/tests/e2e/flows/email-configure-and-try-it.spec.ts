@@ -109,10 +109,19 @@ test('user configures the email template against their own gateway and lists mai
 
 		await page.getByRole('button', { name: /^Create service$/i }).click();
 
-		// The wizard routes to the instance detail page on success.
+		// `email` declares a credential probe, so the wizard stops on its
+		// verification step rather than navigating straight through. The
+		// verdict here is the gateway's real answer over the seeded mailbox —
+		// but this spec is about configuring the instance, so it waits for the
+		// probe to settle and moves on regardless of which way it went. The
+		// `Try It` call below is the assertion that the instance works.
+		await page.getByRole('heading', { name: 'Check it works' }).waitFor({ timeout: 15_000 });
+		await expect(page.locator('.verdict.pending')).toHaveCount(0, { timeout: 30_000 });
+		await page.screenshot({ path: 'screenshots/email-story-2-created.png' });
+		await page.getByRole('button', { name: /^(Done|Continue anyway)$/ }).click();
+
 		await page.waitForURL(/\/services\/[0-9a-f-]{36}$/, { timeout: 15_000 });
 		const serviceId = page.url().split('/').pop()!;
-		await page.screenshot({ path: 'screenshots/email-story-2-created.png' });
 
 		// ── Try It ──────────────────────────────────────────────────────
 		await page.getByRole('button', { name: /Try it/i }).click();

@@ -1448,6 +1448,61 @@ No login required *by default* — the JWT in the URL authenticates the request.
 
 Secret requests also appear in the dashboard: as notification bell items, as badges on the agent tree, and as inline `[Provide]` / `[Deny]` actions in the agent detail panel. The standalone page is for resolving from outside the dashboard (e.g., a link in Telegram or email).
 
+### Service Setup Page (`/services/setup/req_...?token=jwt`)
+
+The service-shaped sibling of the page above. Same signed token, same single-use row, same User Signed Mode rules, and it submits to the *same* `POST /public/secrets/provide/{req_id}` endpoint — there is one write path. What differs is the framing and what fulfilment does: the page leads with the service rather than a vault key name, and on submit the server binds the instance's credential slot as well as writing the secret, so the service goes from credential-less to callable in one POST.
+
+These URLs are minted by `POST /v1/services` for every unbound per-instance credential slot and returned as `setup.setup_url` — the twin of `connect.auth_url` for an OAuth template. A request with no `service_instance_id` 404s here and keeps the older page.
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Overs/ash                                          │
+│                                                     │
+│  [R]  Resend                                        │ ← template icon +
+│       resend-work                                   │   display name, then
+│                                                     │   the instance name
+│  agent:henry set this up for you and needs its      │
+│  token.                                             │
+│                                                     │
+│  Stored as                             resend_key   │ ← where the value
+│  For                                   Jane Doe     │   lands, not what
+│  Also needs                      Mailbox password   │   to paste
+│                                                     │ ← only when a sibling
+│  ┌─ ✓ Signed in as jane@acme.com ──────────────┐   │   slot is unbound
+│  │ Your name will be recorded on the audit     │   │
+│  │ trail for this submission.                  │   │
+│  └─────────────────────────────────────────────┘   │
+│                                                     │
+│  Token                                              │ ← the slot's authored
+│  ┌───────────────────────────────────────────────┐  │   label, falling back
+│  │ Paste the value                    [👁 Show]  │  │   to the slot key made
+│  └───────────────────────────────────────────────┘  │   readable
+│                                                     │
+│  [        Connect        ]                          │
+│                                                     │
+│  Expires in 59m 12s                                 │
+│  Providing a credential does not grant the agent    │
+│  permission to use it. A separate approval is       │
+│  still required.                                    │
+└─────────────────────────────────────────────────────┘
+```
+
+After a successful submit the form is replaced by the outcome:
+
+- **Verified** — when the template declares a credential probe (§9 *Test actions*) *and* the visitor has a same-org session, the page runs it immediately and renders the verdict: green "Works — responded in 214 ms", or red with the truncated upstream error and a **Retry**. This is the whole point of the page: a key pasted wrong is caught here rather than on the agent's first real call.
+- **Sign in to test** — same case without a session. The probe runs through the authenticated call path, so there is no anonymous Test button; the link is offered instead.
+- **Still needs N more** — a multi-slot template. The probe is *not* run (its answer would be a foregone "no usable credential yet"); the page says what remains, and each outstanding slot has its own link.
+- Expired / already-fulfilled / invalid states read as on the secret request page.
+
+### Test Service (authenticated surfaces)
+
+The same verdict component appears in two places inside the dashboard, both backed by `POST /v1/services/{id}/test`:
+
+- **Create wizard, post-create step.** `/services/new` no longer navigates away the moment the service is created: when the template declares a probe it shows a **Check it works** step. Both ways out lead to the service and neither undoes anything — a template can be right while an upstream is merely down, so the primary button reads *Done* when the probe passed or has not run, and *Continue anyway* only when it failed. An unbound credential slot shows its auto-minted setup link to forward, and suppresses the probe until it has been used. This is also the OAuth path's verification step, since this page *is* the "Connect & create" screen.
+- **Service detail → Credentials tab.** A **Test service** button above the credentials form, for both auth kinds. This is what makes an OAuth service verifiable after the fact — there is no value to paste, so without it a reconnect is a leap of faith.
+
+Verdicts render identically everywhere: `ok` green, `failed` red with the upstream status and error, `pending_approval` / `needs_authentication` / `denied` / `not_supported` amber with the reason. Retry is offered except on `not_supported` and `denied`, which answer the same way every time.
+
 ### Approval Deep-Link Page (`/approvals/apr_...`)
 
 Login required. If not logged in → redirect to login → redirect back. If logged in but without authority to resolve → show approval details read-only with: "You don't have permission to resolve this approval."

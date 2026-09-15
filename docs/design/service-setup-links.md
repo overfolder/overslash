@@ -113,9 +113,14 @@ the required check on both `/call` and `/validate`, so demanding a probe
 restate Gmail's `userId: me` would make the template say the same thing twice
 and drift the moment the default changed.
 
-Declared on 18 shipped templates. `deepwiki` is deliberately left without one:
-every tool needs a repo name, and it authenticates with nothing, so there is
-no credential for a probe to prove.
+Declared on 19 of the 23 shipped templates. The four without one are each
+deliberate:
+
+| template | why not |
+|---|---|
+| `deepwiki` | every tool needs a repo name, and it authenticates with nothing — no credential for a probe to prove |
+| `overslash` | `runtime: platform`; a platform action answers from this process against no upstream credential, which is why `Ext::Test` is not read at `Pos::PlatformAction` |
+| `github_legacy_oauth`, `test_email` | `x-overslash-hidden` fixtures, not agent-facing |
 
 ### The setup link — mirroring auto-connect
 

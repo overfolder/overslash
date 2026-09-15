@@ -140,7 +140,7 @@ async fn list_services(
                 row.owner_identity_id,
             )
             .await;
-            let icon_url = platform_services::resolve_instance_icon_url(
+            let tv = platform_services::template_view(
                 state.db(&ext),
                 &state.registry,
                 &row,
@@ -150,7 +150,8 @@ async fn list_services(
             .await;
             let mut summary = platform_services::row_to_summary(row, groups);
             summary.credentials_status = credentials_status;
-            summary.icon_url = icon_url;
+            summary.icon_url = tv.icon_url;
+            summary.test_action = tv.test_action;
             summaries.push(summary);
         }
         if let Some(conn) = q.connection {
@@ -255,8 +256,18 @@ async fn get_service(
             row.owner_identity_id,
         )
         .await;
+        let tv = platform_services::template_view(
+            state.db(&ext),
+            &state.registry,
+            &row,
+            row.owner_identity_id,
+            &state.config.public_url,
+        )
+        .await;
         let mut detail = platform_services::row_to_detail(row);
         detail.credentials_status = credentials_status;
+        detail.icon_url = tv.icon_url;
+        detail.test_action = tv.test_action;
         return Ok(Json(detail));
     };
 
@@ -400,6 +411,8 @@ async fn update_service(
 }
 
 async fn update_service_status(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     Path(id): Path<Uuid>,
@@ -425,7 +438,18 @@ async fn update_service_status(
         .update_service_instance_status(id, &req.status)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
-    Ok(Json(platform_services::row_to_detail(row)))
+    let tv = platform_services::template_view(
+        state.db(&ext),
+        &state.registry,
+        &row,
+        row.owner_identity_id,
+        &state.config.public_url,
+    )
+    .await;
+    let mut detail = platform_services::row_to_detail(row);
+    detail.icon_url = tv.icon_url;
+    detail.test_action = tv.test_action;
+    Ok(Json(detail))
 }
 
 /// Query params for `DELETE /v1/services/{name}`.

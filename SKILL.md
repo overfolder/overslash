@@ -115,7 +115,8 @@ For a **secret-based** template the same response also carries `setup`:
 { "setup": {
     "setup_url": "https://app.overslash.com/services/setup/req_ab12…?token=…",
     "short_url": "https://oversla.sh/xY3",
-    "requests": [{ "credential_key": "token", "secret_name": "resend_key", "setup_url": "…" }],
+    "requests": [{ "request_id": "req_ab12…", "credential_key": "token",
+                   "secret_name": "resend_key", "setup_url": "…" }],
     "expires_at": "…" } }
 ```
 

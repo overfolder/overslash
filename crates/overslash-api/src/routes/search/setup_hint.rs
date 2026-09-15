@@ -79,10 +79,8 @@ pub(super) fn build_auth_status(def: &ServiceDefinition, connected: bool) -> Aut
 ///
 /// One step, for both auth kinds: `create_service` mints whichever credential
 /// handshake the template implies and returns it on the response —
-/// `connect.auth_url` for OAuth, `setup.setup_url` for a secret. Until that
-/// landed this emitted a second `request_secret` step per credential slot, and
-/// an agent following it made two calls and handed its user a link that named
-/// a vault key rather than the service it was for.
+/// `connect.auth_url` for OAuth, `setup.setup_url` for a secret. The `note` is
+/// load-bearing, since it names the field the URL arrives on.
 fn build_setup_steps(def: &ServiceDefinition) -> Vec<SetupStep> {
     let note = match def.auth.first() {
         Some(ServiceAuth::OAuth { .. }) => {
@@ -190,13 +188,10 @@ mod tests {
         );
     }
 
-    /// Regression, inverted. This used to emit one `request_secret` step per
-    /// slot — and an earlier cut emitted a single step whose `secret_name` was
-    /// an array, which would have deserialize-failed the moment an agent
-    /// followed it. Both are moot: `create_service` mints one link per unbound
-    /// slot and returns them together, so the hint stays one step however many
-    /// slots the template declares. No shipped template has two, which is
-    /// exactly why this is a unit test.
+    /// The hint stays one step however many slots the template declares:
+    /// `create_service` mints one link per unbound slot and returns them
+    /// together. No shipped template has two, which is exactly why this is a
+    /// unit test — an assertion over the live catalog would pass vacuously.
     #[test]
     fn multi_slot_secret_template_still_asks_once() {
         let d = def(

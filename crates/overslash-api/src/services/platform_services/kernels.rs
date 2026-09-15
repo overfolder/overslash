@@ -184,6 +184,9 @@ pub async fn kernel_list_services(
                 };
                 derive_credentials_status(tpl, scopes, &row.credentials, row.secret_name.as_deref())
             });
+            // The bulk list already has the resolved template in hand from its
+            // own one-pass fetch, so it fills the pair itself rather than
+            // paying `template_view`'s per-row resolve N times over.
             let icon_url = template.and_then(|tpl| {
                 crate::services::icon_url::resolve_icon_url(
                     tpl.icon.as_ref(),
@@ -241,7 +244,7 @@ pub async fn kernel_get_service(
     let credentials_status =
         compute_credentials_status(&ctx.db, &ctx.registry, &scope, &row, row.owner_identity_id)
             .await;
-    let icon_url = resolve_instance_icon_url(
+    let tv = template_view(
         &ctx.db,
         &ctx.registry,
         &row,
@@ -249,21 +252,10 @@ pub async fn kernel_get_service(
         &ctx.config.public_url,
     )
     .await;
-    let template_key = row.template_key.clone();
-    let template_owner = row.owner_identity_id;
     let mut detail = row_to_detail(row);
     detail.credentials_status = credentials_status;
-    detail.icon_url = icon_url;
-    detail.test_action = resolve_template_definition(
-        &ctx.db,
-        &ctx.registry,
-        ctx.org_id,
-        template_owner,
-        &template_key,
-    )
-    .await
-    .ok()
-    .and_then(|def| crate::routes::actions::probe::describe(&def));
+    detail.icon_url = tv.icon_url;
+    detail.test_action = tv.test_action;
     Ok(detail)
 }
 
@@ -925,5 +917,19 @@ pub async fn kernel_update_service(
         .update_service_instance(id, &update)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
-    Ok(row_to_detail(row))
+    // The dashboard assigns this response straight onto the row it renders, so
+    // omitting these made saving a credential hide the instance's own icon and
+    // Test button until a reload — the moment a user most wants to press it.
+    let tv = template_view(
+        &ctx.db,
+        &ctx.registry,
+        &row,
+        row.owner_identity_id,
+        &ctx.config.public_url,
+    )
+    .await;
+    let mut detail = row_to_detail(row);
+    detail.icon_url = tv.icon_url;
+    detail.test_action = tv.test_action;
+    Ok(detail)
 }

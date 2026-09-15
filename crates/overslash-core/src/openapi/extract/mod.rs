@@ -467,10 +467,13 @@ pub(in crate::openapi) fn parse_pagination(
 /// [`TestSpec`] itself a plain object, so the persisted round-trip needs no
 /// hand-rolled deserializer.
 ///
-/// Structural shape only, exactly like [`parse_pagination`] above: that the
-/// named params exist on the action, that only one action in the template
-/// carries the key, and that its risk is `read` are all cross-field questions
-/// and live in `template_validation::core::action`.
+/// Structural shape only, exactly like [`parse_pagination`] above. The
+/// cross-field questions live one and two levels up: that the named params
+/// exist on the action and that its risk is `read` in
+/// `template_validation::core::action::check_test`, and that only one action
+/// in the template carries the key in `template_validation::core`
+/// (`check_single_test_action`) — it has to be there, since it is a
+/// whole-definition check rather than a per-action one.
 pub(in crate::openapi) fn parse_test(
     v: Option<&Value>,
     base: &str,

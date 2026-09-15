@@ -10,9 +10,8 @@ use super::*;
 /// (programmatically-built templates) are skipped — they can't key a binding.
 pub(super) fn instance_slot_keys(template: &ServiceDefinition) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for slot in template.all_slots() {
-        if slot.source == SecretSource::Instance && !slot.key.is_empty() && !out.contains(&slot.key)
-        {
+    for slot in crate::services::service_setup::instance_slots(template) {
+        if !out.contains(&slot.key) {
             out.push(slot.key);
         }
     }
