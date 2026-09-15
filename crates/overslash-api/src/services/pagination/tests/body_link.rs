@@ -338,6 +338,71 @@ fn a_repeated_continuation_refuses_even_when_another_key_moved() {
     );
 }
 
+/// A next URL that simply omits the declared key. `?query=x&next=` already
+/// stopped the traversal; `?query=x` says strictly less and must not say more.
+/// Without the check the changed `page_size` composes a marker on its own, and
+/// a marker is a delta over the arguments the caller already holds — which
+/// from hop two include the spent token, so the next call is the one just made.
+#[test]
+fn a_next_url_omitting_the_declared_continuation_is_the_last_page() {
+    assert_eq!(
+        next_page(
+            &body_link_spec(),
+            None,
+            None,
+            &sent(&[("page_size", json!(25)), ("next", json!("tok1"))]),
+            &result(
+                200,
+                json!({"data": [{"id": 9}], "next": "/api/v3/search/stories?page_size=100"}),
+                &[],
+            ),
+        ),
+        json!({"has_more": false}),
+        "no continuation in the URL, so the page_size delta is not a next page"
+    );
+}
+
+/// The same on hop one, where the caller never sent the key either. Nothing
+/// downstream would supply it, so the marker would page one forever.
+#[test]
+fn a_first_hop_next_url_omitting_the_continuation_is_the_last_page() {
+    assert_eq!(
+        next_page(
+            &body_link_spec(),
+            None,
+            None,
+            &sent(&[("page_size", json!(25))]),
+            &result(
+                200,
+                json!({"data": [{"id": 9}], "next": "/api/v3/search/stories?page_size=100"}),
+                &[],
+            ),
+        ),
+        json!({"has_more": false}),
+    );
+}
+
+/// The bound on that check: it asks for the continuation only when the spec
+/// declared one. A bare `link` names no key — GitHub advances through `page`,
+/// an ordinary declared parameter — so requiring one would stop every
+/// header-style traversal on page one. Pinned here because the check sits in
+/// the shared helper both arms call.
+#[test]
+fn a_header_link_declaring_no_param_still_pages_without_one() {
+    let marker = next_page(
+        &link_spec(),
+        None,
+        None,
+        &sent(&[("page", json!(1))]),
+        &result(
+            200,
+            json!({}),
+            &[("link", "<https://api.github.com/r?page=2>; rel=\"next\"")],
+        ),
+    );
+    assert_eq!(marker["next"]["params"], json!({"page": 2}));
+}
+
 /// The ordinary case it all sits around: hop two advancing to hop three.
 #[test]
 fn a_fresh_continuation_pages_on_from_the_second_hop() {
