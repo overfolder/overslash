@@ -571,14 +571,17 @@
 			const res = await session.post<{
 				agents_granted: number;
 				rules_written: number;
-				agents_missing_self_setup: number;
+				agents_missing_self_setup?: number;
 			}>(`/v1/orgs/${org.id}/agent-self-setup/backfill`, {});
 			backfillResult =
 				res.agents_granted === 0
 					? 'Nothing to do — every agent already had these rules.'
 					: `Granted ${res.rules_written} rule${res.rules_written === 1 ? '' : 's'} across ` +
 						`${res.agents_granted} agent${res.agents_granted === 1 ? '' : 's'}.`;
-			if (executionSettings) {
+			// The server omits the count when it could not re-take it after the
+			// (already committed) grant. Keep the prior value rather than
+			// blanking the label over a number we simply do not have.
+			if (executionSettings && res.agents_missing_self_setup !== undefined) {
 				executionSettings = {
 					...executionSettings,
 					agents_missing_self_setup: res.agents_missing_self_setup
@@ -919,7 +922,7 @@
 				     toggle does on its own: flipping a policy and rewriting every
 				     existing agent's permissions are different decisions. -->
 				<div class="backfill-row">
-					{#if executionSettings.agents_missing_self_setup > 0}
+					{#if (executionSettings.agents_missing_self_setup ?? 0) > 0}
 						<span class="backfill-count">
 							{executionSettings.agents_missing_self_setup === 1
 								? '1 existing agent predates this and is missing some of these rules.'

@@ -374,6 +374,18 @@ pub struct SelfSetupBackfill {
 /// Set-based on purpose: one statement over N agents rather than N statements,
 /// so an org with hundreds of agents is one round trip, and every row lands or
 /// none does.
+///
+/// Serialized per org by a transaction-scoped advisory lock, the same device
+/// `identity::provision` uses and for the same reason: `permission_rules` has
+/// no unique index on `(org_id, identity_id, action_pattern)` and deliberately
+/// must not grow one — the two other writers (`POST /v1/permissions` and
+/// "Allow & Remember") legitimately re-insert an existing pattern with a fresh
+/// `expires_at`. Without the lock, `NOT EXISTS` is only as good as the
+/// statement's snapshot: under `READ COMMITTED` two concurrent backfills on
+/// one org — two admins, or one retried request — both see the rule missing
+/// and both insert it, leaving a visibly doubled rule list that nothing later
+/// cleans up. The lock releases on commit or rollback, so a panicking request
+/// cannot strand it.
 pub async fn backfill_agent_self_setup(
     pool: &PgPool,
     org_id: Uuid,
@@ -382,6 +394,14 @@ pub async fn backfill_agent_self_setup(
         .iter()
         .map(|s| (*s).to_string())
         .collect();
+
+    let mut tx = pool.begin().await?;
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        format!("agent_self_setup_backfill:{org_id}"),
+    )
+    .execute(&mut *tx)
+    .await?;
 
     let rows = sqlx::query!(
         "INSERT INTO permission_rules (org_id, identity_id, action_pattern, effect)
@@ -405,8 +425,9 @@ pub async fn backfill_agent_self_setup(
         org_id,
         &patterns,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     let rules_written = rows.len() as i64;
     let mut agents: Vec<Uuid> = rows.into_iter().map(|r| r.identity_id).collect();

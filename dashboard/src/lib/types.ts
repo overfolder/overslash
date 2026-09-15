@@ -94,8 +94,13 @@ export interface ExecutionSettings {
   default_agent_self_setup: boolean;
   /** Live first-level agents missing at least one of the four self-setup
    * rules — what a backfill would touch. Recomputed per request, so it drops
-   * to 0 immediately after a successful backfill. */
-  agents_missing_self_setup: number;
+   * to 0 immediately after a successful backfill.
+   *
+   * Always present on GET. Omitted on PATCH when the count could not be
+   * taken — the settings write has already committed at that point, so the
+   * server reports an absent number rather than failing a change that
+   * landed. Treat `undefined` as "keep the value you already had". */
+  agents_missing_self_setup?: number;
   /** Default upstream timeout for action calls, in ms. `null` inherits the
    * deployment default. A template action or an individual call overrides it. */
   call_timeout_ms: number | null;

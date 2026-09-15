@@ -312,7 +312,15 @@ pub(super) struct ExecutionSettingsResponse {
     /// this endpoint: a second round trip to label one button is not worth a
     /// route. Recomputed per request, so it goes to 0 right after a backfill
     /// and climbs again only if agents are created while the default is off.
-    agents_missing_self_setup: i64,
+    ///
+    /// Absent — rather than wrong — when the count could not be taken. On the
+    /// read path it is always present: nothing has been written, so an
+    /// incomplete answer is just an incomplete answer and the GET fails. On
+    /// PATCH it is best-effort, because the settings write has already
+    /// committed by then and failing the request over a label would tell the
+    /// caller their change was lost when it was not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agents_missing_self_setup: Option<i64>,
     /// Default upstream timeout for action calls in this org, in ms.
     /// `null` inherits the deployment default (`CALL_TIMEOUT_MS`).
     /// A template action or an individual call still overrides it.
@@ -378,7 +386,7 @@ pub(super) async fn get_execution_settings(
     Ok(Json(ExecutionSettingsResponse {
         default_deferred_execution: value,
         default_agent_self_setup: self_setup,
-        agents_missing_self_setup: missing,
+        agents_missing_self_setup: Some(missing),
         call_timeout_ms: timeouts.call_timeout_ms,
         max_call_timeout_ms: timeouts.max_call_timeout_ms,
     }))
@@ -476,9 +484,13 @@ pub(super) async fn patch_execution_settings(
         })
         .await;
 
+    // Best-effort: the settings write is already committed. A stale label
+    // costs the caller one stale number; a 500 would tell them a change that
+    // landed did not. Same reasoning as the audit call above.
     let missing =
         overslash_db::repos::org_bootstrap::count_agents_missing_self_setup(state.db(&ext), id)
-            .await?;
+            .await
+            .ok();
 
     Ok(Json(ExecutionSettingsResponse {
         default_deferred_execution: next_deferred,
@@ -499,8 +511,11 @@ pub(super) struct SelfSetupBackfillResponse {
     /// four already contributes two.
     rules_written: i64,
     /// Agents still missing a rule afterwards. Zero on success; non-zero only
-    /// if an agent was created between the write and this read.
-    agents_missing_self_setup: i64,
+    /// if an agent was created between the write and this read. Absent when
+    /// the count could not be taken — the grant above has already committed,
+    /// so a failure to re-count must not be reported as a failed backfill.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agents_missing_self_setup: Option<i64>,
 }
 
 /// `POST /v1/orgs/{id}/agent-self-setup/backfill` — grant the four self-setup
@@ -562,9 +577,13 @@ pub(super) async fn backfill_agent_self_setup(
         })
         .await;
 
+    // Best-effort, like the audit write above: the rules are already committed,
+    // and a 500 here would report a backfill that succeeded as one that failed
+    // — which an admin would reasonably respond to by clicking again.
     let remaining =
         overslash_db::repos::org_bootstrap::count_agents_missing_self_setup(state.db(&ext), id)
-            .await?;
+            .await
+            .ok();
 
     Ok(Json(SelfSetupBackfillResponse {
         agents_granted: outcome.agents_granted,

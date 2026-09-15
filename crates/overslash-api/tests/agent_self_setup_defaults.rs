@@ -598,6 +598,108 @@ async fn pending_count_tracks_the_backfill() {
     assert_eq!(settings["agents_missing_self_setup"], 0);
 }
 
+/// Two admins clicking at once, or one request retried, must not double the
+/// rule list — and the thing that prevents it is a per-org advisory lock, so
+/// that is what this asserts.
+///
+/// `permission_rules` has no unique index on
+/// `(org_id, identity_id, action_pattern)` and deliberately must not grow one:
+/// `POST /v1/permissions` and "Allow & Remember" both legitimately re-insert an
+/// existing pattern with a fresh `expires_at`. So `NOT EXISTS` alone is only as
+/// good as the statement's snapshot — under READ COMMITTED two overlapping
+/// backfills each see the rule missing and each insert it.
+///
+/// Racing two real requests does **not** test this: they reliably fail to
+/// overlap in the window that matters, so such a test passes with the lock
+/// removed (checked). Instead, hold the lock externally and assert the backfill
+/// blocks on it — which is deterministic, and fails immediately if the lock is
+/// ever dropped from the query.
+#[tokio::test]
+async fn backfill_serializes_on_a_per_org_advisory_lock() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+
+    // Take the same lock the backfill takes, on its own connection, and hold it.
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        format!("agent_self_setup_backfill:{org_id}")
+    )
+    .execute(&mut *holder)
+    .await
+    .unwrap();
+
+    // The backfill must now block rather than proceed on a stale snapshot.
+    let blocked = tokio::time::timeout(
+        std::time::Duration::from_millis(1500),
+        backfill(&client, &base, &admin_key, org_id),
+    )
+    .await;
+    assert!(
+        blocked.is_err(),
+        "backfill completed while the per-org lock was held — the lock is not being taken"
+    );
+
+    // Release it, and the same call goes through and writes exactly four.
+    holder.rollback().await.unwrap();
+    let body: Value = backfill(&client, &base, &admin_key, org_id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["rules_written"], 4);
+    assert_eq!(overslash_rules(&pool, agent_id).await, EXPECTED.to_vec());
+}
+
+/// Two concurrent requests leave exactly one set of rules behind. Weaker than
+/// the lock assertion above — it does not reliably reproduce the interleaving —
+/// but it pins the user-visible invariant: whatever the scheduling, the rule
+/// list is never doubled.
+#[tokio::test]
+async fn concurrent_backfills_write_one_set_of_rules() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, agent_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity_no_seed(&base, &client).await;
+    set_self_setup(&client, &base, &admin_key, org_id, true).await;
+
+    let (a, b) = tokio::join!(
+        backfill(&client, &base, &admin_key, org_id),
+        backfill(&client, &base, &admin_key, org_id),
+    );
+    assert_eq!(a.status(), reqwest::StatusCode::OK);
+    assert_eq!(b.status(), reqwest::StatusCode::OK);
+
+    let a: Value = a.json().await.unwrap();
+    let b: Value = b.json().await.unwrap();
+    assert_eq!(
+        a["rules_written"].as_i64().unwrap() + b["rules_written"].as_i64().unwrap(),
+        4,
+        "between them the two calls must write the four rules once"
+    );
+
+    let rows: Vec<String> = sqlx::query_scalar!(
+        "SELECT action_pattern FROM permission_rules
+          WHERE identity_id = $1 AND action_pattern LIKE 'overslash:%'",
+        agent_id
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut deduped = rows.clone();
+    deduped.sort();
+    deduped.dedup();
+    assert_eq!(
+        rows.len(),
+        deduped.len(),
+        "duplicate rule rows after concurrent backfills: {rows:?}"
+    );
+    assert_eq!(deduped, EXPECTED.to_vec());
+}
+
 /// Bulk grants leave a trail naming who ran it and how much it touched.
 #[tokio::test]
 async fn backfill_is_audited() {
