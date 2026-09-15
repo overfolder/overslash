@@ -10,7 +10,7 @@
 		initiateOAuth,
 		createService,
 		createByocCredential,
-		testService
+		runProbe
 	} from '$lib/api/services';
 	import type {
 		ConnectionSummary,
@@ -550,15 +550,7 @@
 		testing = true;
 		testResult = null;
 		try {
-			testResult = await testService(created.id);
-		} catch (e) {
-			// A transport-level failure is still a verdict for the person
-			// looking at it — render it as one rather than replacing the whole
-			// page with a create error the create did not have.
-			testResult = {
-				status: 'failed',
-				error: e instanceof ApiError ? `Could not run the test (${e.status})` : 'Could not run the test'
-			};
+			testResult = await runProbe(created.id);
 		} finally {
 			testing = false;
 		}

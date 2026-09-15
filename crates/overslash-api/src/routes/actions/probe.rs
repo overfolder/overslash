@@ -38,9 +38,14 @@ use crate::extractors::{AuthContext, CallerTransport, ClientIp, ReqExt};
 /// How much of an upstream error message to keep on the verdict.
 const ERROR_CHARS: usize = 300;
 
-/// A body larger than this is a probe returning far more than a liveness
-/// answer; it is read to completion and discarded either way, so the cap
-/// only bounds the memory, never the verdict.
+/// Cap on the envelope this reads back.
+///
+/// `to_bytes` *errors* past this rather than truncating, and an unreadable
+/// body classifies as `failed` — so the cap can turn a healthy probe into a
+/// reported failure, which is why it is far above anything the call can
+/// produce. `verbose: Some(false)` caps the compact render at
+/// `COMPACT_BUDGET_BYTES` (8 KiB), so a real probe is two orders of magnitude
+/// under it and the limit exists only to bound a pathological response.
 const MAX_BODY_BYTES: usize = 1 << 20;
 
 /// A template's declared credential probe, as clients see it.
@@ -72,6 +77,8 @@ pub struct ServiceTestResponse {
     /// - `failed` — the probe ran and the upstream rejected it. `http_status`
     ///   and `error` say how.
     /// - `pending_approval` — the caller's permission chain requires a human.
+    /// - `denied` — a permission rule refuses the call outright. `error`
+    ///   carries the reason.
     /// - `needs_authentication` — there is no usable credential yet.
     /// - `not_supported` — the template declares no probe.
     pub status: &'static str,
@@ -168,20 +175,31 @@ pub(crate) async fn run(
         //
         // - The gateway's auth errors. "There is no usable credential" is
         //   exactly what a probe is for.
-        // - A transport failure reaching the upstream. Answering 502 here
-        //   would tell the operator the *gateway* is broken; what actually
-        //   happened is that this service could not be reached, which is the
-        //   question they asked.
+        // - Failing to reach the upstream at all, whether that is a connect
+        //   error (`Request`) or the budget running out (`UpstreamTimeout`).
+        //   Answering 502/504 here would tell the operator the *gateway* is
+        //   broken; what actually happened is that this service could not be
+        //   reached, which is the question they asked. The two arrive as
+        //   different variants because `http_caller::map_reqwest_timeout`
+        //   folds every timeout into `CallError::Timeout` before it can
+        //   become a `Request` — so matching only on `Request` would let a
+        //   hung upstream escape as a 504.
         //
-        // Everything else — a 403 from the permission gate, a 400 from a
-        // malformed template — propagates, because the caller needs the real
-        // status to act on it.
+        // Everything else — a 400 from a malformed template, a 500 —
+        // propagates, because the caller needs the real status to act on it.
         Err(AppError::Request(e)) => {
-            let mut out = ServiceTestResponse::bare("failed");
-            out.action = Some(action_key.to_string());
-            out.latency_ms = Some(latency_ms);
-            out.error = Some(truncate(&transport_reason(&e), ERROR_CHARS));
-            return Ok(out);
+            return Ok(transport_verdict(
+                action_key,
+                latency_ms,
+                transport_reason(&e),
+            ));
+        }
+        Err(AppError::UpstreamTimeout { timeout_ms, .. }) => {
+            return Ok(transport_verdict(
+                action_key,
+                latency_ms,
+                format!("the service did not respond within {timeout_ms} ms"),
+            ));
         }
         Err(err) => match super::wrap_auth_error_as_ok(&err) {
             Some(resp) => resp,
@@ -199,9 +217,21 @@ pub(crate) async fn run(
 async fn read_json_body(response: Response) -> Value {
     let bytes = match axum::body::to_bytes(response.into_body(), MAX_BODY_BYTES).await {
         Ok(b) => b,
-        Err(_) => return Value::Null,
+        Err(e) => {
+            // Logged rather than swallowed: the verdict this produces
+            // ("returned no verdict") is the least diagnosable one there is,
+            // so the operator debugging it needs a trail.
+            tracing::warn!(error = %e, "probe response body was unreadable");
+            return Value::Null;
+        }
     };
-    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "probe response body was not JSON");
+            Value::Null
+        }
+    }
 }
 
 /// Turn a `CallResponse`-shaped envelope into a verdict.
@@ -222,9 +252,11 @@ fn classify(action_key: &str, latency_ms: u64, body: &Value) -> ServiceTestRespo
     match body.get("status").and_then(Value::as_str) {
         Some("called") => {
             let result = body.get("result");
-            // `status_code` in the verbose shape, `status` in the compact one.
+            // `status_code` in both render shapes: the verbose one is a
+            // serialized `ActionResult` (whose field is `status_code`) and the
+            // compact one inserts the same key explicitly.
             out.http_status = result
-                .and_then(|r| r.get("status_code").or_else(|| r.get("status")))
+                .and_then(|r| r.get("status_code"))
                 .and_then(Value::as_u64)
                 .map(|n| n as u16);
             let is_error = body
@@ -251,6 +283,17 @@ fn classify(action_key: &str, latency_ms: u64, body: &Value) -> ServiceTestRespo
                 .and_then(Value::as_str)
                 .map(str::to_string);
         }
+        // A Layer-2 refusal. It arrives as `Ok(403 + body)` rather than an
+        // `Err`, so it reaches here rather than the propagation arm above —
+        // and it is a genuine verdict anyway: the probe did not run, and the
+        // reason is the thing the operator needs.
+        Some("denied") => {
+            out.status = "denied";
+            out.error = body
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(|r| truncate(r, ERROR_CHARS));
+        }
         // `accepted` (a deferred call) and anything unrecognised: the probe
         // produced no verdict. Say so rather than guessing at one.
         _ => {
@@ -260,13 +303,25 @@ fn classify(action_key: &str, latency_ms: u64, body: &Value) -> ServiceTestRespo
     out
 }
 
+/// A verdict for a call that never got an answer out of the upstream.
+fn transport_verdict(action_key: &str, latency_ms: u64, reason: String) -> ServiceTestResponse {
+    let mut out = ServiceTestResponse::bare("failed");
+    out.action = Some(action_key.to_string());
+    out.latency_ms = Some(latency_ms);
+    out.error = Some(truncate(&reason, ERROR_CHARS));
+    out
+}
+
 /// Why the request never reached the upstream, in words an operator can act
 /// on. `reqwest`'s own `Display` leads with the URL, which on this path is
 /// the gateway's own composed target and reads like an internal detail.
+///
+/// No timeout branch: a timeout never arrives as `AppError::Request` —
+/// `map_reqwest_timeout` has already turned it into `CallError::Timeout`, and
+/// `AppError::UpstreamTimeout` is handled by its own arm above with the budget
+/// it actually blew.
 fn transport_reason(e: &reqwest::Error) -> String {
-    if e.is_timeout() {
-        "the service did not respond in time".into()
-    } else if e.is_connect() {
+    if e.is_connect() {
         "could not connect to the service".into()
     } else {
         format!("could not reach the service: {e}")
@@ -306,14 +361,25 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The compact render shape, which is what `run` asks for
+    /// (`verbose: Some(false)`). `status_code` is the key both shapes use —
+    /// feeding `status` here instead would have exercised nothing, since the
+    /// envelope never carries one.
+    fn called(is_error: bool, status_code: u64, body: Value) -> Value {
+        json!({
+            "status": "called",
+            "is_error": is_error,
+            "action_description": "List domains",
+            "result": {"status_code": status_code, "body": body},
+        })
+    }
+
     #[test]
     fn a_clean_call_is_ok() {
         let v = classify(
             "list_domains",
             214,
-            &json!({"status": "called", "is_error": false,
-                    "action_description": "List domains",
-                    "result": {"status": 200, "body": {"data": []}}}),
+            &called(false, 200, json!({"data": []})),
         );
         assert_eq!(v.status, "ok");
         assert_eq!(v.http_status, Some(200));
@@ -328,8 +394,7 @@ mod tests {
         let v = classify(
             "list_domains",
             80,
-            &json!({"status": "called", "is_error": true,
-                    "result": {"status": 401, "body": "{\"message\":\"API key is invalid\"}"}}),
+            &called(true, 401, json!("{\"message\":\"API key is invalid\"}")),
         );
         assert_eq!(v.status, "failed");
         assert_eq!(v.http_status, Some(401));
@@ -338,12 +403,22 @@ mod tests {
 
     #[test]
     fn an_empty_error_body_falls_back_to_the_status() {
+        let v = classify("list_domains", 80, &called(true, 503, json!("")));
+        assert_eq!(v.error.as_deref(), Some("upstream returned HTTP 503"));
+    }
+
+    /// The verbose shape serializes an `ActionResult`, whose status field is
+    /// spelled the same way. Both must read.
+    #[test]
+    fn the_verbose_shape_reads_the_same_status_field() {
         let v = classify(
             "list_domains",
-            80,
-            &json!({"status": "called", "is_error": true, "result": {"status": 503, "body": ""}}),
+            5,
+            &json!({"status": "called", "is_error": false,
+                    "result": {"status_code": 204, "headers": {}, "body": "", "duration_ms": 3}}),
         );
-        assert_eq!(v.error.as_deref(), Some("upstream returned HTTP 503"));
+        assert_eq!(v.status, "ok");
+        assert_eq!(v.http_status, Some(204));
     }
 
     #[test]
@@ -368,12 +443,39 @@ mod tests {
         assert_eq!(v.auth_url.as_deref(), Some("https://x.test/c/1"));
     }
 
+    /// A Layer-2 refusal comes back as `Ok(403 + body)`, not an `Err`, so it
+    /// lands in `classify` rather than propagating. Without its own arm it
+    /// fell into the catch-all and the reason was dropped.
+    #[test]
+    fn a_denial_keeps_its_reason() {
+        let v = classify(
+            "list_domains",
+            7,
+            &json!({"status": "denied", "reason": "deny rule on resend:*:*"}),
+        );
+        assert_eq!(v.status, "denied");
+        assert_eq!(v.error.as_deref(), Some("deny rule on resend:*:*"));
+    }
+
     /// An unparseable body must not read as success.
     #[test]
     fn a_shapeless_body_is_failed() {
         let v = classify("list_domains", 5, &Value::Null);
         assert_eq!(v.status, "failed");
         assert!(v.error.is_some());
+    }
+
+    #[test]
+    fn a_transport_failure_is_a_verdict_not_a_gateway_error() {
+        let v = transport_verdict(
+            "list_domains",
+            31,
+            "could not connect to the service".into(),
+        );
+        assert_eq!(v.status, "failed");
+        assert_eq!(v.action.as_deref(), Some("list_domains"));
+        assert_eq!(v.latency_ms, Some(31));
+        assert_eq!(v.error.as_deref(), Some("could not connect to the service"));
     }
 
     #[test]

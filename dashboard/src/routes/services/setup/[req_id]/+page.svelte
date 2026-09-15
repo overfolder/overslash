@@ -17,8 +17,7 @@
 	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
 	import TestResult from '$lib/components/services/TestResult.svelte';
-	import { testService } from '$lib/api/services';
-	import { ApiError, apiErrorReason } from '$lib/session';
+	import { runProbe } from '$lib/api/services';
 	import type { ServiceTestResponse } from '$lib/types';
 
 	let { data } = $props();
@@ -92,15 +91,24 @@
 				}
 				return;
 			}
-			const body = (await r.json()) as {
+			// Guarded like the error path above: by this point the secret is in
+			// the vault and the single-use row is burned, so a body that will
+			// not parse must not throw into the catch below and re-offer the
+			// form — the retry would answer "already fulfilled".
+			const body = (await r.json().catch(() => null)) as {
 				service?: { remaining_slots?: string[] };
-			};
-			remainingSlots = body.service?.remaining_slots ?? [];
+			} | null;
+			remainingSlots = body?.service?.remaining_slots ?? [];
 			submitted = true;
 			value = '';
 			// Verify immediately when we can. The point of this page is that the
 			// person holding the key finds out here whether it was the right one.
-			if (canTest) await runTest();
+			//
+			// Not while a sibling slot is still unfilled, though: the probe's
+			// answer would be a foregone "no usable credential yet", and the
+			// headline branch below would report it over the truer "still needs
+			// N more". Same guard the create wizard applies.
+			if (canTest && remainingSlots.length === 0) await runTest();
 		} catch {
 			errorMsg = 'Network error. Please try again.';
 		} finally {
@@ -119,12 +127,7 @@
 		testing = true;
 		testResult = null;
 		try {
-			testResult = await testService(data.meta.service.id);
-		} catch (e) {
-			testResult = {
-				status: 'failed',
-				error: e instanceof ApiError ? apiErrorReason(e) : 'Could not run the test'
-			};
+			testResult = await runProbe(data.meta.service.id);
 		} finally {
 			testing = false;
 		}

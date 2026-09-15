@@ -427,7 +427,13 @@ export interface TestActionRef {
  * Carries no upstream response body on purpose: "do these credentials work"
  * is the whole question the probe answers. */
 export interface ServiceTestResponse {
-  status: 'ok' | 'failed' | 'pending_approval' | 'needs_authentication' | 'not_supported';
+  status:
+    | 'ok'
+    | 'failed'
+    | 'denied'
+    | 'pending_approval'
+    | 'needs_authentication'
+    | 'not_supported';
   action?: string;
   http_status?: number;
   latency_ms?: number;

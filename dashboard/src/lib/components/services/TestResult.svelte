@@ -29,6 +29,7 @@
 			case 'pending_approval':
 			case 'needs_authentication':
 			case 'not_supported':
+			case 'denied':
 				return 'warn';
 			default:
 				return 'fail';
@@ -45,6 +46,8 @@
 					: 'Works';
 			case 'pending_approval':
 				return 'Waiting on an approval';
+			case 'denied':
+				return 'Not allowed to run the test';
 			case 'needs_authentication':
 				return 'No usable credential yet';
 			case 'not_supported':
@@ -61,6 +64,9 @@
 		switch (result.status) {
 			case 'pending_approval':
 				return 'The call needs someone to approve it before it can run.';
+			case 'denied':
+				// The reason is a permission rule, which is the actionable part.
+				return result.error ?? 'A permission rule refuses this call.';
 			case 'needs_authentication':
 				return 'Provide a credential, then test again.';
 			case 'not_supported':
@@ -71,8 +77,14 @@
 	});
 
 	// A retry only makes sense for an outcome that could come out differently.
+	// Retry only where the outcome could come out differently. A template with
+	// no probe and a standing deny rule both answer the same way every time.
 	const canRetry = $derived(
-		!running && !!onRetry && !!result && result.status !== 'not_supported'
+		!running &&
+			!!onRetry &&
+			!!result &&
+			result.status !== 'not_supported' &&
+			result.status !== 'denied'
 	);
 </script>
 

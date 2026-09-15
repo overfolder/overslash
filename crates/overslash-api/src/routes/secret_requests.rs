@@ -560,13 +560,17 @@ async fn submit_provide(
                             ip_address: ip.0.as_deref(),
                         })
                         .await;
+                    // Propagated, not defaulted. An *empty* list is the
+                    // positive verdict — it is what the page reads to say
+                    // "connected" and what tells a waiting agent the instance
+                    // is fully provisioned — so swallowing a query failure
+                    // would announce a false "done" on both surfaces.
                     let remaining_slots = secret_request::outstanding_slots_for_service(
                         state.db(&ext),
                         row.org_id,
                         service_id,
                     )
-                    .await
-                    .unwrap_or_default();
+                    .await?;
                     Some(SubmitServiceOutcome {
                         id: service_id,
                         name: instance.name,

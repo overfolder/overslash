@@ -2,7 +2,7 @@
  * API client wrappers for the Services view: templates, service instances,
  * and OAuth connections.
  */
-import { ApiError, session } from '$lib/session';
+import { ApiError, apiErrorReason, session } from '$lib/session';
 import type {
 	ActionSummary,
 	ByocCredentialSummary,
@@ -243,6 +243,26 @@ export const listServiceGroups = (serviceId: string, signal?: AbortSignal) =>
  */
 export const testService = (id: string, signal?: AbortSignal) =>
 	session.post<ServiceTestResponse>(`/v1/services/${id}/test`, undefined, signal);
+
+/**
+ * `testService`, but a failure to *run* the probe comes back as a verdict too.
+ *
+ * From the operator's seat "I pressed Test and it did not work" is one
+ * outcome, and splitting it across a verdict panel and a thrown error means
+ * every caller re-decides how to render half of it. The three surfaces that
+ * offer a Test button all want this, and when they each had their own copy
+ * they had already drifted on the failure string.
+ */
+export async function runProbe(id: string, signal?: AbortSignal): Promise<ServiceTestResponse> {
+	try {
+		return await testService(id, signal);
+	} catch (e) {
+		return {
+			status: 'failed',
+			error: e instanceof ApiError ? apiErrorReason(e) : 'Could not run the test'
+		};
+	}
+}
 
 // -- OAuth connections --
 
