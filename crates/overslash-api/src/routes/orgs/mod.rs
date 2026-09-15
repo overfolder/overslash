@@ -31,10 +31,11 @@ mod slug;
 use billing_admin::{extend_trial, set_org_plan, start_trial};
 use create::{check_slug, create_free_unlimited_org, create_org};
 use settings::{
-    get_audit_settings, get_execution_settings, get_headless, get_managed_signin, get_org,
-    get_secret_request_settings, get_template_settings, patch_audit_settings,
-    patch_execution_settings, patch_headless, patch_managed_signin, patch_org,
-    patch_secret_request_settings, patch_subagent_cleanup_config, patch_template_settings,
+    backfill_agent_self_setup, get_audit_settings, get_execution_settings, get_headless,
+    get_managed_signin, get_org, get_secret_request_settings, get_template_settings,
+    patch_audit_settings, patch_execution_settings, patch_headless, patch_managed_signin,
+    patch_org, patch_secret_request_settings, patch_subagent_cleanup_config,
+    patch_template_settings,
 };
 
 // Re-exported at the historical `crate::routes::orgs::*` paths — the
@@ -63,6 +64,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/v1/orgs/{id}/execution-settings",
             get(get_execution_settings).patch(patch_execution_settings),
+        )
+        .route(
+            "/v1/orgs/{id}/agent-self-setup/backfill",
+            post(backfill_agent_self_setup),
         )
         .route(
             "/v1/orgs/{id}/audit-settings",

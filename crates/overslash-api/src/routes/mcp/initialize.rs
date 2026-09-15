@@ -55,7 +55,10 @@ pub(super) async fn initialize_response(
          action or resume a pending approval, and overslash_auth for identity \
          introspection (whoami, service_status). Prefer overslash_read when \
          the action only reads data — clients can skip the confirmation \
-         prompt.{}",
+         prompt. If a service you need is not connected yet, set it up \
+         yourself rather than asking the user to: create_service from a \
+         template, then create_connection (OAuth) or request_secret (API \
+         key), and hand the URL each returns to your user.{}",
         roster::roster_sentence(&roster).unwrap_or_default()
     );
 
@@ -82,7 +85,7 @@ pub(super) async fn initialize_response(
 
 /// Static half of `overslash_search`'s description. The caller's connected
 /// service types are appended at request time — see `roster`.
-const SEARCH_DESCRIPTION: &str = "Discover Overslash service instances and actions available to the caller. Each result's `service` field is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the `template` key. Templates with multiple connected instances fan out into one row per instance. Pass `include_catalog: true` to also surface un-connected templates; those rows are marked `setup_required: true` and have no `service` field — set them up first by calling `create_service` on the `overslash` service (params: `template_key` + `name`), then call the name you chose. Pass `exclude` to drop specific services from the response (e.g. when retrying after one already failed). An empty `query` lists every callable instance without actions (browse mode). A row with `paginated: true` returns one page at a time — its result will carry a `_pagination.next` naming the call for the page after it, so you never have to fetch a whole collection to read the start of one.";
+const SEARCH_DESCRIPTION: &str = "Discover Overslash service instances and actions available to the caller. Each result's `service` field is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the `template` key. Templates with multiple connected instances fan out into one row per instance. Pass `include_catalog: true` to also surface un-connected templates; those rows are marked `setup_required: true` and have no `service` field — set them up first by calling `create_service` on the `overslash` service (params: `template_key` + `name`), then call the name you chose. A new instance usually still needs a credential, and the row's `auth.setup` lists the calls that supply one — `create_connection` for OAuth templates, `request_secret` for secret-based ones. Both are yours to make: each returns a URL you hand to your user verbatim, and you never see the credential itself. Do not send the user to a dashboard to do it. Pass `exclude` to drop specific services from the response (e.g. when retrying after one already failed). An empty `query` lists every callable instance without actions (browse mode). A row with `paginated: true` returns one page at a time — its result will carry a `_pagination.next` naming the call for the page after it, so you never have to fetch a whole collection to read the start of one.";
 
 pub(super) async fn tools_list_response(
     state: &AppState,

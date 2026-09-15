@@ -223,6 +223,22 @@ pub(super) enum CallResponse {
         /// approval is granted. Surfaced so MCP clients can choose whether
         /// to wait or to issue an explicit follow-up.
         auto_call_on_approve: bool,
+        /// Which platform action to call once this approval is resolved —
+        /// `auto_call_on_approve` spelled out as the thing to do, because
+        /// getting it wrong is a 409 rather than a no-op.
+        ///
+        /// - `"get_result"` — auto-call is on. The gateway replays the call
+        ///   itself the moment a resolver allows it, so the output is already
+        ///   waiting; fetch it with this `approval_id`. Replaying with
+        ///   `approval_id` instead loses the claim race against the background
+        ///   task and answers `409 execution has already completed`.
+        /// - `"call_pending"` — deferred-execution mode. Nothing runs until
+        ///   the caller dispatches it: `call_pending` over MCP,
+        ///   `POST /v1/approvals/{id}/call` over REST.
+        ///
+        /// Both values are live `overslash` platform action keys, so the field
+        /// carries the call to make, not prose describing it.
+        next_step: &'static str,
         // ── Render-form fields ───────────────────────────────────────────
         // White-label integrations (Telegram/WhatsApp/web bots) render an
         // approval prompt straight off this envelope. The four fields below

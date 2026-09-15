@@ -48,6 +48,7 @@ data only — **not** the trademarks it depicts. See simple-icons'
 | `notion.svg` | Notion | simple-icons 16.28.0 (`notion`) | https://www.notion.so |
 | `overslash.svg` | Overspiral S.L. | local/overslash.svg | — |
 | `resend.svg` | Resend | simple-icons 16.28.0 (`resend`) | https://resend.com/brand |
+| `shortcut.svg` | Shortcut | simple-icons 16.28.0 (`shortcut`) | https://www.shortcut.com/branding |
 | `stripe.svg` | Stripe | simple-icons 16.28.0 (`stripe`) | https://stripe.com/newsroom/information |
 | `telegram.svg` | Telegram | simple-icons 16.28.0 (`telegram`) | https://telegram.org/tour/screenshots |
 | `test_email.svg` | Overspiral S.L. | local/envelope.svg | — |

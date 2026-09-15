@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) AS \"n!\"\n           FROM identities i\n          WHERE i.org_id = $1\n            AND i.kind = 'agent'\n            AND i.depth = 1\n            AND i.archived_at IS NULL\n            AND EXISTS (\n                SELECT 1\n                  FROM unnest($2::text[]) AS pattern\n                 -- Allow-only, matching the two writers: a pattern the\n                 -- agent is denied is a pattern it still lacks, so the\n                 -- button's count and the insert agree about who is missing.\n                 WHERE NOT EXISTS (\n                       SELECT 1\n                         FROM permission_rules r\n                        WHERE r.org_id = $1\n                          AND r.identity_id = i.id\n                          AND r.action_pattern = pattern\n                          AND r.effect = 'allow'\n                          AND (r.expires_at IS NULL OR r.expires_at > now())))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "791ef0efe9c63e72feac28ba661f713a9443912236271d7c79aff50022df10e6"
+}

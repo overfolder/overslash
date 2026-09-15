@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT action_pattern FROM permission_rules\n          WHERE identity_id = $1 AND action_pattern LIKE 'overslash:%'\n            AND (expires_at IS NULL OR expires_at > now())\n          ORDER BY action_pattern",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "action_pattern",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "permission_rules",
+            "name": "action_pattern"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c6391f9e469d3b049861388dbe6df71398f449031ecc9de9d48aae8502957611"
+}

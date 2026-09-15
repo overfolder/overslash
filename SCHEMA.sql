@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict ITpRAwCBQB1Eujdumlb2lXtfTcabr3ewsacbHizs9jNwJBpKN4XyV8oROCASLy3
+\restrict lYnSS1TyJdyBdTlvrhdCwa1onatYtWdcyBptT7jyMcesrEoHYhlq8xvXQWvBCcW
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -896,6 +896,7 @@ CREATE TABLE public.orgs (
     user_template_policy text DEFAULT 'none'::text NOT NULL,
     call_timeout_ms integer,
     max_call_timeout_ms integer,
+    default_agent_self_setup boolean DEFAULT true NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_audit_response_body_mode_check CHECK ((audit_response_body_mode = ANY (ARRAY['off'::text, 'errors_only'::text, 'all'::text]))),
     CONSTRAINT orgs_call_timeout_bounds CHECK ((((call_timeout_ms IS NULL) OR ((call_timeout_ms >= 1000) AND (call_timeout_ms <= 600000))) AND ((max_call_timeout_ms IS NULL) OR ((max_call_timeout_ms >= 1000) AND (max_call_timeout_ms <= 600000))) AND ((call_timeout_ms IS NULL) OR (max_call_timeout_ms IS NULL) OR (call_timeout_ms <= max_call_timeout_ms)))),
@@ -930,6 +931,13 @@ COMMENT ON COLUMN public.orgs.call_timeout_ms IS 'Default upstream timeout in ms
 --
 
 COMMENT ON COLUMN public.orgs.max_call_timeout_ms IS 'Ceiling on any resolved call timeout in this org, in ms. NULL inherits CALL_TIMEOUT_MAX_MS. A caller asking for more is rejected; a template or org default above it is clamped.';
+
+
+--
+-- Name: COLUMN orgs.default_agent_self_setup; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.orgs.default_agent_self_setup IS 'When true (default), a newly-created first-level agent (depth = 1) is seeded with the four overslash:*_own self-setup permission rules: manage_services_own, manage_templates_own, manage_connections_own, request_secrets_own. Existing agents are not touched when this flips.';
 
 
 --
@@ -3302,5 +3310,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ITpRAwCBQB1Eujdumlb2lXtfTcabr3ewsacbHizs9jNwJBpKN4XyV8oROCASLy3
+\unrestrict lYnSS1TyJdyBdTlvrhdCwa1onatYtWdcyBptT7jyMcesrEoHYhlq8xvXQWvBCcW
 

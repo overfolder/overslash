@@ -513,16 +513,11 @@ fn parse_next_spec(
     // rather than half-honoured.
     match style {
         NextStyle::Link => {
-            if param.is_some() || from.is_some() {
-                issues.push(ValidationIssue::new(
-                    "pagination_invalid",
-                    format!(
-                        "{key}.next.style \"link\" takes neither `param` nor `from` — the Link header names the whole next URL"
-                    ),
-                    format!("{base}.next"),
-                ));
-                return None;
-            }
+            // Both optional, and neither is the header form. `from` moves the
+            // read from the `Link` header into the body at that path; `param`
+            // names the one query key the next URL may introduce although the
+            // call just made did not send it. Nothing to reject: a bare `link`
+            // still means what it always did.
         }
         NextStyle::Cursor => {
             if param.is_none() || from.is_none() {

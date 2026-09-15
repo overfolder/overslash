@@ -574,8 +574,12 @@ async fn allow_and_remember_writes_its_rule_from_the_worker() {
     assert_eq!(status, 202);
     let (exec_id, _, _) = fx.execution_row(&approval_id).await;
 
+    // Scoped to the keys this test's call derives: a first-level agent is
+    // seeded with the four `overslash:*_own` self-setup rules at creation, so
+    // an org-wide count no longer isolates what the replay wrote.
     let before: i64 = sqlx::query_scalar!(
-        "SELECT count(*) AS \"n!\" FROM permission_rules WHERE org_id = $1",
+        "SELECT count(*) AS \"n!\" FROM permission_rules
+          WHERE org_id = $1 AND action_pattern LIKE 'http:%'",
         fx.org_id
     )
     .fetch_one(&fx.pool)
@@ -589,7 +593,8 @@ async fn allow_and_remember_writes_its_rule_from_the_worker() {
     fx.run_worker(exec_id).await;
 
     let after: i64 = sqlx::query_scalar!(
-        "SELECT count(*) AS \"n!\" FROM permission_rules WHERE org_id = $1 AND effect = 'allow'",
+        "SELECT count(*) AS \"n!\" FROM permission_rules
+          WHERE org_id = $1 AND effect = 'allow' AND action_pattern LIKE 'http:%'",
         fx.org_id
     )
     .fetch_one(&fx.pool)

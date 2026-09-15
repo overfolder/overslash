@@ -87,6 +87,20 @@ export interface SecretRequestSettings {
  */
 export interface ExecutionSettings {
   default_deferred_execution: boolean;
+  /** When true (default), a newly-created first-level agent is seeded with the
+   * four `overslash:*_own` self-setup permission rules, so it can stand up the
+   * services it needs without an approval per call. Applies at agent-creation
+   * time only — flipping it never touches an agent that already exists. */
+  default_agent_self_setup: boolean;
+  /** Live first-level agents missing at least one of the four self-setup
+   * rules — what a backfill would touch. Recomputed per request, so it drops
+   * to 0 immediately after a successful backfill.
+   *
+   * Always present on GET. Omitted on PATCH when the count could not be
+   * taken — the settings write has already committed at that point, so the
+   * server reports an absent number rather than failing a change that
+   * landed. Treat `undefined` as "keep the value you already had". */
+  agents_missing_self_setup?: number;
   /** Default upstream timeout for action calls, in ms. `null` inherits the
    * deployment default. A template action or an individual call overrides it. */
   call_timeout_ms: number | null;
@@ -554,7 +568,8 @@ export interface ActionSummary {
 
 export interface ActionPagination {
   /** Which continuation family: an opaque cursor, an advancing offset or page
-   *  ordinal, or an RFC 8288 `Link: rel="next"` header. */
+   *  ordinal, or a whole next URL (`link`) — from an RFC 8288 `Link: rel="next"`
+   *  header, or from the response body when `next_param` is set. */
   style: 'cursor' | 'offset' | 'page' | 'link';
   /** The parameter that bounds a page, when the action lets a caller choose. */
   page_size_param?: string;
@@ -562,9 +577,12 @@ export interface ActionPagination {
   page_size_default?: number;
   /** The largest page the upstream documents. */
   page_size_max?: number;
-  /** The parameter carrying the continuation. Absent for `link`, whose next
-   *  URL arrives in a response header. */
+  /** The parameter carrying the continuation. On `link` it is the key lifted
+   *  out of the next URL that page one never sent. */
   next_param?: string;
+  /** Where a `link` style finds the next URL: a dotted response-body path, or
+   *  absent for the RFC 8288 header. Orthogonal to `next_param`. */
+  next_from?: string;
 }
 
 export type ServiceRuntime = 'http' | 'mcp';
@@ -1082,6 +1100,12 @@ export type CallResponse =
        *  explicitly. Backend may omit on older builds — treat undefined as
        *  true. */
       auto_call_on_approve?: boolean;
+      /** The same bit as auto_call_on_approve, spelled as the call to make
+       *  once this approval is resolved. `get_result` when the gateway will
+       *  replay the call itself (replaying with approval_id instead answers
+       *  409); `call_pending` in deferred-execution mode, where nothing runs
+       *  until the caller dispatches it. Backend may omit on older builds. */
+      next_step?: 'get_result' | 'call_pending';
       /** Render-form fields mirroring ApprovalResponse so a white-label caller
        *  can draw the same approval card the dashboard does without a second
        *  GET /v1/approvals/{id}. */

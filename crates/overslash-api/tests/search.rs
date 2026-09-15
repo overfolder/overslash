@@ -1314,6 +1314,96 @@ async fn setup_required_rows_appear_under_include_catalog() {
     );
 }
 
+/// The row an agent sees when it finds a service it wants and cannot use yet
+/// has to name what fixes it. Before `auth.setup` existed the trail ended at
+/// `{"connected": false, "type": "secret"}` and agents fell back to telling
+/// their human to open a dashboard.
+///
+/// Metabase is the canonical case — a secret-auth template whose sole
+/// instance-source slot defaults to `metabase_api_key`.
+#[tokio::test]
+async fn catalog_rows_name_the_calls_that_make_them_callable() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+
+    let body: Value = client
+        .get(format!("{base}/v1/search?q=&include_catalog=true"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+
+    // Secret-auth: create_service, then request_secret naming the vault key.
+    let metabase = results
+        .iter()
+        .find(|r| r["template"] == "metabase")
+        .expect("metabase missing under include_catalog=true");
+    let setup = metabase["auth"]["setup"]
+        .as_array()
+        .unwrap_or_else(|| panic!("metabase row must carry auth.setup: {metabase}"));
+    assert_eq!(setup[0]["action"], "create_service");
+    assert_eq!(setup[0]["params"]["template_key"], "metabase");
+    assert_eq!(setup[1]["action"], "request_secret");
+    assert_eq!(
+        setup[1]["params"]["secret_name"], "metabase_api_key",
+        "the secret step must name the slot's default vault key: {setup:?}"
+    );
+
+    // OAuth: the credential step is create_connection, carrying the provider.
+    let oauth_row = results.iter().find(|r| r["auth"]["type"] == "oauth");
+    if let Some(row) = oauth_row {
+        let setup = row["auth"]["setup"]
+            .as_array()
+            .unwrap_or_else(|| panic!("oauth catalog row must carry auth.setup: {row}"));
+        assert_eq!(setup[0]["action"], "create_service");
+        assert_eq!(setup[1]["action"], "create_connection");
+        assert_eq!(setup[1]["params"]["provider"], row["auth"]["provider"]);
+    }
+
+    // A connected instance has nothing to set up, so the key is absent
+    // entirely rather than emitted empty.
+    if let Some(connected) = results.iter().find(|r| r["auth"]["connected"] == true) {
+        assert!(
+            connected["auth"].get("setup").is_none(),
+            "a callable row must omit auth.setup: {connected}"
+        );
+    }
+
+    // The invariant that makes these steps *followable*, asserted over every
+    // row in the catalog rather than one hand-picked template: each step names
+    // a real platform action, and every parameter it pre-fills is a scalar of
+    // the type that action declares. A template with two instance-source slots
+    // gets two `request_secret` steps, never one naming both — `secret_name`
+    // is declared `string`, so an array would deserialize-fail the moment an
+    // agent did what the hint told it to.
+    for row in results {
+        let Some(setup) = row["auth"].get("setup").and_then(Value::as_array) else {
+            continue;
+        };
+        for step in setup {
+            let action = step["action"]
+                .as_str()
+                .expect("step.action must be a string");
+            assert!(
+                ["create_service", "create_connection", "request_secret"].contains(&action),
+                "unknown setup action {action} on {row}"
+            );
+            for (key, value) in step["params"]
+                .as_object()
+                .expect("step.params is an object")
+            {
+                assert!(
+                    value.is_string(),
+                    "setup param {key} must be a scalar string, got {value} on {row}"
+                );
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn call_with_template_name_returns_structured_error() {
     // The whole point of the MCP-clarity rewrite: when an agent passes a

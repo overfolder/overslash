@@ -158,6 +158,13 @@ pub(super) const BUILTIN_ICONS: &[(&str, &[u8])] = &[
         )),
     ),
     (
+        "shortcut",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/service-icons/shortcut.svg"
+        )),
+    ),
+    (
         "stripe",
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),

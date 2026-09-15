@@ -245,8 +245,36 @@ fn continuation_params(
             params.insert(param.clone(), json!(current + 1));
         }
         NextStyle::Link => {
-            let url = link_next(result.headers.iter())?;
-            params = declared_query_params(&url, sent);
+            // Two places a whole next URL can live, and the declaration picks
+            // one: `from` reads it out of the body at that path, absent reads
+            // the RFC 8288 header. Either way what comes back is a URL, and the
+            // same extraction runs over it.
+            let url = match spec.next.from.as_ref() {
+                Some(path) => {
+                    let url = scalar(dotted(body, path)?)?;
+                    // An upstream at the end of a collection commonly sends the
+                    // key as an empty string rather than omitting it — "no more
+                    // pages" spelled awkwardly, not a URL. (The header arm needs
+                    // no such check: `link_next` only returns a URL it found.)
+                    if url.is_empty() {
+                        return None;
+                    }
+                    url
+                }
+                None => link_next(result.headers.iter())?,
+            };
+            // Deliberately no length ceiling on the URL itself, in either arm.
+            // `MAX_CURSOR_VALUE_CHARS` bounds a value that is *carried into the
+            // marker*; a next URL is parsed and thrown away, and only the keys
+            // lifted out of it survive — so the cap belongs on those, and
+            // `declared_query_params` applies it there. Capping the URL would
+            // have punished exactly the callers this style serves: Shortcut
+            // echoes the caller's whole percent-encoded search expression back
+            // inside its next URL, so a long-but-legitimate `query` would push
+            // it past any ceiling and stop the traversal with `has_more: false`
+            // — a partial answer that reads as a complete one, which is the
+            // failure this module exists to end.
+            params = declared_query_params(&url, sent, spec.next.param.as_deref())?;
             if params.is_empty() {
                 return None;
             }
@@ -389,25 +417,91 @@ fn split_links(value: &str) -> Vec<&str> {
     out
 }
 
-/// Lift out of a `rel="next"` URL only the query parameters the caller could
-/// have sent in the first place.
+/// Lift out of a next URL only the query parameters the caller could have sent
+/// in the first place, plus the one continuation key `continuation` names.
 ///
 /// The upstream's next-URL is a second way to address the same endpoint, and
 /// adopting it wholesale would let a response introduce arguments the action
 /// never declared. Intersecting it with what was actually sent keeps the
 /// continuation inside the action's own contract — and keeps a parameter whose
 /// value did not change out of the marker.
-fn declared_query_params(url: &str, sent: &HashMap<String, Value>) -> Map<String, Value> {
+///
+/// `continuation` is the deliberate hole in that intersection, and it is one
+/// key wide: `next.param` on a `link` spec, which the template author wrote
+/// down, and which `check_pagination` has already refused unless the action
+/// declares it.
+///
+/// `None` means the declared continuation is not there to be had — absent from
+/// the URL, empty, past the ceiling, or the one just spent. That is a wholesale
+/// answer rather than a missing key, for the reason [`NextStyle::Cursor`] bails
+/// out of `continuation_params` entirely in the same situation: a marker
+/// offering the *other* keys the next URL happened to change, minus the cursor,
+/// is a marker whose `next` re-issues the page just fetched.
+fn declared_query_params(
+    url: &str,
+    sent: &HashMap<String, Value>,
+    continuation: Option<&str>,
+) -> Option<Map<String, Value>> {
     let mut out = Map::new();
     let Some((_, query)) = url.split_once('?') else {
-        return out;
+        // No query string at all, so a declared continuation has nowhere to
+        // be. Same answer as the post-loop check below, reached earlier.
+        return if continuation.is_some() {
+            None
+        } else {
+            Some(out)
+        };
     };
+    let mut saw_continuation = false;
     for pair in query.split('&') {
         let Some((k, v)) = pair.split_once('=') else {
             continue;
         };
         let (k, v) = (percent_decode(k), percent_decode(v));
+
+        // The continuation is checked on every hop, before the sent/unsent
+        // split — because which side of that split it falls on changes with
+        // the hop. On page one it was never sent, so it lands in the `else`
+        // branch below; from page two on the caller has merged it back in, so
+        // it lands in the `previous` branch. Guarding only one of them would
+        // guard only the first page of a traversal.
+        //
+        // The rules are the cursor arm's, for the cursor arm's reasons: an
+        // upstream at the end of a collection commonly sends the key with an
+        // empty value rather than omitting it, and a value past the ceiling is
+        // not a page token but a payload wearing one's name.
+        if continuation == Some(k.as_str()) {
+            if v.is_empty() || v.chars().count() > MAX_CURSOR_VALUE_CHARS {
+                return None;
+            }
+            // Stays a string rather than being parsed like the branch below,
+            // for the reason that branch cannot apply on the hop that matters:
+            // on page one there is no previously-sent value to take a type
+            // from. `coerce_args` parses it back on replay if the parameter is
+            // numeric.
+            let value = json!(v);
+            // An upstream handing back the token it was just given is at the
+            // end of the collection or looping; either way the next call is the
+            // one just made. `None` wholesale rather than merely omitting the
+            // key, for the reason stated above: the other keys this next URL
+            // happens to have changed -- a clamped `page_size`, say -- would
+            // otherwise still compose a marker, and a marker whose
+            // continuation is the one already spent re-issues the page just
+            // fetched. Omitting the key does not even lose it from that call:
+            // from page two on the caller has merged the spent token into its
+            // own arguments, and a marker is a delta over those.
+            if sent.get(&k) == Some(&value) {
+                return None;
+            }
+            saw_continuation = true;
+            out.insert(k, value);
+            continue;
+        }
+
         let Some(previous) = sent.get(&k) else {
+            // A key the call did not send is a key the next URL would be
+            // *introducing*, and an upstream does not get to add arguments the
+            // caller never chose.
             continue;
         };
         // Numbers stay numbers: `page=2` coming back as `"2"` would be typed
@@ -421,7 +515,25 @@ fn declared_query_params(url: &str, sent: &HashMap<String, Value>) -> Map<String
             out.insert(k, value);
         }
     }
-    out
+
+    // A next URL that never names the declared continuation is not a next
+    // page, whatever else it changed. The spec having a `param` is the
+    // template author saying *this* key is what advances the collection, so
+    // its absence is the same statement as the empty value handled above --
+    // and the two must not answer differently, or `?query=x&next=` stops the
+    // traversal while the strictly emptier `?query=x` composes a marker. That
+    // marker would carry someone else's delta and no continuation: replayed,
+    // it re-issues the page just fetched, because from page two on the caller
+    // still holds the spent token in its own arguments.
+    //
+    // Only when a `param` was declared. A bare `link` reading the RFC 8288
+    // header names no continuation key -- GitHub's next URL advances through
+    // `page`, an ordinary declared parameter -- and demanding one there would
+    // stop every header-style traversal on page one.
+    if continuation.is_some() && !saw_continuation {
+        return None;
+    }
+    Some(out)
 }
 
 /// Query-string decoding: `+` is a space before percent-decoding runs, so a

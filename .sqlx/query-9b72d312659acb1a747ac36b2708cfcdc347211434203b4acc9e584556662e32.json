@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO permission_rules (org_id, identity_id, action_pattern, effect)\n         SELECT $1, i.id, pattern, 'allow'\n           FROM identities i\n          CROSS JOIN unnest($2::text[]) AS pattern\n          WHERE i.org_id = $1\n            AND i.kind = 'agent'\n            AND i.depth = 1\n            AND i.archived_at IS NULL\n            AND EXISTS (\n                SELECT 1 FROM orgs o\n                 WHERE o.id = $1 AND o.default_agent_self_setup)\n            -- Allow-only, for `bootstrap_agent_in_org`'s reason: a deny is\n            -- the opposite claim, not coverage.\n            AND NOT EXISTS (\n                SELECT 1\n                  FROM permission_rules r\n                 WHERE r.org_id = $1\n                   AND r.identity_id = i.id\n                   AND r.action_pattern = pattern\n                   AND r.effect = 'allow'\n                   AND (r.expires_at IS NULL OR r.expires_at > now()))\n         RETURNING identity_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "permission_rules",
+            "name": "identity_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9b72d312659acb1a747ac36b2708cfcdc347211434203b4acc9e584556662e32"
+}

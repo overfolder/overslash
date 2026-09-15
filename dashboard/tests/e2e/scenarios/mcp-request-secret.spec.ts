@@ -13,7 +13,7 @@
 //   4. Agent re-calls the original action; the credential gate now passes.
 //
 // Plus the negative shape:
-//   - Agent with only `request_secrets_own` cannot mint a request for a
+//   - Agent holding the `_own` half only cannot mint a request for a
 //     stranger's identity (would need `request_secrets_share`, which is
 //     dashboard-only).
 //   - Re-fulfilling a used signed URL fails closed (single-use).
@@ -177,7 +177,8 @@ test('agent uses request_secret to fulfil a credential_missing error end-to-end'
 		// 3. Negative — agent without request_secrets_share cannot mint a
 		// request for a stranger identity. Use the admin user's identity as
 		// the target: the agent (owned by member) is not its descendant and
-		// holds only request_secrets_own.
+		// holds the `_own` half only — `request_secrets_share` is never seeded
+		// and is annotated in overslash.yaml as never auto-grantable to an agent.
 		const denyStep = await mcp.callTool('overslash_call', {
 			service: 'overslash',
 			action: 'request_secret',

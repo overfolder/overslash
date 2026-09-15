@@ -501,11 +501,18 @@ async fn mcp_replay_transport_error_does_not_create_rule() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["execution"]["status"], "failed");
 
-    let row = sqlx::query("SELECT count(*) AS n FROM permission_rules WHERE identity_id = $1")
-        .bind(ctx.agent_ident)
-        .fetch_one(&ctx.pool)
-        .await
-        .unwrap();
+    // Scoped to the service under test rather than counting every rule on the
+    // identity: the agent is seeded with the `overslash:*_own` self-setup rules
+    // when it is created. Mirrors the sibling assertion above.
+    let row = sqlx::query(
+        "SELECT count(*) AS n FROM permission_rules
+          WHERE identity_id = $1 AND action_pattern LIKE $2",
+    )
+    .bind(ctx.agent_ident)
+    .bind(format!("{}:%", ctx.service_key))
+    .fetch_one(&ctx.pool)
+    .await
+    .unwrap();
     let n: i64 = row.get("n");
     assert_eq!(n, 0, "no rule should be created when replay fails");
 }

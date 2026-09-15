@@ -501,6 +501,21 @@ export async function setCallTimeouts(session, timeouts) {
 }
 
 /**
+ * Flip the org's `default_agent_self_setup` policy: whether a newly-created
+ * first-level agent is seeded with the four `overslash:*_own` self-setup
+ * permission rules. Read at agent-creation time only, so flipping it has no
+ * effect on agents that already exist.
+ * @param {import('./auth.mjs').Session} session
+ * @param {boolean} enabled
+ */
+export async function setAgentSelfSetup(session, enabled) {
+	return api(session, `/v1/orgs/${session.orgId}/execution-settings`, {
+		method: 'PATCH',
+		body: { default_agent_self_setup: enabled }
+	});
+}
+
+/**
  * Patch the org's managed sign-in admission settings (migration 066/092).
  * Any field left undefined is omitted so the partial PATCH leaves it as-is.
  * @param {import('./auth.mjs').Session} session

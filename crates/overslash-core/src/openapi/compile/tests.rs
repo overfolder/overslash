@@ -448,6 +448,51 @@ fn compile_mcp_without_url_is_valid() {
     assert!(svc.mcp.expect("mcp present").url.is_none());
 }
 
+/// An MCP tool result is a JSON-RPC envelope with no response headers, so the
+/// header form of `link` would parse cleanly and then find nothing to read.
+/// The body form has no such problem — `next_page` projects the envelope
+/// through `mcp_payload` before it walks a dotted path, exactly as a `cursor`
+/// spec's `from` does — so only the headerless one is refused.
+#[test]
+fn compile_mcp_refuses_header_link_but_accepts_a_body_next_url() {
+    let tool = |pagination: serde_json::Value| {
+        json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "x-overslash-key": "t_mcp"},
+            "x-overslash-runtime": "mcp",
+            "paths": {},
+            "x-overslash-mcp": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {"kind": "none"},
+                "tools": [{
+                    "name": "search_things",
+                    "description": "search",
+                    "risk": "read",
+                    "x-overslash-pagination": pagination,
+                }]
+            }
+        })
+    };
+
+    let err = compile_service(&tool(json!({"next": {"style": "link"}}))).unwrap_err();
+    assert!(
+        err.iter().any(|e| e.code == "pagination_invalid_style"),
+        "{err:?}"
+    );
+
+    let (svc, _) = compile_service(&tool(json!({
+        "next": {"style": "link", "from": "next", "param": "cursor"},
+        "items": "data"
+    })))
+    .expect("a body-borne next URL is readable over MCP");
+    let spec = svc.actions["search_things"]
+        .pagination
+        .as_ref()
+        .expect("pagination compiled");
+    assert_eq!(spec.next.style, crate::types::NextStyle::Link);
+    assert_eq!(spec.next.from.as_deref(), Some("next"));
+}
+
 #[test]
 fn compile_mcp_rejects_unknown_auth_kind() {
     let v = json!({
@@ -695,6 +740,35 @@ fn the_prefixed_and_unprefixed_spellings_agree() {
     );
 }
 
+/// `link` says "the response names the whole next URL" — and the corpus needs
+/// both places a response can name one. Absent `from` is the RFC 8288 header
+/// GitHub sends; `from` moves the read into the body, where Shortcut, Zendesk
+/// and Twilio put theirs. `param` names the single query key that URL may
+/// introduce although page one never sent it.
+#[test]
+fn link_accepts_a_body_path_and_a_continuation_key() {
+    let spec = compile_paged(json!({
+        "page_size": {"param": "maxResults", "default": 25},
+        "next": {"style": "link", "from": "next", "param": "pageToken"},
+        "items": "messages"
+    }))
+    .actions["list_messages"]
+        .pagination
+        .clone()
+        .expect("pagination compiled");
+    assert_eq!(spec.next.style, crate::types::NextStyle::Link);
+    assert_eq!(spec.next.from.as_deref(), Some("next"));
+    assert_eq!(spec.next.param.as_deref(), Some("pageToken"));
+
+    // And the bare header form is untouched.
+    let bare = compile_paged(json!({"next": {"style": "link"}})).actions["list_messages"]
+        .pagination
+        .clone()
+        .expect("pagination compiled");
+    assert_eq!(bare.next.from, None);
+    assert_eq!(bare.next.param, None);
+}
+
 /// D67's leniency, one more time: a broken declaration is an authoring
 /// error the author can see, not a service that quietly loses an action.
 #[test]
@@ -710,10 +784,6 @@ fn a_malformed_pagination_block_is_an_authoring_error() {
         ),
         (
             json!({"next": {"style": "cursor", "param": "pageToken"}}),
-            "pagination_invalid",
-        ),
-        (
-            json!({"next": {"style": "link", "param": "pageToken"}}),
             "pagination_invalid",
         ),
         (

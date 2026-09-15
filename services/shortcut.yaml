@@ -1,0 +1,1155 @@
+# Shortcut (shortcut.com) over its REST API v3.
+#
+# Auth is a workspace API token (Settings → API Tokens), sent verbatim in a
+# `Shortcut-Token` header. A token carries the permissions of the member who
+# minted it, so the cheapest way to bound what an agent can reach is to mint the
+# token as a restricted member — the gateway's permission keys narrow it
+# further, but they cannot widen it.
+#
+# Shortcut's own OpenAPI document is at
+# https://developer.shortcut.com/api/rest/v3/shortcut.openapi.json — ~150
+# operations. What follows is a curated subset: the stories, epics, iterations
+# and workspace metadata an agent needs to find work, file it and move it, and
+# nothing that exists only for the web client.
+openapi: 3.1.0
+info:
+  title: Shortcut
+  key: shortcut
+  category: Development
+  description: >-
+    Shortcut project management over its REST API v3. Stories, epics,
+    iterations, tasks and comments, plus the workspace metadata (workflows,
+    teams, members, labels) whose ids the write actions need. Search is the
+    entry point: `search_stories` takes Shortcut's own search syntax
+    ("state:started owner:me"), pages, and returns ids for everything else.
+    Auth is a workspace API token sent as `Shortcut-Token`; it inherits the
+    permissions of the member who created it.
+servers:
+  - url: https://api.app.shortcut.com
+components:
+  securitySchemes:
+    # The scheme name doubles as the implicit credential slot (`token`), as in
+    # resend.yaml and metabase.yaml; the vault entry defaults to
+    # `shortcut_api_token`. The header takes the token verbatim — no scheme
+    # prefix, no encoding — so the jq template is the identity.
+    token:
+      type: apiKey
+      in: header
+      name: Shortcut-Token
+      x-overslash-template:
+        lang: jq
+        expr: .token
+      default_secret_name: shortcut_api_token
+paths:
+  # --- Search -------------------------------------------------------------
+  #
+  # Shortcut answers its search endpoints with `{total, data, next}`, where
+  # `next` is a whole URL path and query string — not the bare token the `next`
+  # *parameter* takes. `style: link` with `from:` is exactly that shape: the URL
+  # is parsed and the declared query keys lifted out of it. `param: next` names
+  # the continuation, which page one never sends and so would otherwise be
+  # dropped as an argument the caller did not choose.
+  /api/v3/search/stories:
+    get:
+      operationId: search_stories
+      summary: "Search stories for '{query}'"
+      risk: read
+      pagination:
+        page_size:
+          param: page_size
+          default: 25
+          max: 250
+        next:
+          style: link
+          from: next
+          param: next
+        items: data
+      description: >-
+        Search stories with Shortcut's own search syntax — the same one the web
+        client's search bar takes. Operators combine with spaces and all must
+        match: `state:started`, `owner:jane`, `team:backend`, `epic:"Q3
+        billing"`, `label:regression`, `is:blocked`, `has:owner`,
+        `created:2026-01-01..2026-03-31`, `!archived`. Bare words match the
+        name and description. This is the way to find a story id for every
+        other action here. Shortcut caps a query at the first 1000 matches;
+        `total` says how many there are in all. Use `query_stories` instead
+        when you already hold the ids you want to filter on.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          description: Shortcut search expression, e.g. "state:started owner:jane"
+          x-overslash-aliases: [q, search, text]
+          schema:
+            type: string
+        - name: page_size
+          in: query
+          description: Results per page, 1-250.
+          schema:
+            type: integer
+            default: 25
+        - name: detail
+          in: query
+          # Pinned to slim by default, not left to the upstream. Shortcut's
+          # `full` inlines every description, comment and task on every row; at
+          # 25 rows that is routinely megabytes, and the response size cap
+          # would drop the page a caller already paid for. A caller who wants
+          # one story whole should `get_story` it.
+          description: >-
+            How much of each story to return. `slim` (the default) is ids,
+            names, state and owners; `full` inlines descriptions, comments and
+            tasks and is large enough to exceed the response cap on a full
+            page.
+          schema:
+            type: string
+            enum: [slim, full]
+            default: slim
+        - name: next
+          in: query
+          description: >-
+            Continuation token for the next page. Read it from the previous
+            call's `_pagination.next.params` rather than constructing it.
+          schema:
+            type: string
+  /api/v3/search/epics:
+    get:
+      operationId: search_epics
+      summary: "Search epics for '{query}'"
+      risk: read
+      pagination:
+        page_size:
+          param: page_size
+          default: 25
+          max: 250
+        next:
+          style: link
+          from: next
+          param: next
+        items: data
+      description: >-
+        Search epics with the same expression syntax as `search_stories`
+        (`state:in progress`, `owner:jane`, `team:backend`, `!archived`). Use
+        the returned ids with `get_epic`, `list_epic_stories` or the story
+        write actions' `epic_id`.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          description: Shortcut search expression
+          x-overslash-aliases: [q, search, text]
+          schema:
+            type: string
+        - name: page_size
+          in: query
+          description: Results per page, 1-250.
+          schema:
+            type: integer
+            default: 25
+        - name: detail
+          in: query
+          description: >-
+            `slim` (default) or `full`. See `search_stories` — `full` is large.
+          schema:
+            type: string
+            enum: [slim, full]
+            default: slim
+        - name: next
+          in: query
+          description: Continuation token from the previous page.
+          schema:
+            type: string
+  /api/v3/stories/search:
+    post:
+      operationId: query_stories
+      summary: Query stories by structured filters
+      risk: read
+      description: >-
+        Find stories by exact field values rather than a search expression —
+        the way to ask "every story in iteration 42 owned by these two people"
+        without spelling it as text. Every field given must match. Shortcut
+        offers no page size and no cursor on this endpoint and caps the result
+        itself, so it is bounded by how narrow the filters are; use
+        `search_stories` when you need to page. Ids come from `list_workflows`,
+        `list_members`, `list_groups`, `list_epics` and `list_iterations`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                archived:
+                  type: boolean
+                  description: Whether to include archived stories.
+                epic_ids:
+                  type: array
+                  description: Epic ids the stories may belong to.
+                group_ids:
+                  type: array
+                  description: Team (group) UUIDs the stories may belong to.
+                iteration_ids:
+                  type: array
+                  description: Iteration ids the stories may belong to.
+                label_ids:
+                  type: array
+                  description: Label ids attached to the stories.
+                owner_ids:
+                  type: array
+                  description: Member UUIDs who own the stories.
+                requested_by_id:
+                  type: string
+                  description: Member UUID who requested the stories.
+                story_type:
+                  type: string
+                  description: One of feature, bug, chore.
+                workflow_state_id:
+                  type: integer
+                  description: Workflow state id (from list_workflows).
+                workflow_state_types:
+                  type: array
+                  description: Coarse state filter — unstarted, started, done.
+                created_at_start:
+                  type: string
+                  description: ISO 8601 lower bound on creation time.
+                created_at_end:
+                  type: string
+                  description: ISO 8601 upper bound on creation time.
+                updated_at_start:
+                  type: string
+                  description: ISO 8601 lower bound on last update.
+                updated_at_end:
+                  type: string
+                  description: ISO 8601 upper bound on last update.
+                deadline_start:
+                  type: string
+                  description: ISO 8601 lower bound on the due date.
+                deadline_end:
+                  type: string
+                  description: ISO 8601 upper bound on the due date.
+                includes_description:
+                  type: boolean
+                  description: >-
+                    Inline each story's description. Off by default, and
+                    expensive on a wide filter.
+  # --- Stories ------------------------------------------------------------
+  #
+  # Shortcut spells its path parameters `{story-public-id}`. They are written
+  # `{story_id}` here: the gateway builds the URL from this path, so the wire
+  # request is identical, and an argument a caller can type without quoting is
+  # worth more than matching the upstream's hyphens. The upstream spelling is
+  # kept as an alias so a caller reading Shortcut's own docs still lands.
+  #
+  # Every write on a story resolves the id to the story's name, so an approval
+  # says which story it is about. The summary carries the id — that is the
+  # stable handle a reviewer can look up — and the disclosure carries both the
+  # id and the name, plus whatever text the call would write.
+  /api/v3/stories/{story_id}:
+    # Declared here without a resolver, and re-declared with one on `put` and
+    # `delete` below. A resolver runs on every call, not only the ones that
+    # raise an approval, so leaving it on the shared block would make
+    # `get_story` fetch the same story twice — once to resolve its name, once
+    # to answer. Operation-level parameters win on name collision, which is
+    # what lets the two coexist.
+    parameters:
+      - name: story_id
+        in: path
+        required: true
+        description: Story id, the number shown as sc-1234 in the UI.
+        x-overslash-aliases: [story_public_id, story-public-id, id]
+        schema:
+          type: integer
+    get:
+      operationId: get_story
+      summary: "Get story {story_id}"
+      risk: read
+      description: >-
+        One story whole: description, workflow state, owners, labels, tasks,
+        comments, linked branches and pull requests. This is the only way to
+        read a story's description — the search actions return it only under
+        `detail=full`, which is too large for a page of them.
+    put:
+      operationId: update_story
+      summary: "Update story {story_id}"
+      risk: write
+      scope_param: story_id
+      description: >-
+        Change a story in place. Only the fields given are touched, so this is
+        also how a story is moved: set `workflow_state_id` (from
+        `list_workflows`) to advance it, `epic_id` or `iteration_id` to file
+        it, `owner_ids` to assign it. Passing `description` replaces the whole
+        description — read it with `get_story` first if you mean to add to it.
+      disclose:
+        - label: Story
+          primary: true
+          filter: '"#" + (.params.story_id | tostring) + (if .resolved.story_id then " — " + .resolved.story_id else "" end)'
+        - label: New name
+          filter: .body.name // empty
+        - label: Description
+          primary: true
+          filter: .body.description // empty
+          max_chars: 2000
+        - label: Workflow state
+          filter: .body.workflow_state_id // empty
+        # `null` here means "unfile from its epic", which is a change worth
+        # showing — and one `//` would hide.
+        - label: Epic
+          filter: 'if .body | has("epic_id") then (.body.epic_id // "none") else empty end'
+        - label: Iteration
+          filter: 'if .body | has("iteration_id") then (.body.iteration_id // "none") else empty end'
+        - label: Owners
+          filter: '.body.owner_ids // [] | select(length > 0) | join(", ")'
+        # `false` is the interesting half of this field — it un-archives —
+        # and jq's `//` yields its right-hand side for `false` as well as for
+        # `null`, so `// empty` would disclose nothing for exactly the write a
+        # reviewer most needs to see. Test presence instead of truthiness.
+        - label: Archived
+          filter: 'if .body | has("archived") then .body.archived else empty end'
+      parameters:
+        - name: story_id
+          in: path
+          required: true
+          description: Story id, the number shown as sc-1234 in the UI.
+          x-overslash-aliases: [story_public_id, story-public-id, id]
+          schema:
+            type: integer
+          # Turns the bare id into the story's own name for the approval
+          # title and the `Story` disclosure — "12345" tells a reviewer
+          # nothing about what is being rewritten. Display only: the
+          # permission key stays on the id, which an upstream rename cannot
+          # move out from under a grant.
+          resolve:
+            get: /api/v3/stories/{story_id}
+            pick: name
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Story title, 256 characters max.
+                description:
+                  type: string
+                  description: >-
+                    Markdown body. Replaces the existing description entirely.
+                story_type:
+                  type: string
+                  enum: [feature, bug, chore]
+                workflow_state_id:
+                  type: integer
+                  description: Target workflow state (from list_workflows).
+                epic_id:
+                  type: integer
+                  description: Epic to file the story under; null to unfile it.
+                iteration_id:
+                  type: integer
+                  description: Iteration to file the story under.
+                group_id:
+                  type: string
+                  description: Owning team (group) UUID.
+                owner_ids:
+                  type: array
+                  description: Member UUIDs who own the story (replaces the set).
+                follower_ids:
+                  type: array
+                  description: Member UUIDs following the story.
+                labels:
+                  type: array
+                  description: 'Labels as [{"name": "regression"}] (replaces the set).'
+                estimate:
+                  type: integer
+                  description: Point estimate.
+                deadline:
+                  type: string
+                  description: Due date, ISO 8601, or null to clear it.
+                archived:
+                  type: boolean
+                  description: Archive or unarchive the story.
+    delete:
+      operationId: delete_story
+      summary: "Delete story {story_id}"
+      risk: delete
+      scope_param: story_id
+      description: >-
+        Permanently delete a story. Shortcut has no undo for this and no trash
+        to restore from — archiving (`update_story` with `archived: true`) is
+        the reversible way to take a story out of the way.
+      disclose:
+        - label: Story
+          primary: true
+          filter: '"#" + (.params.story_id | tostring) + (if .resolved.story_id then " — " + .resolved.story_id else "" end)'
+      parameters:
+        - name: story_id
+          in: path
+          required: true
+          description: Story id, the number shown as sc-1234 in the UI.
+          x-overslash-aliases: [story_public_id, story-public-id, id]
+          schema:
+            type: integer
+          resolve:
+            get: /api/v3/stories/{story_id}
+            pick: name
+            cache_ttl: 60
+  /api/v3/stories:
+    post:
+      operationId: create_story
+      summary: "Create story '{name}'"
+      risk: write
+      description: >-
+        File a new story. `name` is the only required field, but a story with
+        no `workflow_state_id` lands in the default workflow's first state and
+        a story with no `group_id` belongs to no team — read `list_workflows`
+        and `list_groups` first if either matters. `epic_id` and `iteration_id`
+        file it; `owner_ids` takes member UUIDs from `list_members`.
+      disclose:
+        - label: Name
+          primary: true
+          filter: .body.name
+        - label: Description
+          primary: true
+          filter: .body.description // empty
+          max_chars: 2000
+        - label: Type
+          filter: .body.story_type // empty
+        # Plain `//` here, unlike `update_story`: a create has nothing to
+        # unfile, so these ids are either given or absent and `null` carries no
+        # meaning this schema declares.
+        - label: Epic
+          filter: .body.epic_id // empty
+        - label: Iteration
+          filter: .body.iteration_id // empty
+        - label: Team
+          filter: .body.group_id // empty
+        - label: Owners
+          filter: '.body.owner_ids // [] | select(length > 0) | join(", ")'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Story title, 256 characters max.
+                description:
+                  type: string
+                  description: Markdown body.
+                story_type:
+                  type: string
+                  enum: [feature, bug, chore]
+                  description: Defaults to feature when omitted.
+                workflow_state_id:
+                  type: integer
+                  description: >-
+                    Starting workflow state (from list_workflows). Omitted, the
+                    story lands in the default workflow's first state.
+                epic_id:
+                  type: integer
+                  description: Epic to file the story under.
+                iteration_id:
+                  type: integer
+                  description: Iteration to file the story under.
+                group_id:
+                  type: string
+                  description: Owning team (group) UUID, from list_groups.
+                owner_ids:
+                  type: array
+                  description: Member UUIDs who own the story.
+                requested_by_id:
+                  type: string
+                  description: Member UUID who asked for the story.
+                labels:
+                  type: array
+                  description: 'Labels as [{"name": "regression"}].'
+                estimate:
+                  type: integer
+                  description: Point estimate.
+                deadline:
+                  type: string
+                  description: Due date, ISO 8601.
+                parent_story_id:
+                  type: integer
+                  description: >-
+                    Make this a sub-story of the given story. Unlike a task, a
+                    sub-story has its own state, owners and estimate.
+                tasks:
+                  type: array
+                  description: 'Sub-tasks as [{"description": "..."}].'
+  /api/v3/stories/{story_id}/comments:
+    # Resolver on the write only — see the note on /api/v3/stories/{story_id}.
+    parameters:
+      - name: story_id
+        in: path
+        required: true
+        description: Story id, the number shown as sc-1234 in the UI.
+        x-overslash-aliases: [story_public_id, story-public-id]
+        schema:
+          type: integer
+    get:
+      operationId: list_story_comments
+      summary: "List comments on story {story_id}"
+      risk: read
+      description: >-
+        Every comment on one story, oldest first, with each author's member
+        UUID and any threaded replies. Shortcut offers no page size and no
+        cursor here — the list is bounded by the story, and `get_story`
+        returns the same comments inline if you want both in one call.
+    post:
+      operationId: create_story_comment
+      summary: "Comment on story {story_id}"
+      risk: write
+      scope_param: story_id
+      description: >-
+        Add a comment to a story. Markdown, and `@` mentions work by member
+        mention name. `parent_id` threads the comment under an existing one.
+      disclose:
+        - label: Story
+          primary: true
+          filter: '"#" + (.params.story_id | tostring) + (if .resolved.story_id then " — " + .resolved.story_id else "" end)'
+        - label: Comment
+          primary: true
+          filter: .body.text
+          max_chars: 2000
+        - label: In reply to
+          filter: .body.parent_id // empty
+      parameters:
+        - name: story_id
+          in: path
+          required: true
+          description: Story id to comment on.
+          x-overslash-aliases: [story_public_id, story-public-id]
+          schema:
+            type: integer
+          resolve:
+            get: /api/v3/stories/{story_id}
+            pick: name
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  description: Comment body, Markdown.
+                parent_id:
+                  type: integer
+                  description: Comment id to thread this reply under.
+  /api/v3/stories/{story_id}/comments/{comment_id}:
+    put:
+      operationId: update_story_comment
+      summary: "Edit comment {comment_id} on story {story_id}"
+      risk: write
+      scope_param: story_id
+      description: >-
+        Replace the text of an existing comment. The whole body is replaced,
+        so read it with `list_story_comments` first if you mean to amend it.
+        A token can only edit comments written by its own member.
+      disclose:
+        - label: Story
+          primary: true
+          filter: '"#" + (.params.story_id | tostring) + (if .resolved.story_id then " — " + .resolved.story_id else "" end)'
+        - label: Comment id
+          filter: .params.comment_id
+        - label: New text
+          primary: true
+          filter: .body.text
+          max_chars: 2000
+      parameters:
+        - name: story_id
+          in: path
+          required: true
+          description: Story id the comment belongs to.
+          x-overslash-aliases: [story_public_id, story-public-id]
+          schema:
+            type: integer
+          resolve:
+            get: /api/v3/stories/{story_id}
+            pick: name
+            cache_ttl: 60
+        - name: comment_id
+          in: path
+          required: true
+          description: Comment id, from list_story_comments.
+          x-overslash-aliases: [comment_public_id, comment-public-id]
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  description: Replacement comment body, Markdown.
+  /api/v3/stories/{story_id}/tasks:
+    post:
+      operationId: create_task
+      summary: "Add a task to story {story_id}"
+      risk: write
+      scope_param: story_id
+      description: >-
+        Add one checklist task to a story. Tasks are the checkboxes inside a
+        story, not stories of their own — use a sub-story (`create_story` with
+        `parent_story_id`) for anything that needs its own state or owner.
+      disclose:
+        - label: Story
+          primary: true
+          filter: '"#" + (.params.story_id | tostring) + (if .resolved.story_id then " — " + .resolved.story_id else "" end)'
+        - label: Task
+          primary: true
+          filter: .body.description
+          max_chars: 500
+        # Presence, not truthiness — see the note on `archived` above:
+        # un-ticking a task sends `false`, which `//` would swallow.
+        - label: Complete
+          filter: 'if .body | has("complete") then .body.complete else empty end'
+      parameters:
+        - name: story_id
+          in: path
+          required: true
+          description: Story id to add the task to.
+          x-overslash-aliases: [story_public_id, story-public-id]
+          schema:
+            type: integer
+          resolve:
+            get: /api/v3/stories/{story_id}
+            pick: name
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [description]
+              properties:
+                description:
+                  type: string
+                  description: Task text.
+                complete:
+                  type: boolean
+                  description: Create it already ticked.
+                owner_ids:
+                  type: array
+                  description: Member UUIDs responsible for the task.
+  /api/v3/stories/{story_id}/tasks/{task_id}:
+    put:
+      operationId: update_task
+      summary: "Update task {task_id} on story {story_id}"
+      risk: write
+      scope_param: story_id
+      description: >-
+        Tick, untick, retitle or reassign one task on a story.
+      disclose:
+        - label: Story
+          primary: true
+          filter: '"#" + (.params.story_id | tostring) + (if .resolved.story_id then " — " + .resolved.story_id else "" end)'
+        - label: Task id
+          filter: .params.task_id
+        - label: Task
+          primary: true
+          filter: .body.description // empty
+          max_chars: 500
+        # Presence, not truthiness — see the note on `archived` above:
+        # un-ticking a task sends `false`, which `//` would swallow.
+        - label: Complete
+          filter: 'if .body | has("complete") then .body.complete else empty end'
+      parameters:
+        - name: story_id
+          in: path
+          required: true
+          description: Story id the task belongs to.
+          x-overslash-aliases: [story_public_id, story-public-id]
+          schema:
+            type: integer
+          resolve:
+            get: /api/v3/stories/{story_id}
+            pick: name
+            cache_ttl: 60
+        - name: task_id
+          in: path
+          required: true
+          description: Task id, from get_story.
+          x-overslash-aliases: [task_public_id, task-public-id]
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description:
+                  type: string
+                  description: Replacement task text.
+                complete:
+                  type: boolean
+                  description: Tick or untick the task.
+                owner_ids:
+                  type: array
+                  description: Member UUIDs responsible for the task.
+  /api/v3/story-links:
+    post:
+      operationId: create_story_link
+      summary: "Link story {subject_id} {verb} story {object_id}"
+      risk: write
+      description: >-
+        Relate two stories. The link reads as a sentence — subject, verb,
+        object — so `{"subject_id": 10, "verb": "blocks", "object_id": 20}`
+        means story 10 blocks story 20, and Shortcut shows story 20 as blocked.
+        `duplicates` and `relates to` are the other two verbs.
+      disclose:
+        - label: Link
+          primary: true
+          filter: '"#" + (.body.subject_id | tostring) + " " + .body.verb + " #" + (.body.object_id | tostring)'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [verb, subject_id, object_id]
+              properties:
+                verb:
+                  type: string
+                  enum: [blocks, duplicates, relates to]
+                  description: How the subject relates to the object.
+                subject_id:
+                  type: integer
+                  description: Story id doing the blocking/duplicating/relating.
+                object_id:
+                  type: integer
+                  description: Story id on the receiving end.
+  # --- Epics --------------------------------------------------------------
+  /api/v3/epics/paginated:
+    get:
+      operationId: list_epics
+      summary: "List epics[ (page {page})]"
+      # The plain /epics endpoint returns every epic in the workspace in one
+      # response with no page size at all; this is the same collection with
+      # `{data, next, total}` around it. `next` there is the next page number,
+      # which is what the arithmetic `page` style computes anyway, so the
+      # ordinal is the continuation and `page` declares the origin.
+      pagination:
+        page_size:
+          param: page_size
+          default: 25
+          max: 250
+        next:
+          style: page
+          param: page
+        items: data
+      risk: read
+      description: >-
+        Every epic in the workspace, newest first, one page at a time.
+        Descriptions are omitted unless `includes_description` is set — they
+        are long, and a page of them will not fit. Use `search_epics` when you
+        know what you are looking for.
+      parameters:
+        - name: page
+          in: query
+          description: Page number, counting from 1.
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          description: Epics per page, 1-250.
+          schema:
+            type: integer
+            default: 25
+        - name: includes_description
+          in: query
+          description: Inline each epic's description. Large on a full page.
+          schema:
+            type: boolean
+  /api/v3/epics/{epic_id}:
+    # Resolver on the write only — see the note on /api/v3/stories/{story_id}.
+    parameters:
+      - name: epic_id
+        in: path
+        required: true
+        description: Epic id.
+        x-overslash-aliases: [epic_public_id, epic-public-id, id]
+        schema:
+          type: integer
+    get:
+      operationId: get_epic
+      summary: "Get epic {epic_id}"
+      risk: read
+      description: >-
+        One epic whole: description, state, owners, team, objectives and the
+        progress stats Shortcut computes across its stories. `list_epic_stories`
+        is the cheaper way to get just the stories.
+    put:
+      operationId: update_epic
+      summary: "Update epic {epic_id}"
+      risk: write
+      scope_param: epic_id
+      description: >-
+        Change an epic in place; only the fields given are touched. `state`
+        takes to do / in progress / done, or use `epic_state_id` for a
+        workspace with a customised epic workflow. Passing `description`
+        replaces it entirely.
+      disclose:
+        - label: Epic
+          primary: true
+          filter: '"#" + (.params.epic_id | tostring) + (if .resolved.epic_id then " — " + .resolved.epic_id else "" end)'
+        - label: New name
+          filter: .body.name // empty
+        - label: Description
+          primary: true
+          filter: .body.description // empty
+          max_chars: 2000
+        - label: State
+          filter: .body.state // empty
+        # `false` is the interesting half of this field — it un-archives —
+        # and jq's `//` yields its right-hand side for `false` as well as for
+        # `null`, so `// empty` would disclose nothing for exactly the write a
+        # reviewer most needs to see. Test presence instead of truthiness.
+        - label: Archived
+          filter: 'if .body | has("archived") then .body.archived else empty end'
+      parameters:
+        - name: epic_id
+          in: path
+          required: true
+          description: Epic id.
+          x-overslash-aliases: [epic_public_id, epic-public-id, id]
+          schema:
+            type: integer
+          resolve:
+            get: /api/v3/epics/{epic_id}
+            pick: name
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Epic title.
+                description:
+                  type: string
+                  description: Markdown body; replaces the existing description.
+                state:
+                  type: string
+                  enum: ["to do", "in progress", "done"]
+                epic_state_id:
+                  type: integer
+                  description: Epic workflow state id, from get_epic_workflow.
+                group_id:
+                  type: string
+                  description: Owning team (group) UUID.
+                owner_ids:
+                  type: array
+                  description: Member UUIDs who own the epic.
+                planned_start_date:
+                  type: string
+                  description: ISO 8601 planned start.
+                deadline:
+                  type: string
+                  description: ISO 8601 target date.
+                archived:
+                  type: boolean
+                  description: Archive or unarchive the epic.
+  /api/v3/epics:
+    post:
+      operationId: create_epic
+      summary: "Create epic '{name}'"
+      risk: write
+      description: >-
+        Create an epic — the container stories are filed under with
+        `epic_id`. Only `name` is required.
+      disclose:
+        - label: Name
+          primary: true
+          filter: .body.name
+        - label: Description
+          primary: true
+          filter: .body.description // empty
+          max_chars: 2000
+        - label: State
+          filter: .body.state // empty
+        - label: Team
+          filter: .body.group_id // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Epic title.
+                description:
+                  type: string
+                  description: Markdown body.
+                state:
+                  type: string
+                  enum: ["to do", "in progress", "done"]
+                group_id:
+                  type: string
+                  description: Owning team (group) UUID.
+                owner_ids:
+                  type: array
+                  description: Member UUIDs who own the epic.
+                planned_start_date:
+                  type: string
+                  description: ISO 8601 planned start.
+                deadline:
+                  type: string
+                  description: ISO 8601 target date.
+  /api/v3/epics/{epic_id}/stories:
+    get:
+      operationId: list_epic_stories
+      summary: "List stories in epic {epic_id}"
+      risk: read
+      description: >-
+        Every story filed under one epic. Shortcut offers no page size and no
+        cursor here — the list is bounded by the epic — and returns slim
+        stories, without descriptions. For a large epic, or to filter,
+        `search_stories` with `epic:"<name>"` pages.
+      parameters:
+        - name: epic_id
+          in: path
+          required: true
+          description: Epic id.
+          x-overslash-aliases: [epic_public_id, epic-public-id]
+          schema:
+            type: integer
+  /api/v3/epics/{epic_id}/comments:
+    post:
+      operationId: create_epic_comment
+      summary: "Comment on epic {epic_id}"
+      risk: write
+      scope_param: epic_id
+      description: >-
+        Add a comment to an epic. Markdown, and `@` mentions work by member
+        mention name.
+      disclose:
+        - label: Epic
+          primary: true
+          filter: '"#" + (.params.epic_id | tostring) + (if .resolved.epic_id then " — " + .resolved.epic_id else "" end)'
+        - label: Comment
+          primary: true
+          filter: .body.text
+          max_chars: 2000
+      parameters:
+        - name: epic_id
+          in: path
+          required: true
+          description: Epic id to comment on.
+          x-overslash-aliases: [epic_public_id, epic-public-id]
+          schema:
+            type: integer
+          resolve:
+            get: /api/v3/epics/{epic_id}
+            pick: name
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  description: Comment body, Markdown.
+  # --- Iterations ---------------------------------------------------------
+  /api/v3/iterations:
+    get:
+      operationId: list_iterations
+      summary: List iterations
+      risk: read
+      description: >-
+        Every iteration (sprint) in the workspace with its dates, status and
+        stats. Shortcut offers no page size and no cursor here; a workspace
+        has tens of iterations, not thousands. Use the returned id with
+        `list_iteration_stories` or a story's `iteration_id`.
+    post:
+      operationId: create_iteration
+      summary: "Create iteration '{name}'"
+      risk: write
+      description: >-
+        Open a new iteration. `start_date` and `end_date` are required and are
+        plain dates (YYYY-MM-DD), not timestamps. `group_ids` scopes the
+        iteration to particular teams; omitted, it spans the workspace.
+      disclose:
+        - label: Name
+          primary: true
+          filter: .body.name
+        - label: Dates
+          primary: true
+          filter: '.body.start_date + " → " + .body.end_date'
+        - label: Description
+          filter: .body.description // empty
+          max_chars: 1000
+        - label: Teams
+          filter: '.body.group_ids // [] | select(length > 0) | join(", ")'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, start_date, end_date]
+              properties:
+                name:
+                  type: string
+                  description: Iteration name.
+                start_date:
+                  type: string
+                  description: First day, YYYY-MM-DD.
+                end_date:
+                  type: string
+                  description: Last day, YYYY-MM-DD.
+                description:
+                  type: string
+                  description: Markdown body.
+                group_ids:
+                  type: array
+                  description: Team (group) UUIDs this iteration belongs to.
+                follower_ids:
+                  type: array
+                  description: Member UUIDs following the iteration.
+  /api/v3/iterations/{iteration_id}:
+    get:
+      operationId: get_iteration
+      summary: "Get iteration {iteration_id}"
+      risk: read
+      description: >-
+        One iteration with its dates, status, teams and the story-count and
+        point stats Shortcut computes for it.
+      parameters:
+        - name: iteration_id
+          in: path
+          required: true
+          description: Iteration id.
+          x-overslash-aliases: [iteration_public_id, iteration-public-id, id]
+          schema:
+            type: integer
+  /api/v3/iterations/{iteration_id}/stories:
+    get:
+      operationId: list_iteration_stories
+      summary: "List stories in iteration {iteration_id}"
+      risk: read
+      description: >-
+        Every story in one iteration, slim (no descriptions). Shortcut offers
+        no page size and no cursor here — the list is bounded by the iteration.
+        To filter, or for a large iteration, `search_stories` pages.
+      parameters:
+        - name: iteration_id
+          in: path
+          required: true
+          description: Iteration id.
+          x-overslash-aliases: [iteration_public_id, iteration-public-id]
+          schema:
+            type: integer
+  # --- Workspace metadata -------------------------------------------------
+  #
+  # The id sources every write action above refers to. All small,
+  # workspace-wide sets that Shortcut returns whole: no page size, no cursor,
+  # nothing to page.
+  /api/v3/epic-workflow:
+    get:
+      operationId: get_epic_workflow
+      summary: Get the epic workflow and its states
+      risk: read
+      description: >-
+        The workspace's epic workflow with its states in order. This is where
+        `epic_state_id` comes from — the id an epic is moved to in a workspace
+        that has customised its epic states beyond the default to do / in
+        progress / done that `state` accepts. One workflow per workspace, so
+        there is nothing to page.
+  /api/v3/workflows:
+    get:
+      operationId: list_workflows
+      summary: List workflows and their states
+      risk: read
+      description: >-
+        Every workflow in the workspace with its states in order. This is
+        where `workflow_state_id` comes from — the id a story is moved to in
+        order to advance it — and the only way to know what "in progress"
+        means in a given workspace, since the names and the set are per
+        workflow. Shortcut offers no paging here; a workspace has a handful.
+  /api/v3/members:
+    get:
+      operationId: list_members
+      summary: List workspace members
+      risk: read
+      description: >-
+        Every member of the workspace with their UUID, mention name and email.
+        The UUID is what `owner_ids`, `follower_ids` and `requested_by_id`
+        take. Shortcut offers no page size and no cursor; pass `disabled=true`
+        to see deactivated members instead of active ones.
+      parameters:
+        - name: disabled
+          in: query
+          description: >-
+            Return deactivated members instead of active ones.
+          schema:
+            type: boolean
+  /api/v3/member:
+    get:
+      operationId: get_current_member
+      summary: Get the member this token belongs to
+      risk: read
+      description: >-
+        The member behind this API token — their UUID, name and workspace.
+        Call it to resolve "me": the UUID it returns is what `owner:me` in a
+        search expression means, and what to pass as `owner_ids` when a story
+        should be assigned to whoever this token represents.
+  /api/v3/groups:
+    get:
+      operationId: list_groups
+      summary: List teams
+      risk: read
+      description: >-
+        Every team (Shortcut's API still calls them groups) with its UUID,
+        mention name and members. The UUID is what `group_id` takes on a
+        story, epic or iteration. Shortcut offers no paging; pass
+        `archived=true` for archived teams instead of active ones.
+      parameters:
+        - name: archived
+          in: query
+          description: Return archived teams instead of active ones.
+          schema:
+            type: boolean
+  /api/v3/labels:
+    get:
+      operationId: list_labels
+      summary: List labels
+      risk: read
+      description: >-
+        Every label in the workspace with its id, name and colour. Stories and
+        epics take labels by name, not id — `labels: [{"name": "regression"}]`
+        — so this is mostly for finding out which names exist before writing
+        one. Shortcut offers no paging here.
+      parameters:
+        - name: slim
+          in: query
+          description: >-
+            Omit each label's per-workspace stats, which are the expensive part
+            of the response.
+          schema:
+            type: boolean

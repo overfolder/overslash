@@ -41,6 +41,7 @@
 	let secretRequestError = $state<string | null>(null);
 	let executionSettings = $state<ExecutionSettings | null>(null);
 	let executionSaving = $state(false);
+	let backfillError = $state<string | null>(null);
 	let executionError = $state<string | null>(null);
 	let auditSettings = $state<AuditSettings | null>(null);
 	let auditSaving = $state(false);
@@ -532,7 +533,17 @@
 				`/v1/orgs/${org.id}/execution-settings`,
 				patch
 			);
-			executionSettings = updated;
+			// The server omits `agents_missing_self_setup` when it could not
+			// re-count after the (already committed) write. Replacing the object
+			// wholesale would drop it to undefined, and the card would then claim
+			// "every first-level agent already has these rules" — a false
+			// statement, and a worse failure than a stale number. Carry the
+			// previous value forward instead.
+			executionSettings = {
+				...updated,
+				agents_missing_self_setup:
+					updated.agents_missing_self_setup ?? executionSettings.agents_missing_self_setup
+			};
 		} catch (err) {
 			executionError = asMessage(err);
 		} finally {
@@ -544,6 +555,53 @@
 		if (!executionSettings) return;
 		const next = nextValue ?? !executionSettings.default_deferred_execution;
 		return patchExecutionSettings({ default_deferred_execution: next });
+	}
+
+	function toggleDefaultAgentSelfSetup(nextValue?: boolean) {
+		if (!executionSettings) return;
+		const next = nextValue ?? !executionSettings.default_agent_self_setup;
+		return patchExecutionSettings({ default_agent_self_setup: next });
+	}
+
+	let backfillBusy = $state(false);
+	let backfillResult = $state<string | null>(null);
+	let backfillConfirmOpen = $state(false);
+
+	// The seed runs at agent-creation time and is never retroactive, so an org
+	// that predates the default has agents the policy never reached. This is
+	// the catch-up. Confirmed first: it is a privilege grant across every
+	// first-level agent in the org, not a settings tweak.
+	async function runSelfSetupBackfill() {
+		if (!org) return;
+		backfillConfirmOpen = false;
+		backfillBusy = true;
+		backfillError = null;
+		backfillResult = null;
+		try {
+			const res = await session.post<{
+				agents_granted: number;
+				rules_written: number;
+				agents_missing_self_setup?: number;
+			}>(`/v1/orgs/${org.id}/agent-self-setup/backfill`, {});
+			backfillResult =
+				res.agents_granted === 0
+					? 'Nothing to do — every agent already had these rules.'
+					: `Granted ${res.rules_written} rule${res.rules_written === 1 ? '' : 's'} across ` +
+						`${res.agents_granted} agent${res.agents_granted === 1 ? '' : 's'}.`;
+			// The server omits the count when it could not re-take it after the
+			// (already committed) grant. Keep the prior value rather than
+			// blanking the label over a number we simply do not have.
+			if (executionSettings && res.agents_missing_self_setup !== undefined) {
+				executionSettings = {
+					...executionSettings,
+					agents_missing_self_setup: res.agents_missing_self_setup
+				};
+			}
+		} catch (err) {
+			backfillError = asMessage(err);
+		} finally {
+			backfillBusy = false;
+		}
 	}
 
 	// Blank clears the override; anything else must parse to a positive
@@ -834,15 +892,79 @@
 			{/if}
 		</section>
 
-		<!-- Execution defaults (deferred-execution policy) -->
+		<!-- Agent defaults (self-setup permissions + deferred-execution policy) -->
 		<section class="card">
-			<h2>Approval execution</h2>
+			<h2>Agent defaults</h2>
 			<p class="section-desc">
-				Default behavior when an approval is allowed. Existing agents are not
-				touched when this flips — they keep their per-agent override on the
-				agent detail page.
+				Applied to agents at creation time. Existing agents are not touched when
+				these flip — they keep whatever they were born with, editable per agent
+				on the agent detail page.
 			</p>
 			{#if executionSettings}
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">New agents can set up their own services</div>
+						<div class="toggle-help">
+							When on (default), an agent created directly under a person starts
+							with permission to create services from templates, author
+							templates, start OAuth connections, and mint secret-request links
+							— the four setup steps that otherwise cost an approval each. It
+							never includes the sharing half: publishing a template org-wide,
+							granting a service to a group other than its owner's, or
+							requesting a secret from someone else still needs an admin. Note
+							that an agent owned by an org admin inherits admin reach on these
+							calls through its owner's groups, so those limits do not bind it.
+							Sub-agents are never seeded, and the rules are ordinary
+							permission rules you can revoke per agent.
+						</div>
+					</div>
+					<ToggleSwitch
+						checked={executionSettings.default_agent_self_setup}
+						onchange={toggleDefaultAgentSelfSetup}
+						disabled={executionSaving}
+						label="New agents can set up their own services"
+					/>
+				</div>
+
+				<!-- The default applies at agent-creation time only, so agents that
+				     predate it keep nothing. This is the catch-up, and it is
+				     deliberately a separate deliberate act rather than something the
+				     toggle does on its own: flipping a policy and rewriting every
+				     existing agent's permissions are different decisions. -->
+				<div class="backfill-row">
+					{#if (executionSettings.agents_missing_self_setup ?? 0) > 0}
+						<span class="backfill-count">
+							{executionSettings.agents_missing_self_setup === 1
+								? '1 existing agent predates this and is missing some of these rules.'
+								: `${executionSettings.agents_missing_self_setup} existing agents predate this and are missing some of these rules.`}
+						</span>
+						<button
+							class="btn-secondary"
+							disabled={!executionSettings.default_agent_self_setup ||
+								backfillBusy ||
+								executionSaving}
+							title={executionSettings.default_agent_self_setup
+								? 'Grant the four self-setup rules to every first-level agent that lacks them'
+								: 'Turn the default on first — backfilling against a policy you have declined would grant what the org just opted out of'}
+							onclick={() => (backfillConfirmOpen = true)}
+						>
+							{backfillBusy
+								? 'Granting…'
+								: `Grant to ${executionSettings.agents_missing_self_setup} agent${executionSettings.agents_missing_self_setup === 1 ? '' : 's'}`}
+						</button>
+					{:else}
+						<span class="backfill-count">
+							Every first-level agent in this org already has these rules.
+						</span>
+					{/if}
+					{#if backfillResult}
+						<span class="backfill-ok">{backfillResult}</span>
+					{/if}
+					{#if backfillError}
+						<span class="backfill-err">{backfillError}</span>
+					{/if}
+				</div>
+
 				<div class="toggle-row">
 					<div class="toggle-body">
 						<div class="toggle-label">Deferred execution by default for new agents</div>
@@ -2001,6 +2123,17 @@
 	onCancel={() => (confirmOpen = false)}
 />
 
+<ConfirmModal
+	open={backfillConfirmOpen}
+	title="Grant self-setup permissions to existing agents?"
+	message={`This grants four permission rules — create services, author templates, start OAuth connections, request secrets — to every first-level agent in this org that lacks them${executionSettings?.agents_missing_self_setup !== undefined ? ` (${executionSettings.agents_missing_self_setup})` : ''}. Sub-agents are not touched, and nothing gains the sharing half of any of those. You can revoke per agent afterwards on the agent detail page; there is no bulk undo.`}
+	confirmLabel="Grant"
+	busy={backfillBusy}
+	error={backfillError}
+	onConfirm={runSelfSetupBackfill}
+	onCancel={() => (backfillConfirmOpen = false)}
+/>
+
 <style>
 	.page {
 		max-width: 1000px;
@@ -2015,6 +2148,25 @@
 		border-radius: 8px;
 		padding: 1.5rem;
 		margin-bottom: 1.25rem;
+	}
+	.backfill-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.625rem;
+		margin: 0.25rem 0 0.5rem;
+	}
+	.backfill-count {
+		font: var(--text-body-sm);
+		color: var(--color-text-secondary);
+	}
+	.backfill-ok {
+		font: var(--text-body-sm);
+		color: var(--color-success, #1a7f37);
+	}
+	.backfill-err {
+		font: var(--text-body-sm);
+		color: var(--color-danger, #b3261e);
 	}
 	.idp-warning-banner {
 		background: var(--color-warning-soft, #fff3cd);

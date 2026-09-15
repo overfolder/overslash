@@ -219,9 +219,10 @@ pub enum AppError {
     /// any org template declaring an apiKey scheme) whose instance was never
     /// configured. There is no consent page to send anyone to, so that shape
     /// carries no `auth_url`/`short`/`provider` — it names the fields to fill
-    /// in `missing_credentials` and points at the form in `hint_url`. Agents
-    /// branching on the code should treat `auth_url` as optional and fall back
-    /// to `hint_url`.
+    /// in `missing_credentials`, points at the form in `hint_url`, and lists
+    /// one callable `request_secret` per missing slot in `self_serve`. Agents
+    /// branching on the code should treat `auth_url` as optional and prefer
+    /// `self_serve` over `hint_url`, which is the human's route.
     #[error("needs_authentication: {service:?}")]
     NeedsAuthentication {
         service: Option<String>,
@@ -310,6 +311,12 @@ pub enum AppError {
     /// Distinct from `needs_authentication`, which is OAuth-shaped: this is
     /// the secret-bag analogue. `hint_url` (when present) points at the
     /// dashboard surface where a human can supply the value. Returned as 400.
+    ///
+    /// The rendered body also carries `self_serve`: the `request_secret` call
+    /// that mints a provide URL for `secret_name`. The two are for different
+    /// readers and both earn their place — `hint_url` is a dashboard link,
+    /// useful to a person and inert to an agent; `self_serve` is the call an
+    /// agent can make itself so the human only has to paste a value.
     #[error("credential_missing: secret {secret_name} on service {service:?}")]
     CredentialMissing {
         service: Option<String>,
@@ -644,6 +651,22 @@ impl IntoResponse for AppError {
                 // it just has no dashboard to be pointed at.
                 if !missing_credentials.is_empty() {
                     body["missing_credentials"] = json!(missing_credentials);
+                    // The agent-facing counterpart to `hint_url`: one callable
+                    // `request_secret` per missing slot. `hint_url` sends the
+                    // human to a form; this lets the agent mint the provide
+                    // link itself and hand over just the URL. Only on the
+                    // secret-backed shape — the OAuth shapes recover via
+                    // `auth_url`, and minting a second flow would waste a
+                    // consent round-trip.
+                    body["self_serve"] = json!(
+                        missing_credentials
+                            .iter()
+                            .map(|name| json!({
+                                "action": "request_secret",
+                                "params": { "secret_name": name },
+                            }))
+                            .collect::<Vec<_>>()
+                    );
                 }
                 if let Some(url) = hint_url {
                     body["hint_url"] = json!(url);
@@ -736,6 +759,14 @@ impl IntoResponse for AppError {
                 let mut body = json!({
                     "error": "credential_missing",
                     "secret_name": secret_name,
+                    // Everything `request_secret` needs is already in this
+                    // variant, so name the call rather than only the field —
+                    // the same move D77 made for the create/update_service
+                    // messages. `hint_url` below stays the human's route.
+                    "self_serve": [{
+                        "action": "request_secret",
+                        "params": { "secret_name": secret_name },
+                    }],
                 });
                 if let Some(s) = service {
                     body["service"] = json!(s);

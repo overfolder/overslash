@@ -79,7 +79,10 @@ async fn create_api_key(
 }
 
 /// Boot the API + mock upstream, seed the injected secret, and return a
-/// pending approval raised by an agent with no rules of its own.
+/// pending approval raised by an agent with no rules covering *this* request.
+/// (It does hold the four `overslash:*_own` self-setup rules every first-level
+/// agent is seeded with; those are about the platform metaservice and never
+/// match the `http:` keys this file exercises — `written_rules` filters them.)
 async fn pending_approval(
     pool: sqlx::PgPool,
     fx: &common::BootstrapFixtures,
@@ -160,6 +163,10 @@ async fn written_rules(base: &str, org_key: &str, identity_id: Uuid) -> Vec<Stri
         .unwrap()
         .iter()
         .map(|r| r["action_pattern"].as_str().unwrap().to_string())
+        // Drop the `overslash:*_own` rules a first-level agent is seeded with
+        // at creation. Every test in this file is about what an *approval*
+        // remembered, and the seed would otherwise show up as four extra rows.
+        .filter(|p| !p.starts_with("overslash:"))
         .collect()
 }
 

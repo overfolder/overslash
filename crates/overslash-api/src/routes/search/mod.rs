@@ -22,9 +22,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_core::search::{Candidate, MIN_SCORE, apply_post_bonuses, keyword_fuzzy_score};
-use overslash_core::types::{DeclaredRisk, ServiceAction, ServiceAuth, ServiceDefinition};
+use overslash_core::types::{DeclaredRisk, ServiceAction, ServiceDefinition};
 use overslash_db::repos::{org as org_repo, service_action_embedding, service_template};
 use overslash_db::scopes::{OrgScope, UserScope};
+
+mod setup_hint;
+use setup_hint::{AuthStatus, build_auth_status};
 
 use crate::{
     AppState,
@@ -235,27 +238,6 @@ fn clamp_chars(s: &str, max: usize) -> String {
         Some((cut, _)) => format!("{}…", &s[..cut]),
         None => s.to_string(),
     }
-}
-
-#[derive(Serialize, Clone)]
-struct AuthStatus {
-    /// `"oauth"` or `"secret"`. Mirrors `ServiceAuth` so agents don't have
-    /// to crack open the template themselves.
-    ///
-    /// This string is hand-built, not derived from `ServiceAuth`'s serde
-    /// tag, so `ServiceAuth::Secret`'s `alias = "api_key"` does NOT apply:
-    /// it only rescues *inbound* parsing. Outbound, this field emits
-    /// `"secret"` where it used to emit `"api_key"` — a deliberate break for
-    /// any client branching on the old discriminant. Agents read the current
-    /// vocabulary from SKILL.md, and the dashboard ships with the API.
-    #[serde(rename = "type")]
-    kind: String,
-    /// OAuth provider key when `kind == "oauth"`. Absent for secret-based auth.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
-    /// `true` when this row represents a configured instance the caller can
-    /// call now; `false` for `setup_required` catalog rows.
-    connected: bool,
 }
 
 /// Per-instance data carried from `collect_visible_templates` into the
@@ -854,22 +836,6 @@ async fn collect_visible_templates(
 struct TemplateCandidate {
     tier: &'static str,
     def: ServiceDefinition,
-}
-
-fn build_auth_status(def: &ServiceDefinition, connected: bool) -> AuthStatus {
-    // Pick the first declared auth method as the primary face the caller
-    // sees. Templates that mix auth methods (rare) still surface here with
-    // the preferred one first — exactly how the dashboard displays them.
-    let (kind, provider) = match def.auth.first() {
-        Some(ServiceAuth::OAuth { provider, .. }) => ("oauth".into(), Some(provider.clone())),
-        Some(ServiceAuth::Secret { .. }) => ("secret".into(), None),
-        None => ("none".into(), None),
-    };
-    AuthStatus {
-        kind,
-        provider,
-        connected,
-    }
 }
 
 // Reproduce the global-template visibility filter used by routes/templates.rs.

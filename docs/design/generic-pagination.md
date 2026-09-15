@@ -58,7 +58,7 @@ paths:
         next:
           style: cursor           # cursor | offset | page | link
           param: pageToken        # where the continuation goes on the next call
-          from: nextPageToken     # dotted body path (cursor only)
+          from: nextPageToken     # dotted body path (cursor; also `link`, see below)
         items: messages           # optional: the principal collection
         has_more: null            # optional: an explicit boolean the upstream sends
 ```
@@ -68,7 +68,7 @@ paths:
 | `cursor` | dotted body path in `from` | slack, notion, gmail, drive, keep |
 | `offset` | previous offset + effective page size | hubspot, outlook `$skip`, metabase |
 | `page` | previous page + 1 | whatsapp |
-| `link` | RFC 8288 `rel="next"` header | github |
+| `link` | a whole next URL: the RFC 8288 `rel="next"` header, or the dotted body path in `from` | github (header), shortcut (body) |
 
 `page` requires its parameter to declare a `default:`. A page ordinal has no
 universal origin — WhatsApp counts from 0, GitHub from 1 — and that default is
@@ -80,9 +80,32 @@ everywhere, but a guessed page of 0 against a 1-based upstream makes `next`
 point at the page just fetched, and a follower loops forever. A traversal that
 stops early is a bounded mistake; one that never terminates is not.
 
-`link` is refused on an MCP tool at compile: a tool result is a JSON-RPC
-envelope with no response headers, so the declaration would parse and then find
-nothing — a silent no-op one layer deeper than D67's extension lint can see.
+`link` means the response names the **whole next URL** and the gateway
+decomposes it, lifting out only the query keys the action already declares. Two
+places a response can carry that URL, and the declaration picks one:
+
+```yaml
+next: { style: link }                              # GitHub — Link header
+next: { style: link, from: next, param: next }     # Shortcut — a URL in the body
+```
+
+`from` is a dotted body path. `param` names the one query key that may be lifted
+although the call just made did not send it — every other key has to have been
+sent, so a response cannot introduce arguments the caller never chose, but a
+continuation key appears for the first time on page two by definition. It must
+name a parameter the action declares, and it carries `MAX_CURSOR_VALUE_CHARS`;
+the URL it came out of does not, because the URL is parsed and thrown away.
+
+This is why Shortcut's search is not a `cursor`. Its response `next` is
+`/api/v3/search/stories?query=…&next=a8acc65~24` while its `next` *parameter*
+takes `a8acc65~24`; a cursor would echo the URL back as if it were the token.
+
+`link` is refused on an MCP tool **only without `from`**: a tool result is a
+JSON-RPC envelope with no response headers, so the header form would parse and
+then find nothing — a silent no-op one layer deeper than D67's extension lint
+can see. The body form has no such problem, since `next_page` projects an MCP
+result through `mcp_payload` before walking a dotted path, exactly as it does
+for a `cursor` spec's `from`.
 
 ## Two decisions worth the words
 

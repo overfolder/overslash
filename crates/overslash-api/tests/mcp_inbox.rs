@@ -309,6 +309,36 @@ async fn auto_executed_result_is_reachable_over_mcp() {
     );
 }
 
+/// The 202 that *precedes* that 409 should have prevented it: the envelope
+/// names which call to make once the approval resolves, so an agent never has
+/// to infer it from `auto_call_on_approve`.
+#[tokio::test]
+async fn pending_approval_envelope_names_the_next_step() {
+    for (auto_call, expected) in [(true, "get_result"), (false, "call_pending")] {
+        let fx = bootstrap(auto_call).await;
+        let resp = fx
+            .client
+            .post(format!("{}/v1/actions/call", fx.base))
+            .header("Authorization", format!("Bearer {}", fx.agent_key))
+            .json(&json!({
+                "service": "http",
+                "method": "GET",
+                "url": format!("http://{}/echo", fx.mock_addr),
+                "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 202);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["auto_call_on_approve"], auto_call);
+        assert_eq!(
+            body["next_step"], expected,
+            "auto_call_on_approve={auto_call} should advertise {expected}: {body}"
+        );
+    }
+}
+
 /// The 409 an agent hits when it tries to /call an already-auto-executed
 /// approval must name the recovery path rather than dead-ending.
 #[tokio::test]

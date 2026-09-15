@@ -1,5 +1,6 @@
-// Real-stack screenshot of the org settings "Approval execution" card, which
-// D56 extended with the per-org upstream call timeouts.
+// Real-stack screenshot of the org settings "Agent defaults" card, which
+// D56 extended with the per-org upstream call timeouts. (The card was called
+// "Approval execution" until the self-setup default joined it.)
 //
 // Prereq: `make e2e-up`. Output: dashboard/screenshots/org-call-timeouts*.png.
 
@@ -9,7 +10,7 @@ const session = await login('admin');
 const patchTimeouts = (patch) => setCallTimeouts(session, patch);
 
 const snap = await makeSnapper(session);
-const CARD = 'Approval execution';
+const CARD = 'Agent defaults';
 
 try {
 	// Inheriting: both fields blank, placeholders naming the deployment values.
