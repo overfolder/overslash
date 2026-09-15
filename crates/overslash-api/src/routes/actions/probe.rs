@@ -163,11 +163,26 @@ pub(crate) async fn run(
 
     let response = match outcome {
         Ok(resp) => resp,
-        // The gateway's own auth errors are a verdict, not a failure to
-        // produce one: "there is no usable credential" is exactly what a
-        // probe is for. Everything else — a 403 from the permission gate, a
-        // 400 from a malformed template — propagates, because the caller
-        // needs the real status to act on it.
+        // Two classes of error are themselves verdicts rather than failures
+        // to produce one:
+        //
+        // - The gateway's auth errors. "There is no usable credential" is
+        //   exactly what a probe is for.
+        // - A transport failure reaching the upstream. Answering 502 here
+        //   would tell the operator the *gateway* is broken; what actually
+        //   happened is that this service could not be reached, which is the
+        //   question they asked.
+        //
+        // Everything else — a 403 from the permission gate, a 400 from a
+        // malformed template — propagates, because the caller needs the real
+        // status to act on it.
+        Err(AppError::Request(e)) => {
+            let mut out = ServiceTestResponse::bare("failed");
+            out.action = Some(action_key.to_string());
+            out.latency_ms = Some(latency_ms);
+            out.error = Some(truncate(&transport_reason(&e), ERROR_CHARS));
+            return Ok(out);
+        }
         Err(err) => match super::wrap_auth_error_as_ok(&err) {
             Some(resp) => resp,
             None => return Err(err),
@@ -243,6 +258,19 @@ fn classify(action_key: &str, latency_ms: u64, body: &Value) -> ServiceTestRespo
         }
     }
     out
+}
+
+/// Why the request never reached the upstream, in words an operator can act
+/// on. `reqwest`'s own `Display` leads with the URL, which on this path is
+/// the gateway's own composed target and reads like an internal detail.
+fn transport_reason(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        "the service did not respond in time".into()
+    } else if e.is_connect() {
+        "could not connect to the service".into()
+    } else {
+        format!("could not reach the service: {e}")
+    }
 }
 
 /// A short, human-facing rendering of an upstream failure.

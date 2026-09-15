@@ -140,6 +140,7 @@ mod service_connection_cleanup;
 mod service_icons;
 mod service_instances;
 mod service_pin_connection;
+mod service_setup;
 mod services_admin_view;
 mod services_auto_connect;
 mod shared_router_isolation;
