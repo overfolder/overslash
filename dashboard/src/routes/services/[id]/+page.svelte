@@ -1654,8 +1654,13 @@
 	.test-body {
 		display: flex;
 		flex-direction: column;
+		align-items: flex-start;
 		gap: 0.5rem;
 		flex: 1;
 		min-width: 0;
+	}
+	/* The verdict wants the row's full width; the button does not. */
+	.test-body :global(.verdict) {
+		align-self: stretch;
 	}
 </style>

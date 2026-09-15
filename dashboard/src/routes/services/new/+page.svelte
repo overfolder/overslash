@@ -527,13 +527,16 @@
 			});
 			created = instance;
 			submitting = false;
-			// Nothing to verify: no probe declared, or no credential bound yet
-			// for one to exercise. Go straight to the service.
+			// No probe declared — there is nothing this step could say. Go
+			// straight to the service.
 			if (!instance.test_action) {
 				await goto(`/services/${instance.id}`);
 				return;
 			}
-			await runTest();
+			// A credential slot is still unfilled, so the probe's answer is a
+			// foregone "no usable credential yet". Show the link to forward
+			// instead and leave the button for when it has been used.
+			if (!instance.setup) await runTest();
 		} catch (e) {
 			error = e instanceof ApiError
 				? `Failed to create service (${e.status}): ${JSON.stringify(e.body)}`
@@ -673,7 +676,16 @@
 				<StatusBadge variant="active" />
 			</div>
 
-			<TestResult result={testResult} running={testing} onRetry={runTest} />
+			{#if created.setup && !testResult && !testing}
+				<p>
+					Once the credential below has been provided, test it here.
+				</p>
+				<div class="actions start">
+					<button type="button" class="btn" onclick={runTest}>Test service</button>
+				</div>
+			{:else}
+				<TestResult result={testResult} running={testing} onRetry={runTest} />
+			{/if}
 
 			{#if created.setup}
 				<!-- A credential slot nobody filled in. The link is the same one
@@ -696,7 +708,13 @@
 
 			<div class="actions">
 				<button type="button" class="btn primary" onclick={() => goto(`/services/${created?.id}`)}>
-					{testResult?.status === 'ok' ? 'Done' : 'Continue anyway'}
+					<!-- "anyway" only where something actually went wrong. With no
+					     verdict yet there is nothing to push past. -->
+					{#if !testResult || testResult.status === 'ok'}
+						Done
+					{:else}
+						Continue anyway
+					{/if}
 				</button>
 			</div>
 		</div>
@@ -1247,6 +1265,9 @@
 		margin: 0;
 		font-size: 0.9rem;
 		color: var(--color-text-muted);
+	}
+	.actions.start {
+		justify-content: flex-start;
 	}
 	.setup-link {
 		display: flex;

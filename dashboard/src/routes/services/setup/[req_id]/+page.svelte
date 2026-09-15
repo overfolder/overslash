@@ -176,13 +176,20 @@
 			</div>
 
 			{#if submitted}
+				<!-- Do not say "connected" over a failed probe. The credential is
+				     saved either way; whether it *works* is the verdict's to
+				     report, and claiming success above a red box is worse than
+				     saying less. -->
 				<p class="lead">
-					{svc.display_name} is connected.
-					{#if remainingSlots.length > 0}
-						It still needs {remainingSlots.length} more credential{remainingSlots.length ===
+					{#if testResult && testResult.status !== 'ok' && testResult.status !== 'not_supported'}
+						Saved. {svc.display_name} did not accept it — see below.
+					{:else if remainingSlots.length > 0}
+						Saved. {svc.display_name} still needs {remainingSlots.length} more credential{remainingSlots.length ===
 						1
 							? ''
 							: 's'} — you'll have a separate link for each.
+					{:else}
+						{svc.display_name} is connected.
 					{/if}
 				</p>
 
@@ -203,7 +210,7 @@
 
 				<div class="meta">
 					<div class="row">
-						<span class="k">{svc.slot.label}</span>
+						<span class="k">Stored as</span>
 						<span class="v"><code>{m.secret_name}</code></span>
 					</div>
 					<div class="row">

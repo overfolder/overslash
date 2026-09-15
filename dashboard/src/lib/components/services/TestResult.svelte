@@ -93,7 +93,7 @@
 		{/if}
 		{#if result?.action && result.status !== 'not_supported'}
 			<p class="ran">
-				Ran <code>{result.action}</code>{#if result.summary} — {result.summary}{/if}
+				Ran <code>{result.action}</code>{#if result.summary}{' — '}{result.summary}{/if}
 			</p>
 		{/if}
 	</div>
