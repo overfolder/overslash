@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
 
 	let { data } = $props();
 
 	let value = $state('');
-	let reveal = $state(false);
 	let submitting = $state(false);
 	let submitted = $state(false);
 	let denied = $state(false);
@@ -164,31 +164,7 @@
 			{/if}
 
 			{#if !m.require_user_session || m.viewer}
-				<label class="field">
-					<span>Secret value</span>
-					<div class="input-wrap">
-						<!-- svelte-ignore a11y_autofocus -->
-						<input
-							type={reveal ? 'text' : 'password'}
-							bind:value
-							disabled={submitting}
-							autocomplete="off"
-							spellcheck="false"
-							autocapitalize="off"
-							autocorrect="off"
-							placeholder="Paste secret value"
-						/>
-						<button
-							type="button"
-							class="reveal"
-							onclick={() => (reveal = !reveal)}
-							aria-label={reveal ? 'Hide value' : 'Show value'}
-							disabled={submitting}
-						>
-							{reveal ? 'Hide' : 'Show'}
-						</button>
-					</div>
-				</label>
+				<SecretValueField bind:value disabled={submitting} autofocus />
 
 				{#if errorMsg}
 					<div class="error">{errorMsg}</div>
@@ -282,46 +258,6 @@
 	.v {
 		color: var(--color-text);
 		text-align: right;
-	}
-	.field {
-		display: flex;
-		flex-direction: column;
-		gap: 0.35rem;
-		margin-bottom: 1rem;
-	}
-	.field span {
-		font-size: 0.8rem;
-		color: var(--color-text-muted);
-	}
-	.input-wrap {
-		display: flex;
-		gap: 0.5rem;
-	}
-	.input-wrap input {
-		flex: 1;
-		padding: 0.6rem 0.75rem;
-		border: 1px solid var(--color-border);
-		border-radius: 6px;
-		background: var(--color-bg);
-		color: var(--color-text);
-		font: inherit;
-		font-family: var(--font-mono);
-	}
-	.reveal {
-		padding: 0 0.85rem;
-		border: 1px solid var(--color-border);
-		border-radius: 6px;
-		background: var(--color-bg);
-		color: var(--color-text-muted);
-		cursor: pointer;
-		font-size: 0.8rem;
-	}
-	.reveal:hover:not(:disabled) {
-		color: var(--color-text);
-	}
-	.reveal:disabled {
-		cursor: not-allowed;
-		opacity: 0.6;
 	}
 	.error {
 		background: rgba(230, 56, 54, 0.1);
