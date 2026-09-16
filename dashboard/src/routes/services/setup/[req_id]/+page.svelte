@@ -20,12 +20,8 @@
 	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
 	import TestResult from '$lib/components/services/TestResult.svelte';
 	import { runProbe } from '$lib/api/services';
-	import {
-		fmtCountdown,
-		loginUrl,
-		probeRejected,
-		submitPublicRequest
-	} from '$lib/public-request';
+	import { fmtCountdown, loginUrl, submitPublicRequest } from '$lib/public-request';
+	import { setupOutcome } from '$lib/setup-outcome';
 	import type { ServiceTestResponse } from '$lib/types';
 
 	let { data } = $props();
@@ -38,7 +34,13 @@
 
 	// What remains after a successful submit. A multi-slot template hands over
 	// one link per slot, so finishing this one does not always finish setup.
-	let remainingSlots = $state<string[]>([]);
+	//
+	// `null` is "not known", which the server sends (as an absent field) when
+	// the template would not resolve to answer. Kept distinct from `[]`: the
+	// backend goes out of its way to draw that line — degrading rather than
+	// failing a committed write — and collapsing it here would put the whole
+	// point of that back, announcing a service ready on a shrug.
+	let remainingSlots = $state<string[] | null>(null);
 	// The secret is in the vault but never reached the service. Rare, and the
 	// one post-submit state where there is something for a human to do.
 	let bindFailed = $state(false);
@@ -74,7 +76,7 @@
 			return;
 		}
 		const svcOutcome = outcome.body?.service;
-		remainingSlots = svcOutcome?.remaining_slots ?? [];
+		remainingSlots = svcOutcome?.remaining_slots ?? null;
 		// The value is saved either way; this says whether it reached the
 		// service. `false` is a real outcome, not an error — the server
 		// degrades rather than failing a submit it has already committed.
@@ -90,11 +92,15 @@
 		// report it over the truer "still needs N more". Same guard the create
 		// wizard applies. And not when the server could not say what remains
 		// (`remaining_slots` absent) — "not known" is not "none left".
-		if (canTest && !bindFailed && svcOutcome?.remaining_slots?.length === 0) await runTest();
+		if (canTest && !bindFailed && remainingSlots?.length === 0) await runTest();
 	}
 
 	// The probe runs through the authenticated call path, so it needs a session.
 	// An anonymous visitor gets a sign-in prompt instead of a dead button.
+	const outcome = $derived(
+		setupOutcome({ bindFailed, testing, testResult, remainingSlots })
+	);
+
 	const canTest = $derived(
 		data.state === 'ready' && !!data.meta.service.test_action && !!data.meta.viewer
 	);
@@ -152,18 +158,24 @@
 		     report, and claiming success above a red box is worse than
 		     saying less. -->
 		<p class="lead">
-			{#if bindFailed}
+			{#if outcome === 'bind_failed'}
 				Saved, but it could not be attached to {svc.display_name}. The value is
 				stored — someone with dashboard access can finish this from the service's
 				Credentials tab.
-			{:else if testing}
+			{:else if outcome === 'testing'}
 				<!-- Nothing conclusive to say yet, and "connected" over a panel
 				     that is about to turn red is worse than silence. -->
 				Saved. Checking it works…
-			{:else if probeRejected(testResult)}
+			{:else if outcome === 'rejected'}
 				Saved. {svc.display_name} did not accept it — see below.
-			{:else if remainingSlots.length > 0}
-				Saved. {svc.display_name} still needs {remainingSlots.length} more credential{remainingSlots.length ===
+			{:else if outcome === 'unknown'}
+				<!-- The server could not work out what is left. The credential is
+				     bound, so the service is most likely ready — but "most
+				     likely" is not "is", and the Test button turns the guess
+				     into an answer. -->
+				Saved to {svc.display_name}. Test it to confirm it is ready.
+			{:else if outcome === 'incomplete'}
+				Saved. {svc.display_name} still needs {remainingSlots?.length} more credential{remainingSlots?.length ===
 				1
 					? ''
 					: 's'} — you'll have a separate link for each.
