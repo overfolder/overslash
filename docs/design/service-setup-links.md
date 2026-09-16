@@ -13,7 +13,7 @@ related:
 Standing up a secret-backed service used to take three disconnected moves and
 end with nobody knowing whether it worked. This is the shape that joins them
 up, and the reasoning behind each seam. The binding choices are recorded as
-`D-NEXT` in [DECISIONS.md](../../DECISIONS.md); this document is the longer
+`D83` in [DECISIONS.md](../../DECISIONS.md); this document is the longer
 form — what the flow looks like end to end, what was rejected, and what is
 deliberately still missing.
 

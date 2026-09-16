@@ -244,7 +244,7 @@
 - `pending_approval` envelopes carry `next_step` (`get_result` | `call_pending`), so an agent stops guessing and stops hitting `409 execution has already completed`.
 - **Backfill (D80).** `POST /v1/orgs/{id}/agent-self-setup/backfill` grants the four anchors to every live first-level agent lacking them — admin-only, audited, idempotent, and refused with a `409` while the org toggle is off. Surfaced as a *Grant to N agents* button beside the toggle on `/org`, behind a confirm dialog. Revocation stays per agent; there is no bulk undo.
 
-### Service setup links + credential probe (D-NEXT)
+### Service setup links + credential probe (D83)
 
 - `POST /v1/services` auto-mints a signed, single-use setup link for every unbound per-instance credential slot and returns it as `setup.setup_url` — the twin of the `connect.auth_url` an OAuth template already gets. `skip_credentials: true` opts out. The three mint paths (REST `POST /v1/secrets/requests`, the MCP `request_secret` kernel, this auto-mint) now share one `services::service_setup::mint`.
 - Migration 118 adds `service_instance_id` + `credential_key` to `secret_requests`, both-or-neither by check constraint. Fulfilling such a request writes the vault secret *and* binds the instance's credential slot via `OrgScope::bind_credential_slot` (a single `jsonb_set`, so two outstanding links on one instance cannot erase each other). The pair is validated against the template at mint time; fulfilment carries only a capability token and re-derives nothing.

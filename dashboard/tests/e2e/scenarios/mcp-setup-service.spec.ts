@@ -1,5 +1,5 @@
 // Drives Overslash's `/mcp` endpoint through the puppet to verify the whole
-// setup handshake for a **secret-backed** template — the shape D-NEXT added
+// setup handshake for a **secret-backed** template — the shape D83 added
 // as the twin of the OAuth auto-connect:
 //
 //   1. Agent calls `overslash_call(overslash, create_service, {resend})` and

@@ -1,5 +1,5 @@
 // Real-stack screenshots for service setup links and the credential probe
-// (D-NEXT): the standalone setup page a human opens, both verdicts from the
+// (D83): the standalone setup page a human opens, both verdicts from the
 // probe, and the create wizard's post-create verification step.
 //
 // Every fixture is seeded through the real API, so the setup link is the one
