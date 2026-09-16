@@ -643,7 +643,15 @@ fn test_action_must_be_read_risk() {
     a.risk = Risk::Write.into();
     a.test = Some(TestSpec::default());
     let r = run(&d);
-    assert!(r.errors.iter().any(|e| e.code == "test_action_not_read"));
+    let e = r
+        .errors
+        .iter()
+        .find(|e| e.code == "test_action_not_read")
+        .expect("a write-risk probe is refused");
+    // The path is the whole value of the error to a template author: the fix
+    // is to change `risk` or move the marker, neither of which lives under
+    // `test`, so pointing there sends them to a key that does not exist.
+    assert_eq!(e.path, "actions.list.risk", "{e:?}");
 }
 
 #[test]
@@ -662,7 +670,13 @@ fn test_params_must_name_defined_params() {
         params: HashMap::from([("nope".into(), serde_json::json!(1))]),
     });
     let r = run(&d);
-    assert!(r.errors.iter().any(|e| e.code == "unknown_test_param"));
+    let e = r
+        .errors
+        .iter()
+        .find(|e| e.code == "unknown_test_param")
+        .expect("an unknown test param is refused");
+    // This one *is* under `test` — the offending key is `test.params.nope`.
+    assert_eq!(e.path, "actions.list.test.params.nope", "{e:?}");
 }
 
 /// The probe runs unattended, so a missing required param would surface as

@@ -147,7 +147,11 @@ fn check_test(action: &ServiceAction, action_path: &str, issues: &mut Issues) {
                  as soon as a credential is provided",
                 action.risk
             ),
-            format!("{base}.risk"),
+            // `action_path`, not `base`: `risk` is a top-level field of the
+            // action, and the fix is to change it (or move the marker to a
+            // read action), not to add anything under `test`. Pointing at
+            // `…test.risk` sends the author to a key that does not exist.
+            format!("{action_path}.risk"),
         );
     }
 
