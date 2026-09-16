@@ -124,7 +124,8 @@ overslash_call {
 }
 ```
 
-Returns `{ auth_url, state }`. Surface `auth_url` to the user verbatim:
+Returns `{ auth_url, state }`. Surface `auth_url` to the user verbatim
+(it arrives pre-shortened when the shortener is configured):
 *"Click here to authorize Google Calendar."* Overslash binds the resulting
 token to the service on its OAuth callback. If instead this returns a `400`
 about *"no OAuth client credentials configured"*, the org has no OAuth client —
@@ -301,9 +302,10 @@ overslash_call {
 }
 ```
 
-Returns `{ request_id, provide_url, short_url, expires_at }`. Show `short_url`
-(the oversla.sh link, present when the shortener is configured) or `provide_url`
-verbatim. This is the secret-bag analogue of `create_connection`'s `auth_url`.
+Returns `{ request_id, provide_url, expires_at }`. Show `provide_url`
+verbatim — it is already the short `oversla.sh` link wherever that service is
+configured, so there is never a second URL to choose between. This is the
+secret-bag analogue of `create_connection`'s `auth_url`.
 Once the user submits the value, retry the action. (The link's TTL is fixed at
 1h over MCP; use the REST endpoint `POST /v1/secrets/requests` if you need to
 override `ttl_seconds`.)

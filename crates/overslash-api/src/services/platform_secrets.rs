@@ -126,15 +126,14 @@ pub async fn kernel_request_secret(
     let url = ctx
         .config
         .dashboard_url_for(&format!("/secrets/provide/{req_id}?token={token}"));
-    let short_url = match (
+    let short_url = short_url::mint_with_config(
+        &ctx.http_client,
         ctx.config.oversla_sh_base_url.as_deref(),
         ctx.config.oversla_sh_api_key.as_deref(),
-    ) {
-        (Some(base), Some(key)) => {
-            short_url::mint_with_client(&ctx.http_client, base, key, &url, expires_at).await
-        }
-        _ => None,
-    };
+        &url,
+        expires_at,
+    )
+    .await;
 
     let _ = scope
         .log_audit(AuditEntry {

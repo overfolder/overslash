@@ -257,15 +257,14 @@ pub(crate) async fn kernel_create_connection_for_identity(
         ctx.config.public_url.trim_end_matches('/'),
         flow_id
     );
-    let short = match (
+    let short = short_url::mint_with_config(
+        &ctx.http_client,
         ctx.config.oversla_sh_base_url.as_deref(),
         ctx.config.oversla_sh_api_key.as_deref(),
-    ) {
-        (Some(base), Some(key)) => {
-            short_url::mint_with_client(&ctx.http_client, base, key, &auth_url, expires_at).await
-        }
-        _ => None,
-    };
+        &auth_url,
+        expires_at,
+    )
+    .await;
 
     Ok(CreateConnectionResponse {
         auth_url,
