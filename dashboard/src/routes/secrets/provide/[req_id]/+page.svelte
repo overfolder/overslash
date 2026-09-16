@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import PublicRequestCard from '$lib/components/secrets/PublicRequestCard.svelte';
+	import RequestIdentityBox from '$lib/components/RequestIdentityBox.svelte';
 	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
 	import { fmtCountdown, loginUrl, submitPublicRequest } from '$lib/public-request';
 
@@ -83,6 +84,17 @@
 		<code>{m.requested_by_label}</code> needs a secret:
 	</p>
 
+	<RequestIdentityBox orgName={m.org_name} userEmail={m.viewer?.email ?? null}>
+		{#snippet note()}
+			{#if m.viewer}
+				Your name will be recorded on the audit trail for this submission.
+			{:else}
+				This link is what authorizes the submission — signing in is optional, and
+				only adds your name to the audit trail.
+			{/if}
+		{/snippet}
+	</RequestIdentityBox>
+
 	<div class="meta">
 		<div class="row">
 			<span class="k">Name</span>
@@ -100,20 +112,14 @@
 		{/if}
 	</div>
 
-	{#if m.viewer}
-		<div class="viewer-banner">
-			Signed in as <strong>{m.viewer.email}</strong>. Your name will be recorded on the
-			audit trail for this submission.
-		</div>
-	{:else if m.require_user_session}
-		<!-- Edge case: the row was minted under user-signed-required mode,
-		     but the visitor loaded the page without a matching session.
-		     GET still succeeds (metadata is not sensitive), but POST will
-		     be rejected server-side. Gate the UI here so the visitor
-		     doesn't waste time pasting a value first. -->
+	{#if !m.viewer && m.require_user_session}
+		<!-- The row was minted under user-signed-required mode but the visitor
+		     has no matching session. GET still succeeds (the metadata is not
+		     sensitive) and POST would be rejected server-side, so gate the UI
+		     here rather than letting them paste a value first. -->
 		<div class="viewer-banner warn">
-			This organization requires you to be signed in to Overslash to provide this secret.
-			<a href={loginUrl()}>Sign in to continue</a>.
+			This organization requires you to be signed in to Overslash to provide this
+			credential. <a href={loginUrl()}>Sign in to continue</a>.
 		</div>
 	{/if}
 

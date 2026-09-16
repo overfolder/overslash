@@ -218,6 +218,10 @@ async fn the_setup_page_renders_the_service_and_binds_on_submit() {
     assert_eq!(resp.status(), 200);
     let meta: Value = resp.json().await.unwrap();
     assert_eq!(meta["secret_name"], "resend_key", "flattened provide half");
+    assert!(
+        meta["org_name"].as_str().is_some_and(|n| !n.is_empty()),
+        "the page names the org it is asking on behalf of: {meta}"
+    );
     assert_eq!(meta["service"]["id"], service_id);
     assert_eq!(meta["service"]["display_name"], "Resend");
     assert_eq!(meta["service"]["slot"]["key"], "token");

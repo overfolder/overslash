@@ -1401,6 +1401,14 @@ There is no "breakglass" / "bootstrap" tag in this view. The org creator shows u
 
 Standalone pages have a minimal layout: Overslash logo at top, no sidebar, no nav. They handle expired and already-resolved states gracefully.
 
+### Organization and signed-in user
+
+The three pages a person reaches from *outside* the dashboard — the MCP enrollment consent screen, the secret-request page and the service-setup page — all open the same way: an **Organization / Signed in as** block, same labels, same order, same position near the top. All three arrive out of band (a link in a chat message, a browser handed off by an MCP client) and all three ask the visitor to hand something over, so "which company am I giving this to, and who am I here?" is answered identically on each rather than being a dropdown on one, a footnote on another and absent from the third. `RequestIdentityBox.svelte`.
+
+The organization is **uneditable text** on the secret-request and setup pages: the signed URL names one org and only one, so a control there would offer a choice that does not exist. Enrollment is the exception — a member of several orgs genuinely has one to make, and the consent flow is org-locked at authorize time, so switching re-mints the request against the target org (§4). Below one membership it renders as plain text there too.
+
+`Signed in as` reads **Not signed in** rather than blank on the two token-gated pages, because arriving without a session is a supported state there, not a failure: the URL's token is the capability gate and a session only adds a name to the audit trail.
+
 ### Secret Request Page (`/secrets/provide/req_...?token=jwt`)
 
 No login required *by default* — the JWT in the URL authenticates the request. Safe because providing a secret doesn't grant the agent any authority (the agent still needs a separate approval to use it). Orgs that need a named human on every submission can turn on **User Signed Mode** (see below) via the org settings page.
@@ -1489,7 +1497,7 @@ These URLs are minted by `POST /v1/services` for every unbound per-instance cred
 
 After a successful submit the form is replaced by the outcome:
 
-- **Verified** — when the template declares a credential probe (§9 *Test actions*) *and* the visitor has a same-org session, the page runs it immediately and renders the verdict: green "Works — responded in 214 ms", or red with the truncated upstream error and a **Retry**. This is the whole point of the page: a key pasted wrong is caught here rather than on the agent's first real call.
+- **Verified** — when the template declares a credential probe (§9 *Test actions*) *and* the visitor has a same-org session, the page runs it immediately and renders the verdict: green "Works — responded in 214 ms", or red with the truncated upstream error and a **Retry**. This is the whole point of the page: a key pasted wrong is caught here rather than on the agent's first real call. A **Test service** button sits above the verdict and stays available, because the auto-run covers only the case where this submission completed the setup — a sibling slot still outstanding, a bind that did not land, or wanting to check again after fixing something elsewhere all leave the visitor with nothing to press otherwise.
 - **Sign in to test** — same case without a session. The probe runs through the authenticated call path, so there is no anonymous Test button; the link is offered instead.
 - **Still needs N more** — a multi-slot template. The probe is *not* run (its answer would be a foregone "no usable credential yet"); the page says what remains, and each outstanding slot has its own link.
 - Expired / already-fulfilled / invalid states read as on the secret request page.

@@ -54,6 +54,12 @@ async fn happy_path_mint_get_submit_stored() {
     let meta: Value = resp.json().await.unwrap();
     assert_eq!(meta["secret_name"], "openai_api_key");
     assert!(meta["identity_label"].as_str().is_some());
+    // The page asks a stranger for a credential, so it has to be able to say
+    // which organization is asking.
+    assert!(
+        meta["org_name"].as_str().is_some_and(|n| !n.is_empty()),
+        "provide metadata must name the org: {meta}"
+    );
 
     // Submit value
     let resp = client

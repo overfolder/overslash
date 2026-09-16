@@ -27,6 +27,14 @@ export interface ViewerInfo {
 export interface ProvideMetadata {
 	id: string;
 	secret_name: string;
+	/**
+	 * The organization this request belongs to.
+	 *
+	 * Shown as plain, uneditable text: unlike the enrollment consent screen
+	 * there is nothing to switch to, because the signed token names one org
+	 * and only one.
+	 */
+	org_name: string;
 	identity_label: string;
 	requested_by_label: string;
 	reason: string | null;

@@ -198,6 +198,15 @@ struct TokenQuery {
 struct ProvideMetadata {
     id: String,
     secret_name: String,
+    /// The organization this request belongs to.
+    ///
+    /// A link like this arrives out of band — from a chat message, from an
+    /// agent — and it asks for a credential. "Which company am I giving this
+    /// to?" is the first question a careful person asks, and until now the
+    /// page could not answer it. Shown as plain, uneditable text: unlike the
+    /// enrollment consent screen there is nothing to switch to, because the
+    /// signed token names one org and only one.
+    org_name: String,
     identity_label: String,
     requested_by_label: String,
     reason: Option<String>,
@@ -241,6 +250,15 @@ async fn provide_metadata(
     headers: &HeaderMap,
     row: overslash_db::repos::secret_request::SecretRequestRow,
 ) -> Result<ProvideMetadata> {
+    // Falls back to the id rather than failing the page: the org row is
+    // guaranteed present by the FK, so a miss here means a DB hiccup, and a
+    // page that renders without a pretty name beats one that will not render.
+    let org_name = overslash_db::repos::org::get_by_id(scope.db(), row.org_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|o| o.name)
+        .unwrap_or_else(|| row.org_id.to_string());
     let identity_label = scope
         .get_identity(row.identity_id)
         .await?
@@ -266,6 +284,7 @@ async fn provide_metadata(
     Ok(ProvideMetadata {
         id: row.id,
         secret_name: row.secret_name,
+        org_name,
         identity_label,
         requested_by_label,
         reason: row.reason,

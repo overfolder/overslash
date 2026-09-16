@@ -16,6 +16,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import PublicRequestCard from '$lib/components/secrets/PublicRequestCard.svelte';
+	import RequestIdentityBox from '$lib/components/RequestIdentityBox.svelte';
 	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
 	import TestResult from '$lib/components/services/TestResult.svelte';
 	import { runProbe } from '$lib/api/services';
@@ -172,6 +173,23 @@
 		</p>
 
 		{#if canTest}
+			<!-- An explicit button, not only the auto-run. The probe fires on its
+			     own when this submission completed the setup, but that is the one
+			     case of several: a sibling slot still outstanding, a bind that
+			     did not land, or simply wanting to check again after fixing
+			     something elsewhere all leave the person here with nothing to
+			     press. Same shape as the service detail page's Credentials tab. -->
+			<div class="test-row">
+				<button
+					type="button"
+					class="btn secondary"
+					onclick={runTest}
+					disabled={testing}
+					title={svc.test_action?.summary ?? `Runs ${svc.test_action?.action}`}
+				>
+					{testing ? 'Testing…' : 'Test service'}
+				</button>
+			</div>
 			<TestResult result={testResult} running={testing} onRetry={runTest} />
 		{:else if svc.test_action}
 			<p class="note">
@@ -185,6 +203,17 @@
 			<code>{m.requested_by_label}</code> set this up for you and needs its
 			{svc.slot.label.toLowerCase()}.
 		</p>
+
+		<RequestIdentityBox orgName={m.org_name} userEmail={m.viewer?.email ?? null}>
+			{#snippet note()}
+				{#if m.viewer}
+					Your name will be recorded on the audit trail for this submission.
+				{:else}
+					This link is what authorizes the submission — signing in is optional, and
+					only adds your name to the audit trail.
+				{/if}
+			{/snippet}
+		</RequestIdentityBox>
 
 		<div class="meta">
 			<div class="row">
@@ -213,12 +242,7 @@
 			<p class="slot-help">{svc.slot.description}</p>
 		{/if}
 
-		{#if m.viewer}
-			<div class="viewer-banner">
-				Signed in as <strong>{m.viewer.email}</strong>. Your name will be recorded on the
-				audit trail for this submission.
-			</div>
-		{:else if m.require_user_session}
+		{#if !m.viewer && m.require_user_session}
 			<!-- Minted under user-signed-required mode but opened without a
 			     matching session. GET still succeeds (the metadata is not
 			     sensitive) and POST would be rejected server-side, so gate
@@ -274,6 +298,16 @@
 		font-family: var(--font-mono);
 		font-size: 0.8rem;
 		color: var(--color-text-muted);
+	}
+	.test-row {
+		display: flex;
+		margin-bottom: 0.75rem;
+	}
+	/* `.btn` in the shared card is `flex: 1` — right for the submit button it
+	   was written for, wrong for a secondary action that should size to its
+	   label. */
+	.test-row :global(.btn) {
+		flex: 0 0 auto;
 	}
 	.slot-help {
 		margin: 0 0 1rem;

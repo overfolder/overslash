@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { session, ApiError } from '$lib/session';
+	import RequestIdentityBox from '$lib/components/RequestIdentityBox.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import GroupSearch from '$lib/components/GroupSearch.svelte';
 	import type { ConsentContext } from './+page';
@@ -182,31 +183,39 @@
 				</div>
 			</div>
 
-			<!-- Organization -->
-			<div class="org-box">
-				<div class="org-label">ORGANIZATION</div>
-				{#if data.memberships.length > 1}
-					<label class="sr-only" for="org-switch">Organization</label>
-					<select
-						id="org-switch"
-						class="org-select"
-						value={ctx.org_id}
-						disabled={switching || submitting}
-						onchange={switchOrg}
-					>
-						{#each data.memberships as m (m.org_id)}
-							<option value={m.org_id}>
-								{m.name}{m.is_personal ? ' (personal)' : ''}
-							</option>
-						{/each}
-					</select>
-					{#if switching}
-						<span class="org-switching">Switching…</span>
+			<!-- Organization + signed-in user.
+			     Shared with the secret-request and service-setup pages: all
+			     three are reached from outside the dashboard and all three ask
+			     the visitor to hand something over, so the answer to "which org
+			     is this, and who am I here?" reads the same on each. This is the
+			     one of the three where the org is editable — a member of several
+			     genuinely has a choice, and the consent flow is org-locked at
+			     authorize time, so switching re-mints the request. -->
+			<RequestIdentityBox orgName={ctx.org_name} userEmail={ctx.user_email}>
+				{#snippet orgControl()}
+					{#if data.memberships.length > 1}
+						<label class="sr-only" for="org-switch">Organization</label>
+						<select
+							id="org-switch"
+							class="org-select"
+							value={ctx.org_id}
+							disabled={switching || submitting}
+							onchange={switchOrg}
+						>
+							{#each data.memberships as m (m.org_id)}
+								<option value={m.org_id}>
+									{m.name}{m.is_personal ? ' (personal)' : ''}
+								</option>
+							{/each}
+						</select>
+						{#if switching}
+							<span class="org-switching">Switching…</span>
+						{/if}
+					{:else}
+						<span class="org-name">{ctx.org_name}</span>
 					{/if}
-				{:else}
-					<div class="org-name">{ctx.org_name}</div>
-				{/if}
-			</div>
+				{/snippet}
+			</RequestIdentityBox>
 
 			<!-- Client identity -->
 			<div class="client-box">
@@ -410,10 +419,10 @@
 				</button>
 			</div>
 
-			<!-- Footer -->
+			<!-- Footer. The signed-in identity moved up into the box above,
+			     where the other two pages put it. -->
 			<div class="footer">
-				Enrollment <code class="mono small">{ctx.request_id.slice(0, 12)}</code> · signed
-				in as {ctx.user_email}<br />
+				Enrollment <code class="mono small">{ctx.request_id.slice(0, 12)}</code><br />
 				Permissions will be requested one by one as the client uses them.
 			</div>
 		</div>
@@ -491,30 +500,22 @@
 		font-size: 13px;
 		color: var(--color-text-muted);
 	}
-	.org-box {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		flex-wrap: wrap;
-		background: var(--color-sidebar);
-		border: 1px solid var(--color-border);
-		border-radius: 8px;
-		padding: 10px 12px;
-	}
-	.org-label {
-		font: var(--text-label-sm);
-		color: var(--color-text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-	}
 	.org-name {
 		font-size: 14px;
 		font-weight: 600;
 		color: var(--color-text-heading);
 	}
+	.org-select,
+	.org-name,
+	.org-switching {
+		/* Rendered into the shared box's slot, so these size themselves rather
+		   than inheriting that component's right-aligned text cell. */
+		text-align: left;
+	}
 	.org-select {
 		flex: 1;
 		min-width: 0;
+		max-width: 320px;
 		padding: 7px 10px;
 		border: 1px solid var(--color-border);
 		border-radius: 8px;

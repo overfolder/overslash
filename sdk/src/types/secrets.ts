@@ -88,6 +88,12 @@ export interface ViewerInfo {
 export interface ProvideMetadata {
   id: string;
   secret_name: string;
+  /**
+   * The organization this request belongs to. A link like this arrives out of
+   * band and asks for a credential, so "which company am I giving this to?"
+   * has to be answerable without leaving the page.
+   */
+  org_name: string;
   identity_label: string;
   requested_by_label: string;
   reason: string | null;
