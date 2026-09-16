@@ -190,6 +190,21 @@
 	<title>Audit Log · Overslash</title>
 </svelte:head>
 
+<!-- Column widths live here, not on the cells: the table is `table-layout:
+     fixed` so these <col>s are what actually size the columns, and rendering
+     the same snippet into the anchor table keeps the two aligned. -->
+{#snippet cols()}
+	<colgroup>
+		<col class="c-ts" />
+		<col class="c-user" />
+		<col class="c-agent" />
+		<col class="c-event" />
+		<col class="c-resource" />
+		<col class="c-desc" />
+		<col class="c-ip" />
+	</colgroup>
+{/snippet}
+
 <div class="page">
 	<header class="header">
 		<h1>Audit Log</h1>
@@ -218,6 +233,7 @@
 			</div>
 			<div class="table-wrap anchor-table">
 				<table>
+					{@render cols()}
 					<tbody>
 						<AuditRow
 							entry={anchor}
@@ -244,6 +260,7 @@
 	{:else}
 		<div class="table-wrap" bind:this={tableWrap}>
 			<table>
+				{@render cols()}
 				<thead>
 					<tr>
 						<th>Timestamp</th>
@@ -269,7 +286,7 @@
 							/>
 							{#snippet failed(error)}
 								<tr>
-									<td colspan="7" class="muted">
+									<td colspan="7" class="muted boundary-error">
 										Failed to render entry {entry.id}: {String(
 											(error as { message?: string })?.message ?? error
 										)}
@@ -342,7 +359,40 @@
 	}
 	table {
 		width: 100%;
+		/* Fixed layout is the whole fix. Under auto layout a browser sizes each
+		   column from its content's max-content width and treats a cell's
+		   `max-width` as advisory, so one long description dragged the table
+		   past the wrapper and turned the log into a horizontal-scroll surface.
+		   Fixed layout pins the table to its container and makes the per-cell
+		   clamps in AuditRow real. Below `min-width` there is no honest way to
+		   fit seven columns, so the wrapper scrolls as it always did. */
+		table-layout: fixed;
+		min-width: 900px;
 		border-collapse: collapse;
+	}
+	/* Sum: 100%. Event is the widest fixed-content column — action names run to
+	   `org_service_agent.created` — while Timestamp and Resource wrap happily
+	   and Description is clamped anyway, so they give the room up. */
+	.c-ts {
+		width: 9%;
+	}
+	.c-user {
+		width: 12%;
+	}
+	.c-agent {
+		width: 14%;
+	}
+	.c-event {
+		width: 21%;
+	}
+	.c-resource {
+		width: 11%;
+	}
+	.c-desc {
+		width: 23%;
+	}
+	.c-ip {
+		width: 10%;
 	}
 	thead th {
 		position: sticky;
@@ -355,6 +405,9 @@
 		text-transform: uppercase;
 		color: var(--color-text-muted);
 		font-weight: 600;
+	}
+	.boundary-error {
+		overflow-wrap: anywhere;
 	}
 	.state {
 		padding: var(--space-4);

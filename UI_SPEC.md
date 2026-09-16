@@ -1294,6 +1294,14 @@ Timestamp            Identity (SPIFFE)                                    Event 
 - **Service** — which external service was involved (blank for identity/permission events)
 - **Result** — success/fail/pending, with status code for executions
 
+**Row width.** Columns have fixed proportional widths and the table is exactly
+as wide as its card — a long description or an unwieldy agent name wraps onto
+further lines rather than widening the table into a horizontal-scroll surface.
+The Description cell wraps to at most three lines and then ellipsizes; the full
+text is in its hover title and in the expanded pane. The event badge breaks only
+at the dots in an action name, never mid-segment. Below 900px seven columns
+cannot honestly fit, and the table card scrolls horizontally as before.
+
 ### Search & Filters
 
 Uses the **Search Bar** (see Design System) with keys: `identity`, `event`, `service`, `result`, `time`.
