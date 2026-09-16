@@ -456,6 +456,8 @@ pub fn is_bound(credentials: &CredentialsMap, key: &str) -> bool {
 pub async fn validate_binding(
     scope: &OrgScope,
     registry: &overslash_core::registry::ServiceRegistry,
+    // The *caller*, for the authorization check only. Template resolution
+    // uses the instance's owner — see below.
     identity_id: Option<Uuid>,
     access_level: AccessLevel,
     service_id: Uuid,
@@ -476,11 +478,16 @@ pub async fn validate_binding(
     )
     .await?;
 
+    // Resolved as the instance's *owner*, not the caller. The user tier is
+    // keyed on that identity, so an agent minting a link for its owner-user's
+    // instance — the flow this whole surface exists for — would miss a
+    // user-tier template and fail with "template not found". Every other
+    // instance-view path passes `owner_identity_id` for the same reason.
     let template = crate::services::platform_services::resolve_template_definition(
         scope.db(),
         registry,
         scope.org_id(),
-        identity_id,
+        row.owner_identity_id,
         &row.template_key,
     )
     .await?;

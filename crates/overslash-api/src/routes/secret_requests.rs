@@ -398,7 +398,19 @@ struct SubmitResponse {
 #[derive(Serialize)]
 struct SubmitServiceOutcome {
     id: Uuid,
-    name: String,
+    /// Absent when the bind failed — the name is read off the row the bind
+    /// returns, and there is no row to read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    /// Whether the credential is actually attached to the instance.
+    ///
+    /// `false` means the secret is safely in the vault but the binding did
+    /// not land, so the service is *not* callable and somebody has to finish
+    /// it from the dashboard. Explicit rather than inferred from an absent
+    /// field: every consumer of this block branches on "is it ready", and
+    /// letting a failed bind look like a plain secret request would have the
+    /// page announce success over an instance that still cannot be called.
+    bound: bool,
     /// The slot this submission just bound.
     credential_key: String,
     /// Credential slots this instance still needs a value for. Empty means it
@@ -535,7 +547,8 @@ async fn submit_provide(
                 // The agent that minted a setup link is blocked on exactly
                 // this: its service is now callable.
                 "service_id": service.as_ref().map(|s| s.id),
-                "service_name": service.as_ref().map(|s| s.name.as_str()),
+                "service_name": service.as_ref().and_then(|s| s.name.as_deref()),
+                "credential_bound": service.as_ref().map(|s| s.bound),
                 "credential_key": service.as_ref().map(|s| s.credential_key.as_str()),
                 "remaining_slots": service.as_ref().and_then(|s| s.remaining_slots.clone()),
             }),
@@ -663,11 +676,37 @@ async fn bind_setup_slot(
     else {
         return Ok(None);
     };
-    let Some(instance) = scope
+    let instance = match scope
         .bind_credential_slot(service_id, credential_key, secret_name)
-        .await?
-    else {
-        return Ok(None);
+        .await
+    {
+        Ok(Some(instance)) => instance,
+        // The row is not there. Nothing to bind and nothing to say about a
+        // service, so this reads as a plain secret request.
+        Ok(None) => return Ok(None),
+        // Everything above this point is already committed — the request row
+        // is burned, the vault version written — so propagating would answer
+        // "Submission failed. Please try again." over a link whose retry says
+        // `410 already_fulfilled`, and the value would look lost when it is
+        // not. Report the truth instead: saved, not attached. `bound: false`
+        // is what stops the page claiming the service is ready and what keeps
+        // the waiting agent from calling it.
+        Err(e) => {
+            tracing::error!(
+                service_instance_id = %service_id,
+                credential_key,
+                secret_name,
+                error = %e,
+                "secret stored but its credential slot could not be bound"
+            );
+            return Ok(Some(SubmitServiceOutcome {
+                id: service_id,
+                name: None,
+                bound: false,
+                credential_key: credential_key.to_string(),
+                remaining_slots: None,
+            }));
+        }
     };
 
     let _ = scope
@@ -731,7 +770,8 @@ async fn bind_setup_slot(
 
     Ok(Some(SubmitServiceOutcome {
         id: service_id,
-        name: instance.name,
+        name: Some(instance.name),
+        bound: true,
         credential_key: credential_key.to_string(),
         remaining_slots,
     }))
@@ -779,7 +819,7 @@ async fn load_and_validate(
 
 #[cfg(test)]
 mod tests {
-    use super::humanize;
+    use super::*;
 
     #[test]
     fn humanize_makes_a_slot_key_readable() {
@@ -797,5 +837,52 @@ mod tests {
         for key in ["x", "a_b", "__token__"] {
             assert!(!humanize(key).is_empty(), "{key} humanized to nothing");
         }
+    }
+
+    /// A failed bind is reported, not hidden and not raised.
+    ///
+    /// By the time the bind runs, `mark_fulfilled` has burned the row and the
+    /// vault version is written. Propagating would answer "Submission failed"
+    /// over a link whose retry says `410 already_fulfilled`; returning no
+    /// `service` block at all would look like a plain secret request and let
+    /// the page announce the service is connected. `bound: false` is the only
+    /// shape that says what actually happened.
+    #[test]
+    fn a_failed_bind_serializes_as_saved_but_unattached() {
+        let outcome = SubmitServiceOutcome {
+            id: Uuid::nil(),
+            name: None,
+            bound: false,
+            credential_key: "token".into(),
+            remaining_slots: None,
+        };
+        let v = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(v["bound"], false);
+        assert_eq!(v["credential_key"], "token");
+        assert!(
+            v.get("name").is_none(),
+            "no row came back, so there is no name to report: {v}"
+        );
+        assert!(
+            v.get("remaining_slots").is_none(),
+            "absent, not empty — empty would read as fully provisioned: {v}"
+        );
+    }
+
+    /// The success shape, for contrast: the page reads `bound` and
+    /// `remaining_slots` together to decide whether to offer the test.
+    #[test]
+    fn a_successful_bind_reports_what_remains() {
+        let outcome = SubmitServiceOutcome {
+            id: Uuid::nil(),
+            name: Some("resend-work".into()),
+            bound: true,
+            credential_key: "token".into(),
+            remaining_slots: Some(Vec::new()),
+        };
+        let v = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(v["bound"], true);
+        assert_eq!(v["name"], "resend-work");
+        assert_eq!(v["remaining_slots"], serde_json::json!([]));
     }
 }

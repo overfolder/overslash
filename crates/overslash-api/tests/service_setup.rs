@@ -355,6 +355,91 @@ async fn an_unknown_credential_key_is_rejected_at_mint() {
     );
 }
 
+/// A user-tier template resolves through the *instance owner*, not whoever is
+/// minting. An agent minting for its owner-user's instance is the flow this
+/// surface exists for, and resolving as the caller would miss the owner's
+/// user-tier template entirely — "template not found" on the happy path.
+#[tokio::test]
+async fn a_user_tier_template_resolves_through_the_instance_owner() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    // User-tier templates are off by default at the org level.
+    let policy = client
+        .patch(format!("{base}/v1/orgs/{}/template-settings", fx.org_id))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"user_template_policy": "full"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(policy.status(), 200, "enable user templates");
+
+    // A user-tier template owned by write-user, with one instance slot.
+    let key = format!("acme_private_{}", Uuid::new_v4().simple());
+    let openapi = format!(
+        "openapi: 3.1.0\n\
+         info:\n\
+        \x20 title: Acme Private\n\
+        \x20 key: {key}\n\
+         servers:\n\
+        \x20 - url: https://api.acme.test\n\
+         components:\n\
+        \x20 securitySchemes:\n\
+        \x20   token:\n\
+        \x20     type: apiKey\n\
+        \x20     in: header\n\
+        \x20     name: Authorization\n\
+        \x20     default_secret_name: acme_private_key\n\
+         paths:\n\
+        \x20 /ping:\n\
+        \x20   get:\n\
+        \x20     operationId: ping\n\
+        \x20     summary: Ping the service\n\
+        \x20     risk: read\n"
+    );
+    let tpl = client
+        .post(format!("{base}/v1/templates"))
+        .header(common::auth(&fx.write_key).0, common::auth(&fx.write_key).1)
+        .json(&json!({"openapi": openapi, "user_level": true}))
+        .send()
+        .await
+        .unwrap();
+    let tpl_status = tpl.status();
+    assert!(
+        tpl_status.is_success(),
+        "user-tier template create: {tpl_status} {}",
+        tpl.text().await.unwrap_or_default()
+    );
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.write_key,
+        json!({"template_key": key,
+               "name": format!("acme-private-{}", Uuid::new_v4().simple()),
+               "skip_credentials": true, "user_level": true}),
+    )
+    .await;
+    assert!(svc["id"].is_string(), "create failed: {svc}");
+
+    // An admin minting for someone else's instance must resolve the *owner's*
+    // user tier, not their own — resolving as the caller 404s here.
+    let resp = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"secret_name": "acme_private_key", "service_id": svc["id"]}))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        status, 200,
+        "admin mint over an owner's user-tier template: {body}"
+    );
+    assert_eq!(body["credential_key"], "token", "{body}");
+}
+
 /// A minted setup link is a live capability to *write* an instance's
 /// credential binding, so minting one has to be gated on managing that
 /// instance — not merely on being in its org. `get_service_instance` filters

@@ -38,6 +38,9 @@
 	// What remains after a successful submit. A multi-slot template hands over
 	// one link per slot, so finishing this one does not always finish setup.
 	let remainingSlots = $state<string[]>([]);
+	// The secret is in the vault but never reached the service. Rare, and the
+	// one post-submit state where there is something for a human to do.
+	let bindFailed = $state(false);
 
 	let testing = $state(false);
 	let testResult = $state<ServiceTestResponse | null>(null);
@@ -62,7 +65,7 @@
 		submitting = true;
 		errorMsg = null;
 		const outcome = await submitPublicRequest<{
-			service?: { remaining_slots?: string[] };
+			service?: { bound?: boolean; remaining_slots?: string[] };
 		}>(data.req_id, data.token, value);
 		submitting = false;
 		if (!outcome.ok) {
@@ -71,6 +74,10 @@
 		}
 		const svcOutcome = outcome.body?.service;
 		remainingSlots = svcOutcome?.remaining_slots ?? [];
+		// The value is saved either way; this says whether it reached the
+		// service. `false` is a real outcome, not an error — the server
+		// degrades rather than failing a submit it has already committed.
+		bindFailed = svcOutcome?.bound === false;
 		submitted = true;
 		value = '';
 
@@ -82,7 +89,7 @@
 		// report it over the truer "still needs N more". Same guard the create
 		// wizard applies. And not when the server could not say what remains
 		// (`remaining_slots` absent) — "not known" is not "none left".
-		if (canTest && svcOutcome?.remaining_slots?.length === 0) await runTest();
+		if (canTest && !bindFailed && svcOutcome?.remaining_slots?.length === 0) await runTest();
 	}
 
 	// The probe runs through the authenticated call path, so it needs a session.
@@ -144,7 +151,11 @@
 		     report, and claiming success above a red box is worse than
 		     saying less. -->
 		<p class="lead">
-			{#if testing}
+			{#if bindFailed}
+				Saved, but it could not be attached to {svc.display_name}. The value is
+				stored — someone with dashboard access can finish this from the service's
+				Credentials tab.
+			{:else if testing}
 				<!-- Nothing conclusive to say yet, and "connected" over a panel
 				     that is about to turn red is worse than silence. -->
 				Saved. Checking it works…

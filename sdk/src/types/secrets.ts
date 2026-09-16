@@ -114,7 +114,16 @@ export interface SubmitProvideResponse {
 /** What a setup-link submission did to the service it named. */
 export interface SubmitServiceOutcome {
   id: string;
-  name: string;
+  /** Absent when the bind failed — it is read off the row the bind returns. */
+  name?: string;
+  /**
+   * Whether the credential is actually attached to the instance.
+   *
+   * `false` means the secret is safely in the vault but the binding did not
+   * land, so the service is **not** callable and somebody has to finish it
+   * from the dashboard. Check this before treating the service as ready.
+   */
+  bound: boolean;
   /** The slot this submission bound. */
   credential_key: string;
   /**
