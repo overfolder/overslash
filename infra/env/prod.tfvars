@@ -94,6 +94,30 @@ connection_return_url_hosts = "api.overfolder.com"
 pagerduty_enabled = true
 alert_email       = "alert@overslash.com"
 
+# --- PromQL alert gates ---------------------------------------------------
+# Every PromQL-based alert policy is gated, because GMP rejects a policy whose
+# metric descriptor does not exist yet. The knobs are listed here even at
+# `false` so the set is visible in the env file: `oauth_refresh_alert_enabled`
+# and `upstream_error_alert_enabled` were previously declared only in
+# variables.tf, which is how both ended up switched off in every environment
+# with nothing to hint that they existed.
+#
+# To flip any of these on, first confirm that flag's metric descriptor exists:
+#   gcloud beta monitoring metrics-descriptors list --project=overslash \
+#     --filter='metric.type ~ "prometheus.googleapis.com/<metric>.*"'
+# where <metric> is the series named against each flag below. Verify before
+# flipping, one flag at a time.
+
+# `overslash_http_request_duration_seconds` must be live as a *histogram*, not
+# the summary it rendered as before the bucket set landed.
+api_latency_alert_enabled = false
+
+# `overslash_oauth_events_total` and `overslash_upstream_responses_total`. Both
+# have most likely been emitted by now; verify the descriptors and flip these on
+# in a follow-up.
+oauth_refresh_alert_enabled  = false
+upstream_error_alert_enabled = false
+
 read_oauth_credentials_from_env = false
 
 # Async (non-blocking) action calls. Off until validated on dev.
