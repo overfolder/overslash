@@ -63,6 +63,7 @@ paths:
       operationId: list_databases
       summary: List databases
       risk: read
+      test: true
       description: >-
         List the databases this Metabase knows about. Use the returned `id`
         as the `database` argument of run_query / export_query and

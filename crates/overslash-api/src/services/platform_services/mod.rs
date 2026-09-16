@@ -37,13 +37,14 @@ mod status;
 mod templates;
 mod types;
 
+pub(crate) use kernels::require_owned_by_ceiling_or_admin;
 pub use kernels::{
     kernel_create_service, kernel_get_service, kernel_list_services, kernel_update_service,
 };
 pub use rows::{row_to_detail, row_to_summary};
 pub use status::{
-    ScopeCoverage, ScopeKnowledge, action_scope_coverage, compute_credentials_status,
-    derive_credentials_status, resolve_instance_icon_url,
+    ScopeCoverage, ScopeKnowledge, TemplateView, action_scope_coverage, compute_credentials_status,
+    derive_credentials_status, template_view,
 };
 pub use templates::{resolve_template_definition, resolve_template_source};
 pub use types::{
@@ -190,6 +191,7 @@ mod test_fixtures {
                     request_body: None,
                     download: None,
                     upload: None,
+                    test: None,
                 },
             );
         }

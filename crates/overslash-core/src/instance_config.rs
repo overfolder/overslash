@@ -171,6 +171,7 @@ mod tests {
             request_body: None,
             download: None,
             upload: None,
+            test: None,
         };
         for (name, instance_config) in params {
             action

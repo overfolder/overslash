@@ -28,7 +28,7 @@ use super::*;
 /// surface exists to serve. Org-level rows (`owner_identity_id IS NULL`) match
 /// nobody's ceiling and so always require admin — the same conclusion
 /// `caller_may_manage_owned` reaches for them.
-async fn require_owned_by_ceiling_or_admin(
+pub(crate) async fn require_owned_by_ceiling_or_admin(
     scope: &OrgScope,
     row: &overslash_db::repos::service_instance::ServiceInstanceRow,
     auth_identity: Uuid,
@@ -184,6 +184,9 @@ pub async fn kernel_list_services(
                 };
                 derive_credentials_status(tpl, scopes, &row.credentials, row.secret_name.as_deref())
             });
+            // The bulk list already has the resolved template in hand from its
+            // own one-pass fetch, so it fills the pair itself rather than
+            // paying `template_view`'s per-row resolve N times over.
             let icon_url = template.and_then(|tpl| {
                 crate::services::icon_url::resolve_icon_url(
                     tpl.icon.as_ref(),
@@ -191,9 +194,11 @@ pub async fn kernel_list_services(
                 )
             });
             let groups = groups_by_service.remove(&row.id).unwrap_or_default();
+            let test_action = template.and_then(crate::routes::actions::probe::describe);
             let mut summary = row_to_summary(row, groups);
             summary.credentials_status = credentials_status;
             summary.icon_url = icon_url;
+            summary.test_action = test_action;
             summary
         })
         .collect();
@@ -239,7 +244,7 @@ pub async fn kernel_get_service(
     let credentials_status =
         compute_credentials_status(&ctx.db, &ctx.registry, &scope, &row, row.owner_identity_id)
             .await;
-    let icon_url = resolve_instance_icon_url(
+    let tv = template_view(
         &ctx.db,
         &ctx.registry,
         &row,
@@ -249,7 +254,8 @@ pub async fn kernel_get_service(
     .await;
     let mut detail = row_to_detail(row);
     detail.credentials_status = credentials_status;
-    detail.icon_url = icon_url;
+    detail.icon_url = tv.icon_url;
+    detail.test_action = tv.test_action;
     Ok(detail)
 }
 
@@ -638,6 +644,16 @@ pub async fn kernel_create_service(
     let row_id = row.id;
     let mut detail = row_to_detail(row);
     detail.credentials_status = credentials_status;
+    // Set from the definition already in hand rather than through
+    // `template_view`, which would resolve the template a second time — but
+    // *both* fields, or this reproduces the drift that helper exists to
+    // prevent. The dashboard assigns this response straight onto the row it
+    // renders.
+    detail.test_action = crate::routes::actions::probe::describe(&template_def);
+    detail.icon_url = crate::services::icon_url::resolve_icon_url(
+        template_def.icon.as_ref(),
+        &ctx.config.public_url,
+    );
 
     // Auto-connect orchestration: when the template is OAuth-backed and the
     // caller didn't pin or opt out, kick off the OAuth flow now and surface
@@ -719,6 +735,49 @@ pub async fn kernel_create_service(
                     error = %err,
                     "auto-connect failed; instance created without connection bundle"
                 );
+            }
+        }
+    }
+
+    // Auto-setup orchestration: the secret-path twin of auto-connect above,
+    // and best-effort for the same reason. A secret-backed template whose
+    // per-instance slots nobody bound leaves the instance uncallable and the
+    // caller — typically an agent, which must never see the value — with no
+    // way to fix it except asking its user to visit the dashboard. Minting
+    // the links here means one `create_service` call yields one URL to hand
+    // over, exactly as the OAuth path already does.
+    //
+    // Org-level instances are skipped alongside auto-connect, and for the
+    // same reason: `mint` needs a target identity to store the secret under,
+    // and an instance nobody owns names none.
+    if !input.skip_credentials.unwrap_or(false)
+        && let Some(owner) = owner_identity_id
+    {
+        let pending = crate::services::service_setup::unbound_instance_slots(
+            &template_def,
+            &detail.credentials,
+            detail.secret_name.as_deref(),
+        );
+        if !pending.is_empty() {
+            match crate::services::service_setup::mint_bundle(
+                &ctx.db,
+                &ctx.http_client,
+                &ctx.config,
+                ctx.org_id,
+                owner,
+                auth_identity,
+                row_id,
+                &pending,
+            )
+            .await
+            {
+                Ok(bundle) => detail.setup = Some(bundle),
+                Err(err) => tracing::warn!(
+                    service_instance_id = %row_id,
+                    template_key = %input.template_key,
+                    error = %err,
+                    "setup-link mint failed; instance created without setup bundle"
+                ),
             }
         }
     }
@@ -867,5 +926,19 @@ pub async fn kernel_update_service(
         .update_service_instance(id, &update)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
-    Ok(row_to_detail(row))
+    // The dashboard assigns this response straight onto the row it renders, so
+    // an undecorated one hides the instance's own icon and Test button until a
+    // reload — the moment a user most wants to press it.
+    let tv = template_view(
+        &ctx.db,
+        &ctx.registry,
+        &row,
+        row.owner_identity_id,
+        &ctx.config.public_url,
+    )
+    .await;
+    let mut detail = row_to_detail(row);
+    detail.icon_url = tv.icon_url;
+    detail.test_action = tv.test_action;
+    Ok(detail)
 }

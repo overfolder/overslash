@@ -21,6 +21,7 @@ paths:
       operationId: get_me
       summary: Get the authenticated user's profile
       risk: read
+      test: true
   /v3/users/me/orders/:
     get:
       operationId: list_my_orders

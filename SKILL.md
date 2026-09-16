@@ -104,10 +104,32 @@ same user pick it up immediately. The response carries
 
 | Value | Meaning | Next step |
 |---|---|---|
-| `needs_authentication` | OAuth template with no connection bound, **or** a secret-based / MCP-bearer template with no secret set | OAuth → step 3; secret-based → [Providing a secret](#providing-a-secret-non-oauth-services) |
+| `needs_authentication` | OAuth template with no connection bound, **or** a secret-based / MCP-bearer template with no secret set | OAuth → step 3; secret-based → hand over `setup.setup_url` from this same response, see [Providing a secret](#providing-a-secret-non-oauth-services) |
 | `ok` | secret/connection inferred from existing user state | skip to step 5 |
 | `partially_degraded` | a connection is bound but does not cover every action's scopes — uncovered actions return `403 missing_scopes` | click the upgrade `auth_url` returned in that 403 |
 | `needs_reconnect` | a connection is bound but covers none of the scope-bearing actions | re-run consent (step 3) |
+
+For a **secret-based** template the same response also carries `setup`:
+
+```json
+{ "setup": {
+    "setup_url": "https://oversla.sh/xY3",
+    "requests": [{ "request_id": "req_ab12…", "credential_key": "token",
+                   "secret_name": "resend_key", "setup_url": "https://oversla.sh/xY3" }],
+    "expires_at": "…" } }
+```
+
+Hand `setup_url` to your user verbatim — it opens a page naming the service and
+takes the API key. **You never see the value.** As everywhere else on this
+surface, it is already the short `oversla.sh` link wherever that service is
+configured, so there is never a second URL to choose between. This is the exact
+counterpart of `connect.auth_url` below, so both credential kinds are one call
+and one URL.
+
+One `requests[]` entry per credential slot the template needs, each with its own
+link; a template with two wants both handed over, and `setup.setup_url` is the
+first entry's. Pass `skip_credentials: true` if you intend to wire the
+credentials yourself.
 
 > `needs_authentication` means *no credential is bound yet* — it does **not**
 > tell you whether the underlying OAuth **client** even exists. If the org has
@@ -288,6 +310,11 @@ the required secret is absent, calling the action returns a `400`:
   "hint_url": "https://app.overslash.com/secrets?name=RESEND_API_KEY" }
 ```
 
+If you are **creating the service now**, you already have the link: the
+`create_service` response carries `setup.setup_url` for every credential slot
+it needs (see step 2). Hand that over and stop reading — the rest of this
+section is for a credential that goes missing on a service that already exists.
+
 Mint a one-time provisioning link with the `request_secret` platform action and
 surface it to the user — they paste the value on the page; **you never see it**.
 The `credential_missing` body above carries this call ready-made in its
@@ -298,17 +325,26 @@ The `credential_missing` body above carries this call ready-made in its
 overslash_call {
   "service": "overslash",
   "action": "request_secret",
-  "params": { "secret_name": "RESEND_API_KEY", "purpose": "Send transactional email" }
+  "params": { "secret_name": "RESEND_API_KEY", "purpose": "Send transactional email",
+              "service_id": "<id of the service that needs it>" }
 }
 ```
 
-Returns `{ request_id, provide_url, expires_at }`. Show `provide_url`
-verbatim — it is already the short `oversla.sh` link wherever that service is
-configured, so there is never a second URL to choose between. This is the
-secret-bag analogue of `create_connection`'s `auth_url`.
-Once the user submits the value, retry the action. (The link's TTL is fixed at
-1h over MCP; use the REST endpoint `POST /v1/secrets/requests` if you need to
-override `ttl_seconds`.)
+Returns `{ request_id, provide_url, expires_at }`, plus `service_id` and
+`credential_key` when you passed a `service_id` — the latter is the slot that
+was *inferred* when you named none, so it is how you learn which credential the
+link will bind. Show `provide_url` verbatim — it is already the short
+`oversla.sh` link wherever that service is configured, so there is never a
+second URL to choose between. This is the secret-bag analogue of
+`create_connection`'s `auth_url`. Once the user submits the value, retry the
+action.
+
+Pass `service_id` whenever you know which service the credential is for. With
+it, the link opens a page naming that service and submitting it binds the
+credential to the instance in one step — without it, the value lands in the
+vault and somebody still has to attach it. (The link's TTL is fixed at 1h over
+MCP; use the REST endpoint `POST /v1/secrets/requests` if you need to override
+`ttl_seconds`.)
 
 ## Handling pending approvals
 

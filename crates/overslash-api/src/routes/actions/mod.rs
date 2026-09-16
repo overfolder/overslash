@@ -65,6 +65,7 @@ mod flags;
 mod hybrid;
 mod mcp_resolve;
 mod permission_gate;
+pub(crate) mod probe;
 mod replay_payload;
 mod resolve;
 mod resolve_encode;

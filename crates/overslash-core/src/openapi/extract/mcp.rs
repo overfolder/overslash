@@ -13,8 +13,8 @@ use crate::types::{
 use super::super::ext::{self, Ext, Pos};
 use super::{
     parse_aliases, parse_disclose, parse_download, parse_instance_config, parse_pagination,
-    parse_redact, parse_resolver, parse_scope_params, parse_sql_policy, parse_timeout_ms,
-    parse_upload, parse_wait_mode,
+    parse_redact, parse_resolver, parse_scope_params, parse_sql_policy, parse_test,
+    parse_timeout_ms, parse_upload, parse_wait_mode,
 };
 
 // ── x-overslash-mcp → McpSpec + ServiceActions ───────────────────────
@@ -388,6 +388,8 @@ fn lower_mcp_tool(
             true
         });
 
+    let test = parse_test(ext::get(obj, Pos::McpTool, Ext::Test), &base, errors);
+
     // The upstream MCP tool name defaults to the action key, but may be
     // overridden with `mcp_tool` when the server's tool name isn't a valid
     // Overslash action key — e.g. a server naming its tools with dashes
@@ -416,6 +418,7 @@ fn lower_mcp_tool(
         disabled,
         download,
         upload,
+        test,
         // Everything else defaults — notably `request_body`, since MCP tool
         // calls are framed by the MCP client (which sets its own JSON-RPC
         // content type) and never routed through `resolve`.

@@ -26,6 +26,7 @@ paths:
       operationId: get_me
       summary: Get the authenticated user's profile
       risk: read
+      test: true
   /2/tweets:
     post:
       operationId: post_tweet

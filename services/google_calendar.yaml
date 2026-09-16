@@ -37,6 +37,7 @@ paths:
         items: items
       summary: List all calendars for the authenticated user
       risk: read
+      test: true
       parameters:
         - name: maxResults
           in: query

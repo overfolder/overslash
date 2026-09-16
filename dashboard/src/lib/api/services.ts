@@ -2,7 +2,7 @@
  * API client wrappers for the Services view: templates, service instances,
  * and OAuth connections.
  */
-import { ApiError, session } from '$lib/session';
+import { ApiError, apiErrorReason, session } from '$lib/session';
 import type {
 	ActionSummary,
 	ByocCredentialSummary,
@@ -21,6 +21,7 @@ import type {
 	ServiceInstanceDetail,
 	ServiceInstanceSummary,
 	ServiceStatus,
+	ServiceTestResponse,
 	AdminTemplateSummary,
 	TemplateDetail,
 	TemplateSettings,
@@ -228,6 +229,75 @@ export const getServiceActions = (name: string, signal?: AbortSignal) =>
 
 export const listServiceGroups = (serviceId: string, signal?: AbortSignal) =>
 	session.get<ServiceGroupRef[]>(`/v1/services/${serviceId}/groups`, signal);
+
+// -- Credential probe --
+
+/**
+ * Run the instance's template-declared test action and get back a verdict.
+ *
+ * Always pass the instance UUID. Gated server-side on owning the instance (or
+ * org admin), and the call itself goes through the ordinary permission and
+ * approval path — a `pending_approval` verdict is a real outcome, not an
+ * error. `not_supported` means the template declares no probe, which is why
+ * callers check `test_action` before offering the button.
+ */
+const testPath = (id: string) => `/v1/services/${encodeURIComponent(id)}/test`;
+
+export const testService = (id: string, signal?: AbortSignal) =>
+	session.post<ServiceTestResponse>(testPath(id), undefined, signal);
+
+/**
+ * `testService`, but a failure to *run* the probe comes back as a verdict too.
+ *
+ * From the operator's seat "I pressed Test and it did not work" is one
+ * outcome, and splitting it across a verdict panel and a thrown error leaves
+ * every caller to re-decide how to render half of it.
+ *
+ * `bounceOnExpiry: false` is for the two public, session-less pages. They are
+ * designed to stay open on a burned single-use row, and `session`'s 401 branch
+ * assigns `window.location.href` *before* throwing — so an expired session
+ * would hard-navigate the visitor away from a page they can never get back to,
+ * copying its `?token=` capability into the login URL's `return_to` on the way
+ * out. Those callers get a plain fetch and a rendered verdict instead.
+ */
+export async function runProbe(
+	id: string,
+	opts: { signal?: AbortSignal; bounceOnExpiry?: boolean } = {}
+): Promise<ServiceTestResponse> {
+	if (opts.bounceOnExpiry === false) {
+		try {
+			const r = await fetch(testPath(id), {
+				method: 'POST',
+				credentials: 'same-origin',
+				signal: opts.signal
+			});
+			if (!r.ok) {
+				return {
+					status: 'failed',
+					error:
+						r.status === 401
+							? 'Your session expired. Sign in again to test this service.'
+							: `Could not run the test (${r.status})`
+				};
+			}
+			return (await r.json()) as ServiceTestResponse;
+		} catch {
+			return { status: 'failed', error: 'Could not run the test' };
+		}
+	}
+	try {
+		return await testService(id, opts.signal);
+	} catch (e) {
+		return {
+			status: 'failed',
+			// `apiErrorReason` yields `undefined` for a body that is not the
+			// typed error shape (a 500 with an HTML body, say), and a verdict
+			// with no detail renders as a bare "Test failed".
+			error:
+				(e instanceof ApiError ? apiErrorReason(e) : undefined) ?? 'Could not run the test'
+		};
+	}
+}
 
 // -- OAuth connections --
 

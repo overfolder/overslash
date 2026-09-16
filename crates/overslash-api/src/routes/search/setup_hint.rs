@@ -8,7 +8,7 @@
 
 use serde::Serialize;
 
-use overslash_core::types::{SecretSource, ServiceAuth, ServiceDefinition};
+use overslash_core::types::{ServiceAuth, ServiceDefinition};
 
 #[derive(Serialize, Clone)]
 pub(super) struct AuthStatus {
@@ -75,79 +75,55 @@ pub(super) fn build_auth_status(def: &ServiceDefinition, connected: bool) -> Aut
 }
 
 /// The ordered calls that take an un-connected template to a callable
-/// instance: always `create_service`, then whichever credential step the
-/// template's auth implies.
+/// instance.
+///
+/// One step, for both auth kinds: `create_service` mints whichever credential
+/// handshake the template implies and returns it on the response —
+/// `connect.auth_url` for OAuth, `setup.setup_url` for a secret. The `note` is
+/// load-bearing, since it names the field the URL arrives on.
 fn build_setup_steps(def: &ServiceDefinition) -> Vec<SetupStep> {
-    let mut steps = vec![SetupStep {
+    let note = match def.auth.first() {
+        Some(ServiceAuth::OAuth { .. }) => {
+            // Hedged for the same reason as the secret arm below:
+            // `want_auto_connect` needs an owner, so an org-level create gets
+            // no bundle, and a failed connect is swallowed into a warning.
+            "pick any `name`; it becomes the `service` you call afterwards. \
+             Hand the returned `connect.auth_url` to your user verbatim. If \
+             the response carries no `connect`, start the flow with \
+             `create_connection` passing the new `service_id`"
+        }
+        Some(ServiceAuth::Secret { .. }) => {
+            // Hedged on purpose. `create_service` attaches `setup` only for an
+            // instance with an owner and an unbound slot, and drops the bundle
+            // on a mint failure — so an org-level create (`user_level: false`)
+            // reaches this step and gets no URL. Naming the fallback here is
+            // what keeps that from being a dead end.
+            "pick any `name`; it becomes the `service` you call afterwards. \
+             Hand the returned `setup.setup_url` to your user verbatim — they \
+             paste the credential there and you never see it. If the response \
+             carries no `setup`, mint one with `request_secret` passing the \
+             new `service_id`"
+        }
+        // No auth declared: nothing to provision, the instance is callable as
+        // soon as it exists.
+        None => "pick any `name`; it becomes the `service` you call afterwards",
+    };
+
+    vec![SetupStep {
         action: "create_service",
         params: serde_json::Map::from_iter([(
             "template_key".to_string(),
             serde_json::Value::String(def.key.clone()),
         )]),
-        note: Some("pick any `name`; it becomes the `service` you call afterwards"),
-    }];
-
-    match def.auth.first() {
-        Some(ServiceAuth::OAuth { provider, .. }) => steps.push(SetupStep {
-            action: "create_connection",
-            params: serde_json::Map::from_iter([(
-                "provider".to_string(),
-                serde_json::Value::String(provider.clone()),
-            )]),
-            note: Some("hand the returned `auth_url` to your user verbatim"),
-        }),
-        Some(ServiceAuth::Secret { .. }) => {
-            // Which vault names to ask for. The instance-source slots are the
-            // ones an operator binds per instance — `slots_for` owns that
-            // rule, so read it rather than re-deriving from the auth entry.
-            //
-            // One step per slot, never one step naming several: `request_secret`
-            // declares `secret_name` as a `string` (services/overslash.yaml), so
-            // an array there would deserialize-fail the moment an agent followed
-            // the instruction — a setup hint that breaks the setup. A template
-            // with two slots therefore gets two `request_secret` steps, and the
-            // agent hands its user one provide URL per secret.
-            // The emptiness guard is on `default_secret_name`, the field this
-            // step actually pre-fills — not on `key`, which is what
-            // `reconcile::instance_slot_keys` guards because *it* keys a
-            // binding by it. An instance-source slot with no default name is a
-            // deliberately supported shape (`template_validation::core::auth`
-            // requires a default only for org-source slots, since an instance
-            // slot resolves from the instance's own binding), so this is a
-            // real template, not a malformed one. There is simply no name to
-            // pre-fill for it, and `secret_name: ""` is worse than no step:
-            // `kernel_request_secret` rejects a blank name with a 400, so the
-            // hint would break the setup it describes. Such a slot still
-            // surfaces at call time, by name, in `credential_missing`'s
-            // `missing_credentials` + `self_serve`.
-            for slot in def
-                .all_slots()
-                .into_iter()
-                .filter(|s| s.source == SecretSource::Instance && !s.default_secret_name.is_empty())
-            {
-                steps.push(SetupStep {
-                    action: "request_secret",
-                    params: serde_json::Map::from_iter([(
-                        "secret_name".to_string(),
-                        serde_json::Value::String(slot.default_secret_name.clone()),
-                    )]),
-                    note: Some(
-                        "hand the returned `provide_url` to your user — you never see the value",
-                    ),
-                });
-            }
-        }
-        None => {}
-    }
-
-    steps
+        note: Some(note),
+    }]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use overslash_core::types::Runtime;
     use overslash_core::types::service::{SecretSlot, TokenInjection};
+    use overslash_core::types::{Runtime, SecretSource};
     use std::collections::HashMap;
 
     fn injection() -> TokenInjection {
@@ -205,133 +181,76 @@ mod tests {
         }
     }
 
-    /// The common shape: one implicit slot named after the scheme.
+    /// The common shape: one implicit slot named after the scheme. The hint
+    /// is one step — `create_service` mints the setup link itself.
     #[test]
-    fn single_slot_secret_template_asks_for_one_secret() {
+    fn single_slot_secret_template_asks_for_one_step() {
         let d = def(
             vec![secret_auth("token", "acme_api_key", Vec::new())],
             Vec::new(),
         );
         let steps = build_setup_steps(&d);
 
-        assert_eq!(steps.len(), 2);
+        assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].action, "create_service");
-        assert_eq!(steps[1].action, "request_secret");
-        assert_eq!(steps[1].params["secret_name"], "acme_api_key");
+        assert_eq!(steps[0].params["template_key"], "acme");
+        assert!(
+            steps[0].note.unwrap().contains("setup.setup_url"),
+            "the secret note must name the field the URL arrives on"
+        );
     }
 
-    /// Regression: a template with two instance-source slots must produce two
-    /// `request_secret` steps, each naming one secret as a **string**.
-    ///
-    /// The first cut emitted a single step whose `secret_name` was an array.
-    /// `request_secret` declares that param as `string`, so an agent following
-    /// the hint would have failed deserialization — a setup instruction that
-    /// breaks the setup it describes. No shipped template currently declares
-    /// two instance slots, which is exactly why this is a unit test: the
-    /// integration assertion over the live catalog would pass vacuously.
+    /// The hint stays one step however many slots the template declares:
+    /// `create_service` mints one link per unbound slot and returns them
+    /// together. No shipped template has two, which is exactly why this is a
+    /// unit test — an assertion over the live catalog would pass vacuously.
     #[test]
-    fn multi_slot_secret_template_asks_once_per_secret() {
+    fn multi_slot_secret_template_still_asks_once() {
         let d = def(
             vec![secret_auth(
-                "mailbox",
-                "unused_fallback",
-                vec!["mailbox_user".into(), "mailbox_pass".into()],
+                "basic",
+                "acme_user",
+                vec!["acme_user".into(), "acme_pass".into()],
             )],
             vec![
-                slot("mailbox_user", "acme_user", SecretSource::Instance),
-                slot("mailbox_pass", "acme_pass", SecretSource::Instance),
+                slot("acme_user", "acme_user", SecretSource::Instance),
+                slot("acme_pass", "acme_pass", SecretSource::Instance),
             ],
         );
         let steps = build_setup_steps(&d);
 
-        assert_eq!(steps.len(), 3, "create_service + one step per slot");
-        let secret_steps: Vec<_> = steps
-            .iter()
-            .filter(|s| s.action == "request_secret")
-            .collect();
-        assert_eq!(secret_steps.len(), 2);
-        for step in &secret_steps {
-            assert!(
-                step.params["secret_name"].is_string(),
-                "secret_name must be a string, got {:?}",
-                step.params["secret_name"]
-            );
-        }
-        assert_eq!(secret_steps[0].params["secret_name"], "acme_user");
-        assert_eq!(secret_steps[1].params["secret_name"], "acme_pass");
-    }
-
-    /// An instance-source slot may legitimately declare no `default_secret_name`
-    /// — validation only requires one for org-source slots. There is no name to
-    /// pre-fill, and `secret_name: ""` would 400 in `kernel_request_secret`, so
-    /// the step is omitted rather than emitted broken.
-    #[test]
-    fn instance_slot_without_a_default_name_yields_no_request_step() {
-        let d = def(
-            vec![secret_auth(
-                "acme",
-                "unused_fallback",
-                vec!["named".into(), "unnamed".into()],
-            )],
-            vec![
-                slot("named", "acme_key", SecretSource::Instance),
-                slot("unnamed", "", SecretSource::Instance),
-            ],
+        assert_eq!(steps.len(), 1, "one call, however many slots");
+        assert_eq!(steps[0].action, "create_service");
+        assert!(
+            !steps.iter().any(|s| s.action == "request_secret"),
+            "request_secret is no longer part of the happy path"
         );
-        let steps = build_setup_steps(&d);
-
-        let secret_steps: Vec<_> = steps
-            .iter()
-            .filter(|s| s.action == "request_secret")
-            .collect();
-        assert_eq!(secret_steps.len(), 1, "only the named slot is requestable");
-        assert_eq!(secret_steps[0].params["secret_name"], "acme_key");
-    }
-
-    /// Org-source slots are the deployment's to set, not the caller's, so they
-    /// are not something to ask this user for.
-    #[test]
-    fn org_source_slots_are_not_requested() {
-        let d = def(
-            vec![secret_auth(
-                "gateway",
-                "unused_fallback",
-                vec!["gateway_key".into(), "instance_key".into()],
-            )],
-            vec![
-                slot("gateway_key", "shared_gateway_key", SecretSource::Org),
-                slot("instance_key", "acme_key", SecretSource::Instance),
-            ],
-        );
-        let steps = build_setup_steps(&d);
-
-        let secret_steps: Vec<_> = steps
-            .iter()
-            .filter(|s| s.action == "request_secret")
-            .collect();
-        assert_eq!(secret_steps.len(), 1);
-        assert_eq!(secret_steps[0].params["secret_name"], "acme_key");
     }
 
     #[test]
-    fn oauth_template_asks_for_a_connection_not_a_secret() {
+    fn oauth_template_points_at_the_connect_bundle() {
         let d = def(
             vec![ServiceAuth::OAuth {
                 provider: "google".into(),
-                scopes: Vec::new(),
+                scopes: vec!["calendar.readonly".into()],
                 token_injection: injection(),
             }],
             Vec::new(),
         );
         let steps = build_setup_steps(&d);
 
-        assert_eq!(steps.len(), 2);
-        assert_eq!(steps[1].action, "create_connection");
-        assert_eq!(steps[1].params["provider"], "google");
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].action, "create_service");
+        assert!(
+            steps[0].note.unwrap().contains("connect.auth_url"),
+            "the OAuth note must name the field the URL arrives on"
+        );
+        assert!(
+            !steps.iter().any(|s| s.action == "create_connection"),
+            "create_service auto-initiates the flow"
+        );
     }
 
-    /// A template needing no credential is callable the moment the instance
-    /// exists, so there is no second step to offer.
     #[test]
     fn authless_template_only_needs_create_service() {
         let d = def(Vec::new(), Vec::new());

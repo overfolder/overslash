@@ -94,6 +94,51 @@ async fn self_target_returns_provide_url() {
     assert!(inner["expires_at"].is_string());
 }
 
+/// The MCP surface surfaces the shortened form too.
+///
+/// It is the one of the three mint paths whose caller is an *agent*, which is
+/// exactly the case where the short form matters most: the agent pastes this
+/// into a chat message for its user. All three go through one
+/// `service_setup::mint`, so this pins that the MCP response actually carries
+/// what that produces rather than dropping it on the way out.
+#[tokio::test]
+async fn provide_url_is_shortened_over_mcp() {
+    let shortener = common::start_shortener_stub().await;
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry_customized(pool, None, move |cfg| {
+        cfg.oversla_sh_base_url = Some(shortener);
+        cfg.oversla_sh_api_key = Some("stub-key".into());
+    })
+    .await;
+    let (_org, agent_id, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    grant(
+        &client,
+        &base,
+        &admin_key,
+        agent_id,
+        "overslash:request_secrets_own:*",
+    )
+    .await;
+
+    let resp = call(
+        &client,
+        &base,
+        &agent_key,
+        json!({
+            "service": "overslash",
+            "action": "request_secret",
+            "params": { "secret_name": "openai_api_key" }
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    let inner: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(inner["short_url"], common::STUB_SHORT_URL, "{inner}");
+}
+
 /// Empty `secret_name` is rejected at the kernel before any DB writes.
 #[tokio::test]
 async fn empty_secret_name_rejected() {

@@ -27,7 +27,7 @@ pub(crate) struct CallQuery {
 /// Service + HTTP verb (when only `method` + `url`/`path` is set). Mode A
 /// raw HTTP rides on the verb shape against the synthetic `http`
 /// pseudo-service. See module docs for the field-presence selection rules.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CallRequest {
     // Raw HTTP fields (also reused by service + HTTP verb)

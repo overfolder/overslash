@@ -1168,6 +1168,29 @@ pub async fn start_api_with_auth_providers(
     (format!("http://{addr}"), client)
 }
 
+/// The short URL [`start_shortener_stub`] answers every mint with.
+pub const STUB_SHORT_URL: &str = "https://oversla.sh/xY3";
+
+/// Boot a stub `oversla.sh` that answers every mint with [`STUB_SHORT_URL`],
+/// and return its base URL.
+///
+/// The shared harness leaves `oversla_sh_base_url` unset, which makes every
+/// `short_url` `None` — so a path that silently never reaches the shortener
+/// looks exactly like a deployment that has not configured one. Pair this with
+/// [`start_api_with_registry_customized`] to tell the two apart.
+pub async fn start_shortener_stub() -> String {
+    use axum::{Json, Router, routing::post};
+
+    let app = Router::new().route(
+        "/api/links",
+        post(|| async { Json(serde_json::json!({"short_url": STUB_SHORT_URL})) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
 /// Start the mock target in-process on a random port.
 /// Includes: echo, webhook receiver, and mock OAuth token endpoint.
 /// Boot the combined OAuth/OIDC + GitHub user + echo + webhook fake on an

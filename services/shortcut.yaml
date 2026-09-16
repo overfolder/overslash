@@ -1114,6 +1114,9 @@ paths:
       operationId: get_current_member
       summary: Get the member this token belongs to
       risk: read
+      # The credential probe: this endpoint's entire job is "who does this
+      # token belong to", which is exactly what a Test button asks.
+      test: true
       description: >-
         The member behind this API token — their UUID, name and workspace.
         Call it to resolve "me": the UUID it returns is what `owner:me` in a

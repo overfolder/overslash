@@ -13,6 +13,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AuthContext, ClientIp, OrgAcl, ReqExt, WriteAcl},
+    routes::actions::probe,
     services::{
         group_ceiling,
         platform_caller::PlatformCallContext,
@@ -35,6 +36,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/services/{id}/manage", put(update_service))
         .route("/v1/services/{id}/status", patch(update_service_status))
         .route("/v1/services/{id}/groups", get(list_service_groups))
+        .route("/v1/services/{id}/test", post(test_service))
 }
 
 // -- Request types --
@@ -138,7 +140,7 @@ async fn list_services(
                 row.owner_identity_id,
             )
             .await;
-            let icon_url = platform_services::resolve_instance_icon_url(
+            let tv = platform_services::template_view(
                 state.db(&ext),
                 &state.registry,
                 &row,
@@ -148,7 +150,8 @@ async fn list_services(
             .await;
             let mut summary = platform_services::row_to_summary(row, groups);
             summary.credentials_status = credentials_status;
-            summary.icon_url = icon_url;
+            summary.icon_url = tv.icon_url;
+            summary.test_action = tv.test_action;
             summaries.push(summary);
         }
         if let Some(conn) = q.connection {
@@ -253,8 +256,18 @@ async fn get_service(
             row.owner_identity_id,
         )
         .await;
+        let tv = platform_services::template_view(
+            state.db(&ext),
+            &state.registry,
+            &row,
+            row.owner_identity_id,
+            &state.config.public_url,
+        )
+        .await;
         let mut detail = platform_services::row_to_detail(row);
         detail.credentials_status = credentials_status;
+        detail.icon_url = tv.icon_url;
+        detail.test_action = tv.test_action;
         return Ok(Json(detail));
     };
 
@@ -321,6 +334,66 @@ async fn require_owner_or_admin(
     Err(AppError::Forbidden("admin access required".into()))
 }
 
+/// Run this instance's template-declared credential probe.
+///
+/// The endpoint exists so no caller has to know which action the probe is —
+/// the template says (`x-overslash-test`) and this resolves it. The call
+/// itself is ordinary: same permission chain, same approval gate. See
+/// [`crate::routes::actions::probe`] for why that is not a bypass in the
+/// case it was built for.
+///
+/// Gated by `require_owner_or_admin` rather than by execute access: pressing
+/// this is a management act on the instance ("are its credentials good?"),
+/// and the owner is who is being asked.
+// Eight extractors: the probe delegates to `call_action_impl`, which needs
+// the same six the `/v1/actions/call` handler does, plus this route's own
+// path id and the ACL the ownership check reads.
+#[allow(clippy::too_many_arguments)]
+async fn test_service(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    auth: AuthContext,
+    WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    transport: crate::extractors::CallerTransport,
+    Path(id): Path<Uuid>,
+) -> Result<Json<probe::ServiceTestResponse>> {
+    let instance = scope
+        .get_service_instance(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    require_owner_or_admin(&scope, &instance, &acl).await?;
+
+    // Resolved as the instance's *owner*, not the caller. The user tier is
+    // keyed on that identity, so resolving as an admin probing someone else's
+    // instance would miss the user-tier template it is actually built from —
+    // and a caller who happens to own a same-key template of their own would
+    // shadow the instance's real one. Every other instance-view path passes
+    // `owner_identity_id` for the same reason.
+    let def = platform_services::resolve_template_definition(
+        state.db(&ext),
+        &state.registry,
+        acl.org_id,
+        instance.owner_identity_id,
+        &instance.template_key,
+    )
+    .await?;
+
+    let verdict = probe::run(
+        state.clone(),
+        ext,
+        auth,
+        scope,
+        ip,
+        transport,
+        &instance,
+        &def,
+    )
+    .await?;
+    Ok(Json(verdict))
+}
+
 async fn update_service(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -344,6 +417,8 @@ async fn update_service(
 }
 
 async fn update_service_status(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     Path(id): Path<Uuid>,
@@ -369,7 +444,18 @@ async fn update_service_status(
         .update_service_instance_status(id, &req.status)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
-    Ok(Json(platform_services::row_to_detail(row)))
+    let tv = platform_services::template_view(
+        state.db(&ext),
+        &state.registry,
+        &row,
+        row.owner_identity_id,
+        &state.config.public_url,
+    )
+    .await;
+    let mut detail = platform_services::row_to_detail(row);
+    detail.icon_url = tv.icon_url;
+    detail.test_action = tv.test_action;
+    Ok(Json(detail))
 }
 
 /// Query params for `DELETE /v1/services/{name}`.

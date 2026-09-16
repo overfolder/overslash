@@ -349,6 +349,9 @@ x-overslash-mcp:
 
     - name: list_all_contacts
       risk: read
+      test:
+        params:
+          limit: 1
       # Same shape as search_contacts — see the comment there.
       pagination:
         page_size:

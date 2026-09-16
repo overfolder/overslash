@@ -656,6 +656,7 @@ mod tests {
             request_body: None,
             download: None,
             upload: None,
+            test: None,
         }
     }
 }

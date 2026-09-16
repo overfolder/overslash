@@ -54,6 +54,12 @@ async fn happy_path_mint_get_submit_stored() {
     let meta: Value = resp.json().await.unwrap();
     assert_eq!(meta["secret_name"], "openai_api_key");
     assert!(meta["identity_label"].as_str().is_some());
+    // The page asks a stranger for a credential, so it has to be able to say
+    // which organization is asking.
+    assert!(
+        meta["org_name"].as_str().is_some_and(|n| !n.is_empty()),
+        "provide metadata must name the org: {meta}"
+    );
 
     // Submit value
     let resp = client
@@ -80,6 +86,33 @@ async fn happy_path_mint_get_submit_stored() {
     let got: Value = resp.json().await.unwrap();
     assert_eq!(got["name"], "openai_api_key");
     assert_eq!(got["version"], 2);
+}
+
+/// A provide URL is handed to a person, usually through a chat message, so the
+/// shortened form is what the caller surfaces. It comes from the one `mint`
+/// all three paths share — this pins the bare secret-request half of that;
+/// `service_setup::a_setup_link_is_shortened` pins the service-bound half.
+#[tokio::test]
+async fn a_provide_url_is_shortened() {
+    let shortener = common::start_shortener_stub().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api_with_registry_customized(pool, None, move |cfg| {
+        cfg.oversla_sh_base_url = Some(shortener);
+        cfg.oversla_sh_api_key = Some("stub-key".into());
+    })
+    .await;
+    let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    let req = mint(&base, &client, &agent_key, "openai_api_key").await;
+    assert_eq!(req["short_url"], common::STUB_SHORT_URL, "{req}");
+    // The long form is always there to fall back on — the shortener is
+    // best-effort and the canonical URL is what the token is bound to.
+    assert!(
+        req["url"]
+            .as_str()
+            .is_some_and(|u| u.contains("/secrets/provide/")),
+        "{req}"
+    );
 }
 
 #[tokio::test]

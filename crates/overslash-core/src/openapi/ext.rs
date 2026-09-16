@@ -70,6 +70,7 @@ pub enum Ext {
     Download,
     Upload,
     Pagination,
+    Test,
     // Parameters, body properties, tool properties, platform-action params
     Resolve,
     Aliases,
@@ -111,6 +112,7 @@ impl Ext {
             Ext::Download => "x-overslash-download",
             Ext::Upload => "x-overslash-upload",
             Ext::Pagination => "x-overslash-pagination",
+            Ext::Test => "x-overslash-test",
             Ext::Resolve => "x-overslash-resolve",
             Ext::Aliases => "x-overslash-aliases",
             Ext::InstanceConfig => "x-overslash-instance-config",
@@ -166,6 +168,7 @@ pub(super) const ALL: &[Ext] = &[
     Ext::Download,
     Ext::Upload,
     Ext::Pagination,
+    Ext::Test,
     Ext::Resolve,
     Ext::Aliases,
     Ext::InstanceConfig,
@@ -359,6 +362,14 @@ pub(super) const READS: &[(Ext, &[Pos])] = &[
         Ext::Pagination,
         &[Pos::Operation, Pos::McpTool, Pos::McpToolDiscovered],
     ),
+    // actions.rs · mcp.rs. The credential probe an instance's Test button runs.
+    // Same positions as `risk`, minus the platform runtime: a platform action
+    // answers from this process against no upstream credential, so there is
+    // nothing for a probe to prove there.
+    (
+        Ext::Test,
+        &[Pos::Operation, Pos::McpTool, Pos::McpToolDiscovered],
+    ),
     // params.rs:31,129 · mcp.rs:436. NOT on a platform-action param:
     // `parse_platform_params` reads the other four and no resolver.
     (
@@ -470,7 +481,7 @@ mod tests {
     fn every_variant_is_in_all() {
         // `ALL` drives name resolution and did-you-mean suggestions, so a
         // variant missing from it is invisible to the lint.
-        assert_eq!(ALL.len(), 32, "ALL has drifted from the enum");
+        assert_eq!(ALL.len(), 33, "ALL has drifted from the enum");
         let mut keys: Vec<&str> = ALL.iter().map(|e| e.key()).collect();
         keys.sort_unstable();
         let before = keys.len();
@@ -535,6 +546,11 @@ mod tests {
         assert!(reads_at(Ext::WaitMode, Pos::Operation));
         assert!(!reads_at(Ext::Resolve, Pos::PlatformActionParam));
         assert!(reads_at(Ext::Aliases, Pos::PlatformActionParam));
+        // A platform action answers from this process against no upstream
+        // credential, so a probe there would prove nothing.
+        assert!(!reads_at(Ext::Test, Pos::PlatformAction));
+        assert!(reads_at(Ext::Test, Pos::Operation));
+        assert!(reads_at(Ext::Test, Pos::McpTool));
     }
 
     #[test]

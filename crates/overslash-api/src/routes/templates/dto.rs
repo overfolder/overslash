@@ -89,6 +89,12 @@ pub(super) struct TemplateDetail {
     /// instance-create/edit form and submits them as `config`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) instance_config_params: Vec<InstanceConfigParam>,
+    /// The action this template nominates as its credential probe
+    /// (`x-overslash-test`). The dashboard renders a Test button only when
+    /// this is present, so it must not require fetching `actions` and
+    /// scanning for the marker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) test_action: Option<crate::routes::actions::probe::TestActionRef>,
     /// Effective defaults an org layer supplies for the per-instance surface
     /// (endpoint `url` + `config` pins), folded through the whole chain. The
     /// instance form renders these as placeholders — leaving a field blank

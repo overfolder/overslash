@@ -409,6 +409,40 @@ export interface TemplateDetail {
   delta?: Delta;
   /** Fold-time resolution warnings (drift, shadowed extensions, dead entries). */
   resolution_report?: ResolutionReport;
+  /** The action this template nominates as its credential probe
+   * (`x-overslash-test`). Absent means the template declares none, and no
+   * Test button is offered. */
+  test_action?: TestActionRef;
+}
+
+/** A template's credential probe — the read action a Test button calls. */
+export interface TestActionRef {
+  action: string;
+  /** The action's one-line summary, for the button's tooltip. */
+  summary?: string;
+}
+
+/** The verdict from `POST /v1/services/{id}/test`.
+ *
+ * Carries no upstream response body on purpose: "do these credentials work"
+ * is the whole question the probe answers. */
+export interface ServiceTestResponse {
+  status:
+    | 'ok'
+    | 'failed'
+    | 'denied'
+    | 'pending_approval'
+    | 'needs_authentication'
+    | 'not_supported';
+  action?: string;
+  http_status?: number;
+  latency_ms?: number;
+  /** The call's `action_description` — the same line the approval screen shows. */
+  summary?: string;
+  /** Truncated upstream error text. */
+  error?: string;
+  approval_url?: string;
+  auth_url?: string;
 }
 
 /** A value an org can set on a service instance — either a pinnable action
@@ -686,6 +720,8 @@ export interface ServiceInstanceSummary {
   use_default_connection: boolean;
   groups?: ServiceGroupRef[];
   credentials_status?: CredentialsStatus;
+  /** The template's credential probe. Present means a Test button may be offered. */
+  test_action?: TestActionRef;
 }
 
 export interface ServiceInstanceDetail extends ServiceInstanceSummary {
@@ -695,6 +731,39 @@ export interface ServiceInstanceDetail extends ServiceInstanceSummary {
   updated_at: string;
   /** When this instance's MCP tools were last resynced (RFC3339). Absent until the first resync. */
   discovered_at?: string;
+  /** Present on a create response when the kernel auto-initiated an OAuth flow. */
+  connect?: ConnectBundle;
+  /** Present on a create response when the kernel minted setup links for the
+   * instance's unbound credential slots. The secret twin of `connect` — hand
+   * `setup_url` to whoever holds the API key. */
+  setup?: SetupBundle;
+}
+
+/** OAuth bootstrap bundle returned alongside a freshly-created instance. */
+export interface ConnectBundle {
+  auth_url: string;
+  state: string;
+  flow_id: string;
+  expires_at: string;
+}
+
+/** Setup links minted alongside a freshly-created instance. */
+export interface SetupBundle {
+  /** The URL to hand over — the first entry of `requests`. */
+  setup_url: string;
+  short_url?: string;
+  requests: SetupRequestRef[];
+  expires_at: string;
+}
+
+export interface SetupRequestRef {
+  request_id: string;
+  credential_key: string;
+  secret_name: string;
+  setup_url: string;
+  /** Best-effort shortened form of this entry's `setup_url`. Prefer it when
+   * present — it is the form that survives being pasted into a chat message. */
+  short_url?: string;
 }
 
 export interface CreateServiceRequest {
@@ -719,6 +788,9 @@ export interface CreateServiceRequest {
   groups?: ServiceGroupGrantInput[];
   /** When `false`, this instance won't fall back to the default connection for its provider. Defaults to `true` server-side. */
   use_default_connection?: boolean;
+  /** Suppress the auto-minted setup links for unbound credential slots. The
+   * secret twin of `skip_connect`. */
+  skip_credentials?: boolean;
 }
 
 export interface ServiceGroupGrantInput {

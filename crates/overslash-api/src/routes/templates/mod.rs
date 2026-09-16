@@ -306,6 +306,7 @@ async fn db_row_to_detail(
         hidden: def.hidden,
         configurable_url: configurable_url(def),
         instance_config_params: instance_config_params(def),
+        test_action: crate::routes::actions::probe::describe(def),
         instance_defaults: def.instance_defaults.clone(),
         extends: t.extends,
         delta: t.delta,

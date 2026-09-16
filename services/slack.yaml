@@ -75,6 +75,9 @@ x-overslash-mcp:
     # ── channels (read) ──
     - name: list_channels
       risk: read
+      test:
+        params:
+          limit: 1
       # `limit` already declares `default: 100`, so the block names it and
       # restates nothing. `from` addresses the tool's own payload, not the
       # gateway's MCP envelope — the projection is D55's, the same one
