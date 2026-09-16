@@ -113,21 +113,23 @@ For a **secret-based** template the same response also carries `setup`:
 
 ```json
 { "setup": {
-    "setup_url": "https://app.overslash.com/services/setup/req_ab12…?token=…",
-    "short_url": "https://oversla.sh/xY3",
+    "setup_url": "https://oversla.sh/xY3",
     "requests": [{ "request_id": "req_ab12…", "credential_key": "token",
-                   "secret_name": "resend_key",
-                   "setup_url": "…", "short_url": "…" }],
+                   "secret_name": "resend_key", "setup_url": "https://oversla.sh/xY3" }],
     "expires_at": "…" } }
 ```
 
-Hand `short_url` (or `setup_url` when the shortener is not configured) to your
-user verbatim — it opens a page naming the service and takes the API key.
-**You never see the value.** This is the exact counterpart of
-`connect.auth_url` below, so both credential kinds are one call and one URL.
-One entry per credential slot the template needs, each with its own pair; a
-template with two wants both links handed over. Pass `skip_credentials: true`
-if you intend to wire the credentials yourself.
+Hand `setup_url` to your user verbatim — it opens a page naming the service and
+takes the API key. **You never see the value.** As everywhere else on this
+surface, it is already the short `oversla.sh` link wherever that service is
+configured, so there is never a second URL to choose between. This is the exact
+counterpart of `connect.auth_url` below, so both credential kinds are one call
+and one URL.
+
+One `requests[]` entry per credential slot the template needs, each with its own
+link; a template with two wants both handed over, and `setup.setup_url` is the
+first entry's. Pass `skip_credentials: true` if you intend to wire the
+credentials yourself.
 
 > `needs_authentication` means *no credential is bound yet* — it does **not**
 > tell you whether the underlying OAuth **client** even exists. If the org has

@@ -183,15 +183,14 @@ pub async fn mint(
         PROVIDE_PATH
     };
     let url = config.dashboard_url_for(&format!("{path}/{request_id}?token={token}"));
-    let short_url = match (
+    let short_url = short_url::mint_with_config(
+        http_client,
         config.oversla_sh_base_url.as_deref(),
         config.oversla_sh_api_key.as_deref(),
-    ) {
-        (Some(base), Some(key)) => {
-            short_url::mint_with_client(http_client, base, key, &url, expires_at).await
-        }
-        _ => None,
-    };
+        &url,
+        expires_at,
+    )
+    .await;
 
     // Audited here rather than at each call site: the three mint paths had
     // three copies of this block and had already drifted, so one

@@ -202,13 +202,12 @@ platform_actions:
       hand that to your user verbatim. For a secret-backed template whose
       per-instance credential slots you did not bind, the response carries
       `setup.setup_url` instead: a signed, single-use page where your user
-      pastes the API key. Prefer `setup.short_url` when it is present — it is
-      the form that survives being pasted into a chat message. You never see
-      the value; the page binds it to this instance for you. A template
-      needing several credentials returns one entry per slot under
-      `setup.requests`, each with its own `setup_url` / `short_url` to hand
-      over. Pass skip_credentials: true to suppress all of it and wire the
-      credentials yourself.
+      pastes the API key. You never see the value; the page binds it to this
+      instance for you. A template needing several credentials returns one
+      entry per slot under `setup.requests`, each with its own `setup_url` to
+      hand over, and `setup.setup_url` is the first of them. Pass
+      skip_credentials: true to suppress all of it and wire the credentials
+      yourself.
       An org-level instance (user_level: false) has no Myself group, so `groups`
       is required there: pass at least one group you are a member of, as
       [{ group_id, access_level, auto_approve_reads }] with access_level one of
@@ -245,8 +244,10 @@ platform_actions:
   create_connection:
     description: >
       Start the OAuth dance for a provider. Returns an `auth_url` pointing
-      at Overslash's `/connect-authorize` gate (and an optional shortened
-      form). Hand that URL to the user — the gate fail-fasts on session
+      at Overslash's `/connect-authorize` gate — already the short
+      `oversla.sh` link wherever that service is configured, so there is
+      never a second URL to choose between. Hand it to the user — the gate
+      fail-fasts on session
       mismatch before redirecting to the provider, mitigating the chat-
       delivery pitfalls catalogued in the Obsidian "MCP meets OAuth"
       writeup. The raw provider URL is intentionally not surfaced over MCP;
@@ -267,7 +268,9 @@ platform_actions:
     description: >
       Mint a signed, single-use URL the user can open to provide a secret
       value (e.g. an API key). The agent never sees the value — only the URL.
-      Returns request_id, provide_url, optional short_url, and expires_at.
+      Returns request_id, provide_url and expires_at. `provide_url` is
+      already the short `oversla.sh` link wherever that service is
+      configured, so there is never a second URL to choose between.
       Defaults to the caller's own identity; targeting another identity
       requires `request_secrets_share`.
       Pass service_id to bind the value to a service instance on submit: the

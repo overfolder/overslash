@@ -425,6 +425,11 @@ const LINK_PAIRS: &[(&str, &str)] = &[
     // result (`provide_url`).
     ("url", "short_url"),
     ("provide_url", "short_url"),
+    // `SetupBundle` on the `create_service` response, and each of its
+    // `requests[]` entries — which is why the walk below recurses through
+    // arrays as well as objects. A multi-slot template hands over one link per
+    // entry, so every entry needs collapsing, not just the bundle's scalar.
+    ("setup_url", "short_url"),
 ];
 
 /// Collapse every canonical/short URL pair into the canonical field, for MCP
@@ -534,6 +539,64 @@ mod collapse_tests {
             "raw is the opt-in upstream URL and must never be shortened or dropped: {out}"
         );
         assert_eq!(out["result"]["items"][0]["url"], "https://oversla.sh/a");
+    }
+
+    /// The `create_service` setup bundle: a scalar pair on the bundle itself
+    /// and one per `requests[]` entry. A multi-slot template hands over one
+    /// link per entry, so collapsing only the scalar would leave an agent
+    /// picking between two URLs for every slot after the first — the exact
+    /// trap this collapse exists to remove.
+    #[test]
+    fn every_setup_link_in_the_bundle_collapses() {
+        let out = collapse_link_pairs(json!({
+            "result": { "setup": {
+                "setup_url": "https://app.overslash.com/services/setup/req_a?token=x",
+                "short_url": "https://oversla.sh/a1",
+                "requests": [
+                    {
+                        "credential_key": "acme_user",
+                        "setup_url": "https://app.overslash.com/services/setup/req_a?token=x",
+                        "short_url": "https://oversla.sh/a1",
+                    },
+                    {
+                        "credential_key": "acme_pass",
+                        "setup_url": "https://app.overslash.com/services/setup/req_b?token=y",
+                        "short_url": "https://oversla.sh/b2",
+                    },
+                ],
+            }}
+        }));
+        let setup = &out["result"]["setup"];
+        assert_eq!(setup["setup_url"], "https://oversla.sh/a1");
+        assert!(setup.get("short_url").is_none());
+        assert_eq!(setup["requests"][0]["setup_url"], "https://oversla.sh/a1");
+        assert_eq!(
+            setup["requests"][1]["setup_url"], "https://oversla.sh/b2",
+            "the second slot's link collapses too, not just the first: {out}"
+        );
+        assert!(setup["requests"][1].get("short_url").is_none());
+        // Untouched.
+        assert_eq!(setup["requests"][1]["credential_key"], "acme_pass");
+    }
+
+    /// With the shortener unconfigured every `short_url` is absent, so there
+    /// is no pair and the long form has to survive.
+    #[test]
+    fn a_setup_link_with_no_short_form_is_left_alone() {
+        let out = collapse_link_pairs(json!({
+            "setup": {
+                "setup_url": "https://app.overslash.com/services/setup/req_a?token=x",
+                "requests": [{ "setup_url": "https://app.overslash.com/services/setup/req_a?token=x" }],
+            }
+        }));
+        assert_eq!(
+            out["setup"]["setup_url"],
+            "https://app.overslash.com/services/setup/req_a?token=x"
+        );
+        assert_eq!(
+            out["setup"]["requests"][0]["setup_url"],
+            "https://app.overslash.com/services/setup/req_a?token=x"
+        );
     }
 
     #[test]

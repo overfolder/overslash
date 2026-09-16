@@ -137,6 +137,90 @@ async fn a_setup_link_is_shortened() {
     );
 }
 
+/// Over MCP the bundle carries one URL per link, already shortened.
+///
+/// `create_service` reaches an agent through `routes::mcp::forward`, which
+/// collapses every canonical/short pair (#627) so the agent is never handed
+/// two URLs and made to pick. The setup bundle is a pair at two depths — the
+/// bundle scalar and each `requests[]` entry — so this drives the real
+/// `/mcp` endpoint rather than asserting over `collapse_link_pairs` alone:
+/// the unit test proves the walk, this proves the bundle actually reaches it.
+#[tokio::test]
+async fn the_setup_bundle_is_collapsed_for_mcp_callers() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) =
+        setup_with_shortener(format!("http://127.0.0.1:{}", mock.port())).await;
+    let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    // `manage_services_own` is seeded for a first-level agent (D79), but grant
+    // it explicitly so this asserts the collapse rather than the org default.
+    let grant = client
+        .post(format!("{base}/v1/permissions"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({
+            "identity_id": _ident,
+            "action_pattern": "overslash:manage_services_own:*",
+            "effect": "allow"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(grant.status().is_success(), "grant: {}", grant.status());
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {
+                    "service": "overslash",
+                    "action": "create_service",
+                    "params": {
+                        "template_key": "resend",
+                        "name": format!("resend-mcp-short-{}", Uuid::new_v4().simple()),
+                        "user_level": true
+                    }
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let text = frame["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no tool text: {frame}"));
+    let call: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(call["status"], "called", "{call}");
+    // Compact (the MCP default), deliberately: it parses `body` into an
+    // object, which is what lets the collapse walk reach inside it. Under
+    // `verbose: true` the body is a raw JSON *string* and opaque to the walk
+    // — true of every pair, not just this one, and the shape a caller asking
+    // for verbose has asked for.
+    let inner = &call["result"]["body"];
+
+    let setup = &inner["setup"];
+    assert!(!setup.is_null(), "no setup bundle: {inner}");
+    assert_eq!(setup["setup_url"], common::STUB_SHORT_URL, "{setup}");
+    assert!(
+        setup.get("short_url").is_none(),
+        "the pair is collapsed, not duplicated: {setup}"
+    );
+    assert_eq!(
+        setup["requests"][0]["setup_url"],
+        common::STUB_SHORT_URL,
+        "each entry collapses too, not just the bundle scalar: {setup}"
+    );
+    assert!(setup["requests"][0].get("short_url").is_none(), "{setup}");
+}
+
 /// Binding the slot at create time is the caller saying "I have this covered".
 #[tokio::test]
 async fn a_bound_slot_mints_no_setup_link() {
