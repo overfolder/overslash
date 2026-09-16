@@ -290,9 +290,7 @@ pub(super) async fn enforce_permission_chain(
                     approval.id, approval.org_id
                 ));
                 let approval_url =
-                    crate::services::short_url::mint(state, &approval_url, expires_at)
-                        .await
-                        .unwrap_or(approval_url);
+                    crate::services::short_url::shorten(state, approval_url, expires_at).await;
 
                 return Ok(Some(
                     (
