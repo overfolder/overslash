@@ -436,6 +436,12 @@ variable "upstream_error_alert_enabled" {
   default     = false
 }
 
+variable "api_latency_alert_enabled" {
+  description = "Enable the [P1] API Slow Requests alert. Leave false until a release carrying the *bucketed* overslash_http_request_duration_seconds histogram is deployed and scraped — before that the metric is a summary with no _bucket series, and GMP rejects the policy."
+  type        = bool
+  default     = false
+}
+
 variable "monthly_budget_usd" {
   description = "Monthly billing budget in USD. Triggers email alerts at 50%/80%/100%."
   type        = number

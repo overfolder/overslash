@@ -194,8 +194,18 @@
 
 ### Monitoring & Observability
 
-- OpenTofu module `infra/modules/monitoring/` (PRs #200, #205, #207, #272) deploys 5 GCP dashboards — `overview`, `api-use`, `actions-and-oauth`, `cloudsql-use`, `business` — plus P0/P1/P2 alert policies: API down, API 5xx > 1%, API P99 > 5s, Cloud SQL CPU/disk, background-task staleness, OAuth refresh failure ratio, webhook terminal failure ratio, plus uptime checks.
+- OpenTofu module `infra/modules/monitoring/` (PRs #200, #205, #207, #272) deploys 5 GCP dashboards — `overview`, `api-use`, `actions-and-oauth`, `cloudsql-use`, `business` — plus P0/P1/P2 alert policies: API down, API 5xx > 1%, gateway slow-request ratio, Cloud SQL CPU/disk, background-task staleness, OAuth refresh failure ratio, webhook terminal failure ratio, plus uptime checks.
 - OTel sidecar exports metrics into GMP (instance-label collision fixed in #272).
+- The gateway slow-request alert is a PromQL ratio over
+  `overslash_http_request_duration_seconds`, **not** a Cloud Run p99. It excludes
+  `/v1/events/stream` and every upstream-proxy path, whose durations are set by
+  `EVENTS_STREAM_MAX_CONNECTION_SECS` and `CALL_TIMEOUT_MS` rather than by the gateway.
+  It replaced a `run.googleapis.com/request_latencies` P0 that paged on healthy traffic —
+  that metric carries no route label, so it could not be filtered in place.
+- **PromQL alerts are gated and ship off.** `api_latency_alert_enabled`,
+  `oauth_refresh_alert_enabled` and `upstream_error_alert_enabled` all default to `false`
+  and are listed explicitly in both `infra/env/*.tfvars`; GMP rejects a policy whose metric
+  descriptor does not exist yet. Confirm the descriptor, then flip the flag.
 - Notification channels: email channel auto-provisioned when `alert_email` is set (`infra/env/dev.tfvars` already wired); PagerDuty channel auto-provisioned when `pagerduty_integration_key` is set. **Slack / PagerDuty integration keys are not yet bound** (see Launch Blockers in TODO.md).
 - Public status page at <https://status.overslash.com> (Better Stack) with independent HTTPS uptime checks for `api.overslash.com` and `app.overslash.com`. Runbook: [`docs/runbooks/status-page.md`](docs/runbooks/status-page.md).
 - JSON-format logs with `message`/`span`/`textPayload` surfaced through `make logs` (PR #198).

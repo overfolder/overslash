@@ -23,9 +23,36 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use axum::{Router, extract::State, routing::get};
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 
 static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+
+/// Bucket bounds for `overslash_http_request_duration_seconds`, in seconds.
+///
+/// Without an explicit bucket set, `metrics-exporter-prometheus` renders every
+/// histogram as a Prometheus *summary* — `{quantile="0.99"}` plus `_sum` and
+/// `_count`, and no `_bucket` series at all. A summary's quantiles are computed
+/// per process over a sliding window, so they cannot be aggregated across Cloud
+/// Run instances and `histogram_quantile()` has nothing to read. The `api-use`
+/// dashboard's "p99 Request Duration by Path" widget and the `[P1] API Slow
+/// Requests` alert both query `_bucket`, so these bounds are what make either
+/// one work at all.
+///
+/// `2.5` must stay in this list: it is the alert's threshold, and a
+/// ratio-over-threshold alert is only exact when it lands on a real bucket edge.
+const HTTP_LATENCY_BUCKETS: &[f64] = &[
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
+];
+
+/// Bucket bounds for `overslash_action_execution_duration_seconds`, in seconds.
+///
+/// Sized to the D56 timeout ladder rather than to the HTTP bounds above: this
+/// histogram measures an upstream call, whose ceiling is `CALL_TIMEOUT_MS`
+/// (pinned to 110s in production) and never the tens of milliseconds the
+/// gateway's own routes run in. Feeds the actions dashboard's p99-by-template
+/// widget; no alert is attached.
+const ACTION_DURATION_BUCKETS: &[f64] =
+    &[0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0];
 
 /// Install the global Prometheus recorder on first call; subsequent calls
 /// return the same handle. Idempotent so tests that build many app routers
@@ -38,7 +65,24 @@ static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 pub fn setup() -> PrometheusHandle {
     HANDLE
         .get_or_init(|| {
+            // `Matcher::Full` per metric, never a `Matcher::Suffix`
+            // ("_duration_seconds") blanket: one bucket set cannot serve both
+            // `overslash_resolve_cache_op_duration_seconds` (microseconds — every
+            // sample would land in the first bucket) and
+            // `overslash_approval_resolution_duration_seconds` (human wall-clock
+            // hours — every sample would land in `+Inf`). Metrics not named here
+            // stay summaries, which is correct for them.
             let handle = PrometheusBuilder::new()
+                .set_buckets_for_metric(
+                    Matcher::Full("overslash_http_request_duration_seconds".to_owned()),
+                    HTTP_LATENCY_BUCKETS,
+                )
+                .expect("HTTP latency buckets are non-empty")
+                .set_buckets_for_metric(
+                    Matcher::Full("overslash_action_execution_duration_seconds".to_owned()),
+                    ACTION_DURATION_BUCKETS,
+                )
+                .expect("action duration buckets are non-empty")
                 .install_recorder()
                 .expect("failed to install Prometheus recorder");
             spawn_upkeep(handle.clone(), Duration::from_secs(5));
@@ -91,6 +135,49 @@ mod tests {
         // recorder and may emit between renders.
         let _ = setup();
         let _ = setup();
+    }
+
+    #[tokio::test]
+    async fn http_duration_renders_as_a_bucketed_histogram_not_a_summary() {
+        // `metrics-exporter-prometheus` renders a histogram as a *summary*
+        // unless buckets are set for it, and a summary has no `_bucket` series
+        // and no `le` label. Both the `api-use` dashboard widget and the
+        // `[P1] API Slow Requests` alert query `_bucket`, so a refactor that
+        // drops `set_buckets_for_metric` would silently blank the dashboard and
+        // leave the alert unable to fire — with nothing failing anywhere. This
+        // test is the tripwire for that.
+        let handle = setup();
+        metrics::histogram!(
+            "overslash_http_request_duration_seconds",
+            "method" => "GET",
+            "path" => "/v1/test",
+        )
+        .record(0.42);
+        let text = handle.render();
+        assert!(
+            text.contains("overslash_http_request_duration_seconds_bucket{"),
+            "expected a bucketed histogram, got: {text}",
+        );
+        assert!(
+            text.contains(r#"le="2.5""#),
+            "expected the alert's 2.5s bucket edge to exist verbatim, got: {text}",
+        );
+        assert!(
+            !text.contains(r#"overslash_http_request_duration_seconds{quantile="#),
+            "metric regressed to a Prometheus summary: {text}",
+        );
+        // The alert's denominator and its rate guard both read `_count`, and
+        // every one of its label matchers is on `path`. Pinned here because a
+        // drift in either spelling would leave the alert parsing fine and
+        // matching nothing — failing open, silently.
+        assert!(
+            text.contains("overslash_http_request_duration_seconds_count{"),
+            "alert denominator series missing: {text}",
+        );
+        assert!(
+            text.contains(r#"path="/v1/test""#),
+            "expected a `path` label the alert can exclude on, got: {text}",
+        );
     }
 
     #[tokio::test]
