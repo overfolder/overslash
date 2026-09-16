@@ -116,14 +116,16 @@ For a **secret-based** template the same response also carries `setup`:
     "setup_url": "https://app.overslash.com/services/setup/req_ab12…?token=…",
     "short_url": "https://oversla.sh/xY3",
     "requests": [{ "request_id": "req_ab12…", "credential_key": "token",
-                   "secret_name": "resend_key", "setup_url": "…" }],
+                   "secret_name": "resend_key",
+                   "setup_url": "…", "short_url": "…" }],
     "expires_at": "…" } }
 ```
 
-Hand `short_url` (or `setup_url`) to your user verbatim — it opens a page
-naming the service and takes the API key. **You never see the value.** This is
-the exact counterpart of `connect.auth_url` below, so both credential kinds are
-one call and one URL. One entry per credential slot the template needs; a
+Hand `short_url` (or `setup_url` when the shortener is not configured) to your
+user verbatim — it opens a page naming the service and takes the API key.
+**You never see the value.** This is the exact counterpart of
+`connect.auth_url` below, so both credential kinds are one call and one URL.
+One entry per credential slot the template needs, each with its own pair; a
 template with two wants both links handed over. Pass `skip_credentials: true`
 if you intend to wire the credentials yourself.
 

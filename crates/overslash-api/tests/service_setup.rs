@@ -58,6 +58,20 @@ fn parse_setup_url(url: &str) -> (String, String) {
     (req_id, token)
 }
 
+/// Boot with the `oversla.sh` shortener configured, so `short_url` is the
+/// difference between "this path shortens" and "nobody configured a shortener".
+async fn setup_with_shortener(upstream: String) -> (String, Client, common::BootstrapFixtures) {
+    let shortener = common::start_shortener_stub().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, client) =
+        common::start_api_with_registry_customized(pool, Some(("resend", upstream)), move |cfg| {
+            cfg.oversla_sh_base_url = Some(shortener);
+            cfg.oversla_sh_api_key = Some("stub-key".into());
+        })
+        .await;
+    (base, client, fx)
+}
+
 // ── Auto-mint ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -86,6 +100,41 @@ async fn creating_a_secret_service_mints_a_setup_link() {
     // The probe is advertised on the instance so the dashboard knows to offer
     // a Test button without fetching the template.
     assert_eq!(svc["test_action"]["action"], "list_domains");
+}
+
+/// The link is handed to a person, usually through a chat message, so the
+/// shortened form is the one that matters — and it has to be on the entry as
+/// well as on the bundle, because a multi-slot template hands over one link
+/// per entry and the bundle's scalar only covers the first.
+#[tokio::test]
+async fn a_setup_link_is_shortened() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) =
+        setup_with_shortener(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": format!("resend-short-{}", Uuid::new_v4().simple()),
+               "user_level": true}),
+    )
+    .await;
+    let setup = &svc["setup"];
+    assert!(!setup.is_null(), "no setup bundle on {svc}");
+    assert_eq!(setup["short_url"], common::STUB_SHORT_URL, "{setup}");
+    assert_eq!(
+        setup["requests"][0]["short_url"],
+        common::STUB_SHORT_URL,
+        "every entry carries its own short form, not just the bundle: {setup}"
+    );
+    // The long form is always there to fall back on.
+    assert!(
+        setup["requests"][0]["setup_url"]
+            .as_str()
+            .is_some_and(|u| u.contains("/services/setup/")),
+        "{setup}"
+    );
 }
 
 /// Binding the slot at create time is the caller saying "I have this covered".

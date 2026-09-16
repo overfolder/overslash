@@ -761,6 +761,9 @@ export interface SetupRequestRef {
   credential_key: string;
   secret_name: string;
   setup_url: string;
+  /** Best-effort shortened form of this entry's `setup_url`. Prefer it when
+   * present — it is the form that survives being pasted into a chat message. */
+  short_url?: string;
 }
 
 export interface CreateServiceRequest {

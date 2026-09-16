@@ -74,4 +74,12 @@ export interface SetupRequestRef {
   /** The vault name the value will be stored under. */
   secret_name: string;
   setup_url: string;
+  /**
+   * Best-effort shortened form of this entry's `setup_url`. Absent when the
+   * shortener is unconfigured or the mint failed — `setup_url` always works.
+   *
+   * Per entry, not just on the bundle: every link is handed to a person
+   * separately, so every link wants the form that survives a chat message.
+   */
+  short_url?: string;
 }

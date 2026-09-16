@@ -81,6 +81,15 @@ pub struct SetupRequestRef {
     /// The vault name the value will be stored under.
     pub secret_name: String,
     pub setup_url: String,
+    /// Best-effort shortened form of this entry's `setup_url`.
+    ///
+    /// Per entry, not just on the bundle: every link here is handed to a
+    /// person separately, so every link wants the form that survives being
+    /// pasted into a chat message. The bundle's own `short_url` is the first
+    /// entry's, for the common single-slot case where a caller reads the
+    /// scalar and never looks at `requests`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub short_url: Option<String>,
 }
 
 /// One minted request, as the mint helper returns it.
@@ -314,6 +323,7 @@ pub async fn mint_bundle(
             credential_key: slot.key.clone(),
             secret_name: slot.default_secret_name.clone(),
             setup_url: minted.url,
+            short_url: minted.short_url,
         });
     }
 

@@ -202,9 +202,13 @@ platform_actions:
       hand that to your user verbatim. For a secret-backed template whose
       per-instance credential slots you did not bind, the response carries
       `setup.setup_url` instead: a signed, single-use page where your user
-      pastes the API key. You never see the value; the page binds it to this
-      instance for you. Pass skip_credentials: true to suppress that and wire
-      the credentials yourself.
+      pastes the API key. Prefer `setup.short_url` when it is present — it is
+      the form that survives being pasted into a chat message. You never see
+      the value; the page binds it to this instance for you. A template
+      needing several credentials returns one entry per slot under
+      `setup.requests`, each with its own `setup_url` / `short_url` to hand
+      over. Pass skip_credentials: true to suppress all of it and wire the
+      credentials yourself.
       An org-level instance (user_level: false) has no Myself group, so `groups`
       is required there: pass at least one group you are a member of, as
       [{ group_id, access_level, auto_approve_reads }] with access_level one of
