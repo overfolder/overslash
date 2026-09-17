@@ -776,7 +776,7 @@ Finally, the gate flags are now written into both `infra/env/*.tfvars` even at `
 
 **A defaulted required param needs no mention in `test.params`.** Both `/v1/actions/call` and `/v1/actions/validate` run `apply_defaults` before the required check, so demanding that a probe restate Gmail's `userId: me` would make the template say the same thing twice and drift the moment the default changed.
 
-## D-NEXT: A SQL permission key names the database twice — by name and by id — and matches on either
+## D84: A SQL permission key names the database twice — by name and by id — and matches on either
 
 **Date**: 2026-09-17
 **Decision**: The D42 db label is no longer the operator-pinned `sql_databases` entry with the raw db-key as fallback. It is the database's **own upstream name**, carried into policy through D55's `scope:` channel (`x-overslash-resolve` on the same param that declares `x-overslash-sql-database`), with the pin retained as an override. The raw key does not disappear: `PermissionKey::from_sql_analysis` renders the database as the alternation group `{name,id}`, and `permissions::matching::match_forms` expands it, so one call is covered by a rule written on *either* spelling. Metadata tags carry the same pair as two tags — `db:<name>` and `db_id:<id>` — and the audit `detail.sql` block gains `db_id` beside `db`. `evaluate_sql_policy` splits into `classify_sql` (before resolution, where the instance row still exists) and `finalize_sql_keys` (after it, where the resolved name does).

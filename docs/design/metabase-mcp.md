@@ -101,7 +101,7 @@ ordinary `x-overslash-*` vendor annotations (normalized via `openapi/alias.rs`) 
   Unresolved → default `postgres`, fail-closed.
   The **DB label** itself comes from the database's own name (the `scope:` of
   the `x-overslash-resolve` on the same param), with `label` above as an
-  override and the raw key as the last resort — see D-NEXT for why the key
+  override and the raw key as the last resort — see D84 for why the key
   carries the name *and* the key rather than choosing between them.
 
 ### Parser: `pg_query` (libpg_query), not `sqlparser-rs`
