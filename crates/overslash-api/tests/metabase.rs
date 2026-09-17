@@ -602,9 +602,11 @@ async fn dynamic_fails_closed_without_the_parser() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    // No sql_databases config → the db-key ("1") is the label. The
-    // sentinel is mutation-shaped (nothing was proven read).
-    assert_eq!(keys, vec!["metabase:run_query:table_mut=1/*"]);
+    // No sql_databases pin, so the resolver names the database ("pagila")
+    // and the raw db-key ("1") stays on as the second spelling — the key is
+    // grantable either way. The sentinel is mutation-shaped (nothing was
+    // proven read).
+    assert_eq!(keys, vec!["metabase:run_query:table_mut={pagila,1}/*"]);
     // Classified write → "med" severity card.
     assert_eq!(resp["risk"].as_str(), Some("med"));
 }
@@ -885,15 +887,21 @@ mod classified {
         );
     }
 
-    /// The split is deliberate and load-bearing: the disclosure names the
-    /// database from a live lookup so a reviewer can judge the blast radius,
-    /// while `sql.db` and the permission keys stay on the operator-pinned
-    /// `sql_databases` label (here absent, so the raw id). A grant keyed on a
-    /// name an upstream admin can rename — or that silently reverts to the id
-    /// when a 3s lookup times out — is a grant that breaks or aliases without
-    /// anyone touching Overslash. If someone "unifies" these, this fails.
+    /// The database is named on both surfaces now, and the id is still what
+    /// the grant is anchored to.
+    ///
+    /// This test used to assert the opposite — that the disclosure names the
+    /// database while `sql.db` and the keys stay on the raw id — because a
+    /// grant keyed on a name an upstream admin can rename, or that silently
+    /// reverts to the id when a 3s lookup times out, breaks or aliases
+    /// without anyone touching Overslash. That objection was right about
+    /// keying on the name *alone*, and it is answered rather than dropped:
+    /// the key carries `{name,id}` and matches on either, so neither failure
+    /// can happen. The load-bearing assertion is therefore the rule granted
+    /// below — written against the bare id, as every rule predating this
+    /// change is — still covering the call.
     #[tokio::test]
-    async fn disclosure_names_the_database_while_keys_keep_the_id() {
+    async fn keys_answer_to_both_the_name_and_the_id() {
         let pool = common::test_pool().await;
         let (mock, _seen) = start_mock_metabase().await;
         // No sql_databases config → db_label falls back to the raw db key.
@@ -917,6 +925,8 @@ mod classified {
             json!({}),
         )
         .await;
+        // D40, the whole point: the database now labels as "pagila", and a
+        // rule written against `1` before that was true still covers it.
         assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
 
         let audit: Vec<Value> = client
@@ -941,11 +951,35 @@ mod classified {
             Some("pagila"),
             "display side names the database, got: {disclosed:?}"
         );
+        // The record carries both: the name a reviewer reads, and the id that
+        // survives an upstream rename.
         assert_eq!(
             executed["detail"]["sql"]["db"].as_str(),
-            Some("1"),
-            "policy side keeps the raw id: {:?}",
+            Some("pagila"),
+            "policy side names the database too: {:?}",
             executed["detail"]["sql"]
+        );
+        assert_eq!(
+            executed["detail"]["sql"]["db_id"].as_str(),
+            Some("1"),
+            "the raw id stays in the record: {:?}",
+            executed["detail"]["sql"]
+        );
+
+        // Tags say "either" with two tags rather than one group — `tags @> …`
+        // is an exact match, so a combined tag would be findable by neither.
+        let tags: Vec<&str> = executed["tags"]
+            .as_array()
+            .expect("tags present")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(tags.contains(&"db:pagila"), "{tags:?}");
+        assert!(tags.contains(&"db_id:1"), "{tags:?}");
+        assert!(tags.contains(&"table:pagila/public.film"), "{tags:?}");
+        assert!(
+            !tags.iter().any(|t| t.contains('{')),
+            "tags never carry the alternation group: {tags:?}"
         );
     }
 
@@ -986,7 +1020,10 @@ mod classified {
             .filter_map(Value::as_str)
             .collect();
         // film is covered; only payment is uncovered.
-        assert_eq!(keys, vec!["metabase:run_query:table=pagila/public.payment"]);
+        assert_eq!(
+            keys,
+            vec!["metabase:run_query:table={pagila,1}/public.payment"]
+        );
         // Read-classified → the approval card says low.
         assert_eq!(resp["risk"].as_str(), Some("low"));
     }
@@ -1053,7 +1090,7 @@ mod classified {
             .collect();
         assert_eq!(
             keys,
-            vec!["metabase:run_query:table_mut=pagila/public.film"]
+            vec!["metabase:run_query:table_mut={pagila,1}/public.film"]
         );
         assert_eq!(resp["risk"].as_str(), Some("med"));
     }
@@ -1357,7 +1394,7 @@ mod classified {
             .iter()
             .filter_map(Value::as_str)
             .collect();
-        assert_eq!(keys, vec!["metabase:run_query:table_mut=pagila/*"]);
+        assert_eq!(keys, vec!["metabase:run_query:table_mut={pagila,1}/*"]);
         assert_eq!(resp["risk"].as_str(), Some("med"));
         // The mock still sees the disclosure's database lookup; what must
         // never appear upstream is the query itself.

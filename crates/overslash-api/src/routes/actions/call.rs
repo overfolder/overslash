@@ -170,25 +170,21 @@ pub(super) async fn call_action_impl(
     // Params are fully canonical (aliases, pins, defaults, coercion,
     // validation) and the resolved instance is still on hand, so this is
     // the one point where the SQL param can be located, the target DB's
-    // dialect/label resolved, and the statement classified. The outcome
-    // feeds the `require_risk` gate, the group ceiling, and the permission
-    // keys below — all fail-closed.
-    let sql_policy = evaluate_sql_policy(
+    // dialect read, and the statement classified.
+    //
+    // Only half the policy runs here. Naming the database needs
+    // `x-overslash-resolve`, and no resolver has fired yet — `resolve_request`
+    // below is what runs them, and it consumes the instance row this half
+    // needs. So the verdict is finished by `finalize_sql_keys` once both
+    // halves' inputs exist. The outcome feeds the `require_risk` gate, the
+    // group ceiling, and the permission keys below — all fail-closed.
+    let sql_class = classify_sql(
         std::time::Duration::from_millis(state.config.filter_timeout_ms),
         &pre_meta,
         pre_resolved_mode_c.as_ref(),
         &req.params,
     )
     .await;
-    if let Some(sp) = &sql_policy {
-        tracing::info!(
-            db_label = %sp.db_label,
-            floor = %sp.floor,
-            write_reason = sp.analysis.write_reason.as_ref().map(|r| r.tag()),
-            tables = sp.table_keys.len(),
-            "sql policy evaluated"
-        );
-    }
 
     // ── Admin-as-owner impersonation ──────────────────────────────────
     //
@@ -274,6 +270,11 @@ pub(super) async fn call_action_impl(
     // is merged with the SQL classification — a `dynamic` action carrying a
     // SELECT-only query passes as read here; a write-classified (or
     // unclassifiable) one is rejected. Same value as the ceiling check below.
+    // The policy's second half: the database's own name exists only now that
+    // `resolve_request` has run its resolvers. Nothing between `classify_sql`
+    // and here reads `sql_policy`, which is what makes the split safe.
+    let sql_policy = sql_class.map(|class| finish_sql_policy(&meta, class));
+
     let effective = effective_risk(meta.risk, sql_policy.as_ref(), &action_req.method);
     if let Some(required) = req.require_risk
         && required == Risk::Read

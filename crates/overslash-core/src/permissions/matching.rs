@@ -40,14 +40,68 @@ fn split_scope_arg(arg: &str) -> (Option<String>, String) {
 /// which is what makes `email:send:cc=*@example.com` narrower than the bare
 /// form rather than a synonym for it.
 fn match_forms(key: &str) -> Vec<String> {
-    let dk = parse_derived_key(key);
-    match dk.label {
-        Some(_) => vec![
-            key.to_string(),
-            format!("{}:{}:{}", dk.service, dk.action, dk.value),
-        ],
-        None => vec![key.to_string()],
+    let mut out: Vec<String> = Vec::new();
+    for spelling in expand_alternations(key) {
+        let dk = parse_derived_key(&spelling);
+        if dk.label.is_some() {
+            out.push(format!("{}:{}:{}", dk.service, dk.action, dk.value));
+        }
+        out.push(spelling);
     }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Most a `{a,b,…}` group may expand to. One group of two (a SQL db label's
+/// name and id) is the only producer today; the cap is a backstop so a
+/// pathological key cannot turn one permission check into a combinatorial
+/// walk. Over the cap the key is matched unexpanded, which fails closed: it
+/// matches the literal spelling and nothing else.
+const MAX_ALTERNATION_FORMS: usize = 16;
+
+/// Expand `{a,b}` alternation groups into one concrete string per combination.
+///
+/// A SQL key names its database as `{name,id}` (see
+/// [`super::key::DbLabel`]) so one call can be granted under either spelling.
+/// Expanding here — rather than at the two call sites in
+/// [`super::evaluate`] — is what gives *allow* and *deny* the right
+/// asymmetry for free: [`rule_matches`] already ORs over forms, so allow reads
+/// as "one requirement, several acceptable spellings" while deny reads as "any
+/// spelling hitting any rule blocks".
+///
+/// Groups are non-nesting by construction: every value that goes into a key is
+/// run through `sanitize_key_component`, which collapses `{`, `}` and `,`, so
+/// the only braces present are ones we put there. An unterminated or empty
+/// group is returned as-is rather than guessed at.
+fn expand_alternations(key: &str) -> Vec<String> {
+    if !key.contains('{') {
+        return vec![key.to_string()];
+    }
+    let mut forms = vec![String::new()];
+    let mut rest = key;
+    while let Some(open) = rest.find('{') {
+        let Some(close) = rest[open..].find('}').map(|i| open + i) else {
+            break;
+        };
+        let options: Vec<&str> = rest[open + 1..close].split(',').collect();
+        if options.len() < 2 || options.iter().any(|o| o.is_empty()) {
+            break;
+        }
+        if forms.len() * options.len() > MAX_ALTERNATION_FORMS {
+            return vec![key.to_string()];
+        }
+        let head = &rest[..open];
+        forms = forms
+            .iter()
+            .flat_map(|f| options.iter().map(move |o| format!("{f}{head}{o}")))
+            .collect();
+        rest = &rest[close + 1..];
+    }
+    for f in &mut forms {
+        f.push_str(rest);
+    }
+    forms
 }
 
 /// Does `pattern` cover `key`, in either of the key's [`match_forms`]?
@@ -378,5 +432,86 @@ mod tests {
                 "email:*:*",
             ]
         );
+    }
+
+    /// The alternated SQL key answers to a rule written on *either* spelling,
+    /// under the full label form and the value-only compat rung alike.
+    #[test]
+    fn sql_key_answers_to_both_spellings() {
+        let key = "metabase:run_query:table={reveni-transactional,4}/public.film";
+        for pattern in [
+            "metabase:run_query:table=reveni-transactional/public.film",
+            "metabase:run_query:table=4/public.film",
+            "metabase:run_query:table=reveni-transactional/public.*",
+            // The legacy id-written grant D40 promises will keep matching.
+            "metabase:run_query:table=4/public.*",
+            // Label-agnostic and db-agnostic rungs still reach it.
+            "metabase:run_query:reveni-transactional/public.film",
+            "metabase:run_query:table=*/public.film",
+            "metabase:run_query:**",
+        ] {
+            assert!(rule_matches(pattern, key), "should cover: {pattern}");
+        }
+        // But it is still one database: a rule for a different one misses.
+        assert!(!rule_matches(
+            "metabase:run_query:table=reveni-um/public.film",
+            key
+        ));
+        // And read/write stay disjoint.
+        assert!(!rule_matches(
+            "metabase:run_query:table_mut=4/public.film",
+            key
+        ));
+    }
+
+    /// A derived key pasted verbatim into a rule covers its own call. That is
+    /// what earns `{a,b}` over any private separator: the key and the rule are
+    /// the same syntax, so copying one into the other does the obvious thing.
+    #[test]
+    fn a_pasted_alternated_key_covers_its_own_call() {
+        let key = "metabase:run_query:table={reveni-transactional,4}/public.film";
+        assert!(rule_matches(key, key));
+    }
+
+    #[test]
+    fn a_key_without_alternation_keeps_its_two_forms() {
+        assert_eq!(
+            match_forms("email:send:recipient=jane@example.com"),
+            vec![
+                "email:send:jane@example.com",
+                "email:send:recipient=jane@example.com",
+            ]
+        );
+    }
+
+    /// Malformed or pathological groups are matched literally rather than
+    /// guessed at — the fail-closed side, since a literal matches only itself.
+    /// Past the cap the key is matched literally rather than expanded, so a
+    /// pathological key cannot turn one permission check into a combinatorial
+    /// walk. That is the fail-closed side: none of the spellings it *would*
+    /// have expanded to match, so the call gates.
+    ///
+    /// It also costs the paste-back property — as a *pattern* the same string
+    /// is still glob-expanded, and those expansions do not match the literal
+    /// subject. Nothing we mint can reach here (one group, two options), and
+    /// a wildcard rule still reaches the key, so it gates on a real rule
+    /// rather than becoming unmatchable.
+    #[test]
+    fn an_oversized_alternation_is_not_expanded() {
+        let key = "m:q:table={a,b}{c,d}{e,f}{g,h}{i,j}/x";
+        assert_eq!(match_forms(key).len(), 2, "should not expand: {key}");
+        assert!(!rule_matches("m:q:table=acegi/x", key));
+        assert!(rule_matches("m:q:table=*/x", key));
+    }
+
+    #[test]
+    fn malformed_groups_are_left_alone() {
+        for key in [
+            "m:q:table={unterminated/public.film",
+            "m:q:table={}/public.film",
+            "m:q:table={only-one}/public.film",
+        ] {
+            assert_eq!(match_forms(key).len(), 2, "unexpected expansion of {key}");
+        }
     }
 }

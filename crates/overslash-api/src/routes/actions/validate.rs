@@ -111,15 +111,30 @@ pub(super) async fn validate_action_impl(
     }
 
     // D42 SQL content policy — in lockstep with `/call`, so the dry-run
-    // reports the same effective risk and the same table/column keys the
-    // real call would derive.
-    let sql_policy = super::evaluate_sql_policy(
+    // reports the same effective risk and table/column keys the real call
+    // would derive.
+    //
+    // One divergence, inherited from the D55 one below: `/call` names the
+    // database from its `x-overslash-resolve` answer, and a dry run runs no
+    // resolvers, so the preview keys on the raw db id alone. That stays safe
+    // because the id is one of the two spellings `/call` mints (see
+    // `DbLabel`): every key this preview produces is a key the real call
+    // answers to, so a grant that covers the preview always covers the call.
+    // The preview can only ever read *stricter* — a name-written grant shows
+    // as uncovered here and still works there, never the reverse.
+    let sql_policy = super::classify_sql(
         std::time::Duration::from_millis(state.config.filter_timeout_ms),
         &meta,
         resolved_mode_c.as_ref(),
         &req.params,
     )
-    .await;
+    .await
+    .map(|class| {
+        let scope = meta.service_scope.as_ref().expect(
+            "resolve_action_metadata always sets service_scope after the no-service-rejection gate",
+        );
+        super::finalize_sql_keys(scope, class, &std::collections::HashMap::new())
+    });
 
     // Caller-asserted risk gate — mirrors `/call` (which runs it inside
     // `resolve_request` after `validate_args` has already gated bad args).
