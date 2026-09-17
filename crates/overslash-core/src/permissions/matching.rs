@@ -486,6 +486,24 @@ mod tests {
 
     /// Malformed or pathological groups are matched literally rather than
     /// guessed at — the fail-closed side, since a literal matches only itself.
+    /// Past the cap the key is matched literally rather than expanded, so a
+    /// pathological key cannot turn one permission check into a combinatorial
+    /// walk. That is the fail-closed side: none of the spellings it *would*
+    /// have expanded to match, so the call gates.
+    ///
+    /// It also costs the paste-back property — as a *pattern* the same string
+    /// is still glob-expanded, and those expansions do not match the literal
+    /// subject. Nothing we mint can reach here (one group, two options), and
+    /// a wildcard rule still reaches the key, so it gates on a real rule
+    /// rather than becoming unmatchable.
+    #[test]
+    fn an_oversized_alternation_is_not_expanded() {
+        let key = "m:q:table={a,b}{c,d}{e,f}{g,h}{i,j}/x";
+        assert_eq!(match_forms(key).len(), 2, "should not expand: {key}");
+        assert!(!rule_matches("m:q:table=acegi/x", key));
+        assert!(rule_matches("m:q:table=*/x", key));
+    }
+
     #[test]
     fn malformed_groups_are_left_alone() {
         for key in [
