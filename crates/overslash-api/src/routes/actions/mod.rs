@@ -589,23 +589,27 @@ fn apply_instance_config(
     }
 }
 
-/// Evaluate the D42 SQL content policy for one call: locate the
-/// `x-overslash-sql-field` param, resolve the target database's dialect +
-/// label (jq expression over the call params → `sql_databases` instance
-/// config), parse and classify the SQL, and derive the per-table /
-/// per-column permission keys.
+/// Classify the D42 SQL content policy for one call — the half that runs
+/// *before* resolution, because it reads the resolved service instance and
+/// `resolve_request` consumes that row.
 ///
-/// Fail-closed at every step: an unresolvable database defaults to postgres
-/// with the raw key (or "unknown") as label; a non-postgres dialect, an
-/// unparseable statement, or a build without the `sql_policy` feature all
-/// classify Write with the all-tables sentinel key.
-async fn evaluate_sql_policy(
+/// Locates the `x-overslash-sql-field` param, runs the
+/// `x-overslash-sql-database` jq expression over the call params for the
+/// target database's key, reads that key's dialect / pinned label / D69
+/// `safe_functions` out of the `sql_databases` instance config, then parses
+/// and classifies the statement. *Naming* the database and minting its
+/// permission keys is [`finalize_sql_keys`]'s job, once the resolvers have run.
+///
+/// Fail-closed at every step: an unresolvable database parses as postgres; a
+/// non-postgres dialect, an unparseable statement, or a build without the
+/// `sql_policy` feature all classify Write, which mints the all-tables
+/// sentinel key downstream.
+async fn classify_sql(
     filter_timeout: std::time::Duration,
     meta: &ActionMetadata,
     resolved: Option<&ResolvedModeC>,
     params: &std::collections::HashMap<String, serde_json::Value>,
-) -> Option<SqlPolicyOutcome> {
-    use overslash_core::permissions::PermissionKey;
+) -> Option<SqlClassification> {
     use overslash_core::sql_policy::{self, SqlAnalysis, SqlClass, WriteReason};
 
     let scope = meta.service_scope.as_ref()?;
@@ -621,12 +625,17 @@ async fn evaluate_sql_policy(
     }
 
     // ── Resolve the database key via the template's jq expression. ──
-    let db_expr = meta
+    //
+    // The param's *name* is carried out alongside the key, not just consumed
+    // here: it is what [`finalize_sql_keys`] looks the resolved database name
+    // up under in `ResolvedMeta::canonical`.
+    let db_decl: Option<(String, String)> = meta
         .validation_params
-        .values()
-        .find_map(|p| p.sql_database.clone());
-    let db_key: Option<String> = match db_expr {
-        Some(expr) => {
+        .iter()
+        .find_map(|(name, p)| p.sql_database.clone().map(|expr| (name.clone(), expr)));
+    let db_param = db_decl.as_ref().map(|(name, _)| name.clone());
+    let db_key: Option<String> = match db_decl {
+        Some((_, expr)) => {
             let body = serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
             let join = tokio::task::spawn_blocking(move || {
                 crate::services::response_filter::run_jq_blocking(&expr, &body)
@@ -674,11 +683,7 @@ async fn evaluate_sql_policy(
         .as_ref()
         .and_then(|e| e.dialect.clone())
         .unwrap_or_else(|| "postgres".to_string());
-    let db_label = entry
-        .as_ref()
-        .and_then(|e| e.label.clone())
-        .or(db_key)
-        .unwrap_or_else(|| "unknown".to_string());
+    let pinned_label = entry.as_ref().and_then(|e| e.label.clone());
     // D69: functions this database vouches for on top of the shipped safe
     // list. An unresolvable database has none, which is the fail-closed side.
     let extra_safe = entry.map(|e| e.safe_functions).unwrap_or_default();
@@ -714,26 +719,88 @@ async fn evaluate_sql_policy(
         }
     };
 
+    Some(SqlClassification {
+        db_param,
+        db_key,
+        pinned_label,
+        analysis,
+    })
+}
+
+/// [`finalize_sql_keys`] against a fully resolved request, plus the one log
+/// line that says which database a statement was judged against.
+///
+/// Exists so the call path spends one line on the policy's second half; the
+/// `service_scope` unwrap is safe for the same reason it is everywhere else
+/// below — `resolve_action_metadata` rejects a request without a service
+/// before any of this runs.
+fn finish_sql_policy(meta: &ResolvedMeta, class: SqlClassification) -> SqlPolicyOutcome {
+    let scope = meta.service_scope.as_ref().expect(
+        "resolve_action_metadata always sets service_scope after the no-service-rejection gate",
+    );
+    let outcome = finalize_sql_keys(scope, class, &meta.canonical);
+    tracing::info!(
+        db = %outcome.db.name(),
+        db_id = outcome.db.id().unwrap_or("-"),
+        floor = %outcome.floor,
+        write_reason = outcome.analysis.write_reason.as_ref().map(|r| r.tag()),
+        tables = outcome.table_keys.len(),
+        "sql policy evaluated"
+    );
+    outcome
+}
+
+/// Name the database and mint its permission keys — the half that runs *after*
+/// resolution, because the database's own name arrives in
+/// `ResolvedMeta::canonical` and nothing before `resolve_request` has it.
+///
+/// Label precedence: the operator's `sql_databases` pin, then the resolved
+/// name, then the raw key the call named, then `"unknown"`. Whichever wins,
+/// the raw key rides along as the key's second spelling — see
+/// [`overslash_core::permissions::DbLabel`] for why both are carried. That is
+/// what makes naming the database safe: a rename upstream cannot orphan a
+/// grant, and a resolver that did not answer degrades the key to the id alone
+/// rather than silently re-targeting it.
+fn finalize_sql_keys(
+    scope: &ServiceScope,
+    class: SqlClassification,
+    canonical: &HashMap<String, String>,
+) -> SqlPolicyOutcome {
+    use overslash_core::permissions::{DbLabel, PermissionKey};
+
+    let resolved_name = class
+        .db_param
+        .as_deref()
+        .and_then(|param| canonical.get(param))
+        .map(String::as_str);
+    let name = class
+        .pinned_label
+        .as_deref()
+        .or(resolved_name)
+        .or(class.db_key.as_deref())
+        .unwrap_or("unknown");
+    let db = DbLabel::new(name, class.db_key.as_deref());
+
     let table_keys = PermissionKey::from_sql_analysis(
         &scope.service_key,
         &scope.action_key,
-        &db_label,
-        &analysis,
+        &db,
+        &class.analysis,
     );
     let column_keys = PermissionKey::from_sql_columns(
         &scope.service_key,
         &scope.action_key,
-        &db_label,
-        &analysis,
+        &db,
+        &class.analysis,
     );
 
-    Some(SqlPolicyOutcome {
-        floor: analysis.class.as_risk(),
+    SqlPolicyOutcome {
+        floor: class.analysis.class.as_risk(),
         table_keys,
         column_keys,
-        db_label,
-        analysis,
-    })
+        db,
+        analysis: class.analysis,
+    }
 }
 
 /// Merge a call's declared risk, its SQL classification, and the HTTP-method

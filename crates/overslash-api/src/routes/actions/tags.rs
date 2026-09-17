@@ -138,13 +138,13 @@ pub(super) fn call_tags(
     tags.push(tag("risk", &effective.to_string()));
 
     if let Some(sp) = sql {
-        tags.extend(sql_tags(&sp.db_label, &sp.analysis));
+        tags.extend(sql_tags(&sp.db, &sp.analysis));
     }
 
     clamp(tags)
 }
 
-/// The `sql` audit block for one evaluated policy outcome: the DB label, the
+/// The `sql` audit block for one evaluated policy outcome: the DB label and id, the
 /// classification, which fail-closed rule fired (for writes), and the relations
 /// and columns the statement referenced. The raw query itself travels via the
 /// template's `disclose` filters.
@@ -157,7 +157,11 @@ pub(super) fn sql_audit_block(sp: &SqlPolicyOutcome) -> serde_json::Value {
     use overslash_core::sql_policy::WriteReason;
     let a = &sp.analysis;
     serde_json::json!({
-        "db": sp.db_label,
+        "db": sp.db.name(),
+        // The id the call actually named upstream. The label can move when an
+        // admin renames the database; this cannot, so it is what a later
+        // audit query anchors on.
+        "db_id": sp.db.id(),
         "classified": sp.floor.to_string(),
         "write_reason": a.write_reason.as_ref().map(|r| r.tag()),
         "reason_detail": a.write_reason.as_ref().and_then(|r| match r {
@@ -310,7 +314,7 @@ mod tests {
             floor: Risk::Write,
             table_keys: Vec::new(),
             column_keys: Vec::new(),
-            db_label: "warehouse".into(),
+            db: overslash_core::permissions::DbLabel::new("warehouse", Some("4")),
             analysis: SqlAnalysis {
                 class: SqlClass::Write,
                 write_reason: Some(WriteReason::WritableCte),
@@ -330,9 +334,16 @@ mod tests {
         assert!(tags.contains(&"sql:write".to_string()));
         assert!(tags.contains(&"sql_reason:writable_cte".to_string()));
         assert!(tags.contains(&"db:warehouse".to_string()));
+        // The id rides as its own tag, never piped into `db:` — a set says
+        // "either" with two elements, and `tags @> …` is an exact match.
+        assert!(tags.contains(&"db_id:4".to_string()));
+        // Relation tags stay on the name: doubling 24 tables and 24 columns
+        // would not fit MAX_TAGS, and `?tag~` finds a relation without the
+        // label anyway.
         assert!(tags.contains(&"table:warehouse/public.orders".to_string()));
         assert!(tags.contains(&"table_mut:warehouse/public.audit".to_string()));
         assert!(tags.contains(&"column:warehouse/email".to_string()));
+        assert!(!tags.iter().any(|t| t.contains('{') || t.contains(',')));
         // Effective risk, not the classifier floor in isolation.
         assert!(tags.contains(&"risk:write".to_string()));
     }
