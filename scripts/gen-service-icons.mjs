@@ -145,8 +145,12 @@ for (const key of Object.keys(MANIFEST.icons).sort()) {
 		notice = {
 			key,
 			owner: entry.owner,
+			// Most local entries are generic glyphs we authored, which have no
+			// brand page — but a local entry may also be a vendor mark that
+			// simple-icons does not carry, and for those the guidelines link is
+			// the whole point of the notice.
 			source: `local/${ref}`,
-			guidelines: '—',
+			guidelines: entry.guidelines || '—',
 			note: entry.note || '',
 		};
 	} else {
@@ -216,11 +220,13 @@ License 2.0 in [\`LICENSE\`](../../LICENSE) nor the MIT licence in
 below. Overspiral S.L. does not own them and cannot sublicense them.
 
 The marks are included solely to identify the vendor product that the
-corresponding service template integrates with — nominative use. They are
-unmodified except for an explicit \`fill\` carrying the brand's own colour, which
-is required because the files are served cross-origin and rendered in \`<img>\`,
-where no stylesheet can reach inside them. No affiliation with or endorsement by
-any of these vendors is claimed.
+corresponding service template integrates with — nominative use. They carry an
+explicit \`fill\` with the brand's own colour, which is required because the files
+are served cross-origin and rendered in \`<img>\`, where no stylesheet can reach
+inside them. They are otherwise unaltered, except that a mark taken from a
+vendor's full logotype is cropped to its symbol and scaled into the square box
+every icon here uses — the per-file note in \`manifest.json\` says so where that
+applies. No affiliation with or endorsement by any of these vendors is claimed.
 
 If you own one of these marks and object to its inclusion, contact Overspiral
 S.L. and we will remove it.

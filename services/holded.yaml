@@ -1,0 +1,1960 @@
+# Holded (holded.com) over its REST API v2.
+#
+# Auth is an API token minted in Settings → Developers → Credentials, sent as
+# `Authorization: Bearer <token>`. A token carries per-module scopes chosen at
+# mint time (Sales, Contacts, Accounting… each read/write/full), so the cheapest
+# way to bound what an agent can reach is to mint a narrow token — the gateway's
+# permission keys narrow it further, but they cannot widen it. Each action's
+# description names the module scope it needs, because a 403 from Holded is the
+# only signal there is: `required_scopes` is an OAuth facility and does not gate
+# an API-key template.
+#
+# Holded's own OpenAPI document is at https://api.holded.com/openapi/api2.json —
+# 356 operations across sales, purchases, inventory, CRM, projects, HR and
+# accounting. What follows is a curated subset: the invoicing, contact and
+# treasury surface an agent needs to answer "who owes us / what do we owe" and
+# to draft, issue and settle a sales document. The v1 API (`key:` header) is
+# deprecated and deliberately not modelled.
+#
+# Nothing here deletes. `delete_invoice`, `bulk_delete_invoices`,
+# `delete_contact` and the bulk archive/delete endpoints are left out on
+# purpose: a fiscal document is cancelled (`cancel_invoice`) or corrected with a
+# credit note (`create_credit_note`), never removed, and the bulk endpoints
+# destroy up to 100 rows behind a single approval.
+#
+# Holded's own document carries `x-ai-*` extensions. Those are Holded's
+# vocabulary, not ours; none of them are copied through.
+openapi: 3.1.0
+info:
+  title: Holded
+  key: holded
+  category: Finance
+  description: >-
+    Holded ERP over its REST API v2 — invoices, credit notes, estimates,
+    contacts, leads, purchases, payments and treasury for Spanish SMB
+    accounting. `list_invoices` filters by contact, issue date, due date and
+    payment status (`overdue`, `outstanding`), which is the entry point for
+    receivables questions; `search_contacts` is how a name becomes the
+    `contact_id` every sales document needs. Writes are scoped per document:
+    approving one invoice is not approving all of them. Auth is a
+    per-module-scoped API token sent as a bearer.
+servers:
+  - url: https://api.holded.com
+components:
+  securitySchemes:
+    # The scheme name doubles as the implicit credential slot (`token`), as in
+    # resend.yaml and shortcut.yaml; the vault entry defaults to
+    # `holded_api_key`. Holded takes a standard bearer, so the jq template
+    # prefixes the scheme.
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-label: Holded API token
+      description: >-
+        Minted in Holded under Settings → Developers → Credentials → Add API
+        Token. Grant it only the modules this service needs — the token's own
+        scopes are a ceiling the gateway cannot widen.
+      x-overslash-template:
+        lang: jq
+        expr: '"Bearer " + .token'
+      default_secret_name: holded_api_key
+paths:
+  # --- Probe ---------------------------------------------------------------
+  /api/v2/usage:
+    get:
+      operationId: get_usage
+      summary: Get API usage for the current month
+      risk: read
+      test: true
+      description: >-
+        This month's API call count for the token. Cheap, side-effect free and
+        account-wide, which is what makes it the credential probe. It reads the
+        Developers module, so a token minted without `developers:usage.read`
+        answers 403 and the probe reports a failure although the token works
+        for everything else — grant Developers → read when minting.
+
+  # --- Contacts ------------------------------------------------------------
+  #
+  # Every sales and purchase document is addressed to a `contact_id`, so this is
+  # where an agent starts. `list_contacts` filters are exact-match only and
+  # there is no name filter among them; `search_contacts` is the one that turns
+  # a human name into an id.
+  /api/v2/contacts:
+    get:
+      operationId: list_contacts
+      summary: List contacts
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of contacts — customers, suppliers, leads, debtors and
+        creditors. Every filter here is an **exact** match, and none of them
+        matches a name: use `search_contacts` to find a contact by what it is
+        called. Requires the token's Contacts → read scope.
+      parameters:
+        - name: email
+          in: query
+          description: Exact email address
+          schema:
+            type: string
+        - name: phone
+          in: query
+          description: Exact phone number
+          schema:
+            type: string
+        - name: mobile
+          in: query
+          description: Exact mobile number
+          schema:
+            type: string
+        - name: code
+          in: query
+          description: Exact tax identification number (NIF/CIF)
+          x-overslash-aliases: [nif, cif, tax_id, vat]
+          schema:
+            type: string
+        - name: custom_id
+          in: query
+          description: Your own external reference for the contact
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: >-
+            Cursor from the previous response's `cursor`. Omit for the first
+            page; the response's `has_more` says whether there is another.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Contacts per page, max 200
+          schema:
+            type: integer
+    post:
+      operationId: create_contact
+      summary: "Create contact {name}"
+      risk: write
+      description: >-
+        Create a contact. Only `name` is required; `type` classifies it for
+        accounting (client, supplier, …) and can be set later. The response
+        carries the new `id`, which is what every invoice, estimate and
+        purchase for this contact will reference. Requires the token's
+        Contacts → write scope.
+      # Bank details are credential-like: the approval shows the last four
+      # digits, and the persisted payload keeps none of it.
+      redact:
+        - body.iban
+        - body.swift
+        - body.sepa_ref
+      disclose:
+        - label: Name
+          primary: true
+          filter: .body.name
+        - label: Tax ID
+          filter: .body.code // empty
+        - label: Email
+          primary: true
+          filter: .body.email // empty
+        - label: Phone
+          filter: '[.body.phone, .body.mobile] | map(select(. != null and . != "")) | select(length > 0) | join(" / ")'
+        - label: Type
+          filter: .body.type // empty
+        # `false` means "a company", which is exactly the case `//` would eat.
+        - label: Is a person
+          filter: 'if .body | has("is_person") then .body.is_person else empty end'
+        - label: IBAN
+          filter: '.body.iban // empty | "…" + .[-4:]'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Contact full name or company name
+                code:
+                  type: string
+                  description: Tax identification number (NIF, CIF, …)
+                vat_number:
+                  type: string
+                  description: EU VAT number
+                trade_name:
+                  type: string
+                  description: Commercial name, when it differs from the legal one
+                is_person:
+                  type: boolean
+                  description: True for a natural person, false for a company
+                email:
+                  type: string
+                phone:
+                  type: string
+                mobile:
+                  type: string
+                website:
+                  type: string
+                type:
+                  type: string
+                  description: >-
+                    How the contact is classified in accounting (client,
+                    supplier, lead, debtor, creditor). Omit to leave it
+                    unclassified.
+                iban:
+                  type: string
+                swift:
+                  type: string
+                sepa_ref:
+                  type: string
+                  description: SEPA direct-debit mandate reference
+                tags:
+                  type: array
+                  items:
+                    type: string
+  /api/v2/contacts/{contactId}:
+    get:
+      operationId: get_contact
+      summary: "Get contact {contactId}"
+      risk: read
+      description: >-
+        The complete contact profile: billing and shipping addresses, contact
+        persons, custom fields, default invoicing settings and accounting
+        records. Read this before `update_contact`, which replaces the record.
+        Requires the token's Contacts → read scope.
+      parameters:
+        - name: contactId
+          in: path
+          required: true
+          description: Contact id (24-character hex)
+          x-overslash-aliases: [contact_id, id]
+          schema:
+            type: string
+    put:
+      operationId: update_contact
+      summary: "Update contact {contactId}"
+      risk: write
+      scope_param: contactId
+      description: >-
+        Replace a contact. This is a PUT and `name` is required: fields you
+        omit are **cleared**, not left alone, so read `get_contact` first and
+        send back everything you mean to keep. Requires the token's Contacts →
+        write scope.
+      redact:
+        - body.iban
+        - body.swift
+        - body.sepa_ref
+      disclose:
+        - label: Contact
+          primary: true
+          filter: '.resolved.contactId // .params.contactId'
+        # Every field below uses `has()` rather than `//`: on a replacing PUT an
+        # absent field and a null field mean different things, and "cleared" is
+        # the half a reviewer most needs to see.
+        - label: New name
+          primary: true
+          filter: 'if .body | has("name") then .body.name else empty end'
+        - label: Email
+          filter: 'if .body | has("email") then (.body.email // "cleared") else empty end'
+        - label: Tax ID
+          filter: 'if .body | has("code") then (.body.code // "cleared") else empty end'
+        - label: Type
+          filter: 'if .body | has("type") then (.body.type // "cleared") else empty end'
+        - label: Is a person
+          filter: 'if .body | has("is_person") then .body.is_person else empty end'
+        - label: IBAN
+          filter: '.body.iban // empty | "…" + .[-4:]'
+        - label: Tags
+          filter: '.body.tags // [] | select(length > 0) | join(", ")'
+      parameters:
+        - name: contactId
+          in: path
+          required: true
+          description: Contact id (24-character hex)
+          x-overslash-aliases: [contact_id, id]
+          schema:
+            type: string
+          # Display only — the permission key stays on the id, so renaming the
+          # contact upstream cannot move a grant out from under itself.
+          resolve:
+            get: /api/v2/contacts/{contactId}
+            pick: name
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                code:
+                  type: string
+                vat_number:
+                  type: string
+                trade_name:
+                  type: string
+                is_person:
+                  type: boolean
+                email:
+                  type: string
+                phone:
+                  type: string
+                mobile:
+                  type: string
+                website:
+                  type: string
+                type:
+                  type: string
+                iban:
+                  type: string
+                swift:
+                  type: string
+                sepa_ref:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+  /api/v2/contacts/search:
+    get:
+      operationId: search_contacts
+      summary: "Search contacts named '{name}'"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        Find contacts by name. Prefix matching, token-aware, case- and
+        diacritic-insensitive, so `Joh` matches `John Smith` and `jose` matches
+        `José`. This is the way a human name becomes the `contact_id` that
+        `create_invoice`, `create_estimate`, `create_purchase` and `create_lead`
+        all require. Requires the token's Contacts → read scope.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: Name or name prefix to match
+          x-overslash-aliases: [q, query, search, text]
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Contacts per page, max 200
+          schema:
+            type: integer
+
+  # --- CRM -----------------------------------------------------------------
+  #
+  # Holded calls a deal a "lead", and its scope is `crm:deals.*`. `list_funnels`
+  # is here because `create_lead` requires a `funnel_id` and nothing else in the
+  # curated set produces one.
+  /api/v2/funnels:
+    get:
+      operationId: list_funnels
+      summary: List CRM funnels
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of CRM funnels with their stages. The `id` of a funnel is the
+        `funnel_id` `create_lead` requires, and a stage's `id` is what
+        `update_lead_stage` moves a deal to. Requires the token's CRM → read
+        scope.
+      parameters:
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Funnels per page, max 200
+          schema:
+            type: integer
+  /api/v2/leads:
+    get:
+      operationId: list_leads
+      summary: List leads
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of leads — what Holded's UI calls deals, and what its
+        permissions call `crm:deals`. Each row carries its funnel, stage and
+        value. Requires the token's CRM → read scope.
+      parameters:
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Leads per page, max 200
+          schema:
+            type: integer
+    post:
+      operationId: create_lead
+      summary: "Create lead {name}"
+      risk: write
+      description: >-
+        Open a deal against an existing contact. `funnel_id` comes from
+        `list_funnels`, `contact_id` from `search_contacts`; both are required,
+        as is `name`. Omitting `stage_id` files the lead in the funnel's first
+        stage. Requires the token's CRM → write scope.
+      disclose:
+        - label: Lead
+          primary: true
+          filter: .body.name
+        - label: Contact
+          primary: true
+          filter: '.resolved.contact_id // .body.contact_id'
+        - label: Funnel
+          filter: .body.funnel_id
+        - label: Stage
+          filter: .body.stage_id // empty
+        # A zero-value deal is a real thing to open, and `//` would hide it.
+        - label: Value
+          filter: 'if .body | has("value") then (.body.value | tostring) else empty end'
+        - label: Due date
+          filter: .body.due_date // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [funnel_id, contact_id, name]
+              properties:
+                funnel_id:
+                  type: string
+                  description: Funnel to open the deal in (from list_funnels)
+                contact_id:
+                  type: string
+                  description: Contact the deal is with (from search_contacts)
+                  x-overslash-aliases: [client_id, customer_id]
+                  resolve:
+                    get: /api/v2/contacts/{contact_id}
+                    pick: name
+                    cache_ttl: 60
+                name:
+                  type: string
+                  description: What the deal is called
+                stage_id:
+                  type: string
+                  description: >-
+                    Stage within the funnel (from list_funnels). Omit for the
+                    funnel's first stage.
+                value:
+                  type: number
+                  description: Deal value in the account's base currency
+                potential:
+                  type: number
+                  description: Probability of closing, 0-100
+                due_date:
+                  type: string
+                  description: Expected close date, ISO 8601
+  /api/v2/leads/{leadId}/stage:
+    put:
+      operationId: update_lead_stage
+      summary: "Move lead {leadId} to another stage"
+      risk: write
+      scope_param: leadId
+      description: >-
+        Move a deal to a different stage of its funnel. Stage ids come from
+        `list_funnels`. Requires the token's CRM → write scope.
+      disclose:
+        - label: Lead
+          primary: true
+          filter: '.resolved.leadId // .params.leadId'
+        - label: New stage
+          primary: true
+          filter: .body.stage_id
+      parameters:
+        - name: leadId
+          in: path
+          required: true
+          description: Lead id
+          x-overslash-aliases: [lead_id, deal_id, id]
+          schema:
+            type: string
+          resolve:
+            get: /api/v2/leads/{leadId}
+            pick: name
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stage_id]
+              properties:
+                stage_id:
+                  type: string
+                  description: Target stage id (from list_funnels)
+
+  # --- Invoicing and sales -------------------------------------------------
+  #
+  # The document lists page at 25 rather than 50: an invoice row carries its
+  # line items, and the gateway's response size cap applies before any filter,
+  # so a large default is how a list action becomes unusable rather than merely
+  # chatty. The ceiling stays at Holded's documented 200 for a caller who asks.
+  /api/v2/invoices:
+    get:
+      operationId: list_invoices
+      summary: List invoices
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 25
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of invoices, with `payments_total` and `payments_pending` on
+        every row so outstanding balances read without fetching each invoice.
+        This is the receivables entry point. On `status`: `pending` is nothing
+        collected, `partial` is collected in part, `outstanding` is the two
+        together, `overdue` narrows `outstanding` to a due date already past,
+        and `completed` is settled. `start_date`/`end_date` filter by **issue**
+        date, `due_date_start`/`due_date_end` by **due** date; all accept
+        `2026-01-01` or a full RFC 3339 timestamp. Requires the token's Sales →
+        read scope.
+      parameters:
+        - name: contact_id
+          in: query
+          description: Only invoices for this contact (from search_contacts)
+          x-overslash-aliases: [client_id, customer_id]
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Payment status
+          schema:
+            type: string
+            enum: [pending, completed, partial, cancelled, failed, overdue, outstanding]
+        - name: start_date
+          in: query
+          description: Issued on or after this date
+          x-overslash-aliases: [from, since]
+          schema:
+            type: string
+        - name: end_date
+          in: query
+          description: Issued on or before this date
+          x-overslash-aliases: [to, until]
+          schema:
+            type: string
+        - name: due_date_start
+          in: query
+          description: Due on or after this date
+          schema:
+            type: string
+        - name: due_date_end
+          in: query
+          description: Due on or before this date
+          schema:
+            type: string
+        - name: sort
+          in: query
+          description: Sort order; the `-` prefix is descending
+          schema:
+            type: string
+            enum: [date, -date, dueDate, -dueDate, total, -total]
+        - name: approval_status
+          in: query
+          description: Draft (unapproved) or approved invoices only
+          schema:
+            type: string
+            enum: [draft, approved]
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Invoices per page, max 200
+          schema:
+            type: integer
+    post:
+      operationId: create_invoice
+      summary: "Create invoice for {contact_id}"
+      risk: write
+      description: >-
+        Create a sales invoice. `contact_id` (from `search_contacts`) and
+        `items` are required. The invoice is created as a **draft**: it takes no
+        number from the series and can still be edited. `approve_invoice` is
+        what issues it. Omit `number` to let the numbering series assign one.
+        Requires the token's Sales → write scope.
+      disclose:
+        - label: Customer
+          primary: true
+          filter: '.resolved.contact_id // .body.contact_name // .body.contact_id'
+        - label: Lines
+          primary: true
+          filter: '[.body.items[]? | ((.units // 1) | tostring) + " × " + (.name // .description // "line") + " @ " + ((.price // 0) | tostring)] | join("; ")'
+          max_chars: 1000
+        - label: Line total (before tax and discount)
+          primary: true
+          filter: '[.body.items[]? | select((.type // "product") != "title") | (.units // 1) * (.price // 0)] | add // 0 | (. * 100 | round) / 100 | tostring'
+        - label: Currency
+          filter: .body.currency // empty
+        - label: Date
+          filter: .body.date // empty
+        - label: Due date
+          filter: .body.due_date // empty
+        - label: Number
+          filter: 'if .body | has("number") then (.body.number // "assigned by the numbering series") else empty end'
+        # A zero discount is worth showing when the caller sent one on purpose.
+        - label: Global discount
+          filter: 'if .body | has("discount") then (.body.discount | tostring) else empty end'
+        - label: Notes
+          filter: .body.notes // empty
+          max_chars: 500
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contact_id, items]
+              properties:
+                contact_id:
+                  type: string
+                  description: Contact to invoice (from search_contacts)
+                  x-overslash-aliases: [client_id, customer_id]
+                  resolve:
+                    get: /api/v2/contacts/{contact_id}
+                    pick: name
+                    cache_ttl: 60
+                items:
+                  type: array
+                  description: >-
+                    Invoice lines. A line's amount is `units` × `price`, less
+                    `discount`, plus `taxes`. A line with `type: title` is a
+                    section header and contributes nothing to the total.
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      description:
+                        type: string
+                      type:
+                        type: string
+                        enum: [product, service, title]
+                      product_id:
+                        type: string
+                        description: Catalog product to link the line to (from list_products)
+                      units:
+                        type: number
+                      price:
+                        type: number
+                      discount:
+                        type: number
+                        description: Per-line discount, percent
+                      taxes:
+                        type: array
+                        description: Tax ids for the line (from list_taxes)
+                        items:
+                          type: string
+                date:
+                  type: string
+                  description: Issue date, ISO 8601
+                due_date:
+                  type: string
+                  description: Due date, ISO 8601
+                currency:
+                  type: string
+                  description: Three-letter ISO currency code
+                description:
+                  type: string
+                notes:
+                  type: string
+                number:
+                  type: string
+                  description: >-
+                    Document number. Omit to let the numbering series assign
+                    one, which is almost always what you want.
+                number_line_id:
+                  type: string
+                  description: Numbering series to draw the number from
+                payment_method_id:
+                  type: string
+                  description: Payment method (from list_payment_methods)
+                discount:
+                  type: number
+                  description: Whole-document discount, percent
+                tags:
+                  type: array
+                  items:
+                    type: string
+  /api/v2/invoices/{invoiceId}:
+    get:
+      operationId: get_invoice
+      summary: "Get invoice {invoiceId}"
+      risk: read
+      description: >-
+        One invoice in full: line items, taxes, payments recorded against it and
+        the outstanding balance. Requires the token's Sales → read scope.
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          description: Invoice id (24-character hex)
+          x-overslash-aliases: [invoice_id, document_id, id]
+          schema:
+            type: string
+  /api/v2/invoices/find-by-number:
+    get:
+      operationId: find_invoices_by_number
+      summary: "Find invoices numbered '{document_number}'"
+      risk: read
+      # Not `list_`-prefixed, but it declares `limit` and answers with the
+      # standard envelope, so it pages like everything else here.
+      pagination:
+        page_size:
+          param: limit
+          default: 25
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        Look an invoice up by the number printed on it. The match is tolerant —
+        several invoices can come back, so this answers with a page rather than
+        a single document. Requires the token's Sales → read scope.
+      parameters:
+        - name: document_number
+          in: query
+          required: true
+          description: The number as printed on the invoice
+          x-overslash-aliases: [number, invoice_number, ref]
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Invoices per page, max 200
+          schema:
+            type: integer
+  /api/v2/invoices/{invoiceId}/pdf:
+    get:
+      operationId: get_invoice_pdf
+      summary: "Get the PDF of invoice {invoiceId}"
+      risk: read
+      description: >-
+        The rendered invoice as a PDF. Requires the token's Sales → read scope.
+      # Declared so the binary classification is deliberate rather than
+      # inferred: `detect_response_type` reads `application/pdf` as binary.
+      responses:
+        "200":
+          content:
+            application/pdf: {}
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          description: Invoice id (24-character hex)
+          x-overslash-aliases: [invoice_id, document_id, id]
+          schema:
+            type: string
+  /api/v2/invoices/{invoiceId}/approve:
+    post:
+      operationId: approve_invoice
+      summary: "Approve invoice {invoiceId}"
+      risk: write
+      scope_param: invoiceId
+      description: >-
+        Issue a draft invoice. This assigns the next correlative number from the
+        numbering series and closes the document to further editing — under
+        Spanish invoicing rules the only correction afterwards is a credit note
+        (`create_credit_note`). There is no body. Requires the token's Sales →
+        write scope.
+      disclose:
+        - label: Invoice
+          primary: true
+          filter: '.resolved.invoiceId // .params.invoiceId'
+        - label: Effect
+          primary: true
+          filter: '"Assigns the final correlative number and closes the invoice to editing; after this it can only be corrected with a credit note."'
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          description: Invoice id (24-character hex)
+          x-overslash-aliases: [invoice_id, document_id, id]
+          schema:
+            type: string
+          # `document_number` is null on a draft — which is precisely what is
+          # being approved here — so every filter that reads it falls back to
+          # the raw id rather than rendering an empty approval line.
+          resolve:
+            get: /api/v2/invoices/{invoiceId}
+            pick: document_number
+            cache_ttl: 60
+  /api/v2/invoices/{invoiceId}/send:
+    post:
+      operationId: send_invoice
+      summary: "Email invoice {invoiceId}"
+      risk: write
+      # The recipient is the half of this a grant should be able to bound, so it
+      # gets its own labelled scope alongside the document (the email.yaml
+      # precedent): `holded:send_invoice:recipient=finance@acme.example`.
+      scope_param: [invoiceId, emails:recipient]
+      description: >-
+        Send the invoice to one or more email addresses. This leaves the
+        account and reaches a third party. `emails` is required; `cc` and `bcc`
+        are additional recipients, and `mail_template_id` picks one of the
+        account's mail templates instead of the default body. Requires the
+        token's Sales → write scope.
+      disclose:
+        - label: Invoice
+          primary: true
+          filter: '.resolved.invoiceId // .params.invoiceId'
+        - label: To
+          primary: true
+          filter: '.body.emails | if type == "array" then join(", ") else . end'
+        - label: Cc
+          filter: '.body.cc // [] | if type == "array" then (select(length > 0) | join(", ")) else . end'
+        - label: Bcc
+          filter: '.body.bcc // [] | if type == "array" then (select(length > 0) | join(", ")) else . end'
+        - label: Subject
+          primary: true
+          filter: .body.subject // empty
+        - label: Message
+          primary: true
+          filter: .body.message // empty
+          max_chars: 2000
+        - label: Mail template
+          filter: .body.mail_template_id // empty
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          description: Invoice id (24-character hex)
+          x-overslash-aliases: [invoice_id, document_id, id]
+          schema:
+            type: string
+          resolve:
+            get: /api/v2/invoices/{invoiceId}
+            pick: document_number
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [emails]
+              properties:
+                emails:
+                  type: array
+                  description: Recipient email addresses
+                  items:
+                    type: string
+                cc:
+                  type: array
+                  items:
+                    type: string
+                bcc:
+                  type: array
+                  items:
+                    type: string
+                subject:
+                  type: string
+                message:
+                  type: string
+                  description: Body of the email accompanying the invoice
+                mail_template_id:
+                  type: string
+                  description: One of the account's mail templates
+  /api/v2/invoices/{invoiceId}/payments:
+    post:
+      operationId: create_invoice_payment
+      summary: "Record a payment on invoice {invoiceId}"
+      risk: write
+      scope_param: invoiceId
+      description: >-
+        Record money collected against the invoice; the amount is deducted from
+        the pending balance and the invoice is marked paid once that reaches
+        zero. An amount below the outstanding total records a partial payment.
+        Nothing in the body is required: omitting `treasury_id` books the
+        payment to the account's default treasury, and Holded does not document
+        what an omitted `amount` does — send one. `treasury_id` values come from
+        `list_banking_accounts`. Requires the token's Sales → write scope.
+      disclose:
+        - label: Invoice
+          primary: true
+          filter: '.resolved.invoiceId // .params.invoiceId'
+        # Neither money field uses `//`: on an action with no required body
+        # fields, an omitted amount is the most consequential thing a reviewer
+        # could be shown, and `// empty` would show nothing at all.
+        - label: Amount
+          primary: true
+          filter: 'if (.body.amount // null) == null then "not specified — Holded decides the amount" else (.body.amount | tostring) end'
+        - label: Treasury account
+          primary: true
+          filter: 'if (.body.treasury_id // null) == null then "the account default treasury" else .body.treasury_id end'
+        - label: Date
+          filter: .body.date // empty
+        - label: Note
+          filter: .body.description // empty
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          description: Invoice id (24-character hex)
+          x-overslash-aliases: [invoice_id, document_id, id]
+          schema:
+            type: string
+          resolve:
+            get: /api/v2/invoices/{invoiceId}
+            pick: document_number
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: string
+                  description: >-
+                    Amount collected, as a decimal string (e.g. "100.00"). Send
+                    one explicitly.
+                treasury_id:
+                  type: string
+                  description: >-
+                    Banking account the money landed in (from
+                    list_banking_accounts). Omitted, the account default is
+                    used.
+                  x-overslash-aliases: [banking_account_id, bank_account_id]
+                date:
+                  type: string
+                  description: Payment date, ISO 8601
+                description:
+                  type: string
+  /api/v2/invoices/{invoiceId}/cancel:
+    post:
+      operationId: cancel_invoice
+      summary: "Cancel invoice {invoiceId}"
+      risk: write
+      scope_param: invoiceId
+      description: >-
+        Void an invoice, preventing further edits and further payments. The
+        document is not deleted — nothing here deletes a fiscal document.
+        Answers 422 when the invoice's state does not allow it, for instance
+        when it has already been paid or voided. Requires the token's Sales →
+        write scope.
+      disclose:
+        - label: Invoice
+          primary: true
+          filter: '.resolved.invoiceId // .params.invoiceId'
+        - label: Effect
+          primary: true
+          filter: '"Voids the invoice: no further edits and no further payments. The document is kept, not deleted."'
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          description: Invoice id (24-character hex)
+          x-overslash-aliases: [invoice_id, document_id, id]
+          schema:
+            type: string
+          resolve:
+            get: /api/v2/invoices/{invoiceId}
+            pick: document_number
+            cache_ttl: 60
+
+  # --- Credit notes --------------------------------------------------------
+  #
+  # A credit note (factura rectificativa) is the only legal way to correct an
+  # approved invoice, which is why it is in the set: an agent that can call
+  # `approve_invoice` but not this one can lock a document it cannot then fix.
+  /api/v2/credit-notes:
+    get:
+      operationId: list_credit_notes
+      summary: List credit notes
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 25
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of credit notes. Same filter vocabulary as `list_invoices`, and
+        the same `sales:invoices.read` scope — Holded does not separate the two.
+        Requires the token's Sales → read scope.
+      parameters:
+        - name: contact_id
+          in: query
+          description: Only credit notes for this contact
+          x-overslash-aliases: [client_id, customer_id]
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Payment status
+          schema:
+            type: string
+            enum: [pending, completed, partial, cancelled, failed, overdue, outstanding]
+        - name: start_date
+          in: query
+          description: Issued on or after this date
+          x-overslash-aliases: [from, since]
+          schema:
+            type: string
+        - name: end_date
+          in: query
+          description: Issued on or before this date
+          x-overslash-aliases: [to, until]
+          schema:
+            type: string
+        - name: approval_status
+          in: query
+          description: Draft (unapproved) or approved credit notes only
+          schema:
+            type: string
+            enum: [draft, approved]
+        - name: sort
+          in: query
+          description: Sort order; the `-` prefix is descending
+          schema:
+            type: string
+            enum: [date, -date, dueDate, -dueDate, total, -total]
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Credit notes per page, max 200
+          schema:
+            type: integer
+    post:
+      operationId: create_credit_note
+      summary: "Create credit note for {contact_id}"
+      risk: write
+      description: >-
+        Create a credit note — a factura rectificativa. This is how an approved
+        invoice is corrected or reversed, in whole or in part: an approved
+        invoice cannot be edited and should not be deleted. The body is the
+        same shape as `create_invoice`, and the credit note is likewise created
+        as a draft. Requires the token's Sales → write scope.
+      disclose:
+        - label: Customer
+          primary: true
+          filter: '.resolved.contact_id // .body.contact_name // .body.contact_id'
+        - label: Lines
+          primary: true
+          filter: '[.body.items[]? | ((.units // 1) | tostring) + " × " + (.name // .description // "line") + " @ " + ((.price // 0) | tostring)] | join("; ")'
+          max_chars: 1000
+        - label: Line total (before tax and discount)
+          primary: true
+          filter: '[.body.items[]? | select((.type // "product") != "title") | (.units // 1) * (.price // 0)] | add // 0 | (. * 100 | round) / 100 | tostring'
+        - label: Currency
+          filter: .body.currency // empty
+        - label: Date
+          filter: .body.date // empty
+        - label: Notes
+          filter: .body.notes // empty
+          max_chars: 500
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contact_id, items]
+              properties:
+                contact_id:
+                  type: string
+                  description: Contact the credit note is for
+                  x-overslash-aliases: [client_id, customer_id]
+                  resolve:
+                    get: /api/v2/contacts/{contact_id}
+                    pick: name
+                    cache_ttl: 60
+                items:
+                  type: array
+                  description: Credit note lines, same shape as invoice lines
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      description:
+                        type: string
+                      type:
+                        type: string
+                        enum: [product, service, title]
+                      product_id:
+                        type: string
+                      units:
+                        type: number
+                      price:
+                        type: number
+                      discount:
+                        type: number
+                      taxes:
+                        type: array
+                        items:
+                          type: string
+                date:
+                  type: string
+                  description: Issue date, ISO 8601
+                currency:
+                  type: string
+                description:
+                  type: string
+                notes:
+                  type: string
+                number_line_id:
+                  type: string
+                  description: Numbering series to draw the number from
+
+  # --- Estimates -----------------------------------------------------------
+  /api/v2/estimates:
+    get:
+      operationId: list_estimates
+      summary: List estimates
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 25
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of estimates (quotes). Two independent status axes, and mixing
+        them up is the usual mistake: `status` is the **customer's** decision —
+        `completed` means accepted, `failed` means rejected — while
+        `billing_status` is whether the estimate has been invoiced yet. Requires
+        the token's Sales → read scope.
+      parameters:
+        - name: contact_id
+          in: query
+          description: Only estimates for this contact
+          x-overslash-aliases: [client_id, customer_id]
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: >-
+            The customer's decision: `completed` accepted, `failed` rejected,
+            `pending` not yet answered.
+          schema:
+            type: string
+            enum: [pending, completed, partial, cancelled, failed, overdue]
+        - name: billing_status
+          in: query
+          description: Whether the estimate has been invoiced
+          schema:
+            type: string
+            enum: [pending, paid, partial]
+        - name: start_date
+          in: query
+          description: Issued on or after this date
+          x-overslash-aliases: [from, since]
+          schema:
+            type: string
+        - name: end_date
+          in: query
+          description: Issued on or before this date
+          x-overslash-aliases: [to, until]
+          schema:
+            type: string
+        - name: approval_status
+          in: query
+          description: Draft (unapproved) or approved estimates only
+          schema:
+            type: string
+            enum: [draft, approved]
+        - name: sort
+          in: query
+          description: Sort order; the `-` prefix is descending
+          schema:
+            type: string
+            enum: [date, -date, dueDate, -dueDate, total, -total]
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Estimates per page, max 200
+          schema:
+            type: integer
+    post:
+      operationId: create_estimate
+      summary: "Create estimate for {contact_id}"
+      risk: write
+      description: >-
+        Create an estimate (quote). Same body as `create_invoice`, plus
+        `tax_included` and `show_total`, which control how the document is
+        presented. Once the customer accepts, `convert_document` turns it into
+        an invoice without retyping the lines. Requires the token's Sales →
+        write scope.
+      disclose:
+        - label: Customer
+          primary: true
+          filter: '.resolved.contact_id // .body.contact_name // .body.contact_id'
+        - label: Lines
+          primary: true
+          filter: '[.body.items[]? | ((.units // 1) | tostring) + " × " + (.name // .description // "line") + " @ " + ((.price // 0) | tostring)] | join("; ")'
+          max_chars: 1000
+        - label: Line total (before tax and discount)
+          primary: true
+          filter: '[.body.items[]? | select((.type // "product") != "title") | (.units // 1) * (.price // 0)] | add // 0 | (. * 100 | round) / 100 | tostring'
+        - label: Currency
+          filter: .body.currency // empty
+        - label: Date
+          filter: .body.date // empty
+        - label: Valid until
+          filter: .body.due_date // empty
+        - label: Prices include tax
+          filter: 'if .body | has("tax_included") then .body.tax_included else empty end'
+        - label: Notes
+          filter: .body.notes // empty
+          max_chars: 500
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contact_id, items]
+              properties:
+                contact_id:
+                  type: string
+                  description: Contact to quote
+                  x-overslash-aliases: [client_id, customer_id]
+                  resolve:
+                    get: /api/v2/contacts/{contact_id}
+                    pick: name
+                    cache_ttl: 60
+                items:
+                  type: array
+                  description: Estimate lines, same shape as invoice lines
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      description:
+                        type: string
+                      type:
+                        type: string
+                        enum: [product, service, title]
+                      product_id:
+                        type: string
+                      units:
+                        type: number
+                      price:
+                        type: number
+                      discount:
+                        type: number
+                      taxes:
+                        type: array
+                        items:
+                          type: string
+                date:
+                  type: string
+                  description: Issue date, ISO 8601
+                due_date:
+                  type: string
+                  description: Date the quote is valid until, ISO 8601
+                currency:
+                  type: string
+                description:
+                  type: string
+                notes:
+                  type: string
+                tax_included:
+                  type: boolean
+                  description: Whether the line prices already include tax
+                show_total:
+                  type: boolean
+                  description: Whether to print a total on the document
+  /api/v2/documents/convert:
+    post:
+      operationId: convert_document
+      summary: "Convert {source_type} {source_id} to a {target_type}"
+      # Plain `write`. `risk: dynamic` would read as the right label — the
+      # effect really is chosen at call time by `target_type` — but here
+      # `dynamic` means "classified per call by the SQL content policy" and
+      # requires an `x-overslash-sql-field` to classify. There is no query to
+      # parse, so the varying effect is carried by the disclosure instead: both
+      # `target_type` and `draft` are primary, and a reviewer sees which
+      # document is about to exist.
+      risk: write
+      scope_param: source_id
+      description: >-
+        Create a new document from an existing one — an estimate into an
+        invoice, a sales order into a waybill — keeping the parent-child link
+        between them. The source is left unchanged. `draft: false` creates the
+        new document as **final** rather than as a draft, which for an invoice
+        means it is issued on the spot. Not every pair converts; what is
+        available depends on the document types configured in the account.
+        Requires the token's Sales → write scope.
+      disclose:
+        - label: Conversion
+          primary: true
+          filter: '"\(.body.source_type) \(.body.source_id) → \(.body.target_type)"'
+        # The one boolean that changes what this action is. `//` would erase
+        # exactly the dangerous value.
+        - label: Created as a draft
+          primary: true
+          filter: 'if .body | has("draft") then (.body.draft // "no — the new document is final") else empty end'
+        - label: Date
+          filter: .body.date // empty
+        - label: Numbering series
+          filter: .body.number_line_id // empty
+        - label: Notes
+          filter: .body.notes // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_type, source_id, target_type]
+              properties:
+                source_type:
+                  type: string
+                  description: Type of the document being converted
+                  enum: [invoice, creditnote, estimate, salesorder, salesreceipt, purchase, order, proform, waybill]
+                source_id:
+                  type: string
+                  description: Id of the document being converted
+                  x-overslash-aliases: [document_id, id]
+                target_type:
+                  type: string
+                  description: Type of document to create
+                  enum: [invoice, creditnote, estimate, salesorder, salesreceipt, purchase, order, proform, waybill]
+                draft:
+                  type: boolean
+                  description: >-
+                    Create the new document as a draft. False issues it
+                    immediately.
+                date:
+                  type: string
+                  description: Issue date for the new document, ISO 8601
+                due_date:
+                  type: string
+                number_line_id:
+                  type: string
+                  description: Numbering series for the new document
+                description:
+                  type: string
+                notes:
+                  type: string
+
+  # --- Catalog -------------------------------------------------------------
+  /api/v2/products:
+    get:
+      operationId: list_products
+      summary: List products
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of catalog products. Here because an invoice, estimate or
+        purchase line can reference a `product_id`, and this is where those come
+        from. Requires the token's Inventory → read scope.
+      parameters:
+        - name: name
+          in: query
+          description: Match products by name
+          x-overslash-aliases: [q, query, search]
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Products per page, max 200
+          schema:
+            type: integer
+
+  # --- Purchases (accounts payable) ----------------------------------------
+  /api/v2/purchases:
+    get:
+      operationId: list_purchases
+      summary: List purchases
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 25
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of purchase invoices — the payables mirror of `list_invoices`,
+        with the same `status` vocabulary (`outstanding` and `overdue` are what
+        "what do we owe" asks for). Note the scope: purchases live under
+        Accounting in Holded's permissions, not Sales. Requires the token's
+        Accounting → read scope.
+      parameters:
+        - name: contact_id
+          in: query
+          description: Only purchases from this supplier
+          x-overslash-aliases: [supplier_id, vendor_id]
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Payment status
+          schema:
+            type: string
+            enum: [pending, completed, partial, cancelled, failed, overdue, outstanding]
+        - name: start_date
+          in: query
+          description: Issued on or after this date
+          x-overslash-aliases: [from, since]
+          schema:
+            type: string
+        - name: end_date
+          in: query
+          description: Issued on or before this date
+          x-overslash-aliases: [to, until]
+          schema:
+            type: string
+        - name: due_date_start
+          in: query
+          description: Due on or after this date
+          schema:
+            type: string
+        - name: due_date_end
+          in: query
+          description: Due on or before this date
+          schema:
+            type: string
+        - name: approval_status
+          in: query
+          description: Draft (unapproved) or approved purchases only
+          schema:
+            type: string
+            enum: [draft, approved]
+        - name: sort
+          in: query
+          description: Sort order; the `-` prefix is descending
+          schema:
+            type: string
+            enum: [date, -date, dueDate, -dueDate, total, -total]
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Purchases per page, max 200
+          schema:
+            type: integer
+    post:
+      operationId: create_purchase
+      summary: "Record a purchase from {contact_id}"
+      risk: write
+      description: >-
+        Record a supplier invoice. `contact_id` is the supplier and `items` the
+        lines; both are required. `number` here is the **supplier's** document
+        reference, not a number from your own series. Requires the token's
+        Accounting → write scope.
+      disclose:
+        - label: Supplier
+          primary: true
+          filter: '.resolved.contact_id // .body.contact_name // .body.contact_id'
+        - label: Lines
+          primary: true
+          filter: '[.body.items[]? | ((.units // 1) | tostring) + " × " + (.name // .description // "line") + " @ " + ((.price // 0) | tostring)] | join("; ")'
+          max_chars: 1000
+        - label: Line total (before tax and discount)
+          primary: true
+          filter: '[.body.items[]? | select((.type // "product") != "title") | (.units // 1) * (.price // 0)] | add // 0 | (. * 100 | round) / 100 | tostring'
+        - label: Supplier document number
+          filter: .body.number // empty
+        - label: Currency
+          filter: .body.currency // empty
+        - label: Date
+          filter: .body.date // empty
+        - label: Due date
+          filter: .body.due_date // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contact_id, items]
+              properties:
+                contact_id:
+                  type: string
+                  description: Supplier the purchase is from (from search_contacts)
+                  x-overslash-aliases: [supplier_id, vendor_id]
+                  resolve:
+                    get: /api/v2/contacts/{contact_id}
+                    pick: name
+                    cache_ttl: 60
+                items:
+                  type: array
+                  description: Purchase lines, same shape as invoice lines
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      description:
+                        type: string
+                      type:
+                        type: string
+                        enum: [product, service, title]
+                      product_id:
+                        type: string
+                      units:
+                        type: number
+                      price:
+                        type: number
+                      discount:
+                        type: number
+                      taxes:
+                        type: array
+                        items:
+                          type: string
+                number:
+                  type: string
+                  description: The supplier's own document reference
+                date:
+                  type: string
+                  description: Issue date, ISO 8601
+                due_date:
+                  type: string
+                  description: Due date, ISO 8601
+                currency:
+                  type: string
+                description:
+                  type: string
+                notes:
+                  type: string
+                payment_method_id:
+                  type: string
+                  description: Payment method (from list_payment_methods)
+  /api/v2/purchases/{purchaseId}:
+    get:
+      operationId: get_purchase
+      summary: "Get purchase {purchaseId}"
+      risk: read
+      description: >-
+        One purchase invoice in full: lines, taxes, payments recorded against it
+        and the outstanding balance. Requires the token's Accounting → read
+        scope.
+      parameters:
+        - name: purchaseId
+          in: path
+          required: true
+          description: Purchase id (24-character hex)
+          x-overslash-aliases: [purchase_id, document_id, id]
+          schema:
+            type: string
+
+  # --- Treasury and accounting ---------------------------------------------
+  /api/v2/payments:
+    get:
+      operationId: list_payments
+      summary: List payments
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of payments across every document type — the money ledger, as
+        opposed to the documents the money was against. Narrow it with
+        `document_id` to see what has been collected on one invoice, or with
+        `banking_account_id` to see what landed in one account. Requires the
+        token's Accounting → read scope.
+      parameters:
+        - name: document_id
+          in: query
+          description: Only payments against this document
+          schema:
+            type: string
+        - name: document_type
+          in: query
+          description: Document type the payment is against (e.g. invoice, purchase)
+          schema:
+            type: string
+        - name: banking_account_id
+          in: query
+          description: Only payments in this treasury account
+          x-overslash-aliases: [treasury_id, bank_account_id]
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          description: Paid on or after this date
+          x-overslash-aliases: [from, since]
+          schema:
+            type: string
+        - name: end_date
+          in: query
+          description: Paid on or before this date
+          x-overslash-aliases: [to, until]
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Payments per page, max 200
+          schema:
+            type: integer
+  /api/v2/treasury/accounts:
+    get:
+      operationId: list_banking_accounts
+      summary: List treasury accounts
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of treasury accounts — banks, cards, payment gateways and cash
+        boxes. An account's `id` is the `treasury_id` that
+        `create_invoice_payment` books a payment to. Requires the token's
+        Accounting → read scope.
+      parameters:
+        - name: type
+          in: query
+          description: Kind of account
+          schema:
+            type: string
+            enum: [bank, card, gateway, cash]
+        - name: archived
+          in: query
+          description: Include archived accounts
+          schema:
+            type: boolean
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Accounts per page, max 200
+          schema:
+            type: integer
+  /api/v2/treasury/accounts/{id}/bank-movements:
+    get:
+      operationId: list_bank_movements
+      summary: "List movements on treasury account {id}"
+      risk: read
+      # Scoped per account on purpose: reading one bank account's movements is
+      # a narrower grant than reading every account's, and this is the only
+      # read here where that distinction is worth drawing.
+      scope_param: id
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of movements on a treasury account, with their reconciliation
+        state. Requires the token's Accounting → read scope.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Treasury account id (from list_banking_accounts)
+          x-overslash-aliases: [banking_account_id, treasury_id, bank_account_id, account_id]
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Reconciliation states to include
+          schema:
+            type: array
+            items:
+              type: string
+        - name: start_date
+          in: query
+          description: Movements on or after this date
+          x-overslash-aliases: [from, since]
+          schema:
+            type: string
+        - name: end_date
+          in: query
+          description: Movements on or before this date
+          x-overslash-aliases: [to, until]
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Movements per page, max 200
+          schema:
+            type: integer
+  /api/v2/ledger-entries:
+    get:
+      operationId: list_ledger_entries
+      summary: List ledger entries
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of entries from the daily ledger. Unlike every other list here
+        both `start_date` and `end_date` are **required** — the books are not
+        something to enumerate unbounded. Narrow further with `account` to see
+        one PGC account's movements. Requires the token's Accounting → read
+        scope.
+      parameters:
+        - name: start_date
+          in: query
+          required: true
+          description: Entries from this date onward
+          x-overslash-aliases: [from, since]
+          schema:
+            type: string
+        - name: end_date
+          in: query
+          required: true
+          description: Entries up to this date
+          x-overslash-aliases: [to, until]
+          schema:
+            type: string
+        - name: account
+          in: query
+          description: Accounting account number, e.g. 70500001 (from list_accounting_accounts)
+          x-overslash-aliases: [account_number, pgc]
+          schema:
+            type: integer
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Entries per page, max 200
+          schema:
+            type: integer
+  /api/v2/payment-methods:
+    get:
+      operationId: list_payment_methods
+      summary: List payment methods
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of the account's payment methods. A method's `id` is the
+        `payment_method_id` `create_invoice` and `create_purchase` accept. Note
+        the scope: this is invoicing settings, under Sales, not Accounting.
+        Requires the token's Sales → read scope.
+      parameters:
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Payment methods per page, max 200
+          schema:
+            type: integer
+  # The three settings lists below take no `cursor` and no `limit` upstream —
+  # each is a bounded set that comes back whole. Their action keys are listed in
+  # `shipped_list_actions_declare_pagination`'s allow-list for that reason.
+  /api/v2/taxes:
+    get:
+      operationId: list_taxes
+      summary: List taxes
+      risk: read
+      description: >-
+        Every tax rate configured on the account, in one response — there is no
+        page size and no cursor, because this is a settings list. A tax `id`
+        from here is what goes in an invoice line's `taxes` array. Requires the
+        token's Accounting → read scope.
+  /api/v2/expenses-accounts:
+    get:
+      operationId: list_expenses_accounts
+      summary: List expense accounts
+      risk: read
+      description: >-
+        Every expense account on the account, in one response — no page size and
+        no cursor, because this is a settings list. Requires the token's
+        Accounting → read scope.
+  /api/v2/accounting-accounts:
+    get:
+      operationId: list_accounting_accounts
+      summary: List the chart of accounts
+      risk: read
+      description: >-
+        The account's chart of accounts (PGC), in one response — there is no
+        cursor and no page size, so narrow it with `text` rather than paging.
+        An account `number` from here is what `list_ledger_entries` takes as
+        `account`. Requires the token's Accounting → read scope.
+      parameters:
+        - name: text
+          in: query
+          description: Match accounts by name or number
+          x-overslash-aliases: [q, query, search, name]
+          schema:
+            type: string
+        - name: archived
+          in: query
+          description: Include archived accounts
+          schema:
+            type: boolean
+        - name: include_empty
+          in: query
+          description: Include accounts with no movements
+          schema:
+            type: boolean
+        - name: start_date
+          in: query
+          description: Compute balances from this date
+          x-overslash-aliases: [from, since]
+          schema:
+            type: string
+        - name: end_date
+          in: query
+          description: Compute balances up to this date
+          x-overslash-aliases: [to, until]
+          schema:
+            type: string

@@ -66,6 +66,7 @@ mod google_tasks;
 mod groups;
 mod headless_oauth;
 mod health;
+mod holded;
 mod hubspot;
 mod hybrid_call;
 mod hybrid_sweeps;

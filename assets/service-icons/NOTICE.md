@@ -8,11 +8,13 @@ License 2.0 in [`LICENSE`](../../LICENSE) nor the MIT licence in
 below. Overspiral S.L. does not own them and cannot sublicense them.
 
 The marks are included solely to identify the vendor product that the
-corresponding service template integrates with — nominative use. They are
-unmodified except for an explicit `fill` carrying the brand's own colour, which
-is required because the files are served cross-origin and rendered in `<img>`,
-where no stylesheet can reach inside them. No affiliation with or endorsement by
-any of these vendors is claimed.
+corresponding service template integrates with — nominative use. They carry an
+explicit `fill` with the brand's own colour, which is required because the files
+are served cross-origin and rendered in `<img>`, where no stylesheet can reach
+inside them. They are otherwise unaltered, except that a mark taken from a
+vendor's full logotype is cropped to its symbol and scaled into the square box
+every icon here uses — the per-file note in `manifest.json` says so where that
+applies. No affiliation with or endorsement by any of these vendors is claimed.
 
 If you own one of these marks and object to its inclusion, contact Overspiral
 S.L. and we will remove it.
@@ -42,6 +44,7 @@ data only — **not** the trademarks it depicts. See simple-icons'
 | `google_drive.svg` | Google Drive | simple-icons 16.28.0 (`googledrive`) | https://developers.google.com/drive/web/branding |
 | `google_keep.svg` | Google Keep | simple-icons 16.28.0 (`googlekeep`) | https://about.google/brand-resource-center/logos-list/ |
 | `google_tasks.svg` | Google Tasks | simple-icons 16.28.0 (`googletasks`) | https://about.google/brand-resource-center |
+| `holded.svg` | Holded Technologies, S.L. (Visma Group) | local/holded.svg | https://www.holded.com/ |
 | `http.svg` | Overspiral S.L. | local/globe.svg | — |
 | `hubspot.svg` | HubSpot | simple-icons 16.28.0 (`hubspot`) | https://www.hubspot.com/style-guide |
 | `metabase.svg` | Metabase | simple-icons 16.28.0 (`metabase`) | https://www.metabase.com |
