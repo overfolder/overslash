@@ -723,6 +723,14 @@ fn shipped_list_actions_declare_pagination() {
         // The httpbin echo fixture used by the dev/e2e stack. It returns
         // whatever was sent, not a collection.
         "test_email:list_messages",
+        // Holded exposes no cursor and no page size on any of these three.
+        // They are settings, not collections: an account's tax rates, its
+        // expense accounts and its chart of accounts each come back whole in
+        // one response. The chart of accounts is narrowed with `text` instead,
+        // which is what its description tells a caller to reach for.
+        "holded:list_taxes",
+        "holded:list_expenses_accounts",
+        "holded:list_accounting_accounts",
     ];
 
     fn looks_like_a_list(key: &str) -> bool {
