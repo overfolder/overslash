@@ -19,10 +19,10 @@
 	import RequestIdentityBox from '$lib/components/RequestIdentityBox.svelte';
 	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
 	import TestResult from '$lib/components/services/TestResult.svelte';
-	import { runProbe } from '$lib/api/services';
+	import { runActivate } from '$lib/api/services';
 	import { fmtCountdown, loginUrl, submitPublicRequest } from '$lib/public-request';
 	import { setupOutcome } from '$lib/setup-outcome';
-	import type { ServiceTestResponse } from '$lib/types';
+	import type { ServiceStatus, ServiceTestResponse } from '$lib/types';
 
 	let { data } = $props();
 
@@ -47,6 +47,11 @@
 
 	let testing = $state(false);
 	let testResult = $state<ServiceTestResponse | null>(null);
+	// The instance's status after the probe. Seeded from the submit response
+	// so the page can say "saved, not live yet" even when it cannot run the
+	// probe itself — which is the common case for a visitor who is not the
+	// instance's owner.
+	let status = $state<ServiceStatus | null>(null);
 
 	let timer: ReturnType<typeof setInterval> | undefined;
 	onMount(() => {
@@ -68,7 +73,7 @@
 		submitting = true;
 		errorMsg = null;
 		const outcome = await submitPublicRequest<{
-			service?: { bound?: boolean; remaining_slots?: string[] };
+			service?: { bound?: boolean; remaining_slots?: string[]; status?: ServiceStatus };
 		}>(data.req_id, data.token, value);
 		submitting = false;
 		if (!outcome.ok) {
@@ -81,6 +86,11 @@
 		// service. `false` is a real outcome, not an error — the server
 		// degrades rather than failing a submit it has already committed.
 		bindFailed = svcOutcome?.bound === false;
+		// Every slot filled is not the same claim as callable: this response is
+		// written before the probe runs. Without this the page would announce
+		// the service live one round trip early, which is the thing the whole
+		// feature exists to stop.
+		status = svcOutcome?.status ?? null;
 		submitted = true;
 		value = '';
 
@@ -98,20 +108,37 @@
 	// The probe runs through the authenticated call path, so it needs a session.
 	// An anonymous visitor gets a sign-in prompt instead of a dead button.
 	const outcome = $derived(
-		setupOutcome({ bindFailed, testing, testResult, remainingSlots })
+		setupOutcome({ bindFailed, testing, testResult, remainingSlots, status })
 	);
 
+	// A setup link is always minted `require_user_session`, so `viewer` is
+	// present by the time anyone can submit. The check stays because the
+	// *metadata* GET is still anonymous — deliberately, so the sign-in banner
+	// below can name the service it is asking about instead of bouncing a
+	// visitor to a login screen with no idea what they are signing into.
 	const canTest = $derived(
 		data.state === 'ready' && !!data.meta.service.test_action && !!data.meta.viewer
 	);
 
+	/**
+	 * Run the probe and, on a green verdict, make the instance callable.
+	 *
+	 * Activation rather than a bare probe because this is the page where the
+	 * credential landed — finishing here is the point. It is owner-or-admin
+	 * server-side, and a visitor who is neither gets a `denied` verdict and a
+	 * service that stays `pending_setup` for its owner to finish. That is
+	 * honest: the probe runs through the permission chain, so a non-owner
+	 * could not have produced a green verdict in the first place.
+	 */
 	async function runTest() {
 		if (data.state !== 'ready') return;
 		testing = true;
 		testResult = null;
 		try {
 			// Session-less page: never let a 401 hard-navigate off a burned link.
-			testResult = await runProbe(data.meta.service.id, { bounceOnExpiry: false });
+			const res = await runActivate(data.meta.service.id, { bounceOnExpiry: false });
+			testResult = res.verdict ?? null;
+			status = res.status;
 		} finally {
 			testing = false;
 		}
@@ -179,8 +206,15 @@
 				1
 					? ''
 					: 's'} — you'll have a separate link for each.
+			{:else if outcome === 'not_live'}
+				<!-- Saved and attached, no rejection, and still not callable —
+				     which on this page almost always means the visitor is not
+				     the instance's owner, so the probe could not run as them.
+				     Say who has to finish rather than leaving it at "saved". -->
+				Saved to {svc.display_name}. It goes live once someone who owns it checks the
+				credential — {m.requested_by_label} has been told it arrived.
 			{:else}
-				{svc.display_name} is connected.
+				{svc.display_name} is live.
 			{/if}
 		</p>
 
@@ -199,7 +233,7 @@
 					disabled={testing}
 					title={svc.test_action?.summary ?? `Runs ${svc.test_action?.action}`}
 				>
-					{testing ? 'Testing…' : 'Test service'}
+					{testing ? 'Checking…' : status === 'active' ? 'Test again' : 'Check and finish'}
 				</button>
 			</div>
 			<TestResult result={testResult} running={testing} onRetry={runTest} />
@@ -209,20 +243,44 @@
 			</p>
 		{/if}
 
-		<p class="note">You can close this window. The agent has been notified.</p>
+		<p class="note">
+			{#if outcome === 'connected'}
+				You can close this window. The agent has been notified.
+			{:else}
+				You can close this window — nothing here is lost.
+			{/if}
+		</p>
 	{:else}
 		<p class="lead">
 			<code>{m.requested_by_label}</code> set this up for you and needs its
 			{svc.slot.label.toLowerCase()}.
 		</p>
 
+		{#if !m.viewer && m.require_user_session}
+			<!-- Above the preamble on purpose. The input below is gated, so a
+			     visitor who reads three paragraphs first and only then finds
+			     the page inert has been told the least useful thing last.
+			     The metadata GET stays anonymous (it is not sensitive) so this
+			     can name the service instead of bouncing to a bare login. -->
+			<div class="viewer-banner warn">
+				Sign in to Overslash to finish setting up {svc.display_name}. The credential is
+				checked against {svc.display_name} as you, which is what makes the service
+				usable rather than merely credentialled.
+				<a href={loginUrl()}>Sign in to continue</a>.
+			</div>
+		{/if}
+
 		<RequestIdentityBox orgName={m.org_name} userEmail={m.viewer?.email ?? null}>
 			{#snippet note()}
 				{#if m.viewer}
 					Your name will be recorded on the audit trail for this submission.
 				{:else}
-					This link is what authorizes the submission — signing in is optional, and
-					only adds your name to the audit trail.
+					<!-- Not "optional". A setup link is always minted
+					     session-required: the link is still the capability, but
+					     fulfilling it runs the credential check, and that runs
+					     as somebody. -->
+					The link authorizes the submission; signing in is what lets Overslash check
+					the credential against {svc.display_name} and switch the service on.
 				{/if}
 			{/snippet}
 		</RequestIdentityBox>
@@ -266,18 +324,6 @@
 			</div>
 		{/if}
 
-		{#if !m.viewer && m.require_user_session}
-			<!-- Minted under user-signed-required mode but opened without a
-			     matching session. GET still succeeds (the metadata is not
-			     sensitive) and POST would be rejected server-side, so gate
-			     the input rather than letting them paste a value first. -->
-			<div class="viewer-banner warn">
-				This organization requires you to be signed in to Overslash to provide this
-				credential.
-				<a href={loginUrl()}>Sign in to continue</a>.
-			</div>
-		{/if}
-
 		{#if !m.require_user_session || m.viewer}
 			<SecretValueField
 				bind:value
@@ -293,7 +339,11 @@
 
 			<div class="actions">
 				<button class="btn primary" onclick={submit} disabled={submitting || !value}>
-					{submitting ? 'Saving…' : 'Connect'}
+					<!-- Not "Connect". Submitting saves and binds; whether the
+					     service ends up usable is the probe's answer, and this
+					     button promising otherwise is the claim the whole
+					     feature exists to stop making. -->
+					{submitting ? 'Saving…' : 'Save and check'}
 				</button>
 			</div>
 		{/if}

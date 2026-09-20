@@ -38,11 +38,18 @@ test('a setup link renders the service, binds the credential, and reports the ve
 	// The harness reuses one Postgres across runs, so name the instance
 	// uniquely or the create 409s on a leftover row.
 	const serviceName = `resend-setup-e2e-${Date.now().toString(36)}`;
-	const svc = await api<{ id: string; setup?: SetupBundle }>(session, '/v1/services', {
-		method: 'POST',
-		body: { template_key: 'resend', name: serviceName, user_level: true }
-	});
+	const svc = await api<{ id: string; status: string; setup?: SetupBundle }>(
+		session,
+		'/v1/services',
+		{
+			method: 'POST',
+			body: { template_key: 'resend', name: serviceName, user_level: true }
+		}
+	);
 	expect(svc.setup, 'create_service must auto-mint a setup link').toBeTruthy();
+	// Gated on create: a link was minted, so a human will run the probe and
+	// the instance is not callable until they do.
+	expect(svc.status).toBe('pending_setup');
 
 	// The minted URL carries the dashboard's configured origin, which is not
 	// the preview server's. Keep the path and token, re-point the origin.
@@ -55,7 +62,7 @@ test('a setup link renders the service, binds the credential, and reports the ve
 	await expect(page.getByText(serviceName)).toBeVisible();
 
 	await page.locator('input[type="password"]').fill('re_not_a_real_key');
-	await page.getByRole('button', { name: 'Connect' }).click();
+	await page.getByRole('button', { name: 'Save and check' }).click();
 
 	// The verdict, and not a spinner stuck on. `.verdict.pending` detaching is
 	// what says the probe actually finished rather than the panel merely
@@ -67,11 +74,17 @@ test('a setup link renders the service, binds the credential, and reports the ve
 
 	// The credential is bound either way — the probe reports whether it
 	// *works*, and a rejected key is still a stored one.
-	const bound = await api<{ credentials?: Record<string, string> }>(
+	//
+	// `include_inactive`, because the key is fake and the probe therefore came
+	// back red: the instance is still `pending_setup` and does not resolve by
+	// name. That is the feature, and asserting it here is what stops a future
+	// change quietly going live on a rejected credential.
+	const bound = await api<{ status: string; credentials?: Record<string, string> }>(
 		session,
-		`/v1/services/${serviceName}`
+		`/v1/services/${serviceName}?include_inactive=true`
 	);
 	expect(bound.credentials?.token).toBe('resend_key');
+	expect(bound.status).toBe('pending_setup');
 
 	// Single-use: reloading the same link is a spent link, not a second form.
 	await page.goto(`${minted.pathname}${minted.search}`);
@@ -96,4 +109,43 @@ test('a bare secret request does not render as a setup page', async ({ page, req
 
 	await page.goto(`/services/setup/${req.id}?token=${encodeURIComponent(req.token)}`);
 	await expect(page.getByRole('heading', { name: 'Invalid link' })).toBeVisible();
+});
+
+test('a setup link opened without a session refuses the value before it is typed', async ({
+	page
+}) => {
+	// A per-run org, for the reason the first test states: `resend_key` is
+	// template-wide, so a second mint at that name in the shared dev org is a
+	// `secret_name_conflict` rather than a link.
+	const orgSlug = freshOrgSlug('setup-signin');
+	const session = await login('admin', { org: orgSlug });
+	await attachToContext(page.context(), session);
+
+	const serviceName = `resend-signin-e2e-${Date.now().toString(36)}`;
+	const svc = await api<{ setup?: SetupBundle }>(session, '/v1/services', {
+		method: 'POST',
+		body: { template_key: 'resend', name: serviceName, user_level: true }
+	});
+	expect(svc.setup, 'create_service must auto-mint a setup link').toBeTruthy();
+	const minted = new URL(svc.setup!.setup_url);
+
+	// Drop the session the mint needed. The capability is still in the URL —
+	// and the page must still decline, because fulfilling a setup link runs
+	// the credential probe and the probe runs as somebody.
+	await page.context().clearCookies();
+	await page.goto(`${minted.pathname}${minted.search}`);
+
+	// Gated *before* the value field, not after a rejected submit. Someone who
+	// pastes an API key and only then learns the page is inert has been told
+	// the useful thing last.
+	await expect(page.getByRole('link', { name: 'Sign in to continue' })).toBeVisible();
+	await expect(page.locator('input[type="password"]')).toHaveCount(0);
+
+	// The capability survives the login round trip. This is the only guard on
+	// it: `loginUrl()` carries pathname + search, and a refactor to pathname
+	// alone would strand every recipient on a page they cannot get back to.
+	const href = await page.getByRole('link', { name: 'Sign in to continue' }).getAttribute('href');
+	expect(href).toContain('token%3D');
+
+	await deleteOrg(orgSlug);
 });
