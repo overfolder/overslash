@@ -30,6 +30,7 @@ use crate::error::AppError;
 use crate::routes::util::fmt_time;
 
 mod group_grants;
+mod instance_names;
 mod kernels;
 mod reconcile;
 mod rows;

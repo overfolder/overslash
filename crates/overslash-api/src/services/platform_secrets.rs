@@ -57,6 +57,15 @@ pub struct RequestSecretInput {
     /// single per-instance slot, which is every shipped template.
     #[serde(default)]
     pub credential_key: Option<String>,
+    /// Mint even though `secret_name` already exists, accepting that whoever
+    /// opens the link stores a new version over the current value. Without it
+    /// such a request is refused with `secret_name_conflict` (409).
+    ///
+    /// The refusal is the point: an agent picking a name by convention has no
+    /// way to know the org already uses it, and the person opening the link
+    /// is shown a name, not a history.
+    #[serde(default)]
+    pub force: bool,
 }
 
 pub async fn kernel_request_secret(
@@ -121,6 +130,25 @@ pub async fn kernel_request_secret(
             .unwrap_or(true);
     let require_user_session = !allow_unsigned;
 
+    // Read the version being superseded before minting, so a forced request
+    // reports what was actually there when the agent asked.
+    let warning = if input.force {
+        service_setup::conflicting_secret_names(
+            &scope,
+            &[(None, input.secret_name.trim().to_string())],
+        )
+        .await?
+        .first()
+        .map(|c| {
+            format!(
+                "secret '{}' already exists; fulfilling this request replaces                  its current value (v{}). The old version stays restorable.",
+                c.secret_name, c.current_version
+            )
+        })
+    } else {
+        None
+    };
+
     let minted = service_setup::mint(
         &ctx.db,
         &ctx.http_client,
@@ -135,6 +163,7 @@ pub async fn kernel_request_secret(
             require_user_session,
             service_instance_id: binding.as_ref().map(|(row, _)| row.id),
             credential_key: binding.as_ref().map(|(_, key)| key.as_str()),
+            force: input.force,
             via: "mcp",
             // The platform runtime is transport-agnostic and carries no
             // client IP down to the kernel.
@@ -167,6 +196,13 @@ pub async fn kernel_request_secret(
     {
         obj.insert("service_id".into(), serde_json::json!(row.id));
         obj.insert("credential_key".into(), serde_json::json!(key));
+    }
+    // Same key-presence rule as the binding fields above: absent rather than
+    // null, so an agent branching on presence gets one answer per transport.
+    if let Some(warning) = warning
+        && let Some(obj) = out.as_object_mut()
+    {
+        obj.insert("warning".into(), serde_json::json!(warning));
     }
     Ok(out)
 }

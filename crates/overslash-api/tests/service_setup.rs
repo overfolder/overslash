@@ -852,3 +852,328 @@ async fn probing_an_unknown_instance_is_not_found() {
     let (status, _) = run_probe(&base, &client, &fx.admin_key, &Uuid::new_v4().to_string()).await;
     assert_eq!(status, 404);
 }
+
+// ── Secret-name collisions ────────────────────────────────────────────────
+//
+// A slot's vault name comes from the template's `default_secret_name` and
+// mixes in nothing per-instance, so two instances of one template point at one
+// secret. Before these tests the second setup link silently stored a new
+// version over the first instance's credential, and the first anybody heard of
+// it was a 401 on a real call.
+
+/// Stand up `resend` and fulfil its link, leaving `resend_key` occupied.
+async fn seed_bound_resend(base: &str, client: &Client, admin_key: &str, name: &str) -> Value {
+    let svc = create_service(
+        base,
+        client,
+        admin_key,
+        json!({"template_key": "resend", "name": name, "user_level": true}),
+    )
+    .await;
+    let (req_id, token) = parse_setup_url(svc["setup"]["setup_url"].as_str().unwrap());
+    let resp = client
+        .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .json(&json!({"token": token, "value": "re_first_key"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "seed fulfilment failed");
+    svc
+}
+
+#[tokio::test]
+async fn a_second_instance_refuses_to_claim_the_first_ones_secret() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"template_key": "resend", "name": "resend-two", "user_level": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409, "a taken vault name must refuse");
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "secret_name_conflict", "{body}");
+    assert_eq!(body["conflicts"][0]["secret_name"], "resend_key", "{body}");
+    assert_eq!(body["conflicts"][0]["credential_key"], "token", "{body}");
+    assert_eq!(body["conflicts"][0]["current_version"], 1, "{body}");
+    // The hint has to carry its own instructions: an agent hitting this is not
+    // holding the docs, and the bind escape is the one usually meant.
+    let hint = body["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("credentials"), "{body}");
+    assert!(hint.contains("force"), "{body}");
+
+    // Nothing was written: the refusal happens before the instance row.
+    let listed: Value = client
+        .get(format!("{base}/v1/services"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let names: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert!(
+        !names.contains(&"resend-two"),
+        "a refused create must leave no orphan instance: {names:?}"
+    );
+}
+
+/// The escape that overwrites nothing, and the one people usually want.
+#[tokio::test]
+async fn binding_the_existing_secret_is_allowed_and_mints_no_link() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({
+            "template_key": "resend",
+            "name": "resend-shared",
+            "user_level": true,
+            "credentials": {"token": "resend_key"}
+        }),
+    )
+    .await;
+    assert_eq!(svc["name"], "resend-shared", "create failed: {svc}");
+    assert_eq!(svc["credentials"]["token"], "resend_key");
+    assert!(
+        svc["setup"].is_null(),
+        "a bound slot needs no link, and minting one would reintroduce the \
+         overwrite this whole check exists to stop: {svc}"
+    );
+    // Sharing means sharing: the instance is callable immediately.
+    assert_eq!(svc["credentials_status"], "ok", "{svc}");
+}
+
+#[tokio::test]
+async fn force_mints_the_link_and_says_what_it_will_replace() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({
+            "template_key": "resend",
+            "name": "resend-rotate",
+            "user_level": true,
+            "force": true
+        }),
+    )
+    .await;
+    assert_eq!(svc["name"], "resend-rotate", "create failed: {svc}");
+    let setup = &svc["setup"];
+    assert!(!setup.is_null(), "force must still mint: {svc}");
+    let warnings = setup["warnings"].as_array().expect("warnings present");
+    assert_eq!(warnings.len(), 1, "{setup}");
+    assert_eq!(warnings[0]["code"], "overwrites_existing_secret");
+    assert_eq!(warnings[0]["secret_name"], "resend_key");
+    assert_eq!(
+        warnings[0]["current_version"], 1,
+        "the warning names the version being superseded: {setup}"
+    );
+}
+
+/// The ordinary path must stay quiet. A `warnings` key on every create would
+/// train callers to ignore it.
+#[tokio::test]
+async fn an_uncontested_create_carries_no_warnings() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-clean", "user_level": true}),
+    )
+    .await;
+    assert!(
+        svc["setup"]["warnings"].is_null(),
+        "empty warnings must not serialize: {svc}"
+    );
+}
+
+/// `force` is about the *vault name*, not the instance name — the two failures
+/// are different and must stay different.
+#[tokio::test]
+async fn force_does_not_override_a_taken_instance_name() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({
+            "template_key": "resend",
+            "name": "resend-one",
+            "user_level": true,
+            "force": true
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    assert_ne!(
+        body["error"], "secret_name_conflict",
+        "an instance-name clash is a plain conflict, not a secret one: {body}"
+    );
+}
+
+/// The public page is the last place the truth is available before the write,
+/// and it is reached long after the mint-time check ran.
+#[tokio::test]
+async fn the_setup_page_warns_when_the_name_is_already_taken() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    // Mint first, while the name is still free — so the page, not the mint, is
+    // what catches it.
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-race", "user_level": true}),
+    )
+    .await;
+    let (req_id, token) = parse_setup_url(svc["setup"]["setup_url"].as_str().unwrap());
+
+    let meta: Value = client
+        .get(format!(
+            "{base}/public/services/setup/{req_id}?token={}",
+            urlencoding::encode(&token)
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        meta["overwrites_version"].is_null(),
+        "nothing to overwrite yet: {meta}"
+    );
+
+    // Someone fills the name in the meantime.
+    let put = client
+        .put(format!("{base}/v1/secrets/resend_key"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"value": "re_someone_elses_key"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success(), "seed put: {}", put.status());
+
+    let meta: Value = client
+        .get(format!(
+            "{base}/public/services/setup/{req_id}?token={}",
+            urlencoding::encode(&token)
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        meta["overwrites_version"], 1,
+        "the page must name the version it is about to replace: {meta}"
+    );
+}
+
+// ── Instance-name collisions ──────────────────────────────────────────────
+
+/// Renaming onto a taken name used to fall through to `AppError::Database`
+/// and reach the caller as a 500 "database error".
+#[tokio::test]
+async fn renaming_onto_a_taken_name_is_a_conflict_not_a_server_error() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+
+    let second = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({
+            "template_key": "resend",
+            "name": "resend-two",
+            "user_level": true,
+            "credentials": {"token": "resend_key"}
+        }),
+    )
+    .await;
+    let id = second["id"].as_str().unwrap();
+
+    let resp = client
+        .put(format!("{base}/v1/services/{id}/manage"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"name": "resend-one"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409, "not a 500");
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("resend-one"),
+        "the message names the contested name: {body}"
+    );
+}
+
+/// Neither unique index has a status predicate, so an archived instance keeps
+/// its name — while the default service list hides it. Being told a name is
+/// taken by something invisible is the papercut; the message has to say so.
+#[tokio::test]
+async fn an_archived_instance_still_holding_a_name_says_so() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+    let first = seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+    let id = first["id"].as_str().unwrap();
+
+    let arch = client
+        .patch(format!("{base}/v1/services/{id}/status"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"status": "archived"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(arch.status().is_success(), "archive: {}", arch.status());
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({
+            "template_key": "resend",
+            "name": "resend-one",
+            "user_level": true,
+            "credentials": {"token": "resend_key"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    let msg = body["error"].as_str().unwrap_or_default();
+    assert!(msg.contains("archived"), "must name the real cause: {body}");
+    assert!(msg.contains(id), "must name the row holding it: {body}");
+}

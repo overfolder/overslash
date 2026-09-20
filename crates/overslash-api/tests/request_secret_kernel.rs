@@ -278,3 +278,98 @@ async fn share_target_denied_for_non_admin_agent() {
 // `identity_id = None` from a public test surface. Leaving the guard in
 // place because it's cheap and guarantees a clean 400 if a future code path
 // (e.g. service-account tokens) ever reintroduces an unbound caller.
+
+// ── Name collisions ───────────────────────────────────────────────────────
+
+/// The agent case is the one the check exists for: an agent picking a vault
+/// name by convention has no way to know the org already uses it, and the
+/// person who opens the link is shown a name, not a history.
+#[tokio::test]
+async fn requesting_a_taken_name_is_refused() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool, None).await;
+    let (_org, agent_id, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+    grant(
+        &client,
+        &base,
+        &admin_key,
+        agent_id,
+        "overslash:request_secrets_own:*",
+    )
+    .await;
+
+    let name = format!("taken-{}", Uuid::new_v4().simple());
+    let put = client
+        .put(format!("{base}/v1/secrets/{name}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"value": "original"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success(), "seed put: {}", put.status());
+
+    let resp = call(
+        &client,
+        &base,
+        &agent_key,
+        json!({
+            "service": "overslash",
+            "action": "request_secret",
+            "params": { "secret_name": name }
+        }),
+    )
+    .await;
+    let body: Value = resp.json().await.unwrap();
+    // The platform arm reports the kernel's status on the envelope rather than
+    // on the HTTP response, the way every other kernel error surfaces.
+    let rendered = serde_json::to_string(&body).unwrap();
+    assert!(
+        rendered.contains("secret_name_conflict"),
+        "the refusal must name itself so an agent can branch on it: {body}"
+    );
+}
+
+#[tokio::test]
+async fn forcing_over_a_taken_name_mints_with_a_warning() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool, None).await;
+    let (_org, agent_id, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+    grant(
+        &client,
+        &base,
+        &admin_key,
+        agent_id,
+        "overslash:request_secrets_own:*",
+    )
+    .await;
+
+    let name = format!("rotate-{}", Uuid::new_v4().simple());
+    let put = client
+        .put(format!("{base}/v1/secrets/{name}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"value": "original"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success());
+
+    let resp = call(
+        &client,
+        &base,
+        &agent_key,
+        json!({
+            "service": "overslash",
+            "action": "request_secret",
+            "params": { "secret_name": name, "force": true }
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    let inner: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert!(inner["request_id"].as_str().is_some(), "{inner}");
+    let warning = inner["warning"].as_str().expect("forced mint warns");
+    assert!(warning.contains(&name), "{inner}");
+}

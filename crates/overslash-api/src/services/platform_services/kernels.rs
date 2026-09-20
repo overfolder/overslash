@@ -1,6 +1,7 @@
 //! The service-instance kernels: list, get, create, update.
 
 use super::group_grants::validate_create_group_grants;
+use super::instance_names::{instance_name_conflict, is_instance_name_collision};
 use super::reconcile::*;
 use super::rows::*;
 use super::status::*;
@@ -520,6 +521,39 @@ pub async fn kernel_create_service(
         ));
     }
 
+    // Pre-flight the secret names the auto-mint below is about to claim.
+    //
+    // The same check runs inside `mint`, but it runs there *after* the
+    // instance row and its Myself grant are committed, and the auto-mint
+    // block deliberately swallows mint failures so a shortener outage cannot
+    // fail a create. A conflict swallowed that way would leave an orphan
+    // instance and a 200 with no `setup` bundle — the caller would see a
+    // half-finished service and no reason for it. Checking here means the
+    // 409 arrives before anything is written.
+    let force_credentials = input.force.unwrap_or(false);
+    if !input.skip_credentials.unwrap_or(false) && !force_credentials && owner_identity_id.is_some()
+    {
+        let pending = crate::services::service_setup::unbound_instance_slots(
+            &template_def,
+            &credentials,
+            stored_secret_name.as_deref(),
+        );
+        if !pending.is_empty() {
+            let candidates: Vec<(Option<String>, String)> = pending
+                .iter()
+                .map(|s| (Some(s.key.clone()), s.default_secret_name.clone()))
+                .collect();
+            let conflicts =
+                crate::services::service_setup::conflicting_secret_names(&scope, &candidates)
+                    .await?;
+            if !conflicts.is_empty() {
+                return Err(crate::services::service_setup::conflict_error_for_create(
+                    conflicts,
+                ));
+            }
+        }
+    }
+
     let create_input = CreateServiceInstance {
         org_id: ctx.org_id,
         owner_identity_id,
@@ -536,17 +570,13 @@ pub async fn kernel_create_service(
         status: &input.status,
     };
 
-    let row = scope
-        .create_service_instance(create_input)
-        .await
-        .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e
-                && db_err.constraint().is_some()
-            {
-                return AppError::Conflict(format!("service '{name}' already exists"));
-            }
-            AppError::Database(e)
-        })?;
+    let row = match scope.create_service_instance(create_input).await {
+        Ok(row) => row,
+        Err(e) if is_instance_name_collision(&e) => {
+            return Err(instance_name_conflict(&scope, owner_identity_id, name).await);
+        }
+        Err(e) => return Err(AppError::Database(e)),
+    };
 
     // Auto-grant to the owner's Myself group with admin access and
     // read-level auto-approval.
@@ -768,6 +798,7 @@ pub async fn kernel_create_service(
                 auth_identity,
                 row_id,
                 &pending,
+                force_credentials,
             )
             .await
             {
@@ -922,10 +953,20 @@ pub async fn kernel_update_service(
         use_default_connection: input.use_default_connection,
     };
 
-    let row = scope
-        .update_service_instance(id, &update)
-        .await?
-        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    let row = match scope.update_service_instance(id, &update).await {
+        Ok(row) => row,
+        // Renaming onto a taken name is the same collision the create path
+        // reports as a 409; without this it fell through to `AppError::Database`
+        // and reached the caller as a 500 "database error".
+        Err(e) if is_instance_name_collision(&e) => {
+            let attempted = input.name.as_deref().unwrap_or(&existing.name);
+            return Err(
+                instance_name_conflict(&scope, existing.owner_identity_id, attempted).await,
+            );
+        }
+        Err(e) => return Err(AppError::Database(e)),
+    }
+    .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     // The dashboard assigns this response straight onto the row it renders, so
     // an undecorated one hides the instance's own icon and Test button until a
     // reload — the moment a user most wants to press it.

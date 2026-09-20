@@ -112,6 +112,18 @@
 		{/if}
 	</div>
 
+	{#if m.overwrites_version !== undefined}
+		<!-- A value is already stored under this name. The same notice the setup
+		     page carries: this is the last point before the write, and the
+		     person reading it is the one who knows whether the value they are
+		     about to paste is the same credential. -->
+		<div class="viewer-banner warn">
+			A secret named <code>{m.secret_name}</code> already exists (v{m.overwrites_version}).
+			Saving replaces its current value for everything using it. The old version
+			stays restorable.
+		</div>
+	{/if}
+
 	{#if !m.viewer && m.require_user_session}
 		<!-- The row was minted under user-signed-required mode but the visitor
 		     has no matching session. GET still succeeds (the metadata is not

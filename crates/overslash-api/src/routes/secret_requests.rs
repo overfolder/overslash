@@ -70,6 +70,11 @@ struct CreateSecretRequestBody {
     /// Which credential slot to bind. Optional when the template declares a
     /// single per-instance slot, which is every shipped template.
     credential_key: Option<String>,
+    /// Mint even though `secret_name` already exists, accepting that whoever
+    /// opens the link stores a new version over the current value. Without it
+    /// such a request is refused with `secret_name_conflict` (409).
+    #[serde(default)]
+    force: bool,
 }
 
 #[derive(Serialize)]
@@ -89,6 +94,11 @@ struct CreateSecretRequestResponse {
     service_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_key: Option<String>,
+    /// Present only when `force` overrode a name collision. Names the value
+    /// this link will supersede, so a caller that forced on autopilot still
+    /// has the version number to restore from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 const DEFAULT_TTL: u64 = 3600;
@@ -148,6 +158,27 @@ async fn create_secret_request(
             .unwrap_or(true);
     let require_user_session = !allow_unsigned;
 
+    // Read the version being superseded before minting, so a forced request
+    // reports what was actually there when the caller asked. `mint` refuses
+    // on collision when `force` is false, so this is only ever non-empty on
+    // the deliberate path.
+    let warning = if req.force {
+        service_setup::conflicting_secret_names(
+            &scope,
+            &[(None, req.secret_name.trim().to_string())],
+        )
+        .await?
+        .first()
+        .map(|c| {
+            format!(
+                "secret '{}' already exists; fulfilling this request replaces                  its current value (v{}). The old version stays restorable.",
+                c.secret_name, c.current_version
+            )
+        })
+    } else {
+        None
+    };
+
     let minted = service_setup::mint(
         state.db(&ext),
         &state.http_client,
@@ -162,6 +193,7 @@ async fn create_secret_request(
             require_user_session,
             service_instance_id: binding.as_ref().map(|(row, _)| row.id),
             credential_key: binding.as_ref().map(|(_, key)| key.as_str()),
+            force: req.force,
             via: "rest",
             ip_address: ip.0.as_deref(),
         },
@@ -184,6 +216,7 @@ async fn create_secret_request(
         expires_at: fmt_time(expires_at),
         service_id: binding.as_ref().map(|(row, _)| row.id),
         credential_key: binding.map(|(_, key)| key),
+        warning,
     }))
 }
 
@@ -221,6 +254,17 @@ struct ProvideMetadata {
     /// …" banner so the visitor knows their identity will be captured on
     /// the audit trail. Cross-tenant sessions are silently ignored.
     viewer: Option<ViewerInfo>,
+    /// Version of the existing vault secret this submission will supersede,
+    /// or `None` when the name is still free.
+    ///
+    /// Read live, at page load, rather than recorded when the link was minted.
+    /// That is deliberate: the mint-time check cannot see a secret created
+    /// after it, so the link is the last place the truth is still available
+    /// before the value is written. It warns rather than blocks — the person
+    /// holding the link is the one who can judge whether replacing the value
+    /// is what was meant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overwrites_version: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -281,6 +325,11 @@ async fn provide_metadata(
             email: s.email,
         });
 
+    let overwrites_version = scope
+        .get_secret_by_name(&row.secret_name)
+        .await?
+        .map(|existing| existing.current_version);
+
     Ok(ProvideMetadata {
         id: row.id,
         secret_name: row.secret_name,
@@ -292,6 +341,7 @@ async fn provide_metadata(
         created_at: fmt_time(row.created_at),
         require_user_session: row.require_user_session,
         viewer,
+        overwrites_version,
     })
 }
 
