@@ -1,4 +1,5 @@
 import { test, expect, loginAs } from '../fixtures/auth';
+import { api, attachToContext, deleteOrg, freshOrgSlug, login } from '../../scenarios/index.mjs';
 
 // The standalone service setup page, driven in a browser against the real
 // stack.
@@ -23,20 +24,24 @@ type SetupBundle = {
 };
 
 test('a setup link renders the service, binds the credential, and reports the verdict', async ({
-	page,
-	request,
-	apiBase
+	page
 }) => {
-	await loginAs(page, request, 'admin');
+	// A per-run org. A unique instance name is not enough: `resend`'s slot
+	// stores under the template-authored `resend_key`, which mixes in nothing
+	// per-instance — so in the shared dev org this spec and
+	// `scenarios/mcp-setup-service.spec.ts` both mint a link at that one name,
+	// and whichever ran second was refused with `secret_name_conflict`.
+	const orgSlug = freshOrgSlug('setup-page');
+	const session = await login('admin', { org: orgSlug });
+	await attachToContext(page.context(), session);
 
 	// The harness reuses one Postgres across runs, so name the instance
 	// uniquely or the create 409s on a leftover row.
 	const serviceName = `resend-setup-e2e-${Date.now().toString(36)}`;
-	const create = await request.post(`${apiBase}/v1/services`, {
-		data: { template_key: 'resend', name: serviceName, user_level: true }
+	const svc = await api<{ id: string; setup?: SetupBundle }>(session, '/v1/services', {
+		method: 'POST',
+		body: { template_key: 'resend', name: serviceName, user_level: true }
 	});
-	expect(create.ok(), `create failed: ${await create.text()}`).toBeTruthy();
-	const svc = (await create.json()) as { id: string; setup?: SetupBundle };
 	expect(svc.setup, 'create_service must auto-mint a setup link').toBeTruthy();
 
 	// The minted URL carries the dashboard's configured origin, which is not
@@ -62,15 +67,18 @@ test('a setup link renders the service, binds the credential, and reports the ve
 
 	// The credential is bound either way — the probe reports whether it
 	// *works*, and a rejected key is still a stored one.
-	const detail = await request.get(`${apiBase}/v1/services/${serviceName}`);
-	expect(detail.ok()).toBeTruthy();
-	const bound = (await detail.json()) as { credentials?: Record<string, string> };
+	const bound = await api<{ credentials?: Record<string, string> }>(
+		session,
+		`/v1/services/${serviceName}`
+	);
 	expect(bound.credentials?.token).toBe('resend_key');
 
 	// Single-use: reloading the same link is a spent link, not a second form.
 	await page.goto(`${minted.pathname}${minted.search}`);
 	await expect(page.getByRole('heading', { name: 'Already set up' })).toBeVisible();
 	await expect(page.locator('input[type="password"]')).toHaveCount(0);
+
+	await deleteOrg(orgSlug);
 });
 
 test('a bare secret request does not render as a setup page', async ({ page, request, apiBase }) => {

@@ -16,7 +16,8 @@ import { api, deleteOrg, freshOrgSlug, login, makeSnapper } from '../tests/scena
 // A per-run org, so the collision this script stages is the one it made —
 // the e2e Postgres persists across runs, and `resend_key` surviving from an
 // earlier run would make the first create refuse before the script began.
-const session = await login('admin', { org: freshOrgSlug('conflict') });
+const orgSlug = freshOrgSlug('conflict');
+const session = await login('admin', { org: orgSlug });
 const snap = await makeSnapper(session);
 
 /** Stand up a Resend instance and fulfil its link, occupying `resend_key`. */
@@ -108,5 +109,5 @@ try {
 	await rCtx.close();
 } finally {
 	await snap.close();
-	await deleteOrg(session);
+	await deleteOrg(orgSlug);
 }
