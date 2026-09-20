@@ -202,10 +202,15 @@ pub async fn mint(
         )
         .await?;
         if !conflicts.is_empty() {
-            return Err(if req.credential_key.is_some() {
+            // Keyed on the *surface*, not on whether a slot is named. A REST
+            // or MCP caller that passed `service_id` also has a
+            // `credential_key`, and pointing that caller at
+            // `credentials: {…}` would name a field its own request body does
+            // not have — a fix it cannot apply.
+            return Err(if req.via == "create_service" {
                 conflict_error_for_create(conflicts)
             } else {
-                conflict_error_for_request(conflicts)
+                conflict_error_for_request(conflicts, req.service_instance_id)
             });
         }
     }

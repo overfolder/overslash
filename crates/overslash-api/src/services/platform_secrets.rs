@@ -141,7 +141,8 @@ pub async fn kernel_request_secret(
         .first()
         .map(|c| {
             format!(
-                "secret '{}' already exists; fulfilling this request replaces                  its current value (v{}). The old version stays restorable.",
+                "secret '{}' already exists; fulfilling this request replaces \
+                 its current value (v{}). The old version stays restorable.",
                 c.secret_name, c.current_version
             )
         })

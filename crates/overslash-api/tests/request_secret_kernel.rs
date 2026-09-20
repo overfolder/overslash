@@ -370,6 +370,12 @@ async fn forcing_over_a_taken_name_mints_with_a_warning() {
     let body: Value = resp.json().await.unwrap();
     let inner: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert!(inner["request_id"].as_str().is_some(), "{inner}");
-    let warning = inner["warning"].as_str().expect("forced mint warns");
-    assert!(warning.contains(&name), "{inner}");
+    assert_eq!(
+        inner["warning"].as_str().expect("forced mint warns"),
+        format!(
+            "secret '{name}' already exists; fulfilling this request replaces \
+             its current value (v1). The old version stays restorable."
+        ),
+        "{inner}"
+    );
 }

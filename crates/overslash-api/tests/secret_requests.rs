@@ -770,11 +770,17 @@ async fn forcing_mints_and_reports_the_version_it_supersedes() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    let warning = body["warning"].as_str().expect("forced mint warns");
-    assert!(warning.contains(&name), "{body}");
-    assert!(
-        warning.contains("v2"),
-        "the warning names the version being replaced: {body}"
+    // Asserted whole, not by substring. A `\`-continuation that loses its
+    // escape leaves a run of literal spaces mid-sentence, which every
+    // `contains` in this file still passes — the message reaches the caller
+    // garbled and the suite stays green.
+    assert_eq!(
+        body["warning"].as_str().expect("forced mint warns"),
+        format!(
+            "secret '{name}' already exists; fulfilling this request replaces \
+             its current value (v2). The old version stays restorable."
+        ),
+        "{body}"
     );
 }
 

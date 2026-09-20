@@ -82,13 +82,39 @@ pub fn conflict_error_for_create(conflicts: Vec<SecretNameConflict>) -> AppError
 }
 
 /// The 409 for the two bare-request surfaces (`request_secret`, `POST
-/// /v1/secrets/requests`), which have no credentials map to point at.
-pub fn conflict_error_for_request(conflicts: Vec<SecretNameConflict>) -> AppError {
-    AppError::SecretNameConflict {
-        conflicts,
-        hint: "choose a `secret_name` that is not in use, or pass `force: true` \
-               to store a new version over the existing secret (the current \
-               version stays restorable)"
+/// /v1/secrets/requests`), neither of which takes a credentials map.
+///
+/// `service_id` is the instance the request was bound to, when it was bound to
+/// one. It changes the advice rather than just decorating it: a bound request
+/// *does* have a bind escape, but it is `update_service` — naming
+/// `credentials: {…}` here would describe a field the caller's own request
+/// body does not have, which is the dead-end shape D77 removed from the
+/// service-resolution messages.
+pub fn conflict_error_for_request(
+    conflicts: Vec<SecretNameConflict>,
+    service_id: Option<uuid::Uuid>,
+) -> AppError {
+    let bind = conflicts
+        .iter()
+        .filter_map(|c| {
+            c.credential_key
+                .as_ref()
+                .map(|k| format!("{k:?}: {:?}", c.secret_name))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let hint = match (service_id, bind.is_empty()) {
+        (Some(id), false) => format!(
+            "to bind the existing secret to this slot, no request is needed — \
+             `update_service` on instance {id} with `credentials: {{{bind}}}` \
+             overwrites nothing. Otherwise choose a `secret_name` that is not \
+             in use, or pass `force: true` to store a new version over the \
+             existing secret (the current version stays restorable)."
+        ),
+        _ => "choose a `secret_name` that is not in use, or pass `force: true` \
+              to store a new version over the existing secret (the current \
+              version stays restorable)"
             .to_string(),
-    }
+    };
+    AppError::SecretNameConflict { conflicts, hint }
 }

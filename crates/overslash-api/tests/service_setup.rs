@@ -1177,3 +1177,70 @@ async fn an_archived_instance_still_holding_a_name_says_so() {
     assert!(msg.contains("archived"), "must name the real cause: {body}");
     assert!(msg.contains(id), "must name the row holding it: {body}");
 }
+
+/// The hint has to name a fix the caller can actually apply.
+///
+/// `request_secret` and `POST /v1/secrets/requests` take no `credentials` map,
+/// so pointing a bound request at `credentials: {slot: name}` would describe a
+/// field its own body does not have. Keyed on the surface, not on whether a
+/// slot happens to be named — a bound request has both.
+#[tokio::test]
+async fn a_bound_request_is_pointed_at_update_service_not_credentials() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+    let first = seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+    let service_id = first["id"].as_str().unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({
+            "secret_name": "resend_key",
+            "service_id": service_id,
+            "ttl_seconds": 3600
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "secret_name_conflict", "{body}");
+    let hint = body["hint"].as_str().unwrap_or_default();
+    assert!(
+        hint.contains("update_service") && hint.contains(service_id),
+        "the bind escape must name the call and the instance: {body}"
+    );
+    assert!(
+        hint.contains("force"),
+        "and still offer the replace path: {body}"
+    );
+    // No stray whitespace runs: these hints are prose assembled from
+    // `\`-continued literals, and a lost escape is invisible to `contains`.
+    assert!(!hint.contains("  "), "hint has a run of spaces: {hint:?}");
+}
+
+/// The create surface keeps the `credentials` wording, because there it is a
+/// real field on the request body.
+#[tokio::test]
+async fn the_create_hint_names_the_credentials_map() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"template_key": "resend", "name": "resend-two", "user_level": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    let hint = body["hint"].as_str().unwrap_or_default();
+    assert!(
+        hint.contains(r#"credentials: {"token": "resend_key"}"#),
+        "{body}"
+    );
+    assert!(!hint.contains("update_service"), "{body}");
+    assert!(!hint.contains("  "), "hint has a run of spaces: {hint:?}");
+}
