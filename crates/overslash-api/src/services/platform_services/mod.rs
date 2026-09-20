@@ -37,6 +37,7 @@ mod rows;
 mod status;
 mod templates;
 mod types;
+mod verify;
 
 pub(crate) use kernels::require_owned_by_ceiling_or_admin;
 pub use kernels::{
@@ -52,6 +53,7 @@ pub use types::{
     ConnectBundle, CreateServiceGroupGrant, CreateServiceInput, CredentialsStatus, GetServiceInput,
     ServiceGroupRef, ServiceInstanceDetail, ServiceInstanceSummary, UpdateServiceInput,
 };
+pub use verify::PENDING_SETUP;
 
 pub(crate) use status::resolve_effective_scopes;
 pub(crate) use templates::template_oauth_provider;

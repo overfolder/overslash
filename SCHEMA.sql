@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict hivLY46zV2kF1UBl1hlkWE0ir7K3pvMPUm13R3ygJizTB67gNI5blLA7gYPEnax
+\restrict VeJjLWgpX0zHeRI6jPdnuguwh5zra0DSWpgdtS7uMn5IDYXj1fAAdE1K7oioO0n
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -1116,9 +1116,16 @@ CREATE TABLE public.service_instances (
     discovered_tools jsonb,
     discovered_at timestamp with time zone,
     config jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text]))),
+    CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text, 'pending_setup'::text]))),
     CONSTRAINT service_instances_template_source_check CHECK ((template_source = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
 );
+
+
+--
+-- Name: COLUMN service_instances.status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.service_instances.status IS 'Lifecycle: active (callable), draft (deliberately parked), archived (retired), pending_setup (created by a setup flow, probe not yet green — swept after ~24h). Only active resolves by name or appears in search.';
 
 
 --
@@ -2400,6 +2407,13 @@ CREATE INDEX idx_service_instances_owner ON public.service_instances USING btree
 
 
 --
+-- Name: idx_service_instances_pending_setup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_service_instances_pending_setup ON public.service_instances USING btree (created_at) WHERE (status = 'pending_setup'::text);
+
+
+--
 -- Name: idx_service_instances_user_name; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3342,5 +3356,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict hivLY46zV2kF1UBl1hlkWE0ir7K3pvMPUm13R3ygJizTB67gNI5blLA7gYPEnax
+\unrestrict VeJjLWgpX0zHeRI6jPdnuguwh5zra0DSWpgdtS7uMn5IDYXj1fAAdE1K7oioO0n
 

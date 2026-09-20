@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE service_instances SET created_at = now() - interval '30 days' WHERE id = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d6e86674eb6463aa6953e0e255e6159f31ca392059f48dda6cade9a7dcb80a7b"
+}

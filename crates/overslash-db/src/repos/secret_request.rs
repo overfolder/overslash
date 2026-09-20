@@ -89,3 +89,21 @@ pub async fn mark_fulfilled(pool: &PgPool, id: &str) -> Result<bool, sqlx::Error
     .await?;
     Ok(r.rows_affected() > 0)
 }
+
+/// Every identity that minted a setup link for this instance.
+///
+/// "Who is blocked on this service going live." The rows survive fulfilment —
+/// [`mark_fulfilled`] stamps a timestamp rather than deleting — so this keeps
+/// answering after the credential has landed, which is when the answer is
+/// wanted. Reads `idx_secret_requests_service` (migration 118).
+pub async fn setup_requesters(
+    pool: &PgPool,
+    service_instance_id: Uuid,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT DISTINCT requested_by FROM secret_requests WHERE service_instance_id = $1",
+        service_instance_id,
+    )
+    .fetch_all(pool)
+    .await
+}

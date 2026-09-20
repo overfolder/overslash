@@ -54,6 +54,16 @@ const PROVIDE_PATH: &str = "/secrets/provide";
 /// `ttl_seconds`.
 const SETUP_LINK_TTL_SECS: i64 = 3600;
 
+/// Ceiling on a caller-supplied setup-link TTL.
+///
+/// Lives here rather than beside the `POST /v1/secrets/requests` handler that
+/// clamps to it, because it is the deadline the setup-draft sweeper is derived
+/// from: an unverified instance must outlive every link that could still
+/// fulfil it, or the sweeper deletes the instance out from under a human
+/// mid-paste and cascades their live link with it. See
+/// `Config::setup_draft_retention_secs`.
+pub const MAX_LINK_TTL_SECS: i64 = 86_400;
+
 // ── Bundle returned to the minting caller ────────────────────────────────
 
 /// The setup links minted alongside a freshly-created service instance.
@@ -149,6 +159,10 @@ pub struct MintRequest<'a> {
     pub secret_name: &'a str,
     pub reason: Option<&'a str>,
     pub ttl_seconds: i64,
+    /// The org's `allow_unsigned_secret_provide` policy, inverted. A *floor*,
+    /// not the final value: [`mint`] raises it unconditionally when
+    /// `service_instance_id` is set, because an anonymous fulfilment cannot
+    /// produce the probe verdict such a request exists to trigger.
     pub require_user_session: bool,
     /// Both `Some` or both `None` — the DB check constraint says so, and
     /// [`validate_binding`] is what establishes it for a caller-supplied pair.
@@ -219,6 +233,25 @@ pub async fn mint(
     let expires_at = now + time::Duration::seconds(req.ttl_seconds);
     let request_id = format!("req_{}", Uuid::new_v4().simple());
 
+    // A *setup* request always requires a session, whatever the org's
+    // `allow_unsigned_secret_provide` says. One-directional: this can only
+    // tighten the org's policy, never loosen it.
+    //
+    // Not a new policy so much as the page declining a submission it could not
+    // complete. Fulfilling a setup request binds a credential slot *and* is the
+    // trigger for the instance's probe — and the probe runs through
+    // `call_action_impl`, which needs an identity to evaluate a permission
+    // chain against. An anonymous fulfilment can therefore never produce a
+    // verdict, so it would leave the instance in `pending_setup` until the
+    // sweeper deleted it: the credential accepted, the service never live, and
+    // nobody told why. `allow_unsigned` was written for the bare provide page,
+    // where the only outcome is a stored value.
+    //
+    // Here rather than at the three call sites because that is this module's
+    // whole job — see the module doc — and because those call sites have
+    // already drifted apart once, over TTLs.
+    let require_user_session = req.require_user_session || req.service_instance_id.is_some();
+
     let signing_key = jwt::signing_key_bytes(&config.signing_key);
     let claims = SecretRequestClaims {
         req: request_id.clone(),
@@ -240,7 +273,7 @@ pub async fn mint(
         req.reason,
         &sha256(&token),
         expires_at,
-        req.require_user_session,
+        require_user_session,
         req.service_instance_id,
         req.credential_key,
     )
@@ -279,7 +312,7 @@ pub async fn mint(
                 "id": &request_id,
                 "secret_name": req.secret_name,
                 "target_identity_id": req.target_identity,
-                "require_user_session": req.require_user_session,
+                "require_user_session": require_user_session,
                 "service_instance_id": req.service_instance_id,
                 "credential_key": req.credential_key,
                 "via": req.via,

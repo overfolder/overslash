@@ -25,6 +25,11 @@ pub enum Topic {
     /// deployment with the flag off gets silence rather than a 400 that varies
     /// by environment.
     Activity,
+    /// Service-instance lifecycle. One event today — `service.activated` —
+    /// and it exists because an agent that hands over a setup link is blocked
+    /// on the moment its instance becomes callable, which since D-NEXT is
+    /// promotion rather than credential fulfilment.
+    Services,
 }
 
 impl Topic {
@@ -35,12 +40,13 @@ impl Topic {
     /// Both `Executions` and `Activity` are here because two branches each
     /// added a topic and each wrote `[Topic; 4]` — resolving that by taking
     /// one side compiles cleanly and silently drops the other.
-    pub const ALL: [Topic; 5] = [
+    pub const ALL: [Topic; 6] = [
         Topic::Approvals,
         Topic::Connections,
         Topic::Executions,
         Topic::Secrets,
         Topic::Activity,
+        Topic::Services,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -50,6 +56,7 @@ impl Topic {
             Topic::Executions => "executions",
             Topic::Secrets => "secrets",
             Topic::Activity => "activity",
+            Topic::Services => "services",
         }
     }
 }
@@ -82,6 +89,7 @@ impl FromStr for Topic {
             "executions" => Ok(Topic::Executions),
             "secrets" => Ok(Topic::Secrets),
             "activity" => Ok(Topic::Activity),
+            "services" => Ok(Topic::Services),
             _ => Err(()),
         }
     }
@@ -140,6 +148,17 @@ pub enum EventType {
     /// `rejected`, `failed`, `upstream_error`), so a 403 and an upstream 500
     /// stay distinguishable.
     ActionCompleted,
+    /// A service instance became callable.
+    ///
+    /// The terminal signal for setup. `secret_request.fulfilled` used to be
+    /// it — its payload comment said so — but since D-NEXT a credential
+    /// landing and a service going live are two moments, separated by the
+    /// probe. An agent blocked on "can I call this yet" wants this one.
+    ///
+    /// A new wire string rather than an overload of an existing name, per D62:
+    /// these are stored verbatim by webhook subscriptions, so reusing a name
+    /// would start delivering unrelated events to every current subscriber.
+    ServiceActivated,
 }
 
 impl EventType {
@@ -163,6 +182,7 @@ impl EventType {
             EventType::SecretRequestFulfilled => "secret_request.fulfilled",
             EventType::ActionCalled => "action.called",
             EventType::ActionCompleted => "action.completed",
+            EventType::ServiceActivated => "service.activated",
         }
     }
 
@@ -184,6 +204,7 @@ impl EventType {
             | EventType::ConnectionDeleted => Topic::Connections,
             EventType::SecretRequestCreated | EventType::SecretRequestFulfilled => Topic::Secrets,
             EventType::ActionCalled | EventType::ActionCompleted => Topic::Activity,
+            EventType::ServiceActivated => Topic::Services,
         }
     }
 }
@@ -237,7 +258,7 @@ mod tests {
     fn every_topic_is_in_all_and_round_trips() {
         assert_eq!(
             Topic::ALL.len(),
-            5,
+            6,
             "Topic::ALL is out of step with the enum — see this test's doc comment"
         );
         for t in Topic::ALL {

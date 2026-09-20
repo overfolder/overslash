@@ -521,6 +521,17 @@ pub async fn kernel_create_service(
         ));
     }
 
+    // Every per-instance slot the auto-mint below is about to claim.
+    //
+    // Computed once, here, because two separate pre-insert decisions read it
+    // and neither may re-derive it: the secret-name conflict check (D85) and
+    // the verification gate (D-NEXT).
+    let pending_slots = crate::services::service_setup::unbound_instance_slots(
+        &template_def,
+        &credentials,
+        stored_secret_name.as_deref(),
+    );
+
     // Pre-flight the secret names the auto-mint below is about to claim.
     //
     // The same check runs inside `mint`, but it runs there *after* the
@@ -531,28 +542,35 @@ pub async fn kernel_create_service(
     // half-finished service and no reason for it. Checking here means the
     // 409 arrives before anything is written.
     let force_credentials = input.force.unwrap_or(false);
-    if !input.skip_credentials.unwrap_or(false) && !force_credentials && owner_identity_id.is_some()
+    if !input.skip_credentials.unwrap_or(false)
+        && !force_credentials
+        && owner_identity_id.is_some()
+        && !pending_slots.is_empty()
     {
-        let pending = crate::services::service_setup::unbound_instance_slots(
-            &template_def,
-            &credentials,
-            stored_secret_name.as_deref(),
-        );
-        if !pending.is_empty() {
-            let candidates: Vec<(Option<String>, String)> = pending
-                .iter()
-                .map(|s| (Some(s.key.clone()), s.default_secret_name.clone()))
-                .collect();
-            let conflicts =
-                crate::services::service_setup::conflicting_secret_names(&scope, &candidates)
-                    .await?;
-            if !conflicts.is_empty() {
-                return Err(crate::services::service_setup::conflict_error_for_create(
-                    conflicts,
-                ));
-            }
+        let candidates: Vec<(Option<String>, String)> = pending_slots
+            .iter()
+            .map(|s| (Some(s.key.clone()), s.default_secret_name.clone()))
+            .collect();
+        let conflicts =
+            crate::services::service_setup::conflicting_secret_names(&scope, &candidates).await?;
+        if !conflicts.is_empty() {
+            return Err(crate::services::service_setup::conflict_error_for_create(
+                conflicts,
+            ));
         }
     }
+
+    // The status the row is written in. Deliberately *not* derived from
+    // `detail.setup.is_some()` further down: a mint failure is
+    // warn-and-continue, so reading the bundle would let one silently un-gate
+    // the instance and create it live with no credential — the exact bug this
+    // gate exists to prevent.
+    let create_status = super::verify::resolve_create_status(
+        &input,
+        &template_def,
+        &pending_slots,
+        owner_identity_id,
+    )?;
 
     let create_input = CreateServiceInstance {
         org_id: ctx.org_id,
@@ -567,7 +585,7 @@ pub async fn kernel_create_service(
         config: &config,
         url: input.url.as_deref(),
         use_default_connection: input.use_default_connection.unwrap_or(true),
-        status: &input.status,
+        status: create_status,
     };
 
     let row = match scope.create_service_instance(create_input).await {
@@ -783,11 +801,7 @@ pub async fn kernel_create_service(
     if !input.skip_credentials.unwrap_or(false)
         && let Some(owner) = owner_identity_id
     {
-        let pending = crate::services::service_setup::unbound_instance_slots(
-            &template_def,
-            &detail.credentials,
-            detail.secret_name.as_deref(),
-        );
+        let pending = &pending_slots;
         if !pending.is_empty() {
             match crate::services::service_setup::mint_bundle(
                 &ctx.db,
@@ -797,7 +811,7 @@ pub async fn kernel_create_service(
                 owner,
                 auth_identity,
                 row_id,
-                &pending,
+                pending,
                 force_credentials,
             )
             .await

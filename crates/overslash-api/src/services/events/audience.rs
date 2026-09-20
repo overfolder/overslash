@@ -145,3 +145,45 @@ pub async fn for_secret_request(
 pub async fn for_action(scope: &OrgScope, actor_id: Uuid) -> Vec<Uuid> {
     chain(scope, actor_id).await
 }
+
+/// Service activation: the owner's chain, the actor, and everyone who was
+/// blocked on the instance.
+///
+/// The last set is why this is not [`for_connection`]. `chain` walks *upwards*,
+/// so an owner-user's chain does not contain their agents — and the agent that
+/// called `create_service` and handed over a setup link is exactly the identity
+/// waiting to hear that its service went live. It is a descendant, so the
+/// ancestor walk misses it.
+///
+/// `secret_requests` is the record of who asked: the rows survive fulfilment
+/// (`mark_fulfilled` stamps a timestamp, it does not delete), so
+/// `requested_by` for this instance is precisely "who is blocked on it",
+/// including an agent that has since been re-parented. One indexed read —
+/// `idx_secret_requests_service` exists for it (migration 118).
+///
+/// Degrades rather than fails: a lookup error narrows the audience to the
+/// owner and the actor, which is the safe direction, and the caller can still
+/// poll `get_service`.
+pub async fn for_service_setup(
+    scope: &OrgScope,
+    owner_id: Option<Uuid>,
+    actor_id: Option<Uuid>,
+    service_instance_id: Uuid,
+) -> Vec<Uuid> {
+    let mut audience = Vec::new();
+    if let Some(owner_id) = owner_id {
+        merge(&mut audience, chain(scope, owner_id).await);
+    }
+    if let Some(actor_id) = actor_id {
+        merge(&mut audience, [actor_id]);
+    }
+    match scope.setup_requesters(service_instance_id).await {
+        Ok(ids) => merge(&mut audience, ids),
+        Err(e) => tracing::warn!(
+            service_instance_id = %service_instance_id,
+            error = %e,
+            "audience: setup requesters lookup failed; narrowing to owner and actor"
+        ),
+    }
+    audience
+}
