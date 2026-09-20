@@ -1994,3 +1994,111 @@ async fn a_forced_activation_still_emits_service_activated() {
         "no probe ran, so there is no verdict to carry: {payload}"
     );
 }
+
+/// Parking a gated instance as `draft` takes it off the sweeper's clock, and
+/// `/activate` is how it comes back — with the probe, not around it.
+///
+/// `/activate` deliberately accepts any non-archived status for this reason.
+/// Refusing `draft` would leave `PATCH /status` as the only way out of a park,
+/// and that is the path that runs no probe: it would push someone toward
+/// unverified activation to escape a deadline extension. The audit records
+/// `from: "draft"` either way, and `bypassed_verification` under the same name
+/// `PATCH /status` uses, so "which services went live without a verdict?" is
+/// one query rather than two.
+#[tokio::test]
+async fn a_parked_draft_comes_back_through_the_probe() {
+    let mock = common::start_mock().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api_with_registry(
+        pool.clone(),
+        Some(("resend", format!("http://127.0.0.1:{}", mock.port()))),
+    )
+    .await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-parked-resume", "user_level": true}),
+    )
+    .await;
+    let service_id = svc["id"].as_str().unwrap().to_string();
+    assert_eq!(svc["status"], "pending_setup");
+
+    let (req_id, token) = parse_setup_url(svc["setup"]["setup_url"].as_str().unwrap());
+    client
+        .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .header("cookie", common::session_cookie(fx.org_id, fx.user_ids[0]))
+        .json(&json!({"token": token, "value": "re_live_key"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Park it: off the clock, and out of `pending_setup`.
+    let resp = client
+        .patch(format!("{base}/v1/services/{service_id}/status"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"status": "draft"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // …and back, through the probe.
+    let (status, body) = activate(&base, &client, &fx.admin_key, &service_id, false).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["verdict"]["status"], "ok", "{body}");
+    assert_eq!(body["status"], "active", "{body}");
+
+    let detail: Value = sqlx::query_scalar!(
+        "SELECT detail FROM audit_log WHERE action = 'service.activated' \
+         AND resource_id = $1 ORDER BY created_at DESC LIMIT 1",
+        Uuid::parse_str(&service_id).unwrap(),
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(detail["from"], "draft", "{detail}");
+    assert_eq!(
+        detail["bypassed_verification"], false,
+        "a green verdict is not a bypass: {detail}"
+    );
+}
+
+/// The forced twin, and the reason `bypassed_verification` lives on this
+/// action too: an operator asking "what went live unchecked?" gets one answer
+/// from one key, whichever endpoint did it.
+#[tokio::test]
+async fn a_forced_activation_is_audited_as_a_bypass() {
+    let mock = common::start_mock().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api_with_registry(
+        pool.clone(),
+        Some(("resend", format!("http://127.0.0.1:{}", mock.port()))),
+    )
+    .await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-bypass", "user_level": true}),
+    )
+    .await;
+    let service_id = svc["id"].as_str().unwrap().to_string();
+
+    let (status, body) = activate(&base, &client, &fx.admin_key, &service_id, true).await;
+    assert_eq!(status, 200, "{body}");
+
+    let detail: Value = sqlx::query_scalar!(
+        "SELECT detail FROM audit_log WHERE action = 'service.activated' \
+         AND resource_id = $1 ORDER BY created_at DESC LIMIT 1",
+        Uuid::parse_str(&service_id).unwrap(),
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(detail["forced"], true, "{detail}");
+    assert_eq!(detail["bypassed_verification"], true, "{detail}");
+    assert_eq!(detail["from"], "pending_setup", "{detail}");
+}

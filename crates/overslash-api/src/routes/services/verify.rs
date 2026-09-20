@@ -159,6 +159,13 @@ pub(super) async fn activate_service(
             "cannot activate an archived service; restore it first".into(),
         ));
     }
+    // `draft` is deliberately *not* refused, though this endpoint exists for
+    // `pending_setup`. Parking a gated instance as `draft` is the documented
+    // way to take a setup that legitimately needs longer off the sweeper's
+    // clock — so refusing here would leave `PATCH /status` as the only way
+    // back out, which is the path that does *not* run the probe. Pushing
+    // someone toward unverified activation to escape a park is backwards.
+    // Promotion from any non-archived status is audited identically below.
 
     // Forced: do not run the probe at all. Burning an upstream call whose
     // answer is discarded would be dishonest about what was checked, and the
@@ -235,6 +242,12 @@ async fn promote(
         "from": instance.status,
         "to": "active",
         "forced": forced,
+        // The same key `PATCH /status` writes, deliberately. "Which services
+        // went live without a verdict?" is one question, and an operator
+        // should not have to know it can be answered by two different actions
+        // under two different names. Here it is exactly `forced`: every other
+        // path through this function got a green verdict first.
+        "bypassed_verification": forced,
         // The verdict's four scalar fields, never its error text or a body:
         // an audit row is read by more people than pressed the button.
         "verdict": verdict.map(|v| serde_json::json!({
