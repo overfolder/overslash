@@ -235,6 +235,7 @@ platform_actions:
       skip_connect: { type: boolean, required: false }
       skip_credentials: { type: boolean, required: false }
       force: { type: boolean, required: false }
+      verify: { type: boolean, required: false }
       connect_return_url: { type: string, required: false }
 
   update_service:

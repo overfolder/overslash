@@ -1,3 +1,5 @@
+import type { ServiceStatus } from './services.js';
+
 /**
  * Secret and secret-request wire types.
  *
@@ -141,6 +143,18 @@ export interface SubmitServiceOutcome {
    * the service is ready.
    */
   remaining_slots?: string[];
+  /**
+   * The instance's lifecycle status *after* this submission.
+   *
+   * `remaining_slots: []` says every credential is present, which is an
+   * earlier and weaker claim than callable: the credential probe runs after
+   * this response, from the page the visitor submitted on. `pending_setup`
+   * here means saved but not yet live — wait for the `service.activated`
+   * event rather than treating the fulfilment as the finish line.
+   *
+   * Absent when the bind failed, for the same reason `name` is.
+   */
+  status?: ServiceStatus;
 }
 
 /** Response to `PUT /v1/secrets/{name}`. */

@@ -49,6 +49,23 @@ export interface ServiceTestResponse {
   auth_url?: string;
 }
 
+/** A service instance's lifecycle status. */
+export type ServiceStatus = 'draft' | 'active' | 'archived' | 'pending_setup';
+
+/**
+ * The answer from `POST /v1/services/{id}/activate`.
+ *
+ * Read `status` for whether the service is callable now. Not the verdict: a
+ * forced activation carries none at all, and `not_supported` promotes on a
+ * verdict that never reached an upstream.
+ */
+export interface ServiceActivateResponse {
+  /** The instance's status *after* the call. */
+  status: ServiceStatus;
+  /** Absent only when `force` skipped the probe. */
+  verdict?: ServiceTestResponse;
+}
+
 /**
  * Setup links minted alongside a freshly-created instance, for the credential
  * slots nobody bound.

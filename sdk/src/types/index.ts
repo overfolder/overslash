@@ -47,6 +47,8 @@ export type {
 } from './secrets.js';
 
 export type {
+  ServiceActivateResponse,
+  ServiceStatus,
   ServiceTestResponse,
   SetupBundle,
   SetupRequestRef,

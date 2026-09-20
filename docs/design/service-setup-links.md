@@ -65,11 +65,18 @@ agent                          Overslash                         human
   │                                │◀── POST {token, value} ───────┤
   │                                ├─ vault write                  │
   │                                ├─ bind credentials[token]      │
-  │                                │◀── POST /v1/services/{id}/test┤ (signed in)
-  │                                ├── { status: "ok", 214ms } ───▶│
   │◀── event: secret_request.fulfilled                             │
-  │      { service_id, remaining_slots: [] }                       │
+  │      { service_id, service_status: "pending_setup" }           │
+  │                                │◀ POST /v1/services/{id}/activate
+  │                                ├─ probe → ok                   │ (signed in)
+  │                                ├─ pending_setup → active       │
+  │                                ├─ { status: "active", 214ms }─▶│
+  │◀── event: service.activated                                    │
 ```
+
+The instance is **not callable** until that last step. `create_service` returns
+it `status: "pending_setup"` — it resolves by name nowhere and appears in no
+search result, because nothing has yet checked that its credential works.
 
 One agent call, one URL, one page. The OAuth path is the same diagram with
 `connect.auth_url` in place of `setup.setup_url` and the provider's consent
@@ -174,14 +181,145 @@ permanently-open path to executing an action as someone else, justified only
 by the caller holding a link.
 
 Instead the probe goes through `call_action_impl` unchanged, and the setup page
-offers the Test button only to a visitor holding an `oss_session` for the org.
-This costs nothing in the case the feature exists for: a fresh instance's
-Myself auto-grant carries `auto_approve_level = 'read'`, and validation forces
-the probe to `risk: read`, so the owner's own probe auto-approves. An anonymous
-link recipient sees "Sign in to test" rather than a button that quietly
-elevates.
+offers it only to a visitor holding an `oss_session` for the org. This costs
+nothing in the case the feature exists for: a fresh instance's Myself auto-grant
+carries `auto_approve_level = 'read'`, and validation forces the probe to
+`risk: read`, so the owner's own probe auto-approves.
 
 `pending_approval` is therefore a real verdict, rendered as one.
+
+### Draft until verified
+
+D83 shipped the probe as a *diagnostic* and left the verdict advisory: the
+instance was committed before anyone asked whether its key worked, and the
+wizard's way out said "Continue anyway". A key with a trailing newline and a key
+for the wrong account landed exactly where a good one did. The verdict now gates
+the instance instead of merely describing it — the binding choices are `D-NEXT`
+in [DECISIONS.md](../../DECISIONS.md).
+
+Three things make it cheap. `status` already had a CHECK constraint to widen.
+Every name-resolution query already filters `status = 'active'`, and
+`overslash_search` already skips non-active rows, so a fourth value is excluded
+from the call path and from discovery with no new predicate. And the probe
+reaches a gated instance anyway, because it addresses the call by `service_id`
+and *that* branch of `resolve_instance_for_call` is any-status. The feature is
+mostly two lookups that already disagreed being allowed to mean something.
+
+`pending_setup` is a status of its own rather than a reuse of `draft`, because
+`draft` is a state a person parks an instance in on purpose and the sweeper
+below has to be able to tell the two apart. The separation is enforced at the
+API: `pending_setup` is absent from the status allow-list `PATCH /status` and
+`update_service` validate against, so it is a valid *source* status and never a
+valid target. Every row in it was therefore put there by a setup flow, which is
+what lets the purge key on age alone.
+
+The gate defaults on **exactly where a probe runner exists** — restating the
+auto-mint's condition rather than approximating it. The reason is a constraint
+worth stating plainly: an agent cannot probe the instance it just created.
+`require_owner_or_admin` resolves to `caller_may_manage_owned`, which admits the
+owner, an *ancestor* of the owner, or an admin — and an agent is deliberately
+not an ancestor of its own owner-user. Gating a flow with no human in it
+produces an instance nobody can release, which the sweeper collects a day later.
+
+| create | gated? | why |
+|---|---|---|
+| a setup link is minted | yes | a human lands on a page we control, with a session, and their browser runs the probe |
+| credentials already bound | no | no link, no page, no probe runner — and the agent cannot lift it itself |
+| `skip_credentials: true` | no | the caller said it would wire this up |
+| org-level (no owner) | no | `mint` needs an identity to store the secret under, so no link exists |
+| OAuth | no | the dance ends in a server-side callback with no caller to probe as |
+| no `x-overslash-test` | no | nothing to wait for |
+
+`verify: true` forces it for a caller that probes on its own — the dashboard
+wizard, which checks even on the path where the user named an existing vault
+secret and no link was minted. On a probeless template it is a `400` rather than
+a quiet `active`: answering "fine, it's live" to a caller that asked for
+verification is how a dashboard comes to report a service checked that nothing
+ever checked.
+
+### Why `activate` and `test` are two endpoints
+
+`POST /v1/services/{id}/activate` runs the same probe and, on a green verdict,
+promotes. It is not folded into `/test` because `/test` is a diagnostic the
+service detail page runs against live instances, and `require_owner_or_admin`
+admits an org **admin** to instances they do not own — so promote-on-green there
+would mean an admin sweeping the org's services silently published other
+people's unverified drafts.
+
+Nor is promotion the client's to declare. Routing it through `PATCH /status`
+after a verdict the client claims to have seen would make the gate advisory,
+since any caller can assert a verdict it never obtained. "Activate anyway" is
+`activate?force=true`, which runs no probe either — so nothing is saved by going
+around it, and going around it would skip the `service.activated` event an agent
+may be blocked on. `PATCH /status` stays reachable as an override and now writes
+the audit row it never had, flagging `bypassed_verification` on the one
+transition worth finding later.
+
+Every outcome is a `200`. A red verdict is the answer to the question, not a
+failure to answer it, and a 4xx would make the dashboard render an error where a
+verdict and a retry belong. `not_supported` promotes: a template can lose its
+`x-overslash-test` after an instance was gated on it, and refusing forever over
+a probe that no longer exists is worse than recording which verdict let it
+through.
+
+### Sign-in is now mandatory on a setup link
+
+`mint` raises `require_user_session` to true whenever the request names a
+service, whatever the org's `allow_unsigned_secret_provide` says.
+One-directional — it can only tighten — and keyed on
+`service_instance_id.is_some()`, which is the check constraint's own definition
+of a setup request.
+
+This reads as a policy change and is closer to the page declining a submission
+it cannot complete. Fulfilment is what triggers the probe; the probe runs
+through `call_action_impl`; `call_action_impl` needs an identity to evaluate a
+chain against. An anonymous fulfilment can therefore never yield a verdict, so
+it would leave the instance accepted-but-never-live until the sweeper deleted
+it, with nobody told why. A bare secret request, whose only outcome is a stored
+value, still honours the org setting.
+
+The consequence is reported rather than hidden: the person finishing a link is
+frequently not the instance's owner, the probe runs as *them*, and the Myself
+auto-grant belongs to the owner — so they get `denied` and the instance stays
+gated. Promotion staying behind owner-or-admin therefore costs nothing that was
+ever obtainable, and the page names the person who has to finish rather than
+announcing "saved" over a service that is quietly dead.
+
+### What the sweeper takes, and what it leaves
+
+`service_setup_draft_purge` deletes `pending_setup` rows older than
+`MAX_LINK_TTL_SECS + sweep_grace_secs`, derived rather than configured. The
+deadline is the **longest** link a caller could mint, not the auto-mint's
+one-hour default: `POST /v1/secrets/requests` takes a `ttl_seconds` clamped to
+that ceiling, and the instance must outlive every link that could still fulfil
+it — the `secret_requests` rows cascade with it, so sweeping early would delete
+a live URL out from under someone mid-paste.
+
+Measured from `created_at`. `bind_credential_slot` bumps `updated_at`, so
+someone pasting a third wrong key would push the deadline out indefinitely and
+the sweep would never bound the table. `PATCH /status` → `draft` parks an
+instance off the clock, which is the escape hatch for a setup that genuinely
+needs longer.
+
+It leaves the vault secret. `mint_bundle` stores under the *template's*
+`default_secret_name`, so two Resend instances owned by one user share
+`resend_key` — deleting it could pull the credential out from under a different,
+live service. `DELETE /v1/services/{name}` leaves secrets alone for the same
+reason, and a sweeper that destroyed more than the manual delete would be the
+inconsistency. No audit row and no event either, matching every other sweep: an
+audit row records somebody's act, and a sweeper is nobody.
+
+### Reopening a gated instance
+
+No new endpoints. The primitive was already there and unremarked:
+`validate_binding` and `resolve_slot_key` never required a slot to be *un*bound,
+so a wrong key is corrected by minting a second link at the same slot and the
+new value lands as a new secret version. Beside that, `PUT /v1/secrets/{name}`
+rewrites the value directly for the owner, and `PUT /v1/services/{id}/manage`
+edits config, URL and name — `kernel_update_service` has no status predicate, so
+it works on a gated instance untouched. The wizard's failure step is an inline
+panel over those three, not a rewind to its configure step, whose submit
+*creates*.
 
 ### The verdict carries no body
 
@@ -228,3 +366,20 @@ session-gated.
 - **No deny.** `/secrets/provide`'s Deny button is still local-only
   (`TODO(secret-request-deny)`), and the setup page does not add one. A request
   the human refuses stays pending until it expires.
+- **No `activate` over MCP.** `probe::run` needs `AuthContext`,
+  `CallerTransport` and `ClientIp`; a `PlatformCallContext` carries none of
+  them, so exposing activation as a platform action would mean synthesising an
+  identity and re-entering the call path from inside a call. An agent's path is
+  to hand over `setup.setup_url` and wait for `service.activated`, or poll
+  `get_service` with `include_inactive: true`. This is only a limit at all
+  because the agent could not usefully probe anyway — it is not an ancestor of
+  its own owner-user, so `require_owner_or_admin` refuses it.
+- **The purge does not clean up connections.** A gated instance got there via an
+  unbound *secret* slot, so a bound connection is incidental; and
+  `fire_connection_deleted` wants an actor for its audit row and event, which a
+  sweeper has not got. Identity-owned connections are reusable, so the cost is a
+  row rather than a leak.
+- **The 24h window is fixed, from `created_at`.** A setup that legitimately
+  needs longer is parked with `PATCH /status` → `draft`, which takes it off the
+  clock. Renewing on `updated_at` instead would mean a third wrong key pushed
+  the deadline out forever and the sweep never bounded the table.
