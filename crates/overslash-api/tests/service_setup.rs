@@ -361,10 +361,19 @@ async fn the_setup_page_renders_the_service_and_binds_on_submit() {
     assert_eq!(meta["service"]["slot"]["bound"], false);
     assert_eq!(meta["service"]["test_action"]["action"], "list_domains");
 
+    // A setup request always requires a session, whatever the org's
+    // `allow_unsigned_secret_provide` says: fulfilment is what triggers the
+    // probe, and the probe needs an identity to evaluate a chain against.
+    assert_eq!(
+        meta["require_user_session"], true,
+        "the page must know before the visitor types a secret: {meta}"
+    );
+
     // Submit through the provide endpoint — the setup page has no write path
     // of its own, deliberately.
     let resp = client
         .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .header("cookie", common::session_cookie(fx.org_id, fx.user_ids[0]))
         .json(&json!({"token": token, "value": "re_test_key"}))
         .send()
         .await
@@ -383,9 +392,18 @@ async fn the_setup_page_renders_the_service_and_binds_on_submit() {
         "the only slot was just filled"
     );
 
-    // The instance is now bound and reports itself healthy.
+    // Every credential is present — and that is a different claim from
+    // callable. The probe runs from the page, after this response, so the
+    // instance is still gated here. A page reading `remaining_slots: []` alone
+    // would announce it live one round trip early.
+    assert_eq!(submit["service"]["status"], "pending_setup");
+
+    // Bound, and reporting itself credentialled — but `?include_inactive`,
+    // because a gated instance does not resolve by name.
     let detail: Value = client
-        .get(format!("{base}/v1/services/resend-flow"))
+        .get(format!(
+            "{base}/v1/services/resend-flow?include_inactive=true"
+        ))
         .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
         .send()
         .await
@@ -395,6 +413,96 @@ async fn the_setup_page_renders_the_service_and_binds_on_submit() {
         .unwrap();
     assert_eq!(detail["credentials"]["token"], "resend_key");
     assert_eq!(detail["credentials_status"], "ok");
+    assert_eq!(
+        detail["status"], "pending_setup",
+        "`credentials_status: ok` says a credential is bound, not that it works: {detail}"
+    );
+}
+
+/// An anonymous submit is refused, and refused *before* the single-use row is
+/// burned — otherwise a visitor who signs in and retries would meet a `410`
+/// over a link that was never spent.
+#[tokio::test]
+async fn an_anonymous_setup_submit_is_refused() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-anon", "user_level": true}),
+    )
+    .await;
+    let (req_id, token) = parse_setup_url(svc["setup"]["setup_url"].as_str().unwrap());
+
+    let resp = client
+        .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .json(&json!({"token": token, "value": "re_anon"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body.to_string().contains("user_session_required"),
+        "the page branches on this code to render its sign-in banner: {body}"
+    );
+
+    // The capability survives the refusal: signing in and retrying works.
+    let resp = client
+        .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .header("cookie", common::session_cookie(fx.org_id, fx.user_ids[0]))
+        .json(&json!({"token": token, "value": "re_anon"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "the refused submit must not burn the row"
+    );
+}
+
+/// The other half of the pair: a *bare* secret request still honours the org's
+/// policy. The floor is on setup requests specifically, not on the endpoint.
+#[tokio::test]
+async fn a_bare_secret_request_still_allows_an_anonymous_submit() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let req: Value = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"secret_name": "loose_key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // Not `parse_setup_url`: a request that names no service correctly lands
+    // on the older, service-less page, which that helper asserts against.
+    let parsed = url::Url::parse(req["url"].as_str().unwrap()).unwrap();
+    assert!(parsed.path().contains("/secrets/provide/"), "{parsed}");
+    let token = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "token")
+        .map(|(_, v)| v.to_string())
+        .unwrap();
+    let req_id = parsed.path_segments().unwrap().next_back().unwrap();
+
+    let resp = client
+        .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .json(&json!({"token": token, "value": "loose"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "no service to gate on, so the org's `allow_unsigned` setting still rules"
+    );
 }
 
 #[tokio::test]
@@ -411,9 +519,11 @@ async fn a_second_submit_is_gone() {
     .await;
     let (req_id, token) = parse_setup_url(svc["setup"]["setup_url"].as_str().unwrap());
 
+    let cookie = common::session_cookie(fx.org_id, fx.user_ids[0]);
     for (n, expected) in [(1, 200), (2, 410)] {
         let resp = client
             .post(format!("{base}/public/secrets/provide/{req_id}"))
+            .header("cookie", cookie.clone())
             .json(&json!({"token": token, "value": format!("re_{n}")}))
             .send()
             .await
@@ -1243,4 +1353,644 @@ async fn the_create_hint_names_the_credentials_map() {
     );
     assert!(!hint.contains("update_service"), "{body}");
     assert!(!hint.contains("  "), "hint has a run of spaces: {hint:?}");
+}
+
+
+// ── Draft until verified ──────────────────────────────────────────────────
+
+async fn activate(
+    base: &str,
+    client: &Client,
+    key: &str,
+    service_id: &str,
+    force: bool,
+) -> (u16, Value) {
+    let q = if force { "?force=true" } else { "" };
+    let resp = client
+        .post(format!("{base}/v1/services/{service_id}/activate{q}"))
+        .header(common::auth(key).0, common::auth(key).1)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    (status, resp.json().await.unwrap())
+}
+
+async fn get_service(base: &str, client: &Client, key: &str, name: &str) -> (u16, Value) {
+    let resp = client
+        .get(format!("{base}/v1/services/{name}?include_inactive=true"))
+        .header(common::auth(key).0, common::auth(key).1)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    (status, resp.json().await.unwrap())
+}
+
+/// The gate's default rule: a probe to run, and a credential nobody has
+/// supplied — so a link is about to be minted and a human will run it.
+#[tokio::test]
+async fn an_unbound_secret_service_is_created_pending_setup() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-gated", "user_level": true}),
+    )
+    .await;
+    assert_eq!(svc["status"], "pending_setup", "{svc}");
+    assert!(
+        svc["setup"]["setup_url"].as_str().is_some(),
+        "gated exactly because a link was minted: {svc}"
+    );
+}
+
+/// The escape hatch an agent needs. Nothing in this flow can produce a
+/// verdict — no link, no page — and the agent could not lift the gate itself,
+/// so gating would strand the instance until the sweeper ate it.
+#[tokio::test]
+async fn a_bound_credential_and_skip_credentials_both_create_live() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let bound = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-bound",
+               "secret_name": "resend_key", "user_level": true}),
+    )
+    .await;
+    assert_eq!(bound["status"], "active", "{bound}");
+
+    let skipped = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-skipped",
+               "skip_credentials": true, "user_level": true}),
+    )
+    .await;
+    assert_eq!(skipped["status"], "active", "{skipped}");
+}
+
+/// `verify` asks for a guarantee. On a template with no probe there is none to
+/// give, and answering "fine, it's live" is how a dashboard ends up reporting
+/// a service checked that nothing ever checked.
+#[tokio::test]
+async fn verify_true_on_a_probeless_template_is_rejected() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(
+            &json!({"template_key": "deepwiki", "name": "dw", "user_level": true,
+                      "verify": true}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "{:?}", resp.text().await);
+}
+
+/// The whole point of the status: a gated instance is not reachable by the
+/// name an agent would call it by, and does not appear in the search results
+/// an agent discovers it through.
+#[tokio::test]
+async fn a_pending_setup_service_is_neither_callable_nor_discoverable() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-hidden", "user_level": true}),
+    )
+    .await;
+
+    // `include_inactive` still finds it — the reopen surfaces depend on that.
+    let (status, detail) = get_service(&base, &client, &fx.admin_key, "resend-hidden").await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!(detail["status"], "pending_setup", "{detail}");
+
+    // By name, without `include_inactive`: not found.
+    let resp = client
+        .get(format!("{base}/v1/services/resend-hidden"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "a gated instance does not resolve by name"
+    );
+
+    // And search does not offer it, because it is not callable.
+    let results: Value = client
+        .get(format!("{base}/v1/search?q=resend&include_catalog=true"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let body = results.to_string();
+    assert!(
+        !body.contains("resend-hidden"),
+        "a gated instance is not a search result: {results}"
+    );
+    // …but the catalog row must not tell the agent to create *another* one.
+    // The second `create_service` collides on the name index, which knows
+    // nothing about lifecycle status.
+    assert!(
+        body.contains("awaiting setup") || body.contains("do not create"),
+        "the row has to say an instance already exists: {results}"
+    );
+}
+
+/// The happy path, end to end: gated on create, green on probe, live after.
+#[tokio::test]
+async fn a_green_probe_activates_the_instance() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-green", "user_level": true}),
+    )
+    .await;
+    let service_id = svc["id"].as_str().unwrap().to_string();
+    assert_eq!(svc["status"], "pending_setup");
+
+    let (req_id, token) = parse_setup_url(svc["setup"]["setup_url"].as_str().unwrap());
+    let resp = client
+        .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .header("cookie", common::session_cookie(fx.org_id, fx.user_ids[0]))
+        .json(&json!({"token": token, "value": "re_live_key"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let (status, body) = activate(&base, &client, &fx.admin_key, &service_id, false).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["verdict"]["status"], "ok", "{body}");
+    assert_eq!(body["status"], "active", "{body}");
+
+    // Now it resolves by the name an agent calls it by.
+    let resp = client
+        .get(format!("{base}/v1/services/resend-green"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+/// A red verdict is an answer, not an error: `200`, the verdict rendered, and
+/// the instance left exactly where it was.
+#[tokio::test]
+async fn a_red_probe_leaves_the_instance_gated() {
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{dead}")).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-red", "user_level": true}),
+    )
+    .await;
+    let service_id = svc["id"].as_str().unwrap().to_string();
+    let (req_id, token) = parse_setup_url(svc["setup"]["setup_url"].as_str().unwrap());
+    client
+        .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .header("cookie", common::session_cookie(fx.org_id, fx.user_ids[0]))
+        .json(&json!({"token": token, "value": "re_bad_key"}))
+        .send()
+        .await
+        .unwrap();
+
+    let (status, body) = activate(&base, &client, &fx.admin_key, &service_id, false).await;
+    assert_eq!(
+        status, 200,
+        "a 4xx would make the dashboard render an error where a verdict belongs: {body}"
+    );
+    assert_eq!(body["verdict"]["status"], "failed", "{body}");
+    assert_eq!(body["status"], "pending_setup", "{body}");
+}
+
+/// "Activate anyway". Deliberately runs no probe at all: burning an upstream
+/// call whose answer is discarded would misreport what was checked.
+#[tokio::test]
+async fn force_activates_without_a_probe() {
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{dead}")).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-forced", "user_level": true}),
+    )
+    .await;
+    let service_id = svc["id"].as_str().unwrap().to_string();
+
+    let (status, body) = activate(&base, &client, &fx.admin_key, &service_id, true).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], "active", "{body}");
+    assert!(
+        body.get("verdict").is_none_or(Value::is_null),
+        "no probe ran, so there is no verdict to report: {body}"
+    );
+}
+
+/// Reopen. The primitive is that `validate_binding` never required the slot to
+/// be *un*bound — so a wrong key is corrected by minting a second link at the
+/// same slot, and the new value lands as a new secret version.
+#[tokio::test]
+async fn a_reopened_draft_takes_a_new_credential_and_goes_green() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-reopen", "user_level": true}),
+    )
+    .await;
+    let service_id = svc["id"].as_str().unwrap().to_string();
+    let cookie = common::session_cookie(fx.org_id, fx.user_ids[0]);
+
+    // First value, through the auto-minted link.
+    let (req_id, token) = parse_setup_url(svc["setup"]["setup_url"].as_str().unwrap());
+    client
+        .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .header("cookie", cookie.clone())
+        .json(&json!({"token": token, "value": "re_first"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Re-mint against the now-*bound* slot. This is the reopen path, and it
+    // needs no new endpoint.
+    let req: Value = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(
+            &json!({"secret_name": "resend_key", "service_id": service_id,
+                      "credential_key": "token"}),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let (req_id2, token2) = parse_setup_url(req["url"].as_str().unwrap());
+    let resp = client
+        .post(format!("{base}/public/secrets/provide/{req_id2}"))
+        .header("cookie", cookie)
+        .json(&json!({"token": token2, "value": "re_second"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "a bound slot can be rebound");
+    let submit: Value = resp.json().await.unwrap();
+    assert_eq!(
+        submit["version"], 2,
+        "the correction is a new version, not an overwrite: {submit}"
+    );
+
+    let (status, body) = activate(&base, &client, &fx.admin_key, &service_id, false).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], "active", "{body}");
+}
+
+/// Instance config is editable while gated — `kernel_update_service` has no
+/// status predicate, and reopening must cover "or other", not just the key.
+#[tokio::test]
+async fn a_gated_instance_accepts_a_config_change() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-edit", "user_level": true}),
+    )
+    .await;
+    let service_id = svc["id"].as_str().unwrap();
+
+    let resp = client
+        .put(format!("{base}/v1/services/{service_id}/manage"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"name": "resend-edited"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+}
+
+/// The override path. It is not `activate` — it is the blunt status PATCH —
+/// and since it now bypasses verification it has to leave a trail.
+#[tokio::test]
+async fn the_status_override_is_audited_as_a_bypass() {
+    let mock = common::start_mock().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api_with_registry(
+        pool.clone(),
+        Some(("resend", format!("http://127.0.0.1:{}", mock.port()))),
+    )
+    .await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-override", "user_level": true}),
+    )
+    .await;
+    let service_id = Uuid::parse_str(svc["id"].as_str().unwrap()).unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/services/{service_id}/status"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"status": "active"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let detail: Value = sqlx::query_scalar!(
+        "SELECT detail FROM audit_log WHERE action = 'service.status_changed' \
+         AND resource_id = $1 ORDER BY created_at DESC LIMIT 1",
+        service_id,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(detail["from"], "pending_setup", "{detail}");
+    assert_eq!(detail["to"], "active", "{detail}");
+    assert_eq!(
+        detail["bypassed_verification"], true,
+        "the one transition worth finding later: live without a verdict: {detail}"
+    );
+}
+
+/// The sweeper takes unverified setup drafts and nothing else — in particular
+/// not a `draft` somebody parked on purpose, which is the whole reason the two
+/// are separate statuses.
+#[tokio::test]
+async fn the_sweeper_purges_only_unverified_setup_drafts() {
+    let mock = common::start_mock().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api_with_registry(
+        pool.clone(),
+        Some(("resend", format!("http://127.0.0.1:{}", mock.port()))),
+    )
+    .await;
+
+    let gated = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-stale", "user_level": true}),
+    )
+    .await;
+    let gated_id = Uuid::parse_str(gated["id"].as_str().unwrap()).unwrap();
+
+    let parked = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-parked", "user_level": true,
+               "skip_credentials": true, "status": "draft"}),
+    )
+    .await;
+    let parked_id = Uuid::parse_str(parked["id"].as_str().unwrap()).unwrap();
+    assert_eq!(parked["status"], "draft", "{parked}");
+
+    // Age both past any plausible window.
+    sqlx::query!(
+        "UPDATE service_instances SET created_at = now() - interval '30 days' \
+         WHERE id = ANY($1)",
+        &[gated_id, parked_id][..],
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The setup link is outstanding, and must go with the instance.
+    let links_before: i64 = sqlx::query_scalar!(
+        "SELECT count(*) FROM secret_requests WHERE service_instance_id = $1",
+        gated_id,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap()
+    .unwrap_or(0);
+    assert_eq!(links_before, 1);
+
+    let purged = overslash_db::repos::service_instance::purge_expired_setup_drafts(&pool, 60)
+        .await
+        .unwrap();
+    assert_eq!(purged, 1, "exactly the gated one");
+
+    let survivors: Vec<Uuid> = sqlx::query_scalar!(
+        "SELECT id FROM service_instances WHERE id = ANY($1)",
+        &[gated_id, parked_id][..],
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        survivors,
+        vec![parked_id],
+        "a deliberately parked draft is not this sweeper's business"
+    );
+
+    let links_after: i64 = sqlx::query_scalar!(
+        "SELECT count(*) FROM secret_requests WHERE service_instance_id = $1",
+        gated_id,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap()
+    .unwrap_or(0);
+    assert_eq!(links_after, 0, "the outstanding link cascades with it");
+}
+
+/// The vault keeps what a human typed. `mint_bundle` stores under the
+/// *template's* default name, so two instances of one template share it —
+/// deleting it with an instance could pull the credential out from under a
+/// different, live service.
+#[tokio::test]
+async fn the_sweeper_leaves_the_vault_secret_standing() {
+    let mock = common::start_mock().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api_with_registry(
+        pool.clone(),
+        Some(("resend", format!("http://127.0.0.1:{}", mock.port()))),
+    )
+    .await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-abandoned", "user_level": true}),
+    )
+    .await;
+    let service_id = Uuid::parse_str(svc["id"].as_str().unwrap()).unwrap();
+    let (req_id, token) = parse_setup_url(svc["setup"]["setup_url"].as_str().unwrap());
+    client
+        .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .header("cookie", common::session_cookie(fx.org_id, fx.user_ids[0]))
+        .json(&json!({"token": token, "value": "re_typed_by_a_human"}))
+        .send()
+        .await
+        .unwrap();
+
+    sqlx::query!(
+        "UPDATE service_instances SET created_at = now() - interval '30 days' WHERE id = $1",
+        service_id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    overslash_db::repos::service_instance::purge_expired_setup_drafts(&pool, 60)
+        .await
+        .unwrap();
+
+    let secret: Option<Uuid> = sqlx::query_scalar!(
+        "SELECT id FROM secrets WHERE org_id = $1 AND name = 'resend_key' \
+         AND deleted_at IS NULL",
+        fx.org_id,
+    )
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    assert!(
+        secret.is_some(),
+        "an orphan row is recoverable; a destroyed credential is not"
+    );
+}
+
+/// `/activate` refuses an archived instance, so a green credential cannot
+/// silently resurrect a service somebody retired. `/test` still answers, which
+/// is why the dashboard keeps both.
+#[tokio::test]
+async fn an_archived_service_is_diagnosable_but_not_activatable() {
+    let mock = common::start_mock().await;
+    let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-archived",
+               "secret_name": "resend_key", "user_level": true}),
+    )
+    .await;
+    let service_id = svc["id"].as_str().unwrap().to_string();
+    assert_eq!(svc["status"], "active", "a bound credential is not gated");
+
+    let resp = client
+        .patch(format!("{base}/v1/services/{service_id}/status"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"status": "archived"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let (status, body) = activate(&base, &client, &fx.admin_key, &service_id, false).await;
+    assert_eq!(status, 400, "restoring is a deliberate act: {body}");
+
+    // …but the diagnostic still works, which is what the detail page's Test
+    // button needs on an archived row.
+    let (status, verdict) = run_probe(&base, &client, &fx.admin_key, &service_id).await;
+    assert_eq!(status, 200, "{verdict}");
+    assert!(verdict["action"].is_string(), "{verdict}");
+}
+
+/// A forced activation still announces itself.
+///
+/// This is why "Activate anyway" is `activate?force=true` rather than the
+/// blunt `PATCH /status`: the PATCH promotes just as well and emits nothing,
+/// so an agent blocked on its service going live would wait forever. The
+/// audience is the other half — `chain` walks *upwards*, so the agent that
+/// minted the setup link is a descendant the owner's chain does not contain,
+/// and it has to come from the `secret_requests` rows instead.
+#[tokio::test]
+async fn a_forced_activation_still_emits_service_activated() {
+    let mock = common::start_mock().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api_with_registry(
+        pool.clone(),
+        Some(("resend", format!("http://127.0.0.1:{}", mock.port()))),
+    )
+    .await;
+
+    let svc = create_service(
+        &base,
+        &client,
+        &fx.admin_key,
+        json!({"template_key": "resend", "name": "resend-announced", "user_level": true}),
+    )
+    .await;
+    let service_id = svc["id"].as_str().unwrap().to_string();
+
+    let (status, body) = activate(&base, &client, &fx.admin_key, &service_id, true).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], "active");
+
+    // `emit` spawns, so give it a moment rather than racing it.
+    let mut payload = None;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let row = sqlx::query!(
+            "SELECT payload FROM events WHERE org_id = $1 AND type = 'service.activated' \
+             ORDER BY id DESC LIMIT 1",
+            fx.org_id,
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        if let Some(r) = row {
+            payload = Some(r.payload);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let payload = payload.expect("a forced activation emits service.activated");
+    assert_eq!(payload["service_name"], "resend-announced", "{payload}");
+    assert_eq!(payload["status"], "active", "{payload}");
+    assert_eq!(
+        payload["forced"], true,
+        "the event says the probe was skipped: {payload}"
+    );
+    assert!(
+        payload["verdict"].is_null(),
+        "no probe ran, so there is no verdict to carry: {payload}"
+    );
 }
