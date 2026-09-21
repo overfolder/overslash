@@ -59,10 +59,17 @@ pub(super) fn lower_shape(schema: Option<&Map<String, Value>>, depth: usize) -> 
                 .collect();
             Some(ParamShape::Object {
                 properties,
-                additional_properties: s
-                    .get("additionalProperties")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                // JSON Schema lets this be a bool *or* a schema, and a schema
+                // (`additionalProperties: {type: string}` — how HubSpot writes
+                // its free-form property maps) means "extra keys are allowed,
+                // and here is their type". Reading only the bool form would
+                // take that as `false` and reject every key the upstream
+                // actually accepts.
+                additional_properties: match s.get("additionalProperties") {
+                    None => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(_) => true,
+                },
             })
         }
         Some("array") => {
@@ -256,6 +263,32 @@ mod tests {
         }))
         .unwrap();
         assert!(shape.additional_properties());
+    }
+
+    #[test]
+    fn a_schema_valued_additional_properties_opens_the_object() {
+        // `additionalProperties: {type: string}` is how a free-form property
+        // map is written — HubSpot's object `properties` is exactly this.
+        // Reading only the bool form would take it as `false` and reject every
+        // key the upstream accepts.
+        let shape = lower(json!({
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "properties": { "a": { "type": "string" } }
+        }))
+        .unwrap();
+        assert!(shape.additional_properties());
+    }
+
+    #[test]
+    fn an_explicit_false_still_closes_the_object() {
+        let shape = lower(json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": { "a": { "type": "string" } }
+        }))
+        .unwrap();
+        assert!(!shape.additional_properties());
     }
 
     #[test]

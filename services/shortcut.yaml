@@ -186,21 +186,33 @@ paths:
                 epic_ids:
                   type: array
                   description: Epic ids the stories may belong to.
+                  items:
+                    type: integer
                 group_ids:
                   type: array
                   description: Team (group) UUIDs the stories may belong to.
+                  items:
+                    type: string
                 iteration_ids:
                   type: array
                   description: Iteration ids the stories may belong to.
+                  items:
+                    type: integer
                 label_ids:
                   type: array
                   description: Label ids attached to the stories.
+                  items:
+                    type: integer
                 owner_ids:
                   type: array
                   description: Member UUIDs who own the stories.
+                  items:
+                    type: string
                 project_ids:
                   type: array
                   description: Project ids the stories may belong to.
+                  items:
+                    type: integer
                 requested_by_id:
                   type: string
                   description: Member UUID who requested the stories.
@@ -213,6 +225,9 @@ paths:
                 workflow_state_types:
                   type: array
                   description: Coarse state filter — unstarted, started, done.
+                  items:
+                    type: string
+                    enum: [unstarted, started, done]
                 created_at_start:
                   type: string
                   description: ISO 8601 lower bound on creation time.
@@ -365,12 +380,22 @@ paths:
                 owner_ids:
                   type: array
                   description: Member UUIDs who own the story (replaces the set).
+                  items:
+                    type: string
                 follower_ids:
                   type: array
                   description: Member UUIDs following the story.
+                  items:
+                    type: string
                 labels:
                   type: array
                   description: 'Labels as [{"name": "regression"}] (replaces the set).'
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name:
+                        type: string
                 estimate:
                   type: integer
                   description: Point estimate.
@@ -477,12 +502,20 @@ paths:
                 owner_ids:
                   type: array
                   description: Member UUIDs who own the story.
+                  items:
+                    type: string
                 requested_by_id:
                   type: string
                   description: Member UUID who asked for the story.
                 labels:
                   type: array
                   description: 'Labels as [{"name": "regression"}].'
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name:
+                        type: string
                 estimate:
                   type: integer
                   description: Point estimate.
@@ -497,6 +530,14 @@ paths:
                 tasks:
                   type: array
                   description: 'Sub-tasks as [{"description": "..."}].'
+                  items:
+                    type: object
+                    required: [description]
+                    properties:
+                      description:
+                        type: string
+                      complete:
+                        type: boolean
   /api/v3/stories/{story_id}/comments:
     # Resolver on the write only — see the note on /api/v3/stories/{story_id}.
     parameters:
@@ -661,6 +702,8 @@ paths:
                 owner_ids:
                   type: array
                   description: Member UUIDs responsible for the task.
+                  items:
+                    type: string
   /api/v3/stories/{story_id}/tasks/{task_id}:
     put:
       operationId: update_task
@@ -718,6 +761,8 @@ paths:
                 owner_ids:
                   type: array
                   description: Member UUIDs responsible for the task.
+                  items:
+                    type: string
   /api/v3/story-links:
     post:
       operationId: create_story_link
@@ -876,6 +921,8 @@ paths:
                 owner_ids:
                   type: array
                   description: Member UUIDs who own the epic.
+                  items:
+                    type: string
                 planned_start_date:
                   type: string
                   description: ISO 8601 planned start.
@@ -928,6 +975,8 @@ paths:
                 owner_ids:
                   type: array
                   description: Member UUIDs who own the epic.
+                  items:
+                    type: string
                 planned_start_date:
                   type: string
                   description: ISO 8601 planned start.
@@ -1046,9 +1095,13 @@ paths:
                 group_ids:
                   type: array
                   description: Team (group) UUIDs this iteration belongs to.
+                  items:
+                    type: string
                 follower_ids:
                   type: array
                   description: Member UUIDs following the iteration.
+                  items:
+                    type: string
   /api/v3/iterations/{iteration_id}:
     get:
       operationId: get_iteration
@@ -1156,6 +1209,8 @@ paths:
                 follower_ids:
                   type: array
                   description: Member UUIDs following the project.
+                  items:
+                    type: string
                 external_id:
                   type: string
                   description: >-
@@ -1250,6 +1305,8 @@ paths:
                 follower_ids:
                   type: array
                   description: Member UUIDs following the project (replaces the set).
+                  items:
+                    type: string
                 archived:
                   type: boolean
                   description: Archive or unarchive the project.
