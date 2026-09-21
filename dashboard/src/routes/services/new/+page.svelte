@@ -21,7 +21,8 @@
 		ServiceInstanceDetail,
 		ServiceTestResponse,
 		TemplateDetail,
-		TemplateSummary
+		TemplateSummary,
+		SecretNameConflictBody
 	} from '$lib/types';
 	import { listSecrets } from '$lib/api/secrets';
 	import { connectViaPopup, PopupBlockedError } from '$lib/oauth-connect';
@@ -38,6 +39,7 @@
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
 	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
 	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
+	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import { cleanServiceMap } from '$lib/service-maps';
 	import { probeRejected } from '$lib/public-request';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
@@ -88,6 +90,9 @@
 	// once it is set the service exists and the only remaining question is
 	// whether its credentials work.
 	let created = $state<ServiceInstanceDetail | null>(null);
+	// The 409 body from a refused create, held while the confirm dialog is up.
+	// Non-null is what opens the dialog, so clearing it is how the dialog closes.
+	let secretConflict = $state<SecretNameConflictBody | null>(null);
 	let testing = $state(false);
 	let testResult = $state<ServiceTestResponse | null>(null);
 
@@ -487,7 +492,13 @@
 		oauthAbort?.abort();
 	});
 
-	async function submit() {
+	/**
+	 * `force` is only ever passed by the overwrite confirm dialog below. The
+	 * first attempt never forces: the server's refusal is what tells us there
+	 * is something to confirm, and asking before we know would put a scary
+	 * dialog in front of every create.
+	 */
+	async function submit(force = false) {
 		if (!selectedDetail) return;
 		submitting = true;
 		error = null;
@@ -524,7 +535,8 @@
 				status: 'active',
 				user_level: userLevel,
 				groups: userLevel ? undefined : groupGrants,
-				use_default_connection: useDefaultConnection
+				use_default_connection: useDefaultConnection,
+				force: force || undefined
 			});
 			created = instance;
 			submitting = false;
@@ -539,12 +551,40 @@
 			// instead and leave the button for when it has been used.
 			if (!instance.setup) await runTest();
 		} catch (e) {
+			// A name collision is a question, not a failure: the instance was
+			// not created, nothing was overwritten, and the one person who can
+			// say whether replacing the credential is intended is looking at
+			// the screen. Everything else stays an inline error.
+			if (e instanceof ApiError && e.status === 409 && isSecretNameConflict(e.body)) {
+				secretConflict = e.body;
+				submitting = false;
+				return;
+			}
 			error = e instanceof ApiError
 				? `Failed to create service (${e.status}): ${JSON.stringify(e.body)}`
 				: 'Failed to create service';
 			submitting = false;
 		}
 	}
+
+	function isSecretNameConflict(body: unknown): body is SecretNameConflictBody {
+		return (
+			typeof body === 'object' &&
+			body !== null &&
+			(body as { error?: unknown }).error === 'secret_name_conflict' &&
+			Array.isArray((body as { conflicts?: unknown }).conflicts)
+		);
+	}
+
+	/** Prose for the dialog: one secret reads better than a list of one. */
+	const conflictMessage = $derived.by(() => {
+		const c = secretConflict?.conflicts ?? [];
+		if (c.length === 0) return '';
+		const names = c.map((x) => `${x.secret_name} (v${x.current_version})`).join(', ');
+		return c.length === 1
+			? `A secret named ${names} already exists. Creating this service will hand out a setup link that replaces its current value — which may be the credential another service is already using. The old version stays restorable from the Secrets page.`
+			: `These secrets already exist: ${names}. Creating this service will hand out setup links that replace their current values. The old versions stay restorable from the Secrets page.`;
+	});
 
 	async function runTest() {
 		if (!created) return;
@@ -583,6 +623,27 @@
 			Configure service
 		{/if}
 	</h1>
+
+	<ConfirmDialog
+		open={secretConflict !== null}
+		title="Replace an existing secret?"
+		message={conflictMessage}
+		confirmLabel="Replace it"
+		cancelLabel="Cancel"
+		danger
+		onconfirm={() => {
+			secretConflict = null;
+			submit(true);
+		}}
+		oncancel={() => (secretConflict = null)}
+	>
+		{#if secretConflict}
+			<p class="conflict-hint">
+				To share the existing credential instead, go back and pick that secret
+				name in the credentials field — binding it overwrites nothing.
+			</p>
+		{/if}
+	</ConfirmDialog>
 
 	{#if error}
 		<div class="error">{error}</div>
@@ -690,6 +751,13 @@
 						Send this single-use link to whoever holds the key. It expires on its
 						own and the value never passes through you.
 					</p>
+					{#each created.setup.warnings ?? [] as w (w.secret_name)}
+						<!-- Only ever present when this create was forced past a
+						     name collision. Repeated here because the person who
+						     confirmed the dialog is often not the person who
+						     opens the link. -->
+						<p class="overwrite-note">{w.message}</p>
+					{/each}
 					<input
 						type="text"
 						readonly
@@ -982,7 +1050,7 @@
 				<button
 					type="button"
 					class="btn primary"
-					onclick={submit}
+					onclick={() => submit()}
 					disabled={submitting || connectingOAuth || !groupsSatisfied}
 				>
 					{#if connectingOAuth}
@@ -1281,5 +1349,19 @@
 		color: var(--color-text);
 		font-family: var(--font-mono);
 		font-size: 0.8rem;
+	}
+	.overwrite-note {
+		font-size: 0.8rem;
+		color: var(--color-text);
+		background: var(--badge-bg-warning);
+		border: 1px solid var(--color-warning);
+		border-radius: 6px;
+		padding: 0.5rem 0.65rem;
+		margin: 0;
+	}
+	.conflict-hint {
+		font-size: 0.8rem;
+		color: var(--color-text-muted);
+		margin: 0 0 1.25rem;
 	}
 </style>

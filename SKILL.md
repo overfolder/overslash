@@ -131,6 +131,23 @@ link; a template with two wants both handed over, and `setup.setup_url` is the
 first entry's. Pass `skip_credentials: true` if you intend to wire the
 credentials yourself.
 
+**If the vault name is already taken, the call is refused with
+`secret_name_conflict` (409).** A slot's vault name comes from the template and
+mixes in nothing per-instance, so a *second* instance of a template you already
+set up would aim its setup link at the *first* one's credential — and whoever
+opened the link would replace it without being told. The 409 lists the
+colliding slots and the version of each existing secret. Two ways forward:
+
+- **Share the credential** — the usual case. Bind the existing secret instead
+  of asking for a new one: `"credentials": { "token": "resend_key" }`. No link
+  is minted, nothing is overwritten, and the instance is callable immediately.
+- **Replace it** — only when rotating the credential is the actual intent. Pass
+  `"force": true`. The links are minted and `setup.warnings[]` names each
+  secret and the version being superseded; the old version stays restorable.
+
+Do not reach for `force` to make an error go away. It is the option that
+destroys the current value of a credential other services may be using.
+
 > `needs_authentication` means *no credential is bound yet* — it does **not**
 > tell you whether the underlying OAuth **client** even exists. If the org has
 > no OAuth client for the provider, you only find that out at step 3. See
@@ -345,6 +362,15 @@ credential to the instance in one step — without it, the value lands in the
 vault and somebody still has to attach it. (The link's TTL is fixed at 1h over
 MCP; use the REST endpoint `POST /v1/secrets/requests` if you need to override
 `ttl_seconds`.)
+
+**`secret_name` must be free.** If a secret of that name already exists the
+call is refused with `secret_name_conflict` (409) naming its current version,
+because fulfilling the request would replace a value something else is using
+and the person opening the link is shown a name, not a history. Pick a
+different name, or — when replacing that value is genuinely the intent, such as
+rotating a key — pass `"force": true`; the response then carries a `warning`
+naming the version being superseded. The old version stays restorable either
+way.
 
 ## Handling pending approvals
 

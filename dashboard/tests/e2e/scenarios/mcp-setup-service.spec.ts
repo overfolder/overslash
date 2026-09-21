@@ -19,7 +19,15 @@
 // the (non-admin) `member` user so its access level lands at `write`.
 
 import { test, expect } from '../fixtures/auth';
-import { api, login, openMcpSession, seedAgent, seedAgentApiKey } from '../../scenarios/index.mjs';
+import {
+	api,
+	deleteOrg,
+	freshOrgSlug,
+	login,
+	openMcpSession,
+	seedAgent,
+	seedAgentApiKey
+} from '../../scenarios/index.mjs';
 
 type SetupRequestRef = {
 	request_id: string;
@@ -74,8 +82,15 @@ function decodeCallResult<T>(step: { result: unknown }): T {
 }
 
 test('agent hands over one setup link that creates, credentials and verifies a service', async () => {
-	const adminSession = await login('admin');
-	const memberSession = await login('member');
+	// A per-run org. `resend`'s slot stores under the template-authored name
+	// `resend_key`, which mixes in nothing per-instance — so in the shared dev
+	// org this spec and `flows/service-setup-page.spec.ts` both mint a link at
+	// that one name, and whichever ran second was refused with
+	// `secret_name_conflict`. Unique *instance* names never covered that: the
+	// vault name is not derived from them.
+	const orgSlug = freshOrgSlug('mcp-setup-svc');
+	const adminSession = await login('admin', { org: orgSlug });
+	const memberSession = await login('member', { org: orgSlug });
 
 	const agent = await seedAgent(memberSession, {
 		name: `mcp-puppet-setup-svc-${Date.now()}`,
@@ -198,4 +213,6 @@ test('agent hands over one setup link that creates, credentials and verifies a s
 		body: JSON.stringify({ token, value: 'second-value' })
 	});
 	expect(dupRes.status).toBe(410);
+
+	await deleteOrg(orgSlug);
 });

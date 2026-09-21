@@ -34,6 +34,12 @@ use crate::error::AppError;
 use crate::services::jwt::{self, SECRET_REQUEST_KIND, SecretRequestClaims};
 use crate::services::short_url;
 
+mod conflicts;
+
+pub use conflicts::{
+    conflict_error_for_create, conflict_error_for_request, conflicting_secret_names,
+};
+
 /// Dashboard route the minted URL points at when the request names a service.
 const SETUP_PATH: &str = "/services/setup";
 /// …and when it does not: a bare secret request keeps the service-less page.
@@ -71,6 +77,30 @@ pub struct SetupBundle {
     /// handed over in sequence.
     pub requests: Vec<SetupRequestRef>,
     pub expires_at: String,
+    /// Non-blocking notices about what these links will do when opened.
+    ///
+    /// Populated only on a `force: true` create, where every entry names a
+    /// secret whose current value the link is about to supersede. Empty on the
+    /// ordinary path, and omitted from the wire when empty — a caller that
+    /// never forces never sees the field.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<SetupWarning>,
+}
+
+/// A non-blocking notice on a [`SetupBundle`].
+///
+/// Coded rather than prose-only, matching the template surface's
+/// `ValidationIssue` / `ImportWarning`: the message is for a human reading a
+/// dashboard, the `code` is what an agent or a test can branch on.
+#[derive(Serialize, Debug)]
+pub struct SetupWarning {
+    /// `"overwrites_existing_secret"` is the only code today.
+    pub code: &'static str,
+    pub credential_key: String,
+    pub secret_name: String,
+    /// Version that a fulfilment of this link will supersede.
+    pub current_version: i32,
+    pub message: String,
 }
 
 #[derive(Serialize, Debug)]
@@ -124,6 +154,14 @@ pub struct MintRequest<'a> {
     /// [`validate_binding`] is what establishes it for a caller-supplied pair.
     pub service_instance_id: Option<Uuid>,
     pub credential_key: Option<&'a str>,
+    /// Mint even though `secret_name` already names a live vault secret,
+    /// accepting that fulfilment will store a new version over it.
+    ///
+    /// `false` is the safe default and refuses with
+    /// [`AppError::SecretNameConflict`]. There is no third state: a caller
+    /// either knows it is replacing a credential or it does not, and the
+    /// whole point of the check is that "did not know" used to be silent.
+    pub force: bool,
     /// Which surface minted this, for the audit row and the event payload:
     /// `"rest"`, `"mcp"` or `"create_service"`.
     pub via: &'static str,
@@ -146,6 +184,37 @@ pub async fn mint(
     config: &Config,
     req: MintRequest<'_>,
 ) -> Result<MintedRequest, AppError> {
+    let scope = OrgScope::new(req.org_id, db.clone());
+
+    // The backstop. Every surface that mints also checks earlier — the REST
+    // and MCP kernels so the 409 carries their own wording, `create_service`
+    // so it fails before writing the instance row — but the check lives here
+    // too because this is the only function all three go through, and a
+    // fourth caller must not be able to reintroduce the silent overwrite by
+    // forgetting it.
+    if !req.force {
+        let conflicts = conflicting_secret_names(
+            &scope,
+            &[(
+                req.credential_key.map(str::to_string),
+                req.secret_name.to_string(),
+            )],
+        )
+        .await?;
+        if !conflicts.is_empty() {
+            // Keyed on the *surface*, not on whether a slot is named. A REST
+            // or MCP caller that passed `service_id` also has a
+            // `credential_key`, and pointing that caller at
+            // `credentials: {…}` would name a field its own request body does
+            // not have — a fix it cannot apply.
+            return Err(if req.via == "create_service" {
+                conflict_error_for_create(conflicts)
+            } else {
+                conflict_error_for_request(conflicts, req.service_instance_id)
+            });
+        }
+    }
+
     let now = time::OffsetDateTime::now_utc();
     let expires_at = now + time::Duration::seconds(req.ttl_seconds);
     let request_id = format!("req_{}", Uuid::new_v4().simple());
@@ -199,7 +268,6 @@ pub async fn mint(
     // Deliberately no token, `url` or `short_url` on either: those are bearer
     // capabilities, and anyone in the audience could otherwise fulfil the
     // request themselves.
-    let scope = OrgScope::new(req.org_id, db.clone());
     let _ = scope
         .log_audit(AuditEntry {
             org_id: req.org_id,
@@ -215,6 +283,10 @@ pub async fn mint(
                 "service_instance_id": req.service_instance_id,
                 "credential_key": req.credential_key,
                 "via": req.via,
+                // Only ever true for a mint that was refused once and retried
+                // with `force`, so its presence in the log is the record of a
+                // deliberate credential replacement.
+                "force": req.force,
             }),
             description: None,
             ip_address: req.ip_address,
@@ -272,6 +344,7 @@ pub async fn mint_bundle(
     requested_by: Uuid,
     service_instance_id: Uuid,
     slots: &[SecretSlot],
+    force: bool,
 ) -> Result<SetupBundle, AppError> {
     // Captured once for the whole bundle so every link in it agrees, the way
     // the single-request mint paths capture it.
@@ -279,6 +352,35 @@ pub async fn mint_bundle(
         !overslash_db::repos::org::get_allow_unsigned_secret_provide(db, org_id)
             .await?
             .unwrap_or(true);
+
+    // On a forced create, read the versions being superseded *before* any link
+    // is minted, so the warning names the value that was actually there when
+    // the caller asked. Skipped entirely when not forcing: `mint` refuses on
+    // collision in that case, so there is nothing to warn about.
+    let warnings = if force {
+        let scope = OrgScope::new(org_id, db.clone());
+        let candidates: Vec<(Option<String>, String)> = slots
+            .iter()
+            .map(|s| (Some(s.key.clone()), s.default_secret_name.clone()))
+            .collect();
+        conflicting_secret_names(&scope, &candidates)
+            .await?
+            .into_iter()
+            .map(|c| SetupWarning {
+                code: "overwrites_existing_secret",
+                message: format!(
+                    "opening this link replaces the current value of secret \
+                     '{}' (v{}). The old version stays restorable.",
+                    c.secret_name, c.current_version
+                ),
+                credential_key: c.credential_key.unwrap_or_default(),
+                secret_name: c.secret_name,
+                current_version: c.current_version,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let mut requests = Vec::with_capacity(slots.len());
     let mut events = Vec::with_capacity(slots.len());
@@ -303,6 +405,7 @@ pub async fn mint_bundle(
                 require_user_session,
                 service_instance_id: Some(service_instance_id),
                 credential_key: Some(&slot.key),
+                force,
                 via: "create_service",
                 ip_address: None,
             },
@@ -340,6 +443,7 @@ pub async fn mint_bundle(
         short_url,
         requests,
         expires_at: crate::routes::util::fmt_time(expires_at),
+        warnings,
     })
 }
 

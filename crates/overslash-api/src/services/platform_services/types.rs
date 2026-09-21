@@ -49,6 +49,21 @@ pub struct CreateServiceInput {
     /// Ignored when every per-instance slot is already bound.
     #[serde(default)]
     pub skip_credentials: Option<bool>,
+    /// Mint the setup links even though a slot's vault name is already taken,
+    /// accepting that whoever opens the link replaces the existing value.
+    ///
+    /// Without it such a create is refused with `secret_name_conflict` (409),
+    /// because a slot's vault name comes from the template and mixes in
+    /// nothing per-instance — so the second instance of a template would
+    /// otherwise mint a link pointing at the first one's credential, and
+    /// nobody would find out until a call started failing.
+    ///
+    /// Reach for it to *rotate* a credential. To *share* one, bind the
+    /// existing secret with `credentials: {slot: name}` instead: that needs no
+    /// link and overwrites nothing. Ignored when no slot collides, and
+    /// irrelevant under `skip_credentials`, which mints nothing at all.
+    #[serde(default)]
+    pub force: Option<bool>,
     /// When `false`, this instance must never fall back to the identity's
     /// default connection for the provider at execution time — it requires an
     /// explicit `connection_id`. Defaults to `true` (legacy fallback). White-

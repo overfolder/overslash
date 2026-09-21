@@ -254,6 +254,18 @@
 			<p class="slot-help">{svc.slot.description}</p>
 		{/if}
 
+		{#if m.overwrites_version !== undefined}
+			<!-- A value is already stored under this name. Said here rather than
+			     only at mint time because the two can be minutes or days apart,
+			     and because the person reading this is the one who knows whether
+			     the credential they are about to paste is the same one. -->
+			<div class="viewer-banner warn">
+				A secret named <code>{m.secret_name}</code> already exists (v{m.overwrites_version}).
+				Saving replaces its current value for everything using it. The old version
+				stays restorable.
+			</div>
+		{/if}
+
 		{#if !m.viewer && m.require_user_session}
 			<!-- Minted under user-signed-required mode but opened without a
 			     matching session. GET still succeeds (the metadata is not

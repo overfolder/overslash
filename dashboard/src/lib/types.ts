@@ -754,6 +754,34 @@ export interface SetupBundle {
   short_url?: string;
   requests: SetupRequestRef[];
   expires_at: string;
+  /** Present only on a `force: true` create: one entry per slot whose vault
+   * secret these links will overwrite. Omitted entirely otherwise. */
+  warnings?: SetupWarning[];
+}
+
+/** A non-blocking notice on a {@link SetupBundle}. */
+export interface SetupWarning {
+  /** `overwrites_existing_secret` is the only code today. */
+  code: string;
+  credential_key: string;
+  secret_name: string;
+  /** Version the link will supersede. */
+  current_version: number;
+  message: string;
+}
+
+/** One slot whose vault name is already taken, from a `secret_name_conflict` 409. */
+export interface SecretNameConflict {
+  credential_key?: string;
+  secret_name: string;
+  current_version: number;
+}
+
+/** Body of a 409 `secret_name_conflict` from `POST /v1/services`. */
+export interface SecretNameConflictBody {
+  error: 'secret_name_conflict';
+  conflicts: SecretNameConflict[];
+  hint: string;
 }
 
 export interface SetupRequestRef {
@@ -791,6 +819,10 @@ export interface CreateServiceRequest {
   /** Suppress the auto-minted setup links for unbound credential slots. The
    * secret twin of `skip_connect`. */
   skip_credentials?: boolean;
+  /** Mint setup links even when a slot's vault name is already taken,
+   * accepting that opening the link replaces the existing value. Without it
+   * such a create is refused with `secret_name_conflict` (409). */
+  force?: boolean;
 }
 
 export interface ServiceGroupGrantInput {

@@ -55,6 +55,17 @@ export interface ProvideMetadata {
 	 * runs through the authenticated call path.
 	 */
 	viewer: ViewerInfo | null;
+	/**
+	 * Version of the vault secret this submission will replace, or absent when
+	 * the name is still free.
+	 *
+	 * Read live at page load rather than recorded when the link was minted:
+	 * the mint-time check cannot see a secret created after it, so this page is
+	 * the last place the truth is available before the value is written. It
+	 * warns rather than blocks, because the person holding the link is the one
+	 * who can judge whether replacing the value is what was meant.
+	 */
+	overwrites_version?: number;
 }
 
 /** Everything a public request page can be, once its load has run. */
