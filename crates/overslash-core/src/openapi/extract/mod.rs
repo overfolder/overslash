@@ -31,6 +31,7 @@ mod auth;
 mod mcp;
 mod params;
 mod schemes;
+mod shape;
 
 pub use mcp::overlay_discovered_tools;
 

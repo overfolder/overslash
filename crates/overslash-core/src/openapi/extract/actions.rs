@@ -321,6 +321,9 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     instance_config,
                     sql_field,
                     sql_database,
+                    // A platform action's params are declared as a flat
+                    // `{name: type}` map, so there is no sub-schema to lower.
+                    shape: None,
                 },
             ))
         })

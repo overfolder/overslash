@@ -10,15 +10,7 @@ pub(super) fn p(t: &str, required: bool) -> ActionParam {
     ActionParam {
         param_type: t.into(),
         required,
-        description: String::new(),
-        enum_values: None,
-        default: None,
-        resolve: None,
-        aliases: Vec::new(),
-        location: crate::types::ParamLocation::Body,
-        instance_config: false,
-        sql_field: None,
-        sql_database: None,
+        ..Default::default()
     }
 }
 

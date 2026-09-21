@@ -192,15 +192,7 @@ mod tests {
         ActionParam {
             param_type: ty.into(),
             required,
-            description: String::new(),
-            enum_values: None,
-            default: None,
-            resolve: None,
-            aliases: Vec::new(),
-            location: crate::types::ParamLocation::Body,
-            instance_config: false,
-            sql_field: None,
-            sql_database: None,
+            ..Default::default()
         }
     }
 
@@ -252,15 +244,7 @@ mod tests {
                         ActionParam {
                             param_type: "string".into(),
                             required: true,
-                            description: String::new(),
-                            enum_values: None,
-                            default: None,
-                            resolve: None,
-                            aliases: Vec::new(),
-                            location: crate::types::ParamLocation::Body,
-                            instance_config: false,
-                            sql_field: None,
-                            sql_database: None,
+                            ..Default::default()
                         },
                     );
                     p

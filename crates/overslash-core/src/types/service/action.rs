@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::execution::ExecutionMode;
 use super::pagination::PaginationSpec;
+use super::param_shape::ParamShape;
 use super::risk::DeclaredRisk;
 use super::scope::ScopeParams;
 
@@ -647,6 +648,41 @@ pub struct ActionParam {
     /// [`sql_field`](Self::sql_field) param.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sql_database: Option<String>,
+    /// The inner structure of an `object`/`array` param, lowered from the
+    /// schema's own `properties`/`items`.
+    ///
+    /// `None` means the template authored no sub-schema — the state every
+    /// parameter was in before this field existed, and still the honest answer
+    /// for a genuinely free-form value. It is deliberately not the same as an
+    /// empty [`ParamShape::Object`], which says "we know the set of keys and it
+    /// is empty".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<Box<ParamShape>>,
+}
+
+impl Default for ActionParam {
+    /// An untyped, optional, undescribed parameter.
+    ///
+    /// Exists so the call sites that build one field-by-field — almost all of
+    /// them tests — can name the two or three fields they care about and let
+    /// the rest follow. `param_type` defaults to the empty *sentinel*, not to
+    /// `"string"`: guessing a type is what the sentinel exists to prevent.
+    fn default() -> Self {
+        Self {
+            param_type: String::new(),
+            required: false,
+            description: String::new(),
+            enum_values: None,
+            default: None,
+            resolve: None,
+            aliases: Vec::new(),
+            location: ParamLocation::default(),
+            instance_config: false,
+            sql_field: None,
+            sql_database: None,
+            shape: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -705,16 +741,8 @@ mod tests {
     fn action_param_omits_default_location() {
         let p = ActionParam {
             param_type: "string".into(),
-            required: false,
-            description: String::new(),
-            enum_values: None,
-            default: None,
-            resolve: None,
-            aliases: Vec::new(),
             location: ParamLocation::Body,
-            instance_config: false,
-            sql_field: None,
-            sql_database: None,
+            ..Default::default()
         };
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("location").is_none());
