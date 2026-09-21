@@ -149,6 +149,7 @@ mod tests {
 
     fn def_with(params: &[(&str, bool)]) -> ServiceDefinition {
         let mut action = ServiceAction {
+            additional_properties: false,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,
@@ -179,6 +180,7 @@ mod tests {
                 .insert((*name).to_string(), param(*instance_config));
         }
         ServiceDefinition {
+            default_additional_properties: false,
             default_timeout_ms: None,
             config: Vec::new(),
             key: "t".into(),

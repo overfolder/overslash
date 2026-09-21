@@ -382,6 +382,7 @@ mod tests {
     #[test]
     fn none_when_template_has_no_auth_and_no_connection() {
         let tpl = ServiceDefinition {
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),

@@ -333,5 +333,6 @@ pub(super) async fn get_template_action(
         risk: action.risk,
         params: action.params.clone(),
         scope_param: action.scope_param.refs().to_vec(),
+        additional_properties: action.additional_properties,
     }))
 }

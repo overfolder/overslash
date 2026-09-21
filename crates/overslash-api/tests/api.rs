@@ -19,6 +19,7 @@ mod account_invitations;
 mod actions_reauth;
 mod actions_reauth_return_url;
 mod actions_validate;
+mod additional_properties;
 mod admin_cross_user_call;
 mod approval_disclosure;
 mod approval_expiry_events;

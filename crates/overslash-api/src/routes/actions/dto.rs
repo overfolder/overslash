@@ -506,6 +506,16 @@ pub(super) struct HttpVerb {
 pub(super) struct ActionMetadata {
     /// Schema for `validate_args`. Empty for verb / `http` shapes.
     pub(super) validation_params: HashMap<String, overslash_core::types::ActionParam>,
+    /// The action's `x-overslash-additional-properties`: when set,
+    /// `validate_args` forwards undeclared arguments instead of rejecting them
+    /// and treats a declared `enum` as advisory. Always `false` for verb /
+    /// `http` shapes, which ship no `validation_params` for it to relax.
+    ///
+    /// Rides on the metadata rather than being re-read per endpoint so
+    /// `/call` and `/validate` cannot drift — the byte-identical
+    /// `invalid_action_args` 400 contract between them depends on both gates
+    /// seeing the same flag.
+    pub(super) additional_properties: bool,
     /// Service info for permission-key derivation (service shapes only).
     pub(super) service_scope: Option<ServiceScope>,
     /// Declared risk class — action shape reads it from the template; verb /

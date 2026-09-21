@@ -325,6 +325,14 @@ pub(super) struct ActionDetail {
     /// unscoped.
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     pub(super) scope_param: Vec<ScopeParamRef>,
+    /// Whether `params` above is a floor rather than a fence
+    /// (`x-overslash-additional-properties`). The Explorer reads this to decide
+    /// two things: whether to offer the free-form "additional arguments" rows,
+    /// and whether an `enum` param renders as a closed `<select>` or an
+    /// open combobox. Without it the form would keep enforcing client-side
+    /// exactly the constraint the server stopped enforcing.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(super) additional_properties: bool,
 }
 
 // -- Request types --

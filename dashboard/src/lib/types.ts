@@ -651,6 +651,15 @@ export interface McpDetail {
   discovered_at?: string;
 }
 
+/** One free-form argument row in the API Explorer, for an action whose
+ *  `additional_properties` is set. Not a server type — the gateway sees only
+ *  the merged `params` map — but shared so the form and the request builder
+ *  agree on the shape. */
+export interface ExtraArg {
+  key: string;
+  value: string;
+}
+
 /** Mirrors overslash_core::types::ScopeParamRef */
 export interface ScopeParamRef {
   param: string;
@@ -677,6 +686,12 @@ export interface ActionDetail {
    *  unscoped. The template document's compact `param:label` shorthand is
    *  parsed server-side — never here. */
   scope_param?: ScopeParamRef[];
+  /** Whether `params` above is a floor rather than a fence
+   *  (`x-overslash-additional-properties`). When true the gateway forwards
+   *  arguments the template never declared and treats a declared `enum` as
+   *  advisory, so the form offers free-form extra rows and renders enums as an
+   *  open combobox instead of a closed `<select>`. Absent when strict. */
+  additional_properties?: boolean;
 }
 
 // -- Service instances --

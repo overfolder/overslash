@@ -559,6 +559,7 @@ fn platform_namespace_action_allowed() {
     // An action with empty method/path (like overslash.yaml) must validate
     // clean as long as description is present.
     let mut d = ServiceDefinition {
+        default_additional_properties: false,
         default_timeout_ms: None,
         secrets: Vec::new(),
         config: Vec::new(),
@@ -578,6 +579,7 @@ fn platform_namespace_action_allowed() {
     d.actions.insert(
         "manage_secrets".into(),
         ServiceAction {
+            additional_properties: false,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,
@@ -724,4 +726,201 @@ fn two_test_actions_is_an_error() {
     d.actions.insert("list_others".into(), second);
     let r = run(&d);
     assert!(r.errors.iter().any(|e| e.code == "multiple_test_actions"));
+}
+
+// --- additional-properties -----------------------------------------
+
+/// `validate_args` short-circuits on an empty schema, so the key decides
+/// nothing here. A warning, not an error: the template is not wrong, it just
+/// believes it asked for something.
+#[test]
+fn additional_properties_on_a_paramless_action_warns() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.params.clear();
+    a.additional_properties = true;
+    let r = run(&d);
+    assert!(r.valid, "must not be an error: {:?}", r.errors);
+    let w = r
+        .warnings
+        .iter()
+        .find(|w| w.code == "noop_additional_properties")
+        .unwrap_or_else(|| panic!("{:?}", r.warnings));
+    // These messages are read by a template author, and a `\`-continued
+    // literal that loses its continuation silently ships the source
+    // indentation inside the string. Invisible in review, obvious to whoever
+    // reads the warning.
+    assert!(
+        !w.message.contains("  "),
+        "message carries source indentation: {:?}",
+        w.message
+    );
+}
+
+/// The exception that makes the warning safe to act on. A paramless POST with
+/// no declared `requestBody` is the transcribed-from-nothing case, and the
+/// flag is the *only* reason `resolve` builds a body for it — telling the
+/// author it does nothing would have them delete it and silently stop sending
+/// the payload.
+#[test]
+fn additional_properties_on_a_paramless_body_carrying_action_is_silent() {
+    for method in ["POST", "PUT", "PATCH"] {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.method = method.into();
+        a.params.clear();
+        a.request_body = None;
+        a.additional_properties = true;
+        let r = run(&d);
+        assert!(
+            !r.warnings
+                .iter()
+                .any(|w| w.code == "noop_additional_properties"),
+            "{method} synthesises a body from undeclared args: {:?}",
+            r.warnings
+        );
+    }
+}
+
+/// With a declared JSON body the payload is built whether or not the action is
+/// relaxed, so on a paramless action the flag really does decide nothing.
+#[test]
+fn additional_properties_on_a_paramless_action_with_a_json_body_warns() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.method = "POST".into();
+    a.params.clear();
+    a.additional_properties = true;
+    a.request_body = Some(crate::types::RequestBodySpec {
+        content_type: "application/json".into(),
+        required: true,
+    });
+    let r = run(&d);
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.code == "noop_additional_properties"),
+        "{:?}",
+        r.warnings
+    );
+}
+
+/// One mistake, one diagnostic. The non-JSON case is already an error, and a
+/// warning beside it would tell the author to drop the key while the error
+/// tells them they may also fix the media type.
+#[test]
+fn the_non_json_error_does_not_also_warn() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.method = "POST".into();
+    a.params.clear();
+    a.additional_properties = true;
+    a.request_body = Some(crate::types::RequestBodySpec {
+        content_type: "application/x-www-form-urlencoded".into(),
+        required: true,
+    });
+    let r = run(&d);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.code == "additional_properties_needs_a_json_body"),
+        "{:?}",
+        r.errors
+    );
+    assert!(
+        !r.warnings
+            .iter()
+            .any(|w| w.code == "noop_additional_properties"),
+        "two diagnostics, contradictory advice: {:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn additional_properties_on_an_action_with_params_is_silent() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.params.insert("q".into(), param("string", false));
+    a.additional_properties = true;
+    let r = run(&d);
+    assert!(r.valid, "{:?}", r.errors);
+    assert!(
+        !r.warnings
+            .iter()
+            .any(|w| w.code == "noop_additional_properties"),
+        "{:?}",
+        r.warnings
+    );
+}
+
+/// The gateway only serialises JSON bodies, so a relaxed action with a
+/// declared form body would accept an undeclared argument and then drop it —
+/// the silent loss the extension exists to avoid. Caught at authoring time
+/// rather than papered over by sending JSON to a form endpoint.
+#[test]
+fn additional_properties_with_a_non_json_request_body_is_an_error() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.method = "POST".into();
+    a.params.insert("q".into(), param("string", false));
+    a.additional_properties = true;
+    a.request_body = Some(crate::types::RequestBodySpec {
+        content_type: "application/x-www-form-urlencoded".into(),
+        required: true,
+    });
+    let r = run(&d);
+    let e = r
+        .errors
+        .iter()
+        .find(|e| e.code == "additional_properties_needs_a_json_body")
+        .unwrap_or_else(|| panic!("{:?}", r.errors));
+    assert!(
+        !e.message.contains("  "),
+        "message carries source indentation: {:?}",
+        e.message
+    );
+    assert!(
+        e.message.contains("application/x-www-form-urlencoded"),
+        "the author needs to see which media type blocked it: {:?}",
+        e.message
+    );
+}
+
+#[test]
+fn additional_properties_with_a_json_request_body_is_fine() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.method = "POST".into();
+    a.params.insert("q".into(), param("string", false));
+    a.additional_properties = true;
+    a.request_body = Some(crate::types::RequestBodySpec {
+        content_type: "application/json".into(),
+        required: true,
+    });
+    let r = run(&d);
+    assert!(r.valid, "{:?}", r.errors);
+}
+
+/// A relaxed `GET` routes undeclared arguments to the query string, so a
+/// (pointless) non-JSON body declaration there loses nothing and must not
+/// trip the check.
+#[test]
+fn additional_properties_on_a_get_ignores_the_body_media_type() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.method = "GET".into();
+    a.params.insert("q".into(), param("string", false));
+    a.additional_properties = true;
+    a.request_body = Some(crate::types::RequestBodySpec {
+        content_type: "application/x-www-form-urlencoded".into(),
+        required: false,
+    });
+    let r = run(&d);
+    assert!(
+        !r.errors
+            .iter()
+            .any(|e| e.code == "additional_properties_needs_a_json_body"),
+        "{:?}",
+        r.errors
+    );
 }

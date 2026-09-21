@@ -74,6 +74,11 @@ pub(crate) async fn resolve_action_metadata(
             || instance.secret_name.is_some();
         let metadata = ActionMetadata {
             validation_params: HashMap::new(),
+            // Moot: `validate_args` short-circuits on an empty schema, so
+            // there is nothing here for the flag to relax. Named explicitly
+            // rather than left to a `Default` so the verb shape's answer is
+            // visible next to the empty schema that makes it irrelevant.
+            additional_properties: false,
             service_scope: Some(ServiceScope {
                 service_key: service_key.clone(),
                 action_key: String::new(),
@@ -157,6 +162,7 @@ pub(crate) async fn resolve_action_metadata(
 
         let metadata = ActionMetadata {
             validation_params: action.params.clone(),
+            additional_properties: action.additional_properties,
             service_scope: Some(ServiceScope {
                 service_key: service_key.clone(),
                 action_key: perm_action_key,

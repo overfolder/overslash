@@ -55,6 +55,10 @@ fn http_pseudo_service() -> ServiceDefinition {
         // No upstream of its own to be slow — Mode A's timeout comes entirely
         // from the caller, the org, or the deployment default.
         default_timeout_ms: None,
+        // Mode A has no declared param contract to relax: `validate_args`
+        // already short-circuits on the empty `validation_params` this path
+        // ships.
+        default_additional_properties: false,
         runtime: Runtime::Http,
         mcp: None,
         instance_defaults: None,

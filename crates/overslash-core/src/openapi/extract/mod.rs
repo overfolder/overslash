@@ -389,6 +389,38 @@ pub(in crate::openapi) fn parse_timeout_ms(
     }
 }
 
+/// `x-overslash-additional-properties` → whether the declared parameter set is
+/// a floor rather than a fence.
+///
+/// Shaped like [`parse_timeout_ms`]: sink-agnostic, so the caller decides
+/// whether a malformed value is fatal. It is a warning at `info` (refusing to
+/// load a whole service over one stray key is the worse failure, the same call
+/// `hidden` and `icon` make) and an error on an operation (matching
+/// `timeout_ms` and `wait-mode`, which already drop the action there).
+///
+/// Either way the fallback is `None` → strict, so a typo like
+/// `additional-properties: "true"` fails *closed*. Relaxing the gate is a
+/// capability grant, and a grant must never be something a quoting mistake can
+/// make by accident.
+pub(in crate::openapi) fn parse_additional_properties(
+    v: Option<&Value>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<bool> {
+    let key = Ext::AdditionalProperties.key();
+    match v? {
+        Value::Bool(b) => Some(*b),
+        other => {
+            issues.push(ValidationIssue::new(
+                "openapi_invalid",
+                format!("{key} must be a boolean (got {other})"),
+                format!("{base}.{key}"),
+            ));
+            None
+        }
+    }
+}
+
 /// `x-overslash-wait-mode` → [`ExecutionMode`].
 ///
 /// Shaped like [`parse_timeout_ms`] deliberately: an unrecognized value is a

@@ -634,6 +634,7 @@ mod tests {
         params: HashMap<String, crate::types::ActionParam>,
     ) -> ServiceAction {
         ServiceAction {
+            additional_properties: false,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,

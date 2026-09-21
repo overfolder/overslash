@@ -223,7 +223,7 @@ mod tests {
         let mut a = args(&[]);
         apply_defaults(&s, &mut a);
         assert_eq!(a.get("calendarId"), Some(&json!("primary")));
-        assert!(validate_args(&s, &a).is_ok());
+        assert!(validate_args(&s, &a, false).is_ok());
     }
 
     #[test]
@@ -252,7 +252,7 @@ mod tests {
         let s = schema(&[("recipient", p("string", true))]);
         let mut a = args(&[]);
         apply_defaults(&s, &mut a);
-        let err = validate_args(&s, &a).unwrap_err();
+        let err = validate_args(&s, &a, false).unwrap_err();
         assert_eq!(
             err,
             vec![ArgError::Missing {
@@ -271,7 +271,7 @@ mod tests {
         let mut a = args(&[("chat_id", json!(612616872))]);
         coerce_args(&s, &mut a);
         assert_eq!(a.get("chat_id"), Some(&json!("612616872")));
-        assert!(validate_args(&s, &a).is_ok());
+        assert!(validate_args(&s, &a, false).is_ok());
     }
 
     #[test]
@@ -292,7 +292,7 @@ mod tests {
         let mut a = args(&[("parse_mode", json!("html"))]);
         coerce_args(&s, &mut a);
         assert_eq!(a.get("parse_mode"), Some(&json!("HTML")));
-        assert!(validate_args(&s, &a).is_ok());
+        assert!(validate_args(&s, &a, false).is_ok());
     }
 
     #[test]
@@ -301,7 +301,7 @@ mod tests {
         let mut a = args(&[("count", json!("5"))]);
         coerce_args(&s, &mut a);
         assert_eq!(a.get("count"), Some(&json!(5)));
-        assert!(validate_args(&s, &a).is_ok());
+        assert!(validate_args(&s, &a, false).is_ok());
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
         let mut a = args(&[("to", json!("a@b.com"))]);
         coerce_args(&s, &mut a);
         assert_eq!(a.get("to"), Some(&json!(["a@b.com"])));
-        assert!(validate_args(&s, &a).is_ok());
+        assert!(validate_args(&s, &a, false).is_ok());
     }
 
     #[test]
@@ -353,7 +353,7 @@ mod tests {
         let mut a = args(&[("val", json!(42))]);
         coerce_args(&s, &mut a);
         assert_eq!(a.get("val"), Some(&json!(42)));
-        assert!(validate_args(&s, &a).is_ok());
+        assert!(validate_args(&s, &a, false).is_ok());
     }
 
     #[test]
@@ -363,7 +363,7 @@ mod tests {
         let s = schema(&[("count", p("integer", false))]);
         let mut a = args(&[("count", json!("abc"))]);
         coerce_args(&s, &mut a);
-        assert!(validate_args(&s, &a).is_ok());
+        assert!(validate_args(&s, &a, false).is_ok());
         assert_eq!(a.get("count"), Some(&json!("abc")));
     }
 
@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(a.get("recipient"), Some(&json!("x@s.whatsapp.net")));
         assert!(!a.contains_key("to"));
         // And the rewritten call now validates clean.
-        assert!(validate_args(&s, &a).is_ok());
+        assert!(validate_args(&s, &a, false).is_ok());
     }
 
     #[test]
@@ -428,7 +428,7 @@ mod tests {
         assert_eq!(a.get("x"), Some(&json!(1)));
         assert!(!a.contains_key("alpha") && !a.contains_key("beta"));
         assert!(matches!(
-            validate_args(&s, &a).unwrap_err().as_slice(),
+            validate_args(&s, &a, false).unwrap_err().as_slice(),
             [ArgError::Unknown { field, .. }] if field == "x"
         ));
     }
@@ -459,6 +459,6 @@ mod tests {
         apply_aliases(&s, &mut a);
         coerce_args(&s, &mut a);
         assert_eq!(a.get("chat_id"), Some(&json!("612616872")));
-        assert!(validate_args(&s, &a).is_ok());
+        assert!(validate_args(&s, &a, false).is_ok());
     }
 }

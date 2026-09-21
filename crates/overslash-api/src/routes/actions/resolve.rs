@@ -555,34 +555,80 @@ pub(super) async fn resolve_request(
             // still sends `{}` — a strict upstream extractor checks
             // `Content-Type` before it ever looks at the body, so omitting the
             // body omits the header and the call is rejected outright.
-            let body = action
-                .request_body
-                .as_ref()
-                .filter(|rb| rb.is_json())
-                .map(|_| {
-                    let mut map = serde_json::Map::new();
-                    for (k, v) in body_params {
-                        // A string param whose `x-overslash-sql-field` names a
-                        // path other than its own name is *moved* there
-                        // (`query` → `{"native": {"query": …}}`), keeping the
-                        // caller surface flat while matching the upstream's
-                        // nested payload (D43). Object-mode sql params (the
-                        // path points inside the caller-supplied object) place
-                        // flat like everything else.
-                        let nested_path = action.params.get(k.as_str()).and_then(|p| {
-                            p.sql_field
-                                .as_deref()
-                                .filter(|path| p.param_type != "object" && *path != k.as_str())
-                        });
-                        match nested_path {
-                            Some(path) => insert_at_body_path(&mut map, path, v.clone()),
-                            None => {
-                                map.insert(k.clone(), v.clone());
-                            }
+            //
+            // The one exception is an action that relaxed argument validation
+            // and declares no `requestBody` at all. Its undeclared arguments
+            // passed the gate, and silently dropping them here is the worst of
+            // the three possible outcomes — worse than the 400 they used to
+            // get. Synthesize a JSON body for that case. It can only fire on
+            // arguments that were rejected outright before
+            // `additional_properties` existed, so no existing template changes
+            // shape.
+            //
+            // `request_body.is_none()` and not "not JSON": a declared
+            // *non-JSON* body is the other way an extra argument could be
+            // accepted and then dropped here, and the answer to it is not to
+            // send JSON to a form endpoint — it is that the combination never
+            // reaches this code. `check_action` rejects it at authoring time
+            // (`additional_properties_needs_a_json_body`), which is the only
+            // place the author can still fix it.
+            let declared_json = action.request_body.as_ref().is_some_and(|rb| rb.is_json());
+            // Only the *undeclared* arguments motivate a synthesized body, and
+            // only they go into it. `ParamLocation` defaults to `Body`
+            // (`extract::params` maps any unrecognized `in:` to it), so an
+            // action with no `requestBody` can still carry a declared
+            // body-located param — a `parameters[]` entry whose `in:` is
+            // misspelled. Such a param is dropped today, and it keeps being
+            // dropped: synthesizing it would mean a typo in `in:` silently
+            // changes what goes on the wire the moment someone sets
+            // `additional-properties`, which is a coupling nobody would
+            // predict from either end. Restricting both the trigger and the
+            // contents to undeclared keys is what makes the claim above
+            // literally true — nothing moves except arguments that used to be
+            // a 400.
+            let undeclared: Vec<(&String, &serde_json::Value)> =
+                if action.additional_properties && action.request_body.is_none() {
+                    body_params
+                        .iter()
+                        .copied()
+                        .filter(|(k, _)| !action.params.contains_key(k.as_str()))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+            let build = |entries: Vec<(&String, &serde_json::Value)>| {
+                let mut map = serde_json::Map::new();
+                for (k, v) in entries {
+                    // A string param whose `x-overslash-sql-field` names a
+                    // path other than its own name is *moved* there
+                    // (`query` → `{"native": {"query": …}}`), keeping the
+                    // caller surface flat while matching the upstream's
+                    // nested payload (D43). Object-mode sql params (the
+                    // path points inside the caller-supplied object) place
+                    // flat like everything else.
+                    let nested_path = action.params.get(k.as_str()).and_then(|p| {
+                        p.sql_field
+                            .as_deref()
+                            .filter(|path| p.param_type != "object" && *path != k.as_str())
+                    });
+                    match nested_path {
+                        Some(path) => insert_at_body_path(&mut map, path, v.clone()),
+                        None => {
+                            map.insert(k.clone(), v.clone());
                         }
                     }
-                    serde_json::to_string(&map).unwrap_or_default()
-                });
+                }
+                serde_json::to_string(&map).unwrap_or_default()
+            };
+
+            let body = if declared_json {
+                Some(build(body_params))
+            } else if !undeclared.is_empty() {
+                Some(build(undeclared))
+            } else {
+                None
+            };
             (url, body)
         };
 
@@ -591,10 +637,18 @@ pub(super) async fn resolve_request(
         // and only with the body — never on a bodyless GET, and never without
         // one. Template-chosen headers travel their own channel (`in: header`
         // params and `securitySchemes`), so the two never contend.
-        if body.is_some()
-            && let Some(rb) = &action.request_body
-        {
-            headers.insert("Content-Type".to_string(), rb.content_type.clone());
+        if body.is_some() {
+            headers.insert(
+                "Content-Type".to_string(),
+                action
+                    .request_body
+                    .as_ref()
+                    .map(|rb| rb.content_type.clone())
+                    // A body synthesized for a relaxed action has no declared
+                    // media type to quote, and JSON is the only shape the
+                    // builder above produces.
+                    .unwrap_or_else(|| "application/json".to_string()),
+            );
         }
         // Template-declared header params (`in: header`) are sent verbatim as
         // request headers. `apply_defaults` has already filled any that carry a
