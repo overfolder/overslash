@@ -52,6 +52,7 @@ export type {
   ServiceTestResponse,
   SetupBundle,
   SetupRequestRef,
+  SetupWarning,
   TestActionRef,
 } from './services.js';
 

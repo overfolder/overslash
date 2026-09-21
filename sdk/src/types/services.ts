@@ -82,6 +82,30 @@ export interface SetupBundle {
   /** One entry per unbound slot, each with its own single-use URL. */
   requests: SetupRequestRef[];
   expires_at: string;
+  /**
+   * What this bundle's links will replace, one entry per colliding slot.
+   *
+   * Present only on a `force: true` create. Without `force` such a create is
+   * refused with `secret_name_conflict` (409) instead, because a slot's vault
+   * name comes from the template and mixes in nothing per-instance — so a
+   * second instance's link would otherwise aim at the first one's credential.
+   * A caller that never forces never sees this field.
+   */
+  warnings?: SetupWarning[];
+}
+
+/** One superseded secret named by [`SetupBundle.warnings`]. */
+export interface SetupWarning {
+  /** `overwrites_existing_secret` is the only code today. */
+  code: string;
+  /** The template securityScheme slot key whose name collides. */
+  credential_key: string;
+  /** The vault name being replaced. */
+  secret_name: string;
+  /** The version a fulfilment of this link will supersede. */
+  current_version: number;
+  /** Ready-to-show prose naming what is replaced. */
+  message: string;
 }
 
 export interface SetupRequestRef {
