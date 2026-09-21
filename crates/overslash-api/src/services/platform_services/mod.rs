@@ -29,6 +29,7 @@ use super::platform_caller::PlatformCallContext;
 use crate::error::AppError;
 use crate::routes::util::fmt_time;
 
+mod create;
 mod events;
 mod group_grants;
 mod instance_names;
@@ -40,11 +41,10 @@ mod templates;
 mod types;
 mod verify;
 
+pub use create::kernel_create_service;
 pub(crate) use events::{ServiceEvent, fire_service_event};
 pub(crate) use kernels::require_owned_by_ceiling_or_admin;
-pub use kernels::{
-    kernel_create_service, kernel_get_service, kernel_list_services, kernel_update_service,
-};
+pub use kernels::{kernel_get_service, kernel_list_services, kernel_update_service};
 pub use rows::{row_to_detail, row_to_summary};
 pub use status::{
     ScopeCoverage, ScopeKnowledge, TemplateView, action_scope_coverage, compute_credentials_status,
