@@ -525,7 +525,7 @@ pub async fn kernel_create_service(
     //
     // Computed once, here, because two separate pre-insert decisions read it
     // and neither may re-derive it: the secret-name conflict check (D85) and
-    // the verification gate (D-NEXT).
+    // the verification gate (D86).
     let pending_slots = crate::services::service_setup::unbound_instance_slots(
         &template_def,
         &credentials,

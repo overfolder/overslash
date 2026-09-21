@@ -974,7 +974,7 @@ async fn probing_an_unknown_instance_is_not_found() {
 /// Stand up `resend` and fulfil its link, leaving `resend_key` occupied.
 ///
 /// The submit carries a session because a *setup* request is always minted
-/// `require_user_session` (D-NEXT): fulfilling one triggers the instance's
+/// `require_user_session` (D86): fulfilling one triggers the instance's
 /// credential probe, and the probe runs as somebody.
 async fn seed_bound_resend(
     base: &str,

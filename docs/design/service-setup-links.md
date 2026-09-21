@@ -194,7 +194,7 @@ D83 shipped the probe as a *diagnostic* and left the verdict advisory: the
 instance was committed before anyone asked whether its key worked, and the
 wizard's way out said "Continue anyway". A key with a trailing newline and a key
 for the wrong account landed exactly where a good one did. The verdict now gates
-the instance instead of merely describing it — the binding choices are `D-NEXT`
+the instance instead of merely describing it — the binding choices are `D86`
 in [DECISIONS.md](../../DECISIONS.md).
 
 Three things make it cheap. `status` already had a CHECK constraint to widen.

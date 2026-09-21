@@ -495,7 +495,7 @@ struct SubmitServiceOutcome {
     remaining_slots: Option<Vec<String>>,
     /// The instance's lifecycle status *after* this submission.
     ///
-    /// `remaining_slots: []` used to mean "callable". Since D-NEXT it means
+    /// `remaining_slots: []` used to mean "callable". Since D86 it means
     /// "every credential is present", which is a different and earlier claim:
     /// an instance created by a setup flow sits in `pending_setup` until its
     /// probe comes back green, and this handler runs *before* the probe — the
@@ -629,7 +629,7 @@ async fn submit_provide(
                 "provisioned_by_user_id": provisioned_by_user_id,
                 "user_signed": provisioned_by_user_id.is_some(),
                 // The agent that minted a setup link is blocked on the moment
-                // its service becomes callable — which since D-NEXT is *not*
+                // its service becomes callable — which since D86 is *not*
                 // this moment. The credential has landed; the probe has not
                 // run. `service_status` says which, and `service.activated`
                 // is the event that reports the other.

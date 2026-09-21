@@ -8,7 +8,7 @@
 //!
 //! The slot-selection predicate in particular wants one home: "which slots
 //! does an instance have to bind" is asked by the auto-mint, by the
-//! verification gate (D-NEXT) and by the secret-name conflict check (D85), and
+//! verification gate (D86) and by the secret-name conflict check (D85), and
 //! three copies of it would drift.
 
 use uuid::Uuid;

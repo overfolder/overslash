@@ -27,7 +27,7 @@ pub enum Topic {
     Activity,
     /// Service-instance lifecycle. One event today — `service.activated` —
     /// and it exists because an agent that hands over a setup link is blocked
-    /// on the moment its instance becomes callable, which since D-NEXT is
+    /// on the moment its instance becomes callable, which since D86 is
     /// promotion rather than credential fulfilment.
     Services,
 }
@@ -151,7 +151,7 @@ pub enum EventType {
     /// A service instance became callable.
     ///
     /// The terminal signal for setup. `secret_request.fulfilled` used to be
-    /// it — its payload comment said so — but since D-NEXT a credential
+    /// it — its payload comment said so — but since D86 a credential
     /// landing and a service going live are two moments, separated by the
     /// probe. An agent blocked on "can I call this yet" wants this one.
     ///
