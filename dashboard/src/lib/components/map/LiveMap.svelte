@@ -250,6 +250,13 @@
 		const offResync = onEvent(['stream.resync'], () => {
 			pendingByIdentity.clear();
 			identityByApproval.clear();
+			// Including what we have already asked about. The guard exists to
+			// stop a name that will never list from asking every cooldown for
+			// as long as the tab is open — but a reconnect means we may have
+			// missed the very events that would have listed it, so one more ask
+			// per name is owed. The page refetches on `stream.resync` anyway;
+			// this is about the asks that come after it.
+			refetchedFor.clear();
 			sim?.clearTraffic();
 		});
 
