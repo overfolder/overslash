@@ -115,6 +115,24 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
         );
     }
 
+    // `x-overslash-additional-properties` on an action that declares no params
+    // decides nothing: `validate_args` short-circuits on an empty schema and
+    // already accepts anything. A warning rather than an error, matching the
+    // extension lint's treatment of an inert key — the template is not wrong,
+    // it just believes it asked for something.
+    //
+    // Deliberately not conditioned on how the flag was set. An action that
+    // inherits `true` from `info` and happens to declare no params is the
+    // commonest way to land here, and it is worth one line of output: either
+    // the params are missing or the action does not need the key.
+    if action.additional_properties && action.params.is_empty() {
+        issues.warn(
+            "noop_additional_properties",
+            "additional-properties has no effect on an action that declares no              params — argument validation is already a no-op without a schema              to compare against",
+            format!("{action_path}.additional-properties"),
+        );
+    }
+
     check_pagination(action, &action_path, issues);
 
     check_test(action, &action_path, issues);

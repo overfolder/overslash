@@ -168,6 +168,7 @@ mod tests {
 
     fn mk_service(key: &str, display: &str, desc: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
@@ -204,6 +205,7 @@ mod tests {
 
     fn mk_action(desc: &str, risk: Risk) -> ServiceAction {
         ServiceAction {
+            additional_properties: false,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,

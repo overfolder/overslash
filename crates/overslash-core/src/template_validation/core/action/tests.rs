@@ -559,6 +559,7 @@ fn platform_namespace_action_allowed() {
     // An action with empty method/path (like overslash.yaml) must validate
     // clean as long as description is present.
     let mut d = ServiceDefinition {
+        default_additional_properties: false,
         default_timeout_ms: None,
         secrets: Vec::new(),
         config: Vec::new(),
@@ -578,6 +579,7 @@ fn platform_namespace_action_allowed() {
     d.actions.insert(
         "manage_secrets".into(),
         ServiceAction {
+            additional_properties: false,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,

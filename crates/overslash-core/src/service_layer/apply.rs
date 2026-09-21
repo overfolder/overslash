@@ -177,6 +177,12 @@ pub fn apply_delta(
         // `ActionPatch::timeout_ms`, and the org-wide knob lives on the org
         // row rather than in the mask.
         default_timeout_ms: base.default_timeout_ms,
+        // Carried through so a layer's *added* MCP tools discovered later
+        // inherit the same service-wide default the base's own tools did. The
+        // layer cannot change it: `ActionPatch` is restrictive-only, and
+        // relaxing validation is a capability grant rather than the kind of
+        // no-new-capability tuning D56 allowed for `timeout_ms`.
+        default_additional_properties: base.default_additional_properties,
         runtime: base.runtime,
         mcp: base.mcp.clone(),
         instance_defaults,

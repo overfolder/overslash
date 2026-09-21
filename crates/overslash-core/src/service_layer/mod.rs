@@ -157,6 +157,7 @@ pub(crate) mod fixtures {
 
     pub(crate) fn action(risk: Risk) -> ServiceAction {
         ServiceAction {
+            additional_properties: false,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,
@@ -189,6 +190,7 @@ pub(crate) mod fixtures {
             actions.insert((*k).to_string(), action(*r));
         }
         ServiceDefinition {
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),

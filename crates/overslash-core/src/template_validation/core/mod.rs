@@ -121,6 +121,7 @@ mod tests {
 
     pub(super) fn minimal_valid() -> ServiceDefinition {
         ServiceDefinition {
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
@@ -153,6 +154,7 @@ mod tests {
                 m.insert(
                     "list".into(),
                     ServiceAction {
+                        additional_properties: false,
                         wait_mode: None,
                         handoff_after_ms: None,
                         pagination: None,
@@ -232,6 +234,7 @@ mod tests {
         actions.insert(
             "search".into(),
             ServiceAction {
+                additional_properties: false,
                 wait_mode: None,
                 handoff_after_ms: None,
                 pagination: None,
@@ -277,6 +280,7 @@ mod tests {
             },
         );
         ServiceDefinition {
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),

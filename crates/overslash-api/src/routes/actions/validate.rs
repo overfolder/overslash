@@ -104,9 +104,11 @@ pub(super) async fn validate_action_impl(
     // `invalid_action_args` 400 it would on `/call` — the byte-identical
     // 400 contract is meaningful only when the gates fire in the same
     // order in both endpoints.
-    if let Err(errors) =
-        overslash_core::openapi::validate_input::validate_args(&meta.validation_params, &req.params)
-    {
+    if let Err(errors) = overslash_core::openapi::validate_input::validate_args(
+        &meta.validation_params,
+        &req.params,
+        meta.additional_properties,
+    ) {
         return Err(invalid_action_args_error(&meta.validation_params, errors));
     }
 

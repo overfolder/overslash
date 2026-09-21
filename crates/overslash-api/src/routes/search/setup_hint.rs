@@ -197,6 +197,7 @@ mod tests {
 
     fn def(auth: Vec<ServiceAuth>, secrets: Vec<SecretSlot>) -> ServiceDefinition {
         ServiceDefinition {
+            default_additional_properties: false,
             key: "acme".into(),
             display_name: "Acme".into(),
             description: None,

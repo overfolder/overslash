@@ -166,6 +166,18 @@ struct SearchResult {
     /// inferring it from a parameter's name — which is the one bit this adds.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     paginated: bool,
+    /// Whether this action declares `x-overslash-additional-properties` — that
+    /// `params` above is a floor rather than a fence, so an argument it does
+    /// not list may still be sent and will be forwarded upstream, and a
+    /// declared `enum` names the members we know of rather than all of them.
+    ///
+    /// A bare boolean for the same reason as `paginated`: the fact is one the
+    /// caller cannot infer from `params` at any price, since it is precisely a
+    /// statement about what `params` leaves out. Without it the relaxation is
+    /// reachable only by a caller who already knew to guess, which is no
+    /// relaxation at all.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    additional_properties: bool,
 }
 
 /// The model-facing projection of an [`ServiceAction`] parameter.
@@ -390,6 +402,7 @@ async fn search(
                     missing_scopes: Vec::new(),
                     params: Vec::new(),
                     paginated: false,
+                    additional_properties: false,
                 });
             } else {
                 for inst in connected_instances {
@@ -413,6 +426,7 @@ async fn search(
                         // Likewise: the parameter contract is per-action.
                         params: Vec::new(),
                         paginated: false,
+                        additional_properties: false,
                     });
                 }
             }
@@ -540,6 +554,7 @@ async fn search(
                     missing_scopes: Vec::new(),
                     params: param_infos(action),
                     paginated: action.pagination.is_some(),
+                    additional_properties: action.additional_properties,
                 });
             } else {
                 // Fan-out: one row per (action × instance). Score is the
@@ -572,6 +587,7 @@ async fn search(
                         missing_scopes,
                         params: param_infos(action),
                         paginated: action.pagination.is_some(),
+                        additional_properties: action.additional_properties,
                     });
                 }
             }
@@ -638,6 +654,7 @@ async fn search(
                     missing_scopes,
                     params: param_infos(action),
                     paginated: action.pagination.is_some(),
+                    additional_properties: action.additional_properties,
                 });
             }
         }

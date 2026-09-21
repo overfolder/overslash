@@ -59,6 +59,10 @@ pub enum Ext {
     Hidden,
     Icon,
     DefaultTimeoutMs,
+    // `info` (a service-wide default) *and* operations / MCP tools. The only
+    // key read at both a template-level and an action-level position; the
+    // compiler folds the two into one `ServiceAction` field.
+    AdditionalProperties,
     // Operations, MCP tools, platform actions
     Risk,
     ScopeParam,
@@ -102,6 +106,7 @@ impl Ext {
             Ext::Hidden => "x-overslash-hidden",
             Ext::Icon => "x-overslash-icon",
             Ext::DefaultTimeoutMs => "x-overslash-default_timeout_ms",
+            Ext::AdditionalProperties => "x-overslash-additional-properties",
             Ext::Risk => "x-overslash-risk",
             Ext::ScopeParam => "x-overslash-scope_param",
             Ext::Disclose => "x-overslash-disclose",
@@ -158,6 +163,7 @@ pub(super) const ALL: &[Ext] = &[
     Ext::Hidden,
     Ext::Icon,
     Ext::DefaultTimeoutMs,
+    Ext::AdditionalProperties,
     Ext::Risk,
     Ext::ScopeParam,
     Ext::Disclose,
@@ -287,6 +293,31 @@ pub(super) const READS: &[(Ext, &[Pos])] = &[
     // compile.rs:94
     (Ext::Icon, &[Pos::Info]),
     (Ext::DefaultTimeoutMs, &[Pos::Info]),
+    // compile/mod.rs (the `info` default) · actions.rs · mcp.rs (the
+    // per-action override). Nearest wins, so an operation may write `false` to
+    // re-tighten under a service that relaxed globally.
+    //
+    // NOT on a platform action, and the `info` default deliberately does not
+    // fold onto one either: a platform action is answered in this process
+    // against a param set we fully own, so an undeclared argument would pass
+    // the gate and then be silently ignored by the handler — strictly worse
+    // than the 400 it replaces. Same asymmetry as `disclose` / `redact` /
+    // `timeout_ms`, and for the same reason as `wait-mode`: the answer would
+    // be discarded downstream.
+    //
+    // `McpToolDiscovered` rides along for the `Ext::Upload` reason —
+    // `lower_mcp_tool` is shared with `overlay_discovered_tools`, so the read
+    // genuinely happens at that position even though a pasted `tools/list`
+    // entry never authors the key.
+    (
+        Ext::AdditionalProperties,
+        &[
+            Pos::Info,
+            Pos::Operation,
+            Pos::McpTool,
+            Pos::McpToolDiscovered,
+        ],
+    ),
     // actions.rs:85,184 · mcp.rs:268
     (
         Ext::Risk,
@@ -481,7 +512,7 @@ mod tests {
     fn every_variant_is_in_all() {
         // `ALL` drives name resolution and did-you-mean suggestions, so a
         // variant missing from it is invisible to the lint.
-        assert_eq!(ALL.len(), 33, "ALL has drifted from the enum");
+        assert_eq!(ALL.len(), 34, "ALL has drifted from the enum");
         let mut keys: Vec<&str> = ALL.iter().map(|e| e.key()).collect();
         keys.sort_unstable();
         let before = keys.len();
@@ -551,6 +582,13 @@ mod tests {
         assert!(!reads_at(Ext::Test, Pos::PlatformAction));
         assert!(reads_at(Ext::Test, Pos::Operation));
         assert!(reads_at(Ext::Test, Pos::McpTool));
+        // A platform action owns its param set, so relaxing the gate there
+        // would accept an argument the handler then ignores.
+        assert!(!reads_at(Ext::AdditionalProperties, Pos::PlatformAction));
+        // The one key that is read at both a template-level and an
+        // action-level position.
+        assert!(reads_at(Ext::AdditionalProperties, Pos::Info));
+        assert!(reads_at(Ext::AdditionalProperties, Pos::Operation));
     }
 
     #[test]

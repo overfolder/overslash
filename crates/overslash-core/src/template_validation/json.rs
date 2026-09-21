@@ -91,6 +91,10 @@ pub fn parse_template_parts(
         // value lives in the stored OpenAPI doc and is honored wherever that
         // doc is compiled.
         default_timeout_ms: None,
+        // Like `hidden` and the timeout above: no parts-based input, the
+        // value lives in the stored OpenAPI doc and is honored wherever that
+        // doc is compiled.
+        default_additional_properties: false,
         runtime: Runtime::Http,
         mcp: None,
         instance_defaults: None,

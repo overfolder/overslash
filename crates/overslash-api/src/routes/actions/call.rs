@@ -158,6 +158,7 @@ pub(super) async fn call_action_impl(
     if let Err(errors) = overslash_core::openapi::validate_input::validate_args(
         &pre_meta.validation_params,
         &req.params,
+        pre_meta.additional_properties,
     ) {
         return Err(invalid_action_args_error(
             &pre_meta.validation_params,

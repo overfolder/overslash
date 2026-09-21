@@ -149,6 +149,32 @@ pub struct ServiceAction {
     /// surfaces it in the MCP discovery-override flow.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+    /// `x-overslash-additional-properties` — the template author's statement
+    /// that this action's declared parameter set is a floor, not a fence.
+    ///
+    /// When `true`, [`validate_args`](crate::openapi::validate_input::validate_args) stops
+    /// rejecting arguments the template never declared, and stops enforcing
+    /// `enum` membership on the ones it did. `required` is still enforced.
+    /// The default, `false`, is the closed world every existing template gets.
+    ///
+    /// Folded at compile time from the `info`-level default and the operation's
+    /// own value (nearest wins, so an operation may write `false` under a
+    /// service that relaxed globally). Platform actions never set it: their
+    /// param set is one we fully own, so an undeclared argument would pass the
+    /// gate and then be silently dropped by the handler.
+    ///
+    /// The name is borrowed from JSON Schema, where it governs undeclared keys
+    /// only. Here it also makes `enum` advisory — both are the same
+    /// closed-world assumption about a schema we transcribed rather than own.
+    ///
+    /// A service layer cannot set this. `ActionPatch` is restrictive-only,
+    /// and relaxing validation is a capability grant (unlike `timeout_ms`,
+    /// whose D56 exception turns on granting no new capability). An action a
+    /// layer *adds* is compiled from a synthetic document whose operations can
+    /// declare the key themselves; they inherit no `info` default because that
+    /// document has no `info`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub additional_properties: bool,
     /// The operation's declared `requestBody`, parsed at template-load time.
     /// `None` means the operation takes no body at all (e.g. a POST whose only
     /// inputs are path params) — routing then sends neither a body nor a

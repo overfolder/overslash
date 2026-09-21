@@ -79,6 +79,19 @@ pub struct ServiceDefinition {
     /// maxima still clamp the result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_timeout_ms: Option<u64>,
+    /// `info.x-overslash-additional-properties`: the service-wide default for
+    /// [`ServiceAction::additional_properties`].
+    ///
+    /// Already folded into every action this template compiled, so the runtime
+    /// never reads it — the per-action field is the single source at call
+    /// time. It is carried here for the one path that lowers an action *after*
+    /// compile: `overlay_discovered_tools`, which adds tools from a live
+    /// `tools/list` at instance scope. Without it, a service that relaxed
+    /// globally would relax every authored tool and none of the discovered
+    /// ones — the wrong way round, since a discovered tool's `input_schema` is
+    /// exactly the one nobody hand-checked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default_additional_properties: bool,
     /// Execution runtime. Defaults to `Http` for backwards compat with every
     /// existing template. MCP templates set this to `Mcp` and populate `mcp`.
     #[serde(default, skip_serializing_if = "Runtime::is_default")]
@@ -405,6 +418,7 @@ mod tests {
     fn service_definition_http_defaults_keep_mcp_absent() {
         // Existing Http templates must serialize without runtime/mcp keys.
         let svc = ServiceDefinition {
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
@@ -435,6 +449,7 @@ mod tests {
         actions.insert(
             "search_issues".into(),
             ServiceAction {
+                additional_properties: false,
                 wait_mode: None,
                 handoff_after_ms: None,
                 pagination: None,
@@ -461,6 +476,7 @@ mod tests {
             },
         );
         let svc = ServiceDefinition {
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
@@ -506,6 +522,7 @@ mod tests {
     #[test]
     fn service_action_disabled_elided_when_false() {
         let a = ServiceAction {
+            additional_properties: false,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,
