@@ -85,7 +85,14 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
 
     // Params validation (type, enum, resolvers).
     for (name, param) in &action.params {
-        check_param(name, param, &action.params, &action_path, issues);
+        check_param(
+            name,
+            param,
+            &action.params,
+            &action.scope_param,
+            &action_path,
+            issues,
+        );
     }
 
     // Every scope_param entry must reference an existing param. The *label*
@@ -450,7 +457,14 @@ pub(super) fn check_platform_action(key: &str, action: &ServiceAction, issues: &
     }
 
     for (name, param) in &action.params {
-        check_param(name, param, &action.params, &action_path, issues);
+        check_param(
+            name,
+            param,
+            &action.params,
+            &action.scope_param,
+            &action_path,
+            issues,
+        );
     }
 }
 
@@ -627,10 +641,39 @@ fn check_param(
     name: &str,
     param: &ActionParam,
     all_params: &std::collections::HashMap<String, ActionParam>,
+    scope_param: &crate::types::ScopeParams,
     action_path: &str,
     issues: &mut Issues,
 ) {
     let base = format!("{action_path}.params.{name}");
+    let scope_extracts_this_param = scope_param
+        .refs()
+        .iter()
+        .any(|r| r.param == name && r.extract.is_some());
+
+    // A param whose wire value is a serialized JSON document cannot be scoped
+    // bare: the key's value would be the whole literal — nothing a rule can
+    // match and nothing a human can read, which is exactly what D40 already
+    // says about object arrays. The author writes the decode themselves
+    // (`extract: 'fromjson | .peer | tostring'`) rather than the gateway
+    // decoding implicitly, because implicit magic on an authorization
+    // expression makes a security-relevant line read wrong.
+    if param.is_json_string()
+        && scope_param
+            .refs()
+            .iter()
+            .any(|r| r.param == name && r.extract.is_none())
+    {
+        issues.err(
+            "scope_param_on_json_string_needs_extract",
+            format!(
+                "`{name}` carries a serialized JSON document, so scoping it bare would file \
+                 the whole literal as the permission key's value; give the scope_param entry \
+                 an `extract` (e.g. `fromjson | .id | tostring`)"
+            ),
+            format!("{action_path}.scope_param"),
+        );
+    }
 
     if !VALID_PARAM_TYPES.contains(&param.param_type.as_str()) {
         issues.err(
@@ -691,7 +734,14 @@ fn check_param(
     }
 
     if let Some(ref resolver) = param.resolve {
-        super::resolver::check_resolver(resolver, name, all_params, &base, issues);
+        super::resolver::check_resolver(
+            resolver,
+            name,
+            all_params,
+            scope_extracts_this_param,
+            &base,
+            issues,
+        );
     }
 }
 

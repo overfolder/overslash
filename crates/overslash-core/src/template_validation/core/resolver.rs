@@ -27,6 +27,9 @@ pub(super) fn check_resolver(
     resolver: &ParamResolver,
     param_name: &str,
     all_params: &HashMap<String, ActionParam>,
+    // Whether the action's `scope_param` reaches this param through an
+    // `extract` — the one thing this cannot see from the param alone.
+    scope_extracts_this_param: bool,
     base: &str,
     issues: &mut Issues,
 ) {
@@ -133,6 +136,20 @@ pub(super) fn check_resolver(
             "invalid_resolver_scope",
             "resolver.scope is not supported on an array param: each element mints its own \
              permission key, and one canonical value cannot replace the list",
+            format!("{base}.resolve.scope"),
+        );
+    }
+
+    // Same refusal, one rung over. `resolve.scope` replaces the param's whole
+    // value with one canonical string; a `scope_param` extractor then reads
+    // that string rather than the structure it was written against, so the two
+    // together describe a key neither author intended.
+    if resolver.scope.is_some() && scope_extracts_this_param {
+        issues.err(
+            "invalid_resolver_scope",
+            "resolver.scope and a scope_param `extract` on the same param are mutually \
+             exclusive: `scope` collapses the value to one canonical string, which is not \
+             what the extractor was written to read",
             format!("{base}.resolve.scope"),
         );
     }

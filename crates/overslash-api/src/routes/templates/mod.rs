@@ -105,6 +105,22 @@ fn parse_normalize_compile_and_check_disclose(
                 ));
             }
         }
+        for (i, entry) in action.scope_param.refs().iter().enumerate() {
+            let Some(expr) = entry.extract.as_deref() else {
+                continue;
+            };
+            if let Err(msg) =
+                response_filter::validate_syntax(&response_filter::ResponseFilter::Jq {
+                    expr: expr.to_string(),
+                })
+            {
+                extra.push(ValidationIssue::new(
+                    "scope_extract_invalid_jq",
+                    format!("scope_param `extract` is not a valid jq expression: {msg}"),
+                    format!("actions.{action_key}.scope_param[{i}].extract"),
+                ));
+            }
+        }
     }
     if extra.is_empty() {
         Ok((doc, def))

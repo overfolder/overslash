@@ -135,6 +135,7 @@ mod rate_limits;
 mod request_secret_kernel;
 mod response_filter;
 mod response_too_large_hint;
+mod scope_extract;
 mod search;
 mod secret_requests;
 mod secrets_chain_visibility;

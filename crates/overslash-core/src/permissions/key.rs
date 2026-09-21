@@ -1,9 +1,7 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
 use super::describe::dedup_preserving;
-use crate::types::service::ScopeParams;
+use super::scope_values::{ScopeEntry, ScopeValues};
 
 /// A derived permission key from an action request.
 ///
@@ -86,42 +84,60 @@ impl PermissionKey {
     pub fn from_service_action(
         service_key: &str,
         action_key: &str,
-        scope_param: &ScopeParams,
-        params: &HashMap<String, serde_json::Value>,
+        scope: &ScopeValues,
     ) -> Vec<Self> {
         let mut seen = std::collections::HashSet::new();
-        let keys: Vec<Self> = scope_param
-            .refs()
+        let keys: Vec<Self> = scope
+            .entries()
             .iter()
-            .flat_map(|r| {
-                let values: Vec<String> = match params.get(&r.param) {
-                    Some(serde_json::Value::Array(items)) => {
-                        items.iter().map(Self::scope_arg).collect()
-                    }
-                    Some(v) => vec![Self::scope_arg(v)],
-                    None => Vec::new(),
-                };
+            .flat_map(|(r, entry)| {
                 let label = r.label.clone();
-                values
-                    .into_iter()
-                    .map(move |v| format!("{service_key}:{action_key}:{label}={v}"))
+                let param = r.param.clone();
+                let extracted = r.extract.is_some();
+                match entry {
+                    ScopeEntry::Ready(values) => values
+                        .iter()
+                        .map(|v| {
+                            // An *extracted* value is content lifted out of a
+                            // caller-supplied structure — a display name in an
+                            // untrusted recipient list — rather than a
+                            // caller-typed param. Sanitizing it is what stops
+                            // an `=` or `/` inside it from re-slicing the key.
+                            // A plain value is deliberately not retro-
+                            // sanitized: `/` is live in every GitHub key
+                            // (`repo=overfolder/backend`) and collapsing it
+                            // would silently re-target existing grants.
+                            let v = if extracted {
+                                sanitize_key_component(v)
+                            } else {
+                                sanitize_alternation(v)
+                            };
+                            format!("{service_key}:{action_key}:{label}={v}")
+                        })
+                        .collect::<Vec<_>>(),
+                    // Its own label, and a `/` in the value: `*` does not span
+                    // `/` in the glob engine, so neither a `recipient=*` grant
+                    // nor a plain `{service}:{action}:*` covers this. The
+                    // honest "I trust this action wholesale" rung is `**`.
+                    ScopeEntry::Unextractable(_) => vec![format!(
+                        "{service_key}:{action_key}:{SCOPE_ERROR_LABEL}={label}/{param}"
+                    )],
+                    ScopeEntry::Pending { .. } => unreachable!(
+                        "ScopeValues cannot hold a Pending entry; see ScopePlan::finish"
+                    ),
+                }
             })
             .filter(|k| seen.insert(k.clone()))
             .map(Self)
             .collect();
-        if keys.is_empty() {
+        // The wildcard fallback is suppressed when an extractor failed. Without
+        // that, a mixed list whose plain entries resolved would gate the call
+        // on *those* and leave the failed param's values out of the gate
+        // entirely — silently. Failure narrows; it can never widen.
+        if keys.is_empty() && !scope.has_failures() {
             return vec![Self(format!("{service_key}:{action_key}:*"))];
         }
         keys
-    }
-
-    /// Render one `scope_param` value as the `{arg}` segment. Strings pass
-    /// through unquoted; anything else falls back to its JSON form.
-    fn scope_arg(v: &serde_json::Value) -> String {
-        match v.as_str() {
-            Some(s) => s.to_string(),
-            None => v.to_string(),
-        }
     }
 
     /// D42/D43 per-table keys for one analyzed SQL statement, split by
@@ -256,6 +272,37 @@ fn sanitize_key_component(s: &str) -> String {
         .collect()
 }
 
+/// Collapse only the glob-alternation metacharacters.
+///
+/// `matching::expand_alternations` documents as an invariant that "every value
+/// that goes into a key is run through `sanitize_key_component`, which collapses
+/// `{`, `}` and `,`" — but `scope_arg` never did, so a scope value spelling
+/// `{a,b}` expands into two forms and a grant for one branch covers a call
+/// naming the literal.
+///
+/// Closing that with the full [`sanitize_key_component`] is not an option: it
+/// also collapses `/`, which is live in every shipped GitHub key
+/// (`github:create_pull_request:repo=overfolder/backend`), so it would silently
+/// re-target existing grants. Three characters, none of which appears in any
+/// shipped key, is the fix that changes nothing else.
+fn sanitize_alternation(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c == '{' || c == '}' || c == ',' {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// The label a key carries when an `extract` could not produce its values.
+///
+/// Its own label, so a grant written for the real label never covers it — see
+/// [`PermissionKey::from_service_action`].
+pub const SCOPE_ERROR_LABEL: &str = "scope_error";
+
 /// Sanitize a DB label: [`sanitize_key_component`], lowercased and length-capped.
 ///
 /// Lowercasing exists because [`crate::tags::tag`] lowercases and this does not
@@ -332,7 +379,16 @@ impl DbLabel {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
+    use crate::types::service::ScopeParams;
+
+    /// Resolve a scope with no extractors — every test here is in that state,
+    /// and it is the shape `ScopeValues::resolved` exists for.
+    fn values(scope: &ScopeParams, params: &HashMap<String, serde_json::Value>) -> ScopeValues {
+        ScopeValues::resolved(scope, params)
+    }
     use crate::permissions::matching::rule_matches;
 
     #[test]
@@ -366,8 +422,7 @@ mod tests {
         let keys = PermissionKey::from_service_action(
             "github",
             "create_pull_request",
-            &"repo".into(),
-            &params,
+            &values(&"repo".into(), &params),
         );
         assert_eq!(
             keys[0].0,
@@ -382,7 +437,8 @@ mod tests {
             "to".to_string(),
             serde_json::json!(["a@example.com", "b@example.org"]),
         );
-        let keys = PermissionKey::from_service_action("email", "send", &"to".into(), &params);
+        let keys =
+            PermissionKey::from_service_action("email", "send", &values(&"to".into(), &params));
         assert_eq!(
             keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
             vec!["email:send:to=a@example.com", "email:send:to=b@example.org"]
@@ -398,7 +454,8 @@ mod tests {
             "to".to_string(),
             serde_json::json!(["a@example.com", "b@example.org"]),
         );
-        let keys = PermissionKey::from_service_action("email", "send", &"to".into(), &params);
+        let keys =
+            PermissionKey::from_service_action("email", "send", &values(&"to".into(), &params));
         let covered: Vec<&str> = keys
             .iter()
             .filter(|k| rule_matches("email:send:*@example.com", &k.0))
@@ -411,7 +468,8 @@ mod tests {
     fn service_action_array_scope_param_dedups_repeated_elements() {
         let mut params = HashMap::new();
         params.insert("to".to_string(), serde_json::json!(["a@b.com", "a@b.com"]));
-        let keys = PermissionKey::from_service_action("email", "send", &"to".into(), &params);
+        let keys =
+            PermissionKey::from_service_action("email", "send", &values(&"to".into(), &params));
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].0, "email:send:to=a@b.com");
     }
@@ -422,7 +480,8 @@ mod tests {
         // param — and a domain-scoped rule therefore does not cover it.
         let mut params = HashMap::new();
         params.insert("to".to_string(), serde_json::json!([]));
-        let keys = PermissionKey::from_service_action("email", "send", &"to".into(), &params);
+        let keys =
+            PermissionKey::from_service_action("email", "send", &values(&"to".into(), &params));
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].0, "email:send:*");
         assert!(!rule_matches("email:send:*@example.com", &keys[0].0));
@@ -434,8 +493,7 @@ mod tests {
         let keys = PermissionKey::from_service_action(
             "github",
             "create_pull_request",
-            &"repo".into(),
-            &params,
+            &values(&"repo".into(), &params),
         );
         assert_eq!(keys[0].0, "github:create_pull_request:*");
     }
@@ -446,8 +504,7 @@ mod tests {
         let keys = PermissionKey::from_service_action(
             "github",
             "list_repos",
-            &ScopeParams::default(),
-            &params,
+            &values(&ScopeParams::default(), &params),
         );
         assert_eq!(keys[0].0, "github:list_repos:*");
     }
@@ -478,7 +535,11 @@ mod tests {
             serde_json::json!(["b@example.com"]),
             serde_json::json!(["c@example.net"]),
         );
-        let keys = PermissionKey::from_service_action("email", "send", &recipient_scope(), &params);
+        let keys = PermissionKey::from_service_action(
+            "email",
+            "send",
+            &values(&recipient_scope(), &params),
+        );
         assert_eq!(
             keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
             vec![
@@ -496,7 +557,11 @@ mod tests {
             serde_json::json!(["a@example.com"]),
             serde_json::json!([]),
         );
-        let keys = PermissionKey::from_service_action("email", "send", &recipient_scope(), &params);
+        let keys = PermissionKey::from_service_action(
+            "email",
+            "send",
+            &values(&recipient_scope(), &params),
+        );
         assert_eq!(
             keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
             vec!["email:send:recipient=a@example.com"]
@@ -513,7 +578,7 @@ mod tests {
             serde_json::json!([]),
         );
         let scope = ScopeParams::parse_list(["to", "cc", "bcc"]).unwrap();
-        let keys = PermissionKey::from_service_action("email", "send", &scope, &params);
+        let keys = PermissionKey::from_service_action("email", "send", &values(&scope, &params));
         assert_eq!(
             keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
             vec!["email:send:to=a@example.com", "email:send:cc=a@example.com"]
@@ -525,7 +590,11 @@ mod tests {
         // Only `to` was supplied; cc/bcc are simply not in the args.
         let mut params = HashMap::new();
         params.insert("to".to_string(), serde_json::json!(["a@example.com"]));
-        let keys = PermissionKey::from_service_action("email", "send", &recipient_scope(), &params);
+        let keys = PermissionKey::from_service_action(
+            "email",
+            "send",
+            &values(&recipient_scope(), &params),
+        );
         assert_eq!(
             keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
             vec!["email:send:recipient=a@example.com"]
@@ -539,7 +608,11 @@ mod tests {
             serde_json::json!([]),
             serde_json::json!([]),
         );
-        let keys = PermissionKey::from_service_action("email", "send", &recipient_scope(), &params);
+        let keys = PermissionKey::from_service_action(
+            "email",
+            "send",
+            &values(&recipient_scope(), &params),
+        );
         assert_eq!(
             keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
             vec!["email:send:*"]
@@ -551,7 +624,11 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("to".to_string(), serde_json::json!("a@example.com"));
         params.insert("cc".to_string(), serde_json::json!(["b@example.com"]));
-        let keys = PermissionKey::from_service_action("email", "send", &recipient_scope(), &params);
+        let keys = PermissionKey::from_service_action(
+            "email",
+            "send",
+            &values(&recipient_scope(), &params),
+        );
         assert_eq!(
             keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
             vec![
@@ -731,5 +808,163 @@ mod tests {
                 "metabase:run_query:column=prod/ssn",
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod scope_error_tests {
+    use std::collections::HashMap;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::permissions::{ScopeExtractError, ScopePlan};
+    use crate::types::{ScopeParamRef, ScopeParams};
+
+    fn entry(param: &str, label: &str, extract: Option<&str>) -> ScopeParamRef {
+        ScopeParamRef {
+            param: param.into(),
+            label: label.into(),
+            extract: extract.map(str::to_string),
+        }
+    }
+
+    fn params(entries: &[(&str, serde_json::Value)]) -> HashMap<String, serde_json::Value> {
+        entries
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect()
+    }
+
+    fn keys(scope: ScopeValues) -> Vec<String> {
+        PermissionKey::from_service_action("outlook", "send_mail", &scope)
+            .into_iter()
+            .map(|k| k.0)
+            .collect()
+    }
+
+    #[test]
+    fn an_extracted_value_mints_a_key_per_element() {
+        let scope: ScopeParams = [entry("toRecipients", "recipient", Some(".x"))]
+            .into_iter()
+            .collect();
+        let mut plan = ScopePlan::build(&scope, &params(&[("toRecipients", json!([1]))]));
+        plan.fill(0, Ok(vec!["a@x.com".into(), "b@y.com".into()]));
+        assert_eq!(
+            keys(plan.finish().unwrap()),
+            vec![
+                "outlook:send_mail:recipient=a@x.com",
+                "outlook:send_mail:recipient=b@y.com"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_extractor_mints_a_sentinel_instead_of_nothing() {
+        let scope: ScopeParams = [entry("toRecipients", "recipient", Some(".x"))]
+            .into_iter()
+            .collect();
+        let mut plan = ScopePlan::build(&scope, &params(&[("toRecipients", json!([1]))]));
+        plan.fill(0, Err(ScopeExtractError::Timeout));
+        assert_eq!(
+            keys(plan.finish().unwrap()),
+            vec!["outlook:send_mail:scope_error=recipient/toRecipients"]
+        );
+    }
+
+    /// The fail-open this closes, stated as a test.
+    ///
+    /// A mixed list whose plain entry resolves and whose extractor fails used
+    /// to mint a non-empty key set, so no fallback fired — and the addresses in
+    /// the failed param were simply not in the gate. Silently.
+    #[test]
+    fn a_partial_failure_still_gates_on_the_param_that_failed() {
+        let scope: ScopeParams = [
+            entry("to", "recipient", None),
+            entry("toRecipients", "recipient", Some(".x")),
+        ]
+        .into_iter()
+        .collect();
+        let mut plan = ScopePlan::build(
+            &scope,
+            &params(&[("to", json!(["a@x.com"])), ("toRecipients", json!([1]))]),
+        );
+        plan.fill(1, Err(ScopeExtractError::NonScalarOutput));
+        let got = keys(plan.finish().unwrap());
+        assert!(got.contains(&"outlook:send_mail:recipient=a@x.com".to_string()));
+        assert!(
+            got.contains(&"outlook:send_mail:scope_error=recipient/toRecipients".to_string()),
+            "the failed param must still appear in the gate: {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_failure_suppresses_the_wildcard_fallback() {
+        // Otherwise "we could not tell" would resolve to the same key an
+        // unscoped action mints, which a blanket action grant already covers.
+        let scope: ScopeParams = [entry("toRecipients", "recipient", Some(".x"))]
+            .into_iter()
+            .collect();
+        let mut plan = ScopePlan::build(&scope, &params(&[("toRecipients", json!([1]))]));
+        plan.fill(0, Err(ScopeExtractError::Syntax));
+        let got = keys(plan.finish().unwrap());
+        assert!(!got.iter().any(|k| k.ends_with(":*")), "{got:?}");
+    }
+
+    #[test]
+    fn a_sentinel_is_covered_by_neither_its_label_nor_the_bare_wildcard() {
+        let key = "outlook:send_mail:scope_error=recipient/toRecipients";
+        assert!(!crate::permissions::key_covers(
+            "outlook:send_mail:recipient=*",
+            key
+        ));
+        assert!(
+            !crate::permissions::key_covers("outlook:send_mail:*", key),
+            "`*` does not span `/`, which is why the value carries one"
+        );
+        assert!(
+            crate::permissions::key_covers("outlook:send_mail:**", key),
+            "the honest `I trust this action wholesale` rung still covers it"
+        );
+        assert!(crate::permissions::key_covers(
+            "outlook:*:scope_error=**",
+            key
+        ));
+    }
+
+    #[test]
+    fn an_extracted_value_is_sanitized_but_a_plain_one_keeps_its_slashes() {
+        // An extracted value is content lifted out of caller-supplied
+        // structure, so `=` and `/` inside it would re-slice the key. A plain
+        // value is not retro-sanitized: `/` is live in every GitHub key.
+        let extracting: ScopeParams = [entry("p", "p", Some(".x"))].into_iter().collect();
+        let mut plan = ScopePlan::build(&extracting, &params(&[("p", json!(1))]));
+        plan.fill(0, Ok(vec!["a/b=c".into()]));
+        assert_eq!(
+            keys(plan.finish().unwrap()),
+            vec!["outlook:send_mail:p=a-b-c"]
+        );
+
+        let plain = ScopeValues::resolved(&"repo".into(), &params(&[("repo", json!("own/rep"))]));
+        assert_eq!(
+            PermissionKey::from_service_action("github", "pr", &plain)[0].0,
+            "github:pr:repo=own/rep"
+        );
+    }
+
+    /// `matching::expand_alternations` documents as an invariant that every
+    /// value in a key has been through `sanitize_key_component`. `scope_arg`
+    /// never had been, so `{a,b}` expanded into two forms and a grant for one
+    /// branch covered a call naming the literal.
+    #[test]
+    fn a_plain_value_can_no_longer_forge_an_alternation_group() {
+        let plain =
+            ScopeValues::resolved(&"to".into(), &params(&[("to", json!("{a,b}@example.com"))]));
+        let key = &PermissionKey::from_service_action("email", "send", &plain)[0].0;
+        assert_eq!(key, "email:send:to=-a-b-@example.com");
+        assert!(!crate::permissions::key_covers(
+            "email:send:to=a@example.com",
+            key
+        ));
     }
 }

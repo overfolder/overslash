@@ -306,6 +306,20 @@ paths:
       operationId: send_mail
       summary: Send an email via Outlook
       risk: write
+      # Graph's recipients are `[{emailAddress: {address, name}}]`, so a bare
+      # `scope_param` would file the whole JSON object as the key's value —
+      # nothing a rule can match and nothing a human can read, which is why
+      # this action was unscoped until extractors existed. One key per address
+      # across all three headers, under the same `recipient` label
+      # `services/email.yaml` uses, so a grant written for one template reads
+      # the same way here. In jq `|` binds looser than `,`, so the three
+      # streams are collected first and mapped once.
+      scope_param:
+        - param: message
+          label: recipient
+          extract: >-
+            .toRecipients[]?, .ccRecipients[]?, .bccRecipients[]?
+            | .emailAddress.address
       security:
         - oauth:
             - https://graph.microsoft.com/Mail.Send

@@ -499,15 +499,13 @@ fn shipped_email_send_scopes_permissions_by_recipient() {
     let keys = crate::permissions::PermissionKey::from_service_action(
         "email",
         "send",
-        &crate::types::ScopeParams::default(),
-        &params,
+        &crate::permissions::ScopeValues::resolved(&crate::types::ScopeParams::default(), &params),
     );
     assert_eq!(keys.len(), 1, "no scope_param passed → single wildcard key");
     let keys = crate::permissions::PermissionKey::from_service_action(
         "email",
         "send",
-        &send.scope_param,
-        &params,
+        &crate::permissions::ScopeValues::resolved(&send.scope_param, &params),
     );
     assert_eq!(
         keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>(),
