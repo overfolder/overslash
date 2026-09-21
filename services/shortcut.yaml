@@ -8,9 +8,9 @@
 #
 # Shortcut's own OpenAPI document is at
 # https://developer.shortcut.com/api/rest/v3/shortcut.openapi.json — ~150
-# operations. What follows is a curated subset: the stories, epics, iterations
-# and workspace metadata an agent needs to find work, file it and move it, and
-# nothing that exists only for the web client.
+# operations. What follows is a curated subset: the stories, epics, iterations,
+# projects and workspace metadata an agent needs to find work, file it and move
+# it, and nothing that exists only for the web client.
 openapi: 3.1.0
 info:
   title: Shortcut
@@ -18,10 +18,11 @@ info:
   category: Development
   description: >-
     Shortcut project management over its REST API v3. Stories, epics,
-    iterations, tasks and comments, plus the workspace metadata (workflows,
-    teams, members, labels) whose ids the write actions need. Search is the
-    entry point: `search_stories` takes Shortcut's own search syntax
-    ("state:started owner:me"), pages, and returns ids for everything else.
+    iterations, projects, tasks and comments, plus the workspace metadata
+    (workflows, teams, members, labels) whose ids the write actions need.
+    Search is the entry point: `search_stories` takes Shortcut's own search
+    syntax ("state:started owner:me"), pages, and returns ids for everything
+    else.
     Auth is a workspace API token sent as `Shortcut-Token`; it inherits the
     permissions of the member who created it.
 servers:
@@ -170,7 +171,8 @@ paths:
         offers no page size and no cursor on this endpoint and caps the result
         itself, so it is bounded by how narrow the filters are; use
         `search_stories` when you need to page. Ids come from `list_workflows`,
-        `list_members`, `list_groups`, `list_epics` and `list_iterations`.
+        `list_members`, `list_groups`, `list_epics`, `list_iterations` and
+        `list_projects`.
       requestBody:
         required: true
         content:
@@ -196,6 +198,9 @@ paths:
                 owner_ids:
                   type: array
                   description: Member UUIDs who own the stories.
+                project_ids:
+                  type: array
+                  description: Project ids the stories may belong to.
                 requested_by_id:
                   type: string
                   description: Member UUID who requested the stories.
@@ -296,6 +301,8 @@ paths:
           filter: 'if .body | has("epic_id") then (.body.epic_id // "none") else empty end'
         - label: Iteration
           filter: 'if .body | has("iteration_id") then (.body.iteration_id // "none") else empty end'
+        - label: Project
+          filter: 'if .body | has("project_id") then (.body.project_id // "none") else empty end'
         - label: Owners
           filter: '.body.owner_ids // [] | select(length > 0) | join(", ")'
         # `false` is the interesting half of this field — it un-archives —
@@ -347,6 +354,11 @@ paths:
                 iteration_id:
                   type: integer
                   description: Iteration to file the story under.
+                project_id:
+                  type: integer
+                  description: >-
+                    Project to file the story under, from list_projects; null
+                    to unfile it.
                 group_id:
                   type: string
                   description: Owning team (group) UUID.
@@ -421,6 +433,8 @@ paths:
           filter: .body.epic_id // empty
         - label: Iteration
           filter: .body.iteration_id // empty
+        - label: Project
+          filter: .body.project_id // empty
         - label: Team
           filter: .body.group_id // empty
         - label: Owners
@@ -454,6 +468,9 @@ paths:
                 iteration_id:
                   type: integer
                   description: Iteration to file the story under.
+                project_id:
+                  type: integer
+                  description: Project to file the story under, from list_projects.
                 group_id:
                   type: string
                   description: Owning team (group) UUID, from list_groups.
@@ -1065,6 +1082,232 @@ paths:
           x-overslash-aliases: [iteration_public_id, iteration-public-id]
           schema:
             type: integer
+  # --- Projects -----------------------------------------------------------
+  #
+  # A story carries `project_id` alongside `epic_id`, `iteration_id` and
+  # `group_id`, and a project is the one container of the four with nothing
+  # that surfaces it indirectly: an epic shows up in `list_epics`, an
+  # iteration in `list_iterations`, a team in `list_groups`, but a project is
+  # only ever named by a story already filed under it. `list_projects` is how
+  # a project with no stories yet is found at all.
+  /api/v3/projects:
+    get:
+      operationId: list_projects
+      summary: List projects
+      risk: read
+      description: >-
+        Every project in the workspace with its id, name, abbreviation and the
+        workflow it belongs to. The id is what `project_id` takes on a story.
+        Shortcut offers no page size, no cursor and no filter here — the whole
+        set comes back — which is also what makes this the only way to see a
+        project that has no stories in it yet, since nothing else in this
+        service mentions a project except a story that is already filed under
+        one.
+    post:
+      operationId: create_project
+      summary: "Create project '{name}'"
+      risk: write
+      description: >-
+        Create a project — the container stories are filed under with
+        `project_id`. `name` and `team_id` are both required; `team_id` is the
+        id each workflow returned by `list_workflows` carries, and it fixes
+        which workflow the project's stories move through.
+      disclose:
+        - label: Name
+          primary: true
+          filter: .body.name
+        - label: Description
+          primary: true
+          filter: .body.description // empty
+          max_chars: 2000
+        - label: Abbreviation
+          filter: .body.abbreviation // empty
+        - label: Team
+          filter: .body.team_id // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, team_id]
+              properties:
+                name:
+                  type: string
+                  description: Project name.
+                team_id:
+                  type: integer
+                  description: >-
+                    Team the project belongs to, from a workflow's `team_id`
+                    in list_workflows.
+                description:
+                  type: string
+                  description: Project description.
+                abbreviation:
+                  type: string
+                  description: >-
+                    Prefix shown in story summaries; three characters at most.
+                color:
+                  type: string
+                  description: Hex colour shown with the project, e.g. "#ff0000".
+                iteration_length:
+                  type: integer
+                  description: Weeks per iteration in this project.
+                follower_ids:
+                  type: array
+                  description: Member UUIDs following the project.
+                external_id:
+                  type: string
+                  description: >-
+                    The project's id in whatever tool it was imported from.
+  /api/v3/projects/{project_id}:
+    # Resolver on the writes only — see the note on /api/v3/stories/{story_id}.
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        description: Project id.
+        x-overslash-aliases: [project_public_id, project-public-id, id]
+        schema:
+          type: integer
+    get:
+      operationId: get_project
+      summary: "Get project {project_id}"
+      risk: read
+      description: >-
+        One project whole: name, description, abbreviation, colour, the
+        workflow it belongs to, its followers and the progress stats Shortcut
+        computes across its stories. `list_projects` returns the same shape for
+        every project at once, so reach for this only when you hold one id.
+    put:
+      operationId: update_project
+      summary: "Update project {project_id}"
+      risk: write
+      scope_param: project_id
+      description: >-
+        Change a project in place; only the fields given are touched. Passing
+        `description` replaces it entirely. `archived: true` takes the project
+        out of the way without deleting it, and is the reversible thing to
+        reach for instead of `delete_project`.
+      disclose:
+        - label: Project
+          primary: true
+          filter: '"#" + (.params.project_id | tostring) + (if .resolved.project_id then " — " + .resolved.project_id else "" end)'
+        - label: New name
+          filter: .body.name // empty
+        - label: Description
+          primary: true
+          filter: .body.description // empty
+          max_chars: 2000
+        - label: Abbreviation
+          filter: .body.abbreviation // empty
+        - label: Team
+          filter: .body.team_id // empty
+        # `false` is the interesting half of this field — it un-archives —
+        # and jq's `//` yields its right-hand side for `false` as well as for
+        # `null`, so `// empty` would disclose nothing for exactly the write a
+        # reviewer most needs to see. Test presence instead of truthiness.
+        - label: Archived
+          filter: 'if .body | has("archived") then .body.archived else empty end'
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          description: Project id.
+          x-overslash-aliases: [project_public_id, project-public-id, id]
+          schema:
+            type: integer
+          resolve:
+            get: /api/v3/projects/{project_id}
+            pick: name
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Project name.
+                description:
+                  type: string
+                  description: >-
+                    Replaces the existing description entirely.
+                abbreviation:
+                  type: string
+                  description: >-
+                    Prefix shown in story summaries; three characters at most.
+                color:
+                  type: string
+                  description: Hex colour shown with the project, e.g. "#ff0000".
+                team_id:
+                  type: integer
+                  description: >-
+                    Team the project belongs to, from a workflow's `team_id`
+                    in list_workflows.
+                follower_ids:
+                  type: array
+                  description: Member UUIDs following the project (replaces the set).
+                archived:
+                  type: boolean
+                  description: Archive or unarchive the project.
+                show_thermometer:
+                  type: boolean
+                  description: Show the story-age thermometer in story summaries.
+                days_to_thermometer:
+                  type: integer
+                  description: Days before the thermometer appears on a story.
+    delete:
+      operationId: delete_project
+      summary: "Delete project {project_id}"
+      risk: delete
+      scope_param: project_id
+      description: >-
+        Permanently delete a project. Shortcut refuses while the project still
+        holds stories — move them with `update_story` first — and there is no
+        undo once it succeeds. Archiving (`update_project` with
+        `archived: true`) is the reversible way to retire a project.
+      disclose:
+        - label: Project
+          primary: true
+          filter: '"#" + (.params.project_id | tostring) + (if .resolved.project_id then " — " + .resolved.project_id else "" end)'
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          description: Project id.
+          x-overslash-aliases: [project_public_id, project-public-id, id]
+          schema:
+            type: integer
+          resolve:
+            get: /api/v3/projects/{project_id}
+            pick: name
+            cache_ttl: 60
+  /api/v3/projects/{project_id}/stories:
+    get:
+      operationId: list_project_stories
+      summary: "List stories in project {project_id}"
+      risk: read
+      description: >-
+        Every story filed under one project, slim (no descriptions unless
+        `includes_description` is set). Shortcut offers no page size and no
+        cursor here — the list is bounded by the project. To filter, or for a
+        large project, `query_stories` takes `project_ids`.
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          description: Project id.
+          x-overslash-aliases: [project_public_id, project-public-id]
+          schema:
+            type: integer
+        - name: includes_description
+          in: query
+          description: Inline each story's description. Large on a wide project.
+          schema:
+            type: boolean
   # --- Workspace metadata -------------------------------------------------
   #
   # The id sources every write action above refers to. All small,
