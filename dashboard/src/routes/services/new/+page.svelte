@@ -629,6 +629,12 @@
 	 * A blank value is not an erasure — it means "I did not supply this one",
 	 * which is the shape of both an existing vault secret the user is reusing
 	 * and a slot they intend to fill through a setup link.
+	 *
+	 * Writes the value directly rather than minting a link, which is why the
+	 * reopen panel needs no `force` and meets no `secret_name_conflict`: D85
+	 * gates the act of *minting* a link into an occupied name, because that
+	 * hands a stranger the power to replace a value they cannot see. Someone
+	 * typing into this form is looking at the service the name belongs to.
 	 */
 	async function writeCredentialValues(names: Record<string, string>) {
 		for (const [slot, value] of Object.entries(credentialValues)) {

@@ -110,9 +110,11 @@ fn finish_setup_steps() -> Vec<SetupStep> {
             "you already have an instance of this template awaiting setup — do not create \
              another, it will collide on the name. Pass its `name`. While `status` is \
              `pending_setup` its credential has not been proven to work: hand the setup URL \
-             to your user (mint a fresh one with `request_secret` passing the instance's \
-             `service_id` if the first has been used or has expired). It becomes callable, \
-             and visible to search, once the credential checks out",
+             to your user. If that link expired unused, mint a fresh one with \
+             `request_secret` passing the instance's `service_id`; if it was used and the \
+             credential was wrong, the same call is refused with `secret_name_conflict` \
+             because the value is already stored, so add `force: true` to replace it. It \
+             becomes callable, and visible to search, once the credential checks out",
         ),
     }]
 }

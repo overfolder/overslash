@@ -750,7 +750,9 @@ pub(crate) async fn delete(pool: &PgPool, org_id: Uuid, id: Uuid) -> Result<bool
 /// a human may already have pasted: `mint_bundle` stores under the *template's*
 /// `default_secret_name`, so two instances of one template owned by one user
 /// share a name, and deleting it could pull the credential out from under a
-/// different, live service. `DELETE /v1/services/{name}` leaves secrets alone
+/// different, live service. D85 refuses to mint into that collision unforced,
+/// which narrows the window without closing it — a forced create shares the
+/// name deliberately, and rows predating D85 already do. `DELETE /v1/services/{name}` leaves secrets alone
 /// for the same reason.
 pub async fn purge_expired_setup_drafts(
     pool: &PgPool,

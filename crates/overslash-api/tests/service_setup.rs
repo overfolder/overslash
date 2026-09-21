@@ -972,17 +972,27 @@ async fn probing_an_unknown_instance_is_not_found() {
 // it was a 401 on a real call.
 
 /// Stand up `resend` and fulfil its link, leaving `resend_key` occupied.
-async fn seed_bound_resend(base: &str, client: &Client, admin_key: &str, name: &str) -> Value {
+///
+/// The submit carries a session because a *setup* request is always minted
+/// `require_user_session` (D-NEXT): fulfilling one triggers the instance's
+/// credential probe, and the probe runs as somebody.
+async fn seed_bound_resend(
+    base: &str,
+    client: &Client,
+    fx: &common::BootstrapFixtures,
+    name: &str,
+) -> Value {
     let svc = create_service(
         base,
         client,
-        admin_key,
+        &fx.admin_key,
         json!({"template_key": "resend", "name": name, "user_level": true}),
     )
     .await;
     let (req_id, token) = parse_setup_url(svc["setup"]["setup_url"].as_str().unwrap());
     let resp = client
         .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .header("cookie", common::session_cookie(fx.org_id, fx.user_ids[0]))
         .json(&json!({"token": token, "value": "re_first_key"}))
         .send()
         .await
@@ -995,7 +1005,7 @@ async fn seed_bound_resend(base: &str, client: &Client, admin_key: &str, name: &
 async fn a_second_instance_refuses_to_claim_the_first_ones_secret() {
     let mock = common::start_mock().await;
     let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
-    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+    seed_bound_resend(&base, &client, &fx, "resend-one").await;
 
     let resp = client
         .post(format!("{base}/v1/services"))
@@ -1043,7 +1053,7 @@ async fn a_second_instance_refuses_to_claim_the_first_ones_secret() {
 async fn binding_the_existing_secret_is_allowed_and_mints_no_link() {
     let mock = common::start_mock().await;
     let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
-    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+    seed_bound_resend(&base, &client, &fx, "resend-one").await;
 
     let svc = create_service(
         &base,
@@ -1072,7 +1082,7 @@ async fn binding_the_existing_secret_is_allowed_and_mints_no_link() {
 async fn force_mints_the_link_and_says_what_it_will_replace() {
     let mock = common::start_mock().await;
     let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
-    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+    seed_bound_resend(&base, &client, &fx, "resend-one").await;
 
     let svc = create_service(
         &base,
@@ -1125,7 +1135,7 @@ async fn an_uncontested_create_carries_no_warnings() {
 async fn force_does_not_override_a_taken_instance_name() {
     let mock = common::start_mock().await;
     let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
-    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+    seed_bound_resend(&base, &client, &fx, "resend-one").await;
 
     let resp = client
         .post(format!("{base}/v1/services"))
@@ -1216,7 +1226,7 @@ async fn the_setup_page_warns_when_the_name_is_already_taken() {
 async fn renaming_onto_a_taken_name_is_a_conflict_not_a_server_error() {
     let mock = common::start_mock().await;
     let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
-    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+    seed_bound_resend(&base, &client, &fx, "resend-one").await;
 
     let second = create_service(
         &base,
@@ -1257,7 +1267,7 @@ async fn renaming_onto_a_taken_name_is_a_conflict_not_a_server_error() {
 async fn an_archived_instance_still_holding_a_name_says_so() {
     let mock = common::start_mock().await;
     let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
-    let first = seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+    let first = seed_bound_resend(&base, &client, &fx, "resend-one").await;
     let id = first["id"].as_str().unwrap();
 
     let arch = client
@@ -1298,7 +1308,7 @@ async fn an_archived_instance_still_holding_a_name_says_so() {
 async fn a_bound_request_is_pointed_at_update_service_not_credentials() {
     let mock = common::start_mock().await;
     let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
-    let first = seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+    let first = seed_bound_resend(&base, &client, &fx, "resend-one").await;
     let service_id = first["id"].as_str().unwrap();
 
     let resp = client
@@ -1335,7 +1345,7 @@ async fn a_bound_request_is_pointed_at_update_service_not_credentials() {
 async fn the_create_hint_names_the_credentials_map() {
     let mock = common::start_mock().await;
     let (base, client, fx) = setup_with_upstream(format!("http://127.0.0.1:{}", mock.port())).await;
-    seed_bound_resend(&base, &client, &fx.admin_key, "resend-one").await;
+    seed_bound_resend(&base, &client, &fx, "resend-one").await;
 
     let resp = client
         .post(format!("{base}/v1/services"))
@@ -1354,7 +1364,6 @@ async fn the_create_hint_names_the_credentials_map() {
     assert!(!hint.contains("update_service"), "{body}");
     assert!(!hint.contains("  "), "hint has a run of spaces: {hint:?}");
 }
-
 
 // ── Draft until verified ──────────────────────────────────────────────────
 
@@ -1649,9 +1658,12 @@ async fn a_reopened_draft_takes_a_new_credential_and_goes_green() {
         .await
         .unwrap();
 
-    // Re-mint against the now-*bound* slot. This is the reopen path, and it
-    // needs no new endpoint.
-    let req: Value = client
+    // Re-minting against the now-*bound* slot is refused unforced, and that is
+    // D85 working rather than a collision between the two features: the name
+    // is occupied, and a link aimed at an occupied name replaces whatever is
+    // there. Reopening a credential to fix it *is* a rotation, which is the
+    // case D85 reserves `force` for.
+    let unforced = client
         .post(format!("{base}/v1/secrets/requests"))
         .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
         .json(
@@ -1660,10 +1672,30 @@ async fn a_reopened_draft_takes_a_new_credential_and_goes_green() {
         )
         .send()
         .await
+        .unwrap();
+    assert_eq!(unforced.status(), 409, "a bound slot is occupied, not free");
+    let body: Value = unforced.json().await.unwrap();
+    assert_eq!(body["error"], "secret_name_conflict", "{body}");
+
+    // Forced: the reopen path proper. It needs no new endpoint, only the
+    // acknowledgement that it is replacing a value.
+    let req: Value = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(
+            &json!({"secret_name": "resend_key", "service_id": service_id,
+                      "credential_key": "token", "force": true}),
+        )
+        .send()
+        .await
         .unwrap()
         .json()
         .await
         .unwrap();
+    assert!(
+        req["warning"].as_str().is_some(),
+        "a forced re-mint says what it supersedes: {req}"
+    );
     let (req_id2, token2) = parse_setup_url(req["url"].as_str().unwrap());
     let resp = client
         .post(format!("{base}/public/secrets/provide/{req_id2}"))

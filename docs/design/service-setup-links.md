@@ -304,22 +304,32 @@ needs longer.
 It leaves the vault secret. `mint_bundle` stores under the *template's*
 `default_secret_name`, so two Resend instances owned by one user share
 `resend_key` — deleting it could pull the credential out from under a different,
-live service. `DELETE /v1/services/{name}` leaves secrets alone for the same
-reason, and a sweeper that destroyed more than the manual delete would be the
-inconsistency. No audit row and no event either, matching every other sweep: an
+live service. D85 refuses to *mint* into that collision unforced, which narrows
+the window without closing it: a `force: true` create shares the name on
+purpose, and rows predating D85 already do. `DELETE /v1/services/{name}` leaves
+secrets alone for the same reason, and a sweeper that destroyed more than the
+manual delete would be the inconsistency. No audit row and no event either, matching every other sweep: an
 audit row records somebody's act, and a sweeper is nobody.
 
 ### Reopening a gated instance
 
-No new endpoints. The primitive was already there and unremarked:
-`validate_binding` and `resolve_slot_key` never required a slot to be *un*bound,
-so a wrong key is corrected by minting a second link at the same slot and the
-new value lands as a new secret version. Beside that, `PUT /v1/secrets/{name}`
-rewrites the value directly for the owner, and `PUT /v1/services/{id}/manage`
-edits config, URL and name — `kernel_update_service` has no status predicate, so
-it works on a gated instance untouched. The wizard's failure step is an inline
-panel over those three, not a rewind to its configure step, whose submit
-*creates*.
+No new endpoints. `PUT /v1/secrets/{name}` rewrites the value directly for the
+owner, and `PUT /v1/services/{id}/manage` edits config, URL and name —
+`kernel_update_service` has no status predicate, so it works on a gated instance
+untouched. The wizard's failure step is an inline panel over those two, not a
+rewind to its configure step, whose submit *creates*.
+
+Handing the correction back to *someone else* is the third way, and it meets
+[D85](../../DECISIONS.md) head on. `validate_binding` and `resolve_slot_key`
+never required a slot to be *un*bound, so a second link at the same slot is
+mintable — but by the time there is a wrong key to fix, that slot's vault name
+is occupied, and a link aimed at an occupied name is exactly what D85 refuses
+with `secret_name_conflict`. That is the right answer rather than a collision
+between the two features: reopening a credential to correct it **is** a
+rotation, which is the case D85 reserves `force: true` for, and the forced mint
+reports what it supersedes. The alternative — exempting a re-mint at a slot the
+same instance already owns — would carve a hole in D85 precisely where the value
+being replaced is most likely to be one somebody is using.
 
 ### The verdict carries no body
 
