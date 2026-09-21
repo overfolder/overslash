@@ -45,7 +45,7 @@ compatibility surface from day one, which is why it is versioned.
 ### Wire contract (v1)
 
 ```
-GET /v1/events/stream?topics=approvals,connections,secrets,activity
+GET /v1/events/stream?topics=approvals,connections,secrets,activity,services
 Authorization: Bearer <osk_… | mcp jwt>      (or the oss_session cookie)
 Last-Event-ID: <cursor>                      (sent automatically by EventSource)
 
@@ -190,6 +190,38 @@ deployment with the flag off gets silence, not a 400 — a subscription that
 succeeds or fails depending on an env var would be a worse contract than one
 that is simply quiet.
 
+### The `services` topic
+
+`service.created`, `service.updated` and `service.deleted` report acts of
+configuration, not calls: one event per create, manage, status flip or delete,
+wherever it came from — the dashboard, REST, or an agent's `create_service`
+over MCP. Operator-rate, so unlike `activity` they are emitted unconditionally.
+
+They exist because the Live Map holds a *snapshot* of the fleet. Before them,
+an instance created while the map was open was invisible to it: the map learned
+service names only from `action.*`, whose payload carries a name and nothing
+else, so the first call to a new service drew a placeholder ball — no owner, so
+outside its user's container, and no icon, so a two-letter monogram — that no
+amount of further traffic could correct. Only a page reload fixed it.
+
+The payload names the instance, its owner and its status, and stops there. That
+is the module's standing rule — events are notifications, not state — and here
+it is load-bearing: `icon_url` and `test_action` are properties of the
+*template*, resolved per caller at read time, and freezing them into a
+historical fact would make the event wrong the moment the template is edited. A
+subscriber refetches its listing, which is where those fields belong.
+
+Audience is [`for_service`], which is [`for_connection`]: the owner's chain
+plus the actor. The two terms are not interchangeable here, because on this
+path the owner and the actor are routinely different identities — an agent
+creating a service gets an instance owned by its *ceiling user*, never by
+itself (`kernel_create_service`; `on_behalf_of` likewise resolves to a user, or
+`validate_on_behalf_of` rejects it). So `chain(owner)` is the term that reaches
+the user watching their own map, and `{actor}` is the term that reaches the
+agent that did the creating.
+
+### Emitting the activity pair
+
 Both are emitted from `routes/actions/mod.rs::call_action`, the wrapper that
 already brackets the request for metrics, rather than from the four terminal
 sites inside `call_action_impl`. That wrapper owns the outcome taxonomy —
@@ -221,6 +253,7 @@ The rules mirror the corresponding read endpoints:
 | `approval.*` | `chain(requester) ∪ chain(current_resolver)` | Requester covers `?scope=mine`; resolver covers `?scope=assigned`; the resolver's *ancestors* are exactly `?scope=actionable`, since an identity can act iff the resolver is itself or a descendant. The requester's ancestors come along so a parent keeps seeing its sub-agents' traffic. |
 | `connection.*` | `chain(owner) ∪ {actor}` | **Not** the owner's descendants. Sub-agents *use* an owner-level connection via `on_behalf_of` but cannot list or manage it, and an event stream must never be wider than the read model it reflects. |
 | `secret_request.*` | `chain(requested_by) ∪ chain(target)` | The requesting agent is the one blocked on the secret. The target's chain covers the owner-user whose vault slot is written. Whoever pastes the value is anonymous and gains nothing by doing so. |
+| `service.*` | `chain(owner) ∪ {actor}` | [`for_connection`] verbatim, because the ownership shape is the same. `owner` is the instance's owner-*user*, which is what reaches a user whose agent just created a service for them; `{actor}` is what reaches the agent that did it. An org-level instance has no owner and so reaches only the actor — narrower than `GET /v1/services`, which shows it org-wide, and affordable because creating one requires admin and admins bypass the array. |
 | `action.*` | `chain(actor)` | The Live Map's feed. A parent keeps seeing what its sub-agents call; a sibling chain sees nothing. Org admins bypass the array, which is what makes one stream an org-wide operator view and a personal one for everyone else. Discloses no more than `GET /v1/audit` already shows the same caller. |
 
 Delivery applies one predicate, in two places:
@@ -357,9 +390,6 @@ taken but the identity cap then rejects.
 
 ## Deferred
 
-- **The `services` topic.** SPEC.md §7 implies service-lifecycle notifications
-  (`pending_credentials → active`), but no `service.*` event exists on any
-  transport yet. It slots in as one more `EventType` variant.
 - **MCP elicitation still polls.** Its 500 ms `await_completion` loop predates
   the bus and could now wait on it instead.
 - **The dashboard subscribes only to `approvals`.** Connection and secret events

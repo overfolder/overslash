@@ -827,6 +827,23 @@ pub async fn kernel_create_service(
         }
     }
 
+    // Last, so the fleet a subscriber refetches on hearing this already has
+    // the connection and the setup links this call wired up.
+    super::fire_service_event(
+        ctx.db.clone(),
+        ctx.http_client.clone(),
+        super::ServiceEvent {
+            org_id: ctx.org_id,
+            event_type: crate::services::events::EventType::ServiceCreated,
+            service_instance_id: row_id,
+            name: &detail.name,
+            owner_identity_id,
+            status: &detail.status,
+            actor_identity_id: Some(auth_identity),
+        },
+    )
+    .await;
+
     Ok(detail)
 }
 
@@ -995,5 +1012,23 @@ pub async fn kernel_update_service(
     let mut detail = row_to_detail(row);
     detail.icon_url = tv.icon_url;
     detail.test_action = tv.test_action;
+
+    // The owner *after* the update, which is also the owner before it: nothing
+    // here moves an instance between owners, so one audience covers both.
+    super::fire_service_event(
+        ctx.db.clone(),
+        ctx.http_client.clone(),
+        super::ServiceEvent {
+            org_id: ctx.org_id,
+            event_type: crate::services::events::EventType::ServiceUpdated,
+            service_instance_id: id,
+            name: &detail.name,
+            owner_identity_id: detail.owner_identity_id,
+            status: &detail.status,
+            actor_identity_id: Some(auth_identity),
+        },
+    )
+    .await;
+
     Ok(detail)
 }

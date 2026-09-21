@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { onEvent, eventStream, type StreamEvent } from '$lib/stores/events.svelte';
 	import type { Identity, ServiceInstanceSummary } from '$lib/types';
-	import { buildGraph, type CollapseState, type MapNode } from './graph';
+	import { RAW_HTTP_ID, buildGraph, type CollapseState, type MapNode } from './graph';
 	import { resolveOwner, ownerLabel } from '$lib/ownerLabel';
 	import { createSim, SIZES, type CallOutcome, type Sim, type TooltipCall } from './sim';
 
@@ -11,7 +11,7 @@
 		services = [],
 		currentUserId = undefined,
 		allowedDomains = [],
-		onUnknownActor = () => {}
+		onStaleFleet = () => {}
 	}: {
 		identities?: Identity[];
 		services?: ServiceInstanceSummary[];
@@ -19,9 +19,9 @@
 		currentUserId?: string;
 		/** Org sign-in domains, stripped off owner emails by `$lib/ownerLabel`. */
 		allowedDomains?: string[];
-		/** An event named an identity we have never heard of — the fleet
-		 *  snapshot is stale. The page decides whether to refetch. */
-		onUnknownActor?: () => void;
+		/** An event named an identity or a service we have never heard of — the
+		 *  fleet snapshot is stale. The page decides whether to refetch. */
+		onStaleFleet?: () => void;
 	} = $props();
 
 	interface ActionEventData {
@@ -173,18 +173,42 @@
 		}
 	}
 
+	/**
+	 * Service ids we have already asked the page to refetch for.
+	 *
+	 * Once each, because "unlisted" has two causes and only one of them a
+	 * refetch can fix. A service created since the snapshot loads on the next
+	 * one; a user-level instance an org admin can watch but not list never
+	 * will — and asking again on its every call would be a refetch every
+	 * cooldown for as long as the tab is open.
+	 */
+	const refetchedFor = new Set<string>();
+
+	function noteStaleService(id: string) {
+		// The raw-HTTP ball stands for a call that named no service at all.
+		// There is nothing in any listing for it, so nothing to refetch for.
+		if (id === RAW_HTTP_ID || refetchedFor.has(id)) return;
+		refetchedFor.add(id);
+		onStaleFleet();
+	}
+
 	function handleAction(e: StreamEvent<ActionEventData>) {
 		const { call_id: callId, actor_identity_id: actor } = e.data;
 		if (!callId || !actor) return;
 		// Instance names are unique per owner, so which ball the traffic lands on
 		// depends on the actor — see `Graph.serviceIdFor`.
 		const to = graph.serviceIdFor(e.data.service, actor);
-		// Both endpoints may be new to us. A service gets a node on the spot;
-		// an identity has to come from the API, so ask the page to refetch.
-		if (!graph.byId.has(to) && !extraServices.includes(to)) {
+		// Both endpoints may be new to us. A service gets a node on the spot so
+		// the packet has somewhere to fly, but that node is a placeholder: it
+		// knows a name and nothing else, so it sits on the shared ring with a
+		// monogram instead of inside its owner's container with its icon. Ask
+		// for a refetch too, and the listing replaces it with the real thing.
+		const known = graph.byId.get(to);
+		if (!known && !extraServices.includes(to)) {
 			extraServices = [...extraServices, to];
 		}
-		if (!graph.byId.has(actor)) onUnknownActor();
+		if (!known || known.unlisted) noteStaleService(to);
+		if (!graph.byId.has(actor)) onStaleFleet();
 		if (e.type === 'action.called') sim?.startCall(callId, actor, to);
 		else sim?.finishCall(callId, actor, to, (e.data.outcome as CallOutcome) ?? 'called');
 	}

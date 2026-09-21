@@ -56,13 +56,30 @@ export const EXECUTION_EVENT_TYPES = [
  */
 export const ACTIVITY_EVENT_TYPES = ['action.called', 'action.completed'] as const;
 
+/**
+ * Service-instance lifecycle. Operator-rate, not call-rate: one event per act
+ * of configuration, wherever it came from — the dashboard, the REST API, or an
+ * agent's `create_service` over MCP.
+ *
+ * The payload names the instance and its owner and stops there, so a handler
+ * refetches rather than renders: `icon_url` and the rest are template-derived
+ * and resolved per caller, and an event is a fact that must not go stale when
+ * the template behind it is edited.
+ */
+export const SERVICE_EVENT_TYPES = [
+	'service.created',
+	'service.updated',
+	'service.deleted'
+] as const;
+
 /** Every event name the server can put on the wire. */
 const WIRE_EVENT_TYPES = [
 	...APPROVAL_EVENT_TYPES,
 	...CONNECTION_EVENT_TYPES,
 	...SECRET_EVENT_TYPES,
 	...EXECUTION_EVENT_TYPES,
-	...ACTIVITY_EVENT_TYPES
+	...ACTIVITY_EVENT_TYPES,
+	...SERVICE_EVENT_TYPES
 ] as const;
 
 /**
@@ -98,7 +115,12 @@ export interface ApprovalEventData {
 // `/v1/version` says whether the build emits `action.*` at all, and a build
 // with the flag off emits nothing — so gating here would buy no traffic
 // reduction and cost a reconnect.
-const STREAM_URL = '/v1/events/stream?topics=approvals,activity,executions';
+//
+// `services` is a topic this dashboard added: an API that predates it rejects
+// the whole `?topics=` list rather than the one name it does not know, which
+// on a deploy skew costs a reconnect loop until the API catches up. The stream
+// recovers on its own once it does — but it is why the two ship together.
+const STREAM_URL = '/v1/events/stream?topics=approvals,activity,executions,services';
 
 /**
  * How long to tolerate a reconnect before admitting the stream is down. The
