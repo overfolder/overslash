@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/overfolder/overslash/compare/v0.11.0...v0.12.0) (2026-09-21)
+
+
+### Features
+
+* **shortcut:** add the project surface and let a story name its project ([#642](https://github.com/overfolder/overslash/issues/642)) ([e214d30](https://github.com/overfolder/overslash/commit/e214d309c065c5c8b5d9de63a965de8eba5416a4))
+
 ## [0.11.0](https://github.com/overfolder/overslash/compare/v0.10.2...v0.11.0) (2026-09-21)
 
 
