@@ -192,12 +192,26 @@ that is simply quiet.
 
 ### The `services` topic
 
+Four events, on one topic, for two different readers.
+
 `service.created`, `service.updated` and `service.deleted` report acts of
 configuration, not calls: one event per create, manage, status flip or delete,
 wherever it came from — the dashboard, REST, or an agent's `create_service`
 over MCP. Operator-rate, so unlike `activity` they are emitted unconditionally.
+`service.activated` is D86's, and answers a narrower question — "is this
+instance callable yet" — which since the probe became its own step is no longer
+the same moment as the credential landing.
 
-They exist because the Live Map holds a *snapshot* of the fleet. Before them,
+The split matters at the audience, not at the topic. An agent that handed over
+a setup link is *blocked* on activation, so [`for_service_setup`] reaches
+downwards to it through `secret_requests`; `chain` walks upwards and would miss
+a descendant. The other three state that the fleet changed shape, which nobody
+is waiting on, so their audience is the read model instead — see below. A view
+that merely draws the fleet wants all four and refetches on each; a caller
+waiting to make a call wants exactly one of them.
+
+The three configuration events exist because the Live Map holds a *snapshot* of
+the fleet. Before them,
 an instance created while the map was open was invisible to it: the map learned
 service names only from `action.*`, whose payload carries a name and nothing
 else, so the first call to a new service drew a placeholder ball — no owner, so
@@ -253,7 +267,8 @@ The rules mirror the corresponding read endpoints:
 | `approval.*` | `chain(requester) ∪ chain(current_resolver)` | Requester covers `?scope=mine`; resolver covers `?scope=assigned`; the resolver's *ancestors* are exactly `?scope=actionable`, since an identity can act iff the resolver is itself or a descendant. The requester's ancestors come along so a parent keeps seeing its sub-agents' traffic. |
 | `connection.*` | `chain(owner) ∪ {actor}` | **Not** the owner's descendants. Sub-agents *use* an owner-level connection via `on_behalf_of` but cannot list or manage it, and an event stream must never be wider than the read model it reflects. |
 | `secret_request.*` | `chain(requested_by) ∪ chain(target)` | The requesting agent is the one blocked on the secret. The target's chain covers the owner-user whose vault slot is written. Whoever pastes the value is anonymous and gains nothing by doing so. |
-| `service.*` | `chain(owner) ∪ {actor}` | [`for_connection`] verbatim, because the ownership shape is the same. `owner` is the instance's owner-*user*, which is what reaches a user whose agent just created a service for them; `{actor}` is what reaches the agent that did it. An org-level instance has no owner and so reaches only the actor — narrower than `GET /v1/services`, which shows it org-wide, and affordable because creating one requires admin and admins bypass the array. |
+| `service.activated` | `chain(owner) ∪ {actor} ∪ setup_requesters(instance)` | D86. The one event here somebody is *blocked* on, so it alone reaches downwards: the agent that handed over the setup link is a descendant, and the ancestor walk would miss it. `secret_requests` rows survive fulfilment, so `requested_by` is exactly "who is waiting". |
+| `service.created` / `.updated` / `.deleted` | `chain(owner) ∪ {actor}` | [`for_connection`] verbatim, because the ownership shape is the same. `owner` is the instance's owner-*user*, which is what reaches a user whose agent just created a service for them; `{actor}` is what reaches the agent that did it. An org-level instance has no owner and so reaches only the actor — narrower than `GET /v1/services`, which shows it org-wide, and affordable because creating one requires admin and admins bypass the array. |
 | `action.*` | `chain(actor)` | The Live Map's feed. A parent keeps seeing what its sub-agents call; a sibling chain sees nothing. Org admins bypass the array, which is what makes one stream an org-wide operator view and a personal one for everyone else. Discloses no more than `GET /v1/audit` already shows the same caller. |
 
 Delivery applies one predicate, in two places:

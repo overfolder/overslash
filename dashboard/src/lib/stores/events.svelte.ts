@@ -65,10 +65,17 @@ export const ACTIVITY_EVENT_TYPES = ['action.called', 'action.completed'] as con
  * refetches rather than renders: `icon_url` and the rest are template-derived
  * and resolved per caller, and an event is a fact that must not go stale when
  * the template behind it is edited.
+ *
+ * `service.activated` is here because listings include `pending_setup` rows, so
+ * a gated instance is already on screen when its probe passes (D86) — without
+ * it the row would keep claiming to be gated until something else refetched.
+ * An agent blocked on "can I call this yet" cares which of these it gets; a
+ * view that draws the fleet does not, and refetches on all four.
  */
 export const SERVICE_EVENT_TYPES = [
 	'service.created',
 	'service.updated',
+	'service.activated',
 	'service.deleted'
 ] as const;
 
