@@ -105,18 +105,20 @@ pub fn build_auth_url(
 /// Build a token request with the correct auth method for the provider.
 /// `client_secret_basic` sends credentials as HTTP Basic Auth header.
 /// `client_secret_post` (default) sends them as form body fields.
+///
+/// `url` is passed in rather than read off `provider` because the two grants
+/// do not always post to the same place: see [`refresh_endpoint`].
 fn token_request(
     http_client: &reqwest::Client,
     provider: &oauth_provider::OAuthProviderRow,
+    url: &str,
     client_id: &str,
     client_secret: &str,
     form: &[(&str, &str)],
 ) -> reqwest::RequestBuilder {
     // Always request JSON responses — required for GitHub (defaults to
     // application/x-www-form-urlencoded), harmless for all other providers.
-    let req = http_client
-        .post(&provider.token_endpoint)
-        .header("Accept", "application/json");
+    let req = http_client.post(url).header("Accept", "application/json");
     if provider.token_auth_method == "client_secret_basic" {
         req.basic_auth(client_id, Some(client_secret)).form(form)
     } else {
@@ -148,10 +150,17 @@ pub async fn exchange_code(
     if let Some(verifier) = code_verifier {
         form.push(("code_verifier", verifier));
     }
-    let resp = token_request(http_client, provider, client_id, client_secret, &form)
-        .send()
-        .await
-        .map_err(|e| OAuthError::HttpError(e.to_string()))?;
+    let resp = token_request(
+        http_client,
+        provider,
+        &provider.token_endpoint,
+        client_id,
+        client_secret,
+        &form,
+    )
+    .send()
+    .await
+    .map_err(|e| OAuthError::HttpError(e.to_string()))?;
 
     if !resp.status().is_success() {
         let body = resp.text().await.unwrap_or_default();
@@ -163,6 +172,19 @@ pub async fn exchange_code(
         .map_err(|e| OAuthError::ParseError(e.to_string()))
 }
 
+/// Where a provider takes the refresh grant.
+///
+/// Almost always the token endpoint — RFC 6749 puts both grants there, and
+/// every provider seeded before Figma does. Figma is the exception: it
+/// documents `POST /v1/oauth/refresh`, separate from `POST /v1/oauth/token`.
+/// A NULL column keeps every other provider exactly where it was.
+fn refresh_endpoint(provider: &oauth_provider::OAuthProviderRow) -> &str {
+    provider
+        .refresh_endpoint
+        .as_deref()
+        .unwrap_or(&provider.token_endpoint)
+}
+
 /// Refresh an access token using a refresh token.
 pub async fn refresh_token(
     http_client: &reqwest::Client,
@@ -171,14 +193,24 @@ pub async fn refresh_token(
     client_secret: &str,
     refresh_token: &str,
 ) -> Result<TokenResponse, OAuthError> {
+    // `grant_type` rides along even for a provider with its own refresh
+    // endpoint. It is required by every provider that refreshes at the token
+    // endpoint, and one that does not is being handed a field it ignores.
     let form: Vec<(&str, &str)> = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
     ];
-    let resp = token_request(http_client, provider, client_id, client_secret, &form)
-        .send()
-        .await
-        .map_err(|e| OAuthError::HttpError(e.to_string()))?;
+    let resp = token_request(
+        http_client,
+        provider,
+        refresh_endpoint(provider),
+        client_id,
+        client_secret,
+        &form,
+    )
+    .send()
+    .await
+    .map_err(|e| OAuthError::HttpError(e.to_string()))?;
 
     if !resp.status().is_success() {
         let body = resp.text().await.unwrap_or_default();
@@ -483,12 +515,14 @@ pub async fn fetch_account_profile(
 fn extract_picture(body: &serde_json::Value) -> Option<String> {
     // `picture` is OIDC standard (Google); `avatar_url` is GitHub; the rest
     // are the vendor spellings we have seen.
-    const ROOT_FIELDS: [&str; 5] = [
+    const ROOT_FIELDS: [&str; 6] = [
         "picture",
         "avatar_url",
         "avatarUrl",
         "profile_image_url_https",
         "photoUrl",
+        // Figma's /v1/me.
+        "img_url",
     ];
     // Slack's users.identity nests the account under `user`, and offers a
     // ladder of square sizes — take the largest we can count on.

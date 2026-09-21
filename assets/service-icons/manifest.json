@@ -60,6 +60,7 @@
       "guidelines": "https://www.eventbrite.com/l/for-press/",
       "note": "No simple-icons entry. Source from the vendor brand page before shipping."
     },
+    "figma": { "source": "simple-icons:figma" },
     "github": { "source": "simple-icons:github" },
     "gmail": { "source": "simple-icons:gmail" },
     "google_calendar": { "source": "simple-icons:googlecalendar" },

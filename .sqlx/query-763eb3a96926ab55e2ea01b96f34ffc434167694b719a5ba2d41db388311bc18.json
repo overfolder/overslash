@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO oauth_providers (key, display_name, authorization_endpoint, token_endpoint,\n                revocation_endpoint, userinfo_endpoint, issuer_url, jwks_uri,\n                supports_pkce, supports_refresh, token_auth_method, is_builtin, extra_auth_params,\n                login_hint_param)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, '{}'::jsonb, 'login_hint')\n         ON CONFLICT (key) DO UPDATE SET\n            display_name = EXCLUDED.display_name,\n            authorization_endpoint = EXCLUDED.authorization_endpoint,\n            token_endpoint = EXCLUDED.token_endpoint,\n            revocation_endpoint = EXCLUDED.revocation_endpoint,\n            userinfo_endpoint = EXCLUDED.userinfo_endpoint,\n            issuer_url = EXCLUDED.issuer_url,\n            jwks_uri = EXCLUDED.jwks_uri,\n            supports_pkce = EXCLUDED.supports_pkce,\n            supports_refresh = EXCLUDED.supports_refresh,\n            token_auth_method = EXCLUDED.token_auth_method\n         RETURNING key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                   userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                   extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,\n                   default_identity_scopes, login_hint_param, created_at",
+  "query": "INSERT INTO oauth_providers (key, display_name, authorization_endpoint, token_endpoint,\n                revocation_endpoint, userinfo_endpoint, issuer_url, jwks_uri,\n                supports_pkce, supports_refresh, token_auth_method, is_builtin, extra_auth_params,\n                login_hint_param)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, '{}'::jsonb, 'login_hint')\n         ON CONFLICT (key) DO UPDATE SET\n            display_name = EXCLUDED.display_name,\n            authorization_endpoint = EXCLUDED.authorization_endpoint,\n            token_endpoint = EXCLUDED.token_endpoint,\n            revocation_endpoint = EXCLUDED.revocation_endpoint,\n            userinfo_endpoint = EXCLUDED.userinfo_endpoint,\n            issuer_url = EXCLUDED.issuer_url,\n            jwks_uri = EXCLUDED.jwks_uri,\n            supports_pkce = EXCLUDED.supports_pkce,\n            supports_refresh = EXCLUDED.supports_refresh,\n            token_auth_method = EXCLUDED.token_auth_method\n         RETURNING key, display_name, authorization_endpoint, token_endpoint, refresh_endpoint,\n                   revocation_endpoint,\n                   userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                   extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,\n                   default_identity_scopes, login_hint_param, created_at",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,17 @@
       },
       {
         "ordinal": 4,
+        "name": "refresh_endpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "refresh_endpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "revocation_endpoint",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "userinfo_endpoint",
         "type_info": "Text",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "client_id_pattern",
         "type_info": "Text",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "supports_pkce",
         "type_info": "Bool",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "supports_refresh",
         "type_info": "Bool",
         "origin": {
@@ -103,7 +114,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "extra_auth_params",
         "type_info": "Jsonb",
         "origin": {
@@ -114,7 +125,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "token_auth_method",
         "type_info": "Text",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "is_builtin",
         "type_info": "Bool",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "issuer_url",
         "type_info": "Text",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "jwks_uri",
         "type_info": "Text",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "default_identity_scopes",
         "type_info": "TextArray",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "login_hint_param",
         "type_info": "Text",
         "origin": {
@@ -180,7 +191,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -214,6 +225,7 @@
       true,
       true,
       true,
+      true,
       false,
       false,
       false,
@@ -226,5 +238,5 @@
       false
     ]
   },
-  "hash": "0ede0e45938929027745a1165b43508bcccd6812b8a293282cb7e649d26f43c1"
+  "hash": "763eb3a96926ab55e2ea01b96f34ffc434167694b719a5ba2d41db388311bc18"
 }

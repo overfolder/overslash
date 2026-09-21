@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict VeJjLWgpX0zHeRI6jPdnuguwh5zra0DSWpgdtS7uMn5IDYXj1fAAdE1K7oioO0n
+\restrict pvHEBSOHVKRu1sS9fGrDGcmftSYuVyoNQR6SPgYEaYaMcmZ53D2QCcnGNljCPuM
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -824,8 +824,16 @@ CREATE TABLE public.oauth_providers (
     issuer_url text,
     jwks_uri text,
     default_identity_scopes text[] DEFAULT '{}'::text[] NOT NULL,
-    login_hint_param text
+    login_hint_param text,
+    refresh_endpoint text
 );
+
+
+--
+-- Name: COLUMN oauth_providers.refresh_endpoint; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.oauth_providers.refresh_endpoint IS 'Where the refresh grant is posted, when the provider does not accept it at token_endpoint. NULL means refresh at token_endpoint.';
 
 
 --
@@ -3356,5 +3364,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict VeJjLWgpX0zHeRI6jPdnuguwh5zra0DSWpgdtS7uMn5IDYXj1fAAdE1K7oioO0n
+\unrestrict pvHEBSOHVKRu1sS9fGrDGcmftSYuVyoNQR6SPgYEaYaMcmZ53D2QCcnGNljCPuM
 

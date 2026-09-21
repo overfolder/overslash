@@ -57,6 +57,7 @@ mod email_smoke;
 mod eventbrite;
 mod events_stream;
 mod execution_authz;
+mod figma;
 mod free_unlimited;
 mod github;
 mod gmail;

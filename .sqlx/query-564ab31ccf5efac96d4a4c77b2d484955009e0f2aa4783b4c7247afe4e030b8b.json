@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,\n                default_identity_scopes, login_hint_param, created_at\n         FROM oauth_providers ORDER BY display_name",
+  "query": "SELECT key, display_name, authorization_endpoint, token_endpoint, refresh_endpoint,\n                revocation_endpoint,\n                userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,\n                default_identity_scopes, login_hint_param, created_at\n         FROM oauth_providers ORDER BY display_name",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,17 @@
       },
       {
         "ordinal": 4,
+        "name": "refresh_endpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "refresh_endpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "revocation_endpoint",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "userinfo_endpoint",
         "type_info": "Text",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "client_id_pattern",
         "type_info": "Text",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "supports_pkce",
         "type_info": "Bool",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "supports_refresh",
         "type_info": "Bool",
         "origin": {
@@ -103,7 +114,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "extra_auth_params",
         "type_info": "Jsonb",
         "origin": {
@@ -114,7 +125,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "token_auth_method",
         "type_info": "Text",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "is_builtin",
         "type_info": "Bool",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "issuer_url",
         "type_info": "Text",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "jwks_uri",
         "type_info": "Text",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "default_identity_scopes",
         "type_info": "TextArray",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "login_hint_param",
         "type_info": "Text",
         "origin": {
@@ -180,7 +191,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -202,6 +213,7 @@
       true,
       true,
       true,
+      true,
       false,
       false,
       false,
@@ -214,5 +226,5 @@
       false
     ]
   },
-  "hash": "de3f156ba064b689f6929fcc0a3fc45ea8b47ec620f5727b992dd368ae702148"
+  "hash": "564ab31ccf5efac96d4a4c77b2d484955009e0f2aa4783b4c7247afe4e030b8b"
 }
