@@ -83,6 +83,16 @@ paths:
       summary: "Relaxed write with no declared body"
       risk: read
       additional-properties: true
+  /typo:
+    post:
+      operationId: loose_typo_in_post
+      summary: "Relaxed write whose declared param has a misspelled in:"
+      risk: read
+      additional-properties: true
+      parameters:
+        - name: stray
+          in: kookie
+          schema: {type: string}
 "#;
 
 /// Register the fixture and return `(base, client, agent_key)`.
@@ -382,5 +392,41 @@ async fn search_projects_the_relaxation_to_the_model() {
     assert!(
         text.contains("additional_properties"),
         "search never surfaces the flag, so the relaxation is undiscoverable: {text}",
+    );
+}
+
+/// `ParamLocation` defaults to `Body`, so a `parameters[]` entry with a
+/// misspelled `in:` becomes a declared body param on an action that declares
+/// no `requestBody`. Such a param has always been dropped, and relaxing
+/// argument validation must not quietly start sending it — a typo in `in:`
+/// changing what goes on the wire is a coupling nobody would predict. Only
+/// the undeclared arguments, the ones that used to be a 400, move.
+#[tokio::test]
+async fn a_declared_body_param_with_no_request_body_stays_dropped() {
+    let (base, client, agent_key) = setup().await;
+
+    let (status, body) = call(
+        &base,
+        &client,
+        &agent_key,
+        json!({
+            "service": "relaxer",
+            "action": "loose_typo_in_post",
+            "params": {"stray": "declared-but-bodyless", "undeclared": "sent"}
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "expected execution, got: {body:?}");
+
+    let echo: Value =
+        serde_json::from_str(body["result"]["body"].as_str().expect("echo body")).unwrap();
+    let sent: Value = serde_json::from_str(echo["body"].as_str().unwrap_or("null")).unwrap();
+    assert_eq!(
+        sent["undeclared"], "sent",
+        "the undeclared argument is the whole point: {echo}"
+    );
+    assert!(
+        sent.get("stray").is_none(),
+        "a declared body param on a bodyless action must keep its old behaviour: {sent}",
     );
 }

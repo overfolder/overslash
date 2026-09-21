@@ -573,12 +573,33 @@ pub(super) async fn resolve_request(
             // (`additional_properties_needs_a_json_body`), which is the only
             // place the author can still fix it.
             let declared_json = action.request_body.as_ref().is_some_and(|rb| rb.is_json());
-            let synthesized_json = action.additional_properties
-                && action.request_body.is_none()
-                && !body_params.is_empty();
-            let body = (declared_json || synthesized_json).then(|| {
+            // Only the *undeclared* arguments motivate a synthesized body, and
+            // only they go into it. `ParamLocation` defaults to `Body`
+            // (`extract::params` maps any unrecognized `in:` to it), so an
+            // action with no `requestBody` can still carry a declared
+            // body-located param — a `parameters[]` entry whose `in:` is
+            // misspelled. Such a param is dropped today, and it keeps being
+            // dropped: synthesizing it would mean a typo in `in:` silently
+            // changes what goes on the wire the moment someone sets
+            // `additional-properties`, which is a coupling nobody would
+            // predict from either end. Restricting both the trigger and the
+            // contents to undeclared keys is what makes the claim above
+            // literally true — nothing moves except arguments that used to be
+            // a 400.
+            let undeclared: Vec<(&String, &serde_json::Value)> =
+                if action.additional_properties && action.request_body.is_none() {
+                    body_params
+                        .iter()
+                        .copied()
+                        .filter(|(k, _)| !action.params.contains_key(k.as_str()))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+            let build = |entries: Vec<(&String, &serde_json::Value)>| {
                 let mut map = serde_json::Map::new();
-                for (k, v) in body_params {
+                for (k, v) in entries {
                     // A string param whose `x-overslash-sql-field` names a
                     // path other than its own name is *moved* there
                     // (`query` → `{"native": {"query": …}}`), keeping the
@@ -599,7 +620,15 @@ pub(super) async fn resolve_request(
                     }
                 }
                 serde_json::to_string(&map).unwrap_or_default()
-            });
+            };
+
+            let body = if declared_json {
+                Some(build(body_params))
+            } else if !undeclared.is_empty() {
+                Some(build(undeclared))
+            } else {
+                None
+            };
             (url, body)
         };
 
