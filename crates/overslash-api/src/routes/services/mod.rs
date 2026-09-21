@@ -430,6 +430,25 @@ async fn update_service_status(
     let mut detail = platform_services::row_to_detail(row);
     detail.icon_url = tv.icon_url;
     detail.test_action = tv.test_action;
+
+    // Archiving is how a service leaves the Live Map, so this is as much a
+    // fleet change as a create is — `service.updated` rather than a status-only
+    // name, because a subscriber refetches either way.
+    platform_services::fire_service_event(
+        state.db_pool(&ext),
+        state.http_client.clone(),
+        platform_services::ServiceEvent {
+            org_id: scope.org_id(),
+            event_type: crate::services::events::EventType::ServiceUpdated,
+            service_instance_id: id,
+            name: &detail.name,
+            owner_identity_id: detail.owner_identity_id,
+            status: &detail.status,
+            actor_identity_id: acl.identity_id,
+        },
+    )
+    .await;
+
     Ok(Json(detail))
 }
 
@@ -505,6 +524,23 @@ async fn delete_service(
                     false
                 });
     }
+
+    // After the cascade, so a subscriber that refetches on this does not race
+    // the connection cleanup and re-render a service that is already gone.
+    platform_services::fire_service_event(
+        state.db_pool(&ext),
+        state.http_client.clone(),
+        platform_services::ServiceEvent {
+            org_id: scope.org_id(),
+            event_type: crate::services::events::EventType::ServiceDeleted,
+            service_instance_id: instance.id,
+            name: &instance.name,
+            owner_identity_id: instance.owner_identity_id,
+            status: &instance.status,
+            actor_identity_id: auth.identity_id,
+        },
+    )
+    .await;
 
     Ok(Json(
         serde_json::json!({ "deleted": true, "connection_deleted": connection_deleted }),

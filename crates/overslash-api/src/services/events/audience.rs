@@ -187,3 +187,37 @@ pub async fn for_service_setup(
     }
     audience
 }
+
+/// Service instances: the owner's chain plus whoever performed the act.
+///
+/// Not [`for_service_setup`], and the difference is the point. That one is the
+/// audience for "your instance is callable now", so it reaches *downwards* to
+/// the agent blocked on the setup link it handed over. These events say the
+/// fleet changed shape, which is a fact about the instance rather than an
+/// answer somebody is waiting on, and their audience is the read model: whoever
+/// could have listed the instance over REST.
+///
+/// So the same shape as [`for_connection`], and for the same reason — a
+/// user-level instance is listed by its owner-user and by that user's
+/// ancestors, never by its siblings, so the stream must not be wider.
+///
+/// The two terms are doing different jobs here, because owner and actor are
+/// routinely different identities on this path. An instance's owner is always
+/// a *user* or nobody: a plain create resolves to the caller's ceiling user,
+/// and `on_behalf_of` resolves to a user or `validate_on_behalf_of` rejects
+/// it. So when an agent creates a service, `chain(owner)` is what reaches the
+/// user watching their own Live Map — the agent is nowhere on that chain,
+/// which runs upwards — and `{actor}` is what reaches the agent itself.
+///
+/// Org-level instances have no owner and so reach only the actor — narrower
+/// than `GET /v1/services`, which shows them to the whole org. That is the
+/// deliberate bias of this module, and it costs little here: creating one
+/// already requires admin, and org admins bypass the audience array in the
+/// delivery predicate.
+pub async fn for_service(
+    scope: &OrgScope,
+    owner_id: Option<Uuid>,
+    actor_id: Option<Uuid>,
+) -> Vec<Uuid> {
+    for_connection(scope, owner_id, actor_id).await
+}

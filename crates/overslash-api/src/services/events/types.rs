@@ -25,10 +25,16 @@ pub enum Topic {
     /// deployment with the flag off gets silence rather than a 400 that varies
     /// by environment.
     Activity,
-    /// Service-instance lifecycle. One event today — `service.activated` —
-    /// and it exists because an agent that hands over a setup link is blocked
-    /// on the moment its instance becomes callable, which since D86 is
-    /// promotion rather than credential fulfilment.
+    /// Service-instance lifecycle: created, reconfigured, removed, and the
+    /// moment one becomes callable. Operator-rate, not call-rate — one event
+    /// per act of configuration, whoever performed it (dashboard, REST, or an
+    /// agent's `create_service` over MCP).
+    ///
+    /// Two consumers, wanting different halves of it. An agent that hands over
+    /// a setup link is blocked on `service.activated`, which since D86 is
+    /// promotion rather than credential fulfilment. A consumer that *draws*
+    /// the fleet — the Live Map — wants the other three, because it holds a
+    /// snapshot and would otherwise never learn the fleet had changed.
     Services,
 }
 
@@ -159,6 +165,23 @@ pub enum EventType {
     /// these are stored verbatim by webhook subscriptions, so reusing a name
     /// would start delivering unrelated events to every current subscriber.
     ServiceActivated,
+    /// A service instance now exists. Carries the instance's id, name and
+    /// owner — enough to route on, not enough to render. A consumer that
+    /// draws services (the dashboard's Live Map) refetches its listing, which
+    /// is also how it picks up the template-derived fields — `icon_url`,
+    /// `test_action` — that this payload deliberately does not restate.
+    ///
+    /// Distinct from [`EventType::ServiceActivated`] on purpose: an instance
+    /// exists from the moment it is created, and is callable only once the
+    /// probe passes. The Live Map draws it either way; a caller waiting to
+    /// call it must wait for the other one.
+    ServiceCreated,
+    /// A service instance's configuration or status changed. Covers the
+    /// manage endpoint and the status flip (draft/active/archived) alike: the
+    /// distinction matters to the row, not to a subscriber that is going to
+    /// refetch either way.
+    ServiceUpdated,
+    ServiceDeleted,
 }
 
 impl EventType {
@@ -183,6 +206,9 @@ impl EventType {
             EventType::ActionCalled => "action.called",
             EventType::ActionCompleted => "action.completed",
             EventType::ServiceActivated => "service.activated",
+            EventType::ServiceCreated => "service.created",
+            EventType::ServiceUpdated => "service.updated",
+            EventType::ServiceDeleted => "service.deleted",
         }
     }
 
@@ -204,7 +230,10 @@ impl EventType {
             | EventType::ConnectionDeleted => Topic::Connections,
             EventType::SecretRequestCreated | EventType::SecretRequestFulfilled => Topic::Secrets,
             EventType::ActionCalled | EventType::ActionCompleted => Topic::Activity,
-            EventType::ServiceActivated => Topic::Services,
+            EventType::ServiceActivated
+            | EventType::ServiceCreated
+            | EventType::ServiceUpdated
+            | EventType::ServiceDeleted => Topic::Services,
         }
     }
 }
@@ -307,6 +336,10 @@ mod tests {
             (EventType::SecretRequestFulfilled, Topic::Secrets),
             (EventType::ActionCalled, Topic::Activity),
             (EventType::ActionCompleted, Topic::Activity),
+            (EventType::ServiceActivated, Topic::Services),
+            (EventType::ServiceCreated, Topic::Services),
+            (EventType::ServiceUpdated, Topic::Services),
+            (EventType::ServiceDeleted, Topic::Services),
         ] {
             assert_eq!(event.topic(), expected, "{event}");
         }

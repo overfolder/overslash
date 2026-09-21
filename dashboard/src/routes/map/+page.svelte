@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import '$lib/styles/livemap.css';
+	import { onEvent, SERVICE_EVENT_TYPES } from '$lib/stores/events.svelte';
 	import { listIdentities } from '$lib/identityApi';
 	import { listServices } from '$lib/api/services';
 	import { getVersion } from '$lib/api/version';
@@ -44,19 +45,49 @@
 		}
 	});
 
-	// An agent created after the page loaded shows up in traffic before it
-	// shows up in our snapshot. Refetch — throttled, because on a stale
-	// snapshot *every* event from that agent asks, and the answer is the same.
+	// An agent or a service created after the page loaded is absent from our
+	// snapshot. Refetch — throttled, because on a stale snapshot *every* event
+	// naming it asks, and the answer is the same.
+	//
+	// Trailing edge, not leading: an ask inside the cooldown is deferred to the
+	// end of it rather than dropped. Dropping is what a rate limiter does to
+	// traffic it can afford to lose, and this is the opposite — the ask is a
+	// one-shot signal that the snapshot is wrong, and swallowing it leaves the
+	// map stale until the next unrelated event happens to ask again.
 	const REFETCH_COOLDOWN_MS = 15_000;
 	let lastRefetch = 0;
+	let deferred: ReturnType<typeof setTimeout> | null = null;
+
 	function refetchFleet() {
-		const now = Date.now();
-		if (now - lastRefetch < REFETCH_COOLDOWN_MS) return;
-		lastRefetch = now;
+		if (deferred) return;
+		const wait = REFETCH_COOLDOWN_MS - (Date.now() - lastRefetch);
+		if (wait > 0) {
+			deferred = setTimeout(() => {
+				deferred = null;
+				refetchFleet();
+			}, wait);
+			return;
+		}
+		lastRefetch = Date.now();
 		loadFleet().catch(() => {
 			// Non-fatal: the map keeps running on the snapshot it has.
 		});
 	}
+
+	// The fleet itself changed. `service.*` is a notification, not a rendering —
+	// the payload names the instance and stops there, and everything the map
+	// draws a service with (its owner, its icon) comes from the listing. So the
+	// handler refetches rather than patching a node together from the event.
+	//
+	// `stream.resync` joins them because it means "you may have missed events",
+	// and a missed `service.created` looks exactly like no service at all.
+	onMount(() =>
+		onEvent([...SERVICE_EVENT_TYPES, 'stream.resync'], () => refetchFleet())
+	);
+
+	onDestroy(() => {
+		if (deferred) clearTimeout(deferred);
+	});
 </script>
 
 <svelte:head><title>Live Map · Overslash</title></svelte:head>
@@ -74,7 +105,7 @@
 		</p>
 	</div>
 {:else}
-	<LiveMap {identities} {services} {currentUserId} {allowedDomains} onUnknownActor={refetchFleet} />
+	<LiveMap {identities} {services} {currentUserId} {allowedDomains} onStaleFleet={refetchFleet} />
 {/if}
 
 <style>
