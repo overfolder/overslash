@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.11.0](https://github.com/overfolder/overslash/compare/v0.10.2...v0.11.0) (2026-09-21)
+
+
+### Features
+
+* **events:** the fleet announces itself, so the Live Map stops drawing a stale one ([#638](https://github.com/overfolder/overslash/issues/638)) ([973d7f8](https://github.com/overfolder/overslash/commit/973d7f8b7b859d672d79702e1fd3c728f30a4e3d))
+* **mcp:** collapse the short/long URL pair for MCP callers only ([#627](https://github.com/overfolder/overslash/issues/627)) ([74256e2](https://github.com/overfolder/overslash/commit/74256e25417cdbe76f87f694dd266e8acfd43288))
+* **services:** a Holded service template ([#631](https://github.com/overfolder/overslash/issues/631)) ([0a4f4d1](https://github.com/overfolder/overslash/commit/0a4f4d1ff6d373313bd8a550161dd1502b2e83eb))
+* **services:** a service does not go live until its credential probe passes ([#637](https://github.com/overfolder/overslash/issues/637)) ([2daefb7](https://github.com/overfolder/overslash/commit/2daefb748d1ace0e6dfdefb6c19602ea387cd44f))
+* **services:** setup links and template-declared test actions ([#626](https://github.com/overfolder/overslash/issues/626)) ([0a0e4a8](https://github.com/overfolder/overslash/commit/0a0e4a8139291798ba6d6b2624294ec8523ff677))
+* **setup:** a setup link never silently replaces a credential ([#636](https://github.com/overfolder/overslash/issues/636)) ([9129208](https://github.com/overfolder/overslash/commit/91292082c73e9693478f9d135890ecd98b3e2c1e))
+* **sql-policy:** a database answers to its name and its id, not just its id ([#630](https://github.com/overfolder/overslash/issues/630)) ([e50149d](https://github.com/overfolder/overslash/commit/e50149d428aab9d94c51806211e32e5397c5d187))
+
+
+### Bug Fixes
+
+* **dashboard:** an audit row is as wide as the table, not as wide as its text ([#628](https://github.com/overfolder/overslash/issues/628)) ([711bcff](https://github.com/overfolder/overslash/commit/711bcffd78407fe2f32a02898091f4b1cc9bfb38))
+* **dashboard:** the screenshot script mints in a fresh org per scenario ([#639](https://github.com/overfolder/overslash/issues/639)) ([488ff82](https://github.com/overfolder/overslash/commit/488ff822912771d277cd612186315d949b6425e3))
+* **monitoring:** a latency threshold that reads back our own config is not an alert ([#629](https://github.com/overfolder/overslash/issues/629)) ([96f9642](https://github.com/overfolder/overslash/commit/96f96428450851d21062f1d2174254177bbe2273))
+
 ## [0.10.2](https://github.com/overfolder/overslash/compare/v0.10.1...v0.10.2) (2026-09-15)
 
 
