@@ -741,12 +741,19 @@ fn additional_properties_on_a_paramless_action_warns() {
     a.additional_properties = true;
     let r = run(&d);
     assert!(r.valid, "must not be an error: {:?}", r.errors);
+    let w = r
+        .warnings
+        .iter()
+        .find(|w| w.code == "noop_additional_properties")
+        .unwrap_or_else(|| panic!("{:?}", r.warnings));
+    // These messages are read by a template author, and a `\`-continued
+    // literal that loses its continuation silently ships the source
+    // indentation inside the string. Invisible in review, obvious to whoever
+    // reads the warning.
     assert!(
-        r.warnings
-            .iter()
-            .any(|w| w.code == "noop_additional_properties"),
-        "{:?}",
-        r.warnings
+        !w.message.contains("  "),
+        "message carries source indentation: {:?}",
+        w.message
     );
 }
 
@@ -783,12 +790,20 @@ fn additional_properties_with_a_non_json_request_body_is_an_error() {
         required: true,
     });
     let r = run(&d);
+    let e = r
+        .errors
+        .iter()
+        .find(|e| e.code == "additional_properties_needs_a_json_body")
+        .unwrap_or_else(|| panic!("{:?}", r.errors));
     assert!(
-        r.errors
-            .iter()
-            .any(|e| e.code == "additional_properties_needs_a_json_body"),
-        "{:?}",
-        r.errors
+        !e.message.contains("  "),
+        "message carries source indentation: {:?}",
+        e.message
+    );
+    assert!(
+        e.message.contains("application/x-www-form-urlencoded"),
+        "the author needs to see which media type blocked it: {:?}",
+        e.message
     );
 }
 

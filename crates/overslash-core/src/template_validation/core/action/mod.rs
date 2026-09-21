@@ -128,7 +128,9 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
     if action.additional_properties && action.params.is_empty() {
         issues.warn(
             "noop_additional_properties",
-            "additional-properties has no effect on an action that declares no              params — argument validation is already a no-op without a schema              to compare against",
+            "additional-properties has no effect on an action that declares no params \
+             — argument validation is already a no-op without a schema to compare \
+             against",
             format!("{action_path}.additional-properties"),
         );
     }
@@ -159,7 +161,10 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
         issues.err(
             "additional_properties_needs_a_json_body",
             format!(
-                "additional-properties cannot be honoured on a {} with a non-JSON requestBody                  ({}): an undeclared argument would pass validation and then be dropped, since                  only JSON bodies are serialised. Declare the body as JSON or drop the key.",
+                "additional-properties cannot be honoured on a {} with a non-JSON \
+                 requestBody ({}): an undeclared argument would pass validation and \
+                 then be dropped, since only JSON bodies are serialised. Declare \
+                 the body as JSON or drop the key.",
                 action.method,
                 action
                     .request_body
