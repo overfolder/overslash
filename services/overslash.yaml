@@ -194,10 +194,26 @@ platform_actions:
 
   create_service:
     description: >
-      Create a service instance from a template. The instance is auto-granted to
-      the owner's Myself group with admin access and read-level auto-approval. For
-      OAuth-backed templates the new row carries credentials_status =
-      "needs_authentication" — start the OAuth flow before calling actions.
+      Create a service instance from a template, and get back the one URL your
+      user needs to click to finish setting it up. The instance is auto-granted
+      to the owner's Myself group with admin access and read-level
+      auto-approval.
+      For an OAuth-backed template the response carries `connect.auth_url` —
+      hand that to your user verbatim. For a secret-backed template whose
+      per-instance credential slots you did not bind, the response carries
+      `setup.setup_url` instead: a signed, single-use page where your user
+      pastes the API key. You never see the value; the page binds it to this
+      instance for you. A template needing several credentials returns one
+      entry per slot under `setup.requests`, each with its own `setup_url` to
+      hand over, and `setup.setup_url` is the first of them. Pass
+      skip_credentials: true to suppress all of it and wire the credentials
+      yourself.
+      A slot's vault name comes from the template, so a second instance of the
+      same template would aim its setup link at the first one's secret. That is
+      refused with secret_name_conflict (409). To share one credential across
+      instances, bind it instead — credentials: {slot: name} — which needs no
+      link and overwrites nothing. To replace the stored value, pass
+      force: true; `setup.warnings` then names each version being superseded.
       An org-level instance (user_level: false) has no Myself group, so `groups`
       is required there: pass at least one group you are a member of, as
       [{ group_id, access_level, auto_approve_reads }] with access_level one of
@@ -209,11 +225,18 @@ platform_actions:
       name: { type: string, required: false }
       connection_id: { type: string, required: false }
       secret_name: { type: string, required: false }
+      credentials: { type: object, required: false }
+      config: { type: object, required: false }
       url: { type: string, required: false }
       status: { type: string, required: false }
       user_level: { type: boolean, required: false }
       groups: { type: array, required: false }
       on_behalf_of: { type: string, required: false }
+      skip_connect: { type: boolean, required: false }
+      skip_credentials: { type: boolean, required: false }
+      force: { type: boolean, required: false }
+      verify: { type: boolean, required: false }
+      connect_return_url: { type: string, required: false }
 
   update_service:
     description: "Update mutable fields on a service instance (name, connection, secret, url)"
@@ -229,8 +252,10 @@ platform_actions:
   create_connection:
     description: >
       Start the OAuth dance for a provider. Returns an `auth_url` pointing
-      at Overslash's `/connect-authorize` gate (and an optional shortened
-      form). Hand that URL to the user — the gate fail-fasts on session
+      at Overslash's `/connect-authorize` gate — already the short
+      `oversla.sh` link wherever that service is configured, so there is
+      never a second URL to choose between. Hand it to the user — the gate
+      fail-fasts on session
       mismatch before redirecting to the provider, mitigating the chat-
       delivery pitfalls catalogued in the Obsidian "MCP meets OAuth"
       writeup. The raw provider URL is intentionally not surfaced over MCP;
@@ -251,12 +276,27 @@ platform_actions:
     description: >
       Mint a signed, single-use URL the user can open to provide a secret
       value (e.g. an API key). The agent never sees the value — only the URL.
-      Returns request_id, provide_url, optional short_url, and expires_at.
+      Returns request_id, provide_url and expires_at. `provide_url` is
+      already the short `oversla.sh` link wherever that service is
+      configured, so there is never a second URL to choose between.
       Defaults to the caller's own identity; targeting another identity
       requires `request_secrets_share`.
+      Pass service_id to bind the value to a service instance on submit: the
+      URL then opens a setup page naming that service, and fulfilling it makes
+      the instance callable. You rarely need this — create_service already
+      mints those links and returns them as setup.setup_url; reach for it when
+      adding a credential to an instance that already exists.
+      Refuses with secret_name_conflict (409) when secret_name is already in
+      use, because fulfilling such a request would replace a credential
+      something else is relying on and nobody would be told. Pass force: true
+      only when replacing that value is the intent; the response then carries
+      a warning naming the version being superseded.
     risk: write
     permission: request_secrets_own
     params:
       secret_name: { type: string, required: true }
       identity_id: { type: string, required: false }
       purpose: { type: string, required: false }
+      service_id: { type: string, required: false }
+      credential_key: { type: string, required: false }
+      force: { type: boolean, required: false }

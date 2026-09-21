@@ -117,7 +117,72 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
 
     check_pagination(action, &action_path, issues);
 
+    check_test(action, &action_path, issues);
+
     check_sql_policy(action, &action_path, issues);
+}
+
+/// Cross-field checks for `x-overslash-test`, the credential probe.
+///
+/// Two rules, both errors, and both for the same reason: this action is
+/// invoked *unattended*, the moment a credential lands on a new instance, by a
+/// button whose whole promise is that pressing it is safe.
+///
+/// 1. It must be `risk: read`. A probe that writes is a probe nobody can offer
+///    to a user who has not yet decided to trust the integration.
+/// 2. Its `params` must name real parameters of the action and cover every
+///    required one. A probe that 400s before it reaches the upstream reports
+///    "your credential is broken" about a typo in the template.
+fn check_test(action: &ServiceAction, action_path: &str, issues: &mut Issues) {
+    let Some(test) = action.test.as_ref() else {
+        return;
+    };
+    let base = format!("{action_path}.test");
+
+    if action.risk != DeclaredRisk::Read {
+        issues.err(
+            "test_action_not_read",
+            format!(
+                "a test action must be risk: read (this one is {:?}) — the probe runs unattended \
+                 as soon as a credential is provided",
+                action.risk
+            ),
+            // `action_path`, not `base`: `risk` is a top-level field of the
+            // action, and the fix is to change it (or move the marker to a
+            // read action), not to add anything under `test`. Pointing at
+            // `…test.risk` sends the author to a key that does not exist.
+            format!("{action_path}.risk"),
+        );
+    }
+
+    for name in test.params.keys() {
+        if !action.params.contains_key(name) {
+            issues.err(
+                "unknown_test_param",
+                format!("test param {name:?} does not reference a defined param"),
+                format!("{base}.params.{name}"),
+            );
+        }
+    }
+
+    // A required param that declares a default is already satisfied: both
+    // `/v1/actions/call` and `/v1/actions/validate` run
+    // `validate_input::apply_defaults` before the required check, so
+    // `calendarId: primary` and Gmail's `userId: me` need no mention here.
+    // Demanding one would make the probe restate what the template already
+    // says, and drift the moment the default changes.
+    for (name, param) in &action.params {
+        if param.required && param.default.is_none() && !test.params.contains_key(name) {
+            issues.err(
+                "missing_test_param",
+                format!(
+                    "test omits required param {name:?}, which declares no default — the probe \
+                     would be rejected before it ever reached the upstream"
+                ),
+                format!("{base}.params"),
+            );
+        }
+    }
 }
 
 /// Cross-field checks for `x-overslash-pagination`. The structural shape was

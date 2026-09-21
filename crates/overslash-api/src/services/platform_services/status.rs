@@ -32,24 +32,44 @@ pub async fn compute_credentials_status(
     )
 }
 
-/// Absolute URL of the icon an instance should render, resolved through the
-/// same template lookup `compute_credentials_status` performs.
+/// The fields of an instance view that come from its *template* rather than
+/// its row: the catalog icon and the credential probe.
 ///
 /// Instances carry no icon column by design — an instance is a binding of a
-/// template to a credential, so its icon is the template's. Keeping the lookup
-/// here means the org-key listing path and the kernel path cannot drift.
-pub async fn resolve_instance_icon_url(
+/// template to a credential, so its icon is the template's, and the same is
+/// true of the action its Test button runs.
+///
+/// One call rather than two lookups per site: they resolve from the same
+/// definition and are always wanted together, so setting them separately means
+/// every path that returns an instance view has to remember both.
+pub struct TemplateView {
+    pub icon_url: Option<String>,
+    pub test_action: Option<crate::routes::actions::probe::TestActionRef>,
+}
+
+/// Resolve [`TemplateView`] for one instance. A template that will not resolve
+/// yields an empty view rather than an error: these are decorations, and a
+/// service whose template has been deleted should still list.
+pub async fn template_view(
     db: &sqlx::PgPool,
     registry: &overslash_core::registry::ServiceRegistry,
     row: &ServiceInstanceRow,
     template_owner: Option<Uuid>,
     public_url: &str,
-) -> Option<String> {
-    let template =
+) -> TemplateView {
+    let Ok(template) =
         resolve_template_definition(db, registry, row.org_id, template_owner, &row.template_key)
             .await
-            .ok()?;
-    crate::services::icon_url::resolve_icon_url(template.icon.as_ref(), public_url)
+    else {
+        return TemplateView {
+            icon_url: None,
+            test_action: None,
+        };
+    };
+    TemplateView {
+        icon_url: crate::services::icon_url::resolve_icon_url(template.icon.as_ref(), public_url),
+        test_action: crate::routes::actions::probe::describe(&template),
+    }
 }
 
 /// Granted scopes of the connection the *execution* path would actually use.

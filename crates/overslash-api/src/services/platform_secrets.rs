@@ -16,17 +16,14 @@
 
 use serde::Deserialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use overslash_core::permissions::AccessLevel;
-use overslash_db::repos::{audit::AuditEntry, secret_request};
 use overslash_db::scopes::OrgScope;
 
-use super::jwt::{self, SECRET_REQUEST_KIND, SecretRequestClaims};
 use super::permission_chain;
 use super::platform_caller::PlatformCallContext;
-use super::short_url;
+use super::service_setup;
 use crate::error::AppError;
 use crate::routes::util::fmt_time;
 
@@ -46,6 +43,29 @@ pub struct RequestSecretInput {
     /// what they're being asked to paste.
     #[serde(default)]
     pub purpose: Option<String>,
+    /// Service instance this value is for. When set, fulfilling the request
+    /// also binds the instance's credential slot and the minted URL is the
+    /// setup page rather than the bare provide page — the agent hands over
+    /// one link that finishes the whole setup.
+    ///
+    /// Rarely needed by hand: `create_service` already mints these itself and
+    /// returns them as `setup.setup_url`. This is the path for binding a
+    /// credential to an instance that already exists.
+    #[serde(default)]
+    pub service_id: Option<Uuid>,
+    /// Which credential slot to bind. Optional when the template declares a
+    /// single per-instance slot, which is every shipped template.
+    #[serde(default)]
+    pub credential_key: Option<String>,
+    /// Mint even though `secret_name` already exists, accepting that whoever
+    /// opens the link stores a new version over the current value. Without it
+    /// such a request is refused with `secret_name_conflict` (409).
+    ///
+    /// The refusal is the point: an agent picking a name by convention has no
+    /// way to know the org already uses it, and the person opening the link
+    /// is shown a name, not a history.
+    #[serde(default)]
+    pub force: bool,
 }
 
 pub async fn kernel_request_secret(
@@ -84,10 +104,23 @@ pub async fn kernel_request_secret(
         ));
     }
 
-    let now = time::OffsetDateTime::now_utc();
-    let expires_at = now + time::Duration::seconds(DEFAULT_TTL_SECS);
-
-    let req_id = format!("req_{}", Uuid::new_v4().simple());
+    // Resolve the service binding before anything is written — fulfilment
+    // runs from a public route holding only a capability token, so this is
+    // the only place the pair is checked.
+    let binding = match input.service_id {
+        Some(service_id) => Some(
+            service_setup::validate_binding(
+                &scope,
+                &ctx.registry,
+                Some(caller_identity),
+                ctx.access_level,
+                service_id,
+                input.credential_key.as_deref(),
+            )
+            .await?,
+        ),
+        None => None,
+    };
 
     // Capture the org's User-Signed-Mode policy at mint time so flipping the
     // toggle later never retroactively breaks in-flight URLs.
@@ -97,97 +130,80 @@ pub async fn kernel_request_secret(
             .unwrap_or(true);
     let require_user_session = !allow_unsigned;
 
-    let signing_key = jwt::signing_key_bytes(&ctx.config.signing_key);
-    let claims = SecretRequestClaims {
-        req: req_id.clone(),
-        org: ctx.org_id,
-        iat: now.unix_timestamp(),
-        exp: expires_at.unix_timestamp(),
-        kind: SECRET_REQUEST_KIND.into(),
+    // Read the version being superseded before minting, so a forced request
+    // reports what was actually there when the agent asked.
+    let warning = if input.force {
+        service_setup::conflicting_secret_names(
+            &scope,
+            &[(None, input.secret_name.trim().to_string())],
+        )
+        .await?
+        .first()
+        .map(|c| {
+            format!(
+                "secret '{}' already exists; fulfilling this request replaces \
+                 its current value (v{}). The old version stays restorable.",
+                c.secret_name, c.current_version
+            )
+        })
+    } else {
+        None
     };
-    let token = jwt::mint_secret_request(&signing_key, &claims)
-        .map_err(|e| AppError::Internal(format!("jwt mint: {e}")))?;
-    let token_hash = sha256(&token);
 
-    secret_request::create(
+    let minted = service_setup::mint(
         &ctx.db,
-        &req_id,
-        ctx.org_id,
-        target,
-        input.secret_name.trim(),
-        caller_identity,
-        input.purpose.as_deref(),
-        &token_hash,
-        expires_at,
-        require_user_session,
+        &ctx.http_client,
+        &ctx.config,
+        service_setup::MintRequest {
+            org_id: ctx.org_id,
+            target_identity: target,
+            requested_by: caller_identity,
+            secret_name: input.secret_name.trim(),
+            reason: input.purpose.as_deref(),
+            ttl_seconds: DEFAULT_TTL_SECS,
+            require_user_session,
+            service_instance_id: binding.as_ref().map(|(row, _)| row.id),
+            credential_key: binding.as_ref().map(|(_, key)| key.as_str()),
+            force: input.force,
+            via: "mcp",
+            // The platform runtime is transport-agnostic and carries no
+            // client IP down to the kernel.
+            ip_address: None,
+        },
     )
     .await?;
-
-    let url = ctx
-        .config
-        .dashboard_url_for(&format!("/secrets/provide/{req_id}?token={token}"));
-    let short_url = match (
-        ctx.config.oversla_sh_base_url.as_deref(),
-        ctx.config.oversla_sh_api_key.as_deref(),
-    ) {
-        (Some(base), Some(key)) => {
-            short_url::mint_with_client(&ctx.http_client, base, key, &url, expires_at).await
-        }
-        _ => None,
-    };
-
-    let _ = scope
-        .log_audit(AuditEntry {
-            org_id: ctx.org_id,
-            identity_id: Some(caller_identity),
-            action: "secret_request.created",
-            resource_type: Some("secret_request"),
-            resource_id: None,
-            detail: serde_json::json!({
-                "id": &req_id,
-                "secret_name": input.secret_name.trim(),
-                "target_identity_id": target,
-                "require_user_session": require_user_session,
-                "via": "mcp",
-            }),
-            description: None,
-            ip_address: None,
-        })
-        .await;
-
-    // Same payload as the REST mint path, and for the same reason it omits the
-    // provide URL: that URL is a bearer capability.
-    let audience =
-        crate::services::events::audience::for_secret_request(&scope, caller_identity, target)
-            .await;
-    crate::services::events::emit(
-        ctx.db.clone(),
-        ctx.http_client.clone(),
-        crate::services::events::EventDraft {
-            org_id: ctx.org_id,
-            event_type: crate::services::events::EventType::SecretRequestCreated,
-            payload: serde_json::json!({
-                "request_id": &req_id,
-                "secret_name": input.secret_name.trim(),
-                "identity_id": target,
-                "requested_by": caller_identity,
-                "expires_at": fmt_time(expires_at),
-                "via": "mcp",
-            }),
-            audience,
-        },
+    crate::services::events::emit(ctx.db.clone(), ctx.http_client.clone(), minted.event);
+    let (req_id, url, short_url, expires_at) = (
+        minted.request_id,
+        minted.url,
+        minted.short_url,
+        minted.expires_at,
     );
 
-    Ok(serde_json::json!({
+    let mut out = serde_json::json!({
         "request_id": req_id,
+        // Named `provide_url` on both shapes: an agent that learned the key
+        // before setup links existed keeps working, and the URL is still the
+        // thing you hand your user either way.
         "provide_url": url,
         "short_url": short_url,
         "expires_at": fmt_time(expires_at),
-    }))
-}
-
-fn sha256(s: &str) -> Vec<u8> {
-    let mut h = Sha256::new();
-    h.update(s.as_bytes());
-    h.finalize().to_vec()
+    });
+    // Inserted only when there is a binding, matching the REST shape's
+    // `skip_serializing_if`. Emitting them as `null` otherwise would give an
+    // agent branching on key presence a different answer per transport.
+    if let Some((row, key)) = binding
+        && let Some(obj) = out.as_object_mut()
+    {
+        obj.insert("service_id".into(), serde_json::json!(row.id));
+        obj.insert("credential_key".into(), serde_json::json!(key));
+    }
+    // Same key-presence rule as the binding fields above: absent rather than
+    // null, so an agent branching on presence gets one answer per transport.
+    if let Some(warning) = warning
+        && let Some(obj) = out.as_object_mut()
+    {
+        obj.insert("warning".into(), serde_json::json!(warning));
+    }
+    Ok(out)
 }

@@ -84,6 +84,7 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 - [ ] Ship 11 more service templates to hit top 20 (priority order: Notion, Linear, Jira, Asana, HubSpot, Salesforce, Airtable, Discord, PagerDuty, Zendesk, Intercom).
 - [ ] Complete the OpenAPI **bulk import** UX at `/services/templates/import` — currently scaffolded; needs overlay-default suggestions and a diff preview before save.
 - [ ] **User-to-org template sharing** — propose / approve / deny flow (review card `7e5ee`).
+- [x] **Declare a credential probe on every template that can have one.** `x-overslash-test` (D83) is on 20 of the 24. The four without one are deliberate: `deepwiki` (every tool needs a repo name, and it authenticates with nothing), `overslash` itself (`runtime: platform`), and the hidden fixtures `github_legacy_oauth` / `test_email`. Any template added from here should declare one, and `shipped_test_actions_resolve_to_read_actions` holds a floor so the practice cannot quietly lapse.
 - [ ] **Hard pins on `instance_defaults`** — a layer default is a *preset* an instance may override (D36, D38). Add an opt-in "not instance-changeable" flag so an org layer can mandate a value: the instance form renders it read-only and `instance_config::validate_config` rejects a key the layer has hard-pinned. Deferred deliberately — the preset is the useful case for per-instance values like a mailbox username, and a ceiling only matters once a layer wants to mandate an org-wide constant.
 
 ### 2.3 API surface gaps
@@ -104,6 +105,11 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
   - Decide whether `activity` can ever be on by default. It is the only topic
     whose volume scales with the gateway's hot path — one durable `events` row
     per call — so ungating it means answering that first.
+- [ ] **A setup page that handles every slot at once.** A template with two unbound per-instance credential slots gets two setup links today (D83), handed over in sequence; the page names the outstanding siblings but cannot link to them, because each link is a separate capability. No shipped template declares two, which is why this is a documented limit rather than a blocker.
+- [ ] **Wire the Deny button on the provide / setup pages.** Still local-only (`TODO(secret-request-deny)`): declining leaves the request pending until it expires, and the requesting agent is never told.
+- [ ] **Let an agent verify its own service.** `POST /v1/services/{id}/activate` is owner-or-admin, and an agent is deliberately not an ancestor of its own owner-user, so the agent that created an instance cannot probe it — which is exactly why D86's gate defaults off for a create with no human in it. Exposing it as a platform action means synthesising an `AuthContext` and re-entering `call_action_impl` from inside a call; worth doing only if the re-entrancy (permission chain, audit rows) can be shown not to double.
+- [ ] **Take the credential value on the wizard's *configure* step, not only on its failure step.** D86 put a `SecretValueField` behind "Edit and retry" because a named-but-empty vault secret is otherwise a dead end under the gate. The first pass through the form still only binds a *name* (`SecretNamePicker`, whose hint tells you to go to the Secrets page), so the common case takes one extra round trip through a red verdict.
+- [ ] **The setup-draft purge does not clean up orphaned connections.** `DELETE /v1/services/{name}` calls `cleanup_orphaned_connection`; the sweeper cannot, because `fire_connection_deleted` wants an actor for its audit row and event. Identity-owned connections are reusable, so the cost is a row rather than a leak.
 - [ ] **MCP Login Flow Fixes** (review card `877cb`) — assignment/consent page served from dashboard, default `inherit_permissions=true` for new MCP agents, reuse the existing agent on reauth, hide revoked MCP clients from the UI after 3s.
 
 ---

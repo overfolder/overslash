@@ -845,3 +845,86 @@ fn a_non_positive_timeout_is_an_authoring_error_not_a_silent_fallback() {
         "{err:?}"
     );
 }
+
+// --- test action (x-overslash-test) --------------------------------
+
+/// Compile a one-operation document whose `get` carries `test_value`, and
+/// return the resulting action's probe spec.
+fn compile_test_spec(test_value: serde_json::Value) -> Option<crate::types::TestSpec> {
+    let mut v = json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Acme", "x-overslash-key": "acme"},
+        "servers": [{"url": "https://api.acme.test"}],
+        "paths": {"/domains": {"get": {
+            "operationId": "list_domains",
+            "summary": "List domains",
+            "risk": "read",
+            "test": test_value
+        }}}
+    });
+    assert!(normalize_aliases(&mut v).is_empty());
+    let (def, _) = compile_service(&v).unwrap();
+    def.actions["list_domains"].test.clone()
+}
+
+/// `true` is the spelling every shipped template uses, and it must land as an
+/// empty param map rather than forcing authors to write `{ params: {} }`.
+#[test]
+fn test_true_compiles_to_an_empty_probe() {
+    let spec = compile_test_spec(json!(true)).expect("probe");
+    assert!(spec.params.is_empty());
+}
+
+#[test]
+fn test_object_carries_its_params() {
+    let spec = compile_test_spec(json!({"params": {"limit": 1}})).expect("probe");
+    assert_eq!(spec.params["limit"], json!(1));
+}
+
+/// `false` switches the probe off without deleting the line — the reason the
+/// boolean is unwrapped in `parse_test` rather than by a `Deserialize` impl
+/// that cannot express absence.
+#[test]
+fn test_false_is_no_probe() {
+    assert!(compile_test_spec(json!(false)).is_none());
+}
+
+#[test]
+fn malformed_test_is_a_compile_error() {
+    let mut v = json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Acme", "x-overslash-key": "acme"},
+        "servers": [{"url": "https://api.acme.test"}],
+        "paths": {"/domains": {"get": {
+            "operationId": "list_domains", "summary": "List", "risk": "read",
+            "test": ["list_domains"]
+        }}}
+    });
+    assert!(normalize_aliases(&mut v).is_empty());
+    let err = compile_service(&v).unwrap_err();
+    assert!(err.iter().any(|i| i.code == "test_invalid"), "{err:?}");
+}
+
+/// `test_action()` is what the Test button asks, so it must find the probe by
+/// walking the compiled definition — not by the caller re-reading the document.
+#[test]
+fn test_action_finds_the_marked_operation() {
+    let mut v = json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Acme", "x-overslash-key": "acme"},
+        "servers": [{"url": "https://api.acme.test"}],
+        "paths": {
+            "/domains": {"get": {
+                "operationId": "list_domains", "summary": "List domains",
+                "risk": "read", "test": true
+            }},
+            "/emails": {"post": {
+                "operationId": "send_email", "summary": "Send", "risk": "write"
+            }}
+        }
+    });
+    assert!(normalize_aliases(&mut v).is_empty());
+    let (def, _) = compile_service(&v).unwrap();
+    let (key, _) = def.test_action().expect("probe");
+    assert_eq!(key, "list_domains");
+}

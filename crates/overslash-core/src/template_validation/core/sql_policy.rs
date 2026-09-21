@@ -154,6 +154,42 @@ pub(super) fn check_sql_policy(action: &ServiceAction, action_path: &str, issues
         );
     }
 
+    // The db label — and so the `table=` keys — reads the resolved name out of
+    // the canonical map *under the name of the param that declared
+    // `x-overslash-sql-database`*. A resolver sitting on any other param is
+    // therefore invisible to it, which is silent: the call keys on the raw id
+    // and every name-written grant quietly stops matching. Warn rather than
+    // reject, because id-only labels are a legitimate choice for a provider
+    // with nothing to resolve against.
+    if !sql_params.is_empty() {
+        for (name, param) in &action.params {
+            if param.sql_database.is_none() {
+                continue;
+            }
+            let has_scope = param.resolve.as_ref().is_some_and(|r| r.scope.is_some());
+            if !has_scope {
+                let elsewhere = action.params.iter().any(|(other, p)| {
+                    other != name && p.resolve.as_ref().is_some_and(|r| r.scope.is_some())
+                });
+                let hint = if elsewhere {
+                    " — another param on this action resolves a scope, but the db label only \
+                     reads the one declared on this param"
+                } else {
+                    ""
+                };
+                issues.warn(
+                    "sql_database_without_resolver",
+                    format!(
+                        "param {name:?} sets x-overslash-sql-database but declares no \
+                         x-overslash-resolve with `scope:`, so the database is named by its \
+                         raw key in tags and permission keys{hint}"
+                    ),
+                    format!("{action_path}.params.{name}"),
+                );
+            }
+        }
+    }
+
     if sql_params.is_empty() {
         for (name, param) in &action.params {
             if param.sql_database.is_some() {
@@ -329,6 +365,47 @@ mod tests {
             r.warnings
                 .iter()
                 .any(|w| w.code == "sql_database_without_sql")
+        );
+    }
+
+    #[test]
+    fn sql_database_without_a_scope_resolver_warns() {
+        let mut db = param("integer", true);
+        db.sql_database = Some(".database | tostring".into());
+        let d = def_with_sql_action(
+            DeclaredRisk::Dynamic,
+            vec![("query", sql_param("string", "query")), ("database", db)],
+        );
+        let r = run(&d);
+        assert!(r.valid, "warning, not error: {:?}", r.errors);
+        assert!(
+            r.warnings
+                .iter()
+                .any(|w| w.code == "sql_database_without_resolver")
+        );
+    }
+
+    #[test]
+    fn sql_database_with_a_scope_resolver_is_clean() {
+        let mut db = param("integer", true);
+        db.sql_database = Some(".database | tostring".into());
+        db.resolve = Some(crate::types::ParamResolver {
+            get: Some("/api/database/{database}".into()),
+            pick: Some("name".into()),
+            scope: Some("name".into()),
+            ..Default::default()
+        });
+        let d = def_with_sql_action(
+            DeclaredRisk::Dynamic,
+            vec![("query", sql_param("string", "query")), ("database", db)],
+        );
+        let r = run(&d);
+        assert!(
+            !r.warnings
+                .iter()
+                .any(|w| w.code == "sql_database_without_resolver"),
+            "{:?}",
+            r.warnings
         );
     }
 

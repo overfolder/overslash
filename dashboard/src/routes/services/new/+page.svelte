@@ -9,7 +9,10 @@
 		listConnections,
 		initiateOAuth,
 		createService,
-		createByocCredential
+		createByocCredential,
+		activateService,
+		runActivate,
+		updateService
 	} from '$lib/api/services';
 	import type {
 		ConnectionSummary,
@@ -17,14 +20,18 @@
 		SecretSummary,
 		SecretSlot,
 		ServiceAuth,
+		ServiceInstanceDetail,
+		ServiceTestResponse,
 		TemplateDetail,
-		TemplateSummary
+		TemplateSummary,
+		SecretNameConflictBody
 	} from '$lib/types';
-	import { listSecrets } from '$lib/api/secrets';
+	import { listSecrets, putSecret } from '$lib/api/secrets';
 	import { connectViaPopup, PopupBlockedError } from '$lib/oauth-connect';
 	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import TemplateCard from '$lib/components/services/TemplateCard.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
+	import TestResult from '$lib/components/services/TestResult.svelte';
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
 	import SearchBar, {
 		emptySearch,
@@ -32,9 +39,13 @@
 		matchesAllText, type SearchKey, type SearchValue
 	} from '$lib/components/SearchBar.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
+	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
 	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
 	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
+	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import { cleanServiceMap } from '$lib/service-maps';
+	import { probeRejected } from '$lib/public-request';
+	import { credentialLabel, failureKind } from '$lib/setup-outcome';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
 	import type { Group, GroupGrantPick } from '$lib/api/groups';
@@ -76,6 +87,34 @@
 	let submitting = $state(false);
 	let connectingOAuth = $state(false);
 	let oauthAbort: AbortController | null = null;
+
+	// Post-create verification. The instance exists but is *not* live: a
+	// template with a probe is created `pending_setup`, and only a green
+	// verdict promotes it. `created` doubles as the "we are past creation"
+	// flag, and `created.status` is the answer to "is it usable yet" — never
+	// the verdict, which is absent on a forced activation.
+	let created = $state<ServiceInstanceDetail | null>(null);
+	// The 409 body from a refused create, held while the confirm dialog is up.
+	// Non-null is what opens the dialog, so clearing it is how the dialog closes.
+	let secretConflict = $state<SecretNameConflictBody | null>(null);
+	let testing = $state(false);
+	let testResult = $state<ServiceTestResponse | null>(null);
+	// The reopen panel: edit the credential value and the instance's own
+	// fields, then check again. Inline rather than a rewind to `configure`,
+	// because that form's submit *creates* — reusing it would mean forking
+	// every branch of `submit()` on create-vs-update, including the OAuth
+	// pre-flight, which must not run twice.
+	let reopened = $state(false);
+	let saving = $state(false);
+	let promoting = $state(false);
+	let confirmingForce = $state(false);
+	// Credential *values*, keyed by slot. Separate from `credentialsInput`,
+	// which holds vault *names* — the two are different questions and the
+	// wizard has always been able to answer only the first.
+	let credentialValues = $state<Record<string, string>>({});
+
+	const live = $derived(created?.status === 'active');
+	const kind = $derived(failureKind(testResult));
 
 	let availableSecrets = $state<SecretSummary[]>([]);
 	let secretsLoading = $state(false);
@@ -473,7 +512,13 @@
 		oauthAbort?.abort();
 	});
 
-	async function submit() {
+	/**
+	 * `force` is only ever passed by the overwrite confirm dialog below. The
+	 * first attempt never forces: the server's refusal is what tells us there
+	 * is something to confirm, and asking before we know would put a scary
+	 * dialog in front of every create.
+	 */
+	async function submit(force = false) {
 		if (!selectedDetail) return;
 		submitting = true;
 		error = null;
@@ -499,7 +544,22 @@
 				schemeKeyed && !usesOAuth && Object.keys(cleanedCredentials).length > 0;
 			const cleanedConfig = cleanServiceMap(configInput);
 			const sendConfig = Object.keys(cleanedConfig).length > 0;
-			const created = await createService({
+
+			// Values first, names second. A vault secret left stranded with no
+			// service is harmless and reusable; the reverse — an instance
+			// pointing at a name that holds nothing — is exactly the
+			// `needs_authentication` shape the probe would then report as a
+			// setup bug. Sequential, and the first failure aborts before
+			// anything is created.
+			await writeCredentialValues(cleanedCredentials);
+
+			// `verify` rather than a `status`: the server's own rule gates only
+			// when it mints a setup link, and this wizard probes either way —
+			// including on the path where the user named an existing vault
+			// secret, where no link exists. Sent only when the template can
+			// actually answer, because `verify: true` on a probeless template
+			// is a 400 by design.
+			const instance = await createService({
 				template_key: selectedDetail.key,
 				name: nameInput.trim() || undefined,
 				connection_id: connectionId || undefined,
@@ -507,17 +567,176 @@
 				secret_name: !sendCredentials ? secretName.trim() || undefined : undefined,
 				config: sendConfig ? cleanedConfig : undefined,
 				url: urlInput.trim() || undefined,
-				status: 'active',
+				verify: selectedDetail.test_action ? true : undefined,
 				user_level: userLevel,
 				groups: userLevel ? undefined : groupGrants,
-				use_default_connection: useDefaultConnection
+				use_default_connection: useDefaultConnection,
+				force: force || undefined
 			});
-			await goto(`/services/${created.id}`);
+			created = instance;
+			submitting = false;
+			// No probe declared — nothing this step could say, and the server
+			// left the instance live. Go straight to the service.
+			if (!instance.test_action) {
+				await goto(`/services/${instance.id}`);
+				return;
+			}
+			// A credential slot is still unfilled, so the probe's answer is a
+			// foregone "no usable credential yet". Show the link to forward
+			// instead and leave the button for when it has been used.
+			if (!instance.setup) await runTest();
 		} catch (e) {
+			// A name collision is a question, not a failure: the instance was
+			// not created, nothing was overwritten, and the one person who can
+			// say whether replacing the credential is intended is looking at
+			// the screen. Everything else stays an inline error.
+			if (e instanceof ApiError && e.status === 409 && isSecretNameConflict(e.body)) {
+				secretConflict = e.body;
+				submitting = false;
+				return;
+			}
 			error = e instanceof ApiError
 				? `Failed to create service (${e.status}): ${JSON.stringify(e.body)}`
 				: 'Failed to create service';
 			submitting = false;
+		}
+	}
+
+	function isSecretNameConflict(body: unknown): body is SecretNameConflictBody {
+		return (
+			typeof body === 'object' &&
+			body !== null &&
+			(body as { error?: unknown }).error === 'secret_name_conflict' &&
+			Array.isArray((body as { conflicts?: unknown }).conflicts)
+		);
+	}
+
+	/** Prose for the dialog: one secret reads better than a list of one. */
+	const conflictMessage = $derived.by(() => {
+		const c = secretConflict?.conflicts ?? [];
+		if (c.length === 0) return '';
+		const names = c.map((x) => `${x.secret_name} (v${x.current_version})`).join(', ');
+		return c.length === 1
+			? `A secret named ${names} already exists. Creating this service will hand out a setup link that replaces its current value — which may be the credential another service is already using. The old version stays restorable from the Secrets page.`
+			: `These secrets already exist: ${names}. Creating this service will hand out setup links that replace their current values. The old versions stay restorable from the Secrets page.`;
+	});
+
+	/**
+	 * Write every credential value the user typed, under the name its slot is
+	 * bound to. Throws on the first failure, so the caller aborts rather than
+	 * half-writing a vault.
+	 *
+	 * A blank value is not an erasure — it means "I did not supply this one",
+	 * which is the shape of both an existing vault secret the user is reusing
+	 * and a slot they intend to fill through a setup link.
+	 *
+	 * Writes the value directly rather than minting a link, which is why the
+	 * reopen panel needs no `force` and meets no `secret_name_conflict`: D85
+	 * gates the act of *minting* a link into an occupied name, because that
+	 * hands a stranger the power to replace a value they cannot see. Someone
+	 * typing into this form is looking at the service the name belongs to.
+	 */
+	async function writeCredentialValues(names: Record<string, string>) {
+		for (const [slot, value] of Object.entries(credentialValues)) {
+			if (!value) continue;
+			const name = names[slot] ?? secretName.trim();
+			if (!name) continue;
+			await putSecret(name, value);
+		}
+	}
+
+	/**
+	 * Run the probe and, on a green verdict, make the instance callable.
+	 *
+	 * Activation rather than a bare probe: this is the screen where the user
+	 * is standing up the service, so finishing is the point. `status` off the
+	 * response is authoritative — a forced activation carries no verdict at
+	 * all, and `not_supported` promotes on a verdict that never reached an
+	 * upstream.
+	 */
+	async function runTest() {
+		if (!created) return;
+		testing = true;
+		testResult = null;
+		confirmingForce = false;
+		try {
+			const res = await runActivate(created.id);
+			testResult = res.verdict ?? null;
+			created = { ...created, status: res.status };
+		} finally {
+			testing = false;
+		}
+	}
+
+	/** Open the reopen panel, seeded from the instance as the server stored it. */
+	function reopen() {
+		if (!created) return;
+		nameInput = created.name;
+		urlInput = created.url ?? '';
+		configInput = { ...(created.config ?? {}) };
+		credentialsInput = { ...(created.credentials ?? {}) };
+		// Seeded with a key per slot, not left empty. `SecretValueField`'s
+		// `value` is `$bindable('')`, and Svelte 5 throws `props_invalid_value`
+		// on `bind:` to an absent member — so an unseeded map takes the whole
+		// panel down rather than rendering a blank field.
+		credentialValues = Object.fromEntries(
+			(schemeKeyed && !usesOAuth ? secretSlots.map((s) => s.key) : ['']).map((k) => [k, ''])
+		);
+		reopened = true;
+		// Deliberately *not* clearing `testResult`. Opening the panel to
+		// re-read the error and closing it again must leave the verdict where
+		// it was; clearing on open is the tempting one-liner and it is wrong.
+	}
+
+	/** Save the edits, then check again. */
+	async function saveAndRetest() {
+		if (!created) return;
+		saving = true;
+		error = null;
+		try {
+			const cleanedCredentials = cleanServiceMap(credentialsInput);
+			await writeCredentialValues(cleanedCredentials);
+			const cleanedConfig = cleanServiceMap(configInput);
+			created = await updateService(created.id, {
+				name: nameInput.trim() || undefined,
+				url: urlInput.trim() || undefined,
+				config: cleanedConfig,
+				// A whole-map replace server-side, so send it only when a name
+				// actually changed rather than echoing it back every save.
+				credentials: schemeKeyed && !usesOAuth ? cleanedCredentials : undefined
+			});
+			reopened = false;
+			saving = false;
+			await runTest();
+		} catch (e) {
+			error = e instanceof ApiError
+				? `Could not save the changes (${e.status}): ${JSON.stringify(e.body)}`
+				: 'Could not save the changes';
+			saving = false;
+		}
+	}
+
+	/**
+	 * "Activate anyway" — go live on a red verdict.
+	 *
+	 * `activate?force=true`, not the blunt status PATCH. It runs no probe
+	 * either, so there is nothing to save by going around it — and going
+	 * around it would skip the `service.activated` event, leaving an agent
+	 * blocked on exactly this moment waiting forever.
+	 */
+	async function activateAnyway() {
+		if (!created) return;
+		promoting = true;
+		error = null;
+		try {
+			const res = await activateService(created.id, { force: true });
+			created = { ...created, status: res.status };
+			await goto(`/services/${created.id}`);
+		} catch (e) {
+			error = e instanceof ApiError
+				? `Could not activate (${e.status}): ${JSON.stringify(e.body)}`
+				: 'Could not activate';
+			promoting = false;
 		}
 	}
 
@@ -538,7 +757,45 @@
 
 <div class="page">
 	<a href="/services" class="back">← Back to services</a>
-	<h1>{step === 'pick' ? 'Choose a template' : 'Configure service'}</h1>
+	<h1>
+		{#if created}
+			<!-- Not "Check it works" any more: that was an imperative from when
+			     the user had to press a button. The check runs itself now, so
+			     the heading reports where the service stands. -->
+			{#if testing || !testResult}
+				Checking it works
+			{:else if live}
+				{created.name} is live
+			{:else}
+				Not live yet
+			{/if}
+		{:else if step === 'pick'}
+			Choose a template
+		{:else}
+			Configure service
+		{/if}
+	</h1>
+
+	<ConfirmDialog
+		open={secretConflict !== null}
+		title="Replace an existing secret?"
+		message={conflictMessage}
+		confirmLabel="Replace it"
+		cancelLabel="Cancel"
+		danger
+		onconfirm={() => {
+			secretConflict = null;
+			submit(true);
+		}}
+		oncancel={() => (secretConflict = null)}
+	>
+		{#if secretConflict}
+			<p class="conflict-hint">
+				To share the existing credential instead, go back and pick that secret
+				name in the credentials field — binding it overwrites nothing.
+			</p>
+		{/if}
+	</ConfirmDialog>
 
 	{#if error}
 		<div class="error">{error}</div>
@@ -613,6 +870,211 @@
 					<p class="muted">Select a template to preview its actions and auth requirements.</p>
 				{/if}
 			</aside>
+		</div>
+	{:else if created}
+		<!-- Post-create verification, and a real decision rather than a report.
+		     The instance exists but is not callable: a template that declares a
+		     probe is created `pending_setup` and only a green verdict promotes
+		     it. So the ways out differ — one fixes the credential, one goes
+		     live without a verdict, one throws the whole thing away. -->
+		<div class="form-card">
+			<div class="row">
+				<span class="label">Service</span>
+				<span class="mono">{created.name}</span>
+				<StatusBadge variant={created.status} />
+			</div>
+
+			{#if created.setup && !testResult && !testing}
+				<p>
+					Once the credential below has been provided, check it here — that is
+					what makes {created.name} usable.
+				</p>
+				<div class="actions start">
+					<button type="button" class="btn" onclick={runTest}>Check it works</button>
+				</div>
+			{:else}
+				<TestResult result={testResult} running={testing} onRetry={runTest} />
+			{/if}
+
+			{#if created.setup}
+				<!-- A credential slot nobody filled in. The link is the same one
+				     an agent would be handed, so the person who holds the key
+				     provides it themselves and the value never passes through
+				     whoever is standing the service up. -->
+				<div class="setup-link">
+					<p class="label">Still needs a credential</p>
+					<p>
+						Send this single-use link to whoever holds the key. They will need to
+						sign in to Overslash — checking the credential is what switches the
+						service on, and that check runs as somebody.
+					</p>
+					{#each created.setup.warnings ?? [] as w (w.secret_name)}
+						<!-- Only ever present when this create was forced past a
+						     name collision. Repeated here because the person who
+						     confirmed the dialog is often not the person who
+						     opens the link. -->
+						<p class="overwrite-note">{w.message}</p>
+					{/each}
+					<input
+						type="text"
+						readonly
+						value={created.setup.short_url ?? created.setup.setup_url}
+						onfocus={(e) => e.currentTarget.select()}
+					/>
+				</div>
+			{/if}
+
+			{#if !live && testResult && !testing}
+				<!-- The 24h deadline, stated where it is certain to be read.
+				     An unfinished setup is swept, and a user who closes this tab
+				     on a red verdict should not discover that by absence. -->
+				<p class="expiry-note">
+					{created.name} is not live, so nothing can call it yet. Unfinished setups
+					are deleted automatically after about a day — fix the credential below,
+					or activate it anyway if you know it will work.
+				</p>
+			{/if}
+
+			{#if reopened}
+				<!-- The reopen panel. Only the fields `PUT /manage` accepts:
+				     rewinding to the configure step would show four more that
+				     silently would not save, and its submit creates. -->
+				<div class="reopen">
+					<label class="field">
+						<span class="label">Name</span>
+						<input type="text" bind:value={nameInput} disabled={saving} />
+					</label>
+
+					{#if created.url !== undefined || urlInput}
+						<label class="field">
+							<span class="label">URL</span>
+							<input type="text" bind:value={urlInput} disabled={saving} />
+						</label>
+					{/if}
+
+					{#if instanceConfigParams.length > 0}
+						<ServiceInstanceConfig
+							params={instanceConfigParams}
+							bind:config={configInput}
+							idPrefix="retry-service-config"
+						/>
+					{/if}
+
+					{#if schemeKeyed && !usesOAuth}
+						<!-- A *value*, not a name. The wizard could only ever bind
+						     a vault name, which under the gate is a dead end: the
+						     probe answers "no value stored for `resend_key`" and
+						     there is nothing on this page that could supply one. -->
+						{#each secretSlots as slot (slot.key)}
+							<SecretValueField
+								bind:value={credentialValues[slot.key]}
+								label={credentialLabel(slot)}
+								placeholder="Paste a new value"
+								disabled={saving}
+							/>
+						{/each}
+					{:else if !usesOAuth}
+						<SecretValueField
+							bind:value={credentialValues['']}
+							label="Credential"
+							placeholder="Paste a new value"
+							disabled={saving}
+						/>
+					{/if}
+
+					<div class="actions start">
+						<button
+							type="button"
+							class="btn primary"
+							onclick={saveAndRetest}
+							disabled={saving}
+						>
+							{saving ? 'Saving…' : 'Save and check again'}
+						</button>
+						<button
+							type="button"
+							class="btn"
+							onclick={() => (reopened = false)}
+							disabled={saving}>Cancel</button
+						>
+					</div>
+				</div>
+			{/if}
+
+			<div class="actions">
+				{#if live}
+					<button
+						type="button"
+						class="btn primary"
+						onclick={() => goto(`/services/${created?.id}`)}>Done</button
+					>
+				{:else}
+					<button
+						type="button"
+						class="btn primary"
+						onclick={reopen}
+						disabled={reopened || testing}>Edit and retry</button
+					>
+					<button
+						type="button"
+						class="btn"
+						onclick={() => goto(`/services/${created?.id}`)}>Leave as draft</button
+					>
+					{#if probeRejected(testResult)}
+						<!-- "anyway" only where something actually went wrong.
+						     With no verdict, or one in which the upstream was
+						     never asked (approval, missing credential, deny
+						     rule), there is nothing to push past — and offering
+						     an override there would imply the credential had
+						     been tried when it had not. -->
+						{#if confirmingForce}
+							<button
+								type="button"
+								class="btn danger"
+								onclick={activateAnyway}
+								disabled={promoting}
+							>
+								{promoting ? 'Activating…' : 'Confirm — go live unchecked'}
+							</button>
+						{:else}
+							<button
+								type="button"
+								class="btn ghost-danger"
+								onclick={() => (confirmingForce = true)}
+							>
+								{#if kind === 'unreachable'}
+									Create anyway
+								{:else if kind === 'rejected'}
+									Use it anyway
+								{:else}
+									Activate anyway
+								{/if}
+							</button>
+						{/if}
+					{/if}
+				{/if}
+			</div>
+
+			{#if confirmingForce && kind}
+				<p class="force-note">
+					{#if kind === 'unreachable'}
+						Nothing answered at that address. If it is only reachable from your own
+						network the key may well be fine — but nothing will work until
+						Overslash can reach it either.
+					{:else if kind === 'rejected'}
+						{created.name} refused this credential. Activating will not change
+						that — the first real call fails the same way.
+					{:else}
+						<!-- Deliberately not "the credential is probably fine": Resend
+						     rejects a bad key with a 400, not a 401. The status alone
+						     does not say, so defer to what the upstream actually
+						     said, which the verdict above is already showing. -->
+						{created.name} answered with an error rather than refusing the
+						credential outright — read it above. Activating goes live without
+						knowing which it was.
+					{/if}
+				</p>
+			{/if}
 		</div>
 	{:else if selectedDetail}
 		<div class="form-card">
@@ -883,7 +1345,7 @@
 				<button
 					type="button"
 					class="btn primary"
-					onclick={submit}
+					onclick={() => submit()}
 					disabled={submitting || connectingOAuth || !groupsSatisfied}
 				>
 					{#if connectingOAuth}
@@ -1025,6 +1487,17 @@
 		color: white;
 		border-color: var(--color-primary, #6366f1);
 	}
+	/* The escape hatch, and the confirm it turns into. Ghost first so it does
+	   not compete with "Edit and retry", solid once the user has chosen it. */
+	.btn.ghost-danger {
+		color: #b91c1c;
+		border-color: rgba(220, 38, 38, 0.35);
+	}
+	.btn.danger {
+		background: #b91c1c;
+		color: white;
+		border-color: #b91c1c;
+	}
 	.btn.block {
 		width: 100%;
 		margin-top: 0.5rem;
@@ -1161,5 +1634,59 @@
 		margin: 0;
 		font-size: 0.9rem;
 		color: var(--color-text-muted);
+	}
+	.actions.start {
+		justify-content: flex-start;
+	}
+	.expiry-note,
+	.force-note {
+		margin: 0;
+		font-size: 0.85rem;
+		color: var(--color-text-muted, #6b7280);
+		line-height: 1.5;
+	}
+	.force-note {
+		color: #b91c1c;
+	}
+	/* Indented and ruled, so an open panel reads as "inside the failure" rather
+	   than as a second form competing with the verdict above it. */
+	.reopen {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		border-left: 2px solid var(--color-border);
+		padding-left: 0.85rem;
+	}
+	.setup-link {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		padding: 0.75rem 0.85rem;
+	}
+	.setup-link input {
+		width: 100%;
+		padding: 0.5rem 0.65rem;
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		background: var(--color-bg);
+		color: var(--color-text);
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+	}
+	.overwrite-note {
+		font-size: 0.8rem;
+		color: var(--color-text);
+		background: var(--badge-bg-warning);
+		border: 1px solid var(--color-warning);
+		border-radius: 6px;
+		padding: 0.5rem 0.65rem;
+		margin: 0;
+	}
+	.conflict-hint {
+		font-size: 0.8rem;
+		color: var(--color-text-muted);
+		margin: 0 0 1.25rem;
 	}
 </style>

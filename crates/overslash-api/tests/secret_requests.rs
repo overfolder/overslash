@@ -54,6 +54,12 @@ async fn happy_path_mint_get_submit_stored() {
     let meta: Value = resp.json().await.unwrap();
     assert_eq!(meta["secret_name"], "openai_api_key");
     assert!(meta["identity_label"].as_str().is_some());
+    // The page asks a stranger for a credential, so it has to be able to say
+    // which organization is asking.
+    assert!(
+        meta["org_name"].as_str().is_some_and(|n| !n.is_empty()),
+        "provide metadata must name the org: {meta}"
+    );
 
     // Submit value
     let resp = client
@@ -80,6 +86,33 @@ async fn happy_path_mint_get_submit_stored() {
     let got: Value = resp.json().await.unwrap();
     assert_eq!(got["name"], "openai_api_key");
     assert_eq!(got["version"], 2);
+}
+
+/// A provide URL is handed to a person, usually through a chat message, so the
+/// shortened form is what the caller surfaces. It comes from the one `mint`
+/// all three paths share — this pins the bare secret-request half of that;
+/// `service_setup::a_setup_link_is_shortened` pins the service-bound half.
+#[tokio::test]
+async fn a_provide_url_is_shortened() {
+    let shortener = common::start_shortener_stub().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, client) = common::start_api_with_registry_customized(pool, None, move |cfg| {
+        cfg.oversla_sh_base_url = Some(shortener);
+        cfg.oversla_sh_api_key = Some("stub-key".into());
+    })
+    .await;
+    let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    let req = mint(&base, &client, &agent_key, "openai_api_key").await;
+    assert_eq!(req["short_url"], common::STUB_SHORT_URL, "{req}");
+    // The long form is always there to fall back on — the shortener is
+    // best-effort and the canonical URL is what the token is bound to.
+    assert!(
+        req["url"]
+            .as_str()
+            .is_some_and(|u| u.contains("/secrets/provide/")),
+        "{req}"
+    );
 }
 
 #[tokio::test]
@@ -666,4 +699,142 @@ async fn session_overrides_jwt_in_audit() {
         detail["provisioned_by_user_id"].as_str().unwrap(),
         provisioner.to_string()
     );
+}
+
+// ── Name collisions ───────────────────────────────────────────────────────
+//
+// Fulfilment writes through a blind `ON CONFLICT (org_id, name) DO UPDATE`
+// that bumps the version. That is right for a rotation and wrong for a
+// request nobody realised was aimed at an occupied name, and the two are
+// indistinguishable at write time — so the surface that can still tell them
+// apart is the mint.
+
+#[tokio::test]
+async fn minting_over_an_existing_secret_is_refused() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
+    let base = format!("http://{addr}");
+    let name = format!("taken-{}", Uuid::new_v4().simple());
+
+    let put = client
+        .put(format!("{base}/v1/secrets/{name}"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"value": "original"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success(), "seed put: {}", put.status());
+
+    let resp = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"secret_name": name, "ttl_seconds": 3600}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "secret_name_conflict", "{body}");
+    assert_eq!(body["conflicts"][0]["secret_name"], name, "{body}");
+    assert_eq!(body["conflicts"][0]["current_version"], 1, "{body}");
+    assert!(
+        body["conflicts"][0]["credential_key"].is_null(),
+        "a bare request names no slot: {body}"
+    );
+}
+
+#[tokio::test]
+async fn forcing_mints_and_reports_the_version_it_supersedes() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
+    let base = format!("http://{addr}");
+    let name = format!("rotate-{}", Uuid::new_v4().simple());
+
+    for value in ["v1", "v2"] {
+        let put = client
+            .put(format!("{base}/v1/secrets/{name}"))
+            .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+            .json(&json!({"value": value}))
+            .send()
+            .await
+            .unwrap();
+        assert!(put.status().is_success());
+    }
+
+    let resp = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"secret_name": name, "ttl_seconds": 3600, "force": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    // Asserted whole, not by substring. A `\`-continuation that loses its
+    // escape leaves a run of literal spaces mid-sentence, which every
+    // `contains` in this file still passes — the message reaches the caller
+    // garbled and the suite stays green.
+    assert_eq!(
+        body["warning"].as_str().expect("forced mint warns"),
+        format!(
+            "secret '{name}' already exists; fulfilling this request replaces \
+             its current value (v2). The old version stays restorable."
+        ),
+        "{body}"
+    );
+}
+
+/// A name nobody has used must not acquire a `warning` key — a field present
+/// on every response is a field nobody reads.
+#[tokio::test]
+async fn an_uncontested_mint_carries_no_warning() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
+    let base = format!("http://{addr}");
+
+    let body = mint(
+        &base,
+        &client,
+        &fx.admin_key,
+        &format!("fresh-{}", Uuid::new_v4().simple()),
+    )
+    .await;
+    assert!(body["warning"].is_null(), "{body}");
+}
+
+/// A soft-deleted slot leaves the name free: the upsert resurrects the row
+/// rather than colliding with it, and from the operator's seat the name is
+/// available. Guards the `deleted_at IS NULL` filter the check relies on.
+#[tokio::test]
+async fn a_deleted_secret_does_not_block_a_new_request() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
+    let base = format!("http://{addr}");
+    let name = format!("gone-{}", Uuid::new_v4().simple());
+
+    let put = client
+        .put(format!("{base}/v1/secrets/{name}"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"value": "original"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success());
+
+    let del = client
+        .delete(format!("{base}/v1/secrets/{name}"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert!(del.status().is_success(), "delete: {}", del.status());
+
+    let resp = client
+        .post(format!("{base}/v1/secrets/requests"))
+        .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
+        .json(&json!({"secret_name": name, "ttl_seconds": 3600}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "a freed name must mint without force");
 }

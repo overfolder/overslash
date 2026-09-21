@@ -30,6 +30,16 @@ pub enum ServiceInstanceStatus {
     Draft,
     Active,
     Archived,
+    /// Created by a setup flow, credentials not yet proven to work. Only
+    /// `Active` resolves by name or appears in search, so this is uncallable
+    /// for the same reason `Draft` is — see migration 119 for why it is a
+    /// separate value rather than a reuse of `Draft`.
+    ///
+    /// Spelled out because the container's `rename_all = "lowercase"` would
+    /// otherwise emit `pendingsetup`, and the wire value is the `status`
+    /// column verbatim.
+    #[serde(rename = "pending_setup")]
+    PendingSetup,
 }
 
 impl ServiceInstanceStatus {
@@ -38,6 +48,7 @@ impl ServiceInstanceStatus {
             Self::Draft => "draft",
             Self::Active => "active",
             Self::Archived => "archived",
+            Self::PendingSetup => "pending_setup",
         }
     }
 
@@ -46,6 +57,7 @@ impl ServiceInstanceStatus {
             "draft" => Some(Self::Draft),
             "active" => Some(Self::Active),
             "archived" => Some(Self::Archived),
+            "pending_setup" => Some(Self::PendingSetup),
             _ => None,
         }
     }

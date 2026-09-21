@@ -397,14 +397,213 @@ async fn forward(
             && let Some(code) = parsed.get("error").and_then(Value::as_str)
             && TYPED_ERROR_CODES.contains(&code)
         {
-            return Ok(ForwardOutcome::TypedError(parsed));
+            return Ok(ForwardOutcome::TypedError(collapse_link_pairs(parsed)));
         }
         return Err(format!("API {status}: {text}"));
     }
     if text.is_empty() {
         return Ok(ForwardOutcome::Ok(Value::Null));
     }
-    Ok(ForwardOutcome::Ok(
+    Ok(ForwardOutcome::Ok(collapse_link_pairs(
         serde_json::from_str(&text).unwrap_or(Value::String(text)),
-    ))
+    )))
+}
+
+/// Canonical-URL field → the field carrying its `oversla.sh` short form.
+///
+/// Only Overslash's own link pairs. Each entry is a contract with one REST
+/// response shape, so a new pair belongs here and nowhere else.
+const LINK_PAIRS: &[(&str, &str)] = &[
+    // `AppError::{NeedsAuthentication, ReauthRequired, MissingScopes}`, and
+    // `CreateConnectionResponse` / `InitiateConnectionResponse`.
+    ("auth_url", "short"),
+    // `AuthorizeUrls` on the upstream-OAuth boot flow. `raw` is untouched:
+    // it's the opt-in upstream provider URL, a different thing entirely, and
+    // shortening or dropping it would break the callers that ask for it.
+    ("proxied", "short"),
+    // `CreateSecretRequestResponse` (REST) and the platform `request_secret`
+    // result (`provide_url`).
+    ("url", "short_url"),
+    ("provide_url", "short_url"),
+    // `SetupBundle` on the `create_service` response, and each of its
+    // `requests[]` entries — which is why the walk below recurses through
+    // arrays as well as objects. A multi-slot template hands over one link per
+    // entry, so every entry needs collapsing, not just the bundle's scalar.
+    ("setup_url", "short_url"),
+];
+
+/// Collapse every canonical/short URL pair into the canonical field, for MCP
+/// consumers only.
+///
+/// REST keeps both halves: partners host-allow-list the canonical URL, parse
+/// the flow id out of it, or would rather not put a second service in their
+/// OAuth path. An agent needs none of that — it hands the link to a human
+/// verbatim — and a pair only makes it guess which half to paste. So the MCP
+/// side, and only the MCP side, sees one field holding the short form.
+///
+/// Runs at the forwarding boundary because that is the one place every
+/// MCP-facing response passes through: the REST handlers stay unaware there is
+/// a second surface, and a response shape that grows a pair later is collapsed
+/// here without touching its handler.
+///
+/// Recursive: the pairs sit at different depths (flat on the auth envelopes,
+/// nested under `authorize_urls`, and inside the action-call result wrapper).
+/// A short field with no value is dropped rather than relayed as `null`.
+fn collapse_link_pairs(value: Value) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            for (canonical, short) in LINK_PAIRS {
+                // Only when both keys are present: a lone `url` on some
+                // unrelated payload is left exactly as it is.
+                if !map.contains_key(*canonical) || !map.contains_key(*short) {
+                    continue;
+                }
+                // A present-but-null/unusable short form is dropped; the
+                // canonical URL it sat beside is always populated.
+                if let Some(Value::String(s)) = map.remove(*short) {
+                    map.insert((*canonical).to_string(), Value::String(s));
+                }
+            }
+            Value::Object(
+                map.into_iter()
+                    .map(|(k, v)| (k, collapse_link_pairs(v)))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(collapse_link_pairs).collect()),
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod collapse_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_short_form_replaces_the_canonical_url_and_the_pair_field_goes() {
+        let out = collapse_link_pairs(json!({
+            "error": "needs_authentication",
+            "auth_url": "https://api.overslash.com/connect-authorize?id=abc",
+            "short": "https://oversla.sh/xy7",
+            "provider": "google",
+        }));
+        assert_eq!(out["auth_url"], "https://oversla.sh/xy7");
+        assert!(out.get("short").is_none(), "{out}");
+        assert_eq!(out["provider"], "google", "untouched keys survive: {out}");
+    }
+
+    #[test]
+    fn a_canonical_url_with_no_short_sibling_is_left_alone() {
+        // Headless orgs, and every response minted while the shortener is
+        // unconfigured — which is prod today.
+        let body = json!({
+            "error": "needs_authentication",
+            "auth_url": "https://api.overslash.com/connect-authorize?id=abc",
+        });
+        assert_eq!(collapse_link_pairs(body.clone()), body);
+    }
+
+    #[test]
+    fn a_null_short_never_replaces_a_usable_url() {
+        let out = collapse_link_pairs(json!({
+            "provide_url": "https://app.overslash.com/secrets/provide/r1?token=t",
+            "short_url": Value::Null,
+        }));
+        assert_eq!(
+            out["provide_url"],
+            "https://app.overslash.com/secrets/provide/r1?token=t"
+        );
+        assert!(out.get("short_url").is_none(), "{out}");
+    }
+
+    #[test]
+    fn nested_and_arrayed_pairs_collapse_too() {
+        // `AuthorizeUrls` rides under `authorize_urls`, and action-call
+        // results arrive inside a wrapper.
+        let out = collapse_link_pairs(json!({
+            "result": {
+                "authorize_urls": {
+                    "proxied": "https://api.overslash.com/gated-authorize?id=f1",
+                    "short": "https://oversla.sh/zz1",
+                    "raw": "https://accounts.google.com/o/oauth2/v2/auth?x=1",
+                },
+                "items": [{ "url": "https://long/one", "short_url": "https://oversla.sh/a" }],
+            }
+        }));
+        let urls = &out["result"]["authorize_urls"];
+        assert_eq!(urls["proxied"], "https://oversla.sh/zz1");
+        assert!(urls.get("short").is_none());
+        assert_eq!(
+            urls["raw"], "https://accounts.google.com/o/oauth2/v2/auth?x=1",
+            "raw is the opt-in upstream URL and must never be shortened or dropped: {out}"
+        );
+        assert_eq!(out["result"]["items"][0]["url"], "https://oversla.sh/a");
+    }
+
+    /// The `create_service` setup bundle: a scalar pair on the bundle itself
+    /// and one per `requests[]` entry. A multi-slot template hands over one
+    /// link per entry, so collapsing only the scalar would leave an agent
+    /// picking between two URLs for every slot after the first — the exact
+    /// trap this collapse exists to remove.
+    #[test]
+    fn every_setup_link_in_the_bundle_collapses() {
+        let out = collapse_link_pairs(json!({
+            "result": { "setup": {
+                "setup_url": "https://app.overslash.com/services/setup/req_a?token=x",
+                "short_url": "https://oversla.sh/a1",
+                "requests": [
+                    {
+                        "credential_key": "acme_user",
+                        "setup_url": "https://app.overslash.com/services/setup/req_a?token=x",
+                        "short_url": "https://oversla.sh/a1",
+                    },
+                    {
+                        "credential_key": "acme_pass",
+                        "setup_url": "https://app.overslash.com/services/setup/req_b?token=y",
+                        "short_url": "https://oversla.sh/b2",
+                    },
+                ],
+            }}
+        }));
+        let setup = &out["result"]["setup"];
+        assert_eq!(setup["setup_url"], "https://oversla.sh/a1");
+        assert!(setup.get("short_url").is_none());
+        assert_eq!(setup["requests"][0]["setup_url"], "https://oversla.sh/a1");
+        assert_eq!(
+            setup["requests"][1]["setup_url"], "https://oversla.sh/b2",
+            "the second slot's link collapses too, not just the first: {out}"
+        );
+        assert!(setup["requests"][1].get("short_url").is_none());
+        // Untouched.
+        assert_eq!(setup["requests"][1]["credential_key"], "acme_pass");
+    }
+
+    /// With the shortener unconfigured every `short_url` is absent, so there
+    /// is no pair and the long form has to survive.
+    #[test]
+    fn a_setup_link_with_no_short_form_is_left_alone() {
+        let out = collapse_link_pairs(json!({
+            "setup": {
+                "setup_url": "https://app.overslash.com/services/setup/req_a?token=x",
+                "requests": [{ "setup_url": "https://app.overslash.com/services/setup/req_a?token=x" }],
+            }
+        }));
+        assert_eq!(
+            out["setup"]["setup_url"],
+            "https://app.overslash.com/services/setup/req_a?token=x"
+        );
+        assert_eq!(
+            out["setup"]["requests"][0]["setup_url"],
+            "https://app.overslash.com/services/setup/req_a?token=x"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_url_field_is_not_touched() {
+        // Plenty of payloads carry a `url` that is nothing to do with a link
+        // pair. Without its partner key present, it stays exactly as it is.
+        let body = json!({ "url": "https://example.com/webhook", "method": "POST" });
+        assert_eq!(collapse_link_pairs(body.clone()), body);
+    }
 }

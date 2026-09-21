@@ -87,4 +87,31 @@ impl Config {
     pub fn mcp_elicitation_retention_secs(&self) -> i64 {
         self.mcp_elicitation_reap_after_secs() * 2
     }
+
+    /// Age at which an unverified `pending_setup` service instance is deleted.
+    ///
+    /// The subsystem's own deadline here is the longest TTL a *setup link* can
+    /// carry ([`crate::services::service_setup::MAX_LINK_TTL_SECS`]), not the
+    /// one-hour default the auto-mint uses: `POST /v1/secrets/requests` takes a
+    /// caller-supplied `ttl_seconds` clamped to that ceiling, so a link can
+    /// legitimately outlive the default by hours. The draft must outlive every
+    /// link that could still fulfil it — the `secret_requests` rows cascade
+    /// with the instance, so sweeping early would delete a live link out from
+    /// under whoever was about to paste into it.
+    pub fn setup_draft_retention_secs(&self) -> i64 {
+        crate::services::service_setup::MAX_LINK_TTL_SECS + self.sweep_grace_secs as i64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::services::service_setup::MAX_LINK_TTL_SECS;
+
+    /// The floor this window exists to respect. A grace of zero would still be
+    /// correct; anything below the link ceiling would not.
+    #[test]
+    fn a_setup_draft_outlives_the_longest_link_that_could_fulfil_it() {
+        let cfg = crate::config::tests::empty_test_config();
+        assert!(cfg.setup_draft_retention_secs() >= MAX_LINK_TTL_SECS);
+    }
 }

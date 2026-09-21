@@ -65,3 +65,8 @@ variable "upstream_error_alert_enabled" {
   description = "Enable the upstream error rate alert. GMP rejects the alert policy if overslash_upstream_responses_total has never been emitted (no metric descriptor yet). Set true once at least one upstream response has been observed."
 }
 
+variable "api_latency_alert_enabled" {
+  type        = bool
+  default     = false
+  description = "Enable the [P1] API Slow Requests alert. GMP rejects the alert policy until overslash_http_request_duration_seconds has been scraped *as a histogram* — before the release carrying set_buckets_for_metric, the metric exists only as a summary and has no _bucket series for the query to read. Set true once the histogram descriptor is visible in Metrics Explorer."
+}

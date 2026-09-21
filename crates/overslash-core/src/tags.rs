@@ -2,7 +2,7 @@
 //! Overslash already computes while gating a call.
 //!
 //! A tag is `namespace:value` — `sql:write`, `table:warehouse/public.orders`,
-//! `service:metabase`, `host:metabase.acme.internal`. Tags are stored as
+//! `service:metabase`, `host:metabase.acme.internal`, `db_id:4`. Tags are stored as
 //! `text[]` on approvals, executions and audit rows, and the audit log is
 //! searchable by them (`GET /v1/audit?tag=`).
 //!
@@ -74,12 +74,20 @@ pub fn tag(namespace: &str, value: &str) -> String {
 
 /// Tags for one analyzed SQL statement.
 ///
-/// `db_label` is the raw label from the instance's `sql_databases` config —
-/// the same string the `table=` permission keys were minted from. It is run
-/// through the same sanitizer those keys use, so a `table:` tag and the
+/// `db` is the same [`crate::permissions::DbLabel`] the `table=` permission
+/// keys were minted from, already sanitized, so a `table:` tag and the
 /// `table=` key it came from name the database identically.
-pub fn sql_tags(db_label: &str, analysis: &SqlAnalysis) -> Vec<String> {
-    let db_label = &crate::permissions::sanitize_db_label(db_label);
+///
+/// Where the *key* spells both the name and the id as one alternation group,
+/// the tags spell them as two tags — `db:` and `db_id:`. A set's way to say
+/// "either" is two elements, and it has to be: tag search is exact
+/// containment (`tags @> …`), so a single `db:name,id` tag would match neither
+/// `?tag=db:name` nor `?tag=db_id:id`. Only the scalar pair is doubled;
+/// `table:`/`column:` stay on the name, because 24 tables and 24 columns
+/// doubled would be 96 against a [`MAX_TAGS`] of 64, and `?tag~` already finds
+/// a relation without knowing the db label.
+pub fn sql_tags(db: &crate::permissions::DbLabel, analysis: &SqlAnalysis) -> Vec<String> {
+    let db_label = db.name();
     let mut tags = Vec::new();
 
     tags.push(tag(
@@ -111,6 +119,11 @@ pub fn sql_tags(db_label: &str, analysis: &SqlAnalysis) -> Vec<String> {
     }
 
     tags.push(tag("db", db_label));
+    // The rename-proof search axis: a database can be renamed upstream between
+    // two calls, and `?tag=db_id:4` still finds both.
+    if let Some(id) = db.id() {
+        tags.push(tag("db_id", id));
+    }
 
     let mut table_tags: Vec<String> = analysis
         .read_tables
@@ -197,7 +210,7 @@ fn take_capped(v: &mut Vec<String>, max: usize) -> bool {
 ///
 /// Table and column identifiers are exactly the strings that carry non-ASCII,
 /// so a raw `&s[..max]` here would panic on real input (CLAUDE.md rule 5).
-fn truncate_on_char_boundary(mut s: String, max: usize) -> String {
+pub(crate) fn truncate_on_char_boundary(mut s: String, max: usize) -> String {
     if s.len() <= max {
         return s;
     }
@@ -249,14 +262,17 @@ mod tests {
 
     #[test]
     fn read_statement_tags_class_and_db_only() {
-        let tags = sql_tags("warehouse", &analysis(SqlClass::Read, None));
+        let tags = sql_tags(
+            &crate::permissions::DbLabel::new("warehouse", None),
+            &analysis(SqlClass::Read, None),
+        );
         assert_eq!(tags, vec!["sql:read", "db:warehouse"]);
     }
 
     #[test]
     fn write_reason_payload_is_promoted() {
         let tags = sql_tags(
-            "wh",
+            &crate::permissions::DbLabel::new("wh", None),
             &analysis(
                 SqlClass::Write,
                 Some(WriteReason::Statement("InsertStmt".into())),
@@ -267,7 +283,7 @@ mod tests {
         assert!(tags.contains(&"sql_stmt:insertstmt".to_string()));
 
         let tags = sql_tags(
-            "wh",
+            &crate::permissions::DbLabel::new("wh", None),
             &analysis(
                 SqlClass::Write,
                 Some(WriteReason::UnsupportedDialect("MySQL".into())),
@@ -281,7 +297,7 @@ mod tests {
         // Unbounded payload — the tag records only that it happened; the
         // message stays in audit detail.
         let tags = sql_tags(
-            "wh",
+            &crate::permissions::DbLabel::new("wh", None),
             &analysis(
                 SqlClass::Write,
                 Some(WriteReason::ParseError(
@@ -300,7 +316,7 @@ mod tests {
     #[test]
     fn unsafe_function_names_stay_out_of_the_index() {
         let tags = sql_tags(
-            "wh",
+            &crate::permissions::DbLabel::new("wh", None),
             &analysis(
                 SqlClass::Write,
                 Some(WriteReason::UnsafeFunction("nextval, my_udf".into())),
@@ -314,9 +330,15 @@ mod tests {
     #[test]
     fn non_exhaustive_is_tagged_but_exhaustive_is_not() {
         let mut a = analysis(SqlClass::Write, Some(WriteReason::WritableCte));
-        assert!(!sql_tags("wh", &a).contains(&"sql_exhaustive:false".to_string()));
+        assert!(
+            !sql_tags(&crate::permissions::DbLabel::new("wh", None), &a)
+                .contains(&"sql_exhaustive:false".to_string())
+        );
         a.tables_exhaustive = false;
-        assert!(sql_tags("wh", &a).contains(&"sql_exhaustive:false".to_string()));
+        assert!(
+            sql_tags(&crate::permissions::DbLabel::new("wh", None), &a)
+                .contains(&"sql_exhaustive:false".to_string())
+        );
     }
 
     #[test]
@@ -325,7 +347,7 @@ mod tests {
         a.read_tables = vec!["public.orders".into()];
         a.mut_tables = vec!["public.audit".into()];
         a.columns = vec!["email".into(), "*".into()];
-        let tags = sql_tags("wh", &a);
+        let tags = sql_tags(&crate::permissions::DbLabel::new("wh", None), &a);
         assert!(tags.contains(&"table:wh/public.orders".to_string()));
         assert!(tags.contains(&"table_mut:wh/public.audit".to_string()));
         assert!(tags.contains(&"column:wh/email".to_string()));
@@ -342,7 +364,7 @@ mod tests {
         );
         a.read_tables = vec!["orders".into()];
         a.mut_tables = vec!["orders".into()];
-        let tags = sql_tags("wh", &a);
+        let tags = sql_tags(&crate::permissions::DbLabel::new("wh", None), &a);
         assert!(tags.contains(&"table:wh/orders".to_string()));
         assert!(tags.contains(&"table_mut:wh/orders".to_string()));
     }
@@ -351,7 +373,7 @@ mod tests {
     fn column_overflow_is_capped_and_announced() {
         let mut a = analysis(SqlClass::Read, None);
         a.columns = (0..MAX_COLUMN_TAGS + 10).map(|i| format!("c{i}")).collect();
-        let tags = sql_tags("wh", &a);
+        let tags = sql_tags(&crate::permissions::DbLabel::new("wh", None), &a);
         assert!(tags.contains(&"truncated:column".to_string()));
         assert_eq!(
             tags.iter().filter(|t| t.starts_with("column:")).count(),
@@ -363,7 +385,7 @@ mod tests {
     fn table_overflow_is_capped_and_announced() {
         let mut a = analysis(SqlClass::Read, None);
         a.read_tables = (0..MAX_TABLE_TAGS + 5).map(|i| format!("t{i}")).collect();
-        let tags = sql_tags("wh", &a);
+        let tags = sql_tags(&crate::permissions::DbLabel::new("wh", None), &a);
         assert!(tags.contains(&"truncated:table".to_string()));
         assert_eq!(
             tags.iter().filter(|t| t.starts_with("table:")).count(),
@@ -409,7 +431,7 @@ mod tests {
         let mut a = analysis(SqlClass::Read, None);
         a.read_tables = (0..MAX_TABLE_TAGS + 5).map(|i| format!("t{i}")).collect();
         a.columns = (0..MAX_COLUMN_TAGS + 5).map(|i| format!("c{i}")).collect();
-        let tags = sql_tags("wh", &a);
+        let tags = sql_tags(&crate::permissions::DbLabel::new("wh", None), &a);
         assert!(tags.len() <= MAX_TAGS);
         assert!(tags.contains(&"truncated:table".to_string()));
         assert!(tags.contains(&"truncated:column".to_string()));
@@ -422,7 +444,10 @@ mod tests {
         // as db `a` with relation `b/orders`.
         let mut a = analysis(SqlClass::Read, None);
         a.read_tables = vec!["orders".into()];
-        let tags = sql_tags("prod/warehouse", &a);
+        let tags = sql_tags(
+            &crate::permissions::DbLabel::new("prod/warehouse", None),
+            &a,
+        );
         assert!(tags.contains(&"db:prod-warehouse".to_string()));
         assert!(tags.contains(&"table:prod-warehouse/orders".to_string()));
     }

@@ -54,6 +54,7 @@ x-overslash-mcp:
     #    any other tool: it reports which objects/tools this hub can use. ──
     - name: get_user_details
       risk: read
+      test: true
       description: "Get the connected HubSpot user, hub, and tool availability"
       input_schema:
         type: object

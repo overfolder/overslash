@@ -1,6 +1,7 @@
 //! Unit tests for the `oversla.sh` shortener helper. Integration-flavoured
 //! since they spin up a tiny in-process axum server, but they don't need a
-//! database — `mint_with_client` is `AppState`-free for exactly this reason.
+//! database — `mint_with_client` and `shorten_with_config` are `AppState`-free
+//! for exactly this reason.
 
 use std::net::SocketAddr;
 use std::sync::{
@@ -207,4 +208,66 @@ async fn returns_none_on_transport_error() {
     )
     .await;
     assert!(result.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// `mint_with_config` — the config gate the REST paths share. Both keep the
+// canonical URL beside the short one, so all that matters here is that a
+// half-configured shortener yields `None` without touching the network.
+// ---------------------------------------------------------------------------
+
+const LONG: &str = "https://dashboard.example.com/approvals/00000000-0000-0000-0000-000000000001";
+
+#[tokio::test]
+async fn mint_with_config_returns_the_short_form_when_configured() {
+    let (addr, _mock) = start_mock().await;
+    let client = reqwest::Client::new();
+
+    let short = short_url::mint_with_config(
+        &client,
+        Some(&format!("http://{addr}")),
+        Some("k"),
+        LONG,
+        future_expiry(600),
+    )
+    .await;
+    assert_eq!(short.as_deref(), Some("https://oversla.sh/abc123"));
+}
+
+#[tokio::test]
+async fn mint_with_config_is_none_when_either_half_is_unset() {
+    let (addr, mock) = start_mock().await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    // Prod today runs the first shape: the shortener service is deployed but
+    // the API was never given its base URL.
+    for (base, key) in [(None, Some("k")), (Some(base.clone()), None), (None, None)] {
+        let short =
+            short_url::mint_with_config(&client, base.as_deref(), key, LONG, future_expiry(600))
+                .await;
+        assert_eq!(short, None);
+    }
+    assert_eq!(
+        mock.calls.load(Ordering::SeqCst),
+        0,
+        "a half-configured shortener must not be called at all"
+    );
+}
+
+#[tokio::test]
+async fn mint_with_config_is_none_when_the_mint_fails() {
+    let (addr, mock) = start_mock().await;
+    *mock.response.lock().unwrap() = MockResponse::Status(StatusCode::INTERNAL_SERVER_ERROR);
+    let client = reqwest::Client::new();
+
+    let short = short_url::mint_with_config(
+        &client,
+        Some(&format!("http://{addr}")),
+        Some("k"),
+        LONG,
+        future_expiry(600),
+    )
+    .await;
+    assert_eq!(short, None, "callers fall back to the canonical URL");
 }

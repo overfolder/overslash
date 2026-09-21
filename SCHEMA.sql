@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict lYnSS1TyJdyBdTlvrhdCwa1onatYtWdcyBptT7jyMcesrEoHYhlq8xvXQWvBCcW
+\restrict VeJjLWgpX0zHeRI6jPdnuguwh5zra0DSWpgdtS7uMn5IDYXj1fAAdE1K7oioO0n
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -1022,8 +1022,25 @@ CREATE TABLE public.secret_requests (
     expires_at timestamp with time zone NOT NULL,
     fulfilled_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    require_user_session boolean DEFAULT false NOT NULL
+    require_user_session boolean DEFAULT false NOT NULL,
+    service_instance_id uuid,
+    credential_key text,
+    CONSTRAINT secret_requests_service_binding_complete CHECK (((service_instance_id IS NULL) = (credential_key IS NULL)))
 );
+
+
+--
+-- Name: COLUMN secret_requests.service_instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.secret_requests.service_instance_id IS 'Service instance this request is provisioning a credential for. NULL for a plain secret request, which is the pre-118 shape. ON DELETE CASCADE: an outstanding setup link for a deleted instance has nothing left to bind.';
+
+
+--
+-- Name: COLUMN secret_requests.credential_key; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.secret_requests.credential_key IS 'Template securityScheme slot key to bind on fulfilment, validated against the template at mint time. NULL whenever service_instance_id is.';
 
 
 --
@@ -1099,9 +1116,16 @@ CREATE TABLE public.service_instances (
     discovered_tools jsonb,
     discovered_at timestamp with time zone,
     config jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text]))),
+    CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text, 'pending_setup'::text]))),
     CONSTRAINT service_instances_template_source_check CHECK ((template_source = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
 );
+
+
+--
+-- Name: COLUMN service_instances.status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.service_instances.status IS 'Lifecycle: active (callable), draft (deliberately parked), archived (retired), pending_setup (created by a setup flow, probe not yet green — swept after ~24h). Only active resolves by name or appears in search.';
 
 
 --
@@ -2334,6 +2358,13 @@ CREATE INDEX idx_secret_requests_pending ON public.secret_requests USING btree (
 
 
 --
+-- Name: idx_secret_requests_service; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_secret_requests_service ON public.secret_requests USING btree (service_instance_id) WHERE (service_instance_id IS NOT NULL);
+
+
+--
 -- Name: idx_secret_versions_provisioned_by; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2373,6 +2404,13 @@ CREATE UNIQUE INDEX idx_service_instances_org_name ON public.service_instances U
 --
 
 CREATE INDEX idx_service_instances_owner ON public.service_instances USING btree (owner_identity_id);
+
+
+--
+-- Name: idx_service_instances_pending_setup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_service_instances_pending_setup ON public.service_instances USING btree (created_at) WHERE (status = 'pending_setup'::text);
 
 
 --
@@ -3131,6 +3169,14 @@ ALTER TABLE ONLY public.secret_requests
 
 
 --
+-- Name: secret_requests secret_requests_service_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secret_requests
+    ADD CONSTRAINT secret_requests_service_instance_id_fkey FOREIGN KEY (service_instance_id) REFERENCES public.service_instances(id) ON DELETE CASCADE;
+
+
+--
 -- Name: secret_versions secret_versions_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3310,5 +3356,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict lYnSS1TyJdyBdTlvrhdCwa1onatYtWdcyBptT7jyMcesrEoHYhlq8xvXQWvBCcW
+\unrestrict VeJjLWgpX0zHeRI6jPdnuguwh5zra0DSWpgdtS7uMn5IDYXj1fAAdE1K7oioO0n
 

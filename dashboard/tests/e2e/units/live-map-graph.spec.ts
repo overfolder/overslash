@@ -216,4 +216,30 @@ test.describe('serviceIdFor', () => {
 		expect(balls).toHaveLength(1);
 		expect(balls[0].unlisted).toBeUndefined();
 	});
+
+	/**
+	 * Why the map asks for a refetch rather than making do with the traffic.
+	 *
+	 * A service created while the map is open is known only by the name its
+	 * `action.*` events carry, and a name buys neither of the two things that
+	 * place and decorate a ball: without an owner it has no `rootOf` entry and
+	 * rides the shared ring *outside* its owner's container, and without
+	 * `icon_url` it falls back to a monogram. Both arrive only with the
+	 * listing — which is the whole reason `service.created` is a signal to
+	 * refetch and not a payload to render.
+	 */
+	test('the traffic placeholder gains its container and icon only from the listing', () => {
+		const seen = 'service:gcal';
+
+		const before = build([], [seen]);
+		expect(before.byId.get(seen)!.unlisted).toBe(true);
+		expect(before.rootOf.has(seen)).toBe(false);
+		expect(before.byId.get(seen)!.icon).toBeUndefined();
+
+		const listed = { ...service('gcal', ANA), icon_url: 'https://cdn.example/gcal.svg' };
+		const after = build([listed], [seen]);
+		const ball = [...after.byId.values()].find((n) => n.kind === 'service')!;
+		expect(after.rootOf.get(ball.id)).toBe(ANA);
+		expect(ball.icon).toBe('https://cdn.example/gcal.svg');
+	});
 });

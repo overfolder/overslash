@@ -66,6 +66,12 @@
     "google_drive": { "source": "simple-icons:googledrive" },
     "google_keep": { "source": "simple-icons:googlekeep" },
     "google_tasks": { "source": "simple-icons:googletasks" },
+    "holded": {
+      "source": "local:holded.svg",
+      "owner": "Holded Technologies, S.L. (Visma Group)",
+      "guidelines": "https://www.holded.com/",
+      "note": "Holded's isotype, lifted from the logo the vendor serves at www.holded.com/assets/logos/holded-logo-red-white.svg and re-cropped to a square 24x24 box. No simple-icons entry exists. This is a vendor trademark included to identify the product this template integrates; we hold no licence to it."
+    },
     "hubspot": { "source": "simple-icons:hubspot" },
     "http": {
       "source": "local:globe.svg",

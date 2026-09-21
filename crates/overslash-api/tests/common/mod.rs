@@ -1168,6 +1168,29 @@ pub async fn start_api_with_auth_providers(
     (format!("http://{addr}"), client)
 }
 
+/// The short URL [`start_shortener_stub`] answers every mint with.
+pub const STUB_SHORT_URL: &str = "https://oversla.sh/xY3";
+
+/// Boot a stub `oversla.sh` that answers every mint with [`STUB_SHORT_URL`],
+/// and return its base URL.
+///
+/// The shared harness leaves `oversla_sh_base_url` unset, which makes every
+/// `short_url` `None` — so a path that silently never reaches the shortener
+/// looks exactly like a deployment that has not configured one. Pair this with
+/// [`start_api_with_registry_customized`] to tell the two apart.
+pub async fn start_shortener_stub() -> String {
+    use axum::{Json, Router, routing::post};
+
+    let app = Router::new().route(
+        "/api/links",
+        post(|| async { Json(serde_json::json!({"short_url": STUB_SHORT_URL})) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
 /// Start the mock target in-process on a random port.
 /// Includes: echo, webhook receiver, and mock OAuth token endpoint.
 /// Boot the combined OAuth/OIDC + GitHub user + echo + webhook fake on an
@@ -1382,6 +1405,40 @@ pub async fn bootstrap_agent_on_fixtures(
 
 pub fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
+}
+
+/// The test config's hex signing key, as bytes — what the API decodes at
+/// startup. Kept beside [`session_cookie`] because the two are only useful
+/// together.
+pub fn signing_key_bytes() -> Vec<u8> {
+    hex::decode("cd".repeat(32)).expect("test signing key is hex")
+}
+
+/// A `Cookie:` header carrying a valid `oss_session` for `(org, identity)`.
+///
+/// Forged rather than obtained through a login flow, because the endpoints
+/// that read it treat the session purely as an identity attestation layered on
+/// top of some other capability — a signed URL, an API key — and standing up a
+/// real login to prove "somebody was signed in" would test the login instead.
+///
+/// Needed by the public provide/setup endpoints since a setup request is
+/// always minted `require_user_session = true`: an anonymous fulfilment cannot
+/// run the probe that fulfilment exists to trigger.
+pub fn session_cookie(org_id: Uuid, identity_id: Uuid) -> String {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let claims = overslash_api::services::jwt::Claims {
+        sub: identity_id,
+        org: org_id,
+        email: "fixture@test.local".into(),
+        aud: overslash_api::services::jwt::AUD_SESSION.into(),
+        iat: now,
+        exp: now + 3600,
+        user_id: Some(identity_id),
+        mcp_client_id: None,
+    };
+    let token = overslash_api::services::jwt::mint(&signing_key_bytes(), &claims)
+        .expect("mint test session");
+    format!("oss_session={token}")
 }
 
 /// Test helper: the org's Everyone group id. Every user identity in the org is

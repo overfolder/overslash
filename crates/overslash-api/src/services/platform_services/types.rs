@@ -42,6 +42,51 @@ pub struct CreateServiceInput {
     /// pinned or when the template is not OAuth-backed.
     #[serde(default)]
     pub skip_connect: Option<bool>,
+    /// Twin of [`Self::skip_connect`] for the secret path. With this `true`
+    /// the kernel creates the instance with whatever bindings were supplied
+    /// and mints no setup links — the caller intends to write the vault
+    /// secrets itself, or to bind them later via `PUT /v1/services/{id}/manage`.
+    /// Ignored when every per-instance slot is already bound.
+    #[serde(default)]
+    pub skip_credentials: Option<bool>,
+    /// Mint the setup links even though a slot's vault name is already taken,
+    /// accepting that whoever opens the link replaces the existing value.
+    ///
+    /// Without it such a create is refused with `secret_name_conflict` (409),
+    /// because a slot's vault name comes from the template and mixes in
+    /// nothing per-instance — so the second instance of a template would
+    /// otherwise mint a link pointing at the first one's credential, and
+    /// nobody would find out until a call started failing.
+    ///
+    /// Reach for it to *rotate* a credential. To *share* one, bind the
+    /// existing secret with `credentials: {slot: name}` instead: that needs no
+    /// link and overwrites nothing. Ignored when no slot collides, and
+    /// irrelevant under `skip_credentials`, which mints nothing at all.
+    #[serde(default)]
+    pub force: Option<bool>,
+    /// Gate this instance behind its template's credential probe: create it
+    /// `pending_setup` — uncallable, invisible to search — until
+    /// `POST /v1/services/{id}/activate` gets a green verdict.
+    ///
+    /// `None` (the default) gates exactly when the kernel is about to mint a
+    /// setup link, i.e. when the template declares a probe *and* a per-instance
+    /// slot is unbound. That is the flow where a human lands on a page we
+    /// control, holding a session, and their browser can run the probe. It
+    /// deliberately leaves alone the two flows with no probe runner in them:
+    /// an OAuth create (the callback has no caller to run a probe as) and a
+    /// create whose credentials the caller already bound.
+    ///
+    /// `Some(true)` is the dashboard wizard, which probes even when nothing was
+    /// minted. It is a 400 on a template that declares no probe, rather than a
+    /// silent no-op: the caller asked for a guarantee that cannot be delivered.
+    ///
+    /// `Some(false)` always creates live. Note that an agent cannot lift the
+    /// gate itself — `POST /v1/services/{id}/activate` is owner-or-admin and
+    /// an agent is not an ancestor of its own owner-user (see
+    /// `permission_chain::caller_may_manage_owned`) — so a caller that will
+    /// wire the credentials up itself wants this, or `skip_credentials`.
+    #[serde(default)]
+    pub verify: Option<bool>,
     /// When `false`, this instance must never fall back to the identity's
     /// default connection for the provider at execution time — it requires an
     /// explicit `connection_id`. Defaults to `true` (legacy fallback). White-
@@ -159,6 +204,11 @@ pub struct ServiceInstanceSummary {
     pub groups: Vec<ServiceGroupRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials_status: Option<CredentialsStatus>,
+    /// The template's credential probe, when it declares one. Set by the
+    /// caller, which is where the resolved template is in hand — same as
+    /// `credentials_status` and `icon_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_action: Option<crate::routes::actions::probe::TestActionRef>,
 }
 
 #[derive(Serialize, Clone)]
@@ -235,6 +285,10 @@ pub struct ServiceInstanceDetail {
     pub discovered_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials_status: Option<CredentialsStatus>,
+    /// The template's credential probe, when it declares one. What the
+    /// dashboard reads to decide whether to offer a Test button.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_action: Option<crate::routes::actions::probe::TestActionRef>,
     /// Present on the response to `POST /v1/services` when the kernel
     /// auto-initiated an OAuth flow as part of setting up the instance.
     /// The caller hands `auth_url` to the user and the OAuth callback
@@ -242,6 +296,12 @@ pub struct ServiceInstanceDetail {
     /// finishes. Omitted on every other code path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connect: Option<ConnectBundle>,
+    /// Present on the response to `POST /v1/services` when the kernel minted
+    /// setup links for the instance's unbound credential slots. The secret
+    /// twin of [`Self::connect`] — the caller hands `setup.setup_url` to its
+    /// user exactly as it hands over `connect.auth_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup: Option<crate::services::service_setup::SetupBundle>,
 }
 
 /// OAuth bootstrap bundle returned alongside a freshly-created service

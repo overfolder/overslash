@@ -29,27 +29,33 @@ use super::platform_caller::PlatformCallContext;
 use crate::error::AppError;
 use crate::routes::util::fmt_time;
 
+mod create;
+mod events;
 mod group_grants;
+mod instance_names;
 mod kernels;
 mod reconcile;
 mod rows;
 mod status;
 mod templates;
 mod types;
+mod verify;
 
-pub use kernels::{
-    kernel_create_service, kernel_get_service, kernel_list_services, kernel_update_service,
-};
+pub use create::kernel_create_service;
+pub(crate) use events::{ServiceEvent, fire_service_event};
+pub(crate) use kernels::require_owned_by_ceiling_or_admin;
+pub use kernels::{kernel_get_service, kernel_list_services, kernel_update_service};
 pub use rows::{row_to_detail, row_to_summary};
 pub use status::{
-    ScopeCoverage, ScopeKnowledge, action_scope_coverage, compute_credentials_status,
-    derive_credentials_status, resolve_instance_icon_url,
+    ScopeCoverage, ScopeKnowledge, TemplateView, action_scope_coverage, compute_credentials_status,
+    derive_credentials_status, template_view,
 };
 pub use templates::{resolve_template_definition, resolve_template_source};
 pub use types::{
     ConnectBundle, CreateServiceGroupGrant, CreateServiceInput, CredentialsStatus, GetServiceInput,
     ServiceGroupRef, ServiceInstanceDetail, ServiceInstanceSummary, UpdateServiceInput,
 };
+pub use verify::PENDING_SETUP;
 
 pub(crate) use status::resolve_effective_scopes;
 pub(crate) use templates::template_oauth_provider;
@@ -190,6 +196,7 @@ mod test_fixtures {
                     request_body: None,
                     download: None,
                     upload: None,
+                    test: None,
                 },
             );
         }

@@ -299,7 +299,7 @@ async fn search(
 ) -> Result<Json<SearchResponse>> {
     let q = params.q.trim();
 
-    let (templates, mut instances_by_template) =
+    let (templates, mut instances_by_template, awaiting_setup) =
         collect_visible_templates(&state, &ext, &auth, &scope).await?;
 
     // Parse `exclude` once. Entries match against either template key or
@@ -383,7 +383,7 @@ async fn search(
                     description: None,
                     risk: None,
                     tier: t.tier.into(),
-                    auth: build_auth_status(&t.def, false),
+                    auth: build_auth_status(&t.def, false, awaiting_setup.contains(&t.def.key)),
                     score: None,
                     setup_required: Some(true),
                     scope_coverage: None,
@@ -403,7 +403,7 @@ async fn search(
                         description: None,
                         risk: None,
                         tier: t.tier.into(),
-                        auth: build_auth_status(&t.def, true),
+                        auth: build_auth_status(&t.def, true, false),
                         score: None,
                         setup_required: None,
                         // Browse rows are service-level (no action) — coverage is
@@ -487,7 +487,7 @@ async fn search(
             .cloned()
             .unwrap_or_default();
         let connected = !connected_instances.is_empty();
-        let auth_status = build_auth_status(&t.def, connected);
+        let auth_status = build_auth_status(&t.def, connected, awaiting_setup.contains(&t.def.key));
 
         for (action_key, action) in t.def.actions.iter() {
             let cand = Candidate {
@@ -671,7 +671,11 @@ async fn collect_visible_templates(
     ext: &axum::http::Extensions,
     auth: &AuthContext,
     scope: &OrgScope,
-) -> Result<(Vec<TemplateCandidate>, HashMap<String, Vec<InstanceRow>>)> {
+) -> Result<(
+    Vec<TemplateCandidate>,
+    HashMap<String, Vec<InstanceRow>>,
+    HashSet<String>,
+)> {
     let global_filter = visible_global_filter(state, ext, auth.org_id).await?;
     let user_templates_allowed = org_repo::get_allow_user_templates(state.db(ext), auth.org_id)
         .await?
@@ -783,8 +787,20 @@ async fn collect_visible_templates(
         .collect();
 
     let mut instances_by_template: HashMap<String, Vec<InstanceRow>> = HashMap::new();
+    // Templates the caller already has a half-finished instance of.
+    //
+    // Collected in the same pass that *drops* those rows, because they are two
+    // halves of one fact: a `pending_setup` instance is invisible to search by
+    // design (it is not callable), but telling the caller nothing means the
+    // catalog row reappears with a `create_service` chain — and the second
+    // `create_service` collides on the unique name index, which is
+    // status-agnostic. See `build_setup_steps`.
+    let mut awaiting_setup: HashSet<String> = HashSet::new();
     for r in instances {
         if r.status != "active" {
+            if r.status == crate::services::platform_services::PENDING_SETUP {
+                awaiting_setup.insert(r.template_key.clone());
+            }
             continue;
         }
         let bound_conn = r.connection_id.and_then(|id| connections_by_id.get(&id));
@@ -830,7 +846,7 @@ async fn collect_visible_templates(
             });
     }
 
-    Ok((templates, instances_by_template))
+    Ok((templates, instances_by_template, awaiting_setup))
 }
 
 struct TemplateCandidate {

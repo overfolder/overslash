@@ -52,6 +52,11 @@ const AGENT_KINDS = ['agent', 'sub_agent'];
 const TAG_NAMESPACE_HINTS = [
 	'sql:read',
 	'sql:write',
+	// A SQL call tags its database twice: `db:` is the name a reviewer reads,
+	// `db_id:` the upstream id that survives a rename. Searching the id finds
+	// calls from both sides of one.
+	'db:',
+	'db_id:',
 	'outcome:error',
 	'outcome:ok',
 	'risk:read',

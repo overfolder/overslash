@@ -283,6 +283,11 @@
 	onclick={ontoggle}
 >
 	<td class="ts" title={fullTime(entry.created_at)}>{relativeTime(entry.created_at)}</td>
+	<!-- The one-line clamp this cell used to carry (#520) never fired: under
+	     the old auto layout a `max-width` on a <td> is advisory, so the column
+	     just grew to the longest email instead. The column is sized by its <col>
+	     now, and the shared `td` rule wraps `member+tag@example.com` only when
+	     it genuinely does not fit. The `title` still carries the full address. -->
 	<td class="identity user">
 		{#if units.user && isMe}
 			<a
@@ -345,7 +350,12 @@
 		{/if}
 	</td>
 	<td>
-		<code class="badge">{entry.action}</code>
+		<!-- `<wbr>` after each dot is the only break the badge is allowed: a
+		     pill that splits mid-segment ("identity.upda / ted") reads as a
+		     rendering bug, where "identity. / updated" reads as a wrap. -->
+		<code class="badge"
+			>{#each entry.action.split('.') as part, i}{#if i > 0}.<wbr />{/if}{part}{/each}</code
+		>
 		{#if hasUpstreamError}
 			<span class="upstream-error" title={resultLabel}>error</span>
 		{/if}
@@ -360,7 +370,9 @@
 			<span class="muted">—</span>
 		{/if}
 	</td>
-	<td class="desc">{entry.description ?? ''}</td>
+	<td class="desc" title={entry.description ?? ''}
+		><span class="clamp">{entry.description ?? ''}</span></td
+	>
 	<td class="ip mono">{entry.ip_address ?? ''}</td>
 </tr>
 {#if expanded}
@@ -598,13 +610,27 @@
 		padding: var(--space-3) var(--space-4);
 		border-bottom: 1px solid var(--color-border);
 		vertical-align: top;
+		/* `normal` + `anywhere`: break on spaces where there are any, and only
+		   break mid-token when a single word — an email, a UUID, a URL, an IPv6
+		   address — cannot fit its column on its own. The table is
+		   `table-layout: fixed`, so a cell that refused to wrap would overflow
+		   rather than widen, and the content would simply be lost. */
+		word-break: normal;
+		overflow-wrap: anywhere;
 	}
+	/* Not nowrap: past 24h `relativeTime` returns a full `toLocaleString()`
+	   ("9/16/2026, 7:55:12 AM"), which wraps after the comma. */
 	.ts {
-		white-space: nowrap;
 		color: var(--color-text-muted);
 		font-size: 0.85rem;
 	}
 	.badge {
+		/* inline-block so a long action name moves the whole pill to the next
+		   line instead of tearing its border in half, and `normal` to override
+		   the cell's `anywhere` — the <wbr>s in the markup are the only break
+		   points this pill gets. Every segment fits the column on its own. */
+		display: inline-block;
+		overflow-wrap: normal;
 		font-family: var(--font-mono, monospace);
 		font-size: 0.8rem;
 		padding: 2px 6px;
@@ -620,24 +646,20 @@
 		font-size: 0.8rem;
 		margin-left: 4px;
 	}
-	.desc {
-		max-width: 360px;
+	/* The clamp has to sit on an inner box: a <td> cannot be `-webkit-box`
+	   without ceasing to be a table cell. Three lines, then an ellipsis — the
+	   full text is in the cell's `title` and in the expanded pane. The `td`'s
+	   `overflow-wrap: anywhere` matters here: a description ending in one long
+	   URL would otherwise break on a word boundary and waste the last line. */
+	.desc .clamp {
+		display: -webkit-box;
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
+		-webkit-box-orient: vertical;
 		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 	.muted {
 		color: var(--color-text-muted);
-	}
-	/* Emails are longer than the display names this column used to hold, and
-	   `member+tag@example.com` wraps mid-token when left alone. Clip to one
-	   line — the `title` carries the full address. Only the User cell: the
-	   Agent cell trails badges (approver, `imp`) that must stay visible. */
-	.identity.user {
-		max-width: 220px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 	/* The mark is an inline-level column (tile over stripe) dropped into a cell
 	   that is otherwise inline text and trailing badges. Centring it on the text
@@ -691,6 +713,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-3);
+		min-width: 0;
 	}
 	dl {
 		display: grid;
@@ -704,6 +727,11 @@
 	}
 	dd {
 		margin: 0;
+		/* The grid track is `1fr`, and a grid item's default `min-width: auto`
+		   lets one unbreakable token (a UUID, a URL) blow the track — and with it
+		   the detail row — past the table. */
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 	.tags {
 		display: flex;

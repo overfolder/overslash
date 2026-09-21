@@ -24,6 +24,17 @@ impl OrgScope {
         service_instance::create(self.db(), &input).await
     }
 
+    /// Identities that minted a setup link for this instance — "who is
+    /// blocked on it going live". Not org-scoped in the query: the instance id
+    /// is already the tenant boundary, and every `secret_requests` row keyed on
+    /// it shares its org by construction (migration 118's FK).
+    pub async fn setup_requesters(
+        &self,
+        service_instance_id: Uuid,
+    ) -> Result<Vec<Uuid>, sqlx::Error> {
+        crate::repos::secret_request::setup_requesters(self.db(), service_instance_id).await
+    }
+
     /// Look up a service instance by id, scoped to this org. Returns `None`
     /// if the id belongs to another tenant.
     pub async fn get_service_instance(
@@ -151,6 +162,27 @@ impl OrgScope {
         input: &UpdateServiceInstance<'_>,
     ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
         service_instance::update(self.db(), self.org_id(), id, input).await
+    }
+
+    /// Bind one credential slot on an instance to a vault secret name, scoped
+    /// to this org. Returns `None` if the id belongs to another tenant.
+    ///
+    /// Deliberately narrower than [`Self::update_service_instance`], which is
+    /// what `kernel_update_service` reaches for: that path re-derives the
+    /// template's slot set and checks the caller may manage the instance. The
+    /// public setup-link handler has no caller identity to check — it holds a
+    /// signed capability token — and the slot key it passes was already
+    /// validated against the template at *mint* time, by the caller that did
+    /// hold `manage_services_own`. Re-entering the kernel there would mean
+    /// inventing an identity to satisfy a check that has already happened.
+    pub async fn bind_credential_slot(
+        &self,
+        id: Uuid,
+        slot_key: &str,
+        secret_name: &str,
+    ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
+        service_instance::bind_credential_slot(self.db(), self.org_id(), id, slot_key, secret_name)
+            .await
     }
 
     /// Overwrite a service instance's MCP discovery result, scoped to this org.

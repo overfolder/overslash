@@ -171,7 +171,7 @@
 		{
 			name: 'status',
 			operators: ['=', '!='],
-			values: ['draft', 'active', 'archived'],
+			values: ['draft', 'active', 'archived', 'pending_setup'],
 			hint: 'Lifecycle status'
 		},
 		{
@@ -503,9 +503,22 @@
 										>
 											⌘ Try it
 										</button>
-										<button type="button" class="btn small" onclick={() => archive(s)}>
-											{s.status === 'archived' ? 'Restore' : 'Archive'}
-										</button>
+										{#if s.status === 'pending_setup'}
+											<!-- Archiving a row that deletes itself in a day is
+											     a meaningless act. What this row needs is for
+											     somebody to finish it. -->
+											<button
+												type="button"
+												class="btn small"
+												onclick={() => goto(`/services/${s.id}`)}
+											>
+												Finish setup
+											</button>
+										{:else}
+											<button type="button" class="btn small" onclick={() => archive(s)}>
+												{s.status === 'archived' ? 'Restore' : 'Archive'}
+											</button>
+										{/if}
 										<button
 											type="button"
 											class="btn small danger"

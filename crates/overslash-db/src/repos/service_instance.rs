@@ -195,6 +195,40 @@ where
     .await
 }
 
+/// Bind one credential slot to a vault secret name.
+///
+/// The twin of [`bind_connection_with`] for the secret path: what the public
+/// setup-link handler calls once it has written the value into the vault.
+///
+/// `jsonb_set` rather than a read-modify-write of the whole map, and for the
+/// same reason `bind_connection_with` is a single statement: two slots of the
+/// same instance can be fulfilled concurrently (a template with two setup
+/// links outstanding, two browser tabs), and a whole-map replace would let the
+/// later write erase the earlier binding.
+pub(crate) async fn bind_credential_slot(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+    slot_key: &str,
+    secret_name: &str,
+) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ServiceInstanceRow,
+        "UPDATE service_instances \
+         SET credentials = jsonb_set(COALESCE(credentials, '{}'::jsonb), ARRAY[$3], to_jsonb($4::text), true), \
+             updated_at = now() \
+         WHERE id = $1 AND org_id = $2 \
+         RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
+         template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", config as \"config: Json<ConfigMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at",
+        id,
+        org_id,
+        slot_key,
+        secret_name,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// Get a service instance by name within a specific scope (org or user).
 pub(crate) async fn get_by_name(
     pool: &PgPool,
@@ -694,4 +728,43 @@ pub(crate) async fn delete(pool: &PgPool, org_id: Uuid, id: Uuid) -> Result<bool
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Delete unverified setup drafts older than `max_age_secs`. Cross-org.
+///
+/// Every `pending_setup` row was created by a setup flow that nobody finished:
+/// the status is absent from the allow-list `PATCH /v1/services/{id}/status`
+/// and `update_service` validate against, so it is a valid *source* status and
+/// never a valid *target*. Nothing a user deliberately parked can land here —
+/// that is `draft`, and `draft` is deliberately untouched. Migration 119 has
+/// the full argument.
+///
+/// Keyed on `created_at`, not `updated_at`: `bind_credential_slot` bumps
+/// `updated_at`, so a human pasting a third wrong key would push the deadline
+/// out indefinitely and the sweep would never bound the table. A fixed window
+/// from creation is the honest contract, and `PATCH /status` → `draft` is the
+/// escape hatch for a setup that legitimately needs longer.
+///
+/// Cascades the instance's outstanding `secret_requests` (migration 118's FK)
+/// and its `group_grants`. It deliberately does **not** touch the vault secret
+/// a human may already have pasted: `mint_bundle` stores under the *template's*
+/// `default_secret_name`, so two instances of one template owned by one user
+/// share a name, and deleting it could pull the credential out from under a
+/// different, live service. D85 refuses to mint into that collision unforced,
+/// which narrows the window without closing it — a forced create shares the
+/// name deliberately, and rows predating D85 already do. `DELETE /v1/services/{name}` leaves secrets alone
+/// for the same reason.
+pub async fn purge_expired_setup_drafts(
+    pool: &PgPool,
+    max_age_secs: i64,
+) -> Result<u64, sqlx::Error> {
+    let r = sqlx::query!(
+        "DELETE FROM service_instances \
+         WHERE status = 'pending_setup' AND is_system = false \
+           AND created_at < now() - make_interval(secs => $1)",
+        max_age_secs as f64,
+    )
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
 }

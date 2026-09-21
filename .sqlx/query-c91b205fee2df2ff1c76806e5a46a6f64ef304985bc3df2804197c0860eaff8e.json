@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM service_instances WHERE status = 'pending_setup' AND is_system = false AND created_at < now() - make_interval(secs => $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c91b205fee2df2ff1c76806e5a46a6f64ef304985bc3df2804197c0860eaff8e"
+}

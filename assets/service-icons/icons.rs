@@ -116,6 +116,13 @@ pub(super) const BUILTIN_ICONS: &[(&str, &[u8])] = &[
         )),
     ),
     (
+        "holded",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/service-icons/holded.svg"
+        )),
+    ),
+    (
         "http",
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),

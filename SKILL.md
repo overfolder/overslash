@@ -104,10 +104,49 @@ same user pick it up immediately. The response carries
 
 | Value | Meaning | Next step |
 |---|---|---|
-| `needs_authentication` | OAuth template with no connection bound, **or** a secret-based / MCP-bearer template with no secret set | OAuth → step 3; secret-based → [Providing a secret](#providing-a-secret-non-oauth-services) |
+| `needs_authentication` | OAuth template with no connection bound, **or** a secret-based / MCP-bearer template with no secret set | OAuth → step 3; secret-based → hand over `setup.setup_url` from this same response, see [Providing a secret](#providing-a-secret-non-oauth-services) |
 | `ok` | secret/connection inferred from existing user state | skip to step 5 |
 | `partially_degraded` | a connection is bound but does not cover every action's scopes — uncovered actions return `403 missing_scopes` | click the upgrade `auth_url` returned in that 403 |
 | `needs_reconnect` | a connection is bound but covers none of the scope-bearing actions | re-run consent (step 3) |
+
+For a **secret-based** template the same response also carries `setup`:
+
+```json
+{ "setup": {
+    "setup_url": "https://oversla.sh/xY3",
+    "requests": [{ "request_id": "req_ab12…", "credential_key": "token",
+                   "secret_name": "resend_key", "setup_url": "https://oversla.sh/xY3" }],
+    "expires_at": "…" } }
+```
+
+Hand `setup_url` to your user verbatim — it opens a page naming the service and
+takes the API key. **You never see the value.** As everywhere else on this
+surface, it is already the short `oversla.sh` link wherever that service is
+configured, so there is never a second URL to choose between. This is the exact
+counterpart of `connect.auth_url` below, so both credential kinds are one call
+and one URL.
+
+One `requests[]` entry per credential slot the template needs, each with its own
+link; a template with two wants both handed over, and `setup.setup_url` is the
+first entry's. Pass `skip_credentials: true` if you intend to wire the
+credentials yourself.
+
+**If the vault name is already taken, the call is refused with
+`secret_name_conflict` (409).** A slot's vault name comes from the template and
+mixes in nothing per-instance, so a *second* instance of a template you already
+set up would aim its setup link at the *first* one's credential — and whoever
+opened the link would replace it without being told. The 409 lists the
+colliding slots and the version of each existing secret. Two ways forward:
+
+- **Share the credential** — the usual case. Bind the existing secret instead
+  of asking for a new one: `"credentials": { "token": "resend_key" }`. No link
+  is minted, nothing is overwritten, and the instance is callable immediately.
+- **Replace it** — only when rotating the credential is the actual intent. Pass
+  `"force": true`. The links are minted and `setup.warnings[]` names each
+  secret and the version being superseded; the old version stays restorable.
+
+Do not reach for `force` to make an error go away. It is the option that
+destroys the current value of a credential other services may be using.
 
 > `needs_authentication` means *no credential is bound yet* — it does **not**
 > tell you whether the underlying OAuth **client** even exists. If the org has
@@ -124,7 +163,8 @@ overslash_call {
 }
 ```
 
-Returns `{ auth_url, state }`. Surface `auth_url` to the user verbatim:
+Returns `{ auth_url, state }`. Surface `auth_url` to the user verbatim
+(it arrives pre-shortened when the shortener is configured):
 *"Click here to authorize Google Calendar."* Overslash binds the resulting
 token to the service on its OAuth callback. If instead this returns a `400`
 about *"no OAuth client credentials configured"*, the org has no OAuth client —
@@ -136,12 +176,31 @@ see [When the OAuth client itself is missing](#when-the-oauth-client-itself-is-m
 overslash_read {
   "service": "overslash",
   "action": "get_service",
-  "params": { "name": "google-calendar" }
+  "params": { "name": "google-calendar", "include_inactive": true }
 }
 ```
 
-Wait until `credentials_status == "ok"` (poll a few seconds — the OAuth
-callback flips it). The user has clicked through.
+Wait until `credentials_status == "ok"` **and** `status == "active"` (poll a few
+seconds). The two are different claims and you need both. `credentials_status`
+says a credential is *bound*; `status` says it has been *checked against the
+upstream and works*.
+
+A secret-backed instance is created `status: "pending_setup"` — not callable,
+and absent from `overslash_search` — until your user provides the credential
+and it checks out. That is why this step passes `include_inactive: true`:
+without it, an instance still being set up returns a 404 and looks like it was
+never created. Do not create a second one; the name is unique regardless of
+status.
+
+If the link **expired unused**, mint a fresh one with `request_secret` passing
+this instance's `service_id`. If it was **used** and the credential turned out
+to be wrong, that same call is refused with `secret_name_conflict`: the value is
+already stored under that name, so a second link would replace it. Replacing it
+is exactly what you want here, so pass `"force": true` — and read the `warning`
+that comes back, because the name may be shared with another instance of the
+same template.
+
+An unfinished setup is deleted automatically after about a day.
 
 **Step 5 — call the service.** Use `overslash_read` for `risk: read` actions
 (no confirmation prompt) and `overslash_call` for everything else; both go
@@ -287,6 +346,11 @@ the required secret is absent, calling the action returns a `400`:
   "hint_url": "https://app.overslash.com/secrets?name=RESEND_API_KEY" }
 ```
 
+If you are **creating the service now**, you already have the link: the
+`create_service` response carries `setup.setup_url` for every credential slot
+it needs (see step 2). Hand that over and stop reading — the rest of this
+section is for a credential that goes missing on a service that already exists.
+
 Mint a one-time provisioning link with the `request_secret` platform action and
 surface it to the user — they paste the value on the page; **you never see it**.
 The `credential_missing` body above carries this call ready-made in its
@@ -297,16 +361,35 @@ The `credential_missing` body above carries this call ready-made in its
 overslash_call {
   "service": "overslash",
   "action": "request_secret",
-  "params": { "secret_name": "RESEND_API_KEY", "purpose": "Send transactional email" }
+  "params": { "secret_name": "RESEND_API_KEY", "purpose": "Send transactional email",
+              "service_id": "<id of the service that needs it>" }
 }
 ```
 
-Returns `{ request_id, provide_url, short_url, expires_at }`. Show `short_url`
-(the oversla.sh link, present when the shortener is configured) or `provide_url`
-verbatim. This is the secret-bag analogue of `create_connection`'s `auth_url`.
-Once the user submits the value, retry the action. (The link's TTL is fixed at
-1h over MCP; use the REST endpoint `POST /v1/secrets/requests` if you need to
-override `ttl_seconds`.)
+Returns `{ request_id, provide_url, expires_at }`, plus `service_id` and
+`credential_key` when you passed a `service_id` — the latter is the slot that
+was *inferred* when you named none, so it is how you learn which credential the
+link will bind. Show `provide_url` verbatim — it is already the short
+`oversla.sh` link wherever that service is configured, so there is never a
+second URL to choose between. This is the secret-bag analogue of
+`create_connection`'s `auth_url`. Once the user submits the value, retry the
+action.
+
+Pass `service_id` whenever you know which service the credential is for. With
+it, the link opens a page naming that service and submitting it binds the
+credential to the instance in one step — without it, the value lands in the
+vault and somebody still has to attach it. (The link's TTL is fixed at 1h over
+MCP; use the REST endpoint `POST /v1/secrets/requests` if you need to override
+`ttl_seconds`.)
+
+**`secret_name` must be free.** If a secret of that name already exists the
+call is refused with `secret_name_conflict` (409) naming its current version,
+because fulfilling the request would replace a value something else is using
+and the person opening the link is shown a name, not a history. Pick a
+different name, or — when replacing that value is genuinely the intent, such as
+rotating a key — pass `"force": true`; the response then carries a `warning`
+naming the version being superseded. The old version stays restorable either
+way.
 
 ## Handling pending approvals
 

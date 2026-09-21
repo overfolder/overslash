@@ -185,6 +185,35 @@ pub struct ServiceAction {
     /// [`result`](UploadSpec::result) is jq.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upload: Option<UploadSpec>,
+    /// `x-overslash-test`: this action is the template's credential probe —
+    /// the call the dashboard's "Test service" button makes to prove that a
+    /// freshly-provided credential actually works.
+    ///
+    /// At most one action per template carries it, and template validation
+    /// refuses any risk but [`DeclaredRisk::Read`]. Both rules exist for the
+    /// same reason: the probe fires unattended the moment a credential lands,
+    /// so there must be exactly one candidate and it must be safe to run
+    /// without asking anyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test: Option<TestSpec>,
+}
+
+/// How to invoke an action as a credential probe.
+///
+/// Authored as either `test: true` (the common zero-argument read) or
+/// `test: { params: { … } }` when the probe needs arguments — a
+/// `list_charges` that must be bounded to `limit: 1`, say. The boolean
+/// spelling is unwrapped by the extractor (`openapi::extract::parse_test`),
+/// which is also where `test: false` becomes an absent probe; by the time a
+/// document reaches this type the object form is the only one left, so the
+/// derive is all that is needed for the persisted round-trip.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestSpec {
+    /// Arguments to pass. Validated at template-load time against the action's
+    /// own params: every required one covered, no unknown ones named.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub params: HashMap<String, serde_json::Value>,
 }
 
 /// How to turn an MCP tool result into a downloadable object.

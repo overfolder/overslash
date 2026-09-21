@@ -78,6 +78,10 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
         alias: "pagination",
         canonical: "x-overslash-pagination",
     },
+    Alias {
+        alias: "test",
+        canonical: "x-overslash-test",
+    },
 ];
 
 pub(super) const INFO_ALIASES: &[Alias] = &[
@@ -135,6 +139,10 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
     Alias {
         alias: "pagination",
         canonical: "x-overslash-pagination",
+    },
+    Alias {
+        alias: "test",
+        canonical: "x-overslash-test",
     },
 ];
 
@@ -494,6 +502,36 @@ mod tests {
             v["x-overslash-mcp"]["tools"][0]["x-overslash-risk"],
             "write"
         );
+    }
+
+    /// `test:` normalizes at the two positions that read it — an operation and
+    /// an MCP tool — and nowhere else. The `info` half is the interesting one:
+    /// a template author reaching for "the template's test action" would put it
+    /// there, and a silent rewrite would produce a key that normalizes and is
+    /// then never read.
+    #[test]
+    fn rewrites_test_on_operations_and_mcp_tools_only() {
+        let mut v = doc(json!({
+            "info": {"title": "Acme", "test": "list_domains"},
+            "paths": {"/domains": {"get": {"operationId": "list_domains", "test": true}}},
+            "x-overslash-mcp": {"tools": [{"name": "ping", "test": {"params": {"n": 1}}}]}
+        }));
+        let issues = normalize_aliases(&mut v);
+        assert!(issues.is_empty(), "{issues:?}");
+
+        let op = v["paths"]["/domains"]["get"].as_object().unwrap();
+        assert_eq!(op["x-overslash-test"], json!(true));
+        assert!(op.get("test").is_none());
+
+        let tool = v["x-overslash-mcp"]["tools"][0].as_object().unwrap();
+        assert_eq!(tool["x-overslash-test"]["params"]["n"], 1);
+        assert!(tool.get("test").is_none());
+
+        // Untouched at `info`: no INFO_ALIASES entry, so the lint is what
+        // reports it rather than the normalizer inventing a reader.
+        let info = v["info"].as_object().unwrap();
+        assert_eq!(info["test"], "list_domains");
+        assert!(info.get("x-overslash-test").is_none());
     }
 
     #[test]

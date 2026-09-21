@@ -1,6 +1,7 @@
 <script lang="ts">
 	type Variant =
 		| 'draft'
+		| 'pending_setup'
 		| 'active'
 		| 'archived'
 		| 'connected'
@@ -13,7 +14,12 @@
 		| 'user'
 		| 'hidden';
 	let { variant, label }: { variant: Variant; label?: string } = $props();
-	const text = $derived(label ?? variant.replace('-', ' '));
+	// `pending_setup` is the one variant whose wire value is not its label: the
+	// status column carries the underscore, and "Awaiting setup" is what the
+	// state actually means to someone reading a list.
+	const text = $derived(
+		label ?? (variant === 'pending_setup' ? 'Awaiting setup' : variant.replace('-', ' '))
+	);
 </script>
 
 <span class="badge {variant}">{text}</span>
@@ -37,6 +43,7 @@
 		border-color: rgba(34, 197, 94, 0.3);
 	}
 	.draft,
+	.pending_setup,
 	.needs-setup,
 	.partially-degraded {
 		background: rgba(234, 179, 8, 0.14);

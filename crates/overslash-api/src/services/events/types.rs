@@ -25,6 +25,17 @@ pub enum Topic {
     /// deployment with the flag off gets silence rather than a 400 that varies
     /// by environment.
     Activity,
+    /// Service-instance lifecycle: created, reconfigured, removed, and the
+    /// moment one becomes callable. Operator-rate, not call-rate — one event
+    /// per act of configuration, whoever performed it (dashboard, REST, or an
+    /// agent's `create_service` over MCP).
+    ///
+    /// Two consumers, wanting different halves of it. An agent that hands over
+    /// a setup link is blocked on `service.activated`, which since D86 is
+    /// promotion rather than credential fulfilment. A consumer that *draws*
+    /// the fleet — the Live Map — wants the other three, because it holds a
+    /// snapshot and would otherwise never learn the fleet had changed.
+    Services,
 }
 
 impl Topic {
@@ -35,12 +46,13 @@ impl Topic {
     /// Both `Executions` and `Activity` are here because two branches each
     /// added a topic and each wrote `[Topic; 4]` — resolving that by taking
     /// one side compiles cleanly and silently drops the other.
-    pub const ALL: [Topic; 5] = [
+    pub const ALL: [Topic; 6] = [
         Topic::Approvals,
         Topic::Connections,
         Topic::Executions,
         Topic::Secrets,
         Topic::Activity,
+        Topic::Services,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -50,6 +62,7 @@ impl Topic {
             Topic::Executions => "executions",
             Topic::Secrets => "secrets",
             Topic::Activity => "activity",
+            Topic::Services => "services",
         }
     }
 }
@@ -82,6 +95,7 @@ impl FromStr for Topic {
             "executions" => Ok(Topic::Executions),
             "secrets" => Ok(Topic::Secrets),
             "activity" => Ok(Topic::Activity),
+            "services" => Ok(Topic::Services),
             _ => Err(()),
         }
     }
@@ -140,6 +154,34 @@ pub enum EventType {
     /// `rejected`, `failed`, `upstream_error`), so a 403 and an upstream 500
     /// stay distinguishable.
     ActionCompleted,
+    /// A service instance became callable.
+    ///
+    /// The terminal signal for setup. `secret_request.fulfilled` used to be
+    /// it — its payload comment said so — but since D86 a credential
+    /// landing and a service going live are two moments, separated by the
+    /// probe. An agent blocked on "can I call this yet" wants this one.
+    ///
+    /// A new wire string rather than an overload of an existing name, per D62:
+    /// these are stored verbatim by webhook subscriptions, so reusing a name
+    /// would start delivering unrelated events to every current subscriber.
+    ServiceActivated,
+    /// A service instance now exists. Carries the instance's id, name and
+    /// owner — enough to route on, not enough to render. A consumer that
+    /// draws services (the dashboard's Live Map) refetches its listing, which
+    /// is also how it picks up the template-derived fields — `icon_url`,
+    /// `test_action` — that this payload deliberately does not restate.
+    ///
+    /// Distinct from [`EventType::ServiceActivated`] on purpose: an instance
+    /// exists from the moment it is created, and is callable only once the
+    /// probe passes. The Live Map draws it either way; a caller waiting to
+    /// call it must wait for the other one.
+    ServiceCreated,
+    /// A service instance's configuration or status changed. Covers the
+    /// manage endpoint and the status flip (draft/active/archived) alike: the
+    /// distinction matters to the row, not to a subscriber that is going to
+    /// refetch either way.
+    ServiceUpdated,
+    ServiceDeleted,
 }
 
 impl EventType {
@@ -163,6 +205,10 @@ impl EventType {
             EventType::SecretRequestFulfilled => "secret_request.fulfilled",
             EventType::ActionCalled => "action.called",
             EventType::ActionCompleted => "action.completed",
+            EventType::ServiceActivated => "service.activated",
+            EventType::ServiceCreated => "service.created",
+            EventType::ServiceUpdated => "service.updated",
+            EventType::ServiceDeleted => "service.deleted",
         }
     }
 
@@ -184,6 +230,10 @@ impl EventType {
             | EventType::ConnectionDeleted => Topic::Connections,
             EventType::SecretRequestCreated | EventType::SecretRequestFulfilled => Topic::Secrets,
             EventType::ActionCalled | EventType::ActionCompleted => Topic::Activity,
+            EventType::ServiceActivated
+            | EventType::ServiceCreated
+            | EventType::ServiceUpdated
+            | EventType::ServiceDeleted => Topic::Services,
         }
     }
 }
@@ -237,7 +287,7 @@ mod tests {
     fn every_topic_is_in_all_and_round_trips() {
         assert_eq!(
             Topic::ALL.len(),
-            5,
+            6,
             "Topic::ALL is out of step with the enum — see this test's doc comment"
         );
         for t in Topic::ALL {
@@ -286,6 +336,10 @@ mod tests {
             (EventType::SecretRequestFulfilled, Topic::Secrets),
             (EventType::ActionCalled, Topic::Activity),
             (EventType::ActionCompleted, Topic::Activity),
+            (EventType::ServiceActivated, Topic::Services),
+            (EventType::ServiceCreated, Topic::Services),
+            (EventType::ServiceUpdated, Topic::Services),
+            (EventType::ServiceDeleted, Topic::Services),
         ] {
             assert_eq!(event.topic(), expected, "{event}");
         }

@@ -96,9 +96,13 @@ ordinary `x-overslash-*` vendor annotations (normalized via `openapi/alias.rs`) 
   (one field `.database_id`, or a composition `.project + "/" + .dataset`) whose
   result keys into per-instance config (`x-overslash-instance-config` /
   `x-overslash-config`, D38): `{ "5": { dialect: "postgres", label: "reveni-prod" } }`.
-  Resolves the **dialect** to parse with + a human **DB label** for audit. Reuses
+  Resolves the **dialect** to parse with, plus (D69) `safe_functions`. Reuses
   the jq engine already behind `x-overslash-disclose`/`-transform` (D27).
   Unresolved → default `postgres`, fail-closed.
+  The **DB label** itself comes from the database's own name (the `scope:` of
+  the `x-overslash-resolve` on the same param), with `label` above as an
+  override and the raw key as the last resort — see D84 for why the key
+  carries the name *and* the key rather than choosing between them.
 
 ### Parser: `pg_query` (libpg_query), not `sqlparser-rs`
 
@@ -125,7 +129,9 @@ can be added later without touching the rule surface.
 - **Table names — enforceable.** `.tables()` lists referenced relations → one
   derived permission key per table, DB-label-scoped, reusing the `scope_param` key
   shape (`metabase:execute:table=reveni-prod/public.orders`) and the existing glob
-  rule engine — no new grammar. Caveats: unqualified names depend on `search_path`
+  rule engine — no new grammar. The db component is the alternation group
+  `{name,id}` when the two differ, which the glob engine already reads, so one
+  call is granted by a rule naming either. Caveats: unqualified names depend on `search_path`
   (require schema-qualified rules); a **view** is gated as its own name.
 - **Column names — fail-closed detection only.** Parsing yields *referenced*
   identifiers, not *resolved* columns. **`SELECT *` surfaces `*` as a literal

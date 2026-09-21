@@ -27,7 +27,7 @@ pub(crate) struct CallQuery {
 /// Service + HTTP verb (when only `method` + `url`/`path` is set). Mode A
 /// raw HTTP rides on the verb shape against the synthetic `http`
 /// pseudo-service. See module docs for the field-presence selection rules.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CallRequest {
     // Raw HTTP fields (also reused by service + HTTP verb)
@@ -530,7 +530,28 @@ pub(super) struct ResolvedModeC {
     pub(super) instance: overslash_db::repos::service_instance::ServiceInstanceRow,
 }
 
-/// D42 SQL policy outcome for one call. `None` (from [`evaluate_sql_policy`])
+/// What [`super::classify_sql`] learns before resolution runs: everything the
+/// parser needs, plus the two half-answers to "which database is this?".
+///
+/// Exists because the two facts arrive at different times. The dialect, the
+/// pinned label and D69 `safe_functions` live on the instance row, which
+/// `resolve_request` *consumes*; the resolved database name does not exist
+/// until that same call has run its resolvers. So the policy is evaluated in
+/// two steps and this carries the first step's answer across.
+pub(super) struct SqlClassification {
+    /// Param that declared `x-overslash-sql-database` — the key into
+    /// [`ResolvedMeta::canonical`], and the reason the param *name* is
+    /// tracked at all rather than just its jq expression.
+    pub(super) db_param: Option<String>,
+    /// The raw db key the jq expression produced (Metabase's `"4"`).
+    pub(super) db_key: Option<String>,
+    /// `sql_databases[key].label`, when an operator pinned one.
+    pub(super) pinned_label: Option<String>,
+    /// The classifier verdict — see [`SqlPolicyOutcome::analysis`].
+    pub(super) analysis: overslash_core::sql_policy::SqlAnalysis,
+}
+
+/// D42 SQL policy outcome for one call. `None` (from [`super::classify_sql`])
 /// when the action nominates no SQL param, the shape is not a service action,
 /// or the caller didn't supply the SQL param.
 pub(super) struct SqlPolicyOutcome {
@@ -542,10 +563,10 @@ pub(super) struct SqlPolicyOutcome {
     pub(super) table_keys: Vec<overslash_core::permissions::PermissionKey>,
     /// `column=…` / `column_star=…` keys — deny-screen only.
     pub(super) column_keys: Vec<overslash_core::permissions::PermissionKey>,
-    /// Audit label as configured ("reveni-prod", the raw db-key, or
-    /// "unknown"). Sanitized at the point of use — `PermissionKey` and
-    /// `overslash_core::tags` both run it through the same sanitizer.
-    pub(super) db_label: String,
+    /// Every spelling this database answers to — the human name and, when it
+    /// differs, the raw upstream id. Already sanitized; `PermissionKey` and
+    /// `overslash_core::tags` both read it rather than re-deriving a label.
+    pub(super) db: overslash_core::permissions::DbLabel,
     /// The full classifier verdict. Kept whole rather than reduced to the
     /// risk floor: the tables, columns and write reason are what get minted
     /// into metadata tags and written to the audit `detail.sql` block, and

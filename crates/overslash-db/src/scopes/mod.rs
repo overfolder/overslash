@@ -67,6 +67,7 @@ mod system_events;
 mod system_executions;
 mod system_identities;
 mod system_idp_config;
+mod system_service_instances;
 mod system_webhooks;
 pub mod user;
 mod user_connections;

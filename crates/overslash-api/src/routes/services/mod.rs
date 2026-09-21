@@ -23,6 +23,10 @@ use crate::{
     },
 };
 
+mod verify;
+
+use verify::{activate_service, test_service};
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/services", get(list_services).post(create_service))
@@ -35,6 +39,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/services/{id}/manage", put(update_service))
         .route("/v1/services/{id}/status", patch(update_service_status))
         .route("/v1/services/{id}/groups", get(list_service_groups))
+        .route("/v1/services/{id}/test", post(test_service))
+        .route("/v1/services/{id}/activate", post(activate_service))
 }
 
 // -- Request types --
@@ -138,7 +144,7 @@ async fn list_services(
                 row.owner_identity_id,
             )
             .await;
-            let icon_url = platform_services::resolve_instance_icon_url(
+            let tv = platform_services::template_view(
                 state.db(&ext),
                 &state.registry,
                 &row,
@@ -148,7 +154,8 @@ async fn list_services(
             .await;
             let mut summary = platform_services::row_to_summary(row, groups);
             summary.credentials_status = credentials_status;
-            summary.icon_url = icon_url;
+            summary.icon_url = tv.icon_url;
+            summary.test_action = tv.test_action;
             summaries.push(summary);
         }
         if let Some(conn) = q.connection {
@@ -253,8 +260,18 @@ async fn get_service(
             row.owner_identity_id,
         )
         .await;
+        let tv = platform_services::template_view(
+            state.db(&ext),
+            &state.registry,
+            &row,
+            row.owner_identity_id,
+            &state.config.public_url,
+        )
+        .await;
         let mut detail = platform_services::row_to_detail(row);
         detail.credentials_status = credentials_status;
+        detail.icon_url = tv.icon_url;
+        detail.test_action = tv.test_action;
         return Ok(Json(detail));
     };
 
@@ -303,7 +320,7 @@ async fn create_service(
 /// never match the ancestry branch and still require Admin. Mirrors the
 /// template checks (templates.rs / platform_templates.rs) via the shared
 /// `caller_may_manage_owned` helper.
-async fn require_owner_or_admin(
+pub(super) async fn require_owner_or_admin(
     scope: &OrgScope,
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
     acl: &OrgAcl,
@@ -344,6 +361,8 @@ async fn update_service(
 }
 
 async fn update_service_status(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     Path(id): Path<Uuid>,
@@ -358,6 +377,11 @@ async fn update_service_status(
     }
     require_owner_or_admin(&scope, &existing, &acl).await?;
 
+    // `pending_setup` is deliberately absent: it is a valid *source* status —
+    // park the instance as `draft`, or force it `active` — and never a valid
+    // target. That asymmetry is what lets the sweeper delete every row in that
+    // state on age alone, because every one of them was put there by a setup
+    // flow rather than by a person. See migration 119.
     if !["draft", "active", "archived"].contains(&req.status.as_str()) {
         return Err(AppError::BadRequest(format!(
             "invalid status '{}'; must be draft, active, or archived",
@@ -369,7 +393,63 @@ async fn update_service_status(
         .update_service_instance_status(id, &req.status)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
-    Ok(Json(platform_services::row_to_detail(row)))
+
+    // This endpoint has never written one, which was defensible while it only
+    // archived and restored. It is now also the blunt override for the setup
+    // gate — `pending_setup` → `active` with no probe — so a status change has
+    // to leave a trail naming who made it.
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "service.status_changed",
+            resource_type: Some("service_instance"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({
+                "from": existing.status,
+                "to": row.status,
+                // The one transition worth finding later: a service made live
+                // without a verdict. `service.activated` records the verified
+                // path; this records the one that went around it.
+                "bypassed_verification": existing.status == platform_services::PENDING_SETUP
+                    && row.status == "active",
+            }),
+            description: None,
+            ip_address: None,
+        })
+        .await;
+
+    let tv = platform_services::template_view(
+        state.db(&ext),
+        &state.registry,
+        &row,
+        row.owner_identity_id,
+        &state.config.public_url,
+    )
+    .await;
+    let mut detail = platform_services::row_to_detail(row);
+    detail.icon_url = tv.icon_url;
+    detail.test_action = tv.test_action;
+
+    // Archiving is how a service leaves the Live Map, so this is as much a
+    // fleet change as a create is — `service.updated` rather than a status-only
+    // name, because a subscriber refetches either way.
+    platform_services::fire_service_event(
+        state.db_pool(&ext),
+        state.http_client.clone(),
+        platform_services::ServiceEvent {
+            org_id: scope.org_id(),
+            event_type: crate::services::events::EventType::ServiceUpdated,
+            service_instance_id: id,
+            name: &detail.name,
+            owner_identity_id: detail.owner_identity_id,
+            status: &detail.status,
+            actor_identity_id: acl.identity_id,
+        },
+    )
+    .await;
+
+    Ok(Json(detail))
 }
 
 /// Query params for `DELETE /v1/services/{name}`.
@@ -444,6 +524,23 @@ async fn delete_service(
                     false
                 });
     }
+
+    // After the cascade, so a subscriber that refetches on this does not race
+    // the connection cleanup and re-render a service that is already gone.
+    platform_services::fire_service_event(
+        state.db_pool(&ext),
+        state.http_client.clone(),
+        platform_services::ServiceEvent {
+            org_id: scope.org_id(),
+            event_type: crate::services::events::EventType::ServiceDeleted,
+            service_instance_id: instance.id,
+            name: &instance.name,
+            owner_identity_id: instance.owner_identity_id,
+            status: &instance.status,
+            actor_identity_id: auth.identity_id,
+        },
+    )
+    .await;
 
     Ok(Json(
         serde_json::json!({ "deleted": true, "connection_deleted": connection_deleted }),

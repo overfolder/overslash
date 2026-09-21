@@ -5,8 +5,9 @@
 //                           run_query/export_query at risk `dynamic`
 //   metabase-approval     — an INSERT classified write by the gateway parser,
 //                           bubbling an approval whose permission key names
-//                           exactly the referenced table
-//                           (metabase:run_query:table=pagila/public.film)
+//                           exactly the referenced table, under both the
+//                           pinned name and the raw db id
+//                           (metabase:run_query:table_mut={pagila,5}/public.film)
 //                           with the raw SQL disclosed as the primary field
 //   metabase-queue        — the approvals queue row for the same call
 //

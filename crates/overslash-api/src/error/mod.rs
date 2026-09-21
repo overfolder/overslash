@@ -54,6 +54,22 @@ impl From<ArgError> for ArgErrorDto {
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
+/// One slot whose vault name is already taken, as [`AppError::SecretNameConflict`]
+/// reports it.
+#[derive(Debug, serde::Serialize)]
+pub struct SecretNameConflict {
+    /// The template securityScheme slot the link would have filled. `None` for
+    /// a bare `request_secret` that names no service.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_key: Option<String>,
+    /// The vault name that already exists.
+    pub secret_name: String,
+    /// Current version of the existing secret. The value a forced overwrite
+    /// would supersede — and, since versions are retained, the one to restore
+    /// from if the overwrite turns out to be a mistake.
+    pub current_version: i32,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("not found: {0}")]
@@ -324,6 +340,28 @@ pub enum AppError {
         hint_url: Option<String>,
     },
 
+    /// A setup link would be minted for a vault secret name that is already
+    /// taken, so fulfilling it would version over a credential somebody else
+    /// is relying on. Returned as 409.
+    ///
+    /// The collision is silent by construction: a slot's vault name comes from
+    /// the template's `default_secret_name`, which is fixed per template and
+    /// mixes in nothing per-instance — so a second instance of the same
+    /// template mints a link pointing at the *first* instance's secret. Nobody
+    /// finds out until a call 401s.
+    ///
+    /// Two ways out, and the envelope names both because they serve different
+    /// intents: `credentials: {key: name}` *binds* the existing secret (share
+    /// one credential across instances, no link needed), while `force: true`
+    /// mints anyway and writes a new version (rotate, or deliberately replace).
+    #[error("secret_name_conflict: {}", conflicts.iter().map(|c| c.secret_name.as_str()).collect::<Vec<_>>().join(", "))]
+    SecretNameConflict {
+        conflicts: Vec<SecretNameConflict>,
+        /// What a caller can do about it, in prose. Agents hitting this are
+        /// not holding the docs — same reasoning as D77's messages.
+        hint: String,
+    },
+
     /// The caller is asking to act on an identity outside their reachable
     /// chain (e.g. a sub-agent trying to read a sibling's secrets). Distinct
     /// from `Forbidden` (which carries explicit-deny semantics): an explicit
@@ -360,7 +398,7 @@ impl AppError {
                 StatusCode::BAD_GATEWAY
             }
             Self::UpstreamTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
-            Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::Conflict(_) | Self::SecretNameConflict { .. } => StatusCode::CONFLICT,
             Self::Gone(_) => StatusCode::GONE,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::TemplateValidationFailed { .. } => StatusCode::BAD_REQUEST,
@@ -416,6 +454,17 @@ impl IntoResponse for AppError {
                     .into_response();
             }
             Self::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
+            Self::SecretNameConflict { conflicts, hint } => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "secret_name_conflict",
+                        "conflicts": conflicts,
+                        "hint": hint,
+                    })),
+                )
+                    .into_response();
+            }
             Self::Gone(msg) => (StatusCode::GONE, msg.clone()),
             Self::Internal(msg) => {
                 tracing::error!("Internal error: {msg}");

@@ -120,15 +120,39 @@ fn describe_key_named(dk: &DerivedKey, service_label: Option<&str>) -> String {
             } else if let Some(ref label) = dk.label {
                 // "Send on recipient=jane@example.com" reads like a bug; the
                 // label is a noun the approver already understands.
-                let target = describe_arg_glob(&dk.value, Some(label))
-                    .unwrap_or_else(|| format!("{label} {}", dk.value));
+                let value = collapse_alternation(&dk.value);
+                let target = describe_arg_glob(&value, Some(label))
+                    .unwrap_or_else(|| format!("{label} {value}"));
                 prefixed(format!("{} on {}", humanize_action(&dk.action), target))
             } else {
-                let target = describe_arg_glob(&dk.arg, None).unwrap_or_else(|| dk.arg.clone());
+                let arg = collapse_alternation(&dk.arg);
+                let target = describe_arg_glob(&arg, None).unwrap_or_else(|| arg.clone());
                 prefixed(format!("{} on {}", humanize_action(&dk.action), target))
             }
         }
     }
+}
+
+/// Render an alternation group as its first alternative, for prose only.
+///
+/// A SQL key names its database `{name,id}` so a grant survives an upstream
+/// rename (see [`super::key::DbLabel`]), and that is the right thing to
+/// *store*. It is the wrong thing to read aloud: "Run query on table
+/// {pagila,1}/public.film" makes an approver decode syntax to find the one
+/// word they needed. The stored pattern is untouched — only the sentence
+/// describing it drops to the name.
+fn collapse_alternation(value: &str) -> String {
+    let Some(open) = value.find('{') else {
+        return value.to_string();
+    };
+    let Some(close) = value[open..].find('}').map(|i| open + i) else {
+        return value.to_string();
+    };
+    let first = value[open + 1..close].split(',').next().unwrap_or_default();
+    if first.is_empty() {
+        return value.to_string();
+    }
+    format!("{}{first}{}", &value[..open], &value[close + 1..])
 }
 
 /// Drop repeats while keeping first-seen order.
@@ -500,5 +524,24 @@ mod tests {
                 "pattern: {pattern}"
             );
         }
+    }
+
+    /// The stored rule keeps the alternation that makes it rename-proof; the
+    /// sentence an approver reads keeps only the name.
+    #[test]
+    fn an_alternated_db_label_reads_as_its_name() {
+        assert_eq!(
+            describe_pattern("metabase:run_query:table={pagila,1}/public.film"),
+            describe_pattern("metabase:run_query:table=pagila/public.film"),
+        );
+        assert_eq!(
+            describe_pattern("metabase:run_query:column_star={pagila,1}"),
+            describe_pattern("metabase:run_query:column_star=pagila"),
+        );
+        // Nothing to collapse, nothing collapsed.
+        assert_eq!(
+            describe_pattern("email:send:recipient=jane@example.com"),
+            describe_pattern("email:send:recipient=jane@example.com"),
+        );
     }
 }

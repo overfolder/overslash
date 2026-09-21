@@ -21,10 +21,12 @@ moved {
   to   = google_monitoring_alert_policy.api_high_5xx[0]
 }
 
-moved {
-  from = google_monitoring_alert_policy.api_high_latency
-  to   = google_monitoring_alert_policy.api_high_latency[0]
-}
+# `api_high_latency` is deliberately absent. It was removed outright rather
+# than migrated: its Cloud Run `request_latencies` p99 was dominated by
+# `/v1/events/stream`, whose SSE connections live a fixed 30s by design and so
+# recorded 6x the 5s threshold on healthy traffic. That metric carries no route
+# label, so it could not be filtered in place. Replaced by `api_slow_requests`
+# in alerts_p1.tf; its `moved` block went with it.
 
 moved {
   from = google_monitoring_alert_policy.api_high_cpu

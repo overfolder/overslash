@@ -15,6 +15,12 @@ export const load: LayoutLoad = async ({ url, fetch }) => {
 	if (url.pathname.startsWith('/secrets/provide/')) {
 		return { user: null, allowedDomains: [] as string[] };
 	}
+	// Its service-shaped sibling, same signed-URL gate. Both must also be
+	// listed as `standalone` in +layout.svelte — this list only decides
+	// whether the page needs a session, not whether it wears the app shell.
+	if (url.pathname.startsWith('/services/setup/')) {
+		return { user: null, allowedDomains: [] as string[] };
+	}
 
 	try {
 		const res = await fetch('/auth/me/identity', { credentials: 'include' });

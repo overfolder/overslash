@@ -723,6 +723,14 @@ fn shipped_list_actions_declare_pagination() {
         // The httpbin echo fixture used by the dev/e2e stack. It returns
         // whatever was sent, not a collection.
         "test_email:list_messages",
+        // Holded exposes no cursor and no page size on any of these three.
+        // They are settings, not collections: an account's tax rates, its
+        // expense accounts and its chart of accounts each come back whole in
+        // one response. The chart of accounts is narrowed with `text` instead,
+        // which is what its description tells a caller to reach for.
+        "holded:list_taxes",
+        "holded:list_expenses_accounts",
+        "holded:list_accounting_accounts",
     ];
 
     fn looks_like_a_list(key: &str) -> bool {
@@ -890,4 +898,61 @@ fn shipped_github_templates_auth() {
         }
         _ => panic!("github_legacy_oauth template must declare OAuth auth"),
     }
+}
+
+/// Every shipped template's declared credential probe must resolve to a real,
+/// read-risk action whose params exist — and the catalogue must keep most
+/// templates carrying one at all.
+///
+/// Nothing asserts `!disabled` here because `test_action()` already filters
+/// disabled actions out: such a template would read as having no probe and
+/// fall to the count assertion below instead.
+///
+/// The first half duplicates `check_test` on purpose: that rule runs over a
+/// *parsed* definition, while this one runs over the registry the gateway
+/// actually serves, so it also catches a probe lost to a layer fold or an
+/// action renamed out from under its marker.
+///
+/// The second half is the one a reviewer should weigh. A count assertion
+/// noticing a *drop* is what keeps "declare a probe" from quietly becoming
+/// optional as templates are added; the floor is deliberately well under the
+/// current number so adding an unprobeable template (deepwiki — every tool
+/// needs a repo name, and it authenticates with nothing) is not a failure.
+#[test]
+fn shipped_test_actions_resolve_to_read_actions() {
+    let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("services");
+    let reg =
+        ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+            .unwrap();
+
+    let mut with_probe = 0;
+    for def in reg.all() {
+        let Some((key, action)) = def.test_action() else {
+            continue;
+        };
+        with_probe += 1;
+        assert!(
+            action.risk == crate::types::Risk::Read,
+            "{}: test action {key} is risk {:?}, not read",
+            def.key,
+            action.risk
+        );
+        for name in action.test.as_ref().unwrap().params.keys() {
+            assert!(
+                action.params.contains_key(name),
+                "{}: test param {name:?} is not a param of {key}",
+                def.key
+            );
+        }
+    }
+    assert!(
+        with_probe >= 15,
+        "only {with_probe} shipped templates declare a test action; \
+         a new template should declare one unless it genuinely cannot be probed"
+    );
 }

@@ -281,6 +281,225 @@ async fn org_admins_receive_events_they_are_not_an_audience_of() {
     );
 }
 
+/// Creating a service must announce itself, or a dashboard holding a fleet
+/// snapshot — the Live Map — has no way to learn the instance exists short of
+/// a page reload. Traffic alone is not enough: the `action.*` payload carries
+/// a service *name* and nothing else, so a map that learned about an instance
+/// that way would draw it with no owner and no icon.
+/// Mint an identity-bound key. The owner-user has none out of the box, and
+/// half of `for_service` is only observable from that user's own stream.
+async fn key_for(client: &Client, base: &str, org_key: &str, org: Uuid, identity: Uuid) -> String {
+    client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&serde_json::json!({
+            "org_id": org,
+            "identity_id": identity,
+            "name": "owner-key",
+        }))
+        .send()
+        .await
+        .expect("mint key")
+        .json::<Value>()
+        .await
+        .unwrap()["key"]
+        .as_str()
+        .expect("key")
+        .to_string()
+}
+
+/// Seed a global template the agent can instantiate.
+async fn seed_template(client: &Client, base: &str, org_key: &str, key: &str) {
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&serde_json::json!({
+            "openapi": common::minimal_openapi(key),
+            "user_level": false,
+        }))
+        .send()
+        .await
+        .expect("seed template");
+    assert!(resp.status().is_success(), "template seed failed");
+}
+
+/// Every `service.*` frame, in cursor order, as `(type, payload)`.
+fn service_events(frames: &[Frame]) -> Vec<(String, Value)> {
+    frames
+        .iter()
+        .filter(|f| {
+            f.event
+                .as_deref()
+                .is_some_and(|e| e.starts_with("service."))
+        })
+        .map(|f| (f.event.clone().unwrap(), f.payload()))
+        .collect()
+}
+
+#[tokio::test]
+async fn creating_a_service_announces_it_on_the_services_topic() {
+    let pool = common::test_pool().await;
+    let (base, client) = start(pool.clone()).await;
+    let (org, agent_id, agent_key, org_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    seed_template(&client, &base, &org_key, "fleet-news").await;
+
+    let created = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&serde_json::json!({
+            "template_key": "fleet-news",
+            "name": "my-fleet-news",
+        }))
+        .send()
+        .await
+        .expect("create service");
+    assert_eq!(created.status(), 200, "create should succeed");
+    let detail = created.json::<Value>().await.unwrap();
+
+    let frames = read_stream(&client, &base, &agent_key, "?topics=services", Some(0)).await;
+    let event = frames
+        .iter()
+        .find(|f| f.event.as_deref() == Some("service.created"))
+        .unwrap_or_else(|| panic!("no service.created in {frames:?}"));
+
+    let payload = event.payload();
+    assert_eq!(payload["service_instance_id"], detail["id"]);
+    assert_eq!(payload["name"], "my-fleet-news");
+    assert_eq!(payload["actor_identity_id"], agent_id.to_string());
+    // The SPEC rule that agents create at owner-user level: the instance
+    // belongs to the agent's ceiling user, not to the agent. The Live Map draws
+    // containers per user, so this is the field that decides which one it lands
+    // in — and the reason the audience walks the owner's chain rather than
+    // stopping at the actor.
+    assert_eq!(payload["owner_identity_id"], detail["owner_identity_id"]);
+    assert_ne!(
+        payload["owner_identity_id"],
+        agent_id.to_string(),
+        "owner should be the ceiling user, not the calling agent"
+    );
+
+    // Routing information, not a rendering: everything template-derived is
+    // resolved per caller at read time, so it must not be frozen into an event.
+    for absent in ["icon_url", "credentials", "secret_name", "test_action"] {
+        assert!(
+            payload.get(absent).is_none(),
+            "payload restates `{absent}`: {payload}"
+        );
+    }
+
+    // The other half of `for_service`, and the half the Live Map is built on:
+    // the owner-*user*'s own stream. The agent above is in the audience through
+    // the `∪ {actor}` term alone, so asserting only that would leave
+    // `chain(owner)` free to be deleted — and with it the case this exists for,
+    // a user watching their map while their agent sets a service up for them.
+    let owner_id = common::owner_user_id(&pool, org).await;
+    assert_eq!(
+        payload["owner_identity_id"],
+        owner_id.to_string(),
+        "the instance should be owned by the agent's ceiling user"
+    );
+    let owner_key = key_for(&client, &base, &org_key, org, owner_id).await;
+    let owner_frames = read_stream(&client, &base, &owner_key, "?topics=services", Some(0)).await;
+    assert!(
+        owner_frames
+            .iter()
+            .any(|f| f.event.as_deref() == Some("service.created")),
+        "the owner user never heard about their own service: {owner_frames:?}"
+    );
+}
+
+/// Manage, archive and delete each announce themselves too.
+///
+/// Four `fire_service_event` call sites raise three event types, and a test of
+/// creation alone lets the other three be deleted without the suite noticing.
+/// The delete site is the one worth pinning: it fires *after* the orphaned-
+/// connection cascade, and it reports the name and status off a row captured
+/// before the DELETE — so an instance renamed and archived on its way out says
+/// so, rather than reporting whatever it was created as.
+#[tokio::test]
+async fn managing_archiving_and_deleting_a_service_announce_themselves() {
+    let pool = common::test_pool().await;
+    let (base, client) = start(pool.clone()).await;
+    let (org, _agent_id, agent_key, org_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    seed_template(&client, &base, &org_key, "fleet-churn").await;
+
+    let created = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&serde_json::json!({ "template_key": "fleet-churn", "name": "churn" }))
+        .send()
+        .await
+        .expect("create service");
+    assert_eq!(created.status(), 200);
+    let id = created.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .expect("instance id")
+        .to_string();
+
+    // As the owner user, not the agent: an agent may not manage a service its
+    // ceiling user owns, and the owner is also the identity whose stream we
+    // read, so one key does both jobs.
+    let owner_id = common::owner_user_id(&pool, org).await;
+    let owner_key = key_for(&client, &base, &org_key, org, owner_id).await;
+
+    let renamed = client
+        .put(format!("{base}/v1/services/{id}/manage"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&serde_json::json!({ "name": "churn-renamed" }))
+        .send()
+        .await
+        .expect("manage service");
+    assert_eq!(renamed.status(), 200, "manage should succeed");
+
+    let archived = client
+        .patch(format!("{base}/v1/services/{id}/status"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&serde_json::json!({ "status": "archived" }))
+        .send()
+        .await
+        .expect("archive service");
+    assert_eq!(archived.status(), 200, "archive should succeed");
+
+    let deleted = client
+        .delete(format!("{base}/v1/services/{id}"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .send()
+        .await
+        .expect("delete service");
+    assert_eq!(deleted.status(), 200, "delete should succeed");
+
+    let frames = read_stream(&client, &base, &owner_key, "?topics=services", Some(0)).await;
+    let events = service_events(&frames);
+    let types: Vec<&str> = events.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(
+        types,
+        vec![
+            "service.created",
+            "service.updated",
+            "service.updated",
+            "service.deleted"
+        ],
+        "unexpected lifecycle on the services topic: {events:?}"
+    );
+
+    let (_, manage) = &events[1];
+    assert_eq!(
+        manage["name"], "churn-renamed",
+        "the rename should ride out"
+    );
+
+    let (_, status) = &events[2];
+    assert_eq!(status["status"], "archived");
+
+    // Read off the pre-delete row, so it reports the instance as it last was.
+    let (_, gone) = &events[3];
+    assert_eq!(gone["service_instance_id"], id);
+    assert_eq!(gone["name"], "churn-renamed");
+    assert_eq!(gone["status"], "archived");
+}
+
 #[tokio::test]
 async fn topics_filter_the_stream_and_unknown_topics_are_rejected() {
     let pool = common::test_pool().await;

@@ -409,6 +409,54 @@ export interface TemplateDetail {
   delta?: Delta;
   /** Fold-time resolution warnings (drift, shadowed extensions, dead entries). */
   resolution_report?: ResolutionReport;
+  /** The action this template nominates as its credential probe
+   * (`x-overslash-test`). Absent means the template declares none, and no
+   * Test button is offered. */
+  test_action?: TestActionRef;
+}
+
+/** A template's credential probe — the read action a Test button calls. */
+export interface TestActionRef {
+  action: string;
+  /** The action's one-line summary, for the button's tooltip. */
+  summary?: string;
+}
+
+/** The verdict from `POST /v1/services/{id}/test`.
+ *
+ * Carries no upstream response body on purpose: "do these credentials work"
+ * is the whole question the probe answers. */
+export interface ServiceTestResponse {
+  status:
+    | 'ok'
+    | 'failed'
+    | 'denied'
+    | 'pending_approval'
+    | 'needs_authentication'
+    | 'not_supported';
+  action?: string;
+  http_status?: number;
+  latency_ms?: number;
+  /** The call's `action_description` — the same line the approval screen shows. */
+  summary?: string;
+  /** Truncated upstream error text. */
+  error?: string;
+  approval_url?: string;
+  auth_url?: string;
+}
+
+/** The answer from `POST /v1/services/{id}/activate`.
+ *
+ * Every outcome is a `200`, including a red verdict: "your credential does not
+ * work" is the answer to the question, not a failure to answer it. Read
+ * `status` for whether the instance is live now — do not infer it from the
+ * verdict, because `force` promotes with no verdict at all and
+ * `not_supported` promotes with a verdict that never reached an upstream. */
+export interface ServiceActivateResponse {
+  /** The instance's status *after* the call. */
+  status: ServiceStatus;
+  /** Absent only when `force` skipped the probe. */
+  verdict?: ServiceTestResponse;
 }
 
 /** A value an org can set on a service instance — either a pinnable action
@@ -633,7 +681,14 @@ export interface ActionDetail {
 
 // -- Service instances --
 
-export type ServiceStatus = 'draft' | 'active' | 'archived';
+/**
+ * `pending_setup` is a service created by a setup flow whose credential has
+ * not been proven to work. Uncallable and invisible to search, like `draft` —
+ * but unlike `draft`, which is a state someone parks an instance in on
+ * purpose, it is swept after ~24h. Only the create path enters it and only
+ * activation leaves it, so it is never a valid target of `setServiceStatus`.
+ */
+export type ServiceStatus = 'draft' | 'active' | 'archived' | 'pending_setup';
 
 export interface ServiceGroupRef {
   grant_id: string;
@@ -686,6 +741,8 @@ export interface ServiceInstanceSummary {
   use_default_connection: boolean;
   groups?: ServiceGroupRef[];
   credentials_status?: CredentialsStatus;
+  /** The template's credential probe. Present means a Test button may be offered. */
+  test_action?: TestActionRef;
 }
 
 export interface ServiceInstanceDetail extends ServiceInstanceSummary {
@@ -695,6 +752,67 @@ export interface ServiceInstanceDetail extends ServiceInstanceSummary {
   updated_at: string;
   /** When this instance's MCP tools were last resynced (RFC3339). Absent until the first resync. */
   discovered_at?: string;
+  /** Present on a create response when the kernel auto-initiated an OAuth flow. */
+  connect?: ConnectBundle;
+  /** Present on a create response when the kernel minted setup links for the
+   * instance's unbound credential slots. The secret twin of `connect` — hand
+   * `setup_url` to whoever holds the API key. */
+  setup?: SetupBundle;
+}
+
+/** OAuth bootstrap bundle returned alongside a freshly-created instance. */
+export interface ConnectBundle {
+  auth_url: string;
+  state: string;
+  flow_id: string;
+  expires_at: string;
+}
+
+/** Setup links minted alongside a freshly-created instance. */
+export interface SetupBundle {
+  /** The URL to hand over — the first entry of `requests`. */
+  setup_url: string;
+  short_url?: string;
+  requests: SetupRequestRef[];
+  expires_at: string;
+  /** Present only on a `force: true` create: one entry per slot whose vault
+   * secret these links will overwrite. Omitted entirely otherwise. */
+  warnings?: SetupWarning[];
+}
+
+/** A non-blocking notice on a {@link SetupBundle}. */
+export interface SetupWarning {
+  /** `overwrites_existing_secret` is the only code today. */
+  code: string;
+  credential_key: string;
+  secret_name: string;
+  /** Version the link will supersede. */
+  current_version: number;
+  message: string;
+}
+
+/** One slot whose vault name is already taken, from a `secret_name_conflict` 409. */
+export interface SecretNameConflict {
+  credential_key?: string;
+  secret_name: string;
+  current_version: number;
+}
+
+/** Body of a 409 `secret_name_conflict` from `POST /v1/services`. */
+export interface SecretNameConflictBody {
+  error: 'secret_name_conflict';
+  conflicts: SecretNameConflict[];
+  hint: string;
+}
+
+export interface SetupRequestRef {
+  request_id: string;
+  credential_key: string;
+  secret_name: string;
+  setup_url: string;
+  /** Best-effort shortened form of this entry's `setup_url`. Prefer it when
+   * present — it is the form that survives being pasted into a chat message. */
+  short_url?: string;
 }
 
 export interface CreateServiceRequest {
@@ -709,6 +827,17 @@ export interface CreateServiceRequest {
   config?: Record<string, string>;
   url?: string;
   status?: ServiceStatus;
+  /**
+   * Gate the new instance behind its template's credential probe: it is
+   * created `pending_setup` and only becomes callable once
+   * `activateService` gets a green verdict.
+   *
+   * Omit to take the server's rule, which gates exactly when a setup link is
+   * minted. Send `true` when *you* will run the probe — the wizard does,
+   * including on the path where the credential was named rather than pasted
+   * and no link exists. A `400` comes back if the template declares no probe.
+   */
+  verify?: boolean;
   user_level?: boolean;
   /**
    * Group grants to attach at creation. Required (non-empty) when
@@ -719,6 +848,13 @@ export interface CreateServiceRequest {
   groups?: ServiceGroupGrantInput[];
   /** When `false`, this instance won't fall back to the default connection for its provider. Defaults to `true` server-side. */
   use_default_connection?: boolean;
+  /** Suppress the auto-minted setup links for unbound credential slots. The
+   * secret twin of `skip_connect`. */
+  skip_credentials?: boolean;
+  /** Mint setup links even when a slot's vault name is already taken,
+   * accepting that opening the link replaces the existing value. Without it
+   * such a create is refused with `secret_name_conflict` (409). */
+  force?: boolean;
 }
 
 export interface ServiceGroupGrantInput {

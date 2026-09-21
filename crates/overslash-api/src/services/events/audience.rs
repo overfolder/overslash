@@ -145,3 +145,79 @@ pub async fn for_secret_request(
 pub async fn for_action(scope: &OrgScope, actor_id: Uuid) -> Vec<Uuid> {
     chain(scope, actor_id).await
 }
+
+/// Service activation: the owner's chain, the actor, and everyone who was
+/// blocked on the instance.
+///
+/// The last set is why this is not [`for_connection`]. `chain` walks *upwards*,
+/// so an owner-user's chain does not contain their agents — and the agent that
+/// called `create_service` and handed over a setup link is exactly the identity
+/// waiting to hear that its service went live. It is a descendant, so the
+/// ancestor walk misses it.
+///
+/// `secret_requests` is the record of who asked: the rows survive fulfilment
+/// (`mark_fulfilled` stamps a timestamp, it does not delete), so
+/// `requested_by` for this instance is precisely "who is blocked on it",
+/// including an agent that has since been re-parented. One indexed read —
+/// `idx_secret_requests_service` exists for it (migration 118).
+///
+/// Degrades rather than fails: a lookup error narrows the audience to the
+/// owner and the actor, which is the safe direction, and the caller can still
+/// poll `get_service`.
+pub async fn for_service_setup(
+    scope: &OrgScope,
+    owner_id: Option<Uuid>,
+    actor_id: Option<Uuid>,
+    service_instance_id: Uuid,
+) -> Vec<Uuid> {
+    let mut audience = Vec::new();
+    if let Some(owner_id) = owner_id {
+        merge(&mut audience, chain(scope, owner_id).await);
+    }
+    if let Some(actor_id) = actor_id {
+        merge(&mut audience, [actor_id]);
+    }
+    match scope.setup_requesters(service_instance_id).await {
+        Ok(ids) => merge(&mut audience, ids),
+        Err(e) => tracing::warn!(
+            service_instance_id = %service_instance_id,
+            error = %e,
+            "audience: setup requesters lookup failed; narrowing to owner and actor"
+        ),
+    }
+    audience
+}
+
+/// Service instances: the owner's chain plus whoever performed the act.
+///
+/// Not [`for_service_setup`], and the difference is the point. That one is the
+/// audience for "your instance is callable now", so it reaches *downwards* to
+/// the agent blocked on the setup link it handed over. These events say the
+/// fleet changed shape, which is a fact about the instance rather than an
+/// answer somebody is waiting on, and their audience is the read model: whoever
+/// could have listed the instance over REST.
+///
+/// So the same shape as [`for_connection`], and for the same reason — a
+/// user-level instance is listed by its owner-user and by that user's
+/// ancestors, never by its siblings, so the stream must not be wider.
+///
+/// The two terms are doing different jobs here, because owner and actor are
+/// routinely different identities on this path. An instance's owner is always
+/// a *user* or nobody: a plain create resolves to the caller's ceiling user,
+/// and `on_behalf_of` resolves to a user or `validate_on_behalf_of` rejects
+/// it. So when an agent creates a service, `chain(owner)` is what reaches the
+/// user watching their own Live Map — the agent is nowhere on that chain,
+/// which runs upwards — and `{actor}` is what reaches the agent itself.
+///
+/// Org-level instances have no owner and so reach only the actor — narrower
+/// than `GET /v1/services`, which shows them to the whole org. That is the
+/// deliberate bias of this module, and it costs little here: creating one
+/// already requires admin, and org admins bypass the audience array in the
+/// delivery predicate.
+pub async fn for_service(
+    scope: &OrgScope,
+    owner_id: Option<Uuid>,
+    actor_id: Option<Uuid>,
+) -> Vec<Uuid> {
+    for_connection(scope, owner_id, actor_id).await
+}
