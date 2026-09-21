@@ -1063,6 +1063,32 @@ export interface ActionParam {
   description: string;
   enum?: string[];
   default?: unknown;
+  /** The inner structure of an `object`/`array` param, lowered from the
+   *  template's own `properties`/`items`. Absent when the template authored no
+   *  sub-schema — which means "not described", never "described as empty", so
+   *  the form must fall back to a plain JSON textarea rather than to an empty
+   *  field list. */
+  shape?: ParamShape;
+}
+
+/** One of the two shapes a param can declare, matching the server's untagged
+ *  enum: an object carries `properties`, an array carries `items`. Never both. */
+export interface ParamShape {
+  properties?: Record<string, NestedParam>;
+  items?: NestedParam;
+  /** JSON Schema's own keyword: when true an undeclared key inside this object
+   *  is forwarded rather than rejected, so the form must not enforce the
+   *  key set the server stopped enforcing. */
+  additional_properties?: boolean;
+}
+
+export interface NestedParam {
+  type?: string;
+  required?: boolean;
+  description?: string;
+  enum?: string[];
+  default?: unknown;
+  shape?: ParamShape;
 }
 
 export interface ConnectionSummary {
