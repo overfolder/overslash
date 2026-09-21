@@ -74,6 +74,10 @@ function toField(path: string, depth: number, p: NestedParam): ShapeField {
  * control is where the optional ones are discoverable.
  */
 export function skeletonFor(shape: ParamShape | undefined, type: string): string {
+	// No declared shape, no skeleton. A bare `{}` is *less* informative than the
+	// `JSON object` placeholder it would replace — it looks like a contract
+	// ("this object takes no keys") rather than an absence of one.
+	if (!shape) return '';
 	const value = skeletonValue(shape, type, 0);
 	return value === undefined ? '' : JSON.stringify(value, null, 2);
 }
