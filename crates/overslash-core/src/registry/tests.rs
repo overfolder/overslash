@@ -720,6 +720,13 @@ fn shipped_list_actions_declare_pagination() {
         "shortcut:list_members",
         "shortcut:list_groups",
         "shortcut:list_labels",
+        // `/api/v3/projects` declares no parameters at all — no page size, no
+        // cursor, not even a filter — and that is the point: it is the only
+        // thing in the service that surfaces a project with no stories in it.
+        // One project's stories are bounded by the project in the path, like
+        // an epic's and an iteration's above.
+        "shortcut:list_projects",
+        "shortcut:list_project_stories",
         // The httpbin echo fixture used by the dev/e2e stack. It returns
         // whatever was sent, not a collection.
         "test_email:list_messages",

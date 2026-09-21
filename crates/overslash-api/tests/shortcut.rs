@@ -77,13 +77,19 @@ fn shortcut_yaml_parses() {
         "get_current_member",
         "list_groups",
         "list_labels",
+        "list_projects",
+        "get_project",
+        "create_project",
+        "update_project",
+        "delete_project",
+        "list_project_stories",
     ] {
         assert!(
             svc.actions.contains_key(action),
             "missing action '{action}'"
         );
     }
-    assert_eq!(svc.actions.len(), 29, "curated surface changed size");
+    assert_eq!(svc.actions.len(), 35, "curated surface changed size");
 
     // Risk classes are what the approval chain gates on, so the destructive
     // one is asserted by name rather than left to the method default.
@@ -93,6 +99,25 @@ fn shortcut_yaml_parses() {
     assert_eq!(svc.actions["update_story"].risk, DeclaredRisk::Write);
     // A POST that only reads — the search twin — must not default to write.
     assert_eq!(svc.actions["query_stories"].risk, DeclaredRisk::Read);
+    assert_eq!(svc.actions["delete_project"].risk, DeclaredRisk::Delete);
+    assert_eq!(svc.actions["list_projects"].risk, DeclaredRisk::Read);
+
+    // The two story writes have to be able to *say* which project a story
+    // belongs to — the whole reason the project surface exists. A body
+    // property the template does not declare is rejected as an unknown
+    // argument, which is how this went missing in the first place.
+    for action in ["create_story", "update_story"] {
+        assert!(
+            svc.actions[action].params.contains_key("project_id"),
+            "{action} must accept project_id"
+        );
+    }
+    assert!(
+        svc.actions["query_stories"]
+            .params
+            .contains_key("project_ids"),
+        "query_stories must filter on project_ids"
+    );
 }
 
 /// The pagination declaration that motivated the body-borne `link` form.
@@ -212,6 +237,17 @@ async fn start_mock_shortcut() -> (SocketAddr, SeenLog) {
             json!({"id": 99, "name": "Fix login redirect", "app_url": "https://app.shortcut.com/x/story/99"})
         } else if path.starts_with("/api/v3/stories/") {
             json!({"id": 12345, "name": "Fix login redirect", "story_type": "bug"})
+        } else if path == "/api/v3/projects" {
+            json!([
+                {"id": 77, "name": "Billing", "abbreviation": "BIL", "team_id": 500},
+                // The one the story endpoints never mention, which is the
+                // whole reason this action exists.
+                {"id": 78, "name": "Empty", "abbreviation": "EMP", "team_id": 500},
+            ])
+        } else if path.starts_with("/api/v3/projects/") && path.ends_with("/stories") {
+            json!([{"id": 12345, "name": "Fix login redirect"}])
+        } else if path.starts_with("/api/v3/projects/") {
+            json!({"id": 77, "name": "Billing", "abbreviation": "BIL"})
         } else if path == "/api/v3/workflows" {
             json!([{"id": 500, "name": "Engineering", "states": [{"id": 5001, "name": "Ready"}]}])
         } else {
@@ -239,6 +275,19 @@ async fn setup(
     mock: SocketAddr,
     access_level: &str,
 ) -> (String, reqwest::Client, String, String) {
+    setup_auto_approving(pool, mock, access_level, "read").await
+}
+
+/// `setup`, with the auto-approve level spelled out. At `"write"` a story
+/// write runs instead of bubbling, which is the only way to see the body the
+/// gateway actually puts on the wire — an approval stops the call before the
+/// upstream is touched.
+async fn setup_auto_approving(
+    pool: sqlx::PgPool,
+    mock: SocketAddr,
+    access_level: &str,
+    auto_approve_level: &str,
+) -> (String, reqwest::Client, String, String) {
     common::allow_loopback_ssrf();
     let (base, client) = start_api_with_registry(pool, None).await;
     let (_org_id, _ident_id, agent_key, admin_key) = bootstrap_org_identity(&base, &client).await;
@@ -264,7 +313,7 @@ async fn setup(
             "groups": [{
                 "group_id": everyone_id.to_string(),
                 "access_level": access_level,
-                "auto_approve_reads": true,
+                "auto_approve_level": auto_approve_level,
             }],
             "status": "active",
             "credentials": { "token": "shortcut_api_token" },
@@ -504,6 +553,169 @@ async fn a_disclosure_survives_the_falsy_half_of_every_field() {
     assert!(
         labelled("Owners").is_none(),
         "an empty owner set must omit the row, not render an empty one: {fields:?}"
+    );
+}
+
+/// The bug this surface exists to fix: `update_story` could not say which
+/// project a story belongs to, because the template never declared the field
+/// — so the gateway rejected it as an unknown argument. Filing a story into a
+/// project has to reach the wire, and has to be disclosed.
+#[tokio::test]
+async fn a_story_can_be_filed_into_a_project_and_the_move_is_disclosed() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_shortcut().await;
+    let (base, client, agent_key, _admin) = setup(pool, mock, "admin").await;
+
+    let filed = call(
+        &base,
+        &client,
+        &agent_key,
+        "update_story",
+        json!({ "story_id": 12345, "project_id": 77 }),
+    )
+    .await;
+    assert_eq!(filed["status"], json!("pending_approval"), "{filed}");
+    let rendered = serde_json::to_string(&filed["disclosed_fields"]).unwrap();
+    assert!(
+        rendered.contains("Project"),
+        "filing a story into a project must be disclosed: {rendered}"
+    );
+    assert!(
+        rendered.contains("77"),
+        "the disclosure must name the project: {rendered}"
+    );
+
+    // And the unfile — `project_id: null` is a real change, which the `//`
+    // form of the filter would have swallowed. Same reasoning as `epic_id`.
+    let unfiled = call(
+        &base,
+        &client,
+        &agent_key,
+        "update_story",
+        json!({ "story_id": 12345, "project_id": Value::Null }),
+    )
+    .await;
+    let fields = unfiled["disclosed_fields"]
+        .as_array()
+        .cloned()
+        .expect("inline disclosed_fields present");
+    let project = fields
+        .iter()
+        .find(|f| f["label"] == json!("Project"))
+        .expect("unfiling from a project must be disclosed");
+    assert!(
+        serde_json::to_string(project).unwrap().contains("none"),
+        "a null project_id must read as an unfile, not vanish: {project}"
+    );
+}
+
+/// The wire half of the same bug. A disclosure proves the gateway *parsed*
+/// `project_id`; only the request the upstream receives proves it forwarded
+/// it. Auto-approve the write so the call is not stopped at the approval.
+#[tokio::test]
+async fn project_id_reaches_the_upstream_on_both_story_writes() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_shortcut().await;
+    let (base, client, agent_key, _admin) =
+        setup_auto_approving(pool, mock, "admin", "write").await;
+
+    let created = call(
+        &base,
+        &client,
+        &agent_key,
+        "create_story",
+        json!({ "name": "Fix login redirect", "project_id": 77 }),
+    )
+    .await;
+    assert_eq!(created["status"], json!("called"), "{created}");
+    let post = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| r.method == "POST" && r.path == "/api/v3/stories")
+        .cloned()
+        .expect("create_story must have reached the upstream");
+    assert_eq!(
+        post.body["project_id"],
+        json!(77),
+        "create_story dropped project_id: {}",
+        post.body
+    );
+
+    let moved = call(
+        &base,
+        &client,
+        &agent_key,
+        "update_story",
+        json!({ "story_id": 12345, "project_id": 77 }),
+    )
+    .await;
+    assert_eq!(moved["status"], json!("called"), "{moved}");
+    let put = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| r.method == "PUT")
+        .cloned()
+        .expect("update_story must have reached the upstream");
+    assert_eq!(
+        put.body["project_id"],
+        json!(77),
+        "update_story dropped project_id: {}",
+        put.body
+    );
+
+    // The unfile has to survive as a literal `null`, not be pruned out of the
+    // body on its way through — `null` is what Shortcut reads as "unfile".
+    call(
+        &base,
+        &client,
+        &agent_key,
+        "update_story",
+        json!({ "story_id": 12345, "project_id": Value::Null }),
+    )
+    .await;
+    let unfile = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| r.method == "PUT")
+        .cloned()
+        .unwrap();
+    assert!(
+        unfile.body.get("project_id") == Some(&Value::Null),
+        "a null project_id must reach the wire as null, not vanish: {}",
+        unfile.body
+    );
+}
+
+/// A project write is scoped to the project it names, exactly as a story
+/// write is scoped to its story.
+#[tokio::test]
+async fn a_project_write_is_scoped_to_the_project_it_names() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_shortcut().await;
+    let (base, client, agent_key, _admin) = setup(pool, mock, "admin").await;
+
+    let body = call(
+        &base,
+        &client,
+        &agent_key,
+        "delete_project",
+        json!({ "project_id": 77 }),
+    )
+    .await;
+    let rendered = serde_json::to_string(&body).unwrap();
+    assert!(
+        rendered.contains("shortcut:delete_project:project_id=77"),
+        "expected a project-scoped permission key, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("Billing"),
+        "the disclosure must resolve the project to its name: {rendered}"
     );
 }
 
