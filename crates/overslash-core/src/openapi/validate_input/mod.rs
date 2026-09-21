@@ -7,6 +7,12 @@
 //! rejected (mirrors `additionalProperties: false`), and `enum` members must
 //! be respected.
 //!
+//! The same three checks run at every *depth* a parameter declares a shape for
+//! (see [`nested`]), so an action whose contract is a nested object gets the
+//! same self-correctable 400 its top-level fields get, naming the field by its
+//! full path. A parameter whose template authored no sub-schema is
+//! unconstrained inside, exactly as every parameter was before shapes existed.
+//!
 //! That closed world is the default, not a law. An action carrying
 //! `x-overslash-additional-properties: true` passes `additional_properties`
 //! here, which drops *both* the unknown-key rejection and the `enum`
@@ -41,6 +47,7 @@ use crate::types::ActionParam;
 
 mod coerce;
 mod error;
+mod nested;
 #[cfg(test)]
 mod test_helpers;
 
@@ -136,6 +143,20 @@ pub fn validate_args(
                 }
             }
         }
+    }
+
+    // Nested shapes, for every supplied value whose param declared one. Runs
+    // after the flat passes so the errors an agent reads are ordered
+    // outside-in: a missing top-level `createRequest` is reported before
+    // anything about what should have been inside it.
+    for (name, p) in params {
+        let (Some(shape), Some(v)) = (p.shape.as_deref(), args.get(name)) else {
+            continue;
+        };
+        if v.is_null() {
+            continue;
+        }
+        nested::validate_nested(shape, v, additional_properties, name, &mut errors);
     }
 
     if errors.is_empty() {
