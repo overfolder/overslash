@@ -68,7 +68,7 @@ When running in a Kanban worktree (`.cline/worktrees/<id>/`), `make local` autom
    lands mid-codepoint — and the strings we truncate (upstream error text,
    user-supplied names, log lines) are exactly the ones that carry non-ASCII.
    Snap down to a valid boundary with `str::floor_char_boundary(n)` (stable
-   since 1.91, comfortably under our 1.97 MSRV), or iterate with
+   since 1.91, comfortably under our 1.98 MSRV), or iterate with
    `chars()`/`char_indices()`. Same for `split_at`/`get`. Older call sites
    hand-roll the same snap as `while !s.is_char_boundary(n) { n -= 1 }` — just
    as correct; no need to churn them.

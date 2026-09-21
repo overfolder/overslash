@@ -3,7 +3,7 @@
 # replaces the per-crate `COPY Cargo.toml` + `fn main(){}` stub scaffold this
 # file used to hand-maintain — a new crate needs no edit here — and the
 # `find crates/ -exec touch` that existed to defeat the stub fingerprints.
-FROM rust:1.97-trixie AS chef
+FROM rust:1.98-trixie AS chef
 
 WORKDIR /app
 

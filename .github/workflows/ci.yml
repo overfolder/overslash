@@ -131,12 +131,18 @@ jobs:
       - name: Line-count gate (crates/*/src)
         run: bash scripts/check-line-counts.sh
 
+      # Same rationale as the line-count gate: nothing but bash, so a toolchain
+      # pin that drifted from the Dockerfiles fails in seconds. rust-toolchain.toml
+      # is .dockerignore'd, so this check is the only thing linking the two.
+      - name: Rust version gate (Dockerfiles vs rust-toolchain.toml)
+        run: bash scripts/check-rust-version.sh
+
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           # Pinned explicitly rather than left to the action's `stable` default:
           # keep in sync with rust-toolchain.toml, or the action installs one
           # toolchain and cargo silently downloads another on the first build.
-          toolchain: "1.97"
+          toolchain: "1.98"
           components: rustfmt, clippy
       # The `key` suffix must be rotated whenever [profile.*] settings in
       # Cargo.toml change: rust-cache's primary key doesn't hash profiles, so
@@ -270,8 +276,12 @@ jobs:
         with:
           # See the lint job for why the toolchain is pinned explicitly (and
           # must stay in sync with rust-toolchain.toml).
-          toolchain: "1.97"
-          components: llvm-tools-preview
+          toolchain: "1.98"
+          # rust-toolchain.toml declares rustfmt + clippy, so rustup fetches
+          # them on the first cargo call whether or not they are listed here.
+          # Listing them keeps that cost in the setup step instead of buried,
+          # untimed, inside the first build.
+          components: rustfmt, clippy, llvm-tools-preview
       # See the lint job for why the key carries a -deps-opt1 suffix (and
       # must be rotated again on the next [profile.*] change).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -345,7 +355,12 @@ jobs:
         with:
           # See the lint job for why the toolchain is pinned explicitly (and
           # must stay in sync with rust-toolchain.toml).
-          toolchain: "1.97"
+          toolchain: "1.98"
+          # rust-toolchain.toml declares rustfmt + clippy, so rustup fetches
+          # them on the first cargo call whether or not they are listed here.
+          # Listing them keeps that cost in the setup step instead of buried,
+          # untimed, inside the first build.
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: sql-policy-deps
@@ -485,7 +500,12 @@ jobs:
         with:
           # See the lint job for why the toolchain is pinned explicitly (and
           # must stay in sync with rust-toolchain.toml).
-          toolchain: "1.97"
+          toolchain: "1.98"
+          # rust-toolchain.toml declares rustfmt + clippy, so rustup fetches
+          # them on the first cargo call whether or not they are listed here.
+          # Listing them keeps that cost in the setup step instead of buried,
+          # untimed, inside the first build.
+          components: rustfmt, clippy
       # See the lint job for why the key carries a -deps-opt1 suffix (and
       # must be rotated again on the next [profile.*] change).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
