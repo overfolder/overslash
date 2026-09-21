@@ -9,13 +9,35 @@
 //
 // Prereq: `make e2e-up`. Output: dashboard/screenshots/service-setup-*.png.
 
-import { api, connectGithubService, login, makeSnapper } from '../tests/scenarios/index.mjs';
+import {
+	api,
+	connectGithubService,
+	deleteOrg,
+	freshOrgSlug,
+	login,
+	makeSnapper
+} from '../tests/scenarios/index.mjs';
 
-const session = await login('admin');
-const snap = await makeSnapper(session);
+// A fresh org per scenario, not one shared session.
+//
+// `resend`'s slot stores under the template-authored `resend_key`, which mixes
+// in nothing per-instance — so within one org the *second* mint at that name is
+// refused with `secret_name_conflict` (D85) the moment the first link has been
+// fulfilled. This script mints three times, and the whole point of section 2 is
+// to fulfil one. Isolating by org is what keeps each scenario looking like a
+// first run, which is what a reviewer is here to see.
+const orgs = [];
+async function freshStage(label) {
+	const slug = freshOrgSlug(`shot-${label}`);
+	orgs.push(slug);
+	const session = await login('admin', { org: slug });
+	return { session, snap: await makeSnapper(session) };
+}
+
+const { session, snap } = await freshStage('setup-page');
 
 /** Create a Resend instance and hand back the setup link it minted. */
-async function seedSetupLink(name) {
+async function seedSetupLink(session, name) {
 	const svc = await api(session, '/v1/services', {
 		method: 'POST',
 		body: { template_key: 'resend', name, user_level: true }
@@ -34,7 +56,7 @@ try {
 	//
 	// Signed in, which is now the only way to submit at all: a setup link is
 	// always minted session-required. The anonymous case is section 2b.
-	const pending = await seedSetupLink(`resend-setup-${Date.now()}`);
+	const pending = await seedSetupLink(session, `resend-setup-${Date.now()}`);
 	const { page, ctx } = await snap.navigateAndSnap('service-setup-page', pending.path, {
 		viewport: { width: 1100, height: 900 },
 		fullPage: false,
@@ -68,23 +90,25 @@ try {
 	// the shot is *where* it says so: above the preamble, before the value
 	// field, rather than after a rejected submit.
 	//
-	// A link of its own: the one above was spent by the submit in section 2,
-	// and a spent link renders "Already set up" rather than the gate.
-	const anon = await seedSetupLink(`resend-anon-${Date.now()}`);
-	const { page: aPage, ctx: aCtx } = await snap.page({
+	// Its own org as well as its own link: the one above was spent by the
+	// submit in section 2, which both burns the link and occupies `resend_key`.
+	const anonStage = await freshStage('anon');
+	const anon = await seedSetupLink(anonStage.session, `resend-anon-${Date.now()}`);
+	const { page: aPage, ctx: aCtx } = await anonStage.snap.page({
 		viewport: { width: 900, height: 900 }
 	});
 	// `snap.page()` attaches the session to every context it makes. Drop it:
 	// the whole point of the shot is the page a link recipient sees before
 	// signing in.
 	await aCtx.clearCookies();
-	await aPage.goto(`${session.dashboardUrl}${anon.path}`);
+	await aPage.goto(`${anonStage.session.dashboardUrl}${anon.path}`);
 	await aPage.getByRole('link', { name: 'Sign in to continue' }).waitFor({ timeout: 20_000 });
 	await aPage.locator('.card').first().screenshot({
 		path: 'screenshots/service-setup-signin-required.png'
 	});
 	console.log('[scenarios] wrote screenshots/service-setup-signin-required.png');
 	await aCtx.close();
+	await anonStage.snap.close();
 
 	// ── 3. The wizard's post-create step ────────────────────────────────
 	//
@@ -92,7 +116,8 @@ try {
 	// verdict, the 24h note, and the three ways out. Driven through the real
 	// form so the screenshot shows the step in its place rather than the
 	// component in isolation.
-	const { page: wPage, ctx: wCtx } = await snap.navigateAndSnap(
+	const wizardStage = await freshStage('wizard');
+	const { page: wPage, ctx: wCtx } = await wizardStage.snap.navigateAndSnap(
 		'service-setup-wizard-page',
 		'/services/new?template=resend',
 		{
@@ -135,6 +160,7 @@ try {
 		console.log('[scenarios] wrote screenshots/service-setup-wizard-reopen.png');
 	}
 	await wCtx.close();
+	await wizardStage.snap.close();
 
 	// ── 4. The OAuth half, passing ──────────────────────────────────────
 	//
@@ -142,9 +168,12 @@ try {
 	// fact — there is no value to paste, so without it a reconnect is a leap
 	// of faith. Driven against the fake AS + fake upstream, so the verdict is
 	// a real green one rather than a mocked component.
-	const { page: gPage, ctx: gCtx } = await snap.page({ viewport: { width: 1400, height: 1000 } });
-	const github = await connectGithubService(session, gPage, { suffix: 'probe' });
-	await gPage.goto(`${session.dashboardUrl}/services/${github.id}`);
+	const ghStage = await freshStage('github');
+	const { page: gPage, ctx: gCtx } = await ghStage.snap.page({
+		viewport: { width: 1400, height: 1000 }
+	});
+	const github = await connectGithubService(ghStage.session, gPage, { suffix: 'probe' });
+	await gPage.goto(`${ghStage.session.dashboardUrl}/services/${github.id}`);
 	await gPage.getByRole('button', { name: 'credentials' }).click();
 	await gPage.getByRole('button', { name: /^(Test service|Check and finish setup)$/ }).click();
 	await gPage.locator('.verdict').waitFor({ timeout: 30_000 });
@@ -154,6 +183,12 @@ try {
 	});
 	console.log('[scenarios] wrote screenshots/service-setup-detail-verdict-ok.png');
 	await gCtx.close();
+	await ghStage.snap.close();
 } finally {
 	await snap.close();
+	// Best-effort: a screenshot run that dies mid-way should not leave a dozen
+	// orgs behind, but a failed cleanup must not mask the error that caused it.
+	for (const slug of orgs) {
+		await deleteOrg(slug).catch(() => {});
+	}
 }
