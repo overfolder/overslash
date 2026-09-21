@@ -256,7 +256,7 @@
 - Dashboard: the create wizard stops on a "Check it works" step instead of navigating away (covering the OAuth "Connect & create" path too), the service detail page's credentials tab gains a Test button, and the setup page runs the probe on submit for a signed-in visitor. Shared `TestResult.svelte` + `SecretValueField.svelte`.
 - Knock-on: the `overslash_search` setup hint collapses from "create_service, then one `request_secret` per slot" to a single step naming the field the URL arrives on.
 
-### Setup links never silently replace a credential (D-NEXT)
+### Setup links never silently replace a credential (D85)
 
 - `service_setup::mint` refuses a link whose `secret_name` already names a live vault secret: `secret_name_conflict` (409), with one `conflicts[]` entry per slot carrying `credential_key`, `secret_name` and `current_version`, plus a `hint`. Covers all three mint surfaces, since they share that one function. A slot's vault name is the template's `default_secret_name` and mixes in nothing per-instance, so before this the second instance of a template aimed its link at the first one's credential and fulfilment versioned over it silently.
 - `force: true` mints anyway, and says what it supersedes: `setup.warnings[]` on a create, a scalar `warning` on `request_secret` / `POST /v1/secrets/requests`. The audit row carries `force`, so a deliberate replacement is on the record. Binding an existing secret (`credentials: {slot: name}`) is untouched and remains the way to *share* one — it mints no link and overwrites nothing.
