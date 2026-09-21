@@ -133,6 +133,44 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
         );
     }
 
+    // `additional-properties` promises that an argument the template does not
+    // declare still reaches the upstream. On a body-carrying method the
+    // gateway can only serialise a JSON body (`RequestBodySpec::is_json` —
+    // "bodies only serialised for JSON media types today"), so an action that
+    // declares a non-JSON `requestBody` would accept the argument at the gate
+    // and then drop it on the floor: the caller is told yes and gets nothing,
+    // which is strictly worse than the 400 the promise replaced.
+    //
+    // An error rather than a warning, for `unknown_pagination_param`'s reason
+    // — this is a promise the gateway believes it kept and never did. The two
+    // ways out are both the author's: drop the key, or declare the body as
+    // JSON. Synthesising a JSON body over a declared `application/x-www-form-
+    // urlencoded` would be the third, and it is worse than either, since a
+    // form endpoint reading a JSON payload fails in a way nobody can debug
+    // from the call site.
+    //
+    // Only on a body-carrying method: a relaxed `GET` routes its undeclared
+    // arguments to the query string, where nothing is lost.
+    let body_carrying = !matches!(action.method.as_str(), "GET" | "HEAD" | "");
+    if action.additional_properties
+        && body_carrying
+        && action.request_body.as_ref().is_some_and(|rb| !rb.is_json())
+    {
+        issues.err(
+            "additional_properties_needs_a_json_body",
+            format!(
+                "additional-properties cannot be honoured on a {} with a non-JSON requestBody                  ({}): an undeclared argument would pass validation and then be dropped, since                  only JSON bodies are serialised. Declare the body as JSON or drop the key.",
+                action.method,
+                action
+                    .request_body
+                    .as_ref()
+                    .map(|rb| rb.content_type.as_str())
+                    .unwrap_or(""),
+            ),
+            format!("{action_path}.additional-properties"),
+        );
+    }
+
     check_pagination(action, &action_path, issues);
 
     check_test(action, &action_path, issues);

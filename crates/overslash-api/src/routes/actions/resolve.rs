@@ -564,6 +564,14 @@ pub(super) async fn resolve_request(
             // arguments that were rejected outright before
             // `additional_properties` existed, so no existing template changes
             // shape.
+            //
+            // `request_body.is_none()` and not "not JSON": a declared
+            // *non-JSON* body is the other way an extra argument could be
+            // accepted and then dropped here, and the answer to it is not to
+            // send JSON to a form endpoint — it is that the combination never
+            // reaches this code. `check_action` rejects it at authoring time
+            // (`additional_properties_needs_a_json_body`), which is the only
+            // place the author can still fix it.
             let declared_json = action.request_body.as_ref().is_some_and(|rb| rb.is_json());
             let synthesized_json = action.additional_properties
                 && action.request_body.is_none()

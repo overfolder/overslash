@@ -727,3 +727,106 @@ fn two_test_actions_is_an_error() {
     let r = run(&d);
     assert!(r.errors.iter().any(|e| e.code == "multiple_test_actions"));
 }
+
+// --- additional-properties -----------------------------------------
+
+/// `validate_args` short-circuits on an empty schema, so the key decides
+/// nothing here. A warning, not an error: the template is not wrong, it just
+/// believes it asked for something.
+#[test]
+fn additional_properties_on_a_paramless_action_warns() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.params.clear();
+    a.additional_properties = true;
+    let r = run(&d);
+    assert!(r.valid, "must not be an error: {:?}", r.errors);
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.code == "noop_additional_properties"),
+        "{:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn additional_properties_on_an_action_with_params_is_silent() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.params.insert("q".into(), param("string", false));
+    a.additional_properties = true;
+    let r = run(&d);
+    assert!(r.valid, "{:?}", r.errors);
+    assert!(
+        !r.warnings
+            .iter()
+            .any(|w| w.code == "noop_additional_properties"),
+        "{:?}",
+        r.warnings
+    );
+}
+
+/// The gateway only serialises JSON bodies, so a relaxed action with a
+/// declared form body would accept an undeclared argument and then drop it —
+/// the silent loss the extension exists to avoid. Caught at authoring time
+/// rather than papered over by sending JSON to a form endpoint.
+#[test]
+fn additional_properties_with_a_non_json_request_body_is_an_error() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.method = "POST".into();
+    a.params.insert("q".into(), param("string", false));
+    a.additional_properties = true;
+    a.request_body = Some(crate::types::RequestBodySpec {
+        content_type: "application/x-www-form-urlencoded".into(),
+        required: true,
+    });
+    let r = run(&d);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.code == "additional_properties_needs_a_json_body"),
+        "{:?}",
+        r.errors
+    );
+}
+
+#[test]
+fn additional_properties_with_a_json_request_body_is_fine() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.method = "POST".into();
+    a.params.insert("q".into(), param("string", false));
+    a.additional_properties = true;
+    a.request_body = Some(crate::types::RequestBodySpec {
+        content_type: "application/json".into(),
+        required: true,
+    });
+    let r = run(&d);
+    assert!(r.valid, "{:?}", r.errors);
+}
+
+/// A relaxed `GET` routes undeclared arguments to the query string, so a
+/// (pointless) non-JSON body declaration there loses nothing and must not
+/// trip the check.
+#[test]
+fn additional_properties_on_a_get_ignores_the_body_media_type() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.method = "GET".into();
+    a.params.insert("q".into(), param("string", false));
+    a.additional_properties = true;
+    a.request_body = Some(crate::types::RequestBodySpec {
+        content_type: "application/x-www-form-urlencoded".into(),
+        required: false,
+    });
+    let r = run(&d);
+    assert!(
+        !r.errors
+            .iter()
+            .any(|e| e.code == "additional_properties_needs_a_json_body"),
+        "{:?}",
+        r.errors
+    );
+}
