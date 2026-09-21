@@ -111,6 +111,10 @@ pub fn apply_defaults(params: &HashMap<String, ActionParam>, args: &mut HashMap<
 ///    is normalized to the canonical member (`"html"` → `"HTML"`), but only when
 ///    the match is unambiguous.
 ///
+/// The scalar nudge covers one case that is a repair rather than a convenience:
+/// a string that opens a JSON literal, sent to an `object` or `array` param, is
+/// parsed rather than passed through or split. See [`parse_json_literal`].
+///
 /// Params with an unspecified (empty) `param_type` are never scalar-coerced —
 /// they are the `anyOf`/`oneOf`/untyped case, where guessing a target type
 /// could corrupt a legitimately non-string value.
@@ -176,17 +180,57 @@ fn coerce_scalar(param_type: &str, v: &Value) -> Option<Value> {
         // knows an empty recipient list is unsendable.
         "array" => match v {
             Value::Array(_) => None,
-            Value::String(s) => Some(Value::Array(
-                s.split(',')
-                    .map(str::trim)
-                    .filter(|part| !part.is_empty())
-                    .map(|part| Value::String(part.to_string()))
-                    .collect(),
-            )),
+            Value::String(s) => Some(match parse_json_literal(s) {
+                // A serialized list *is* the list. Without this the comma rule
+                // below tore one apart at every separator inside it —
+                // `'["email","firstname"]'` reached the upstream as three
+                // quoted fragments, with no error raised anywhere.
+                Some(Value::Array(items)) => Value::Array(items),
+                // A serialized object is one element of the list, which is the
+                // same reading the `other` arm gives a bare scalar.
+                Some(one) => Value::Array(vec![one]),
+                None => Value::Array(
+                    s.split(',')
+                        .map(str::trim)
+                        .filter(|part| !part.is_empty())
+                        .map(|part| Value::String(part.to_string()))
+                        .collect(),
+                ),
+            }),
             other => Some(Value::Array(vec![other.clone()])),
+        },
+        // A JSON document the caller serialized before sending. An agent whose
+        // only description of the parameter is prose reaches for a string, and
+        // the string then travelled all the way to the upstream quoted — and
+        // blinded the action's own `disclose` filters on the way, since
+        // `.arguments.createRequest.objectType` yields nothing against a
+        // string. Parse it back into the value the template says the wire wants.
+        "object" => match v {
+            Value::String(s) => parse_json_literal(s),
+            _ => None,
         },
         _ => None,
     }
+}
+
+/// Parse a string that is syntactically a JSON **object or array** literal.
+///
+/// Keyed on the first non-whitespace byte rather than on "does `serde_json`
+/// accept it": every JSON scalar is also a valid JSON document, so a permissive
+/// parse would turn `"12"` into a number and `"null"` into a null on params
+/// that declared neither. `{` and `[` are the two openers no plain id, address
+/// or free-text value starts with, which is what keeps this from reaching a
+/// value the caller meant literally.
+///
+/// Returns `None` when the string does not open a literal or does not parse —
+/// the caller then falls back to whatever it did before, so a malformed blob
+/// still reaches the upstream and fails there rather than here.
+fn parse_json_literal(s: &str) -> Option<Value> {
+    let trimmed = s.trim_start();
+    if !trimmed.starts_with(['{', '[']) {
+        return None;
+    }
+    serde_json::from_str(trimmed).ok()
 }
 
 /// Case-normalize a string enum value to its canonical member. Returns `Some`
@@ -333,6 +377,89 @@ mod tests {
         let mut a = args(&[("cc", json!("a@b.com, c@d.com ,,"))]);
         coerce_args(&s, &mut a);
         assert_eq!(a.get("cc"), Some(&json!(["a@b.com", "c@d.com"])));
+    }
+
+    #[test]
+    fn coerce_serialized_json_array_is_parsed_not_split() {
+        // The regression this arm exists for: HubSpot's `filterGroups` is an
+        // array of objects whose shape only ever lived in prose, so an agent
+        // serializes it. Splitting on commas turned one filter group into
+        // three quoted fragments and sent them upstream with no error.
+        let s = schema(&[("filterGroups", p("array", false))]);
+        let mut a = args(&[(
+            "filterGroups",
+            json!(r#"[{"filters":[{"propertyName":"email","operator":"EQ","value":"a@b.com"}]}]"#),
+        )]);
+        coerce_args(&s, &mut a);
+        assert_eq!(
+            a.get("filterGroups"),
+            Some(
+                &json!([{"filters": [{"propertyName": "email", "operator": "EQ", "value": "a@b.com"}]}])
+            )
+        );
+    }
+
+    #[test]
+    fn coerce_serialized_string_array_is_parsed_not_split() {
+        let s = schema(&[("properties", p("array", false))]);
+        let mut a = args(&[("properties", json!(r#"["email","firstname"]"#))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("properties"), Some(&json!(["email", "firstname"])));
+    }
+
+    #[test]
+    fn coerce_serialized_object_for_array_param_becomes_one_element() {
+        // Same reading the bare-scalar arm gives: a single value where a list
+        // is declared is a one-element list.
+        let s = schema(&[("sorts", p("array", false))]);
+        let mut a = args(&[("sorts", json!(r#"{"propertyName":"createdate"}"#))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(
+            a.get("sorts"),
+            Some(&json!([{"propertyName": "createdate"}]))
+        );
+    }
+
+    #[test]
+    fn coerce_serialized_json_object_param_is_parsed() {
+        // Until this arm existed an `object` param had no coercion at all, so
+        // the string reached the upstream quoted — and the action's own
+        // `disclose` filter reading `.createRequest.objectType` saw nothing.
+        let s = schema(&[("createRequest", p("object", false))]);
+        let mut a = args(&[(
+            "createRequest",
+            json!(r#"{"objectType":"contacts","objects":[{"properties":{}}]}"#),
+        )]);
+        coerce_args(&s, &mut a);
+        assert_eq!(
+            a.get("createRequest"),
+            Some(&json!({"objectType": "contacts", "objects": [{"properties": {}}]}))
+        );
+    }
+
+    #[test]
+    fn coerce_malformed_json_for_object_param_is_left_alone() {
+        // Not our failure to report: the upstream is the layer that knows what
+        // it accepts, and a 400 here would be a guess.
+        let s = schema(&[("createRequest", p("object", false))]);
+        let mut a = args(&[("createRequest", json!("{not json"))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("createRequest"), Some(&json!("{not json")));
+    }
+
+    #[test]
+    fn coerce_does_not_parse_a_string_that_merely_contains_json() {
+        // Only the *opener* qualifies a string. A recipient list, an id, or a
+        // free-text value that happens to mention a brace is untouched — which
+        // is also why `"12"` never becomes a number on an `object` param.
+        let s = schema(&[("to", p("array", false)), ("blob", p("object", false))]);
+        let mut a = args(&[
+            ("to", json!("a@b.com, c@d.com")),
+            ("blob", json!("see {\"a\":1} below")),
+        ]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("to"), Some(&json!(["a@b.com", "c@d.com"])));
+        assert_eq!(a.get("blob"), Some(&json!("see {\"a\":1} below")));
     }
 
     #[test]
