@@ -757,6 +757,85 @@ fn additional_properties_on_a_paramless_action_warns() {
     );
 }
 
+/// The exception that makes the warning safe to act on. A paramless POST with
+/// no declared `requestBody` is the transcribed-from-nothing case, and the
+/// flag is the *only* reason `resolve` builds a body for it — telling the
+/// author it does nothing would have them delete it and silently stop sending
+/// the payload.
+#[test]
+fn additional_properties_on_a_paramless_body_carrying_action_is_silent() {
+    for method in ["POST", "PUT", "PATCH"] {
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.method = method.into();
+        a.params.clear();
+        a.request_body = None;
+        a.additional_properties = true;
+        let r = run(&d);
+        assert!(
+            !r.warnings
+                .iter()
+                .any(|w| w.code == "noop_additional_properties"),
+            "{method} synthesises a body from undeclared args: {:?}",
+            r.warnings
+        );
+    }
+}
+
+/// With a declared JSON body the payload is built whether or not the action is
+/// relaxed, so on a paramless action the flag really does decide nothing.
+#[test]
+fn additional_properties_on_a_paramless_action_with_a_json_body_warns() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.method = "POST".into();
+    a.params.clear();
+    a.additional_properties = true;
+    a.request_body = Some(crate::types::RequestBodySpec {
+        content_type: "application/json".into(),
+        required: true,
+    });
+    let r = run(&d);
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.code == "noop_additional_properties"),
+        "{:?}",
+        r.warnings
+    );
+}
+
+/// One mistake, one diagnostic. The non-JSON case is already an error, and a
+/// warning beside it would tell the author to drop the key while the error
+/// tells them they may also fix the media type.
+#[test]
+fn the_non_json_error_does_not_also_warn() {
+    let mut d = minimal_valid();
+    let a = d.actions.get_mut("list").unwrap();
+    a.method = "POST".into();
+    a.params.clear();
+    a.additional_properties = true;
+    a.request_body = Some(crate::types::RequestBodySpec {
+        content_type: "application/x-www-form-urlencoded".into(),
+        required: true,
+    });
+    let r = run(&d);
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.code == "additional_properties_needs_a_json_body"),
+        "{:?}",
+        r.errors
+    );
+    assert!(
+        !r.warnings
+            .iter()
+            .any(|w| w.code == "noop_additional_properties"),
+        "two diagnostics, contradictory advice: {:?}",
+        r.warnings
+    );
+}
+
 #[test]
 fn additional_properties_on_an_action_with_params_is_silent() {
     let mut d = minimal_valid();

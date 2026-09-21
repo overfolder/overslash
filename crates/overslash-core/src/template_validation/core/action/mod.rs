@@ -115,33 +115,25 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
         );
     }
 
-    // `x-overslash-additional-properties` on an action that declares no params
-    // decides nothing: `validate_args` short-circuits on an empty schema and
-    // already accepts anything. A warning rather than an error, matching the
-    // extension lint's treatment of an inert key — the template is not wrong,
-    // it just believes it asked for something.
-    //
-    // Deliberately not conditioned on how the flag was set. An action that
-    // inherits `true` from `info` and happens to declare no params is the
-    // commonest way to land here, and it is worth one line of output: either
-    // the params are missing or the action does not need the key.
-    if action.additional_properties && action.params.is_empty() {
-        issues.warn(
-            "noop_additional_properties",
-            "additional-properties has no effect on an action that declares no params \
-             — argument validation is already a no-op without a schema to compare \
-             against",
-            format!("{action_path}.additional-properties"),
-        );
-    }
-
     // `additional-properties` promises that an argument the template does not
-    // declare still reaches the upstream. On a body-carrying method the
-    // gateway can only serialise a JSON body (`RequestBodySpec::is_json` —
-    // "bodies only serialised for JSON media types today"), so an action that
-    // declares a non-JSON `requestBody` would accept the argument at the gate
-    // and then drop it on the floor: the caller is told yes and gets nothing,
-    // which is strictly worse than the 400 the promise replaced.
+    // declare still reaches the upstream. Two checks hang off that promise,
+    // and both need to know whether this action can carry a body at all: a
+    // relaxed `GET` routes its undeclared arguments to the query string,
+    // where nothing is lost and nothing is synthesised.
+    let body_carrying = !matches!(action.method.as_str(), "GET" | "HEAD" | "");
+    let non_json_body = action.request_body.as_ref().is_some_and(|rb| !rb.is_json());
+    // The routing case that makes the flag load-bearing rather than
+    // decorative: with no declared `requestBody`, `resolve` builds a JSON body
+    // *only* because the action is relaxed, and only out of the undeclared
+    // arguments. Turn the flag off and the body disappears.
+    let synthesises_body = body_carrying && action.request_body.is_none();
+
+    // On a body-carrying method the gateway can only serialise a JSON body
+    // (`RequestBodySpec::is_json` — "bodies only serialised for JSON media
+    // types today"), so an action that declares a non-JSON `requestBody`
+    // would accept the argument at the gate and then drop it on the floor:
+    // the caller is told yes and gets nothing, which is strictly worse than
+    // the 400 the promise replaced.
     //
     // An error rather than a warning, for `unknown_pagination_param`'s reason
     // — this is a promise the gateway believes it kept and never did. The two
@@ -150,14 +142,7 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
     // urlencoded` would be the third, and it is worse than either, since a
     // form endpoint reading a JSON payload fails in a way nobody can debug
     // from the call site.
-    //
-    // Only on a body-carrying method: a relaxed `GET` routes its undeclared
-    // arguments to the query string, where nothing is lost.
-    let body_carrying = !matches!(action.method.as_str(), "GET" | "HEAD" | "");
-    if action.additional_properties
-        && body_carrying
-        && action.request_body.as_ref().is_some_and(|rb| !rb.is_json())
-    {
+    if action.additional_properties && body_carrying && non_json_body {
         issues.err(
             "additional_properties_needs_a_json_body",
             format!(
@@ -172,6 +157,38 @@ pub(super) fn check_action(key: &str, action: &ServiceAction, issues: &mut Issue
                     .map(|rb| rb.content_type.as_str())
                     .unwrap_or(""),
             ),
+            format!("{action_path}.additional-properties"),
+        );
+    }
+
+    // `additional-properties` on an action that declares no params decides
+    // nothing *for validation*: `validate_args` short-circuits on an empty
+    // schema and already accepts anything.
+    //
+    // But it is not inert everywhere, which is why this is not simply
+    // `params.is_empty()`. On a body-carrying method with no declared
+    // `requestBody`, the flag is the only reason `resolve` builds a body at
+    // all — an action with zero declared params is precisely the transcribed-
+    // from-nothing case, and telling its author the key does nothing would
+    // have them delete it and silently stop sending the payload. `synthesises_
+    // body` is that exception. The non-JSON case is excluded too: it is
+    // already an error above, and one mistake should not produce two
+    // diagnostics pointing at the same line with contradictory advice.
+    //
+    // Deliberately not conditioned on how the flag was set. An action that
+    // inherits `true` from `info` and happens to declare no params is the
+    // commonest way to land here, and it is worth one line of output: either
+    // the params are missing or the action does not need the key.
+    if action.additional_properties
+        && action.params.is_empty()
+        && !synthesises_body
+        && !non_json_body
+    {
+        issues.warn(
+            "noop_additional_properties",
+            "additional-properties has no effect on this action: it declares no params, \
+             so argument validation is already a no-op, and the method carries no \
+             synthesised body for undeclared arguments to land in",
             format!("{action_path}.additional-properties"),
         );
     }
