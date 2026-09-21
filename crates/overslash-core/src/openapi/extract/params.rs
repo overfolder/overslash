@@ -10,7 +10,7 @@ use crate::types::{
 };
 
 use super::super::ext::{self, Ext, Pos};
-use super::shape::lower_shape;
+use super::shape::{lower_content_media_type, lower_shape};
 use super::{parse_aliases, parse_instance_config, parse_sql_policy};
 
 // ── parameters → HashMap<String, ActionParam> ────────────────────────
@@ -40,6 +40,7 @@ pub(super) fn collect_parameters(
             param_type,
             enum_values,
             default,
+            content_media_type,
             shape,
         } = schema_fields(schema);
 
@@ -71,6 +72,7 @@ pub(super) fn collect_parameters(
                 instance_config,
                 sql_field,
                 sql_database,
+                content_media_type,
                 shape,
             },
         );
@@ -142,6 +144,7 @@ pub(super) fn collect_body_parameters(
             param_type,
             enum_values,
             default,
+            content_media_type,
             shape,
         } = schema_fields(pobj);
         let description = pobj
@@ -170,6 +173,7 @@ pub(super) fn collect_body_parameters(
                 instance_config,
                 sql_field,
                 sql_database,
+                content_media_type,
                 shape,
             },
         );
@@ -187,6 +191,7 @@ pub(super) struct SchemaFields {
     pub(super) param_type: String,
     pub(super) enum_values: Option<Vec<String>>,
     pub(super) default: Option<Value>,
+    pub(super) content_media_type: Option<String>,
     pub(super) shape: Option<Box<ParamShape>>,
 }
 
@@ -209,6 +214,7 @@ fn schema_fields(schema: Option<&Map<String, Value>>) -> SchemaFields {
                 .collect()
         }),
         default: s.get("default").cloned(),
+        content_media_type: lower_content_media_type(schema),
         shape: lower_shape(schema, 0).map(Box::new),
     }
 }

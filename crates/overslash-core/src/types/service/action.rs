@@ -648,8 +648,22 @@ pub struct ActionParam {
     /// [`sql_field`](Self::sql_field) param.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sql_database: Option<String>,
+    /// `contentMediaType` on a `string` param: the wire value is a
+    /// *serialized* document of this type, not the document itself.
+    ///
+    /// Only `application/json` is honoured. A caller may then pass structure
+    /// and have it encoded once, and [`shape`](Self::shape) carries the
+    /// schema's `contentSchema` so the encoded document can be checked. What
+    /// this never does is re-encode a string the caller supplied: `serde_json`
+    /// re-sorts object keys on a parse/serialize round trip, so a round trip
+    /// through the gateway would hand the upstream — and the approval record —
+    /// different bytes than the caller sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_media_type: Option<String>,
     /// The inner structure of an `object`/`array` param, lowered from the
-    /// schema's own `properties`/`items`.
+    /// schema's own `properties`/`items` — or, on a
+    /// [`content_media_type`](Self::content_media_type) string, from its
+    /// `contentSchema`.
     ///
     /// `None` means the template authored no sub-schema — the state every
     /// parameter was in before this field existed, and still the honest answer
@@ -680,8 +694,21 @@ impl Default for ActionParam {
             instance_config: false,
             sql_field: None,
             sql_database: None,
+            content_media_type: None,
             shape: None,
         }
+    }
+}
+
+impl ActionParam {
+    /// Does this param carry a serialized JSON document as its wire value?
+    ///
+    /// The one question every JSON-string behaviour keys off, asked at the
+    /// point of use rather than precomputed: a parse only ever happens because
+    /// a reader asked for one, so a field nothing reads inside is never parsed
+    /// and its bytes are never at risk of being rewritten.
+    pub fn is_json_string(&self) -> bool {
+        self.content_media_type.as_deref() == Some("application/json")
     }
 }
 

@@ -643,6 +643,33 @@ fn check_param(
         );
     }
 
+    // `contentMediaType` says the wire value is a *serialized* document, which
+    // only means anything on a string — on an object param the gateway would
+    // have to both encode and not encode the same value.
+    if param.content_media_type.is_some() && param.param_type != "string" {
+        issues.err(
+            "content_media_type_on_non_string",
+            format!(
+                "`contentMediaType` describes what a string spells, so it is only \
+                 read on a `string` param; this one is {:?}",
+                param.param_type
+            ),
+            format!("{base}.contentMediaType"),
+        );
+    }
+    // A `contentSchema` with no `contentMediaType` is a schema for a document
+    // nothing will ever parse — silently inert, which is the failure mode the
+    // extension vocabulary exists to avoid.
+    if param.param_type == "string" && param.content_media_type.is_none() && param.shape.is_some() {
+        issues.err(
+            "content_schema_without_media_type",
+            "`contentSchema` on a string is only read when `contentMediaType: \
+             application/json` says the string carries one"
+                .to_string(),
+            format!("{base}.contentSchema"),
+        );
+    }
+
     if let Some(ref values) = param.enum_values {
         if values.is_empty() {
             issues.err(

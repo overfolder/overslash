@@ -28,6 +28,14 @@ pub(super) fn p_default(t: &str, required: bool, default: Value) -> ActionParam 
     }
 }
 
+/// A param whose wire value is a serialized JSON document.
+pub(super) fn p_json(t: &str) -> ActionParam {
+    ActionParam {
+        content_media_type: Some("application/json".into()),
+        ..p(t, false)
+    }
+}
+
 pub(super) fn p_enum(members: &[&str], required: bool) -> ActionParam {
     ActionParam {
         enum_values: Some(members.iter().map(|s| s.to_string()).collect()),

@@ -322,7 +322,9 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     sql_field,
                     sql_database,
                     // A platform action's params are declared as a flat
-                    // `{name: type}` map, so there is no sub-schema to lower.
+                    // `{name: type}` map, so there is no schema to read either
+                    // a media type or a sub-shape from.
+                    content_media_type: None,
                     shape: None,
                 },
             ))

@@ -149,14 +149,48 @@ pub fn validate_args(
     // after the flat passes so the errors an agent reads are ordered
     // outside-in: a missing top-level `createRequest` is reported before
     // anything about what should have been inside it.
+    //
+    // A JSON-carrying *string* param is parsed here and nowhere else, and only
+    // into a read-only view: the argument itself keeps the caller's exact
+    // bytes, because a parse/serialize round trip would re-sort its keys. A
+    // param that declares no `contentSchema` is not parsed at all — nobody
+    // asked to look inside, so a blob we would consider malformed stays the
+    // upstream's business.
     for (name, p) in params {
-        let (Some(shape), Some(v)) = (p.shape.as_deref(), args.get(name)) else {
+        let Some(v) = args.get(name).filter(|v| !v.is_null()) else {
             continue;
         };
-        if v.is_null() {
+        if p.is_json_string() {
+            let Some(text) = v.as_str() else { continue };
+            let Some(shape) = p.shape.as_deref() else {
+                // Still worth saying it is not JSON: `coerce_args` would have
+                // encoded structure, so a string here is the caller's own and
+                // the upstream is about to be handed something it declared it
+                // would not accept.
+                if serde_json::from_str::<Value>(text).is_err() {
+                    errors.push(ArgError::NotJson {
+                        field: name.clone(),
+                    });
+                }
+                continue;
+            };
+            match serde_json::from_str::<Value>(text) {
+                Ok(parsed) => nested::validate_nested(
+                    shape,
+                    &parsed,
+                    additional_properties,
+                    name,
+                    &mut errors,
+                ),
+                Err(_) => errors.push(ArgError::NotJson {
+                    field: name.clone(),
+                }),
+            }
             continue;
         }
-        nested::validate_nested(shape, v, additional_properties, name, &mut errors);
+        if let Some(shape) = p.shape.as_deref() {
+            nested::validate_nested(shape, v, additional_properties, name, &mut errors);
+        }
     }
 
     if errors.is_empty() {
@@ -174,7 +208,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    use super::test_helpers::{args, p, p_enum, schema};
+    use crate::types::{NestedParam, ParamShape};
+
+    use super::test_helpers::{args, p, p_enum, p_json, schema};
 
     #[test]
     fn ok_when_all_required_present_and_no_unknowns() {
@@ -294,7 +330,8 @@ mod tests {
             .map(|e| match e {
                 ArgError::Missing { field }
                 | ArgError::Unknown { field, .. }
-                | ArgError::NotInEnum { field, .. } => field.as_str(),
+                | ArgError::NotInEnum { field, .. }
+                | ArgError::NotJson { field } => field.as_str(),
             })
             .collect();
         assert_eq!(fields, vec!["a", "b", "y", "z"]);
@@ -377,9 +414,92 @@ mod tests {
                 ArgError::Missing { .. } => "missing",
                 ArgError::Unknown { .. } => "unknown",
                 ArgError::NotInEnum { .. } => "enum",
+                ArgError::NotJson { .. } => "not_json",
             })
             .collect();
         assert_eq!(tags, vec!["missing", "unknown", "enum"]);
+    }
+
+    // --- JSON-carrying string params ---------------------------------------
+
+    fn p_json_shaped() -> ActionParam {
+        ActionParam {
+            shape: Some(Box::new(ParamShape::Object {
+                properties: std::collections::BTreeMap::from([(
+                    "peer".to_string(),
+                    NestedParam {
+                        param_type: "string".into(),
+                        required: true,
+                        ..Default::default()
+                    },
+                )]),
+                additional_properties: false,
+            })),
+            ..p_json("string")
+        }
+    }
+
+    #[test]
+    fn a_json_string_is_validated_against_its_content_schema() {
+        let s = schema(&[("params_json", p_json_shaped())]);
+        let ok = args(&[("params_json", json!(r#"{"peer":"me"}"#))]);
+        assert!(validate_args(&s, &ok, false).is_ok());
+
+        let bad = args(&[("params_json", json!(r#"{"user":"me"}"#))]);
+        let err = validate_args(&s, &bad, false).unwrap_err();
+        assert!(
+            err.contains(&ArgError::Missing {
+                field: "params_json.peer".into()
+            }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_json_string_keeps_its_bytes_through_validation() {
+        // Validation parses into a read-only view. The argument itself must be
+        // untouched — the whole point of not re-encoding in `coerce_args`
+        // would be lost if this path wrote the parse back.
+        let raw = r#"{"z":1,"peer":"me"}"#;
+        let s = schema(&[("params_json", p_json_shaped())]);
+        let mut a = args(&[("params_json", json!(raw))]);
+        // `additional_properties` so the undeclared `z` is not the thing under
+        // test here.
+        let _ = validate_args(&s, &a, true);
+        assert_eq!(a.remove("params_json"), Some(json!(raw)));
+    }
+
+    #[test]
+    fn a_string_that_is_not_json_is_reported() {
+        let s = schema(&[("params_json", p_json_shaped())]);
+        let a = args(&[("params_json", json!("not json"))]);
+        assert_eq!(
+            validate_args(&s, &a, false).unwrap_err(),
+            vec![ArgError::NotJson {
+                field: "params_json".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn not_json_bites_even_when_the_action_is_relaxed() {
+        // The relaxation exists because a transcribed *enum* goes stale. "Is
+        // this string JSON" cannot.
+        let s = schema(&[("params_json", p_json("string"))]);
+        let a = args(&[("params_json", json!("{ not json"))]);
+        assert_eq!(
+            validate_args(&s, &a, true).unwrap_err(),
+            vec![ArgError::NotJson {
+                field: "params_json".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_json_string_with_no_content_schema_is_only_checked_for_being_json() {
+        let s = schema(&[("params_json", p_json("string"))]);
+        let a = args(&[("params_json", json!(r#"{"anything":[1,2,3]}"#))]);
+        assert!(validate_args(&s, &a, false).is_ok());
     }
 
     // --- `additional_properties: true` -------------------------------------

@@ -20,6 +20,17 @@ use serde_json::{Map, Value};
 
 use crate::types::{MAX_PARAM_SCHEMA_DEPTH, NestedParam, ParamShape};
 
+/// Read `contentMediaType` off a parameter's schema.
+///
+/// Only `application/json` is carried. Anything else is left as `None` rather
+/// than stored-and-ignored: a value nothing reads is a second source of truth,
+/// and template validation reports the unsupported type rather than letting it
+/// look supported.
+pub(super) fn lower_content_media_type(schema: Option<&Map<String, Value>>) -> Option<String> {
+    let v = schema?.get("contentMediaType")?.as_str()?;
+    (v == "application/json").then(|| v.to_string())
+}
+
 /// Lower a schema object's `properties`/`items` into a [`ParamShape`].
 ///
 /// Returns `None` when the schema declares no inner structure this can carry:
@@ -32,6 +43,12 @@ pub(super) fn lower_shape(schema: Option<&Map<String, Value>>, depth: usize) -> 
     let s = schema?;
     if depth >= MAX_PARAM_SCHEMA_DEPTH {
         return None;
+    }
+    // A string carrying a serialized document describes its contents with
+    // `contentSchema`, so that is the sub-tree to lower. The param stays a
+    // string on the wire — this only says what the string spells.
+    if let Some(content) = s.get("contentSchema").and_then(Value::as_object) {
+        return lower_shape(Some(content), depth);
     }
     // A `$ref` is not resolved anywhere in the loader, so descending into a
     // schema that only names one would invent a shape the document does not

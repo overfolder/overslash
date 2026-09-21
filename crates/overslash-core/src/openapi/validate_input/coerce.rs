@@ -137,6 +137,11 @@ pub fn coerce_args(params: &HashMap<String, ActionParam>, args: &mut HashMap<Str
         if let Some(canon) = coerce_enum(p.enum_values.as_deref(), &v) {
             v = canon;
         }
+        if p.is_json_string()
+            && let Some(encoded) = encode_json_string(&v)
+        {
+            v = encoded;
+        }
         if v != original {
             args.insert(name.clone(), v);
         }
@@ -213,6 +218,28 @@ fn coerce_scalar(param_type: &str, v: &Value) -> Option<Value> {
     }
 }
 
+/// Serialize structure the caller passed to a `contentMediaType:
+/// application/json` string param.
+///
+/// Returns `None` for a value that is already a string — and that is the whole
+/// point. `serde_json` is on default features, so its object type is a
+/// `BTreeMap` and any parse/serialize round trip re-sorts every key (and
+/// renormalizes numbers, whitespace and escapes). A gateway that round-tripped
+/// a caller's string would hand the upstream, the approval record and the
+/// replay different bytes than the caller sent, for no gain. So a string is
+/// never re-encoded; only structure is encoded, exactly once.
+///
+/// Doing it here rather than at body assembly is what makes that claim hold
+/// through an approval: `replay_payload::build` stores the post-coercion
+/// arguments, so what a human approved and what is later replayed are the same
+/// bytes.
+fn encode_json_string(v: &Value) -> Option<Value> {
+    if !matches!(v, Value::Object(_) | Value::Array(_)) {
+        return None;
+    }
+    serde_json::to_string(v).ok().map(Value::String)
+}
+
 /// Parse a string that is syntactically a JSON **object or array** literal.
 ///
 /// Keyed on the first non-whitespace byte rather than on "does `serde_json`
@@ -255,7 +282,7 @@ mod tests {
     use serde_json::json;
 
     use crate::openapi::validate_input::test_helpers::{
-        args, p, p_alias, p_default, p_enum, schema,
+        args, p, p_alias, p_default, p_enum, p_json, schema,
     };
     use crate::openapi::validate_input::{ArgError, validate_args};
 
@@ -460,6 +487,44 @@ mod tests {
         coerce_args(&s, &mut a);
         assert_eq!(a.get("to"), Some(&json!(["a@b.com", "c@d.com"])));
         assert_eq!(a.get("blob"), Some(&json!("see {\"a\":1} below")));
+    }
+
+    #[test]
+    fn a_json_string_param_encodes_structure_once() {
+        // An agent that can see the `contentSchema` will reach for the object.
+        // The gateway serializes it here, above validation, key derivation,
+        // the approval and the replay — so every one of them sees the same
+        // bytes the upstream will.
+        let s = schema(&[("params_json", p_json("string"))]);
+        let mut a = args(&[("params_json", json!({ "peer": "me", "limit": 10 }))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(
+            a.get("params_json"),
+            Some(&json!(r#"{"limit":10,"peer":"me"}"#))
+        );
+    }
+
+    #[test]
+    fn a_json_string_param_never_re_encodes_a_string_it_was_given() {
+        // `serde_json` re-sorts object keys on a round trip, so re-encoding
+        // would hand the upstream and the approval record different bytes than
+        // the caller sent — for nothing. `z` before `a` is the tell.
+        let raw = r#"{"z":1,"a":2}"#;
+        let s = schema(&[("params_json", p_json("string"))]);
+        let mut a = args(&[("params_json", json!(raw))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("params_json"), Some(&json!(raw)));
+    }
+
+    #[test]
+    fn a_json_string_param_leaves_a_scalar_alone() {
+        // Nothing to encode, and `validate_args` is where "that is not JSON"
+        // gets said.
+        let s = schema(&[("params_json", p_json("string"))]);
+        let mut a = args(&[("params_json", json!(42))]);
+        coerce_args(&s, &mut a);
+        // The ordinary string coercion still applies.
+        assert_eq!(a.get("params_json"), Some(&json!("42")));
     }
 
     #[test]
