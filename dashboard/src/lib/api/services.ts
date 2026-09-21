@@ -20,6 +20,7 @@ import type {
 	ServiceGroupRef,
 	ServiceInstanceDetail,
 	ServiceInstanceSummary,
+	ServiceActivateResponse,
 	ServiceStatus,
 	ServiceTestResponse,
 	AdminTemplateSummary,
@@ -272,6 +273,19 @@ export async function runProbe(
 				signal: opts.signal
 			});
 			if (!r.ok) {
+				// A 403 is not a rejected credential. The probe is gated on
+				// owning the instance (or org admin), and the person finishing
+				// a setup link is frequently neither — so reporting `failed`
+				// here renders a red "the upstream refused your key" over a
+				// key nothing has tried. `denied` is the existing amber
+				// verdict for "the upstream was never asked", and
+				// `probeRejected` already excludes it.
+				if (r.status === 403) {
+					return {
+						status: 'denied',
+						error: "Only the service's owner can check this credential."
+					};
+				}
 				return {
 					status: 'failed',
 					error:
@@ -295,6 +309,79 @@ export async function runProbe(
 			// with no detail renders as a bare "Test failed".
 			error:
 				(e instanceof ApiError ? apiErrorReason(e) : undefined) ?? 'Could not run the test'
+		};
+	}
+}
+
+/**
+ * Run the probe and, if it passes, make the instance callable.
+ *
+ * The promoting half of `testService`, and a separate endpoint on purpose:
+ * `/test` is a diagnostic the service detail page runs against already-live
+ * instances, and it admits an org admin to instances they do not own — so
+ * promote-on-green there would let an admin silently publish other people's
+ * unverified drafts.
+ *
+ * `force` is "Activate anyway": it runs no probe at all, so the response
+ * carries no verdict. Read `status`, never the verdict, to decide whether the
+ * service is live.
+ *
+ * Always the instance UUID, never the name — a gated instance does not resolve
+ * by name, which is the whole point of the status.
+ */
+export const activateService = (id: string, opts: { force?: boolean } = {}) =>
+	session.post<ServiceActivateResponse>(
+		`/v1/services/${encodeURIComponent(id)}/activate${opts.force ? '?force=true' : ''}`
+	);
+
+/**
+ * `activateService`, but a failure to *reach* the endpoint comes back as a
+ * red verdict rather than a throw — the `runProbe` treatment, for the same
+ * reason and for the same two session-less pages.
+ */
+export async function runActivate(
+	id: string,
+	opts: { force?: boolean; bounceOnExpiry?: boolean } = {}
+): Promise<ServiceActivateResponse> {
+	if (opts.bounceOnExpiry === false) {
+		try {
+			const r = await fetch(
+				`/v1/services/${encodeURIComponent(id)}/activate${opts.force ? '?force=true' : ''}`,
+				{ method: 'POST', credentials: 'same-origin' }
+			);
+			if (!r.ok) {
+				// Same three-way split as `runProbe`: a 403 means this visitor
+				// may not activate, which says nothing about the credential.
+				const verdict: ServiceTestResponse =
+					r.status === 403
+						? { status: 'denied', error: "Only the service's owner can activate it." }
+						: {
+								status: 'failed',
+								error:
+									r.status === 401
+										? 'Your session expired. Sign in again to finish setup.'
+										: `Could not finish setup (${r.status})`
+							};
+				return { status: 'pending_setup', verdict };
+			}
+			return (await r.json()) as ServiceActivateResponse;
+		} catch {
+			return {
+				status: 'pending_setup',
+				verdict: { status: 'failed', error: 'Could not finish setup' }
+			};
+		}
+	}
+	try {
+		return await activateService(id, opts);
+	} catch (e) {
+		return {
+			status: 'pending_setup',
+			verdict: {
+				status: 'failed',
+				error:
+					(e instanceof ApiError ? apiErrorReason(e) : undefined) ?? 'Could not finish setup'
+			}
 		};
 	}
 }

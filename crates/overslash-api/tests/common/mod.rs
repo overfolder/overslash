@@ -1407,6 +1407,40 @@ pub fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
 }
 
+/// The test config's hex signing key, as bytes — what the API decodes at
+/// startup. Kept beside [`session_cookie`] because the two are only useful
+/// together.
+pub fn signing_key_bytes() -> Vec<u8> {
+    hex::decode("cd".repeat(32)).expect("test signing key is hex")
+}
+
+/// A `Cookie:` header carrying a valid `oss_session` for `(org, identity)`.
+///
+/// Forged rather than obtained through a login flow, because the endpoints
+/// that read it treat the session purely as an identity attestation layered on
+/// top of some other capability — a signed URL, an API key — and standing up a
+/// real login to prove "somebody was signed in" would test the login instead.
+///
+/// Needed by the public provide/setup endpoints since a setup request is
+/// always minted `require_user_session = true`: an anonymous fulfilment cannot
+/// run the probe that fulfilment exists to trigger.
+pub fn session_cookie(org_id: Uuid, identity_id: Uuid) -> String {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let claims = overslash_api::services::jwt::Claims {
+        sub: identity_id,
+        org: org_id,
+        email: "fixture@test.local".into(),
+        aud: overslash_api::services::jwt::AUD_SESSION.into(),
+        iat: now,
+        exp: now + 3600,
+        user_id: Some(identity_id),
+        mcp_client_id: None,
+    };
+    let token = overslash_api::services::jwt::mint(&signing_key_bytes(), &claims)
+        .expect("mint test session");
+    format!("oss_session={token}")
+}
+
 /// Test helper: the org's Everyone group id. Every user identity in the org is
 /// a member of it (see `bootstrap_org`), which makes it the obvious group to
 /// satisfy the create-time grant requirement on an org-level service.

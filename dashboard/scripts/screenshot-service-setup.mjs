@@ -32,8 +32,8 @@ async function seedSetupLink(name) {
 try {
 	// ── 1. The page a human opens ───────────────────────────────────────
 	//
-	// Signed in, so the Test button is on offer — the anonymous case renders
-	// the same card with a sign-in line in its place.
+	// Signed in, which is now the only way to submit at all: a setup link is
+	// always minted session-required. The anonymous case is section 2b.
 	const pending = await seedSetupLink(`resend-setup-${Date.now()}`);
 	const { page, ctx } = await snap.navigateAndSnap('service-setup-page', pending.path, {
 		viewport: { width: 1100, height: 900 },
@@ -51,7 +51,7 @@ try {
 	// comes back rejected — which is the failure state this feature exists to
 	// surface at setup time instead of on the agent's first real call.
 	await page.locator('input[type="password"]').fill('re_not_a_real_key');
-	await page.getByRole('button', { name: 'Connect' }).click();
+	await page.getByRole('button', { name: 'Save and check' }).click();
 	await page.locator('.verdict').waitFor({ timeout: 30_000 });
 	// Wait out the probe rather than catching it mid-flight.
 	await page.locator('.verdict.pending').waitFor({ state: 'detached', timeout: 30_000 });
@@ -61,11 +61,37 @@ try {
 	console.log('[scenarios] wrote screenshots/service-setup-verdict-failed.png');
 	await ctx.close();
 
+	// ── 2b. The same link, opened without a session ─────────────────────
+	//
+	// A setup link is always minted session-required, because fulfilling one
+	// runs the credential probe and the probe runs as somebody. The point of
+	// the shot is *where* it says so: above the preamble, before the value
+	// field, rather than after a rejected submit.
+	//
+	// A link of its own: the one above was spent by the submit in section 2,
+	// and a spent link renders "Already set up" rather than the gate.
+	const anon = await seedSetupLink(`resend-anon-${Date.now()}`);
+	const { page: aPage, ctx: aCtx } = await snap.page({
+		viewport: { width: 900, height: 900 }
+	});
+	// `snap.page()` attaches the session to every context it makes. Drop it:
+	// the whole point of the shot is the page a link recipient sees before
+	// signing in.
+	await aCtx.clearCookies();
+	await aPage.goto(`${session.dashboardUrl}${anon.path}`);
+	await aPage.getByRole('link', { name: 'Sign in to continue' }).waitFor({ timeout: 20_000 });
+	await aPage.locator('.card').first().screenshot({
+		path: 'screenshots/service-setup-signin-required.png'
+	});
+	console.log('[scenarios] wrote screenshots/service-setup-signin-required.png');
+	await aCtx.close();
+
 	// ── 3. The wizard's post-create step ────────────────────────────────
 	//
-	// The same verdict component, on the authenticated surface. Driven through
-	// the real form so the screenshot shows the step in its place rather than
-	// the component in isolation.
+	// The money shot: a service that was created but is *not live*, its red
+	// verdict, the 24h note, and the three ways out. Driven through the real
+	// form so the screenshot shows the step in its place rather than the
+	// component in isolation.
 	const { page: wPage, ctx: wCtx } = await snap.navigateAndSnap(
 		'service-setup-wizard-page',
 		'/services/new?template=resend',
@@ -81,7 +107,9 @@ try {
 	// 409s the create instead of advancing the wizard.
 	await wPage.getByRole('textbox').first().fill(`resend-wizard-${Date.now()}`);
 	await wPage.getByRole('button', { name: 'Create service' }).click();
-	await wPage.getByRole('heading', { name: 'Check it works' }).waitFor({ timeout: 30_000 });
+	await wPage
+		.getByRole('heading', { name: /^(Checking it works|Not live yet)$/ })
+		.waitFor({ timeout: 30_000 });
 	// The wizard does not auto-probe while a slot is unfilled — the answer
 	// would be a foregone "no usable credential yet" — so this is the step as
 	// it looks with a setup link still to forward.
@@ -90,6 +118,22 @@ try {
 		path: 'screenshots/service-setup-wizard-verify.png'
 	});
 	console.log('[scenarios] wrote screenshots/service-setup-wizard-verify.png');
+
+	// …and the same step after a red verdict, with the reopen panel open.
+	// This is what "the draft is reopenable" looks like: the verdict stays
+	// above the fields the user is editing against it.
+	await wPage.getByRole('button', { name: 'Check it works' }).click();
+	await wPage.locator('.verdict').waitFor({ timeout: 30_000 });
+	await wPage.locator('.verdict.pending').waitFor({ state: 'detached', timeout: 30_000 });
+	const reopen = wPage.getByRole('button', { name: 'Edit and retry' });
+	if (await reopen.isVisible().catch(() => false)) {
+		await reopen.click();
+		await wPage.locator('.reopen').waitFor({ timeout: 10_000 });
+		await wPage.locator('.form-card').first().screenshot({
+			path: 'screenshots/service-setup-wizard-reopen.png'
+		});
+		console.log('[scenarios] wrote screenshots/service-setup-wizard-reopen.png');
+	}
 	await wCtx.close();
 
 	// ── 4. The OAuth half, passing ──────────────────────────────────────
@@ -102,7 +146,7 @@ try {
 	const github = await connectGithubService(session, gPage, { suffix: 'probe' });
 	await gPage.goto(`${session.dashboardUrl}/services/${github.id}`);
 	await gPage.getByRole('button', { name: 'credentials' }).click();
-	await gPage.getByRole('button', { name: 'Test service' }).click();
+	await gPage.getByRole('button', { name: /^(Test service|Check and finish setup)$/ }).click();
 	await gPage.locator('.verdict').waitFor({ timeout: 30_000 });
 	await gPage.locator('.verdict.pending').waitFor({ state: 'detached', timeout: 30_000 });
 	await gPage.locator('.card').first().screenshot({

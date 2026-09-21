@@ -13,7 +13,6 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AuthContext, ClientIp, OrgAcl, ReqExt, WriteAcl},
-    routes::actions::probe,
     services::{
         group_ceiling,
         platform_caller::PlatformCallContext,
@@ -23,6 +22,10 @@ use crate::{
         },
     },
 };
+
+mod verify;
+
+use verify::{activate_service, test_service};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -37,6 +40,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/services/{id}/status", patch(update_service_status))
         .route("/v1/services/{id}/groups", get(list_service_groups))
         .route("/v1/services/{id}/test", post(test_service))
+        .route("/v1/services/{id}/activate", post(activate_service))
 }
 
 // -- Request types --
@@ -316,7 +320,7 @@ async fn create_service(
 /// never match the ancestry branch and still require Admin. Mirrors the
 /// template checks (templates.rs / platform_templates.rs) via the shared
 /// `caller_may_manage_owned` helper.
-async fn require_owner_or_admin(
+pub(super) async fn require_owner_or_admin(
     scope: &OrgScope,
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
     acl: &OrgAcl,
@@ -332,66 +336,6 @@ async fn require_owner_or_admin(
         return Ok(());
     }
     Err(AppError::Forbidden("admin access required".into()))
-}
-
-/// Run this instance's template-declared credential probe.
-///
-/// The endpoint exists so no caller has to know which action the probe is —
-/// the template says (`x-overslash-test`) and this resolves it. The call
-/// itself is ordinary: same permission chain, same approval gate. See
-/// [`crate::routes::actions::probe`] for why that is not a bypass in the
-/// case it was built for.
-///
-/// Gated by `require_owner_or_admin` rather than by execute access: pressing
-/// this is a management act on the instance ("are its credentials good?"),
-/// and the owner is who is being asked.
-// Eight extractors: the probe delegates to `call_action_impl`, which needs
-// the same six the `/v1/actions/call` handler does, plus this route's own
-// path id and the ACL the ownership check reads.
-#[allow(clippy::too_many_arguments)]
-async fn test_service(
-    State(state): State<AppState>,
-    ReqExt(ext): ReqExt,
-    auth: AuthContext,
-    WriteAcl(acl): WriteAcl,
-    scope: OrgScope,
-    ip: ClientIp,
-    transport: crate::extractors::CallerTransport,
-    Path(id): Path<Uuid>,
-) -> Result<Json<probe::ServiceTestResponse>> {
-    let instance = scope
-        .get_service_instance(id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
-    require_owner_or_admin(&scope, &instance, &acl).await?;
-
-    // Resolved as the instance's *owner*, not the caller. The user tier is
-    // keyed on that identity, so resolving as an admin probing someone else's
-    // instance would miss the user-tier template it is actually built from —
-    // and a caller who happens to own a same-key template of their own would
-    // shadow the instance's real one. Every other instance-view path passes
-    // `owner_identity_id` for the same reason.
-    let def = platform_services::resolve_template_definition(
-        state.db(&ext),
-        &state.registry,
-        acl.org_id,
-        instance.owner_identity_id,
-        &instance.template_key,
-    )
-    .await?;
-
-    let verdict = probe::run(
-        state.clone(),
-        ext,
-        auth,
-        scope,
-        ip,
-        transport,
-        &instance,
-        &def,
-    )
-    .await?;
-    Ok(Json(verdict))
 }
 
 async fn update_service(
@@ -433,6 +377,11 @@ async fn update_service_status(
     }
     require_owner_or_admin(&scope, &existing, &acl).await?;
 
+    // `pending_setup` is deliberately absent: it is a valid *source* status —
+    // park the instance as `draft`, or force it `active` — and never a valid
+    // target. That asymmetry is what lets the sweeper delete every row in that
+    // state on age alone, because every one of them was put there by a setup
+    // flow rather than by a person. See migration 119.
     if !["draft", "active", "archived"].contains(&req.status.as_str()) {
         return Err(AppError::BadRequest(format!(
             "invalid status '{}'; must be draft, active, or archived",
@@ -444,6 +393,32 @@ async fn update_service_status(
         .update_service_instance_status(id, &req.status)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+
+    // This endpoint has never written one, which was defensible while it only
+    // archived and restored. It is now also the blunt override for the setup
+    // gate — `pending_setup` → `active` with no probe — so a status change has
+    // to leave a trail naming who made it.
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "service.status_changed",
+            resource_type: Some("service_instance"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({
+                "from": existing.status,
+                "to": row.status,
+                // The one transition worth finding later: a service made live
+                // without a verdict. `service.activated` records the verified
+                // path; this records the one that went around it.
+                "bypassed_verification": existing.status == platform_services::PENDING_SETUP
+                    && row.status == "active",
+            }),
+            description: None,
+            ip_address: None,
+        })
+        .await;
+
     let tv = platform_services::template_view(
         state.db(&ext),
         &state.registry,

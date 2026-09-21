@@ -729,3 +729,42 @@ pub(crate) async fn delete(pool: &PgPool, org_id: Uuid, id: Uuid) -> Result<bool
     .await?;
     Ok(result.rows_affected() > 0)
 }
+
+/// Delete unverified setup drafts older than `max_age_secs`. Cross-org.
+///
+/// Every `pending_setup` row was created by a setup flow that nobody finished:
+/// the status is absent from the allow-list `PATCH /v1/services/{id}/status`
+/// and `update_service` validate against, so it is a valid *source* status and
+/// never a valid *target*. Nothing a user deliberately parked can land here —
+/// that is `draft`, and `draft` is deliberately untouched. Migration 119 has
+/// the full argument.
+///
+/// Keyed on `created_at`, not `updated_at`: `bind_credential_slot` bumps
+/// `updated_at`, so a human pasting a third wrong key would push the deadline
+/// out indefinitely and the sweep would never bound the table. A fixed window
+/// from creation is the honest contract, and `PATCH /status` → `draft` is the
+/// escape hatch for a setup that legitimately needs longer.
+///
+/// Cascades the instance's outstanding `secret_requests` (migration 118's FK)
+/// and its `group_grants`. It deliberately does **not** touch the vault secret
+/// a human may already have pasted: `mint_bundle` stores under the *template's*
+/// `default_secret_name`, so two instances of one template owned by one user
+/// share a name, and deleting it could pull the credential out from under a
+/// different, live service. D85 refuses to mint into that collision unforced,
+/// which narrows the window without closing it — a forced create shares the
+/// name deliberately, and rows predating D85 already do. `DELETE /v1/services/{name}` leaves secrets alone
+/// for the same reason.
+pub async fn purge_expired_setup_drafts(
+    pool: &PgPool,
+    max_age_secs: i64,
+) -> Result<u64, sqlx::Error> {
+    let r = sqlx::query!(
+        "DELETE FROM service_instances \
+         WHERE status = 'pending_setup' AND is_system = false \
+           AND created_at < now() - make_interval(secs => $1)",
+        max_age_secs as f64,
+    )
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}

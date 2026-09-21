@@ -445,6 +445,20 @@ export interface ServiceTestResponse {
   auth_url?: string;
 }
 
+/** The answer from `POST /v1/services/{id}/activate`.
+ *
+ * Every outcome is a `200`, including a red verdict: "your credential does not
+ * work" is the answer to the question, not a failure to answer it. Read
+ * `status` for whether the instance is live now — do not infer it from the
+ * verdict, because `force` promotes with no verdict at all and
+ * `not_supported` promotes with a verdict that never reached an upstream. */
+export interface ServiceActivateResponse {
+  /** The instance's status *after* the call. */
+  status: ServiceStatus;
+  /** Absent only when `force` skipped the probe. */
+  verdict?: ServiceTestResponse;
+}
+
 /** A value an org can set on a service instance — either a pinnable action
  * param (`x-overslash-instance-config`) or a credential template's non-secret
  * input (`components.x-overslash-config`). Both live in the instance's one
@@ -667,7 +681,14 @@ export interface ActionDetail {
 
 // -- Service instances --
 
-export type ServiceStatus = 'draft' | 'active' | 'archived';
+/**
+ * `pending_setup` is a service created by a setup flow whose credential has
+ * not been proven to work. Uncallable and invisible to search, like `draft` —
+ * but unlike `draft`, which is a state someone parks an instance in on
+ * purpose, it is swept after ~24h. Only the create path enters it and only
+ * activation leaves it, so it is never a valid target of `setServiceStatus`.
+ */
+export type ServiceStatus = 'draft' | 'active' | 'archived' | 'pending_setup';
 
 export interface ServiceGroupRef {
   grant_id: string;
@@ -806,6 +827,17 @@ export interface CreateServiceRequest {
   config?: Record<string, string>;
   url?: string;
   status?: ServiceStatus;
+  /**
+   * Gate the new instance behind its template's credential probe: it is
+   * created `pending_setup` and only becomes callable once
+   * `activateService` gets a green verdict.
+   *
+   * Omit to take the server's rule, which gates exactly when a setup link is
+   * minted. Send `true` when *you* will run the probe — the wizard does,
+   * including on the path where the credential was named rather than pasted
+   * and no link exists. A `400` comes back if the template declares no probe.
+   */
+  verify?: boolean;
   user_level?: boolean;
   /**
    * Group grants to attach at creation. Required (non-empty) when

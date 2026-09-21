@@ -41,11 +41,18 @@ export interface ProvideMetadata {
 	expires_at: string;
 	created_at: string;
 	/**
-	 * True iff the request was minted while the org had
-	 * `allow_unsigned_secret_provide = false`. When set, submission requires a
-	 * same-org session and the page must gate the input accordingly. Captured
-	 * at mint time, so flipping the org setting never retroactively breaks an
-	 * in-flight URL.
+	 * When set, submission requires a same-org session and the page must gate
+	 * the input accordingly.
+	 *
+	 * Two sources. For a bare secret request it is the org's
+	 * `allow_unsigned_secret_provide`, inverted. For a *setup* request it is
+	 * always true, whatever the org says: fulfilling one is what triggers the
+	 * instance's credential probe, the probe runs through the authenticated
+	 * call path, and an anonymous fulfilment would therefore leave the service
+	 * accepted-but-never-live with nobody told why.
+	 *
+	 * Captured at mint time either way, so flipping the org setting never
+	 * retroactively breaks an in-flight URL.
 	 */
 	require_user_session: boolean;
 	/**

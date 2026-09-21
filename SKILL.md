@@ -176,12 +176,31 @@ see [When the OAuth client itself is missing](#when-the-oauth-client-itself-is-m
 overslash_read {
   "service": "overslash",
   "action": "get_service",
-  "params": { "name": "google-calendar" }
+  "params": { "name": "google-calendar", "include_inactive": true }
 }
 ```
 
-Wait until `credentials_status == "ok"` (poll a few seconds — the OAuth
-callback flips it). The user has clicked through.
+Wait until `credentials_status == "ok"` **and** `status == "active"` (poll a few
+seconds). The two are different claims and you need both. `credentials_status`
+says a credential is *bound*; `status` says it has been *checked against the
+upstream and works*.
+
+A secret-backed instance is created `status: "pending_setup"` — not callable,
+and absent from `overslash_search` — until your user provides the credential
+and it checks out. That is why this step passes `include_inactive: true`:
+without it, an instance still being set up returns a 404 and looks like it was
+never created. Do not create a second one; the name is unique regardless of
+status.
+
+If the link **expired unused**, mint a fresh one with `request_secret` passing
+this instance's `service_id`. If it was **used** and the credential turned out
+to be wrong, that same call is refused with `secret_name_conflict`: the value is
+already stored under that name, so a second link would replace it. Replacing it
+is exactly what you want here, so pass `"force": true` — and read the `warning`
+that comes back, because the name may be shared with another instance of the
+same template.
+
+An unfinished setup is deleted automatically after about a day.
 
 **Step 5 — call the service.** Use `overslash_read` for `risk: read` actions
 (no confirmation prompt) and `overslash_call` for everything else; both go

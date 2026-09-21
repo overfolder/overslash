@@ -56,7 +56,14 @@ pub(super) struct SetupStep {
     note: Option<&'static str>,
 }
 
-pub(super) fn build_auth_status(def: &ServiceDefinition, connected: bool) -> AuthStatus {
+/// `awaiting_setup`: the caller already has an instance of this template
+/// sitting in `pending_setup`. Not callable, so `connected` stays false — but
+/// the chain to fix it is "finish the one you have", not "make another".
+pub(super) fn build_auth_status(
+    def: &ServiceDefinition,
+    connected: bool,
+    awaiting_setup: bool,
+) -> AuthStatus {
     // Pick the first declared auth method as the primary face the caller
     // sees. Templates that mix auth methods (rare) still surface here with
     // the preferred one first — exactly how the dashboard displays them.
@@ -65,13 +72,51 @@ pub(super) fn build_auth_status(def: &ServiceDefinition, connected: bool) -> Aut
         Some(ServiceAuth::Secret { .. }) => ("secret".into(), None),
         None => ("none".into(), None),
     };
-    let setup = (!connected).then(|| build_setup_steps(def));
+    let setup = (!connected).then(|| {
+        if awaiting_setup {
+            finish_setup_steps()
+        } else {
+            build_setup_steps(def)
+        }
+    });
     AuthStatus {
         kind,
         provider,
         connected,
         setup,
     }
+}
+
+/// The chain for a template the caller already has a `pending_setup` instance
+/// of.
+///
+/// Calling `create_service` again is the wrong move twice over: with the same
+/// name it is a `409` (the unique index does not know about lifecycle status),
+/// and with a different one it leaves a second orphan for the sweeper. The
+/// instance exists and its credential handshake may well be in someone's chat
+/// window already — what is missing is a green probe.
+///
+/// `get_service` rather than `list_services` because the caller needs one
+/// row's `status`, and `include_inactive` is the flag that makes an
+/// un-callable instance visible at all.
+fn finish_setup_steps() -> Vec<SetupStep> {
+    vec![SetupStep {
+        action: "get_service",
+        params: serde_json::Map::from_iter([(
+            "include_inactive".to_string(),
+            serde_json::Value::Bool(true),
+        )]),
+        note: Some(
+            "you already have an instance of this template awaiting setup — do not create \
+             another, it will collide on the name. Pass its `name`. While `status` is \
+             `pending_setup` its credential has not been proven to work: hand the setup URL \
+             to your user. If that link expired unused, mint a fresh one with \
+             `request_secret` passing the instance's `service_id`; if it was used and the \
+             credential was wrong, the same call is refused with `secret_name_conflict` \
+             because the value is already stored, so add `force: true` to replace it. It \
+             becomes callable, and visible to search, once the credential checks out",
+        ),
+    }]
 }
 
 /// The ordered calls that take an un-connected template to a callable
@@ -100,9 +145,13 @@ fn build_setup_steps(def: &ServiceDefinition) -> Vec<SetupStep> {
             // what keeps that from being a dead end.
             "pick any `name`; it becomes the `service` you call afterwards. \
              Hand the returned `setup.setup_url` to your user verbatim — they \
-             paste the credential there and you never see it. If the response \
-             carries no `setup`, mint one with `request_secret` passing the \
-             new `service_id`"
+             sign in, paste the credential there, and you never see it. If the \
+             response carries no `setup`, mint one with `request_secret` \
+             passing the new `service_id`. The instance comes back \
+             `status: pending_setup` and is not callable until the credential \
+             has been checked against the upstream, which happens when your \
+             user submits it; wait for the `service.activated` event, or poll \
+             `get_service` with `include_inactive` until `status` is `active`"
         }
         // No auth declared: nothing to provision, the instance is callable as
         // soon as it exists.
@@ -257,6 +306,48 @@ mod tests {
         let steps = build_setup_steps(&d);
 
         assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].action, "create_service");
+    }
+
+    /// A gated instance is invisible to search *by design* — it is not
+    /// callable — so the row the caller sees falls back to the catalog one.
+    /// Left alone, that row's chain says `create_service`, which collides on
+    /// the unique name index: the index knows nothing about lifecycle status.
+    /// The whole point of the third state is to not send an agent into a 409.
+    #[test]
+    fn a_template_awaiting_setup_says_finish_it_rather_than_create_another() {
+        let d = def(
+            vec![secret_auth("token", "acme_api_key", Vec::new())],
+            vec![slot("token", "acme_api_key", SecretSource::Instance)],
+        );
+        let status = build_auth_status(&d, false, true);
+
+        assert!(!status.connected, "not callable, so still not connected");
+        let steps = status.setup.expect("an un-connected row carries a chain");
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0].action, "get_service",
+            "never `create_service` — that is the 409"
+        );
+        assert_eq!(
+            steps[0].params.get("include_inactive"),
+            Some(&serde_json::Value::Bool(true)),
+            "without this the instance 404s and looks like it was never created"
+        );
+        let note = steps[0].note.expect("the note is the load-bearing half");
+        assert!(note.contains("do not create"), "{note}");
+        assert!(note.contains("pending_setup"), "{note}");
+    }
+
+    /// …and the same template with nothing outstanding keeps the ordinary
+    /// chain. The third state must not leak into the common case.
+    #[test]
+    fn a_template_with_no_gated_instance_keeps_the_create_chain() {
+        let d = def(
+            vec![secret_auth("token", "acme_api_key", Vec::new())],
+            vec![slot("token", "acme_api_key", SecretSource::Instance)],
+        );
+        let steps = build_auth_status(&d, false, false).setup.unwrap();
         assert_eq!(steps[0].action, "create_service");
     }
 }

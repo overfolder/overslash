@@ -102,7 +102,9 @@ struct CreateSecretRequestResponse {
 }
 
 const DEFAULT_TTL: u64 = 3600;
-const MAX_TTL: u64 = 86_400;
+/// Re-exported from `service_setup`, which owns it: the setup-draft sweeper's
+/// window is derived from this, so the two cannot be allowed to drift.
+const MAX_TTL: u64 = crate::services::service_setup::MAX_LINK_TTL_SECS as u64;
 
 async fn create_secret_request(
     State(state): State<AppState>,
@@ -491,6 +493,18 @@ struct SubmitServiceOutcome {
     /// the service is ready.
     #[serde(skip_serializing_if = "Option::is_none")]
     remaining_slots: Option<Vec<String>>,
+    /// The instance's lifecycle status *after* this submission.
+    ///
+    /// `remaining_slots: []` used to mean "callable". Since D-NEXT it means
+    /// "every credential is present", which is a different and earlier claim:
+    /// an instance created by a setup flow sits in `pending_setup` until its
+    /// probe comes back green, and this handler runs *before* the probe — the
+    /// page runs it, with the visitor's session. So the page and the waiting
+    /// agent both need this field to tell "saved" from "live".
+    ///
+    /// Absent when the bind failed, for the same reason `name` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
 }
 
 async fn submit_provide(
@@ -614,9 +628,13 @@ async fn submit_provide(
                 "requested_by": row.requested_by,
                 "provisioned_by_user_id": provisioned_by_user_id,
                 "user_signed": provisioned_by_user_id.is_some(),
-                // The agent that minted a setup link is blocked on exactly
-                // this: its service is now callable.
+                // The agent that minted a setup link is blocked on the moment
+                // its service becomes callable — which since D-NEXT is *not*
+                // this moment. The credential has landed; the probe has not
+                // run. `service_status` says which, and `service.activated`
+                // is the event that reports the other.
                 "service_id": service.as_ref().map(|s| s.id),
+                "service_status": service.as_ref().and_then(|s| s.status.clone()),
                 "service_name": service.as_ref().and_then(|s| s.name.as_deref()),
                 "credential_bound": service.as_ref().map(|s| s.bound),
                 "credential_key": service.as_ref().map(|s| s.credential_key.as_str()),
@@ -775,6 +793,7 @@ async fn bind_setup_slot(
                 bound: false,
                 credential_key: credential_key.to_string(),
                 remaining_slots: None,
+                status: None,
             }));
         }
     };
@@ -844,6 +863,7 @@ async fn bind_setup_slot(
         bound: true,
         credential_key: credential_key.to_string(),
         remaining_slots,
+        status: Some(instance.status),
     }))
 }
 
@@ -925,6 +945,7 @@ mod tests {
             bound: false,
             credential_key: "token".into(),
             remaining_slots: None,
+            status: None,
         };
         let v = serde_json::to_value(&outcome).unwrap();
         assert_eq!(v["bound"], false);
@@ -949,10 +970,15 @@ mod tests {
             bound: true,
             credential_key: "token".into(),
             remaining_slots: Some(Vec::new()),
+            status: Some("pending_setup".into()),
         };
         let v = serde_json::to_value(&outcome).unwrap();
         assert_eq!(v["bound"], true);
         assert_eq!(v["name"], "resend-work");
         assert_eq!(v["remaining_slots"], serde_json::json!([]));
+        // Every slot filled is not the same claim as callable. The probe runs
+        // after this handler returns, so a page that read `remaining_slots:
+        // []` alone would announce a service live one round trip early.
+        assert_eq!(v["status"], "pending_setup");
     }
 }

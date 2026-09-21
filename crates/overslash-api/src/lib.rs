@@ -240,6 +240,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         let async_wall = state.config.async_orphan_grace_secs();
         let elicit_reap_after = state.config.mcp_elicitation_reap_after_secs();
         let elicit_retention = state.config.mcp_elicitation_retention_secs();
+        let setup_draft_retention = state.config.setup_draft_retention_secs();
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
@@ -315,6 +316,21 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                 instrumented_step("subagent_purge", system.purge_archived_subagents(), |n| {
                     tracing::info!("Purged {n} archived sub-agent identities")
                 })
+                .await;
+                // Service instances whose setup nobody finished. Same kind of
+                // sweep as the two above — delete a row whose owner never came
+                // back — and the window is derived from the longest setup link
+                // that could still fulfil it, so this can never reap an
+                // instance out from under a live URL.
+                //
+                // Only `pending_setup`, never `draft`: the latter is a state a
+                // user parks an instance in on purpose. Migration 119 has the
+                // argument for why those are separate values.
+                instrumented_step(
+                    "service_setup_draft_purge",
+                    system.purge_expired_setup_drafts(setup_draft_retention),
+                    |n| tracing::info!("Purged {n} unverified service setup drafts"),
+                )
                 .await;
                 instrumented_step(
                     "auto_bubble",

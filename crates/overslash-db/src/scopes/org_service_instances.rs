@@ -24,6 +24,17 @@ impl OrgScope {
         service_instance::create(self.db(), &input).await
     }
 
+    /// Identities that minted a setup link for this instance — "who is
+    /// blocked on it going live". Not org-scoped in the query: the instance id
+    /// is already the tenant boundary, and every `secret_requests` row keyed on
+    /// it shares its org by construction (migration 118's FK).
+    pub async fn setup_requesters(
+        &self,
+        service_instance_id: Uuid,
+    ) -> Result<Vec<Uuid>, sqlx::Error> {
+        crate::repos::secret_request::setup_requesters(self.db(), service_instance_id).await
+    }
+
     /// Look up a service instance by id, scoped to this org. Returns `None`
     /// if the id belongs to another tenant.
     pub async fn get_service_instance(

@@ -109,16 +109,27 @@ test('user configures the email template against their own gateway and lists mai
 
 		await page.getByRole('button', { name: /^Create service$/i }).click();
 
-		// `email` declares a credential probe, so the wizard stops on its
-		// verification step rather than navigating straight through. The
-		// verdict here is the gateway's real answer over the seeded mailbox —
-		// but this spec is about configuring the instance, so it waits for the
-		// probe to settle and moves on regardless of which way it went. The
-		// `Try It` call below is the assertion that the instance works.
-		await page.getByRole('heading', { name: 'Check it works' }).waitFor({ timeout: 15_000 });
+		// `email` declares a credential probe, so the wizard stops to verify
+		// rather than navigating straight through, and the instance is not
+		// callable until the probe passes. The verdict here is the gateway's
+		// real answer over the seeded mailbox — but this spec is about
+		// configuring the instance, so it waits for the probe to settle and
+		// takes whichever way out is offered. The `Try It` call below is the
+		// assertion that the instance works.
+		await page.getByRole('heading', { name: /^(Checking it works|.* is live|Not live yet)$/ }).waitFor({
+			timeout: 15_000
+		});
 		await expect(page.locator('.verdict.pending')).toHaveCount(0, { timeout: 30_000 });
 		await page.screenshot({ path: 'screenshots/email-story-2-created.png' });
-		await page.getByRole('button', { name: /^(Done|Continue anyway)$/ }).click();
+		// Green → "Done". Red → the override, which is the only path that
+		// leaves a usable service for `Try It` to call.
+		const done = page.getByRole('button', { name: /^Done$/ });
+		if (await done.isVisible().catch(() => false)) {
+			await done.click();
+		} else {
+			await page.getByRole('button', { name: /anyway$/ }).click();
+			await page.getByRole('button', { name: /^Confirm/ }).click();
+		}
 
 		await page.waitForURL(/\/services\/[0-9a-f-]{36}$/, { timeout: 15_000 });
 		const serviceId = page.url().split('/').pop()!;

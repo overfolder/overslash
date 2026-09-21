@@ -15,6 +15,8 @@
 		setServiceStatus,
 		deleteService,
 		upgradeConnectionScopes,
+		activateService,
+		runActivate,
 		runProbe
 	} from '$lib/api/services';
 	import { groupsApi, type Group, type GroupGrantPick } from '$lib/api/groups';
@@ -46,6 +48,8 @@
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import AutoApproveSelect from '$lib/components/AutoApproveSelect.svelte';
 	import { resolveOwner, ownerLabel, ownerTitle } from '$lib/ownerLabel';
+	import { probeRejected } from '$lib/public-request';
+	import { failureKind } from '$lib/setup-outcome';
 
 
 	const id = $derived($page.params.id ?? '');
@@ -85,12 +89,43 @@
 	let testResult = $state<ServiceTestResponse | null>(null);
 
 	/// Run the template's declared credential probe against this instance.
+	/**
+	 * Check the credentials, and — only where that is the question being asked
+	 * — finish setting the instance up.
+	 *
+	 * One button, two endpoints, chosen by status. A service awaiting setup is
+	 * asking "does this work, and can I go live"; a live one is asking "are
+	 * these credentials still good", which must not write. And an *archived*
+	 * one has to go through `/test`: `/activate` refuses an archived instance
+	 * outright, because a green credential silently resurrecting a service
+	 * somebody retired is not a thing a diagnostic should be able to do.
+	 */
+	/** "Activate anyway": go live on a red verdict, with no probe run. */
+	async function forceActivate() {
+		if (!svc) return;
+		testing = true;
+		try {
+			const res = await activateService(svc.id, { force: true });
+			svc = { ...svc, status: res.status };
+		} catch (e) {
+			error = e instanceof ApiError ? `Could not activate (${e.status})` : 'Could not activate';
+		} finally {
+			testing = false;
+		}
+	}
+
 	async function runTest() {
 		if (!svc) return;
 		testing = true;
 		testResult = null;
 		try {
-			testResult = await runProbe(svc.id);
+			if (svc.status === 'pending_setup') {
+				const res = await runActivate(svc.id);
+				testResult = res.verdict ?? null;
+				svc = { ...svc, status: res.status };
+			} else {
+				testResult = await runProbe(svc.id);
+			}
 		} finally {
 			testing = false;
 		}
@@ -795,6 +830,16 @@
 							<StatusBadge variant="partially-degraded" label="partial scopes" />
 						{/if}
 					</div>
+					{#if svc.status === 'pending_setup'}
+						<!-- The deadline, next to the badge that earns it. An
+						     unfinished setup is swept after about a day, and
+						     discovering that by absence is worse than a line of
+						     text here. -->
+						<p class="pending-note">
+							Nothing can call this yet — its credentials have not been checked.
+							Unfinished setups are deleted automatically after about a day.
+						</p>
+					{/if}
 				</div>
 			</div>
 			<div class="head-actions">
@@ -817,6 +862,20 @@
 					{#if svc.status === 'draft'}
 						<button type="button" class="btn primary" onclick={() => changeStatus('active')}>
 							Activate
+						</button>
+					{:else if svc.status === 'pending_setup'}
+						<!-- Deliberately not the bare status PATCH the `draft`
+						     button uses. This instance is waiting on a verdict,
+						     so the primary action is to get one; going live
+						     without one is still available, on the Credentials
+						     tab where the verdict is rendered. -->
+						<button
+							type="button"
+							class="btn primary"
+							onclick={runTest}
+							disabled={testing}
+						>
+							{testing ? 'Checking…' : 'Check and finish setup'}
 						</button>
 					{/if}
 					<button
@@ -1049,15 +1108,54 @@
 					<!-- The whole credentials tab answers "is this wired up?"; this
 					     is the only part that answers it by asking the upstream.
 					     Works for both auth kinds, which is what makes a
-					     reconnected OAuth service verifiable too. -->
+					     reconnected OAuth service verifiable too.
+
+					     On a service still awaiting setup the same button also
+					     finishes it, and the override below it lives here
+					     rather than in the header because this is where the
+					     verdict it overrides is rendered. -->
 					<div class="row test-row">
-						<span class="label">Test</span>
+						<span class="label">{svc.status === 'pending_setup' ? 'Finish setup' : 'Test'}</span>
 						<div class="test-body">
 							<button type="button" class="btn" onclick={runTest} disabled={testing}
 								title={svc.test_action.summary ?? `Runs ${svc.test_action.action}`}>
-								{testing ? 'Testing…' : 'Test service'}
+								{#if testing}
+									Checking…
+								{:else if svc.status === 'pending_setup'}
+									Check and finish setup
+								{:else}
+									Test service
+								{/if}
 							</button>
 							<TestResult result={testResult} running={testing} onRetry={runTest} />
+							{#if svc.status === 'pending_setup' && probeRejected(testResult) && !testing}
+								<p class="override-note">
+									{#if failureKind(testResult) === 'unreachable'}
+										Nothing answered at that address. If it is only reachable from your
+										own network the credential may be fine — but nothing will work
+										until Overslash can reach it either.
+									{:else if failureKind(testResult) === 'rejected'}
+										{svc.name} refused this credential. Activating will not change that —
+										the first real call fails the same way.
+									{:else}
+										{svc.name} answered with an error rather than refusing the
+										credential outright — read it above. A bad key does not always
+										come back as a 401.
+									{/if}
+								</p>
+								<!-- `activate?force=true`, not the status PATCH: it runs
+								     no probe either, and the PATCH would skip the
+								     `service.activated` event an agent may be
+								     blocked on. -->
+								<button
+									type="button"
+									class="btn danger"
+									onclick={forceActivate}
+									disabled={testing}
+								>
+									Activate anyway
+								</button>
+							{/if}
 						</div>
 					</div>
 				{/if}
@@ -1377,6 +1475,20 @@
 		gap: 0.5rem;
 		align-items: center;
 		flex-wrap: wrap;
+	}
+	.override-note {
+		margin: 0;
+		font-size: 0.8rem;
+		color: #b91c1c;
+		max-width: 52ch;
+		line-height: 1.5;
+	}
+	.pending-note {
+		margin: 0.35rem 0 0;
+		font-size: 0.8rem;
+		color: var(--color-text-muted, #6b7280);
+		max-width: 46ch;
+		line-height: 1.5;
 	}
 	.head-actions {
 		display: flex;

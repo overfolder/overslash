@@ -161,9 +161,21 @@ test('agent hands over one setup link that creates, credentials and verifies a s
 	expect(meta.service.slot.bound).toBe(false);
 	expect(meta.service.test_action?.action).toBe('list_domains');
 
-	// 3. Submit as the member (same-org session), which is what a person
+	// 3a. Without a session, the submit is refused. A setup link is always
+	// minted session-required, whatever the org's `allow_unsigned` setting
+	// says: fulfilling one triggers the credential probe, and the probe runs
+	// through the authenticated call path.
+	const anonRes = await fetch(`${memberSession.apiUrl}/public/secrets/provide/${requestId}`, {
+		method: 'POST',
+		headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+		body: JSON.stringify({ token, value: 'anonymous-attempt' })
+	});
+	expect(anonRes.status).toBe(401);
+	expect(await anonRes.text()).toContain('user_session_required');
+
+	// 3b. Submit as the member (same-org session), which is what a person
 	// clicking the link in practice does. One POST writes the vault secret and
-	// binds the slot.
+	// binds the slot. The refused attempt above must not have burned the row.
 	const submitRes = await fetch(`${memberSession.apiUrl}/public/secrets/provide/${requestId}`, {
 		method: 'POST',
 		headers: {
@@ -177,30 +189,47 @@ test('agent hands over one setup link that creates, credentials and verifies a s
 	const submit = (await submitRes.json()) as {
 		ok: boolean;
 		name: string;
-		service?: { id: string; credential_key: string; remaining_slots: string[] };
+		service?: {
+			id: string;
+			credential_key: string;
+			remaining_slots: string[];
+			status: string;
+		};
 	};
 	expect(submit.ok).toBe(true);
 	expect(submit.service?.id).toBe(detail.id);
 	expect(submit.service?.credential_key).toBe('token');
 	expect(submit.service?.remaining_slots).toEqual([]);
+	// Bound is not the same claim as live: the probe runs after this response.
+	// A client reading `remaining_slots: []` alone would announce the service
+	// ready one round trip early.
+	expect(submit.service?.status).toBe('pending_setup');
 
 	// The instance is bound now — this is what the extra columns buy over a
 	// bare secret request, where the value would land in the vault and someone
-	// would still have to attach it.
-	const bound = (await api(memberSession, `/v1/services/${serviceName}`)) as ServiceDetail;
+	// would still have to attach it. `include_inactive`, because it is not
+	// callable yet and therefore does not resolve by name.
+	const bound = (await api(
+		memberSession,
+		`/v1/services/${serviceName}?include_inactive=true`
+	)) as ServiceDetail & { status: string };
 	expect(bound.credentials?.token).toBe('resend_key');
 	expect(bound.credentials_status).toBe('ok');
+	expect(bound.status).toBe('pending_setup');
 
-	// 4. The probe reaches the real Resend API and is rejected (the value is
-	// not a real key), which is itself the proof that the credential path is
-	// wired: assert on getting a *verdict*, not on the upstream outcome, so
-	// this does not depend on a third party being reachable in CI.
-	const verdict = (await api(memberSession, `/v1/services/${bound.id}/test`, {
+	// 4. Activate: the probe reaches the real Resend API and is rejected (the
+	// value is not a real key), which is itself the proof that the credential
+	// path is wired. Assert on getting a *verdict*, not on the upstream
+	// outcome, so this does not depend on a third party being reachable in CI
+	// — and assert that the verdict decided the instance's fate, which is the
+	// whole feature in one line.
+	const activated = (await api(memberSession, `/v1/services/${bound.id}/activate`, {
 		method: 'POST'
-	})) as { status: string; action?: string; latency_ms?: number };
-	expect(['ok', 'failed']).toContain(verdict.status);
-	expect(verdict.action).toBe('list_domains');
-	expect(typeof verdict.latency_ms).toBe('number');
+	})) as { status: string; verdict?: { status: string; action?: string; latency_ms?: number } };
+	expect(['ok', 'failed']).toContain(activated.verdict?.status);
+	expect(activated.verdict?.action).toBe('list_domains');
+	expect(typeof activated.verdict?.latency_ms).toBe('number');
+	expect(activated.status).toBe(activated.verdict?.status === 'ok' ? 'active' : 'pending_setup');
 
 	// 5. Single-use: re-POSTing the spent link must be rejected.
 	const dupRes = await fetch(`${memberSession.apiUrl}/public/secrets/provide/${requestId}`, {
