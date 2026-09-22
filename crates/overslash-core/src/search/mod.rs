@@ -168,6 +168,7 @@ mod tests {
 
     fn mk_service(key: &str, display: &str, desc: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),

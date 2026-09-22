@@ -7,6 +7,8 @@
 //!
 //! - [`auth`] + [`schemes`] — `components.x-overslash-secrets` /
 //!   `x-overslash-config` / `securitySchemes` → `Vec<ServiceAuth>`.
+//! - [`auth_modes`] — `components.x-overslash-auth-modes` → `Vec<AuthMode>`,
+//!   the alternatives an instance picks one of.
 //! - [`actions`] — `paths.*.*` and `x-overslash-platform_actions.*` →
 //!   `ServiceAction`, plus `responses.*.content.*` → `"json"` / `"binary"`.
 //! - [`mcp`] — `x-overslash-mcp` → `McpSpec` + its `ServiceAction`s.
@@ -28,6 +30,7 @@ use super::ext::{self, Ext, Pos};
 
 mod actions;
 mod auth;
+mod auth_modes;
 mod mcp;
 mod params;
 mod schemes;

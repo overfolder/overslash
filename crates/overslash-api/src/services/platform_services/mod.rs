@@ -79,6 +79,7 @@ mod test_fixtures {
 
     pub(super) fn mcp_bearer_template(default_secret: Option<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
@@ -106,6 +107,7 @@ mod test_fixtures {
 
     pub(super) fn mcp_oauth_template(provider: &str, scopes: &[&str]) -> ServiceDefinition {
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
@@ -136,6 +138,7 @@ mod test_fixtures {
 
     pub(super) fn secret_template() -> ServiceDefinition {
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
@@ -205,6 +208,7 @@ mod test_fixtures {
             );
         }
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
@@ -217,6 +221,7 @@ mod test_fixtures {
             hidden: false,
             icon: None,
             auth: vec![ServiceAuth::OAuth {
+                scheme: "oauth".into(),
                 provider: "google".into(),
                 scopes: vec![],
                 token_injection: TokenInjection {

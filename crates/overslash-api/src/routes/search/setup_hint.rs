@@ -197,6 +197,7 @@ mod tests {
 
     fn def(auth: Vec<ServiceAuth>, secrets: Vec<SecretSlot>) -> ServiceDefinition {
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             key: "acme".into(),
             display_name: "Acme".into(),
@@ -281,6 +282,7 @@ mod tests {
     fn oauth_template_points_at_the_connect_bundle() {
         let d = def(
             vec![ServiceAuth::OAuth {
+                scheme: "oauth".into(),
                 provider: "google".into(),
                 scopes: vec!["calendar.readonly".into()],
                 token_injection: injection(),

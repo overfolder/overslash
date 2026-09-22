@@ -173,6 +173,7 @@ mod tests {
                 .insert((*name).to_string(), param(*instance_config));
         }
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             default_timeout_ms: None,
             config: Vec::new(),
