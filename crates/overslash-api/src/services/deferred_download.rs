@@ -309,6 +309,7 @@ pub async fn open_upstream(
         // Nothing was dialed — the stored request names an address the guard
         // refuses. A 502 would blame an upstream that was never contacted.
         http_caller::CallError::Blocked(reason) => AppError::BadRequest(reason),
+        http_caller::CallError::GuardFailed(reason) => AppError::Internal(reason),
         e => AppError::BadGateway(format!("download upstream request failed: {e}")),
     })
 }

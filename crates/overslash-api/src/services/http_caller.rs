@@ -46,6 +46,8 @@ use std::time::{Duration, Instant};
 
 use overslash_core::types::ActionResult;
 
+use crate::error::AppError;
+
 /// Errors from an HTTP call.
 #[derive(Debug, thiserror::Error)]
 pub enum CallError {
@@ -65,6 +67,17 @@ pub enum CallError {
     /// asked for something we will not do — so it maps to a 400, not a 502.
     #[error("{0}")]
     Blocked(String),
+
+    /// The guard could not reach a verdict — a resolver task that failed to
+    /// join, or a client builder that refused to build.
+    ///
+    /// Kept apart from [`CallError::Blocked`] because the two say opposite
+    /// things about whose fault it is: "we will not dial that" is the
+    /// caller's answer and a 400, while "we could not tell" is ours and a
+    /// 500. Collapsing them would have a transient host-level failure read
+    /// as a malformed request, and a caller would retune a URL that was fine.
+    #[error("{0}")]
+    GuardFailed(String),
 
     /// The upstream kept redirecting past [`MAX_REDIRECTS`].
     #[error("upstream redirected more than {max} times")]
@@ -146,7 +159,14 @@ fn build_request(
 async fn guarded_client(url: &str) -> Result<(reqwest::Client, url::Url), CallError> {
     crate::services::ssrf_guard::outbound_client(url)
         .await
-        .map_err(|e| CallError::Blocked(e.to_string()))
+        .map_err(|e| match e {
+            // The guard is careful about this distinction — `BadRequest` for
+            // anything about the target, `Internal` only for a failure of its
+            // own machinery — so the transport keeps it rather than flattening
+            // both into "blocked".
+            AppError::BadRequest(msg) => CallError::Blocked(msg),
+            other => CallError::GuardFailed(other.to_string()),
+        })
 }
 
 /// How many redirects a call follows.

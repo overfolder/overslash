@@ -59,6 +59,8 @@ pub(super) fn map_call_error(
         http_caller::CallError::TooManyRedirects { max } => {
             AppError::BadGateway(format!("upstream redirected more than {max} times"))
         }
+        // The guard could not reach a verdict. Ours, not the caller's.
+        http_caller::CallError::GuardFailed(reason) => AppError::Internal(reason),
         http_caller::CallError::Blocked(reason) => AppError::BadRequest(reason),
         http_caller::CallError::Request(e) => AppError::Request(e),
     }

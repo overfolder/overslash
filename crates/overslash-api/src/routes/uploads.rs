@@ -336,8 +336,11 @@ async fn push(
         // anything else is the upstream's (502) — except an SSRF refusal, where
         // nothing was dialed at all and calling it a bad gateway would name the
         // wrong party.
-        let status = if matches!(e, crate::services::http_caller::CallError::Blocked(_)) {
+        use crate::services::http_caller::CallError;
+        let status = if matches!(e, CallError::Blocked(_)) {
             StatusCode::BAD_REQUEST
+        } else if matches!(e, CallError::GuardFailed(_)) {
+            StatusCode::INTERNAL_SERVER_ERROR
         } else if meter.exceeded() {
             StatusCode::PAYLOAD_TOO_LARGE
         } else {
