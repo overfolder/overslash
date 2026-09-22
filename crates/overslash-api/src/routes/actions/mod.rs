@@ -233,7 +233,6 @@ struct CallActivity {
     service: Option<String>,
     action: Option<String>,
     pool: sqlx::PgPool,
-    http_client: reqwest::Client,
     audience: Vec<Uuid>,
 }
 
@@ -255,7 +254,6 @@ impl CallActivity {
         }
         crate::services::events::emit(
             self.pool.clone(),
-            self.http_client.clone(),
             crate::services::events::EventDraft {
                 org_id: self.org_id,
                 event_type,
@@ -315,7 +313,6 @@ async fn call_action(
             service: req.service.clone(),
             action: req.action.clone(),
             pool: state.db_pool(&ext),
-            http_client: state.http_client.clone(),
             // Resolved once, here, and reused by both events. The chain walk
             // is a query, so doing it per-event would double the cost of a
             // feature that is already the most expensive observer we have.

@@ -271,7 +271,6 @@ async fn promote(
 
     crate::services::events::emit(
         state.db_pool(ext),
-        state.http_client.clone(),
         crate::services::events::EventDraft {
             org_id: acl.org_id,
             event_type: crate::services::events::EventType::ServiceActivated,

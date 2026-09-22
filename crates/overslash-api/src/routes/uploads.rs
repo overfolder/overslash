@@ -323,7 +323,6 @@ async fn push(
     );
 
     let response = crate::services::http_caller::call_streaming_upload(
-        &state.http_client,
         &request.method,
         &url,
         &out_headers,

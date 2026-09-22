@@ -202,7 +202,7 @@ async fn create_secret_request(
         },
     )
     .await?;
-    crate::services::events::emit(state.db_pool(&ext), state.http_client.clone(), minted.event);
+    crate::services::events::emit(state.db_pool(&ext), minted.event);
     let (req_id, token, url, short_url, expires_at) = (
         minted.request_id,
         minted.token,
@@ -616,7 +616,6 @@ async fn submit_provide(
     .await;
     crate::services::events::emit(
         state.db_pool(&ext),
-        state.http_client.clone(),
         crate::services::events::EventDraft {
             org_id: row.org_id,
             event_type: crate::services::events::EventType::SecretRequestFulfilled,

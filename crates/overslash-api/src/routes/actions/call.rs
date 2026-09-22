@@ -685,7 +685,6 @@ pub(super) async fn call_action_impl(
         // Header phase only — see `http_caller`'s module docs on why a total
         // deadline must not reach a streamed body.
         let upstream = match http_caller::call_streaming(
-            &state.http_client,
             &action_req.method,
             &resolved_url,
             &resolved_headers,
@@ -812,7 +811,6 @@ pub(super) async fn call_action_impl(
 
     // Buffered call path (default)
     let mut result = match http_caller::call(
-        &state.http_client,
         &action_req.method,
         &resolved_url,
         &resolved_headers,

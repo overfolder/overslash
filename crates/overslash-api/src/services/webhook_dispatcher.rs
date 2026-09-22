@@ -15,13 +15,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// Resolving subscriptions is bounded to the caller's org and therefore
 /// lives on `OrgScope`. Creating the per-delivery rows and updating their
 /// status runs on the system dispatcher, so it uses `SystemScope`.
-pub async fn dispatch(
-    pool: &PgPool,
-    http_client: &reqwest::Client,
-    org_id: Uuid,
-    event: &str,
-    payload: serde_json::Value,
-) {
+pub async fn dispatch(pool: &PgPool, org_id: Uuid, event: &str, payload: serde_json::Value) {
     let org = OrgScope::new(org_id, pool.clone());
     let system = SystemScope::new_internal(pool.clone());
     let subs = match org.find_matching_webhook_subscriptions(event).await {
@@ -52,7 +46,6 @@ pub async fn dispatch(
 
         deliver(
             pool,
-            http_client,
             delivery.id,
             &sub.url,
             &sub.secret,
@@ -87,6 +80,14 @@ fn build_envelope(
 
 /// Attempt to deliver a single webhook.
 ///
+/// The URL is registrant-supplied, so it goes through the SSRF guard on every
+/// attempt: resolve, refuse private / loopback / link-local answers, pin the
+/// validated IP, and no redirects. Without that this function is an SSRF
+/// oracle — it records the response status *and* body on the delivery row,
+/// which the dashboard then shows back to whoever registered the endpoint.
+/// A refusal is a terminal-shaped failure recorded like any other: it will be
+/// retried, and it will be refused again, because the address is the problem.
+///
 /// Connection-hold invariant: this takes the `pool` (an `Arc`-cheap handle),
 /// **not** a checked-out `PoolConnection`, and never acquires a DB connection
 /// before the outbound HTTP `send()` below. The only DB work — marking the
@@ -98,7 +99,6 @@ fn build_envelope(
 #[allow(clippy::too_many_arguments)]
 async fn deliver(
     pool: &PgPool,
-    http_client: &reqwest::Client,
     delivery_id: Uuid,
     url: &str,
     secret: &str,
@@ -113,6 +113,19 @@ async fn deliver(
     mac.update(body.as_bytes());
     let signature = hex::encode(mac.finalize().into_bytes());
 
+    let system = SystemScope::new_internal(pool.clone());
+
+    let http_client = match crate::services::ssrf_guard::outbound_client(url).await {
+        Ok((client, _)) => client,
+        Err(e) => {
+            let _ = system
+                .mark_webhook_failed(delivery_id, None, &e.to_string())
+                .await;
+            record_failed_attempt(event_type, attempt);
+            return;
+        }
+    };
+
     let result = http_client
         .post(url)
         .header("Content-Type", "application/json")
@@ -124,7 +137,6 @@ async fn deliver(
         .send()
         .await;
 
-    let system = SystemScope::new_internal(pool.clone());
     match result {
         Ok(resp) => {
             let status = resp.status().as_u16() as i32;
@@ -139,25 +151,27 @@ async fn deliver(
                 let _ = system
                     .mark_webhook_failed(delivery_id, Some(status), &body)
                     .await;
-                let exhausted = attempt >= MAX_DELIVERY_ATTEMPTS;
-                let status_label = if exhausted { "failed" } else { "retry" };
-                overslash_metrics::webhooks::record_delivery(event_type, status_label, exhausted);
-                if exhausted {
-                    overslash_metrics::webhooks::record_attempts(event_type, "exhausted", attempt);
-                }
+                record_failed_attempt(event_type, attempt);
             }
         }
         Err(e) => {
             let _ = system
                 .mark_webhook_failed(delivery_id, None, &e.to_string())
                 .await;
-            let exhausted = attempt >= MAX_DELIVERY_ATTEMPTS;
-            let status_label = if exhausted { "failed" } else { "retry" };
-            overslash_metrics::webhooks::record_delivery(event_type, status_label, exhausted);
-            if exhausted {
-                overslash_metrics::webhooks::record_attempts(event_type, "exhausted", attempt);
-            }
+            record_failed_attempt(event_type, attempt);
         }
+    }
+}
+
+/// Metrics for one delivery attempt that did not succeed — refused by the
+/// guard, refused by the network, or answered with a non-2xx. One place, so
+/// the three failure shapes can't drift into labelling themselves differently.
+fn record_failed_attempt(event_type: &str, attempt: u32) {
+    let exhausted = attempt >= MAX_DELIVERY_ATTEMPTS;
+    let status_label = if exhausted { "failed" } else { "retry" };
+    overslash_metrics::webhooks::record_delivery(event_type, status_label, exhausted);
+    if exhausted {
+        overslash_metrics::webhooks::record_attempts(event_type, "exhausted", attempt);
     }
 }
 
@@ -167,7 +181,7 @@ async fn deliver(
 const MAX_DELIVERY_ATTEMPTS: u32 = 5;
 
 /// Background task: retry failed webhook deliveries.
-pub async fn spawn_retry_loop(pool: PgPool, http_client: reqwest::Client) {
+pub async fn spawn_retry_loop(pool: PgPool) {
     let system = SystemScope::new_internal(pool.clone());
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -187,7 +201,6 @@ pub async fn spawn_retry_loop(pool: PgPool, http_client: reqwest::Client) {
             let envelope = build_envelope(row.id, &row.event, row.created_at, &row.payload);
             deliver(
                 &pool,
-                &http_client,
                 row.id,
                 &row.url,
                 &row.secret,

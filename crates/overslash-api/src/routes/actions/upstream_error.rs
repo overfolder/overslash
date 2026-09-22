@@ -51,6 +51,10 @@ pub(super) fn map_call_error(
             timeout_source: timeout.source(),
             max_ms: timeout.max_ms(),
         },
+        // The guard refused the target before a socket was opened. The
+        // caller asked for an address we will not dial, so this is their
+        // error (400), not the upstream's (502).
+        http_caller::CallError::Blocked(reason) => AppError::BadRequest(reason),
         http_caller::CallError::Request(e) => AppError::Request(e),
     }
 }

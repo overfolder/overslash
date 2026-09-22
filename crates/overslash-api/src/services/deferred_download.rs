@@ -298,7 +298,6 @@ pub async fn open_upstream(
     // replaced; wiring the full cascade through token minting is tracked in
     // TECH_DEBT.md.
     http_caller::call_streaming(
-        &state.http_client,
         &request.method,
         &url,
         &headers,

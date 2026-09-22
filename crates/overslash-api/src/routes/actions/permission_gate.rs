@@ -260,7 +260,6 @@ pub(super) async fn enforce_permission_chain(
                 // never sees the derived signal before its cause.
                 crate::services::events::emit_all(
                     state.db_pool(ext),
-                    state.http_client.clone(),
                     vec![
                         crate::services::events::EventDraft {
                             org_id: auth.org_id,

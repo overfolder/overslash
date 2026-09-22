@@ -1,8 +1,21 @@
-//! The thin HTTP transport under every action call.
+//! The HTTP transport under every action call.
 //!
-//! Deliberately dumb: it takes already-resolved values (including a
-//! [`Duration`], never a [`crate::services::call_timeout::CallTimeout`]) and
-//! knows nothing about where they came from.
+//! Deliberately dumb about *policy*: it takes already-resolved values
+//! (including a [`Duration`], never a
+//! [`crate::services::call_timeout::CallTimeout`]) and knows nothing about
+//! where they came from.
+//!
+//! # The one thing it is not dumb about
+//!
+//! It builds its own client, from the URL, via
+//! [`crate::services::ssrf_guard::outbound_client`] — it does not accept one.
+//! Every outbound action request reaches the wire through the three functions
+//! below, so owning client construction here is what makes "a Mode A call
+//! cannot dial 169.254.169.254" a property of the transport rather than a rule
+//! each of the five call sites has to remember. The guard resolves the host,
+//! refuses private / loopback / link-local answers, pins the validated IP, and
+//! disables redirects; it pools the resulting client per validated address, so
+//! this is not a handshake per call.
 //!
 //! # Two different meanings of "timeout"
 //!
@@ -23,9 +36,10 @@
 //! chunks* thereafter. A slow-but-live 900MB export runs as long as it needs;
 //! a stalled one still dies.
 //!
-//! A per-request idle timeout is not available directly: `read_timeout` is
-//! `ClientBuilder`-only in reqwest 0.13, and building a client per call would
-//! cost a TLS handshake every time.
+//! A per-request idle timeout is still not available directly: `read_timeout`
+//! is `ClientBuilder`-only in reqwest 0.13, and the pooled clients the guard
+//! hands out are shared by calls with different budgets, so it cannot be set
+//! per call there either. [`idle_guarded_stream`] remains the answer.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -44,6 +58,13 @@ pub enum CallError {
         content_type: Option<String>,
         limit_bytes: usize,
     },
+
+    /// The SSRF guard refused the target before anything was dialed.
+    ///
+    /// Distinct from `Request(e)`: nothing left the process, and the caller
+    /// asked for something we will not do — so it maps to a 400, not a 502.
+    #[error("{0}")]
+    Blocked(String),
 
     /// The upstream did not answer within the resolved per-call timeout.
     ///
@@ -114,13 +135,22 @@ fn build_request(
     builder
 }
 
+/// Resolve, validate and pin the target, returning the client to send on.
+///
+/// The single place the transport acquires a client. See the module docs.
+async fn guarded_client(url: &str) -> Result<reqwest::Client, CallError> {
+    crate::services::ssrf_guard::outbound_client(url)
+        .await
+        .map(|(client, _)| client)
+        .map_err(|e| CallError::Blocked(e.to_string()))
+}
+
 /// Call an HTTP endpoint, buffering the response. Returns an error if the
 /// response body exceeds `max_body_bytes`.
 ///
 /// `timeout` is a total deadline covering connect through the last byte of the
 /// body.
 pub async fn call(
-    client: &reqwest::Client,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
@@ -130,9 +160,10 @@ pub async fn call(
 ) -> Result<ActionResult, CallError> {
     let start = Instant::now();
     let timeout_ms = timeout.as_millis() as u64;
+    let client = guarded_client(url).await?;
 
     let response = build_request(
-        client,
+        &client,
         method,
         url,
         headers,
@@ -216,7 +247,6 @@ pub async fn call(
 /// headers). Nothing has reached the client when it fires, so the caller can
 /// still turn it into a clean 504. See the module docs.
 pub async fn call_streaming(
-    client: &reqwest::Client,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
@@ -224,13 +254,18 @@ pub async fn call_streaming(
     timeout: Duration,
 ) -> Result<reqwest::Response, CallError> {
     let timeout_ms = timeout.as_millis() as u64;
-    match tokio::time::timeout(
-        timeout,
-        build_request(client, method, url, headers, to_outgoing(body), None).send(),
-    )
+    // Inside the deadline: the guard resolves DNS, and a hostile resolver is
+    // exactly as good a way to hang the header phase as a hostile upstream.
+    match tokio::time::timeout(timeout, async {
+        let client = guarded_client(url).await?;
+        build_request(&client, method, url, headers, to_outgoing(body), None)
+            .send()
+            .await
+            .map_err(|e| map_reqwest_timeout(e, timeout_ms))
+    })
     .await
     {
-        Ok(res) => res.map_err(|e| map_reqwest_timeout(e, timeout_ms)),
+        Ok(res) => res,
         Err(_elapsed) => Err(CallError::Timeout { timeout_ms }),
     }
 }
@@ -263,14 +298,14 @@ fn to_outgoing(body: Option<&str>) -> OutgoingBody<'_> {
 /// [`crate::services::proxy_upload::metered_body`]) and that meter carries both
 /// the idle guard and the byte ceiling.
 pub async fn call_streaming_upload(
-    client: &reqwest::Client,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
     body: reqwest::Body,
 ) -> Result<reqwest::Response, CallError> {
+    let client = guarded_client(url).await?;
     build_request(
-        client,
+        &client,
         method,
         url,
         headers,

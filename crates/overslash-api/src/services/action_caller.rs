@@ -428,7 +428,6 @@ pub async fn call_action_request(
         // so it can still become a clean 504 with a real audit row — which is
         // exactly what a total deadline over the body would forfeit.
         let upstream = match http_caller::call_streaming(
-            &ctx.state.http_client,
             &action_req.method,
             &resolved_url,
             &resolved_headers,
@@ -487,7 +486,6 @@ pub async fn call_action_request(
 
     // ── Buffered path (default) ──────────────────────────────────────
     let mut result = match http_caller::call(
-        &ctx.state.http_client,
         &action_req.method,
         &resolved_url,
         &resolved_headers,
@@ -618,6 +616,10 @@ fn map_call_error(e: http_caller::CallError, timeout: CallTimeout) -> AppError {
             timeout_source: timeout.source(),
             max_ms: timeout.max_ms(),
         },
+        // The guard refused the target before a socket was opened. The
+        // caller asked for an address we will not dial, so this is their
+        // error (400), not the upstream's (502).
+        http_caller::CallError::Blocked(reason) => AppError::BadRequest(reason),
         http_caller::CallError::Request(e) => AppError::Request(e),
     }
 }
