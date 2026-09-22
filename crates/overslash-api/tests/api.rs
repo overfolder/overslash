@@ -21,6 +21,7 @@ mod actions_reauth_return_url;
 mod actions_validate;
 mod additional_properties;
 mod admin_cross_user_call;
+mod api_key_org_binding;
 mod approval_disclosure;
 mod approval_expiry_events;
 mod approval_token_leak;

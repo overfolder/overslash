@@ -91,7 +91,8 @@ This directory is an **assessment**, not a remediation. Nothing here changes cod
 infrastructure. The work it identifies is tracked in [TODO.md §1.6](../../../TODO.md) and,
 for the P0/P1 items, as GitHub issues.
 
-Two findings in [gap-assessment.md](gap-assessment.md) are **live vulnerabilities**
-rather than compliance gaps, and should be decided on their own timeline rather than
-waiting for a CASA engagement. They are marked `P0` and repeated at the top of that
-document.
+Two findings in [gap-assessment.md](gap-assessment.md) were **live vulnerabilities**
+rather than compliance gaps, to be decided on their own timeline rather than waiting for
+a CASA engagement. They are marked `P0` and repeated at the top of that document. **V2**
+(cross-tenant API-key minting) is fixed; **V1** (SSRF on the action-execution path) is
+still open.

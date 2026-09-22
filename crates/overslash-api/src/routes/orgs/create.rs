@@ -105,27 +105,27 @@ async fn finalize_new_org(
     audit_detail: serde_json::Value,
     ip: ClientIp,
 ) -> Result<axum::response::Response> {
-    let bootstrap_identity_id =
-        match provision_new_org_contents(state, ext, org.id, bootstrap_user_id).await {
-            Ok(id) => id,
-            Err(e) => {
-                // Best-effort cleanup. If this also fails we leave a dangling
-                // org row, but that's strictly better than the half-bootstrapped
-                // state; admins can sweep manually.
-                if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
-                    .execute(state.db(ext))
-                    .await
-                {
-                    tracing::error!(
-                        org_id = %org.id,
-                        bootstrap_error = %e,
-                        cleanup_error = %cleanup_err,
-                        "create_org rollback failed; manual cleanup required"
-                    );
-                }
-                return Err(e);
+    let contents = match provision_new_org_contents(state, ext, org.id, bootstrap_user_id).await {
+        Ok(c) => c,
+        Err(e) => {
+            // Best-effort cleanup. If this also fails we leave a dangling
+            // org row, but that's strictly better than the half-bootstrapped
+            // state; admins can sweep manually.
+            if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
+                .execute(state.db(ext))
+                .await
+            {
+                tracing::error!(
+                    org_id = %org.id,
+                    bootstrap_error = %e,
+                    cleanup_error = %cleanup_err,
+                    "create_org rollback failed; manual cleanup required"
+                );
             }
-        };
+            return Err(e);
+        }
+    };
+    let bootstrap_identity_id = contents.identity_id;
 
     let bootstrap_scope = overslash_db::OrgScope::new(org.id, state.db_pool(ext));
     let _ = bootstrap_scope
@@ -166,6 +166,10 @@ async fn finalize_new_org(
     let redirect_to = redirect_for_org(state, &org);
     let mut resp: OrgResponse = org.into();
     resp.redirect_to = Some(redirect_to);
+    resp.identity_id = bootstrap_identity_id;
+    // Only ever populated on the credential-less path, and only in this one
+    // response — `GET /v1/orgs/{id}` has no such field to leak it back.
+    resp.api_key = contents.admin_key;
 
     // Re-mint the session cookie scoped to the new org when the caller came
     // in with a multi-org session. Without this, the client redirects to
@@ -327,12 +331,22 @@ fn extract_optional_session_user(
     claims.user_id
 }
 
+/// What a freshly provisioned org came up with.
+pub(crate) struct NewOrgContents {
+    /// The identity that owns the org, when the request produced one.
+    pub identity_id: Option<Uuid>,
+    /// Plaintext `osk_…` for the org's first admin key. Present only on the
+    /// credential-less path, where it is the only way in, and returned
+    /// exactly once — nothing can read it back afterwards.
+    pub admin_key: Option<String>,
+}
+
 pub(crate) async fn provision_new_org_contents(
     state: &AppState,
     ext: &axum::http::Extensions,
     org_id: Uuid,
     session_user_id: Option<Uuid>,
-) -> Result<Option<Uuid>> {
+) -> Result<NewOrgContents> {
     match session_user_id {
         Some(user_id) => {
             let user = user_repo::get_by_id(state.db(ext), user_id)
@@ -370,11 +384,52 @@ pub(crate) async fn provision_new_org_contents(
             // can't rewrite history.
             overslash_db::repos::org::set_creator_user_id(state.db(ext), org_id, user_id).await?;
 
-            Ok(Some(creator_identity.id))
+            // The creator already holds a session; they need no key.
+            Ok(NewOrgContents {
+                identity_id: Some(creator_identity.id),
+                admin_key: None,
+            })
         }
         None => {
-            overslash_db::repos::org_bootstrap::bootstrap_org(state.db(ext), org_id, None).await?;
-            Ok(None)
+            // No credential to attach, so this org would otherwise come up
+            // with no way into it at all. Mint the first admin User and its
+            // key here — inside the one request that is already authorised to
+            // create the org — and hand the key back once.
+            //
+            // The alternative, and what this replaces, was to leave the org
+            // unclaimed and let a second *unauthenticated* call to
+            // `POST /v1/api-keys` claim it on a "no keys, no identities yet"
+            // precondition. That second call had no credential to check, so
+            // it authorised itself on an org id taken from its own body:
+            // anyone who learned the id of an org in that window could take
+            // it. Folding the mint into creation removes the unauthenticated
+            // write from the surface rather than relocating it, and inherits
+            // this route's `ALLOW_ORG_CREATION` / `cloud_billing` gates for
+            // free. See the V2 finding in docs/compliance/casa/.
+            let admin_user = identity::create(state.db(ext), org_id, "admin", "user", None).await?;
+            identity::set_is_org_admin(state.db(ext), org_id, admin_user.id, true).await?;
+            overslash_db::repos::org_bootstrap::bootstrap_org(
+                state.db(ext),
+                org_id,
+                Some(admin_user.id),
+            )
+            .await?;
+
+            let (raw_key, key_hash, key_prefix) = crate::routes::api_keys::generate_api_key()?;
+            overslash_db::OrgScope::new(org_id, state.db_pool(ext))
+                .create_api_key(
+                    admin_user.id,
+                    "bootstrap-admin",
+                    &key_hash,
+                    &key_prefix,
+                    &[],
+                )
+                .await?;
+
+            Ok(NewOrgContents {
+                identity_id: Some(admin_user.id),
+                admin_key: Some(raw_key),
+            })
         }
     }
 }

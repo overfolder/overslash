@@ -2263,16 +2263,7 @@ async fn mcp_overslash_call_resumes_pending_approval() {
         .await
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
-    let admin: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id":org_id,"name":"bootstrap"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let admin_key = admin["key"].as_str().unwrap().to_string();
+    let admin_key = org["api_key"].as_str().unwrap().to_string();
     let user: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -2403,16 +2394,7 @@ async fn mcp_overslash_call_rejects_mixed_approval_and_service_args() {
         .json()
         .await
         .unwrap();
-    let admin: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id":org["id"].as_str().unwrap(),"name":"bootstrap"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let admin_key = admin["key"].as_str().unwrap().to_string();
+    let admin_key = org["api_key"].as_str().unwrap().to_string();
 
     let resp = client
         .post(format!("{base}/mcp"))

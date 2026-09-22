@@ -306,16 +306,7 @@ async fn setup(pool: PgPool) -> (String, String, Uuid, Uuid, String) {
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
     // Create API key (org-level bootstrap)
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "bootstrap"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let raw_key = key["key"].as_str().unwrap().to_string();
+    let raw_key = org["api_key"].as_str().unwrap().to_string();
 
     // Create user identity (agents require a parent)
     let user: Value = client
@@ -1919,17 +1910,7 @@ async fn test_service_registry_api() {
         .json()
         .await
         .unwrap();
-    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
-    let key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "test"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key_resp["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     // List templates — should have at least github, stripe, slack (global tier)
     let resp: Vec<Value> = client
@@ -2184,16 +2165,7 @@ async fn test_oauth_callback_exchanges_code_and_stores_connection() {
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    let key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "test"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key_resp["key"].as_str().unwrap().to_string();
+    let api_key = org["api_key"].as_str().unwrap().to_string();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))

@@ -23,16 +23,16 @@ are GCP defaults Terraform never created.
 | `n/a` | Genuinely out of scope, with a reason |
 
 **Severity** is *assessment* severity — how likely a lab is to raise it and how hard it is
-to argue. It is deliberately separate from security severity: two rows below are live
-vulnerabilities and carry both.
+to argue. It is deliberately separate from security severity: the rows below that are live
+vulnerabilities carry both.
 
 ---
 
-## Read this first: two live vulnerabilities
+## Read this first: live vulnerabilities
 
-These were found while assessing and are **not** compliance gaps. They are exploitable on
-the current `dev` head and should be decided on their own timeline rather than waiting for
-a CASA engagement.
+These were found while assessing and are **not** compliance gaps. They should be decided
+on their own timeline rather than waiting for a CASA engagement. **V2 is fixed**; V1 is
+still exploitable on the current `dev` head.
 
 ### V1 — Unrestricted SSRF on the action-execution path
 
@@ -69,28 +69,60 @@ Also reopen whether `Everyone` should hold `admin` on `http` by default. The com
 it preserves a migrated default; it is now the difference between "SSRF requires a
 deliberate grant" and "SSRF is available to every member on day one".
 
-### V2 — Cross-tenant API-key minting
+### V2 — Cross-tenant API-key minting — **FIXED**
 
-`crates/overslash-api/src/routes/api_keys.rs:96` builds `OrgScope::new(req.org_id, …)`
-from the **request body**, and `req.org_id` is never compared to `acl.org_id`. The admin
-branch then honours a caller-supplied `req.identity_id` (`:113-120`). `api_keys` has
-separate foreign keys on `org_id` and `identity_id` and **no composite constraint**, so
-the pair is never cross-validated at the database either.
+> **Resolved.** `POST /v1/api-keys` no longer reads an org from the request body, and no
+> longer has an unauthenticated branch. Three layers, plus the root cause. Regression
+> cover in `crates/overslash-api/tests/api_key_org_binding.rs`.
 
-An admin of org A can therefore mint a live `osk_` key bound to an identity in org B.
+**What it was.** `crates/overslash-api/src/routes/api_keys.rs:96` built
+`OrgScope::new(req.org_id, …)` from the **request body**, and `req.org_id` was never
+compared to `acl.org_id`. The admin branch then honoured a caller-supplied
+`req.identity_id`. `api_keys` had separate foreign keys on `org_id` and `identity_id` and
+**no composite constraint**, so the pair was never cross-validated at the database either.
+An admin of org A could mint a live `osk_` key bound to an identity in org B.
 
-The sibling endpoint shows the check that is missing —
-`crates/overslash-api/src/routes/org_service_keys.rs:99`:
+**Why the field was there at all.** The same handler carried an *unauthenticated*
+bootstrap branch — "no keys, no identities yet, so mint the org's first admin" — and that
+branch has no credential to derive an org from. One route was holding two authorization
+models, and the field the credential-less branch needed became the field the authenticated
+branch trusted. That is the root cause, not the missing comparison.
 
-```rust
-if req.org_id != acl.org_id {
-    return Err(AppError::Forbidden("org_id must match the authenticated org".into()));
-}
-```
+**The fix.**
 
-Lower-severity relative: the unauthenticated bootstrap branch (`api_keys.rs:123-155`)
-keys its "no keys, no identities yet" precondition on the same attacker-supplied
-`req.org_id`.
+1. **The org is never named by the caller.** `create_api_key` takes `AdminAcl` + the
+   `OrgScope` extractor, like the other 91 handlers in the routes tree. `org_id` is gone
+   from `CreateApiKeyRequest`. The scope is minted from the presented credential — a
+   session JWT's currently *active* org, which `/auth/switch-org` re-mints, or an `osk_`
+   key's own org. Deriving from the *user* would have reintroduced the bug in a subtler
+   form, because a human can belong to several orgs: an org-A session would look valid for
+   a request naming org B. A multi-org human mints into B by being switched to B.
+2. **The identity resolves through that scope.** `scope.get_identity(identity_id)` binds
+   the org as a `WHERE` clause on the lookup rather than a comparison a later edit can
+   drop; an id from another tenant is indistinguishable from one that does not exist
+   (404).
+3. **The database refuses the pair.** Migration 121 adds
+   `UNIQUE (org_id, id)` on `identities` and a composite
+   `api_keys (org_id, identity_id) REFERENCES identities (org_id, id)` foreign key, so a
+   mismatched pair is rejected regardless of what any future handler does. It replaces
+   the single-column `api_keys_identity_id_fkey`, which it subsumes, and adds the index
+   that cascade never had.
+
+**The unauthenticated branch is gone, not relocated.** An org's first admin User and its
+key are now minted by `POST /v1/orgs` itself and returned once in that response
+(`routes/orgs/create.rs::provision_new_org_contents`). That inherits the org-creation
+route's existing controls for free — `ALLOW_ORG_CREATION`, and a hard refusal under
+`cloud_billing` — neither of which the old branch had. It was already dead in cloud:
+signup provisioning (`routes/auth/provisioning.rs:254`) creates the org, the admin
+identity and the membership together, so `count_identities() > 0` from the org's first
+instant and the precondition never held.
+
+**Was the old bootstrap branch exploitable?** In practice, no — but it was one control
+deep. It authorised on a body-supplied `org_id` naming an org with zero keys *and* zero
+identities. Reaching that window needed the org's UUIDv4, which is unguessable and is
+returned only to the org's creator; and any org with a member has identities, so a leaked
+id from a live tenant never qualified. The exposure was an org created via the no-session
+`POST /v1/orgs` path and not yet claimed. Real, narrow, and now closed by construction.
 
 ---
 
@@ -131,9 +163,9 @@ magic link.
 | Req | Requirement | Verdict | Evidence / gap | Sev |
 |-----|-------------|---------|----------------|-----|
 | 3.1.1 | Least-privilege access control on a trusted service layer | `pass` | Capability types in `crates/overslash-db/src/scopes/` (`SystemScope > OrgScope > UserScope > AgentScope`) inject `org_id` into every query. `/v1/actions/call` runs two layers: a default-deny group ceiling (`overslash-core/src/permissions/ceiling.rs`, enforced at `routes/actions/call.rs:346-356`) and an ancestor-chain walk with approval bubbling (`routes/actions/permission_gate.rs:48-90`). Enforcement is server-side only. **Infrastructure caveat from the live scan:** two GCP-default service accounts hold `roles/editor` on the production project — the default Compute Engine SA (flagged P2, **0 permissions used in 90 days**) and the cloudservices agent (P2, downgrade to `roles/compute.editor`) — both invisible to Terraform — [gcp-posture.md](gcp-posture.md) | — |
-| 3.1.2 | Policy attributes not manipulable by end users | `gap` | **V2** — `routes/api_keys.rs:96` takes `org_id` from the request body and `:113-120` takes `identity_id`, neither validated against the authenticated ACL | **High** (+ vuln) |
+| 3.1.2 | Policy attributes not manipulable by end users | `pass` | **V2, fixed.** `POST /v1/api-keys` no longer accepts an `org_id`: `create_api_key` takes `AdminAcl` + the `OrgScope` extractor, so the org is the presented credential's currently-active org and the caller cannot name one (`routes/api_keys.rs`). `identity_id` is resolved through that scope. The unauthenticated bootstrap branch — the only reason a body `org_id` existed — is gone; the first admin key is minted by `POST /v1/orgs` (`routes/orgs/create.rs::provision_new_org_contents`) behind `ALLOW_ORG_CREATION`. Migration 121 backs it with a composite FK. Tests: `tests/api_key_org_binding.rs` | — |
 | 3.1.3 | Access controls fail securely | `pass` | Default-deny ceiling; foreign ids 404 at the SQL boundary (`routes/approvals/resolve.rs:31-34`); org-configurable response capture is fail-closed (`services/audit_capture.rs:44-47`) | — |
-| 3.1.4 | Protected against IDOR on create / read / update / delete | `gap` | The scope model holds across the surface — unscoped repo getters exist (`repos/service_template.rs:97`, `repos/mcp_upstream_connection.rs:79`, `repos/oauth_connection_flow.rs:119`) but every call site filters on the caller's org immediately. **V2 is the exception, and it is a create-path IDOR** | **High** (+ vuln) |
+| 3.1.4 | Protected against IDOR on create / read / update / delete | `pass` | The scope model holds across the surface — unscoped repo getters exist (`repos/service_template.rs:97`, `repos/mcp_upstream_connection.rs:79`, `repos/oauth_connection_flow.rs:119`) but every call site filters on the caller's org immediately. **V2 was the one exception — a create-path IDOR — and is fixed**: `routes/api_keys.rs` was the only handler in the routes tree taking its org from `req.*`, and it no longer does. Migration 121 adds the composite `api_keys (org_id, identity_id) -> identities (org_id, id)` FK so the pair cannot diverge even if a handler regresses | — |
 | 3.1.5 | Anti-CSRF on authenticated functionality; anti-automation on unauthenticated | `statement` | `SameSite=Lax` on the session cookie, CORS with an explicit origin predicate and no `Any` (`lib.rs:709-756`), JSON-only endpoints, and no cookie-authenticated form posts. No synchronizer token. Anti-automation on unauthenticated surfaces is uneven — magic-link, downloads and uploads have buckets; `POST /oauth/register` has none. Needs a written answer and will also be probed by the scan | Med |
 | 3.1.6 | Directory browsing disabled | `pass` | Nothing serves a filesystem directory. `/icons/{file}` reads a compiled-in table with a name allowlist, not the disk (`routes/icons.rs:68-79`) | — |
 | 3.2.1 | Only secure OAuth flows (auth code / auth code + PKCE) | `pass` | Authorization Code throughout. The MCP Authorization Server mandates **PKCE S256** (`routes/oauth/authorize.rs:39-51`); upstream connections use PKCE where the provider supports it. No implicit, no ROPC anywhere | — |
@@ -200,24 +232,24 @@ when it was written.
 
 | Verdict | Count |
 |---------|-------|
-| `pass` | 23 |
+| `pass` | 25 |
 | `statement` | 12 |
-| `gap` | 17 |
+| `gap` | 15 |
 | `scan` | 1 |
 | `n/a` | 2 |
 
-Of the 17 gaps, **2 are also live vulnerabilities** (5.1.5 / V1, and 3.1.2 + 3.1.4 / V2)
-and 4 are the unbuilt webhook-provider section.
+Of the 15 gaps, **1 is also a live vulnerability** (5.1.5 / V1) and 4 are the unbuilt
+webhook-provider section. V2 closed 3.1.2 and 3.1.4, which are now `pass`.
 
 ## Priority ladder
 
 Remediation is tracked in [TODO.md §1.6](../../../TODO.md). The ordering:
 
 **P0 — live vulnerabilities.** V1 (route Mode A and webhook delivery through
-`ssrf_guard::build_pinned_client`; revisit the default `Everyone → admin on http` grant),
-V2 (`req.org_id != acl.org_id` → 403, validate the identity belongs to the org, and add a
-composite foreign key so the database enforces it). Decide these on a security timeline,
-not a compliance one.
+`ssrf_guard::build_pinned_client`; revisit the default `Everyone → admin on http` grant).
+Decide on a security timeline, not a compliance one. ~~V2~~ is fixed: the org comes from
+the credential, the identity resolves through that scope, migration 121 enforces the pair,
+and the unauthenticated bootstrap branch is gone.
 
 **P1 — hard CASA fails.** `Secure` on `oss_session` plus `__Host-`/`__Secure-` prefixes
 (2.3.1); **server-side sessions** — a sessions table with a `jti` claim checked per

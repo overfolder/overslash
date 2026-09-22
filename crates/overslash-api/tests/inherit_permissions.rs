@@ -382,16 +382,7 @@ async fn setup_with_pool(
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    let org_key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_api_key = org_key["key"].as_str().unwrap().to_string();
+    let org_api_key = org["api_key"].as_str().unwrap().to_string();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))

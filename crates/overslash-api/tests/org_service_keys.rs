@@ -38,17 +38,8 @@ async fn setup() -> (String, reqwest::Client, Uuid, String, Uuid) {
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
     // Bootstrap path mints the first admin User and binds the key to it.
-    let bootstrap: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "bootstrap-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let admin_key = bootstrap["key"].as_str().unwrap().to_string();
-    let admin_user_id: Uuid = bootstrap["identity_id"].as_str().unwrap().parse().unwrap();
+    let admin_key = org["api_key"].as_str().unwrap().to_string();
+    let admin_user_id: Uuid = org["identity_id"].as_str().unwrap().parse().unwrap();
 
     (base, client, org_id, admin_key, admin_user_id)
 }
@@ -410,16 +401,7 @@ async fn revoke_other_org_returns_not_found() {
         .await
         .unwrap();
     let org_b_id: Uuid = org_b["id"].as_str().unwrap().parse().unwrap();
-    let boot_b: Value = client
-        .post(format!("{base_a}/v1/api-keys"))
-        .json(&json!({"org_id": org_b_id, "name": "admin-b"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let admin_key_b = boot_b["key"].as_str().unwrap().to_string();
+    let admin_key_b = org_b["api_key"].as_str().unwrap().to_string();
 
     let key_b: Value = client
         .post(format!("{base_a}/v1/org-service-keys"))

@@ -68,13 +68,13 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 The annual security assessment Google requires of apps holding restricted OAuth scopes —
 we ship `gmail.*`, `drive` and `keep` templates, so the system OAuth client needs it.
 Full assessment in [docs/compliance/casa/](docs/compliance/casa/README.md); the gap list
-is [gap-assessment.md](docs/compliance/casa/gap-assessment.md). 17 of 55 requirements
+is [gap-assessment.md](docs/compliance/casa/gap-assessment.md). 15 of 55 requirements
 are gaps today.
 
 **P0 — live vulnerabilities, not compliance items. Decide on a security timeline.**
 
 - [ ] **SSRF on the action-execution path** — Mode A validates only that the URL parses, and executes it with a bare `reqwest::Client::new()` (default redirect-following, no DNS pinning). `Everyone` holds `admin` on the `http` pseudo-service from org bootstrap, and users skip Layer 2. Route execution *and* webhook delivery through `ssrf_guard::build_pinned_client`, and reopen the default grant. (CASA 5.1.5, 7.3.1)
-- [ ] **Cross-tenant API-key minting** — `POST /v1/api-keys` builds its `OrgScope` from a body-supplied `org_id` that is never compared to the authenticated ACL, and honours a body-supplied `identity_id`. Add the `req.org_id != acl.org_id` check the sibling endpoint already has, validate the identity belongs to the org, and add a composite FK so the database enforces it. (CASA 3.1.2, 3.1.4)
+- [x] **Cross-tenant API-key minting** — `POST /v1/api-keys` no longer takes an `org_id` at all: it uses `AdminAcl` + the `OrgScope` extractor, so the org is the presented credential's currently-active org. `identity_id` resolves through that scope, and migration 121 adds a composite `api_keys (org_id, identity_id) -> identities (org_id, id)` FK. The unauthenticated bootstrap branch — the only reason a body `org_id` existed — is gone; `POST /v1/orgs` returns the first admin key instead. (CASA 3.1.2, 3.1.4 — both now `pass`)
 
 **P1 — hard CASA fails.**
 
