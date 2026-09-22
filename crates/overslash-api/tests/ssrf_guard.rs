@@ -4,13 +4,15 @@
 //!
 //! # Why these tests can run at all
 //!
-//! The whole suite runs with `OVERSLASH_SSRF_ALLOW_PRIVATE=1`, because Mode A
-//! and Mode C fakes are bound to 127.0.0.1. That hatch opens **loopback and
-//! nothing else** (see `services::ssrf_guard::default_policy`), which is what
-//! makes this file possible: the fakes stay reachable while the link-local,
-//! RFC1918 and CGNAT addresses an attacker actually wants stay refused. If the
-//! hatch is ever widened back to "block nothing", every test here goes green
-//! for the wrong reason — the positive controls are what would still catch it.
+//! The whole suite runs with `OVERSLASH_SSRF_ALLOWED_CIDRS=127.0.0.0/8,::1/128`,
+//! because the Mode A and Mode C fakes are bound to loopback. That is the same
+//! operator allow-list a self-hosted deployment uses for its own private
+//! network — there is no test-only bypass — and it opens **those ranges and
+//! nothing else**, which is what makes this file possible: the fakes stay
+//! reachable while the link-local, RFC1918 and CGNAT addresses an attacker
+//! actually wants stay refused. If someone ever widens that list, every test
+//! here goes green for the wrong reason, and the two positive controls are what
+//! would still catch the opposite mistake.
 
 use crate::common;
 

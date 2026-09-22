@@ -186,6 +186,13 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     let (embedder, embeddings_available) = init_embeddings(&db).await;
 
+    // Parse the egress allow-list now, so "your outbound reach is wider than
+    // the default, and here is exactly how much" lands next to the rest of
+    // startup rather than in the middle of the day's traffic — and so a
+    // deployment that set the dangerous metadata variable and nothing else
+    // hears about it before it wonders why nothing happened.
+    services::ssrf_guard::log_egress_configuration();
+
     let http_client = reqwest::Client::new();
     let mailer = services::email::build_mailer(&config, http_client.clone());
 

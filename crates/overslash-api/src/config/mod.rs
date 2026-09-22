@@ -278,10 +278,11 @@ pub struct Config {
     /// Test-only host rewrites applied to every upstream URL right before the
     /// HTTP request goes out. Keyed by hostname (`api.github.com`) → base URL
     /// (`http://127.0.0.1:54321`). Loaded from `OVERSLASH_SERVICE_BASE_OVERRIDES`
-    /// in the form `host=base_url[,host=base_url...]`. The override is
-    /// silently ignored unless the override target is a loopback address or
-    /// `OVERSLASH_SSRF_ALLOW_PRIVATE=1` is set, so prod deploys can leave the
-    /// var defined harmlessly.
+    /// in the form `host=base_url[,host=base_url...]`. The override is silently
+    /// ignored unless the target is a loopback address or an address inside a
+    /// range the operator listed in `OVERSLASH_SSRF_ALLOWED_CIDRS`, so a prod
+    /// deploy can leave the var defined harmlessly — and a stray entry can
+    /// never redirect traffic to a host the deployment would not have dialed.
     pub service_base_overrides: HashMap<String, String>,
     /// Credential this deployment supplies on an org's behalf, for a service
     /// it hosts itself. `None` on a deployment that hosts no such service —
@@ -496,9 +497,9 @@ impl Config {
     /// (preserving path + query). When no override matches, returns the URL
     /// unchanged.
     ///
-    /// The override is silently skipped if the override target is not loopback
-    /// and `OVERSLASH_SSRF_ALLOW_PRIVATE` isn't set — the SSRF guard is
-    /// honored regardless. Errors in URL parsing fall through unchanged.
+    /// The override is silently skipped unless the target is loopback or inside
+    /// an `OVERSLASH_SSRF_ALLOWED_CIDRS` range — and the SSRF guard is honored
+    /// at call time regardless. Errors in URL parsing fall through unchanged.
     /// The platform-held value for vault secret `secret_name`, if this
     /// deployment has one *and* `url` lands on the host it is pinned to.
     ///
@@ -595,7 +596,7 @@ pub(crate) mod tests {
     use std::env;
     use std::sync::Mutex;
 
-    /// Tests in this module mutate `OVERSLASH_SSRF_ALLOW_PRIVATE`; the env
+    /// Tests in this module mutate `OVERSLASH_SSRF_ALLOWED_CIDRS`; the env
     /// is process-global so any two of them racing would produce nondeter-
     /// ministic results under cargo's default parallel runner. Serialise
     /// across the whole env-touching cohort with a single mutex.
@@ -703,7 +704,7 @@ pub(crate) mod tests {
     /// before any assertion runs — a panic inside `assert_eq!` would
     /// otherwise poison `ENV_LOCK` and convert sibling-test failures into
     /// `PoisonError`s, hiding the real cause.
-    fn with_env_locked<R>(set_bypass: bool, f: impl FnOnce() -> R) -> R {
+    fn with_env_locked<R>(allowed_cidrs: Option<&str>, f: impl FnOnce() -> R) -> R {
         // Tolerate a prior poisoning so a single failing test doesn't
         // cascade into "all env-touching tests fail" — `into_inner()`
         // hands back the wrapped guard regardless of poisoning state.
@@ -711,32 +712,31 @@ pub(crate) mod tests {
         // SAFETY: ENV_LOCK serialises env mutations across this cohort,
         // and `apply_base_overrides` reads the env at call time.
         unsafe {
-            if set_bypass {
-                env::set_var("OVERSLASH_SSRF_ALLOW_PRIVATE", "1");
-            } else {
-                env::remove_var("OVERSLASH_SSRF_ALLOW_PRIVATE");
+            match allowed_cidrs {
+                Some(v) => env::set_var("OVERSLASH_SSRF_ALLOWED_CIDRS", v),
+                None => env::remove_var("OVERSLASH_SSRF_ALLOWED_CIDRS"),
             }
         }
         let out = f();
         // Always reset to the unset state so subsequent acquirers don't
-        // observe leaked bypass enablement.
+        // observe a leaked allow-list.
         unsafe {
-            env::remove_var("OVERSLASH_SSRF_ALLOW_PRIVATE");
+            env::remove_var("OVERSLASH_SSRF_ALLOWED_CIDRS");
         }
         drop(guard);
         out
     }
 
     #[test]
-    fn apply_base_overrides_drops_non_loopback_target_without_ssrf_bypass() {
-        // Without OVERSLASH_SSRF_ALLOW_PRIVATE, a non-loopback override is
-        // silently ignored — guards prod deploys against accidentally-set vars.
+    fn apply_base_overrides_drops_non_loopback_target_without_an_allow_list() {
+        // With no allow-list, a non-loopback override is silently ignored —
+        // guards prod deploys against accidentally-set vars.
         let mut cfg = empty_test_config();
         cfg.service_base_overrides.insert(
             "api.github.com".into(),
             "https://attacker.example.com".into(),
         );
-        let resolved = with_env_locked(false, || {
+        let resolved = with_env_locked(None, || {
             cfg.apply_base_overrides("https://api.github.com/x")
         });
         assert_eq!(resolved, "https://api.github.com/x");
@@ -746,8 +746,8 @@ pub(crate) mod tests {
     fn apply_base_overrides_mixed_matrix_keeps_loopback_drops_disallowed() {
         // E2E real-stack scenario: a single override map combines both kinds
         // of entries — the loopback fake target the e2e harness sets up and
-        // an extra entry that purposely points at a disallowed host. Without
-        // the SSRF bypass, the loopback entry must apply (override hits the
+        // an extra entry that purposely points at a disallowed host. With no
+        // allow-list, the loopback entry must apply (override hits the
         // fake) while the disallowed entry must be silently dropped (request
         // would fall through to the original upstream — proving the gate
         // rejected the override). The non-overridden host passes through
@@ -759,7 +759,7 @@ pub(crate) mod tests {
             "api.attacker.test".into(),
             "https://attacker.example.com".into(),
         );
-        let (allowed, rejected, untouched) = with_env_locked(false, || {
+        let (allowed, rejected, untouched) = with_env_locked(None, || {
             (
                 cfg.apply_base_overrides("https://api.github.com/repos/x/y?per_page=5"),
                 cfg.apply_base_overrides("https://api.attacker.test/foo"),
@@ -772,22 +772,35 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn apply_base_overrides_keeps_non_loopback_target_with_ssrf_bypass() {
-        // Inverse of the rejection case: when OVERSLASH_SSRF_ALLOW_PRIVATE=1
-        // (the e2e profile turns this on so loopback fakes are reachable)
-        // the gate's loopback-only check is bypassed and *every* override
-        // entry applies — including non-loopback ones. The bypass is the
-        // single audited escape hatch for tests; the production binary never
-        // sets it.
+    fn apply_base_overrides_keeps_a_target_inside_an_allowed_range() {
+        // Inverse of the rejection case, and the self-hosted one: an operator
+        // who declared 10.42.0.0/16 reachable can point a template's host at a
+        // service in it. The gate follows the same allow-list the guard does,
+        // so the override applies and the call then succeeds rather than being
+        // rewritten into a request the transport refuses.
+        //
+        // Note what is *not* re-opened: a hostname target, and an address
+        // outside the listed range, are still dropped — see the two tests
+        // above. There is no longer any value of any variable that makes every
+        // override apply.
         let mut cfg = empty_test_config();
+        cfg.service_base_overrides
+            .insert("api.github.com".into(), "http://10.42.0.7:9000".into());
         cfg.service_base_overrides.insert(
             "api.attacker.test".into(),
             "https://attacker.example.com".into(),
         );
-        let resolved = with_env_locked(true, || {
-            cfg.apply_base_overrides("https://api.attacker.test/foo")
+        let (inside, hostname) = with_env_locked(Some("10.42.0.0/16"), || {
+            (
+                cfg.apply_base_overrides("https://api.github.com/x"),
+                cfg.apply_base_overrides("https://api.attacker.test/foo"),
+            )
         });
-        assert_eq!(resolved, "https://attacker.example.com/foo");
+        assert_eq!(inside, "http://10.42.0.7:9000/x");
+        assert_eq!(
+            hostname, "https://api.attacker.test/foo",
+            "a hostname target is not an address and stays dropped"
+        );
     }
 
     #[test]

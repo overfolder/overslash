@@ -3,6 +3,10 @@
 //! validated IP via reqwest's `resolve` override to close the DNS-rebinding
 //! window between validation and dial.
 //!
+//! A self-hosted deployment that must reach its own private network says so
+//! with `OVERSLASH_SSRF_ALLOWED_CIDRS` — see [`operator_allowed_ranges`]. That
+//! is the only way past the deny-list; there is no boolean bypass.
+//!
 //! Every outbound request whose URL a caller can influence goes through here:
 //! template OpenAPI import, MCP dispatch, OAuth upstream discovery, the
 //! action-execution transport ([`crate::services::http_caller`]) and webhook
@@ -55,30 +59,260 @@ pub fn is_disallowed_ip(ip: &IpAddr) -> bool {
     }
 }
 
-/// Loopback in either family, including the v4-in-v6 spellings.
-fn is_loopback(ip: &IpAddr) -> bool {
+/// The instance-metadata ranges, which the allow-list **cannot** reach.
+///
+/// `169.254.169.254` is the single most valuable target an SSRF can hit: on
+/// every major cloud it hands out credentials for the instance's own service
+/// account, and a token minted there is not "one internal service" but the
+/// whole deployment. `fd00:ec2::/32` is AWS's IPv6 spelling of the same
+/// endpoint and lives inside ULA, so a self-hoster allowing their own ULA
+/// prefix would otherwise open it by accident.
+///
+/// These are denied **before** the allow-list is consulted, so no
+/// `OVERSLASH_SSRF_ALLOWED_CIDRS` entry — however broad, however
+/// well-intentioned — reaches them. Past that deny stands exactly one gate,
+/// [`METADATA_OVERRIDE_VAR`], and it does not open the ranges by itself: it
+/// only lets the allow-list cover them. Two deliberate acts, because one is
+/// what a mistake looks like.
+const METADATA_CIDRS: [&str; 2] = ["169.254.0.0/16", "fd00:ec2::/32"];
+
+/// The one gate past [`METADATA_CIDRS`]. Named `DANGER` for the same reason
+/// `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS` is: nobody should be able
+/// to set it without noticing what they are doing.
+const METADATA_OVERRIDE_VAR: &str = "OVERSLASH_DANGER_ALLOW_METADATA_CIDR";
+
+fn metadata_cidrs() -> &'static [ipnet::IpNet] {
+    static NETS: OnceLock<Vec<ipnet::IpNet>> = OnceLock::new();
+    NETS.get_or_init(|| {
+        METADATA_CIDRS
+            .iter()
+            .map(|c| c.parse().expect("static CIDR"))
+            .collect()
+    })
+}
+
+/// Whether `ip` is an instance-metadata address, in any of its spellings —
+/// including the v4-mapped and deprecated v4-compatible IPv6 forms, which are
+/// the same address wearing a different hat and must not slip past a check that
+/// only looked at `IpAddr::V4`.
+fn is_metadata_ip(ip: &IpAddr) -> bool {
+    if metadata_cidrs().iter().any(|net| net.contains(ip)) {
+        return true;
+    }
     match ip {
-        IpAddr::V4(v4) => v4.is_loopback(),
-        IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.to_ipv4().map(|m| m.is_loopback()).unwrap_or(false)
-        }
+        IpAddr::V6(v6) => v6.to_ipv4().is_some_and(|m| {
+            metadata_cidrs()
+                .iter()
+                .any(|net| net.contains(&IpAddr::V4(m)))
+        }),
+        IpAddr::V4(_) => false,
     }
 }
 
-/// The policy every production caller runs under.
+/// Whether the operator has explicitly opened [`METADATA_CIDRS`] to the
+/// allow-list. Read per call rather than cached: it is one boolean env lookup,
+/// and the cost of getting a stale answer here is higher than the cost of
+/// reading it.
+fn metadata_override_set() -> bool {
+    matches!(
+        std::env::var(METADATA_OVERRIDE_VAR).as_deref(),
+        Ok("true" | "1" | "yes")
+    )
+}
+
+/// Ranges the *deployment operator* has declared reachable, from
+/// `OVERSLASH_SSRF_ALLOWED_CIDRS` — a comma-separated list of CIDR blocks.
 ///
-/// Integration tests and `scripts/e2e-up.sh` point Mode A / Mode C / MCP at
-/// axum fakes bound to 127.0.0.1 (and at `localtest.me` subdomains that
-/// resolve there), so `OVERSLASH_SSRF_ALLOW_PRIVATE=1` opens **loopback, and
-/// only loopback**. A blanket bypass would mean the integration suite could
-/// never prove the guard refuses the addresses that actually matter — the
-/// cloud metadata endpoint at 169.254.169.254, RFC1918, CGNAT — because the
-/// one env var that makes the fakes reachable would make those reachable too.
-/// Narrowing it keeps the fakes working and keeps the refusal tests honest.
+/// Overslash self-hosted beside internal services has a need the deny-list
+/// would otherwise refuse outright: a GitLab on `10.42.0.7`, a MinIO on a
+/// container network, a webhook consumer that never leaves the VPC. Without a
+/// supported way to say so, the only way back would be to disable the guard —
+/// which is the vulnerability again. This is that way, and it is the **only**
+/// one. There is deliberately no boolean bypass, because a boolean cannot tell
+/// "my GitLab" from "the instance-metadata endpoint", and a knob that cannot
+/// make that distinction ends up set in places where it should not be.
 ///
-/// Production never sets the var: neither the binary nor the infra reads it.
+/// Four properties make it a narrowing rather than a hole:
+///
+/// - **Operator-only.** Read from the process environment. No org, user,
+///   template or API request can reach it, so a tenant cannot widen its own
+///   egress, and the multi-tenant deployment simply never sets it.
+/// - **Explicit about what it opens.** `10.42.0.0/16` permits that range and
+///   nothing else. Allowing one private range does not re-open link-local,
+///   CGNAT, or the rest of RFC1918.
+/// - **It cannot reach the metadata endpoint.** [`METADATA_CIDRS`] are denied
+///   before this list is consulted, so even `0.0.0.0/0` here does not open
+///   them. Only [`METADATA_OVERRIDE_VAR`] lifts that, and only in combination
+///   with an entry here that covers them.
+/// - **Checked against the resolved address, not the URL.** A hostname that
+///   resolves outside every listed range is refused like any other, so a
+///   rebind cannot smuggle an address in under an allow-listed name.
+/// - **Still pinned.** An allowed address is validated and pinned exactly like
+///   a public one, and a redirect away from it is re-checked from scratch.
+///
+/// Parsed once, at boot (see [`log_egress_configuration`]). A malformed entry
+/// is dropped with a warning rather than widening anything, and the accepted
+/// set is logged, because an operator deserves to see in the log that this
+/// control was loosened and by how much — see
+/// [`warn_about_egress_configuration`] for what else is said and when.
+///
+/// The integration suite and `scripts/e2e-up.sh` use the same mechanism —
+/// `127.0.0.0/8,::1/128`, because the fakes bind to loopback. One mechanism
+/// rather than a test-only bypass means the suite exercises the code path a
+/// self-hoster actually runs, and `tests/ssrf_guard.rs` still proves the
+/// metadata endpoint, RFC1918 and CGNAT are refused while it is set.
+fn operator_allowed_ranges() -> &'static [ipnet::IpNet] {
+    static RANGES: OnceLock<Vec<ipnet::IpNet>> = OnceLock::new();
+    RANGES.get_or_init(|| {
+        let ranges = std::env::var("OVERSLASH_SSRF_ALLOWED_CIDRS")
+            .map(|raw| parse_allowed_cidrs(&raw))
+            .unwrap_or_default();
+        warn_about_egress_configuration(&ranges);
+        ranges
+    })
+}
+
+/// Force the one-time parse and its log lines at boot.
+///
+/// The allow-list is otherwise read lazily, on the first guarded call, which
+/// would put a "your egress is wider than default" line somewhere in the middle
+/// of the day's traffic instead of next to the rest of startup — and would say
+/// nothing at all on a deployment that is misconfigured precisely because
+/// nothing is calling out.
+pub fn log_egress_configuration() {
+    let _ = operator_allowed_ranges();
+}
+
+/// Everything worth telling an operator about their egress configuration, in
+/// one place, reached on **every** startup — including the one where nothing is
+/// configured, because "you set the dangerous variable and it is doing nothing"
+/// is exactly the case that otherwise stays silent.
+///
+/// The four combinations of (allow-list overlaps metadata) × (override set) do
+/// not collapse into two. Whether the metadata endpoint is reachable is a
+/// question about *both* variables, and an operator should not have to hold
+/// both in their head to read the log — so each line names
+/// [`METADATA_OVERRIDE_VAR`] and says which way it is set.
+fn warn_about_egress_configuration(ranges: &[ipnet::IpNet]) {
+    let override_set = metadata_override_set();
+    let metadata = METADATA_CIDRS.join(", ");
+
+    if !ranges.is_empty() {
+        let listed = ranges
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        tracing::warn!(
+            "SSRF guard: outbound calls are permitted to operator-allowed ranges [{listed}]. \
+             Anyone who can make Overslash issue a request can reach them."
+        );
+    }
+
+    // An overlap is nearly always a mistake rather than a homelab — an operator
+    // reaching for 169.254.0.0/16 usually wants some other link-local device.
+    // Warned about either way, because the interesting question is not "is it
+    // blocked" but "did you mean this".
+    let overlapping: Vec<String> = ranges
+        .iter()
+        .filter(|n| overlaps_metadata(n))
+        .map(|n| n.to_string())
+        .collect();
+
+    match (overlapping.is_empty(), override_set) {
+        (false, true) => {
+            let overlapping = overlapping.join(", ");
+            tracing::warn!(
+                "SSRF guard: allowed range(s) [{overlapping}] overlap the cloud \
+                 instance-metadata ranges [{metadata}], and {METADATA_OVERRIDE_VAR} IS SET — so \
+                 the metadata endpoint is REACHABLE from this deployment. A token minted there \
+                 is the whole deployment, and anyone who can make Overslash issue a request can \
+                 mint one. Unset {METADATA_OVERRIDE_VAR} unless you are certain."
+            );
+        }
+        (false, false) => {
+            let overlapping = overlapping.join(", ");
+            tracing::warn!(
+                "SSRF guard: allowed range(s) [{overlapping}] overlap the cloud \
+                 instance-metadata ranges [{metadata}]. Those addresses stay REFUSED, because \
+                 {METADATA_OVERRIDE_VAR} is not set. Narrow the range if the overlap was \
+                 accidental; set {METADATA_OVERRIDE_VAR} only if reaching metadata is genuinely \
+                 what you want."
+            );
+        }
+        // The case the early-return used to swallow: the dangerous variable is
+        // set, and on its own it does nothing, because it does not grant — it
+        // only lets OVERSLASH_SSRF_ALLOWED_CIDRS cover those ranges. Someone who
+        // set it and stopped there is expecting an effect they have not got.
+        (true, true) => {
+            tracing::warn!(
+                "SSRF guard: {METADATA_OVERRIDE_VAR} is set, but no OVERSLASH_SSRF_ALLOWED_CIDRS \
+                 entry covers the instance-metadata ranges [{metadata}], so it grants nothing \
+                 and the metadata endpoint stays REFUSED. It does not open those ranges by \
+                 itself. Unset it, or — only if you mean it — also list the range."
+            );
+        }
+        (true, false) => {}
+    }
+}
+
+/// Whether an allowed range touches [`METADATA_CIDRS`] at all.
+///
+/// Containment in either direction: a `/32` inside the metadata range, and a
+/// range broad enough to swallow it, are both overlaps and both worth a word.
+/// Mismatched families never overlap, which `IpNet::contains` already gives us
+/// — so allowing `10.0.0.0/8` says nothing about `fd00:ec2::/32`.
+fn overlaps_metadata(range: &ipnet::IpNet) -> bool {
+    metadata_cidrs()
+        .iter()
+        .any(|m| m.contains(&range.network()) || range.contains(&m.network()))
+}
+
+/// Parse an `OVERSLASH_SSRF_ALLOWED_CIDRS` value.
+///
+/// Shared with the `OVERSLASH_SERVICE_BASE_OVERRIDES` gate in
+/// [`crate::config`], which asks the same question about a rewrite target that
+/// this module asks about a request target. One parser, so the two cannot come
+/// to different conclusions about the same string.
+///
+/// A malformed entry is dropped with a warning rather than widening anything:
+/// the fail-closed direction, since a typo that silently allowed a range would
+/// be the one mistake here that matters.
+pub(crate) fn parse_allowed_cidrs(raw: &str) -> Vec<ipnet::IpNet> {
+    let mut ranges = Vec::new();
+    for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        match entry.parse::<ipnet::IpNet>() {
+            Ok(net) => ranges.push(net),
+            Err(e) => tracing::warn!(
+                "OVERSLASH_SSRF_ALLOWED_CIDRS: ignoring {entry:?} — not a CIDR range ({e})"
+            ),
+        }
+    }
+    ranges
+}
+
+/// The policy every caller runs under: the metadata hard deny, then the
+/// operator's allow-list, then the deny-list.
 pub fn default_policy(ip: &IpAddr) -> bool {
-    if is_loopback(ip) && std::env::var("OVERSLASH_SSRF_ALLOW_PRIVATE").as_deref() == Ok("1") {
+    policy_with(ip, operator_allowed_ranges(), metadata_override_set())
+}
+
+/// [`default_policy`] with its two environment reads supplied.
+///
+/// Split so the decision table can be unit-tested without a test mutating
+/// process-wide state that its neighbours read.
+///
+/// The order is the whole design. The metadata deny comes **first**, so it is
+/// not something an allow-list entry can outrank; `allow_metadata` does not
+/// permit anything on its own, it only stops that first rule from
+/// short-circuiting, leaving the allow-list to decide as it would for any other
+/// address. An operator therefore needs two separate deliberate acts to reach
+/// the metadata endpoint, and neither reads like a typo.
+fn policy_with(ip: &IpAddr, allowed: &[ipnet::IpNet], allow_metadata: bool) -> bool {
+    if !allow_metadata && is_metadata_ip(ip) {
+        return true;
+    }
+    if allowed.iter().any(|net| net.contains(ip)) {
         return false;
     }
     is_disallowed_ip(ip)
@@ -381,21 +615,166 @@ mod tests {
         assert!(is_disallowed_ip(&IpAddr::V6(loopback_compat)));
     }
 
-    /// The hatch is scoped to loopback. This is the property the integration
-    /// tests lean on: the suite runs with the var set *and* still proves a
-    /// Mode A call to the metadata endpoint is refused.
-    #[test]
-    fn hatch_opens_loopback_only() {
-        let metadata = IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254));
-        let private = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
-        let loop4 = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let loop6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+    fn nets(list: &[&str]) -> Vec<ipnet::IpNet> {
+        list.iter().map(|s| s.parse().unwrap()).collect()
+    }
 
-        // `default_policy` reads the env, so assert the pieces it composes
-        // rather than mutating a process-wide var under a parallel runner.
-        assert!(is_loopback(&loop4) && is_loopback(&loop6));
-        assert!(!is_loopback(&metadata) && !is_loopback(&private));
-        assert!(is_disallowed_ip(&metadata) && is_disallowed_ip(&private));
+    /// The self-hosted case: a declared range is reachable, and *only* it.
+    #[test]
+    fn an_allowed_range_is_reachable_and_nothing_else_is() {
+        let allowed = nets(&["10.42.0.0/16"]);
+
+        assert!(
+            !policy_with(&IpAddr::V4(Ipv4Addr::new(10, 42, 0, 7)), &allowed, false),
+            "the listed range must be reachable"
+        );
+        assert!(
+            policy_with(&IpAddr::V4(Ipv4Addr::new(10, 99, 0, 7)), &allowed, false),
+            "a private address outside the listed range is still refused"
+        );
+        // Allowing one private range must not quietly re-open the ones that
+        // matter most.
+        assert!(policy_with(
+            &IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+            &allowed,
+            false
+        ));
+        assert!(policy_with(
+            &IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),
+            &allowed,
+            false
+        ));
+    }
+
+    /// The hard deny: **no** allow-list entry reaches the metadata ranges,
+    /// including one that covers the entire address space.
+    #[test]
+    fn no_allow_list_entry_reaches_metadata_without_the_override() {
+        let metadata = IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254));
+        for allowed in [
+            nets(&["169.254.169.254/32"]),
+            nets(&["169.254.0.0/16"]),
+            nets(&["0.0.0.0/0"]),
+        ] {
+            assert!(
+                policy_with(&metadata, &allowed, false),
+                "{allowed:?} must not reach the metadata endpoint"
+            );
+        }
+        // AWS's IPv6 spelling sits inside ULA, so a self-hoster allowing their
+        // own fd00::/8 prefix must not open it by accident.
+        let v6 = IpAddr::V6("fd00:ec2::254".parse().unwrap());
+        assert!(policy_with(&v6, &nets(&["fd00::/8"]), false));
+        // And the v4-in-v6 spellings are the same address wearing a hat.
+        for mapped in ["::ffff:169.254.169.254", "::169.254.169.254"] {
+            let ip = IpAddr::V6(mapped.parse().unwrap());
+            assert!(
+                policy_with(&ip, &nets(&["0.0.0.0/0", "::/0"]), false),
+                "{mapped} must not reach the metadata endpoint"
+            );
+        }
+    }
+
+    /// The predicate behind the startup warning. It has to fire on a range
+    /// that *contains* the metadata ranges as well as one contained by them,
+    /// and stay quiet on an unrelated private range.
+    #[test]
+    fn metadata_overlap_is_detected_in_both_directions() {
+        for overlapping in ["169.254.169.254/32", "169.254.0.0/16", "0.0.0.0/0"] {
+            let net: ipnet::IpNet = overlapping.parse().unwrap();
+            assert!(overlaps_metadata(&net), "{overlapping} overlaps");
+        }
+        // The IPv6 endpoint sits inside ULA, so a self-hoster's own prefix
+        // overlaps it and must be called out.
+        assert!(overlaps_metadata(&"fd00::/8".parse().unwrap()));
+        assert!(overlaps_metadata(&"::/0".parse().unwrap()));
+
+        for unrelated in ["10.0.0.0/8", "192.168.1.0/24", "127.0.0.0/8", "fe80::/10"] {
+            let net: ipnet::IpNet = unrelated.parse().unwrap();
+            assert!(!overlaps_metadata(&net), "{unrelated} does not overlap");
+        }
+    }
+
+    /// The override alone opens nothing — it only stops the hard deny from
+    /// short-circuiting, leaving the allow-list to decide. Two deliberate acts.
+    #[test]
+    fn the_override_alone_opens_nothing() {
+        let metadata = IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254));
+
+        assert!(
+            policy_with(&metadata, &[], true),
+            "override set but nothing allowed: link-local is still denied"
+        );
+        assert!(
+            policy_with(&metadata, &nets(&["10.42.0.0/16"]), true),
+            "override set and an unrelated range allowed: still denied"
+        );
+        assert!(
+            !policy_with(&metadata, &nets(&["169.254.169.254/32"]), true),
+            "override set *and* the range allowed: reachable, as documented"
+        );
+    }
+
+    /// This is the property the integration suite leans on: it runs with
+    /// loopback allowed and still proves the metadata endpoint is refused.
+    #[test]
+    fn the_suites_loopback_allowance_opens_loopback_only() {
+        let allowed = nets(&["127.0.0.0/8", "::1/128"]);
+
+        assert!(!policy_with(
+            &IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &allowed,
+            false
+        ));
+        assert!(!policy_with(
+            &IpAddr::V6(Ipv6Addr::LOCALHOST),
+            &allowed,
+            false
+        ));
+        for still_refused in [
+            IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),
+            IpAddr::V6("fd00::1".parse().unwrap()),
+        ] {
+            assert!(
+                policy_with(&still_refused, &allowed, false),
+                "{still_refused} must stay refused"
+            );
+        }
+    }
+
+    /// An empty allow-list is the production default: the deny-list alone.
+    #[test]
+    fn an_empty_allow_list_is_the_deny_list_alone() {
+        assert!(policy_with(&IpAddr::V4(Ipv4Addr::LOCALHOST), &[], false));
+        assert!(policy_with(
+            &IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            &[],
+            false
+        ));
+        assert!(!policy_with(
+            &IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+            &[],
+            false
+        ));
+    }
+
+    /// An IPv6 range works the same way, and does not leak into IPv4.
+    #[test]
+    fn an_allowed_ipv6_range_does_not_open_ipv4() {
+        let allowed = nets(&["fd00::/8"]);
+        assert!(!policy_with(
+            &IpAddr::V6("fd00::1".parse().unwrap()),
+            &allowed,
+            false
+        ));
+        assert!(policy_with(
+            &IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            &allowed,
+            false
+        ));
     }
 
     #[tokio::test]
@@ -465,9 +844,9 @@ mod tests {
     async fn outbound_client_pools_per_validated_address() {
         // A public IP literal: allowed by the default policy, needs no DNS,
         // and never dialed — only the client is built. Deliberately not a
-        // loopback address, because that would mean writing the hatch env var
-        // from a unit test that shares a process with the config tests which
-        // read it.
+        // loopback address, because reaching one would mean writing
+        // `OVERSLASH_SSRF_ALLOWED_CIDRS` from a unit test that shares a process
+        // with the config tests which read the same variable.
         let before = cached_client_count();
         outbound_client("http://8.8.8.8:9/x").await.unwrap();
         let after_first = cached_client_count();

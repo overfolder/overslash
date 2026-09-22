@@ -93,6 +93,22 @@ delete the hand-rolled check and call `ssrf_guard::outbound_client`. Not folded 
 because it is a different surface with different tests; tracked in
 [TODO.md §1.6](../../../TODO.md).
 
+**Self-hosted private networking.** The deny-list would otherwise make Overslash
+unable to reach a service on the operator's own network, so a self-hosted deployment
+declares the ranges it needs in `OVERSLASH_SSRF_ALLOWED_CIDRS`. Operator-only (process
+environment; no org, user, template or request can reach it), checked against the
+resolved address rather than the URL, specific about which ranges it opens, and still
+pinned. The multi-tenant deployment sets nothing, so its egress is public-only. There is
+no boolean bypass — the previous `OVERSLASH_SSRF_ALLOW_PRIVATE` is gone.
+
+The allow-list explicitly **cannot** reach the instance-metadata ranges (`169.254.0.0/16`,
+`fd00:ec2::/32`, and the v4-in-v6 spellings of both): they are denied before it is
+consulted, so not even `0.0.0.0/0` opens them. A second variable,
+`OVERSLASH_DANGER_ALLOW_METADATA_CIDR`, is the only gate past that, and it opens nothing
+by itself — it merely lets the allow-list cover those ranges. This is the answer to the
+one 5.1.5 finding a lab will not adjudicate: the metadata endpoint is unreachable on any
+configuration short of two deliberate, separately-named acts.
+
 **Still open — the default grant.** Whether `Everyone` should hold `admin` on `http` by
 default is a behaviour change for new orgs, so it was deliberately left to a human. The
 comment says it preserves a migrated default; it is now the difference between "raw HTTP
@@ -220,7 +236,7 @@ magic link.
 | 5.1.2 | Redirects and forwards allowlisted, or warned | `pass` | `sanitize_next` accepts only same-origin paths — must start `/`, must not start `//`, no CR/LF (`routes/auth/mod.rs:199-204`). OAuth `redirect_uri` is exact-match. The LB's catch-all 301 to `www` is static config (`infra/modules/api-lb/main.tf:154-181`) | — |
 | 5.1.3 | Avoid `eval()` / dynamic code execution; sandbox where unavoidable | `statement` | Overslash *does* evaluate user-supplied jq filters — that is a product feature. It runs in-process with syntax validation and a timeout, over JSON only, with no filesystem, network or shell reach (`services/response_filter.rs:145-199`). No `Command::new` exists in any server crate. Needs a written description of the sandbox | Med |
 | 5.1.4 | Protect against template injection | `statement` | `{param}` interpolation in action descriptions is plain string substitution, not a template engine. Server-rendered HTML interpolations pass `html_escape` (`routes/connect_gate.rs:294-307`, `routes/oauth_upstream.rs:620-680`). One rough edge to fix or disclose: `oauth_upstream.rs:646` puts an HTML-escaped value inside a JavaScript string literal (`window.location.href = '{return_to}'`) — the wrong encoder for that context. It holds today (entities are not decoded inside `<script>`, and `'` → `&#x27;` blocks termination) but backslash is not escaped | Med |
-| 5.1.5 | Prevent Server-Side Request Forgery | `statement` | **V1 fixed.** Action execution and webhook delivery now resolve, check and pin every target through `services/ssrf_guard.rs`, with redirects disabled; the transport (`services/http_caller.rs`) owns client construction so a new call site cannot bypass it. Tests: `tests/ssrf_guard.rs`. Two things still need saying to a lab: the residual issuer-discovery surface at `routes/org_idp_configs.rs:135`/`:521`, and the scoping argument in [dast-readiness.md](dast-readiness.md) — outbound HTTP on user-supplied input *is* the product, so the control is a deny-list of destinations, not an absence of egress | Medium |
+| 5.1.5 | Prevent Server-Side Request Forgery | `statement` | **V1 fixed.** Action execution and webhook delivery now resolve, check and pin every target through `services/ssrf_guard.rs`, re-running the guard on each redirect hop and stripping credentials that would cross a host boundary; the transport (`services/http_caller.rs`) owns client construction so a new call site cannot bypass it. Tests: `tests/ssrf_guard.rs`. Three things still need saying to a lab: the operator allow-list a self-hoster uses for its own private network (`OVERSLASH_SSRF_ALLOWED_CIDRS` — environment-only, never set on the multi-tenant deployment), the residual issuer-discovery surface at `routes/org_idp_configs.rs:135`/`:521`, and the scoping argument in [dast-readiness.md](dast-readiness.md) — outbound HTTP on user-supplied input *is* the product, so the control is a deny-list of destinations, not an absence of egress | Medium |
 | 5.1.6 | Protect against XPath / XML injection | `n/a` | No XML is parsed anywhere. No `quick-xml`, `roxmltree`, `xml-rs` or `serde-xml` in `Cargo.lock`; all payloads are JSON, and templates are YAML | — |
 | 5.1.7 | Context-aware escaping against reflected, stored and DOM XSS | `statement` | Six `{@html}` sinks in the dashboard, each fed by an escaping helper — `lib/api.ts:53-87` escapes both values and keys, `lib/approvals/format.ts:107-118`, `components/api-explorer/ResponsePanel.svelte:54-59`. No unescaped sink found. Svelte escapes by default elsewhere. Disclose the JS-context issue from 5.1.4; the scan confirms the rest | Med |
 | 5.1.8 | Protect against database injection | `pass` | Effectively every query is a compile-time-checked `sqlx::query!` / `query_as!` macro with bind parameters, and `clippy.toml:1-5` sets `disallowed-methods` to **ban** runtime-string SQL, enforced by `cargo clippy -D warnings` in CI. The only dynamic SQL is `services/key_rotation.rs:218-291`, built from a `const TARGETS: &[Target]` of `&'static str` table and column names | — |

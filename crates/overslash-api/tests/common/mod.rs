@@ -48,13 +48,15 @@ static BOOTSTRAP_FIXTURES: OnceLock<BootstrapFixtures> = OnceLock::new();
 /// nextest-safe: each test runs in its own process, all sharing one template.
 pub async fn test_pool() -> PgPool {
     // Every test fake binds to 127.0.0.1, and the SSRF guard sits under the
-    // action-execution transport, so without the loopback hatch a Mode A / B /
-    // C call to a fake is refused with a 400. This is the one preamble every
+    // action-execution transport, so unless loopback is declared reachable a
+    // Mode A / B / C call to a fake is refused with a 400. This is the one
+    // preamble every
     // integration test runs — there are seven `Config` constructors in this
-    // file and an eighth would be added without thinking about SSRF — and it
-    // runs before any of them, which matters because the base-override parser
-    // reads the same variable. The hatch opens loopback *only*, so a suite that
-    // runs with it on still proves the real refusals in `tests/ssrf_guard.rs`.
+    // integration test runs — there are seven `Config` constructors in this file
+    // and an eighth would be added without thinking about SSRF — and it runs
+    // before any of them, which matters because the base-override parser reads
+    // the same variable. It opens loopback *only*, so a suite that runs with it
+    // set still proves the real refusals in `tests/ssrf_guard.rs`.
     allow_loopback_ssrf();
 
     let base_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
@@ -1558,11 +1560,16 @@ pub async fn grant_service_to_everyone(
     svc_id
 }
 
-/// Open **loopback** for the SSRF guard so stubs bound to 127.0.0.1 are
-/// reachable. The production binary never sets this env var; the knob exists
-/// solely so tests can use loopback stubs. It is not a blanket bypass — the
-/// guard still refuses link-local, RFC1918 and CGNAT, which is what makes
-/// `tests/ssrf_guard.rs` meaningful while the whole suite runs with it on.
+/// Declare loopback reachable for the SSRF guard, so stubs bound to 127.0.0.1
+/// can be called.
+///
+/// Uses `OVERSLASH_SSRF_ALLOWED_CIDRS` — the operator allow-list a self-hosted
+/// deployment uses for its own private network — rather than a test-only
+/// bypass. Two things follow from that. The suite exercises the code path a
+/// real deployment runs, instead of a branch only tests can reach. And it opens
+/// loopback and nothing else, so `tests/ssrf_guard.rs` can prove the guard
+/// refuses link-local, RFC1918 and CGNAT *while the whole suite runs with this
+/// set*.
 ///
 /// [`test_pool`] and [`test_pool_bootstrapped`] call this, so no test needs an
 /// explicit call. The existing explicit calls are harmless (it is idempotent)
@@ -1574,7 +1581,7 @@ pub fn allow_loopback_ssrf() {
         // SAFETY: runs exactly once, before any thread that might read the
         // env concurrently (Once provides the happens-before).
         unsafe {
-            std::env::set_var("OVERSLASH_SSRF_ALLOW_PRIVATE", "1");
+            std::env::set_var("OVERSLASH_SSRF_ALLOWED_CIDRS", "127.0.0.0/8,::1/128");
         }
     });
 }

@@ -60,7 +60,13 @@ a vulnerability — passes cleanly. `crates/overslash-api/tests/ssrf_guard.rs` i
 evidence to hand the lab, including that a 302 toward the metadata endpoint is returned
 rather than followed.
 
-One caveat to state in the memo rather than let a scanner find: OIDC issuer discovery
+Two things for the memo. First, the allow-list: a self-hosted deployment can declare its
+own private ranges in `OVERSLASH_SSRF_ALLOWED_CIDRS`, which is read from the process
+environment and is therefore not reachable by anything a scanner can send. A scan target
+should have it unset, and the memo should say so — an operator who set it and then
+commissioned a scan would get findings about their own network, correctly.
+
+Second, a caveat to state rather than let a scanner find: OIDC issuer discovery
 (`routes/org_idp_configs.rs`) still runs behind a hand-rolled string check instead of the
 shared guard, so a DNS name that resolves inward passes it. Org-admin only, and tracked
 in TODO §1.6 — but a scan run with an admin credential will reach it.
