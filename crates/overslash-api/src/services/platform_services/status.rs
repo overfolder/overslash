@@ -91,7 +91,22 @@ pub(crate) async fn resolve_effective_scopes(
     template: &ServiceDefinition,
     row: &ServiceInstanceRow,
 ) -> Option<Option<Vec<String>>> {
-    if let Some(conn_id) = row.connection_id {
+    // Whether *this instance's mode* authenticates through a connection at all.
+    // Gating every branch below on it is what keeps this function mirroring
+    // `resolve_instance_auth`, which gates its own connection rungs the same
+    // way.
+    let mode_has_oauth = template
+        .oauth_provider_for_mode(row.auth_mode.as_deref())
+        .is_some();
+
+    // A pinned connection counts only while the mode still uses one. An
+    // instance switched from OAuth to a token keeps its `connection_id` — that
+    // is deliberate, so switching back costs nothing — and reading it here
+    // would hand the classifier `Known(scopes)` for a mode that resolves no
+    // OAuth at all. `derive_credentials_status` would then fall through its
+    // `!has_oauth` guard and return `None`, dropping the badge entirely
+    // instead of reporting on the token the instance actually uses.
+    if let Some(conn_id) = row.connection_id.filter(|_| mode_has_oauth) {
         return scope
             .get_connection(conn_id)
             .await
@@ -106,10 +121,10 @@ pub(crate) async fn resolve_effective_scopes(
     if !row.use_default_connection {
         return None;
     }
-    // Mode-scoped, mirroring `resolve_instance_auth`: an instance whose
-    // operator picked a token mode never falls back to an ambient connection
-    // for the provider, so reporting one here would classify a perfectly
-    // healthy token instance against somebody else's OAuth grant.
+    // Same reasoning one rung down: a token mode never falls back to an
+    // ambient connection for the provider, so reporting one here would
+    // classify a perfectly healthy token instance against somebody else's
+    // OAuth grant.
     let provider = template.oauth_provider_for_mode(row.auth_mode.as_deref())?;
     let owner = row.owner_identity_id?;
     UserScope::new(row.org_id, owner, db.clone())

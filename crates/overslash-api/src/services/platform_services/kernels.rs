@@ -167,28 +167,37 @@ pub async fn kernel_list_services(
             let tpl_key = (row.owner_identity_id, row.template_key.clone());
             let template = templates.get(&tpl_key);
             let credentials_status = template.and_then(|tpl| {
-                let scopes: ScopeKnowledge = if let Some(cid) = row.connection_id {
-                    match connections_by_id.get(&cid) {
-                        Some(c) => scope_knowledge(c.scopes.as_deref()),
-                        None => ScopeKnowledge::NoConnection,
-                    }
-                } else if !row.use_default_connection {
-                    // Opted out of the default fallback and nothing pinned:
-                    // execution resolves no connection, so the badge is
-                    // NoConnection regardless of what the owner has for the
-                    // provider (a sibling instance may have populated the cache).
-                    ScopeKnowledge::NoConnection
-                } else if let (Some(owner), Some(provider)) = (
-                    row.owner_identity_id,
-                    tpl.oauth_provider_for_mode(row.auth_mode.as_deref()),
-                ) {
-                    match conn_by_owner_provider.get(&(owner, provider.to_string())) {
-                        Some(opt) => scope_knowledge(opt.as_deref()),
-                        None => ScopeKnowledge::NoConnection,
-                    }
-                } else {
-                    ScopeKnowledge::NoConnection
-                };
+                // Same gate as `resolve_effective_scopes`, which this hot path
+                // is the bulk twin of: a pinned connection counts only while
+                // the instance's mode still authenticates through one. A
+                // switched instance keeps its `connection_id` on purpose, and
+                // reading it in a token mode would drop the badge entirely.
+                let mode_has_oauth = tpl
+                    .oauth_provider_for_mode(row.auth_mode.as_deref())
+                    .is_some();
+                let scopes: ScopeKnowledge =
+                    if let Some(cid) = row.connection_id.filter(|_| mode_has_oauth) {
+                        match connections_by_id.get(&cid) {
+                            Some(c) => scope_knowledge(c.scopes.as_deref()),
+                            None => ScopeKnowledge::NoConnection,
+                        }
+                    } else if !row.use_default_connection {
+                        // Opted out of the default fallback and nothing pinned:
+                        // execution resolves no connection, so the badge is
+                        // NoConnection regardless of what the owner has for the
+                        // provider (a sibling instance may have populated the cache).
+                        ScopeKnowledge::NoConnection
+                    } else if let (Some(owner), Some(provider)) = (
+                        row.owner_identity_id,
+                        tpl.oauth_provider_for_mode(row.auth_mode.as_deref()),
+                    ) {
+                        match conn_by_owner_provider.get(&(owner, provider.to_string())) {
+                            Some(opt) => scope_knowledge(opt.as_deref()),
+                            None => ScopeKnowledge::NoConnection,
+                        }
+                    } else {
+                        ScopeKnowledge::NoConnection
+                    };
                 derive_credentials_status(
                     tpl,
                     row.auth_mode.as_deref(),

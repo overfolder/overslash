@@ -431,3 +431,111 @@ async fn resending_the_current_mode_is_not_a_switch() {
     );
     assert!(same.get("setup").is_none(), "{same}");
 }
+
+/// A switched instance keeps its old `connection_id` on purpose — that is what
+/// makes switching back free. The status path must therefore not read it while
+/// the instance is in a token mode.
+///
+/// Regression: `resolve_effective_scopes` used the pinned connection
+/// unconditionally, so it answered `Known(scopes)` for a token-mode instance.
+/// `derive_credentials_status` then fell through its `!has_oauth` guard and
+/// returned `None` — dropping the credentials badge entirely rather than
+/// reporting on the token the instance actually authenticates with.
+#[tokio::test]
+async fn a_stale_connection_does_not_blank_the_badge_after_switching_to_a_token() {
+    ensure_oauth_env();
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, _ident, api_key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    seed_dual_mode_template(&base, &client, &admin_key, "dm-stale").await;
+
+    // An OAuth-mode instance with a connection actually pinned.
+    let (status, created) = create_service(
+        &base,
+        &client,
+        &api_key,
+        json!({
+            "template_key": "dm-stale",
+            "name": "svc-stale",
+            "auth_mode": "oauth",
+            "skip_connect": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let instance_id = uuid::Uuid::parse_str(&id).unwrap();
+    let owner_id: uuid::Uuid = created["owner_identity_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let connection_id = uuid::Uuid::new_v4();
+    sqlx::query!(
+        "INSERT INTO connections \
+         (id, org_id, identity_id, provider_key, encrypted_access_token, scopes, account_email, is_default) \
+         VALUES ($1, $2, $3, 'google', $4, ARRAY['openid']::TEXT[], 'someone@example.com', false)",
+        connection_id,
+        org_id,
+        owner_id,
+        b"fake_token".as_ref(),
+    )
+    .execute(&pool)
+    .await
+    .expect("seed connection");
+    sqlx::query!(
+        "UPDATE service_instances SET connection_id = $2 WHERE id = $1",
+        instance_id,
+        connection_id
+    )
+    .execute(&pool)
+    .await
+    .expect("pin connection");
+
+    let owner_key =
+        key_for_identity(&base, &client, &admin_key, org_id, &owner_id.to_string()).await;
+
+    // Switch to the token mode and bind its slot in the same call.
+    let resp = client
+        .put(format!("{base}/v1/services/{id}/manage"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&json!({ "auth_mode": "token", "credentials": { "token": "my_vault_token" } }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let switched: Value = resp.json().await.unwrap();
+    assert_eq!(switched["auth_mode"], "token", "{switched}");
+
+    // The connection is deliberately still there…
+    let still_pinned: Option<uuid::Uuid> = sqlx::query_scalar!(
+        "SELECT connection_id FROM service_instances WHERE id = $1",
+        instance_id
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        still_pinned,
+        Some(connection_id),
+        "switching must not drop the old connection — that is what makes switching back free"
+    );
+
+    // …and the badge reports on the token, rather than vanishing.
+    let detail: Value = client
+        .get(format!("{base}/v1/services/svc-stale"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        detail["credentials_status"], "ok",
+        "a token-mode instance with its slot bound must report ok, not lose its badge to a \
+         stale connection: {detail}"
+    );
+}

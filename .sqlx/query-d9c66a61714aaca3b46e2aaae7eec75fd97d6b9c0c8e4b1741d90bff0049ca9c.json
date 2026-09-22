@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO connections (id, org_id, identity_id, provider_key, encrypted_access_token, scopes, account_email, is_default) VALUES ($1, $2, $3, 'google', $4, ARRAY['openid']::TEXT[], 'someone@example.com', false)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d9c66a61714aaca3b46e2aaae7eec75fd97d6b9c0c8e4b1741d90bff0049ca9c"
+}
