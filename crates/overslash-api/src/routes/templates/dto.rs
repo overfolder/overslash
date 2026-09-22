@@ -56,6 +56,15 @@ pub(super) struct TemplateDetail {
     /// slots, so this is NOT derivable from `auth` on the client.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) secrets: Vec<overslash_core::types::SecretSlot>,
+    /// The alternative credential kinds this template accepts, of which an
+    /// instance picks one at creation (`auth_mode`).
+    ///
+    /// Always at least one entry — a template declaring no
+    /// `x-overslash-auth-modes` has a single implicit mode holding every
+    /// scheme, which is the "all of these, together" reading. The dashboard
+    /// renders a picker only when there is more than one, and cannot derive
+    /// these from `auth`: the labels and the default live here.
+    pub(super) auth_modes: Vec<overslash_core::types::AuthMode>,
     /// Canonical OpenAPI 3.1 YAML source — the editable document. For DB
     /// templates this is the stored, alias-normalized text. For global
     /// templates it's the shipped YAML verbatim.

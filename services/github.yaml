@@ -4,8 +4,9 @@
 # on the target repos/orgs. The authorize/token endpoints are identical to the
 # classic OAuth App flow; user access tokens expire (~8h) and refresh via the
 # standard refresh grant, which the gateway already performs automatically.
-# Orgs still on an OAuth App client can use the hidden `github_legacy_oauth`
-# template instead.
+# An org that would rather not run a GitHub App at all can instead pick this
+# template's `token` auth mode at creation and paste a personal access token;
+# the two are alternatives on the same host and the same paths.
 openapi: 3.1.0
 info:
   title: GitHub
@@ -20,7 +21,36 @@ info:
 servers:
   - url: https://api.github.com
 components:
+  # GitHub accepts a user-to-server OAuth token and a personal access token in
+  # the very same `Authorization: Bearer` header, so what differs between these
+  # two modes is not the injection but where the credential comes from — and
+  # therefore what bounds it. The App mode is bounded by the app's fine-grained
+  # permissions and its installations; the token mode by whatever the PAT was
+  # granted.
+  x-overslash-auth-modes:
+    oauth:
+      label: GitHub App
+      description: >-
+        Sign in through the configured GitHub App. Access is the intersection
+        of the app's permissions and the installations you can reach, and the
+        token refreshes itself.
+      default: true
+      schemes: [oauth]
+    token:
+      label: Personal access token
+      description: >-
+        Paste a fine-grained or classic PAT. Access is whatever the token was
+        granted, and it stops working when the token expires or is revoked.
+      schemes: [token]
   securitySchemes:
+    token:
+      type: http
+      scheme: bearer
+      x-overslash-label: GitHub personal access token
+      description: >-
+        A fine-grained or classic personal access token. A fine-grained token
+        is preferable: it names the repositories it may touch.
+      default_secret_name: github_pat
     oauth:
       type: oauth2
       provider: github

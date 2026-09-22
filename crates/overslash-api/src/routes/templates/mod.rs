@@ -312,6 +312,7 @@ async fn db_row_to_detail(
         icon_url: resolve_icon_url(def.icon.as_ref(), &state.config.public_url),
         auth,
         secrets: def.all_slots(),
+        auth_modes: def.auth_modes(),
         openapi: openapi_yaml,
         actions: actions_from_definition(def),
         scopes: template_required_scopes(def),

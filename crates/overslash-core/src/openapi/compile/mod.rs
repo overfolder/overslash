@@ -146,6 +146,7 @@ pub fn compile_service(
                 auth: Vec::new(),
                 secrets: Vec::new(),
                 config: Vec::new(),
+                auth_modes: Vec::new(),
             }
         }
     };
@@ -153,6 +154,7 @@ pub fn compile_service(
         auth,
         secrets,
         config,
+        auth_modes,
     } = creds;
 
     // Document root-level `security`, applied as the default required-scopes
@@ -319,6 +321,7 @@ pub fn compile_service(
             auth,
             secrets,
             config,
+            declared_auth_modes: auth_modes,
             actions,
             default_timeout_ms,
             default_additional_properties,

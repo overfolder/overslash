@@ -414,6 +414,7 @@ mod verb_host_path_tests {
 
     fn svc_with_hosts(hosts: Vec<&str>) -> ServiceDefinition {
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),

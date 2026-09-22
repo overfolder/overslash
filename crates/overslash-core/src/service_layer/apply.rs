@@ -168,6 +168,9 @@ pub fn apply_delta(
         // Credential slots ride with `auth`: a mask may add actions and hosts,
         // never rebind credentials.
         secrets: base.secrets.clone(),
+        // And so do the alternatives between them: a layer that could drop a
+        // mode would strand every instance that had picked it.
+        declared_auth_modes: base.declared_auth_modes.clone(),
         // Same reasoning for the non-secret inputs those credentials read: a
         // layer presets their *values* through `instance_defaults.config`, it
         // never redeclares them.

@@ -76,6 +76,10 @@ pub fn parse_template_parts(
         // parts-built definition whose key matches a shipped asset gets it.
         icon: crate::service_icon::ServiceIcon::implicit_for_key(key),
         auth,
+        // Parts-based CRUD names no auth modes either; like `secrets` they
+        // live in the stored OpenAPI doc. Empty reads as "no alternation",
+        // which is the right answer for a definition assembled field by field.
+        declared_auth_modes: Vec::new(),
         // Likewise no `secrets` input: credential slots live in the stored
         // OpenAPI doc. An auth entry whose template names an undeclared slot
         // still resolves — `ServiceDefinition::slots_for` treats it as the

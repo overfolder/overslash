@@ -89,6 +89,7 @@ mod create_status_tests {
             action.test = Some(Default::default());
         }
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             key: "resend".into(),
             display_name: "Resend".into(),

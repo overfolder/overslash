@@ -49,6 +49,8 @@ fn http_pseudo_service() -> ServiceDefinition {
         // rather than a vendor mark — Mode A stands for "any URL you supply".
         icon: ServiceIcon::implicit_for_key(HTTP_PSEUDO_SERVICE),
         auth: Vec::new(),
+        // No credentials, so nothing to choose between.
+        declared_auth_modes: Vec::new(),
         secrets: Vec::new(),
         config: Vec::new(),
         actions: HashMap::new(),

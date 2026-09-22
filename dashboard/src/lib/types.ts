@@ -362,6 +362,28 @@ export interface ResolutionReport {
   warnings: ValidationMessage[];
 }
 
+/**
+ * One of the alternative credential kinds a template accepts, of which an
+ * instance picks exactly one at creation.
+ *
+ * Always at least one — a template that declares no
+ * `x-overslash-auth-modes` has a single implicit mode holding every scheme,
+ * which is the "all of these, together" reading (`email`'s gateway key plus
+ * its mailbox login). The picker renders only when there is more than one.
+ */
+export interface AuthMode {
+	/** Stable key, as persisted on the instance (`oauth`, `token`). */
+	key: string;
+	/** Display name for the picker. Falls back to `key` when empty. */
+	label?: string;
+	/** Help text under the picker's option. */
+	description?: string;
+	/** The `securitySchemes` keys this mode activates. */
+	schemes: string[];
+	/** Whether a create that names no mode resolves to this one. */
+	default?: boolean;
+}
+
 export interface TemplateDetail {
   key: string;
   display_name: string;
@@ -379,6 +401,11 @@ export interface TemplateDetail {
    * is not derivable from `auth`; it is what the credentials form renders.
    */
   secrets?: SecretSlot[];
+  /**
+   * The alternative credential kinds this template accepts. Always at least
+   * one entry; the wizard shows a picker only when there is more than one.
+   */
+  auth_modes?: AuthMode[];
   /** Raw OpenAPI 3.1 YAML source. This is the editable document. */
   openapi: string;
   /** Compiled actions view for rendering the detail page without re-parsing. */
@@ -754,6 +781,12 @@ export interface ServiceInstanceSummary {
   url?: string;
   /** When `false`, an unbound instance won't fall back to the identity's default connection for the provider. Defaults to `true`. */
   use_default_connection: boolean;
+  /**
+   * Which of the template's alternative credential kinds this instance
+   * authenticates with. Absent when it is on the template's default, and on
+   * every template that declares only one.
+   */
+  auth_mode?: string;
   groups?: ServiceGroupRef[];
   credentials_status?: CredentialsStatus;
   /** The template's credential probe. Present means a Test button may be offered. */
@@ -833,6 +866,12 @@ export interface SetupRequestRef {
 export interface CreateServiceRequest {
   template_key: string;
   name?: string;
+  /**
+   * Which of the template's alternative credential kinds to use. Omitted
+   * resolves to the template's default; an unknown key is a 400 naming the
+   * ones that exist.
+   */
+  auth_mode?: string;
   connection_id?: string;
   secret_name?: string;
   /** Per-scheme secret bindings: securityScheme key → secret NAME in the org vault. */
@@ -890,6 +929,13 @@ export interface UpdateServiceRequest {
   config?: Record<string, string>;
   url?: string | null;
   use_default_connection?: boolean;
+  /**
+   * Switch which of the template's alternative credential kinds this instance
+   * uses. Destroys nothing — the other mode's credential stays bound — but the
+   * instance drops back to `pending_setup` and the response carries a fresh
+   * `connect.auth_url` or `setup.setup_url` for the new mode.
+   */
+  auth_mode?: string;
 }
 
 // -- OAuth --

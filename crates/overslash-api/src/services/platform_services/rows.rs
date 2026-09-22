@@ -7,6 +7,7 @@ pub fn row_to_summary(
     groups: Vec<ServiceGroupRef>,
 ) -> ServiceInstanceSummary {
     ServiceInstanceSummary {
+        auth_mode: row.auth_mode.clone(),
         // Set by the caller, which is where the resolved template is in hand —
         // same as `credentials_status`.
         icon_url: None,
@@ -31,6 +32,7 @@ pub fn row_to_summary(
 
 pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
     ServiceInstanceDetail {
+        auth_mode: row.auth_mode.clone(),
         icon_url: None,
         id: row.id,
         org_id: row.org_id,

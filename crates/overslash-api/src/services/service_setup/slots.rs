@@ -32,7 +32,29 @@ use crate::error::AppError;
 /// (the legacy scalar alias, composed credentials) that
 /// `status::derive_credentials_status` owns for the badge; [`is_bound`] is the
 /// single-slot half of it, shared so the two cannot disagree.
-pub fn instance_slots(template: &ServiceDefinition) -> Vec<SecretSlot> {
+///
+/// Narrowed to the instance's auth mode: on a template offering OAuth *or* a
+/// token, the slots of the alternative the operator did not pick are not slots
+/// this instance owes anybody a value for.
+pub fn instance_slots(template: &ServiceDefinition, mode: Option<&str>) -> Vec<SecretSlot> {
+    template
+        .all_slots_for_mode(mode)
+        .into_iter()
+        .filter(|s| s.source == SecretSource::Instance && !s.key.is_empty())
+        .collect()
+}
+
+/// Every per-instance credential slot the template declares, across *all* its
+/// auth modes.
+///
+/// The counterpart to [`instance_slots`], and the distinction matters on a
+/// dual-mode template: `instance_slots(t, None)` means "the slots of the
+/// template's **default** mode", which is the right answer for what an
+/// instance owes and the wrong one for what a caller may legitimately bind.
+/// Binding the credential for the mode you are about to switch to is allowed —
+/// a binding for an inactive mode injects nothing, because `auth_for_mode`
+/// never returns its scheme.
+pub fn all_instance_slots(template: &ServiceDefinition) -> Vec<SecretSlot> {
     template
         .all_slots()
         .into_iter()
@@ -50,6 +72,7 @@ pub fn instance_slots(template: &ServiceDefinition) -> Vec<SecretSlot> {
 /// available answers.
 pub fn unprovisioned_instance_slots(
     template: &ServiceDefinition,
+    mode: Option<&str>,
     credentials: &CredentialsMap,
     legacy_secret_name: Option<&str>,
 ) -> Vec<String> {
@@ -66,7 +89,7 @@ pub fn unprovisioned_instance_slots(
     // Counting only keyed slots here would report "provisioned" while the
     // badge reads `NeedsAuthentication`.
     let sole_instance_slot = template
-        .all_slots()
+        .all_slots_for_mode(mode)
         .iter()
         .filter(|s| s.source == SecretSource::Instance)
         .count()
@@ -77,7 +100,7 @@ pub fn unprovisioned_instance_slots(
         return Vec::new();
     }
 
-    instance_slots(template)
+    instance_slots(template, mode)
         .into_iter()
         .filter(|s| !s.optional && !is_bound(credentials, &s.key))
         .map(|s| s.key)
@@ -97,11 +120,12 @@ pub fn unprovisioned_instance_slots(
 /// read as complete while a credential is outstanding.
 pub fn unbound_instance_slots(
     template: &ServiceDefinition,
+    mode: Option<&str>,
     credentials: &CredentialsMap,
     legacy_secret_name: Option<&str>,
 ) -> Vec<SecretSlot> {
-    let missing = unprovisioned_instance_slots(template, credentials, legacy_secret_name);
-    instance_slots(template)
+    let missing = unprovisioned_instance_slots(template, mode, credentials, legacy_secret_name);
+    instance_slots(template, mode)
         .into_iter()
         .filter(|s| !s.default_secret_name.is_empty() && missing.contains(&s.key))
         .collect()
@@ -192,7 +216,7 @@ fn resolve_slot_key(
     template: &ServiceDefinition,
     credential_key: Option<&str>,
 ) -> Result<String, AppError> {
-    let slots = instance_slots(template);
+    let slots = all_instance_slots(template);
     let key = match credential_key {
         Some(k) => k.to_string(),
         // No key named: only unambiguous when the template has exactly one
@@ -272,6 +296,7 @@ mod tests {
 
     fn def(auth: Vec<ServiceAuth>, secrets: Vec<SecretSlot>) -> ServiceDefinition {
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             key: "acme".into(),
             display_name: "Acme".into(),
@@ -303,7 +328,12 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(
-            keys(unbound_instance_slots(&d, &CredentialsMap::new(), None)),
+            keys(unbound_instance_slots(
+                &d,
+                None,
+                &CredentialsMap::new(),
+                None
+            )),
             vec!["token"]
         );
     }
@@ -315,7 +345,7 @@ mod tests {
             Vec::new(),
         );
         let bound = CredentialsMap::from([("token".to_string(), "acme_api_key".to_string())]);
-        assert!(unbound_instance_slots(&d, &bound, None).is_empty());
+        assert!(unbound_instance_slots(&d, None, &bound, None).is_empty());
     }
 
     /// The legacy scalar `secret_name` is how every pre-slots instance stores
@@ -328,11 +358,17 @@ mod tests {
             Vec::new(),
         );
         assert!(
-            unbound_instance_slots(&d, &CredentialsMap::new(), Some("acme_api_key")).is_empty()
+            unbound_instance_slots(&d, None, &CredentialsMap::new(), Some("acme_api_key"))
+                .is_empty()
         );
         // …and an empty one covers nothing.
         assert_eq!(
-            keys(unbound_instance_slots(&d, &CredentialsMap::new(), Some(""))),
+            keys(unbound_instance_slots(
+                &d,
+                None,
+                &CredentialsMap::new(),
+                Some("")
+            )),
             vec!["token"]
         );
     }
@@ -353,7 +389,12 @@ mod tests {
             ],
         );
         assert_eq!(
-            keys(unbound_instance_slots(&d, &CredentialsMap::new(), None)),
+            keys(unbound_instance_slots(
+                &d,
+                None,
+                &CredentialsMap::new(),
+                None
+            )),
             vec!["acme_user"]
         );
     }
@@ -375,7 +416,12 @@ mod tests {
             ],
         );
         assert_eq!(
-            keys(unbound_instance_slots(&d, &CredentialsMap::new(), None)),
+            keys(unbound_instance_slots(
+                &d,
+                None,
+                &CredentialsMap::new(),
+                None
+            )),
             vec!["acme_user"]
         );
     }
@@ -396,7 +442,12 @@ mod tests {
             ],
         );
         assert_eq!(
-            keys(unbound_instance_slots(&d, &CredentialsMap::new(), None)),
+            keys(unbound_instance_slots(
+                &d,
+                None,
+                &CredentialsMap::new(),
+                None
+            )),
             vec!["acme_user"]
         );
     }
@@ -418,12 +469,18 @@ mod tests {
                 slot("acme_pass", "acme_pass", SecretSource::Instance),
             ],
         );
-        let mut got = keys(unbound_instance_slots(&d, &CredentialsMap::new(), None));
+        let mut got = keys(unbound_instance_slots(
+            &d,
+            None,
+            &CredentialsMap::new(),
+            None,
+        ));
         got.sort();
         assert_eq!(got, vec!["acme_pass", "acme_user"]);
 
         let mut with_legacy = keys(unbound_instance_slots(
             &d,
+            None,
             &CredentialsMap::new(),
             Some("acme_user"),
         ));
@@ -538,7 +595,7 @@ mod tests {
         );
         let bound = CredentialsMap::from([("acme_user".to_string(), "acme_user".to_string())]);
         assert_eq!(
-            keys(unbound_instance_slots(&d, &bound, None)),
+            keys(unbound_instance_slots(&d, None, &bound, None)),
             vec!["acme_pass"]
         );
     }

@@ -28,7 +28,41 @@ info:
 servers:
   - url: https://api.figma.com
 components:
+  # Figma accepts either a personal access token or an OAuth access token on
+  # the same host and the same paths, so the two are alternatives rather than
+  # companions — an instance picks one at creation and uses it for every call.
+  #
+  # `security:` on the operations below stays what it is everywhere in this
+  # gateway: the *scopes* an OAuth connection needs. It is not the alternation
+  # — it has nowhere to carry a display label or a stable key, and a token mode
+  # has no scopes to declare. That is what this block is for.
+  x-overslash-auth-modes:
+    oauth:
+      label: Sign in with Figma
+      description: >-
+        Connect a Figma account. Access is bounded by the scopes granted at
+        connect time, and the token refreshes itself.
+      default: true
+      schemes: [oauth]
+    token:
+      label: Personal access token
+      description: >-
+        Paste a token generated under Figma → Settings → Security → Personal
+        access tokens. Scoped by what you tick when creating it, and it does
+        not expire until you revoke it.
+      schemes: [token]
   securitySchemes:
+    token:
+      type: apiKey
+      in: header
+      # Figma's own header, not `Authorization` — a PAT sent as a bearer is
+      # rejected.
+      name: X-Figma-Token
+      x-overslash-label: Figma personal access token
+      description: >-
+        A Figma personal access token. Grants exactly what the account can
+        already see, bounded by the scopes ticked when the token was made.
+      default_secret_name: figma_pat
     oauth:
       type: oauth2
       # Resolves the Figma OAuth provider row seeded in migration

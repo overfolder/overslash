@@ -26,6 +26,7 @@ pub async fn compute_credentials_status(
     };
     derive_credentials_status(
         &template,
+        row.auth_mode.as_deref(),
         scopes,
         &row.credentials,
         row.secret_name.as_deref(),
@@ -90,7 +91,22 @@ pub(crate) async fn resolve_effective_scopes(
     template: &ServiceDefinition,
     row: &ServiceInstanceRow,
 ) -> Option<Option<Vec<String>>> {
-    if let Some(conn_id) = row.connection_id {
+    // Whether *this instance's mode* authenticates through a connection at all.
+    // Gating every branch below on it is what keeps this function mirroring
+    // `resolve_instance_auth`, which gates its own connection rungs the same
+    // way.
+    let mode_has_oauth = template
+        .oauth_provider_for_mode(row.auth_mode.as_deref())
+        .is_some();
+
+    // A pinned connection counts only while the mode still uses one. An
+    // instance switched from OAuth to a token keeps its `connection_id` — that
+    // is deliberate, so switching back costs nothing — and reading it here
+    // would hand the classifier `Known(scopes)` for a mode that resolves no
+    // OAuth at all. `derive_credentials_status` would then fall through its
+    // `!has_oauth` guard and return `None`, dropping the badge entirely
+    // instead of reporting on the token the instance actually uses.
+    if let Some(conn_id) = row.connection_id.filter(|_| mode_has_oauth) {
         return scope
             .get_connection(conn_id)
             .await
@@ -105,7 +121,11 @@ pub(crate) async fn resolve_effective_scopes(
     if !row.use_default_connection {
         return None;
     }
-    let provider = template_oauth_provider(template)?;
+    // Same reasoning one rung down: a token mode never falls back to an
+    // ambient connection for the provider, so reporting one here would
+    // classify a perfectly healthy token instance against somebody else's
+    // OAuth grant.
+    let provider = template.oauth_provider_for_mode(row.auth_mode.as_deref())?;
     let owner = row.owner_identity_id?;
     UserScope::new(row.org_id, owner, db.clone())
         .find_my_connection_by_provider(provider)
@@ -182,25 +202,35 @@ pub fn action_scope_coverage(
 /// Pure classifier: takes a template + scope knowledge + the instance's
 /// credential bindings and returns a [`CredentialsStatus`] or `None` when the
 /// template has no auth scheme to evaluate.
+///
+/// `auth_mode` narrows the template to the alternative this instance actually
+/// uses. That narrowing is the whole reason a dual-mode template works: read
+/// template-wide, a template offering OAuth *or* a token always "has OAuth",
+/// so a token-bound instance reported `NeedsAuthentication` forever and — since
+/// [D86] gates go-live on the credential probe — could never become callable.
 pub fn derive_credentials_status(
     template: &ServiceDefinition,
+    auth_mode: Option<&str>,
     scopes: ScopeKnowledge<'_>,
     credentials: &CredentialsMap,
     secret_name: Option<&str>,
 ) -> Option<CredentialsStatus> {
+    let mode_auth = template.auth_for_mode(auth_mode);
     // An OAuth MCP server (mcp.auth kind: oauth) needs the same connection
     // dance as an HTTP OAuth template, so fold it into `has_oauth`.
+    //
+    // MCP carries its own single-`kind` auth block rather than
+    // `securitySchemes`, so it has no modes to narrow by; it contributes to
+    // `has_oauth` exactly as it always did.
     let mcp_oauth = matches!(
         template.mcp.as_ref().map(|m| &m.auth),
         Some(McpAuth::OAuth { .. })
     );
     let has_oauth = mcp_oauth
-        || template
-            .auth
+        || mode_auth
             .iter()
             .any(|a| matches!(a, ServiceAuth::OAuth { .. }));
-    let has_secret = template
-        .auth
+    let has_secret = mode_auth
         .iter()
         .any(|a| matches!(a, ServiceAuth::Secret { .. }));
     // A required credential slot is unbound when the execution-time resolution
@@ -219,23 +249,26 @@ pub fn derive_credentials_status(
     // that credential too, so excluding it would report every such instance
     // unbound.
     let single_instance_slot = template
-        .all_slots()
+        .all_slots_for_mode(auth_mode)
         .iter()
         .filter(|s| s.source == SecretSource::Instance)
         .count()
         <= 1;
-    let secret_unbound = template.all_slots().into_iter().any(|slot| {
-        !slot.optional
-            && credentials.get(&slot.key).is_none_or(|n| n.is_empty())
-            && match slot.source {
-                // The scalar alias only ever stood for a single credential, so
-                // it cannot vouch for one half of a composed one.
-                SecretSource::Instance => {
-                    !single_instance_slot || secret_name.is_none() || secret_name == Some("")
+    let secret_unbound = template
+        .all_slots_for_mode(auth_mode)
+        .into_iter()
+        .any(|slot| {
+            !slot.optional
+                && credentials.get(&slot.key).is_none_or(|n| n.is_empty())
+                && match slot.source {
+                    // The scalar alias only ever stood for a single credential, so
+                    // it cannot vouch for one half of a composed one.
+                    SecretSource::Instance => {
+                        !single_instance_slot || secret_name.is_none() || secret_name == Some("")
+                    }
+                    SecretSource::Org => slot.default_secret_name.is_empty(),
                 }
-                SecretSource::Org => slot.default_secret_name.is_empty(),
-            }
-    });
+        });
     let mcp_bearer = matches!(
         template.mcp.as_ref().map(|m| &m.auth),
         Some(McpAuth::Bearer { .. })
@@ -329,6 +362,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &def,
+                None,
                 ScopeKnowledge::NoConnection,
                 &CredentialsMap::new(),
                 None
@@ -340,6 +374,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &def,
+                None,
                 ScopeKnowledge::Known(&full),
                 &CredentialsMap::new(),
                 None
@@ -352,6 +387,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &def,
+                None,
                 ScopeKnowledge::Known(&partial),
                 &CredentialsMap::new(),
                 None
@@ -360,7 +396,13 @@ mod tests {
         );
         // Unknown granted scopes → benefit of the doubt (Ok), matching the gate.
         assert_eq!(
-            derive_credentials_status(&def, ScopeKnowledge::Unknown, &CredentialsMap::new(), None),
+            derive_credentials_status(
+                &def,
+                None,
+                ScopeKnowledge::Unknown,
+                &CredentialsMap::new(),
+                None
+            ),
             Some(CredentialsStatus::Ok)
         );
     }
@@ -371,6 +413,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &tpl,
+                None,
                 ScopeKnowledge::NoConnection,
                 &CredentialsMap::new(),
                 None
@@ -382,6 +425,7 @@ mod tests {
     #[test]
     fn none_when_template_has_no_auth_and_no_connection() {
         let tpl = ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
@@ -402,6 +446,7 @@ mod tests {
         assert!(
             derive_credentials_status(
                 &tpl,
+                None,
                 ScopeKnowledge::NoConnection,
                 &CredentialsMap::new(),
                 None
@@ -417,6 +462,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &tpl,
+                None,
                 ScopeKnowledge::Known(&granted),
                 &CredentialsMap::new(),
                 None
@@ -432,6 +478,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &tpl,
+                None,
                 ScopeKnowledge::Known(&granted),
                 &CredentialsMap::new(),
                 None
@@ -447,7 +494,13 @@ mod tests {
         // the doubt.
         let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::Unknown, &CredentialsMap::new(), None),
+            derive_credentials_status(
+                &tpl,
+                None,
+                ScopeKnowledge::Unknown,
+                &CredentialsMap::new(),
+                None
+            ),
             Some(CredentialsStatus::Ok)
         );
     }
@@ -459,6 +512,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &tpl,
+                None,
                 ScopeKnowledge::Known(&granted),
                 &CredentialsMap::new(),
                 None
@@ -474,6 +528,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &tpl,
+                None,
                 ScopeKnowledge::Known(&granted),
                 &CredentialsMap::new(),
                 None
@@ -488,6 +543,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &tpl,
+                None,
                 ScopeKnowledge::NoConnection,
                 &CredentialsMap::new(),
                 Some("whatsapp_mcp_token")
@@ -502,6 +558,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &tpl,
+                None,
                 ScopeKnowledge::NoConnection,
                 &CredentialsMap::new(),
                 None
@@ -511,6 +568,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &tpl,
+                None,
                 ScopeKnowledge::NoConnection,
                 &CredentialsMap::new(),
                 Some("")
@@ -525,6 +583,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &tpl,
+                None,
                 ScopeKnowledge::NoConnection,
                 &CredentialsMap::new(),
                 Some("my_api_key")
@@ -545,6 +604,7 @@ mod tests {
         assert_eq!(
             derive_credentials_status(
                 &tpl,
+                None,
                 ScopeKnowledge::NoConnection,
                 &CredentialsMap::new(),
                 None
@@ -558,14 +618,20 @@ mod tests {
         let tpl = dual_scheme_template();
         let bound = CredentialsMap::from([("mailbox".to_string(), "my_login".to_string())]);
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, &bound, None),
+            derive_credentials_status(&tpl, None, ScopeKnowledge::NoConnection, &bound, None),
             Some(CredentialsStatus::Ok)
         );
         // Binding only the optional org slot leaves the required mailbox slot
         // empty → still needs authentication.
         let gateway_only = CredentialsMap::from([("gateway".to_string(), "gw".to_string())]);
         assert_eq!(
-            derive_credentials_status(&tpl, ScopeKnowledge::NoConnection, &gateway_only, None),
+            derive_credentials_status(
+                &tpl,
+                None,
+                ScopeKnowledge::NoConnection,
+                &gateway_only,
+                None
+            ),
             Some(CredentialsStatus::NeedsAuthentication)
         );
     }

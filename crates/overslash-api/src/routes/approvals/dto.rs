@@ -145,6 +145,7 @@ mod risk_tests {
         );
         let mut registry = ServiceRegistry::default();
         registry.insert(ServiceDefinition {
+            declared_auth_modes: Vec::new(),
             default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),

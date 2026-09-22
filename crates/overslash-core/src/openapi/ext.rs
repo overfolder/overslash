@@ -84,6 +84,7 @@ pub enum Ext {
     // components
     Secrets,
     Config,
+    AuthModes,
     // components.securitySchemes.*
     Provider,
     TokenInjection,
@@ -125,6 +126,7 @@ impl Ext {
             Ext::SqlDatabase => "x-overslash-sql-database",
             Ext::Secrets => "x-overslash-secrets",
             Ext::Config => "x-overslash-config",
+            Ext::AuthModes => "x-overslash-auth-modes",
             Ext::Provider => "x-overslash-provider",
             Ext::TokenInjection => "x-overslash-token_injection",
             Ext::DefaultSecretName => "x-overslash-default_secret_name",
@@ -182,6 +184,7 @@ pub(super) const ALL: &[Ext] = &[
     Ext::SqlDatabase,
     Ext::Secrets,
     Ext::Config,
+    Ext::AuthModes,
     Ext::Provider,
     Ext::TokenInjection,
     Ext::DefaultSecretName,
@@ -449,6 +452,8 @@ pub(super) const READS: &[(Ext, &[Pos])] = &[
     // auth.rs:286,213
     (Ext::Secrets, &[Pos::Components]),
     (Ext::Config, &[Pos::Components]),
+    // auth.rs — the alternative credential kinds an instance picks between.
+    (Ext::AuthModes, &[Pos::Components]),
     // schemes.rs:16,42
     (Ext::Provider, &[Pos::SecurityScheme(SchemeKind::Oauth2)]),
     (
@@ -512,7 +517,7 @@ mod tests {
     fn every_variant_is_in_all() {
         // `ALL` drives name resolution and did-you-mean suggestions, so a
         // variant missing from it is invisible to the lint.
-        assert_eq!(ALL.len(), 34, "ALL has drifted from the enum");
+        assert_eq!(ALL.len(), 35, "ALL has drifted from the enum");
         let mut keys: Vec<&str> = ALL.iter().map(|e| e.key()).collect();
         keys.sort_unstable();
         let before = keys.len();
