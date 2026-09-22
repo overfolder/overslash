@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, si.template_id, si.connection_id, si.secret_name, si.credentials as \"credentials: Json<CredentialsMap>\", si.config as \"config: Json<ConfigMap>\", si.url, si.use_default_connection, si.status, si.is_system, si.created_at, si.updated_at, si.discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", si.discovered_at FROM service_instances si WHERE si.org_id = $1 AND si.name = $2 AND si.status = 'active' AND EXISTS ( SELECT 1 FROM group_grants gg JOIN identity_groups ig ON ig.group_id = gg.group_id JOIN identities i ON i.id = ig.identity_id JOIN groups g ON g.id = gg.group_id WHERE ig.identity_id = $3 AND gg.service_instance_id = si.id AND i.org_id = $1 AND g.org_id = $1 )",
+  "query": "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, si.template_id, si.connection_id, si.secret_name, si.credentials as \"credentials: Json<CredentialsMap>\", si.config as \"config: Json<ConfigMap>\", si.url, si.use_default_connection, si.auth_mode, si.status, si.is_system, si.created_at, si.updated_at, si.discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", si.discovered_at FROM service_instances si WHERE si.org_id = $1 AND si.name = $2 AND EXISTS ( SELECT 1 FROM group_grants gg JOIN identity_groups ig ON ig.group_id = gg.group_id JOIN identities i ON i.id = ig.identity_id JOIN groups g ON g.id = gg.group_id WHERE ig.identity_id = $3 AND gg.service_instance_id = si.id AND i.org_id = $1 AND g.org_id = $1 )",
   "describe": {
     "columns": [
       {
@@ -148,6 +148,17 @@
       },
       {
         "ordinal": 13,
+        "name": "auth_mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "auth_mode"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
         "name": "status",
         "type_info": "Text",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "is_system",
         "type_info": "Bool",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -180,7 +191,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -191,7 +202,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "discovered_tools?: Json<Vec<serde_json::Value>>",
         "type_info": "Jsonb",
         "origin": {
@@ -202,7 +213,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "discovered_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -234,6 +245,7 @@
       false,
       true,
       false,
+      true,
       false,
       false,
       false,
@@ -242,5 +254,5 @@
       true
     ]
   },
-  "hash": "56d75902d498e2e219bf3dbc1508e22154bd5e811824ade118e8f964412ef05e"
+  "hash": "b1a1b67ff2564962fe731a8a96124d2c35f16a71a864619ade5d89731930868d"
 }

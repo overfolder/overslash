@@ -662,15 +662,16 @@ fn slot_views(
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
     credential_key: &str,
 ) -> (SetupSlotView, Vec<SetupSlotView>) {
-    let slots: Vec<SetupSlotView> = crate::services::service_setup::instance_slots(def)
-        .into_iter()
-        .map(|s| SetupSlotView {
-            bound: crate::services::service_setup::is_bound(&instance.credentials.0, &s.key),
-            label: slot_label(&s),
-            key: s.key,
-            description: s.description,
-        })
-        .collect();
+    let slots: Vec<SetupSlotView> =
+        crate::services::service_setup::instance_slots(def, instance.auth_mode.as_deref())
+            .into_iter()
+            .map(|s| SetupSlotView {
+                bound: crate::services::service_setup::is_bound(&instance.credentials.0, &s.key),
+                label: slot_label(&s),
+                key: s.key,
+                description: s.description,
+            })
+            .collect();
     let slot = slots
         .iter()
         .find(|s| s.key == credential_key)
@@ -841,6 +842,7 @@ async fn bind_setup_slot(
         Ok(template) => Some(
             crate::services::service_setup::unprovisioned_instance_slots(
                 &template,
+                instance.auth_mode.as_deref(),
                 &instance.credentials.0,
                 instance.secret_name.as_deref(),
             ),

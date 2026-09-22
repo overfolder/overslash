@@ -17,7 +17,6 @@ use overslash_db::scopes::{OrgScope, UserScope};
 
 use crate::error::Result;
 use crate::services::group_ceiling;
-use crate::services::platform_services::template_oauth_provider;
 
 /// The last step of the principal precedence, in isolation: a secret-based
 /// instance's identity-bearing config var (email's `mailbox_user`).
@@ -90,8 +89,12 @@ pub async fn resolve_service_principals(
         // 2. Unbound OAuth instance: the owner-provider connection the exec path
         //    would pick.
         if principal.is_none()
-            && let (Some(owner), Some(provider)) =
-                (r.owner_identity_id, template_oauth_provider(def))
+            && let (Some(owner), Some(provider)) = (
+                r.owner_identity_id,
+                // Mode-scoped, like the exec path: a token-mode instance names
+                // its account through its config, never through a connection.
+                def.oauth_provider_for_mode(r.auth_mode.as_deref()),
+            )
         {
             let key = (owner, provider.to_string());
             principal = match owner_provider_email.get(&key) {

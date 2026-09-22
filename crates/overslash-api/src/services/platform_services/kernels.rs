@@ -143,7 +143,10 @@ pub async fn kernel_list_services(
         ) else {
             continue;
         };
-        let Some(provider) = template_oauth_provider(tpl) else {
+        // Mode-scoped: a token-mode instance resolves no connection at call
+        // time, so prefetching one for it would only feed the badge a grant the
+        // execution path will never use.
+        let Some(provider) = tpl.oauth_provider_for_mode(row.auth_mode.as_deref()) else {
             continue;
         };
         let key = (owner, provider.to_string());
@@ -175,9 +178,10 @@ pub async fn kernel_list_services(
                     // NoConnection regardless of what the owner has for the
                     // provider (a sibling instance may have populated the cache).
                     ScopeKnowledge::NoConnection
-                } else if let (Some(owner), Some(provider)) =
-                    (row.owner_identity_id, template_oauth_provider(tpl))
-                {
+                } else if let (Some(owner), Some(provider)) = (
+                    row.owner_identity_id,
+                    tpl.oauth_provider_for_mode(row.auth_mode.as_deref()),
+                ) {
                     match conn_by_owner_provider.get(&(owner, provider.to_string())) {
                         Some(opt) => scope_knowledge(opt.as_deref()),
                         None => ScopeKnowledge::NoConnection,
@@ -185,7 +189,13 @@ pub async fn kernel_list_services(
                 } else {
                     ScopeKnowledge::NoConnection
                 };
-                derive_credentials_status(tpl, scopes, &row.credentials, row.secret_name.as_deref())
+                derive_credentials_status(
+                    tpl,
+                    row.auth_mode.as_deref(),
+                    scopes,
+                    &row.credentials,
+                    row.secret_name.as_deref(),
+                )
             });
             // The bulk list already has the resolved template in hand from its
             // own one-pass fetch, so it fills the pair itself rather than
@@ -390,6 +400,7 @@ pub async fn kernel_update_service(
     };
 
     let update = UpdateServiceInstance {
+        auth_mode: None,
         name: input.name.as_deref(),
         connection_id: input.connection_id,
         secret_name: new_secret_name.as_ref().map(|o| o.as_deref()),

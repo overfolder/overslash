@@ -34,6 +34,21 @@ pub struct CreateServiceInput {
     pub groups: Vec<CreateServiceGroupGrant>,
     #[serde(default)]
     pub on_behalf_of: Option<Uuid>,
+    /// Which of the template's alternative credential kinds this instance
+    /// should use (`components.x-overslash-auth-modes`), e.g. `oauth` or
+    /// `token` on a template that accepts either.
+    ///
+    /// Omitted resolves to the template's declared default, so a caller that
+    /// names only a template keeps working. A key the template does not
+    /// declare is a `400` naming the ones that would have worked — the only
+    /// useful answer to a caller that guessed.
+    ///
+    /// The choice is persisted and decides everything downstream: whether the
+    /// response carries `connect.auth_url` or `setup.setup_url`, which slots
+    /// the credentials badge reports on, and which credential the call path
+    /// injects.
+    #[serde(default)]
+    pub auth_mode: Option<String>,
     /// Suppress the default auto-connect behavior for OAuth-backed
     /// templates. With this `true` the kernel creates the instance with
     /// `connection_id = NULL` and never initiates an OAuth flow — the

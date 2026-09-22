@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE service_instances SET name = COALESCE($3, name), connection_id = CASE WHEN $4 THEN $5 ELSE connection_id END, secret_name = CASE WHEN $6 THEN $7 ELSE secret_name END, credentials = CASE WHEN $8 THEN $9 ELSE credentials END, config = CASE WHEN $10 THEN $11 ELSE config END, url = CASE WHEN $12 THEN $13 ELSE url END, use_default_connection = CASE WHEN $14 THEN $15 ELSE use_default_connection END, updated_at = now() WHERE id = $1 AND org_id = $2 RETURNING id, org_id, owner_identity_id, name, template_source, template_key, template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", config as \"config: Json<ConfigMap>\", url, use_default_connection, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at",
+  "query": "SELECT id, org_id, owner_identity_id, name, template_source, template_key, template_id, connection_id, secret_name, credentials as \"credentials: Json<CredentialsMap>\", config as \"config: Json<ConfigMap>\", url, use_default_connection, auth_mode, status, is_system, created_at, updated_at, discovered_tools as \"discovered_tools?: Json<Vec<serde_json::Value>>\", discovered_at FROM service_instances WHERE org_id = $1 ORDER BY name",
   "describe": {
     "columns": [
       {
@@ -148,6 +148,17 @@
       },
       {
         "ordinal": 13,
+        "name": "auth_mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "auth_mode"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
         "name": "status",
         "type_info": "Text",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "is_system",
         "type_info": "Bool",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -180,7 +191,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -191,7 +202,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "discovered_tools?: Json<Vec<serde_json::Value>>",
         "type_info": "Jsonb",
         "origin": {
@@ -202,7 +213,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "discovered_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -215,21 +226,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
-        "Text",
-        "Bool",
-        "Uuid",
-        "Bool",
-        "Text",
-        "Bool",
-        "Jsonb",
-        "Bool",
-        "Jsonb",
-        "Bool",
-        "Text",
-        "Bool",
-        "Bool"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -246,6 +243,7 @@
       false,
       true,
       false,
+      true,
       false,
       false,
       false,
@@ -254,5 +252,5 @@
       true
     ]
   },
-  "hash": "68f8c9bf7ffd710b855ebb67ca1e31a08cbf8c0ce86f55761037ce0c575cef38"
+  "hash": "22906bd054c87986c65e4abde1492654ea209d62a81257a5ea28ebb66e84484b"
 }

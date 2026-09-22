@@ -36,8 +36,8 @@ mod conflicts;
 mod slots;
 
 pub use slots::{
-    instance_slots, is_bound, unbound_instance_slots, unprovisioned_instance_slots,
-    validate_binding,
+    all_instance_slots, instance_slots, is_bound, unbound_instance_slots,
+    unprovisioned_instance_slots, validate_binding,
 };
 
 pub use conflicts::{
