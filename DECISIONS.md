@@ -922,7 +922,7 @@ The key is returned **exactly once**, on the credential-less path only. A creato
 
 The composite foreign key is the layer that survives a future handler regression, which is why it is here rather than left to the two code checks. `identities.id` is already the primary key, so `(org_id, id)` is unique by construction and the added constraint only gives Postgres the index a composite reference demands. The migration **reports** pre-existing mismatched rows through a `RAISE EXCEPTION` naming them rather than healing them: a key bound across tenants is an incident, and deleting the evidence is the wrong default.
 
-## D-NEXT: The outbound transport owns its client, and the SSRF hatch opens loopback only
+## D92: The outbound transport owns its client, and the SSRF hatch opens loopback only
 
 **Date**: 2026-09
 **Decision**: `services/http_caller` no longer *accepts* a `reqwest::Client`. Its three entry points — `call`, `call_streaming`, `call_streaming_upload` — build one per request from the URL via `ssrf_guard::outbound_client`. Every action-execution path (Mode A raw HTTP, Mode B/C, replay, deferred download, proxied upload) reaches the wire through those three functions, so "a call cannot dial 169.254.169.254" is a property of the transport rather than a rule five call sites have to remember, and a sixth one added later inherits it. `webhook_dispatcher::deliver` does the same for the registrant's URL on every attempt, first try and retry alike. `state.http_client` survives only for destinations the *deployment* chose (Stripe, the short-URL service, the mailer) and for OAuth/OIDC endpoints that come from a provider row — the residual issuer-discovery surface is tracked in TODO §1.6, not blessed.
