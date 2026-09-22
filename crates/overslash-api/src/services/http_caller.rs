@@ -278,7 +278,15 @@ pub async fn call(
     // an outer deadline makes the documented contract true.
     match tokio::time::timeout(
         timeout,
-        call_inner(method, url, headers, body, max_body_bytes, timeout, timeout_ms),
+        call_inner(
+            method,
+            url,
+            headers,
+            body,
+            max_body_bytes,
+            timeout,
+            timeout_ms,
+        ),
     )
     .await
     {

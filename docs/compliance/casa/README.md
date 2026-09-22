@@ -93,6 +93,9 @@ for the P0/P1 items, as GitHub issues.
 
 Two findings in [gap-assessment.md](gap-assessment.md) were **live vulnerabilities**
 rather than compliance gaps, to be decided on their own timeline rather than waiting for
-a CASA engagement. They are marked `P0` and repeated at the top of that document. **V2**
-(cross-tenant API-key minting) is fixed; **V1** (SSRF on the action-execution path) is
-still open.
+a CASA engagement. They are marked `P0` and repeated at the top of that document. Both are
+now fixed — **V2** (cross-tenant API-key minting), then **V1** (SSRF on the
+action-execution path). Two follow-ups survive V1 and are tracked in TODO §1.6: the
+default `Everyone → admin on http` grant, which is a behaviour change for new orgs and so
+a human decision, and OIDC issuer discovery, which still runs behind a hand-rolled host
+check rather than the shared guard.
