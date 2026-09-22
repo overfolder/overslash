@@ -52,7 +52,7 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 
 - [x] Bind `pagerduty_integration_key` in `infra/env/prod.tfvars` (or a Slack channel via a custom notification channel) so P0 alerts actually page someone.
 - [x] Public status page (Better Stack / Statuspage / Instatus) wired to the existing P0 uptime check + a manual override.
-- [x] **Master-key rotation runbook** — documented procedure to rotate the AES-256-GCM master key with zero downtime (dual-key read, re-encrypt loop, drop old key). Run the drill end-to-end on dev.
+- [ ] **Master-key rotation runbook** — documented procedure to rotate the AES-256-GCM master key with zero downtime (dual-key read, re-encrypt loop, drop old key). Run the drill end-to-end on dev.
 - [ ] **Postgres PITR restore drill** — document and execute a full restore-to-new-instance against the dev DB; record RTO/RPO observed.
 - [ ] On-call runbook: how to roll back a Cloud Run revision, how to disable a webhook target, how to revoke a leaked API key, how to suspend an org.
 
@@ -62,6 +62,57 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 - [ ] (later) DPA template + signing flow (DocuSign / PandaDoc / countersigned PDF). Procurement asks for this on every B2B deal.
 - [x] Subprocessor list page on the marketing site (Cloud Run, Cloud SQL, Stripe, Cloudflare, Resend, configured IdPs). On www.overslash.com/privacy
 - [ ] (later) **GDPR request handling** — document the manual process for data-export and hard-delete requests (intake → DPO ack → manual SQL → audit row). Automated endpoints are a post-launch backlog item; volume expected to be near zero at GA.
+
+### 1.6 CASA readiness
+
+The annual security assessment Google requires of apps holding restricted OAuth scopes —
+we ship `gmail.*`, `drive` and `keep` templates, so the system OAuth client needs it.
+Full assessment in [docs/compliance/casa/](docs/compliance/casa/README.md); the gap list
+is [gap-assessment.md](docs/compliance/casa/gap-assessment.md). 17 of 55 requirements
+are gaps today.
+
+**P0 — live vulnerabilities, not compliance items. Decide on a security timeline.**
+
+- [ ] **SSRF on the action-execution path** — Mode A validates only that the URL parses, and executes it with a bare `reqwest::Client::new()` (default redirect-following, no DNS pinning). `Everyone` holds `admin` on the `http` pseudo-service from org bootstrap, and users skip Layer 2. Route execution *and* webhook delivery through `ssrf_guard::build_pinned_client`, and reopen the default grant. (CASA 5.1.5, 7.3.1)
+- [ ] **Cross-tenant API-key minting** — `POST /v1/api-keys` builds its `OrgScope` from a body-supplied `org_id` that is never compared to the authenticated ACL, and honours a body-supplied `identity_id`. Add the `req.org_id != acl.org_id` check the sibling endpoint already has, validate the identity belongs to the org, and add a composite FK so the database enforces it. (CASA 3.1.2, 3.1.4)
+
+**P1 — hard CASA fails.**
+
+- [ ] `Secure` on `oss_session`, plus `__Host-`/`__Secure-` cookie prefixes. (2.3.1)
+- [ ] **Server-side sessions** — a sessions table with a `jti` claim checked per request. Keeps the 7-day UX while making logout, identity change and admin revoke effective, and gives a "terminate all other sessions" surface. One indexed lookup per request, cacheable in Valkey. (2.2.1, 2.2.2, 2.2.3)
+- [ ] **Webhook section 7** — `https://` enforced at registration, delivery through the SSRF guard, a challenge-response endpoint-ownership handshake before first delivery, and a signed timestamp header behind a versioned signature (breaking for existing consumers — needs a migration note). (7.1.1, 7.1.2, 7.2.3, 7.3.1)
+- [ ] Security-headers layer on the API + a `headers` block in `dashboard/vercel.json` (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy; HSTS on the API).
+- [ ] **Dependency vulnerability scanning in CI** — `cargo-deny` + `npm audit` + OSV, with a written triage policy. Clear the four fixable advisories (`h2`, `rustls`, `crossbeam-epoch`, `event-listener`); justify `rsa` (unreached) and `paste` (unmaintained, no fix). (6.1.1)
+- [ ] Require TLS on outbound calls — reject `http://` for Mode A and for instance/org base URLs, since vault credentials ride those requests. (4.1.1)
+- [ ] `redirect_uri` scheme allowlist + loopback-only rule + array cap on Dynamic Client Registration. (3.2.2)
+- [ ] `SECURITY.md` with a vulnerability disclosure policy and a security contact. Pairs with the `security.txt` item in §1.5.
+
+**P2 — will be raised by a lab.**
+
+- [ ] MFA or step-up for admin-class operations, or restrict magic-link login for admin identities so the IdP's MFA is the only path. (3.3.1, 2.4.1)
+- [ ] `DEV_AUTH` parsed as a boolean with an `OVERSLASH_ENV != prod` interlock; weak-key rejection at boot so a copied `.env.example` cannot start; `RUST_LOG` off `debug` in production; drop `db_error` from the unauthenticated `/health`. (6.2.1, 1.2.1)
+- [ ] Extend rate limiting to session-cookie and MCP-bearer traffic, and to the `/oauth/*` subrouter — unauthenticated DCR is currently unthrottled. (1.1.1, 3.1.5)
+- [ ] Secret Manager Data Access audit logs + a log sink with locked retention + a documented secrets access-control policy. (6.7.1)
+- [ ] Subdomain inventory and dangling-CNAME check across all ten `overslash.com` hostnames. (6.4.1)
+- [ ] Infra hardening: `deletion_protection` and `ssl_mode` on Cloud SQL; an explicit `google_compute_ssl_policy` and Cloud Armor on the LB; `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`; least-privilege IAM in place of project-wide `secretmanager.secretAccessor` and `cloudsql.admin`; Memorystore `auth_enabled` + `transit_encryption_mode`.
+- [ ] Move `Keyring::test()` behind `#[cfg(test)]` — it is `pub` and returns a hardcoded `[0xAB; 32]` key in the production library.
+- [ ] Trusted-proxy configuration so `X-Forwarded-For` is not attacker-controlled; every per-IP throttle and every audit `ip_address` currently trusts it.
+- [ ] `Cache-Control: no-store` on `secrets/reveal` and other sensitive authenticated responses.
+- [ ] Fix `ci-ok`: it accepts `cancelled` as success, and the paths-filter omits `services/**`, `scripts/**`, `.githooks/**` and the other four workflows — so a PR touching only those skips every substantive job and the one required check goes green.
+- [ ] `CODEOWNERS` + a documented required-review count, so four-eyes is evidenceable from the repo.
+
+**P3 — document rather than fix.** CMEK; SBOM, artifact signing and build provenance
+(`--provenance=false` in Cloud Build); `db-f1-micro` sizing; an org-policy baseline; the
+three production alert policies disabled in `infra/env/prod.tfvars`.
+
+**Assessment logistics.**
+
+- [ ] Close the dev-environment deltas (public Cloud SQL IP with no `authorized_networks`; `DEV_AUTH` on) or stand up a dedicated scan environment. See [dast-readiness.md](docs/compliance/casa/dast-readiness.md).
+- [ ] Write the SSRF scoping memo **before** engaging a lab — the product looks exactly like SSRF to a DAST scanner, and the argument has to be supplied during scoping, not after the report.
+- [ ] Run the ADA Burp Audit Scan Configuration ourselves against the scan target and fix what it finds. At AL1 this is also the deliverable.
+- [ ] Assemble the evidence pack — [evidence-index.md](docs/compliance/casa/evidence-index.md).
+- [ ] Engage an authorized lab.
+
 
 ---
 

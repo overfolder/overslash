@@ -1,0 +1,261 @@
+# CASA gap assessment
+
+Assessed against **CASA Specification v2.1.1 (2026-06-03)** and its Test Guide.
+Planning for **AL2** (lab assessment) — see [README.md](README.md).
+
+Assessed on 2026-09-22 against `origin/dev`. Every `pass` row cites a file and line;
+re-verify citations at revalidation, because line numbers drift.
+
+**Verdicts**
+
+| | |
+|---|---|
+| `pass` | The control exists and the evidence is already in the repo |
+| `statement` | The control exists but only holds with a written explanation; the lab will ask, and we need a prepared answer |
+| `gap` | Would be raised as a finding today |
+| `scan` | Only an authenticated DAST run can answer it; not assessable from source |
+| `n/a` | Genuinely out of scope, with a reason |
+
+**Severity** is *assessment* severity — how likely a lab is to raise it and how hard it is
+to argue. It is deliberately separate from security severity: two rows below are live
+vulnerabilities and carry both.
+
+---
+
+## Read this first: two live vulnerabilities
+
+These were found while assessing and are **not** compliance gaps. They are exploitable on
+the current `dev` head and should be decided on their own timeline rather than waiting for
+a CASA engagement.
+
+### V1 — Unrestricted SSRF on the action-execution path
+
+Any authenticated org member can make Overslash issue an arbitrary HTTP request to an
+internal address and read the response body.
+
+- Mode A URL validation stops at "parses, scheme is `http`/`https`, has a host" —
+  `crates/overslash-api/src/routes/actions/service_resolve.rs:311`. No IP resolution, no
+  private/loopback/link-local check.
+- Execution uses `state.http_client`, a bare `reqwest::Client::new()` —
+  `crates/overslash-api/src/lib.rs:189`. That carries reqwest's **default redirect policy
+  (follows up to 10)** and no DNS pinning, so even a host allowlist added at the URL layer
+  would be defeated by a redirect or a rebind.
+- Org bootstrap grants the `Everyone` group **`admin` on the `http` pseudo-service** —
+  `crates/overslash-db/src/repos/org_bootstrap.rs:143-153` ("preserves the prior
+  `allow_raw_http=true` default").
+- Layer-2 approval is skipped for `kind == "user"` identities —
+  `crates/overslash-api/src/routes/actions/permission_gate.rs:79` ("Users are gated by
+  groups only — they are their own approvers").
+
+So `POST /v1/actions/call {"service":"http","method":"GET","url":"http://169.254.169.254/…"}`
+reaches the metadata endpoint, and `http://localhost:*` reaches anything the container can.
+
+The fix is mostly wiring, not design: `crates/overslash-api/src/services/ssrf_guard.rs`
+is already correct — it denies loopback / private / link-local / CGNAT / broadcast /
+multicast / unspecified / documentation IPv4 and loopback / ULA / link-local / multicast
+IPv6, recurses into IPv4-mapped *and* IPv4-compatible v6 addresses, pins the validated IP
+via `.resolve()` to close DNS rebinding, and sets `Policy::none()` so a redirect cannot
+walk it inward. It is simply not on this path; it covers only OAuth-upstream discovery,
+template import and MCP dispatch. The codebase names this exact attack elsewhere
+(`routes/actions/deferred.rs:79-84`, `services/deferred_download.rs:355-362`).
+
+Also reopen whether `Everyone` should hold `admin` on `http` by default. The comment says
+it preserves a migrated default; it is now the difference between "SSRF requires a
+deliberate grant" and "SSRF is available to every member on day one".
+
+### V2 — Cross-tenant API-key minting
+
+`crates/overslash-api/src/routes/api_keys.rs:96` builds `OrgScope::new(req.org_id, …)`
+from the **request body**, and `req.org_id` is never compared to `acl.org_id`. The admin
+branch then honours a caller-supplied `req.identity_id` (`:113-120`). `api_keys` has
+separate foreign keys on `org_id` and `identity_id` and **no composite constraint**, so
+the pair is never cross-validated at the database either.
+
+An admin of org A can therefore mint a live `osk_` key bound to an identity in org B.
+
+The sibling endpoint shows the check that is missing —
+`crates/overslash-api/src/routes/org_service_keys.rs:99`:
+
+```rust
+if req.org_id != acl.org_id {
+    return Err(AppError::Forbidden("org_id must match the authenticated org".into()));
+}
+```
+
+Lower-severity relative: the unauthenticated bootstrap branch (`api_keys.rs:123-155`)
+keys its "no keys, no identities yet" precondition on the same attacker-supplied
+`req.org_id`.
+
+---
+
+## 1 Authentication
+
+Overslash has **no passwords**. Users authenticate by IdP OAuth/OIDC (Google, GitHub,
+per-org configured providers) or by passwordless magic link. Programmatic callers use
+`osk_` API keys. This makes 1.1.3 non-applicable and reframes 1.1.1 and 1.3.x around the
+magic link.
+
+| Req | Requirement | Verdict | Evidence / gap | Sev |
+|-----|-------------|---------|----------------|-----|
+| 1.1.1 | Authentication resistant to brute force | `statement` | Google and GitHub are ADA-approved external authentication services. For the proprietary path (magic link), `routes/auth/magic_link.rs:16-19,76-113` enforces a per-IP bucket (30 / 600s) and a per-email bucket (5 / 900s) — comfortably inside the "no more than 100 failed attempts per account per hour" criterion. Needs a written policy + screenshots. **Caveat:** the *global* limiter (`middleware/rate_limit.rs:17-20,150-157`) only fires for `Bearer osk_…`, so session-cookie and MCP-bearer traffic is unthrottled — see 1.1.1's neighbour findings under §6 | Low |
+| 1.1.2 | System-generated codes securely random, short expiry | `pass` | 32 CSPRNG bytes → URL-safe base64, 15-minute TTL (`services/magic_link_email.rs:24`), minted at `routes/auth/magic_link.rs:118-129` | — |
+| 1.1.3 | Passwords resistant to offline attack | `n/a` | No passwords exist. The nearest analogue, API keys, is **Argon2id** over 256 bits of entropy with a 12-char prefix index (`routes/api_keys.rs:191-209`) — worth stating affirmatively | — |
+| 1.2.1 | No default credentials on publicly exposed interfaces | `statement` | No default accounts ship. But `.env.example:4-5` carries a 64-zero `SECRETS_ENCRYPTION_KEY` and an all-ones `SIGNING_KEY`, and boot validation (`config/from_env.rs:303`) only checks non-emptiness — a copied `.env` boots silently with a publicly published vault key. Needs weak-key rejection at boot to make the statement clean | Med |
+| 1.3.1 | OOB verifier expires in a reasonable timeframe | `pass` | 15 minutes — `services/magic_link_email.rs:24` | — |
+| 1.3.2 | OOB verifier used only once | `pass` | `magic_link_token::consume` claims the row atomically — `routes/auth/magic_link.rs:178` | — |
+| 1.3.3 | OOB verifier securely random | `pass` | `rand::rng().fill(&mut [u8; 32])` — `routes/auth/magic_link.rs:119-121` | — |
+| 1.3.4 | OOB verifier resistant to brute force | `pass` | 256-bit token, **SHA-256 only** stored (`:122`), lookup by hash, plus the per-IP / per-email buckets above. Every outcome returns an identical `{"sent": true}` — no enumeration | — |
+
+## 2 Session Management
+
+| Req | Requirement | Verdict | Evidence / gap | Sev |
+|-----|-------------|---------|----------------|-----|
+| 2.1.1 | No passwords or session tokens in URL parameters | `statement` | No session token ever appears in a URL. Three *capability* tokens do: `GET /auth/magic-link/verify?token=…`, `/v1/downloads/{token}`, `/v1/uploads/{token}`. All are single-use or short-TTL, stored only as SHA-256, and the magic-link verifier redirects to a clean URL after setting the cookie. Defensible, but a Burp scan will surface it, so prepare the answer | Low |
+| 2.2.1 | Logout invalidates all stateful session tokens incl. refresh | `gap` | Logout only emits a clearing `Set-Cookie` — `routes/auth/session.rs:5-17`. The JWT stays valid for its full 7 days. No denylist, no session table, no `session_version` claim. (The MCP side *does* have real refresh-token revocation with replay detection and chain revocation — `routes/oauth/token.rs:158-168` — so the pattern exists in-repo) | **High** |
+| 2.2.2 | Option to terminate all other active sessions after credential change | `gap` | No mechanism. With no password there is no "password change", but magic-link login *is* account recovery, and the requirement covers reset/recovery explicitly. Falls out of the same fix as 2.2.1 | Med |
+| 2.2.3 | Non-revocable stateless tokens expire within 24 hours | `gap` | `exp: now + 7 * 24 * 3600` in seven mint sites (`routes/auth/magic_link.rs:203`, `auth/providers.rs:375`, `auth/session.rs:261`, `auth/dev_token.rs:292`, `oauth/consent.rs:428`, `orgs/create.rs:188`, `connect_gate.rs:175`); cookie `Max-Age=604800` (`routes/auth/mod.rs:188`). The token carries no `jti` and there is no server-side state, so it is non-revocable by definition. **7 days > 24 hours — a literal fail** | **High** |
+| 2.3.1 | Cookie session tokens have `Secure` | `gap` | `routes/auth/mod.rs:188` — `oss_session={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`. No `Secure`. Same for the OAuth state cookies (`auth/providers.rs:207,217`) and the logout clear (`auth/session.rs:9`). The *only* cookie in the repo with `Secure` is the Vercel preview handoff (`auth/providers.rs:525`), which proves the attribute is understood. With `Domain=.app.<apex>` set, one plaintext request to any subdomain leaks a 7-day bearer. No `__Host-`/`__Secure-` prefix either | **High** |
+| 2.3.2 | Cookie session tokens have `HttpOnly` | `pass` | `routes/auth/mod.rs:188` | — |
+| 2.3.3 | Session tokens dynamically generated after authentication | `pass` | A fresh JWT is minted on every login and on org switch / OAuth consent (`routes/oauth/consent.rs:443`), so there is no session fixation. `osk_` API keys are the documented programmatic-access carve-out, not session tokens | — |
+| 2.3.4 | Stateless tokens protected against tampering, replay, enveloping, key substitution | `statement` | HS256 with a fixed algorithm on decode, plus an `aud` split (`session` vs `mcp`) that stops a cookie JWT being replayed against `/mcp` and vice versa — `services/jwt.rs:6-11`, tests at `:215-237`. **Caveat to disclose:** `signing_key_bytes` falls back to the raw UTF-8 bytes of an arbitrary string when `SIGNING_KEY` is not hex (`services/jwt.rs:139-141`, duplicated at `extractors.rs:184-185,219-220,503-504`) with no length floor, so a short key is accepted | Med |
+| 2.4.1 | Full login session or re-auth before sensitive transactions | `statement` | `GET /v1/secrets/{name}/versions/{v}/reveal` requires a **session cookie** — an API key cannot reach it — and writes a `secret.revealed` audit row (`routes/secrets.rs:334-379`). `InstanceAdminAuth` is likewise cookie-only and uncached, so revocation is immediate (`extractors.rs:722-742`). There is no step-up re-authentication, which is what a lab will probe; see 3.3.1 | Med |
+
+## 3 Access Control
+
+| Req | Requirement | Verdict | Evidence / gap | Sev |
+|-----|-------------|---------|----------------|-----|
+| 3.1.1 | Least-privilege access control on a trusted service layer | `pass` | Capability types in `crates/overslash-db/src/scopes/` (`SystemScope > OrgScope > UserScope > AgentScope`) inject `org_id` into every query. `/v1/actions/call` runs two layers: a default-deny group ceiling (`overslash-core/src/permissions/ceiling.rs`, enforced at `routes/actions/call.rs:346-356`) and an ancestor-chain walk with approval bubbling (`routes/actions/permission_gate.rs:48-90`). Enforcement is server-side only | — |
+| 3.1.2 | Policy attributes not manipulable by end users | `gap` | **V2** — `routes/api_keys.rs:96` takes `org_id` from the request body and `:113-120` takes `identity_id`, neither validated against the authenticated ACL | **High** (+ vuln) |
+| 3.1.3 | Access controls fail securely | `pass` | Default-deny ceiling; foreign ids 404 at the SQL boundary (`routes/approvals/resolve.rs:31-34`); org-configurable response capture is fail-closed (`services/audit_capture.rs:44-47`) | — |
+| 3.1.4 | Protected against IDOR on create / read / update / delete | `gap` | The scope model holds across the surface — unscoped repo getters exist (`repos/service_template.rs:97`, `repos/mcp_upstream_connection.rs:79`, `repos/oauth_connection_flow.rs:119`) but every call site filters on the caller's org immediately. **V2 is the exception, and it is a create-path IDOR** | **High** (+ vuln) |
+| 3.1.5 | Anti-CSRF on authenticated functionality; anti-automation on unauthenticated | `statement` | `SameSite=Lax` on the session cookie, CORS with an explicit origin predicate and no `Any` (`lib.rs:709-756`), JSON-only endpoints, and no cookie-authenticated form posts. No synchronizer token. Anti-automation on unauthenticated surfaces is uneven — magic-link, downloads and uploads have buckets; `POST /oauth/register` has none. Needs a written answer and will also be probed by the scan | Med |
+| 3.1.6 | Directory browsing disabled | `pass` | Nothing serves a filesystem directory. `/icons/{file}` reads a compiled-in table with a name allowlist, not the disk (`routes/icons.rs:68-79`) | — |
+| 3.2.1 | Only secure OAuth flows (auth code / auth code + PKCE) | `pass` | Authorization Code throughout. The MCP Authorization Server mandates **PKCE S256** (`routes/oauth/authorize.rs:39-51`); upstream connections use PKCE where the provider supports it. No implicit, no ROPC anywhere | — |
+| 3.2.2 | `redirect_uri` and `state` validated (open redirect / CSRF) | `gap` | Strong on the flows that matter: exact-match `redirect_uri` at authorize *and* re-checked at token exchange (`routes/oauth/authorize.rs:85-87`, `routes/oauth/token.rs:102-103`); IdP login carries PKCE + nonce state cookies (`routes/auth/providers.rs:207`); the `?next=` parameter is restricted to same-origin paths (`routes/auth/mod.rs:199-204`). **But** unauthenticated Dynamic Client Registration accepts any non-empty, whitespace-free `redirect_uri` — no scheme allowlist, so `javascript:` and `data:` register (`routes/oauth/register.rs:45-52`) — and there is no loopback-only rule for public clients, no cap on the array length, and no registration cap per IP | **High** |
+| 3.3.1 | Administrative interfaces use MFA | `gap` | **No MFA of any kind exists** — no TOTP, WebAuthn, passkey or step-up, anywhere in `crates/` or `dashboard/`. Most exposed on `secret.reveal`, on minting a key with the `impersonate` scope, and on `InstanceAdminAuth` operations. Partial answer available: org admins who sign in through a Workspace or GitHub IdP inherit that IdP's MFA — but magic link bypasses it, so the answer is not complete until magic link is restricted for admin-class identities or a step-up is added | **High** |
+
+## 4 Communications
+
+| Req | Requirement | Verdict | Evidence / gap | Sev |
+|-----|-------------|---------|----------------|-----|
+| 4.1.1 | TLS enforced on all connections, default TLS 1.2+, secure ciphers | `gap` | Inbound is fine in practice — `api.overslash.com` and `app.overslash.com` both negotiate TLS 1.2/1.3 and reject 1.0/1.1 (verified externally 2026-09-22) — but it is *incidental*: no `google_compute_ssl_policy` is declared, so the GCLB runs GCP's permissive default profile (`infra/modules/api-lb/main.tf:183-192`). **Outbound is the real gap:** `http://` is accepted for Mode A (`routes/actions/service_resolve.rs:311`) and `effective_base` only forces `https://` when the template host carries no scheme (`:236-243`), so an instance or org default of `http://…` is used verbatim — with injected vault credentials on the wire (`routes/actions/call.rs:671-676`). No config flag requires TLS outbound | **High** |
+| 4.1.2 | Trusted TLS certificates; no blanket trust of self-signed | `pass` | `danger_accept_invalid_certs` appears **nowhere** in the repo; no custom certificate verifier, no `hostname_verification(false)`. reqwest defaults throughout | — |
+| 4.1.3 | No weak cryptography affecting confidentiality or integrity | `pass` | AES-256-GCM for the vault with a per-encryption CSPRNG nonce (`overslash-core/src/crypto.rs:184-186`), SHA-256 for token hashing, Argon2id for API keys, HMAC-SHA256 for webhooks, HS256 for JWTs. All ≥ 112-bit security. `rsa 0.9.10` appears transitively (sqlx-mysql) carrying RUSTSEC-2023-0071 at CVSS 5.9 — below the 7.0 bar and on an unreached code path; state it rather than chase it | — |
+| 4.1.4 | Cryptographic modules fail securely; no padding oracle | `pass` | AES-GCM is AEAD — no padding to oracle. Decrypt failures surface as `AppError::Crypto`, which returns a fixed generic string to the client and logs detail server-side only (`error/mod.rs:469-493`) | — |
+
+## 5 Data Validation and Sanitization
+
+| Req | Requirement | Verdict | Evidence / gap | Sev |
+|-----|-------------|---------|----------------|-----|
+| 5.1.1 | Protect against HTTP parameter pollution | `scan` | Not assessable from source. axum/serde reject duplicate JSON keys and take a deterministic first-wins on query params; the scan is the evidence | Low |
+| 5.1.2 | Redirects and forwards allowlisted, or warned | `pass` | `sanitize_next` accepts only same-origin paths — must start `/`, must not start `//`, no CR/LF (`routes/auth/mod.rs:199-204`). OAuth `redirect_uri` is exact-match. The LB's catch-all 301 to `www` is static config (`infra/modules/api-lb/main.tf:154-181`) | — |
+| 5.1.3 | Avoid `eval()` / dynamic code execution; sandbox where unavoidable | `statement` | Overslash *does* evaluate user-supplied jq filters — that is a product feature. It runs in-process with syntax validation and a timeout, over JSON only, with no filesystem, network or shell reach (`services/response_filter.rs:145-199`). No `Command::new` exists in any server crate. Needs a written description of the sandbox | Med |
+| 5.1.4 | Protect against template injection | `statement` | `{param}` interpolation in action descriptions is plain string substitution, not a template engine. Server-rendered HTML interpolations pass `html_escape` (`routes/connect_gate.rs:294-307`, `routes/oauth_upstream.rs:620-680`). One rough edge to fix or disclose: `oauth_upstream.rs:646` puts an HTML-escaped value inside a JavaScript string literal (`window.location.href = '{return_to}'`) — the wrong encoder for that context. It holds today (entities are not decoded inside `<script>`, and `'` → `&#x27;` blocks termination) but backslash is not escaped | Med |
+| 5.1.5 | Prevent Server-Side Request Forgery | `gap` | **V1.** See the top of this document, and [dast-readiness.md](dast-readiness.md) — this requirement needs both a fix *and* a scoping argument, because outbound HTTP on user-supplied input is the product | **Critical** (+ vuln) |
+| 5.1.6 | Protect against XPath / XML injection | `n/a` | No XML is parsed anywhere. No `quick-xml`, `roxmltree`, `xml-rs` or `serde-xml` in `Cargo.lock`; all payloads are JSON, and templates are YAML | — |
+| 5.1.7 | Context-aware escaping against reflected, stored and DOM XSS | `statement` | Six `{@html}` sinks in the dashboard, each fed by an escaping helper — `lib/api.ts:53-87` escapes both values and keys, `lib/approvals/format.ts:107-118`, `components/api-explorer/ResponsePanel.svelte:54-59`. No unescaped sink found. Svelte escapes by default elsewhere. Disclose the JS-context issue from 5.1.4; the scan confirms the rest | Med |
+| 5.1.8 | Protect against database injection | `pass` | Effectively every query is a compile-time-checked `sqlx::query!` / `query_as!` macro with bind parameters, and `clippy.toml:1-5` sets `disallowed-methods` to **ban** runtime-string SQL, enforced by `cargo clippy -D warnings` in CI. The only dynamic SQL is `services/key_rotation.rs:218-291`, built from a `const TARGETS: &[Target]` of `&'static str` table and column names | — |
+| 5.1.9 | Protect against OS command injection | `pass` | No `std::process::Command` in any server crate; no shell invocation on any request path | — |
+| 5.1.10 | Protect against local / remote file inclusion | `pass` | No user input reaches a filesystem path. `/icons/{file}` resolves against a compiled-in allowlist (`routes/icons.rs:68-79`). Remote inclusion is the SSRF question — 5.1.5 | — |
+| 5.2.1 | Restrict uploads to expected types; prevent execution of uploaded content | `statement` | Overslash stores and serves no uploads. `POST /v1/uploads/{token}` redeems a one-shot capability token and forwards bytes to a pinned upstream; the redeemer controls nothing but the bytes and a Content-Type hint (`routes/uploads.rs:15-24,58-67`). Nothing is written to disk, nothing is served back, nothing is executed. Needs a written statement, not a control | Low |
+
+## 6 Configuration
+
+| Req | Requirement | Verdict | Evidence / gap | Sev |
+|-----|-------------|---------|----------------|-----|
+| 6.1.1 | No 3P components with known exploitable vulnerabilities | `gap` | **Process gap, not a component gap.** No `cargo-audit`, no `cargo-deny` (no `deny.toml`), no `npm audit` in CI, no OSV / Trivy / Grype, no `dependency-review-action`. Dependabot covers all four ecosystems weekly with a 7-day cooldown (D30/D31) but that is *version* maintenance, not vulnerability management. A direct OSV query on 2026-09-22 over 628 crates in `Cargo.lock` returned **6 advisories, none ≥ CVSS 7.0**: `h2 0.4.13` RUSTSEC-2026-0258 (unbounded empty DATA frames → 0.4.16), `rustls 0.23.37` RUSTSEC-2026-0285 (CVSS 5.3 → 0.23.45), `crossbeam-epoch 0.9.18` → 0.9.20, `event-listener 5.4.1` → 5.4.2, `rsa 0.9.10` (Marvin, CVSS 5.9, no fix, transitive/unreached), `paste 1.0.15` (unmaintained, no fix). `npm audit` is clean in both `dashboard/` and `sdk/`. Four of the six clear with a `cargo update`; the other two are exactly the "justified exception" the Test Guide permits | **High** |
+| 6.2.1 | Debug modes disabled in production | `gap` | Three things a lab will find. (a) `dev_auth_enabled: env::var("DEV_AUTH").is_ok()` — `config/from_env.rs:143` — so `DEV_AUTH=0`, `false` and `""` all **enable** it, and when on, `GET /auth/dev/token?profile=admin&org=<any-slug>` mints a 7-day admin session for an auto-created org with zero authentication (`routes/auth/dev_token.rs:136-321`), plus IdP seeding and org deletion via `routes/dev_e2e.rs`. There is no `OVERSLASH_ENV` interlock — contrast the preview-handoff feature, which requires both gates (`config/mod.rs:554`). (b) `rust_log = "overslash=debug,info"` in production, byte-identical to dev (`infra/env/prod.tfvars:4`). (c) unauthenticated `/health` echoes truncated sqlx error text, which commonly leads with host/port/user (`routes/health.rs:55-57,85-96`) | **High** |
+| 6.3.1 | `Origin` header not used for authentication or access control | `pass` | `Origin` is used only by the CORS layer. Authorization derives from the session cookie or the `osk_` key, resolved in `extractors.rs` — never from a header a caller sets. CORS itself is an explicit origin predicate, never `Any`, and correctly rejects `evil.attacker.app.example.com` against a single-label wildcard (`lib.rs:709-756`) | — |
+| 6.4.1 | Not susceptible to subdomain takeover | `statement` | Needs an inventory before it can be answered. Ten hostnames exist under `overslash.com` (`api`, `app`, `www`, `dev`, `docs`, `status`, `mail`, `mailbox`, `acme`, plus per-org `<slug>.app`) spread across GCLB, Cloud Run domain mappings, Vercel and Better Stack — and `enable_dns = false` in both environments (`infra/env/prod.tfvars:56`), so the records live outside IaC. Produce a record-by-record inventory with the owning service and a dangling-CNAME check | Med |
+| 6.5.1 | Do not log credentials or payment details; session tokens only hashed | `statement` | The deliberate controls are good: `scrub_transport_error` maps `reqwest::Error` to fixed strings and **explicitly refuses** to include `Display` output or `e.url()`, because injected secrets live in path and query (`services/audit_capture.rs:93-118`); the rate limiter logs only a 12-character `osk_` prefix (`middleware/rate_limit.rs:149-151`); `Keyring` has a redacting `Debug` with a test asserting it (`overslash-core/src/crypto.rs:43-51,440-450`). **But** there is no `tracing`-layer scrubber and no loggable-field allowlist, and prod runs at `debug` (6.2.1b). One known leak bypasses the scrubber: `services/deferred_download.rs:308-309` formats `reqwest::Error` straight into a `BadGateway` message that is returned verbatim to the caller (`error/mod.rs:427`). Evidence for this row is a **log sample**, so capture one after dropping the log level | Med |
+| 6.6.1 | Browser storage cleared on logout | `pass` | No authentication material is ever placed in browser storage. The only `localStorage` writes are theme and shell UI preferences (`dashboard/src/lib/stores.ts:11-17`, `lib/stores/shell.ts:7-29`). The session lives solely in an `HttpOnly` cookie, so there is nothing for logout to clear | — |
+| 6.7.1 | Securely store access tokens, API keys and server-side secrets | `gap` | The *storage* half passes comfortably: AES-256-GCM with a two-slot versioned keyring, `active_id > previous_id` invariant, and a CAS-safe re-encryption walker over 10 encrypted columns (`overslash-core/src/crypto.rs:78-93`, `services/key_rotation.rs:42-91`); Argon2id for API keys; every production secret injected from Secret Manager via `secret_key_ref` with no plaintext credential in any Cloud Run env var (`infra/modules/cloud-run/main.tf:586-597`). The requirement's other two clauses are unmet: **no documented access-control policy** for server-side secrets, and **access is not logged or monitored** — there is no `google_project_iam_audit_config` anywhere in `infra/`, so Secret Manager Data Access logs are off by GCP default, and there is no log sink, no retention policy and no alert on `AccessSecretVersion`. Two storage caveats to disclose: the generated secrets — `db_password`, `signing_key` and **the vault master key** — live in plaintext Terraform state (`infra/modules/secret-manager/main.tf:35-76`) in a bucket with 90-day version history and no CMEK; and `Keyring::test()`, which returns a hardcoded `[0xAB; 32]` key, is `pub` **outside** any `#[cfg(test)]` block and therefore compiled into the production library (`overslash-core/src/crypto.rs:145-152`) | **High** |
+
+## 7 Webhook Security
+
+Overslash is **both** a webhook provider (`approval.created`, `approval.resolved`,
+`service.activated`, the DLQ digest) and a webhook consumer (Stripe). The consumer side is
+already correct; the provider side has not been built to this section, which did not exist
+when it was written.
+
+| Req | Requirement | Verdict | Evidence / gap | Sev |
+|-----|-------------|---------|----------------|-----|
+| 7.1.1 | Webhook traffic exclusively HTTPS, TLS 1.2+ | `gap` | Registration accepts any URL string — `routes/webhooks.rs:64` passes `req.url` straight to `create_webhook_subscription` with no scheme check — and the dispatcher `POST`s it with a shared plain client (`services/webhook_dispatcher.rs:116-124`). The verification text is explicit: "Webhook providers shall refuse to deliver webhooks to `http://` endpoints" | **High** |
+| 7.1.2 | Provider verifies endpoint ownership before delivering events | `gap` | No challenge-response handshake and no manual verification step; the first event ships on the first trigger after registration. Partial compensating control: registration is org-admin-only (`AdminAcl` at `routes/webhooks.rs:51`). At AL2 the lab registers a callback it controls and checks that nothing arrives before verification, so the compensating control alone will not pass | **High** |
+| 7.2.1 | Payloads authenticated with HMAC-SHA256 or stronger | `pass` | **Provider:** HMAC-SHA256 over the raw serialized envelope, sent as `X-Overslash-Signature: sha256=<hex>` (`services/webhook_dispatcher.rs:111-121`), with a 256-bit CSPRNG signing secret minted per subscription (`routes/webhooks.rs:57-61`). **Consumer:** the Stripe handler computes over `"<timestamp>.<raw body>"` using the raw bytes, never a re-serialization (`routes/billing/webhook.rs:360-370`) | — |
+| 7.2.2 | Signature verification uses a timing-safe comparison | `pass` | `subtle::ConstantTimeEq` over every candidate `v1` signature — `routes/billing/webhook.rs:371-384`. This is the code snippet to paste into the evidence pack verbatim | — |
+| 7.2.3 | Payloads include replay protection via signed timestamps | `gap` | **Consumer side passes** — Stripe's `t=` is inside the signed payload and events outside a ±tolerance window are rejected (`routes/billing/webhook.rs:310-358`). **Provider side fails** — our outbound signature is `sha256=<hmac>` with no timestamp header and no signed time component, so a captured delivery replays forever. Fixing it changes the signature format, so it needs a versioned header and a migration note for existing consumers | **High** |
+| 7.3.1 | Provider implements SSRF mitigations for user-supplied callback URLs | `gap` | Callback URLs *are* user-supplied, so the "not applicable" exemption does not apply. Delivery uses the shared client and never touches `ssrf_guard`, so `https://127.0.0.1/…`, `https://10.0.0.1/…` and `http://169.254.169.254/…` are all deliverable targets — and a delivery's status and body are recorded, which makes it an oracle. Same fix as V1, applied to a second call site | **High** |
+| 7.3.2 | Signing secrets not hardcoded or in version control | `pass` | Generated per subscription from 32 CSPRNG bytes at creation time (`routes/webhooks.rs:57-61`), stored in the database, returned to the registrant once. No webhook secret appears in the repo. `STRIPE_WEBHOOK_SECRET` is a Secret Manager entry injected via `secret_key_ref` (`infra/modules/cloud-run/main.tf:426-455`) | — |
+
+---
+
+## Tally
+
+| Verdict | Count |
+|---------|-------|
+| `pass` | 23 |
+| `statement` | 12 |
+| `gap` | 17 |
+| `scan` | 1 |
+| `n/a` | 2 |
+
+Of the 17 gaps, **2 are also live vulnerabilities** (5.1.5 / V1, and 3.1.2 + 3.1.4 / V2)
+and 4 are the unbuilt webhook-provider section.
+
+## Priority ladder
+
+Remediation is tracked in [TODO.md §1.6](../../../TODO.md). The ordering:
+
+**P0 — live vulnerabilities.** V1 (route Mode A and webhook delivery through
+`ssrf_guard::build_pinned_client`; revisit the default `Everyone → admin on http` grant),
+V2 (`req.org_id != acl.org_id` → 403, validate the identity belongs to the org, and add a
+composite foreign key so the database enforces it). Decide these on a security timeline,
+not a compliance one.
+
+**P1 — hard CASA fails.** `Secure` on `oss_session` plus `__Host-`/`__Secure-` prefixes
+(2.3.1); **server-side sessions** — a sessions table with a `jti` claim checked per
+request, which keeps the 7-day UX while satisfying 2.2.1, 2.2.2 and 2.2.3 at the cost of
+one indexed lookup (cacheable in Valkey) (2.2.x); a security-headers layer on the API and
+a `headers` block in `dashboard/vercel.json` (4.x/6.x adjacency); **webhook section 7 in
+full** — `https://` at registration, delivery through `ssrf_guard`, a challenge-response
+ownership handshake, and a signed timestamp header behind a versioned signature (7.1.1,
+7.1.2, 7.2.3, 7.3.1); dependency vulnerability scanning in CI plus clearing the four
+fixable advisories (6.1.1); require TLS on outbound calls (4.1.1); a `redirect_uri` scheme
+allowlist on DCR (3.2.2); `SECURITY.md` with a disclosure policy.
+
+**P2 — will be raised.** MFA or step-up for admin-class operations (3.3.1); `DEV_AUTH`
+parsed as a boolean with an `OVERSLASH_ENV` interlock, weak-key rejection at boot, and
+`RUST_LOG` off `debug` in production (6.2.1, 1.2.1); rate limiting extended to
+session-cookie and MCP-bearer traffic and to the `/oauth/*` subrouter (1.1.1, 3.1.5);
+Secret Manager Data Access logs, a log sink with locked retention, and a documented
+secrets access policy (6.7.1); a subdomain inventory (6.4.1); `deletion_protection` and
+`ssl_mode` on Cloud SQL; an explicit `google_compute_ssl_policy` and Cloud Armor on the
+LB; `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`; least-privilege IAM in place of the
+project-wide `secretmanager.secretAccessor` and `cloudsql.admin` bindings; Memorystore
+`auth_enabled` + `transit_encryption_mode`; move `Keyring::test()` behind `#[cfg(test)]`;
+trusted-proxy configuration so `X-Forwarded-For` is not attacker-controlled
+(`extractors.rs:102-111`); `Cache-Control: no-store` on `secrets/reveal` and other
+sensitive responses.
+
+**P3 — document rather than fix.** CMEK; SBOM, artifact signing and build provenance
+(`--provenance=false` at `infra/modules/cloud-build/main.tf:217`); the `rsa` and `paste`
+advisories, justified as unreached and as unmaintained-with-no-fix — both exceptions the
+Test Guide explicitly permits; `db-f1-micro` sizing; an org-policy baseline; the three
+production alert policies disabled at `infra/env/prod.tfvars:113-119`, which already carry
+their verification procedure inline and are exactly the shape of evidence a lab accepts.
+
+## Cite these affirmatively
+
+An assessment that lists only gaps misrepresents the codebase. Lead the submission with:
+the AES-256-GCM keyring and its CAS-safe rotation walker; Argon2id API-key hashing over
+256 bits of entropy; the `scopes/` capability model; PKCE-S256 with exact-match
+`redirect_uri` and refresh rotation with replay detection and chain revocation; the
+`ssrf_guard` implementation itself (correct, just under-deployed); `scrub_transport_error`,
+which refuses to log a URL because credentials live in its query; the generic-message
+error boundary; one-shot capability tokens with indistinguishable 404s; CORS with an
+explicit origin predicate; every GitHub Action SHA-pinned under a written decision (D31)
+with a 7-day publish cooldown (D30); no `danger_accept_invalid_certs` anywhere; non-root
+multi-stage Docker images; PITR with 7-day log retention; and the unusually high density of
+recorded rationale in the HCL, which is itself good evidence for the architecture
+requirements.
