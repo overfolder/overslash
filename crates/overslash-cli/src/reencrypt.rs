@@ -8,7 +8,6 @@ use anyhow::{Context, Result};
 use overslash_api::services::key_rotation::{self, Options, Reporter, Stats};
 use overslash_core::crypto::Keyring;
 use sqlx::PgPool;
-use std::env;
 
 struct StdoutReporter {
     dry_run: bool,
@@ -30,7 +29,7 @@ impl Reporter for StdoutReporter {
 }
 
 pub async fn run(opts: Options) -> Result<()> {
-    let database_url = env::var("DATABASE_URL").context("DATABASE_URL is required")?;
+    let database_url = overslash_env::required("DATABASE_URL")?;
     let keyring = Keyring::from_env().context("failed to build Keyring from env")?;
     let pool = PgPool::connect(&database_url)
         .await

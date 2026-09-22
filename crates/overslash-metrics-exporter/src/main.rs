@@ -13,7 +13,6 @@
 mod cloud_monitoring;
 mod queries;
 
-use std::env;
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
@@ -31,12 +30,10 @@ const METRIC_PREFIX: &str = "custom.googleapis.com/overslash/business";
 async fn main() -> Result<()> {
     init_tracing();
 
-    let database_url = env::var("DATABASE_URL").context("DATABASE_URL is required")?;
-    let dry_run = env::var("EXPORTER_DRY_RUN")
-        .ok()
-        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "TRUE"));
-    let project_id = env::var("GCP_PROJECT_ID").ok();
-    let location = env::var("GCP_REGION").unwrap_or_else(|_| "us-central1".into());
+    let database_url = overslash_env::required("DATABASE_URL")?;
+    let dry_run = overslash_env::flag("EXPORTER_DRY_RUN");
+    let project_id = overslash_env::optional("GCP_PROJECT_ID");
+    let location = overslash_env::or_default("GCP_REGION", "us-central1");
 
     if !dry_run && project_id.is_none() {
         anyhow::bail!("GCP_PROJECT_ID is required unless EXPORTER_DRY_RUN=1");
@@ -46,7 +43,8 @@ async fn main() -> Result<()> {
     // from Secret Manager without baking the password into the URL. Splice
     // it in at connect time when present; locally the URL itself can carry
     // user:pass and DATABASE_PASSWORD stays unset.
-    let connect_opts = build_connect_options(&database_url, env::var("DATABASE_PASSWORD").ok())?;
+    let connect_opts =
+        build_connect_options(&database_url, overslash_env::optional("DATABASE_PASSWORD"))?;
     let db = PgPoolOptions::new()
         .max_connections(4)
         .acquire_timeout(std::time::Duration::from_secs(10))
@@ -85,9 +83,8 @@ fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("overslash_metrics_exporter=info,info"));
-    let json = env::var("LOG_FORMAT")
-        .ok()
-        .is_some_and(|v| v.eq_ignore_ascii_case("json"));
+    let json =
+        overslash_env::optional("LOG_FORMAT").is_some_and(|v| v.eq_ignore_ascii_case("json"));
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
     if json {
         builder.json().init();

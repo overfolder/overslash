@@ -3253,6 +3253,7 @@ dependencies = [
  "anyhow",
  "axum",
  "dotenvy",
+ "overslash-env",
  "rand 0.10.2",
  "redis",
  "reqwest 0.13.5",
@@ -3292,6 +3293,7 @@ dependencies = [
  "minijinja",
  "overslash-core",
  "overslash-db",
+ "overslash-env",
  "overslash-fakes",
  "overslash-metrics",
  "rand 0.10.2",
@@ -3326,6 +3328,7 @@ dependencies = [
  "mime_guess",
  "overslash-api",
  "overslash-core",
+ "overslash-env",
  "overslash-mcp",
  "rand 0.10.2",
  "reqwest 0.13.5",
@@ -3353,6 +3356,7 @@ dependencies = [
  "fastembed",
  "glob-match",
  "jaq-core",
+ "overslash-env",
  "pg_query",
  "rand 0.10.2",
  "serde",
@@ -3378,6 +3382,13 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "overslash-env"
+version = "0.1.0"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]
@@ -3452,6 +3463,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "overslash-env",
  "reqwest 0.13.5",
  "serde",
  "serde_json",

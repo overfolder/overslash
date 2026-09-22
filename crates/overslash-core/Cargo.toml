@@ -25,6 +25,7 @@ embeddings = ["dep:fastembed"]
 sql_policy = ["dep:pg_query"]
 
 [dependencies]
+overslash-env = { path = "../overslash-env" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

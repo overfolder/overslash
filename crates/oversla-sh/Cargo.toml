@@ -10,6 +10,7 @@ name = "oversla-sh"
 path = "src/main.rs"
 
 [dependencies]
+overslash-env = { path = "../overslash-env" }
 axum = { workspace = true }
 tower-http = { workspace = true }
 tokio = { workspace = true }

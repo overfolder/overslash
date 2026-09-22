@@ -73,7 +73,7 @@ async fn list_credentials(
     let providers = oauth_provider::list_all(state.db(&ext)).await?;
     let enc_key = state.config.keyring()?;
     let env_fallback_enabled =
-        std::env::var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS").is_ok();
+        overslash_env::flag("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS");
 
     let mut rows: Vec<CredentialRow> = Vec::new();
 
@@ -102,7 +102,10 @@ async fn list_credentials(
 
         // Env-var fallback (tier 3) — surface so the UI can display read-only.
         if env_fallback_enabled
-            && let (Ok(client_id), Ok(_)) = (std::env::var(&id_name), std::env::var(&secret_name))
+            && let (Some(client_id), Some(_)) = (
+                overslash_env::optional(&id_name),
+                overslash_env::optional(&secret_name),
+            )
         {
             rows.push(CredentialRow {
                 provider_key: provider.key.clone(),

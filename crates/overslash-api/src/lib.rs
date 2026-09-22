@@ -833,7 +833,7 @@ async fn instrumented_step<E: std::fmt::Display>(
 /// to write to — the endpoint uses this flag to decide whether the cosine
 /// query is worth issuing at all.
 pub async fn init_embeddings(db: &PgPool) -> (Arc<dyn Embedder>, bool) {
-    let env_flag = std::env::var("OVERSLASH_EMBEDDINGS").unwrap_or_else(|_| "on".to_string());
+    let env_flag = overslash_env::or_default("OVERSLASH_EMBEDDINGS", "on");
     if env_flag.eq_ignore_ascii_case("off") {
         if has_pgvector(db).await {
             tracing::info!(
@@ -855,9 +855,8 @@ pub async fn init_embeddings(db: &PgPool) -> (Arc<dyn Embedder>, bool) {
 
     #[cfg(feature = "embeddings")]
     {
-        let cache_dir = std::env::var("OVERSLASH_EMBED_CACHE_DIR")
-            .ok()
-            .map(std::path::PathBuf::from);
+        let cache_dir =
+            overslash_env::optional("OVERSLASH_EMBED_CACHE_DIR").map(std::path::PathBuf::from);
         match overslash_core::embeddings::FastembedEmbedder::new(cache_dir) {
             Ok(e) => {
                 tracing::info!("semantic search enabled (pgvector + fastembed/bge-small-en-v1.5)");

@@ -11,6 +11,7 @@ name = "overslash-metrics-exporter"
 path = "src/main.rs"
 
 [dependencies]
+overslash-env = { path = "../overslash-env" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }

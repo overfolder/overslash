@@ -93,17 +93,19 @@ impl Vars {
     /// environment.
     ///
     /// Entries that can't be used are dropped with a warning rather than
-    /// failing the boot: an empty value (the repo-wide "unset" spelling, see
-    /// `Config::from_env`), a name that isn't a legal reference, or a value
-    /// carrying ASCII control characters — the last because these land in URLs
-    /// and header values, where an embedded newline is a request-splitting
-    /// primitive rather than a typo.
+    /// failing the boot: an empty value (the repo-wide "unset" spelling — see
+    /// `overslash_env`, which this prefix scan has to reimplement because it
+    /// discovers names rather than reading one), a name that isn't a legal
+    /// reference, or a value carrying ASCII control characters — the last
+    /// because these land in URLs and header values, where an embedded newline
+    /// is a request-splitting primitive rather than a typo.
     pub fn from_env() -> Self {
         let mut map = BTreeMap::new();
         for (key, value) in std::env::vars() {
             let Some(name) = key.strip_prefix(ENV_PREFIX) else {
                 continue;
             };
+            let value = value.trim();
             if value.is_empty() {
                 continue;
             }
@@ -121,7 +123,7 @@ impl Vars {
                 );
                 continue;
             }
-            map.insert(name.to_string(), value);
+            map.insert(name.to_string(), value.to_string());
         }
         Self { map }
     }

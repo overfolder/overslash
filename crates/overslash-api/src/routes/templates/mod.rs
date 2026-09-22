@@ -501,7 +501,7 @@ async fn resolved_summary(
 fn load_global_yaml(key: &str) -> Option<String> {
     // Walk upward from the executable dir to find `services/{key}.yaml`.
     // Works in both `cargo run` and installed-binary contexts.
-    let services_dir = std::env::var_os("OVERSLASH_SERVICES_DIR")
+    let services_dir = overslash_env::optional("OVERSLASH_SERVICES_DIR")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok().map(|p| p.join("services")))?;
     let path = services_dir.join(format!("{key}.yaml"));

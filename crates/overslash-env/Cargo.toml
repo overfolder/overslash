@@ -1,0 +1,15 @@
+[package]
+name = "overslash-env"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tracing = { workspace = true }
+
+# A manifest cannot both inherit `[workspace.lints]` and override it, and
+# inheriting is what keeps a future workspace lint from silently skipping
+# this crate — so `unsafe_code = "forbid"` lives at the crate root instead.
+[lints]
+workspace = true
