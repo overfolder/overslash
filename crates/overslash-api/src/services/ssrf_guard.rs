@@ -114,10 +114,7 @@ fn is_metadata_ip(ip: &IpAddr) -> bool {
 /// and the cost of getting a stale answer here is higher than the cost of
 /// reading it.
 fn metadata_override_set() -> bool {
-    matches!(
-        std::env::var(METADATA_OVERRIDE_VAR).as_deref(),
-        Ok("true" | "1" | "yes")
-    )
+    overslash_env::flag(METADATA_OVERRIDE_VAR)
 }
 
 /// Ranges the *deployment operator* has declared reachable, from
@@ -164,7 +161,7 @@ fn metadata_override_set() -> bool {
 fn operator_allowed_ranges() -> &'static [ipnet::IpNet] {
     static RANGES: OnceLock<Vec<ipnet::IpNet>> = OnceLock::new();
     RANGES.get_or_init(|| {
-        let ranges = std::env::var("OVERSLASH_SSRF_ALLOWED_CIDRS")
+        let ranges = overslash_env::optional("OVERSLASH_SSRF_ALLOWED_CIDRS")
             .map(|raw| parse_allowed_cidrs(&raw))
             .unwrap_or_default();
         warn_about_egress_configuration(&ranges);

@@ -12,7 +12,7 @@ pub fn resolve_config_path(
     if let Some(p) = config {
         return Ok(p);
     }
-    let home = std::env::var_os("HOME")
+    let home = overslash_env::optional("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --config explicitly"))?;
     let dir = home.join(".config").join("overslash");

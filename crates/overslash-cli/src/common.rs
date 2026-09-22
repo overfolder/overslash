@@ -11,10 +11,8 @@ fn init_tracing(to_stderr: bool) {
     // Prod (Cloud Run) sets `LOG_FORMAT=json` so logs land in Cloud Logging
     // as structured JSON; locally we default to the human-readable text
     // formatter so `make local` stays grep-friendly.
-    let json_logs = std::env::var("LOG_FORMAT")
-        .ok()
-        .map(|v| v.eq_ignore_ascii_case("json"))
-        .unwrap_or(false);
+    let json_logs =
+        overslash_env::optional("LOG_FORMAT").is_some_and(|v| v.eq_ignore_ascii_case("json"));
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
     match (to_stderr, json_logs) {
         (true, true) => builder.with_writer(std::io::stderr).json().init(),
@@ -63,7 +61,7 @@ pub fn load_config(host: String, port: u16) -> Config {
     // host/port — otherwise CLI overrides like `--port 7676` would still
     // advertise the env-default URL (e.g. http://localhost:3000) in the
     // banner and inside redirect_uri / login_url responses.
-    if std::env::var("PUBLIC_URL").is_err() {
+    if !overslash_env::is_set("PUBLIC_URL") {
         config.public_url = default_public_url(&config.host, config.port);
     }
     if !config.service_base_overrides.is_empty() {
