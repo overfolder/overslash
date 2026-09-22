@@ -276,7 +276,7 @@
 - Dashboard: the wizard's post-create step is a decision — Edit and retry (an inline panel that takes a credential *value*, which the wizard could never do before), Leave as draft, or Activate anyway with wording split three ways off the verdict. The setup page activates on submit and names who must finish when the visitor is not the owner. Services list and detail page carry the status; `setup-outcome.ts` gains `not_live` and `failureKind`.
 - Fixed on the way past: `runProbe` mapped any non-OK to a red `failed`, so a non-owner's `403` rendered as "the upstream rejected your credential" over a key nothing had tried. Now `denied`, which is already the amber "never asked" verdict.
 
-### Parameter schemas, JSON-carrying fields, and scope extractors (D-NEXT)
+### Parameter schemas, JSON-carrying fields, and scope extractors (D90)
 
 - **Nested schemas are carried.** A parameter's `properties`/`items` reach the compiled action instead of being dropped — one `openapi::extract::shape::lower_shape` for all three lowering sites, capped at 5 levels, no `$ref`, degrading to the bare `object`/`array` rather than failing. 38 shipped params picked up a shape with no template edited, including the 8 (holded's invoice lines, gmail/outlook's message envelopes) that had been authoring a full schema no caller ever saw.
 - **Enforced with the same three checks, at every depth.** Required present, unknown key rejected, string `enum` respected, naming the field by its full path (`createRequest.objects[0].objectType`). No type rejection at any depth. `additional-properties` relaxes the nested checks, a sub-schema may open itself with `additionalProperties: true` (read as a bool *or* a schema), and neither can re-close a level its action opened.
