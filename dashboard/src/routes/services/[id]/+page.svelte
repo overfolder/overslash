@@ -1043,38 +1043,6 @@
 						idPrefix="edit-service-config"
 					/>
 				{/if}
-				{#if hasModeChoice && !isSystem}
-					<div class="field auth-modes">
-						<span class="label">Authentication method</span>
-						<div class="auth-mode-row">
-							{#each modes as mode (mode.key)}
-								<button
-									type="button"
-									class="auth-mode"
-									class:selected={activeMode?.key === mode.key}
-									disabled={switchingMode || activeMode?.key === mode.key}
-									onclick={() => switchAuthMode(mode.key)}
-								>
-									<span class="auth-mode-label">{mode.label || mode.key}</span>
-									{#if mode.description}
-										<small>{mode.description}</small>
-									{/if}
-								</button>
-							{/each}
-						</div>
-						<small>
-							Switching keeps the other method's credential, so you can switch back
-							without entering it again. The service returns to setup until its
-							credential has been checked.
-						</small>
-						{#if modeSetupUrl}
-							<div class="auth-mode-setup">
-								<span>Send this link to whoever has the credential:</span>
-								<code>{modeSetupUrl}</code>
-							</div>
-						{/if}
-					</div>
-				{/if}
 				{#if usesSecret && !usesOAuth && !isSystem && schemeKeyed}
 					<ServiceCredentials
 						slots={secretSlots}
@@ -1273,6 +1241,40 @@
 								>
 									Activate anyway
 								</button>
+							{/if}
+						</div>
+					</div>
+				{/if}
+				{#if hasModeChoice && !isSystem}
+					<div class="row auth-modes">
+						<span class="label">Method</span>
+						<div class="auth-mode-body">
+							<div class="auth-mode-row">
+								{#each modes as mode (mode.key)}
+									<button
+										type="button"
+										class="auth-mode"
+										class:selected={activeMode?.key === mode.key}
+										disabled={switchingMode || activeMode?.key === mode.key}
+										onclick={() => switchAuthMode(mode.key)}
+									>
+										<span class="auth-mode-label">{mode.label || mode.key}</span>
+										{#if mode.description}
+											<small>{mode.description}</small>
+										{/if}
+									</button>
+								{/each}
+							</div>
+							<small class="hint">
+								This template accepts either. Switching keeps the other method's
+								credential, so you can switch back without entering it again — but
+								the service returns to setup until the new one has been checked.
+							</small>
+							{#if modeSetupUrl}
+								<div class="auth-mode-setup">
+									<span>Send this link to whoever has the credential:</span>
+									<code>{modeSetupUrl}</code>
+								</div>
 							{/if}
 						</div>
 					</div>
@@ -1887,6 +1889,11 @@
 	}
 
 	/* Auth-method switcher, shown only when the template offers alternatives. */
+	.auth-modes .auth-mode-body {
+		display: flex;
+		flex-direction: column;
+		flex: 1;
+	}
 	.auth-modes .auth-mode-row {
 		display: flex;
 		flex-wrap: wrap;

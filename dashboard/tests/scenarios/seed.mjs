@@ -43,11 +43,13 @@ import { api } from './api.mjs';
  *   template_key: string,
  *   template_source: string,
  *   status: string,
+ *   auth_mode?: string,
  * }} ServiceInstance
  *
  * @typedef {{
  *   templateKey: string,
  *   name?: string,
+ *   authMode?: string,
  *   status?: 'draft' | 'active' | 'archived',
  *   secretName?: string,
  *   credentials?: Record<string, string>,
@@ -185,6 +187,10 @@ export async function seedService(session, input) {
 		status: input.status ?? 'active'
 	};
 	if (input.name) body.name = input.name;
+	// Which of the template's alternative credential kinds to use. Only
+	// meaningful on a template that declares more than one (figma, github,
+	// notion); omitted takes the template's default.
+	if (input.authMode) body.auth_mode = input.authMode;
 	if (input.secretName) body.secret_name = input.secretName;
 	if (input.credentials) body.credentials = input.credentials;
 	if (input.config) body.config = input.config;

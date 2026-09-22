@@ -1181,6 +1181,33 @@
 				</div>
 			{/if}
 
+			{#if hasModeChoice}
+				<fieldset class="auth-modes">
+					<legend class="label">How will this service authenticate?</legend>
+					{#each modes as mode (mode.key)}
+						<label class="auth-mode" class:selected={activeMode?.key === mode.key}>
+							<input
+								type="radio"
+								name="new-service-auth-mode"
+								value={mode.key}
+								checked={activeMode?.key === mode.key}
+								onchange={() => (selectedMode = mode.key)}
+							/>
+							<span class="auth-mode-body">
+								<span class="auth-mode-label">{mode.label || mode.key}</span>
+								{#if mode.description}
+									<small>{mode.description}</small>
+								{/if}
+							</span>
+						</label>
+					{/each}
+					<small class="auth-mode-note">
+						Pick one — this service uses that credential for every call. You can
+						switch later without losing the other.
+					</small>
+				</fieldset>
+			{/if}
+
 			{#if usesOAuth}
 				<div class="field">
 					<span class="label">OAuth credential ({oauthProvider?.provider})</span>
@@ -1343,32 +1370,6 @@
 				/>
 			{/if}
 
-			{#if hasModeChoice}
-				<fieldset class="auth-modes">
-					<legend class="label">How will this service authenticate?</legend>
-					{#each modes as mode (mode.key)}
-						<label class="auth-mode" class:selected={activeMode?.key === mode.key}>
-							<input
-								type="radio"
-								name="new-service-auth-mode"
-								value={mode.key}
-								checked={activeMode?.key === mode.key}
-								onchange={() => (selectedMode = mode.key)}
-							/>
-							<span class="auth-mode-body">
-								<span class="auth-mode-label">{mode.label || mode.key}</span>
-								{#if mode.description}
-									<small>{mode.description}</small>
-								{/if}
-							</span>
-						</label>
-					{/each}
-					<small class="auth-mode-note">
-						Pick one — this service uses that credential for every call. You can
-						switch later without losing the other.
-					</small>
-				</fieldset>
-			{/if}
 
 			{#if usesSecret && !usesOAuth && schemeKeyed}
 				<ServiceCredentials
