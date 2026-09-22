@@ -230,3 +230,165 @@ impl Config {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::tests::ENV_LOCK;
+    use std::env;
+
+    // ── Config::from_env, and the empty-means-unset rule ────────────────
+    //
+    // `from_env` is the boundary this whole module exists to defend, and it
+    // had no test: every other test here builds a `Config` literal via
+    // `empty_test_config`, so the ~90 env reads were only ever exercised by
+    // running the binary. These two cover the shape that matters — that a
+    // variable set to the empty string behaves exactly as if it were unset.
+
+    /// The variables `from_env` requires, plus every one the assertions below
+    /// depend on. Set to a known state so an inherited CI environment can't
+    /// decide the outcome.
+    const FROM_ENV_VARS: &[&str] = &[
+        "DATABASE_URL",
+        "SECRETS_ENCRYPTION_KEY",
+        "SIGNING_KEY",
+        "HOST",
+        "PORT",
+        "PUBLIC_URL",
+        "SERVICES_DIR",
+        "DASHBOARD_URL",
+        "REDIS_URL",
+        "GOOGLE_AUTH_CLIENT_ID",
+        "GOOGLE_AUTH_CLIENT_SECRET",
+        "DEV_AUTH",
+        "CLOUD_BILLING",
+        "MAGIC_LINK_ENABLED",
+        "CALL_TIMEOUT_MS",
+        "SINGLE_ORG_MODE",
+    ];
+
+    /// Run `f` with `overrides` applied on top of a cleared slate, holding
+    /// `ENV_LOCK`. Restores the slate and releases the lock *before* the
+    /// caller asserts, so a failed assertion can't poison the mutex.
+    fn with_from_env<R>(overrides: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
+        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: ENV_LOCK serialises every env mutation in this cohort.
+        unsafe {
+            for k in FROM_ENV_VARS {
+                env::remove_var(k);
+            }
+            // The three `from_env` panics on. Overridable below.
+            env::set_var("DATABASE_URL", "postgres://u:p@localhost/db");
+            env::set_var("SECRETS_ENCRYPTION_KEY", "ab".repeat(32));
+            env::set_var("SIGNING_KEY", "cd".repeat(32));
+            for (k, v) in overrides {
+                env::set_var(k, v);
+            }
+        }
+        let out = f();
+        unsafe {
+            for k in FROM_ENV_VARS {
+                env::remove_var(k);
+            }
+        }
+        drop(guard);
+        out
+    }
+
+    #[test]
+    fn from_env_reads_a_populated_environment() {
+        let cfg = with_from_env(
+            &[
+                ("HOST", "0.0.0.0"),
+                ("PORT", "7676"),
+                ("SERVICES_DIR", "/srv/templates"),
+                ("REDIS_URL", "redis://localhost:6380"),
+                ("GOOGLE_AUTH_CLIENT_ID", "client-id"),
+                ("GOOGLE_AUTH_CLIENT_SECRET", "client-secret"),
+                ("DEV_AUTH", "1"),
+                ("CALL_TIMEOUT_MS", "4200"),
+                ("SINGLE_ORG_MODE", "acme"),
+            ],
+            Config::from_env,
+        );
+
+        assert_eq!(cfg.host, "0.0.0.0");
+        assert_eq!(cfg.port, 7676);
+        assert_eq!(
+            cfg.public_url, "http://localhost:7676",
+            "derived from host/port"
+        );
+        assert_eq!(cfg.services_dir, "/srv/templates");
+        assert_eq!(cfg.redis_url.as_deref(), Some("redis://localhost:6380"));
+        assert_eq!(
+            cfg.env_auth_credentials("google"),
+            Some(("client-id".into(), "client-secret".into()))
+        );
+        assert!(cfg.dev_auth_enabled);
+        assert_eq!(cfg.call_timeout_ms, 4200);
+        assert_eq!(cfg.single_org_mode.as_deref(), Some("acme"));
+        // Untouched: the documented defaults, not whatever the host exports.
+        assert_eq!(cfg.dashboard_url, "/");
+        assert!(!cfg.cloud_billing);
+        assert!(cfg.magic_link_enabled, "default-on");
+    }
+
+    #[test]
+    fn from_env_treats_every_empty_value_as_unset() {
+        // The regression this PR exists for. Each of these was previously a
+        // *present* value: `Some("")` for the IdP pair and REDIS_URL, `true`
+        // for DEV_AUTH, and `""` beating the default for HOST and
+        // SERVICES_DIR. Compose renders `${FOO:-}` exactly this way.
+        let cfg = with_from_env(
+            &[
+                ("HOST", ""),
+                ("PORT", ""),
+                ("PUBLIC_URL", ""),
+                ("SERVICES_DIR", ""),
+                ("DASHBOARD_URL", ""),
+                ("REDIS_URL", ""),
+                ("GOOGLE_AUTH_CLIENT_ID", ""),
+                ("GOOGLE_AUTH_CLIENT_SECRET", ""),
+                ("DEV_AUTH", ""),
+                ("CLOUD_BILLING", ""),
+                ("MAGIC_LINK_ENABLED", ""),
+                ("CALL_TIMEOUT_MS", ""),
+                ("SINGLE_ORG_MODE", ""),
+            ],
+            Config::from_env,
+        );
+
+        assert_eq!(cfg.host, "127.0.0.1", "empty must not bind \":3000\"");
+        assert_eq!(cfg.port, 3000);
+        assert_eq!(
+            cfg.public_url, "http://127.0.0.1:3000",
+            "an empty PUBLIC_URL must still be derived, not advertised as \"\""
+        );
+        assert_eq!(cfg.services_dir, "services");
+        assert_eq!(cfg.dashboard_url, "/");
+        assert_eq!(cfg.redis_url, None);
+        assert_eq!(
+            cfg.env_auth_credentials("google"),
+            None,
+            "an empty client id must not shadow DB IdP config with (\"\", \"\")"
+        );
+        assert!(
+            !cfg.dev_auth_enabled,
+            "DEV_AUTH=\"\" must not enable the bypass"
+        );
+        assert!(!cfg.cloud_billing);
+        assert_eq!(cfg.call_timeout_ms, 30_000, "falls back, not 0");
+        assert_eq!(cfg.single_org_mode, None);
+        // Default-on flags fall back to their default, not to false.
+        assert!(cfg.magic_link_enabled);
+    }
+
+    #[test]
+    fn validate_env_reports_an_empty_required_var_as_missing() {
+        let missing = with_from_env(&[("SIGNING_KEY", "")], Config::validate_env);
+        assert_eq!(missing, vec!["SIGNING_KEY"]);
+
+        let none = with_from_env(&[], Config::validate_env);
+        assert!(none.is_empty(), "all three set: {none:?}");
+    }
+}

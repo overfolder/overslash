@@ -609,4 +609,34 @@ mod cli_tests {
         let r = Cli::try_parse_from(["overslash", "bogus"]);
         assert!(r.is_err());
     }
+
+    /// `resolve_host` exists because clap's `env = "HOST"` treats `HOST=""`
+    /// as a value and lets it beat `default_value`, binding the server to
+    /// `":8080"`. These cover the precedence it replaces that with.
+    #[test]
+    fn resolve_host_prefers_the_flag() {
+        assert_eq!(resolve_host(Some("127.0.0.1".into())), "127.0.0.1");
+    }
+
+    #[test]
+    fn resolve_host_falls_back_to_the_default_for_a_blank_flag() {
+        // `--host ""` and `--host "   "` are both "the operator said nothing".
+        assert_eq!(resolve_host(Some(String::new())), "0.0.0.0");
+        assert_eq!(resolve_host(Some("   ".into())), "0.0.0.0");
+    }
+
+    #[test]
+    fn resolve_host_defaults_when_no_flag_and_no_env() {
+        // HOST is read through `overslash_env`, which treats empty as unset;
+        // with neither flag nor variable the documented default stands.
+        assert_eq!(
+            resolve_host(None),
+            std::env::var("HOST")
+                .ok()
+                .map(|h| h.trim().to_string())
+                .filter(|h| !h.is_empty())
+                .unwrap_or_else(|| "0.0.0.0".into()),
+            "no flag: HOST if usable, else the default"
+        );
+    }
 }
