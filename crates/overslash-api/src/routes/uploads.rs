@@ -333,8 +333,12 @@ async fn push(
         // The transfer aborted, and only the meter knows why: the abort reaches
         // us as a generic reqwest failure, so ask the meter rather than reading
         // the error's text. Over the ceiling is the caller's problem (413);
-        // anything else is the upstream's (502).
-        let status = if meter.exceeded() {
+        // anything else is the upstream's (502) — except an SSRF refusal, where
+        // nothing was dialed at all and calling it a bad gateway would name the
+        // wrong party.
+        let status = if matches!(e, crate::services::http_caller::CallError::Blocked(_)) {
+            StatusCode::BAD_REQUEST
+        } else if meter.exceeded() {
             StatusCode::PAYLOAD_TOO_LARGE
         } else {
             StatusCode::BAD_GATEWAY

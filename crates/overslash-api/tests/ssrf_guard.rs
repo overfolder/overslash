@@ -139,40 +139,107 @@ async fn mode_a_still_reaches_a_loopback_fake() {
     assert_eq!(resp.status(), 200, "the loopback hatch must still work");
 }
 
-/// A redirect is the other half of the finding: a host allowlist checked at
-/// the URL layer is defeated by a cooperative server answering 302. The
-/// pinned client disables redirects, so the 3xx comes back to the caller as
-/// the upstream's own answer and the `Location` is never followed.
+/// A redirect is the other half of the finding: a check made at the URL layer
+/// is defeated by a cooperative server answering 302. Following is not
+/// optional — a Drive download *is* a redirect to a signed URL — so the
+/// transport follows by hand and re-runs the guard on every hop. The metadata
+/// endpoint is therefore refused at hop two, exactly as it is at hop one.
 #[tokio::test]
-async fn mode_a_does_not_follow_a_redirect_to_the_metadata_endpoint() {
+async fn a_redirect_toward_the_metadata_endpoint_is_refused_at_the_next_hop() {
     let (pool, _fx) = common::test_pool_bootstrapped().await;
     let (base, key, _org, _mock) = boot(pool).await;
 
-    // A loopback server whose only job is to point somewhere it must not be
-    // followed to.
-    let app = axum::Router::new().route(
-        "/bounce",
-        axum::routing::get(|| async { Redirect::temporary(METADATA).into_response() }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let redirector = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let redirector = start_redirector(METADATA.to_string()).await;
 
     let resp = raw_http(&base, &key, &format!("http://{redirector}/bounce")).await;
-    assert_eq!(resp.status(), 200, "the call itself succeeds");
+    assert_eq!(resp.status(), 400, "hop two must be checked like hop one");
 
     let body: Value = resp.json().await.unwrap();
-    let status = body["result"]["status_code"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("no upstream status in {body}"));
+    let msg = body.to_string();
+    assert!(
+        msg.contains("169.254.169.254") && msg.contains("refusing to connect"),
+        "expected the guard to refuse the redirect target, got {msg}"
+    );
+    assert!(!msg.contains("ami-id"), "followed the redirect: {msg}");
+}
+
+/// An injected credential must not ride a redirect to another host. On this
+/// path `Authorization` is a vault secret, so forwarding it to wherever an
+/// upstream points would disclose it — to a CDN in the benign case, and to
+/// whoever the upstream names in the other one.
+#[tokio::test]
+async fn a_cross_host_redirect_drops_the_injected_credential() {
+    let (pool, _fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org, _mock) = boot(pool).await;
+
+    // `[::1]` and `127.0.0.1` are the same machine and different hosts, which
+    // is exactly the distinction under test — and both are loopback, so the
+    // suite's hatch reaches them.
+    let sink = start_header_sink().await;
+    let redirector = start_redirector(format!("http://[::1]:{}/sink", sink.port())).await;
+
+    let resp = raw_http_body(
+        &base,
+        &key,
+        json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{redirector}/bounce"),
+            "headers": { "Authorization": "Bearer super-secret-upstream-token" },
+        }),
+    )
+    .await;
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
     assert_eq!(
-        status, 307,
-        "the redirect must be handed back, not followed: {body}"
+        status, 200,
+        "the second hop should have been reached: {body}"
+    );
+
+    // The sink echoes the request headers it actually received, so this is an
+    // assertion about what crossed the wire on hop two, not about our intent.
+    let echoed = body["result"]["body"].as_str().unwrap_or_default();
+    assert!(
+        echoed.contains("\"reached\":true"),
+        "the sink was not reached: {body}"
     );
     assert!(
-        !body.to_string().contains("ami-id"),
-        "followed the redirect: {body}"
+        !echoed.contains("super-secret-upstream-token"),
+        "the credential crossed a host boundary: {echoed}"
     );
+}
+
+/// A loopback server on the IPv6 side that reports the headers it was sent.
+async fn start_header_sink() -> std::net::SocketAddr {
+    let app = axum::Router::new().route(
+        "/sink",
+        axum::routing::get(|headers: axum::http::HeaderMap| async move {
+            let seen: Vec<String> = headers
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", v.to_str().unwrap_or("")))
+                .collect();
+            axum::Json(json!({ "reached": true, "headers": seen }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// A loopback server whose only job is to point somewhere else.
+async fn start_redirector(to: String) -> std::net::SocketAddr {
+    let app = axum::Router::new().route(
+        "/bounce",
+        axum::routing::get(move || {
+            let to = to.clone();
+            async move { Redirect::temporary(&to).into_response() }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
 }
 
 // ── Webhook delivery ────────────────────────────────────────────────

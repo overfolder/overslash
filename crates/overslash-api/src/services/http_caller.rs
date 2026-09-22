@@ -66,6 +66,10 @@ pub enum CallError {
     #[error("{0}")]
     Blocked(String),
 
+    /// The upstream kept redirecting past [`MAX_REDIRECTS`].
+    #[error("upstream redirected more than {max} times")]
+    TooManyRedirects { max: usize },
+
     /// The upstream did not answer within the resolved per-call timeout.
     ///
     /// Distinct from a `Request(e)` that happens to have `e.is_timeout()`:
@@ -135,14 +139,120 @@ fn build_request(
     builder
 }
 
-/// Resolve, validate and pin the target, returning the client to send on.
+/// Resolve, validate and pin the target, returning the client to send on and
+/// the parsed URL to resolve a `Location` against.
 ///
 /// The single place the transport acquires a client. See the module docs.
-async fn guarded_client(url: &str) -> Result<reqwest::Client, CallError> {
+async fn guarded_client(url: &str) -> Result<(reqwest::Client, url::Url), CallError> {
     crate::services::ssrf_guard::outbound_client(url)
         .await
-        .map(|(client, _)| client)
         .map_err(|e| CallError::Blocked(e.to_string()))
+}
+
+/// How many redirects a call follows.
+///
+/// Above the 3 the template-import hop loop allows, because a cloud-storage
+/// download routinely costs two (signed-URL issuer → CDN) and a third is
+/// plausible; below the 10 `reqwest` follows by default, which was never a
+/// deliberate choice here.
+const MAX_REDIRECTS: usize = 5;
+
+/// Headers that carry a credential and must not travel where it does not
+/// belong.
+///
+/// On this path `Authorization` is an injected vault secret, so forwarding it
+/// to wherever an upstream points is a credential disclosure — to a CDN in the
+/// benign case and to whoever the upstream names in the other one. `reqwest`'s
+/// own default policy strips exactly these; following redirects by hand means
+/// re-implementing that rather than inheriting it.
+fn is_credential_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("authorization")
+        || name.eq_ignore_ascii_case("cookie")
+        || name.eq_ignore_ascii_case("proxy-authorization")
+        || name.eq_ignore_ascii_case("www-authenticate")
+}
+
+/// Whether a credential may follow this hop.
+///
+/// Only to the **same host**, and never onto a weaker transport. A different
+/// host is a different party, whoever named it. An `https` → `http` downgrade
+/// would put a vault secret on the wire in clear, which is worth refusing even
+/// when the host is unchanged. A port change on the same host is neither of
+/// those, and stripping there would break ordinary same-service redirects
+/// without taking anything away from an attacker.
+fn credential_may_follow(from: &url::Url, to: &url::Url) -> bool {
+    from.host_str() == to.host_str() && !(from.scheme() == "https" && to.scheme() == "http")
+}
+
+/// Send, and follow redirects **with the guard re-run on every hop**.
+///
+/// The pinned client sets `Policy::none()`, because letting `reqwest` follow
+/// is precisely the hole: a validated first hop says nothing about where a 302
+/// points. But refusing to follow at all is not an option either — a Google
+/// Drive download *is* a redirect to a signed URL on another host, which is
+/// what `tests/large_file.rs::test_google_drive_redirect_stream` asserts. So
+/// each hop gets its own resolve, its own policy check and its own pin, the
+/// same shape `routes/templates/fetch.rs` already uses for OpenAPI import.
+///
+/// Method and body follow the convention `reqwest` and browsers use: 303
+/// becomes a GET, 301/302 become a GET when the original was a POST, and
+/// 307/308 replay both. A streamed request body cannot be replayed at all,
+/// which is why [`call_streaming_upload`] does not come through here.
+async fn send_following_redirects(
+    method: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+    body: Option<&str>,
+    total_timeout: Option<Duration>,
+    timeout_ms: u64,
+) -> Result<reqwest::Response, CallError> {
+    let mut method = method.to_string();
+    let mut body = body.map(str::to_owned);
+    let mut headers = headers.clone();
+    let mut target = url.to_string();
+
+    for _hop in 0..=MAX_REDIRECTS {
+        let (client, current) = guarded_client(&target).await?;
+        let outgoing = match body.as_deref() {
+            Some(b) => OutgoingBody::Text(b),
+            None => OutgoingBody::None,
+        };
+        let response = build_request(&client, &method, &target, &headers, outgoing, total_timeout)
+            .send()
+            .await
+            .map_err(|e| map_reqwest_timeout(e, timeout_ms))?;
+
+        let status = response.status();
+        if !status.is_redirection() {
+            return Ok(response);
+        }
+        // A 3xx without a usable `Location` — a 304, or a 300 offering no
+        // default — is the upstream's answer, not an instruction to move.
+        let Some(location) = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+        else {
+            return Ok(response);
+        };
+
+        let next = current.join(&location).map_err(|e| {
+            CallError::Blocked(format!("upstream redirect is not a usable URL: {e}"))
+        })?;
+        if !credential_may_follow(&current, &next) {
+            headers.retain(|name, _| !is_credential_header(name));
+        }
+        if status == 303
+            || (matches!(status.as_u16(), 301 | 302) && method.eq_ignore_ascii_case("POST"))
+        {
+            method = "GET".to_string();
+            body = None;
+        }
+        target = next.to_string();
+    }
+
+    Err(CallError::TooManyRedirects { max: MAX_REDIRECTS })
 }
 
 /// Call an HTTP endpoint, buffering the response. Returns an error if the
@@ -160,19 +270,9 @@ pub async fn call(
 ) -> Result<ActionResult, CallError> {
     let start = Instant::now();
     let timeout_ms = timeout.as_millis() as u64;
-    let client = guarded_client(url).await?;
 
-    let response = build_request(
-        &client,
-        method,
-        url,
-        headers,
-        to_outgoing(body),
-        Some(timeout),
-    )
-    .send()
-    .await
-    .map_err(|e| map_reqwest_timeout(e, timeout_ms))?;
+    let response =
+        send_following_redirects(method, url, headers, body, Some(timeout), timeout_ms).await?;
     let status_code = response.status().as_u16();
 
     // Fold rather than collect: a `HashMap` built straight from the iterator
@@ -256,26 +356,14 @@ pub async fn call_streaming(
     let timeout_ms = timeout.as_millis() as u64;
     // Inside the deadline: the guard resolves DNS, and a hostile resolver is
     // exactly as good a way to hang the header phase as a hostile upstream.
-    match tokio::time::timeout(timeout, async {
-        let client = guarded_client(url).await?;
-        build_request(&client, method, url, headers, to_outgoing(body), None)
-            .send()
-            .await
-            .map_err(|e| map_reqwest_timeout(e, timeout_ms))
-    })
+    match tokio::time::timeout(
+        timeout,
+        send_following_redirects(method, url, headers, body, None, timeout_ms),
+    )
     .await
     {
         Ok(res) => res,
         Err(_elapsed) => Err(CallError::Timeout { timeout_ms }),
-    }
-}
-
-/// The `Option<&str>` both public buffered/streamed entry points still take,
-/// as the enum the builder now speaks.
-fn to_outgoing(body: Option<&str>) -> OutgoingBody<'_> {
-    match body {
-        Some(b) => OutgoingBody::Text(b),
-        None => OutgoingBody::None,
     }
 }
 
@@ -303,7 +391,7 @@ pub async fn call_streaming_upload(
     headers: &HashMap<String, String>,
     body: reqwest::Body,
 ) -> Result<reqwest::Response, CallError> {
-    let client = guarded_client(url).await?;
+    let (client, _) = guarded_client(url).await?;
     build_request(
         &client,
         method,

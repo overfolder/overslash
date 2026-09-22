@@ -54,6 +54,11 @@ pub(super) fn map_call_error(
         // The guard refused the target before a socket was opened. The
         // caller asked for an address we will not dial, so this is their
         // error (400), not the upstream's (502).
+        // An upstream that keeps redirecting is misbehaving on its side, and
+        // the hop limit is ours — neither is the caller's input.
+        http_caller::CallError::TooManyRedirects { max } => {
+            AppError::BadGateway(format!("upstream redirected more than {max} times"))
+        }
         http_caller::CallError::Blocked(reason) => AppError::BadRequest(reason),
         http_caller::CallError::Request(e) => AppError::Request(e),
     }

@@ -118,10 +118,16 @@ where
         )));
     }
 
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| AppError::BadRequest("URL has no host".into()))?
-        .to_string();
+    // `host_str()` keeps the brackets on an IPv6 literal (`[::1]`), and neither
+    // `to_socket_addrs` nor reqwest's `resolve` override accepts them — the
+    // first fails with "Name or service not known", which reads as a DNS
+    // problem and is really a spelling one. Take the bare form from `host()`.
+    let host = match parsed.host() {
+        Some(url::Host::Ipv6(v6)) => v6.to_string(),
+        Some(url::Host::Ipv4(v4)) => v4.to_string(),
+        Some(url::Host::Domain(d)) => d.to_string(),
+        None => return Err(AppError::BadRequest("URL has no host".into())),
+    };
     let port = parsed
         .port_or_known_default()
         .ok_or_else(|| AppError::BadRequest("URL has no port".into()))?;
@@ -404,6 +410,23 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    /// An IPv6 literal is spelled with brackets in a URL and without them
+    /// everywhere else. Regression guard: this used to fail as "could not
+    /// resolve host \"[::1]\"", which reads as a DNS outage.
+    #[tokio::test]
+    async fn an_ipv6_literal_resolves_without_its_brackets() {
+        // A ULA address: syntactically fine, refused on policy, which is the
+        // proof it got past parsing and resolution rather than failing there.
+        let err = outbound_client("http://[fd00::1]:80/x").await.unwrap_err();
+        let AppError::BadRequest(msg) = err else {
+            panic!("expected BadRequest");
+        };
+        assert!(
+            msg.contains("refusing to connect"),
+            "should fail on policy, not resolution: {msg}"
+        );
     }
 
     /// The metadata endpoint is an IP literal, so this needs no DNS.
