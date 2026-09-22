@@ -29,3 +29,6 @@ time = { workspace = true }
 [dev-dependencies]
 reqwest = { workspace = true }
 tokio = { workspace = true }
+
+[lints]
+workspace = true

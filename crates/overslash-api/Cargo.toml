@@ -70,3 +70,6 @@ uuid = { workspace = true }
 tokio = { workspace = true }
 libc = "0.2"
 minijinja = { version = "2", default-features = false, features = ["serde"] }
+
+[lints]
+workspace = true
