@@ -941,7 +941,7 @@ The suite and `scripts/e2e-up.sh` use that same mechanism — `127.0.0.0/8,::1/1
 
 **Rationale**: The guard was already correct and already used by three subsystems; the vulnerability was that the hot path didn't call it (CASA 5.1.5 / 7.3.1, finding V1 in `docs/compliance/casa/gap-assessment.md`). Wiring it in at each call site would have fixed today's five and left the sixth to chance, which is the shape the bug had in the first place. Whether `Everyone` should hold `admin` on the `http` pseudo-service by default — the grant that makes raw HTTP reachable by every member on day one — is a behaviour change for new orgs and is deliberately left open.
 
-## D-NEXT: An empty env var means unset, and one crate owns every read
+## D93: An empty env var means unset, and one crate owns every read
 
 **Date**: 2026-09
 **Decision**: `crates/overslash-env` is the only place the process environment is read. Its accessors trim, and treat an empty or whitespace-only value exactly as they treat a variable that was never exported. `flag()` is the single truthiness rule — `true`/`1`/`yes`/`on` on, `false`/`0`/`no`/`off` off, anything else falls back to the caller's declared default with a warning. A scoped guard test bans `env::var` in the config boundary and the security-relevant lazy readers.
