@@ -20,18 +20,8 @@ async fn test_create_user_identity() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     // Create user — no parent, depth=0
     let user: Value = client
@@ -67,18 +57,8 @@ async fn test_create_agent_with_user_parent() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))
@@ -125,18 +105,8 @@ async fn test_create_agent_without_parent_fails() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     let resp = client
         .post(format!("{base}/v1/identities"))
@@ -164,18 +134,8 @@ async fn test_create_agent_with_nonexistent_parent_fails() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     let resp = client
         .post(format!("{base}/v1/identities"))
@@ -203,18 +163,8 @@ async fn test_create_agent_with_agent_parent_fails() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))
@@ -267,18 +217,8 @@ async fn test_create_sub_agent() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))
@@ -337,18 +277,8 @@ async fn test_create_sub_agent_with_user_parent_fails() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))
@@ -388,18 +318,8 @@ async fn test_create_user_with_parent_fails() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))
@@ -439,18 +359,8 @@ async fn test_ancestor_chain() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))
@@ -523,18 +433,8 @@ async fn test_list_children() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))
@@ -602,16 +502,7 @@ async fn test_delete_parent_cascades_children() {
         .unwrap();
     let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))
@@ -686,18 +577,8 @@ async fn test_nested_sub_agents() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))
@@ -764,17 +645,7 @@ async fn bootstrap_admin(client: &reqwest::Client, base: &str, slug: &str) -> St
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap().to_string();
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    key["key"].as_str().unwrap().to_string()
+    org["api_key"].as_str().unwrap().to_string()
 }
 
 async fn create_identity_helper(

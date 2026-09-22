@@ -54,7 +54,6 @@ beforeAll(async () => {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie },
     body: JSON.stringify({
-      org_id: dev.org_id,
       identity_id: dev.identity_id,
       name: `sdk-integration-${Date.now()}`,
       scopes: [],

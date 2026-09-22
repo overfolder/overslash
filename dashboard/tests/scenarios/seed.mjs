@@ -144,7 +144,7 @@ export async function listIdentities(session) {
 export async function seedAgentApiKey(session, identityId, name = 'scenarios-seed') {
 	return api(session, '/v1/api-keys', {
 		method: 'POST',
-		body: { org_id: session.orgId, identity_id: identityId, name },
+		body: { identity_id: identityId, name },
 		expect: [200, 201]
 	});
 }

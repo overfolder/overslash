@@ -33,16 +33,7 @@ async fn setup_hierarchy(
         .unwrap();
     let org_id = org["id"].as_str().unwrap().to_string();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": &org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key["key"].as_str().unwrap().to_string();
+    let api_key = org["api_key"].as_str().unwrap().to_string();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))

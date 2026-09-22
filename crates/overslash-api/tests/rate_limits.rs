@@ -30,16 +30,7 @@ async fn bootstrap() -> (String, reqwest::Client, Uuid, String) {
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_api_key = key["key"].as_str().unwrap().to_string();
+    let org_api_key = org["api_key"].as_str().unwrap().to_string();
 
     (base, client, org_id, org_api_key)
 }

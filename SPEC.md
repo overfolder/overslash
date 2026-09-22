@@ -155,7 +155,7 @@ The stdio shim requires `overslash mcp login` once (runs the same OAuth flow int
 
 - **Cloud** serves orgs off a single wildcard origin `app.overslash.com`. `*.app.overslash.com` resolves to the same instance; subdomain middleware maps the `Host` header to an `org_id`. `app.overslash.com` (the root) hosts Overslash-level login and the `/account` page; `<slug>.app.overslash.com` hosts an individual corp org.
 - **Self-hosted** runs the same binary and code path. Two env flags scope it down:
-  - `ALLOW_ORG_CREATION=false` — disables `POST /v1/orgs` and the dashboard's "Create org" CTAs. Existing orgs keep working.
+  - `ALLOW_ORG_CREATION=false` — disables `POST /v1/orgs` and the dashboard's "Create org" CTAs. Existing orgs keep working. Because a session-less `POST /v1/orgs` is also what mints an org's first admin User and its `osk_` key (returned once, in that response), this is the switch that closes the only unauthenticated credential-issuing path in the product.
   - `SINGLE_ORG_MODE=<slug>` — disables subdomain middleware; every request is scoped to the named org, the root-domain login lands directly in that org with no personal-org auto-creation, and the org switcher is hidden.
 
 Self-hosted operators who want the "old" single-org experience set `SINGLE_ORG_MODE=<their-org-slug>`. Self-hosted operators who want full multi-org (e.g., an internal PaaS) leave both flags unset. See [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md).
@@ -221,7 +221,7 @@ Enrollment is **MCP OAuth 2.1** (MCP spec 2025-06-18 — RFC 8414 + RFC 7591 + P
 
 **Binding.** On submission, the server persists a `(user_identity_id, client_id) → agent_identity_id` row and the dashboard follows the returned `redirect_uri` back to the MCP client with an auth code bound to the agent. Subsequent authorizations from the same `(user, client_id)` reuse the binding and skip the prompt. The issued access token's `sub` is the agent; `/mcp` refuses any token whose `sub` points at a user-kind identity so a pre-binding or CSRF-stolen token can't slip through. The consent screen is hosted inline in the OAuth flow — there is no separate "consent URL" sent out-of-band.
 
-**Headless / long-lived credentials.** Static `osk_…` API keys minted via `POST /v1/api-keys` remain the credential for non-interactive callers (CI, batch jobs) — see §Authentication. Device-flow OAuth for headless clients is a future add.
+**Headless / long-lived credentials.** Static `osk_…` API keys minted via `POST /v1/api-keys` remain the credential for non-interactive callers (CI, batch jobs) — see §Authentication. Device-flow OAuth for headless clients is a future add. Minting requires an admin credential and always lands in that credential's currently-active org; the request names only the identity to bind, resolved through the caller's own scope. An org's *first* key is the exception, and it comes from `POST /v1/orgs`, which mints the org's admin User and returns its key once when the creator has no session to attach.
 
 ### Identity Reconfiguration
 

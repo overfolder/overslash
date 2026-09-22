@@ -29,16 +29,7 @@ async fn bootstrap_acl(
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
     // First API key (bootstrap — no auth required)
-    let org_key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_key = org_key_resp["key"].as_str().unwrap().to_string();
+    let org_key = org["api_key"].as_str().unwrap().to_string();
 
     // Find system groups
     let groups: Vec<Value> = client
@@ -190,19 +181,9 @@ async fn test_org_bootstrap() {
         .json()
         .await
         .unwrap();
-    let org_id = org["id"].as_str().unwrap();
 
     // Bootstrap key
-    let key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "test"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let key = key_resp["key"].as_str().unwrap();
+    let key = org["api_key"].as_str().unwrap();
 
     // Check system groups exist
     let groups: Vec<Value> = client

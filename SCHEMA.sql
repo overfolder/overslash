@@ -1511,6 +1511,14 @@ ALTER TABLE ONLY public.identities
 
 
 --
+-- Name: identities identities_org_id_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identities
+    ADD CONSTRAINT identities_org_id_id_key UNIQUE (org_id, id);
+
+
+--
 -- Name: identities identities_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1911,10 +1919,10 @@ CREATE UNIQUE INDEX identities_org_user_unique ON public.identities USING btree 
 
 
 --
--- Name: idx_api_keys_org; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_api_keys_org_identity; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_api_keys_org ON public.api_keys USING btree (org_id);
+CREATE INDEX idx_api_keys_org_identity ON public.api_keys USING btree (org_id, identity_id);
 
 
 --
@@ -2569,19 +2577,19 @@ CREATE TRIGGER events_notify_trigger AFTER INSERT ON public.events FOR EACH ROW 
 
 
 --
--- Name: api_keys api_keys_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.api_keys
-    ADD CONSTRAINT api_keys_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
-
-
---
 -- Name: api_keys api_keys_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.api_keys
     ADD CONSTRAINT api_keys_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: api_keys api_keys_org_id_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.api_keys
+    ADD CONSTRAINT api_keys_org_id_identity_id_fkey FOREIGN KEY (org_id, identity_id) REFERENCES public.identities(org_id, id) ON DELETE CASCADE;
 
 
 --

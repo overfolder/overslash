@@ -96,16 +96,7 @@ async fn bootstrap_with_auto_call_on(
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    let bootstrap_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let admin_key = bootstrap_resp["key"].as_str().unwrap().to_string();
+    let admin_key = org["api_key"].as_str().unwrap().to_string();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))
@@ -319,16 +310,7 @@ async fn org_default_deferred_execution_seeds_new_agents_off() {
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    let bootstrap_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let admin_key = bootstrap_resp["key"].as_str().unwrap().to_string();
+    let admin_key = org["api_key"].as_str().unwrap().to_string();
 
     // Create an agent BEFORE flipping the org default — it should be
     // born with the universal default (auto_call_on_approve=true).
