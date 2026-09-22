@@ -4,227 +4,255 @@ What Google's own Recommender and the live project configuration say, as opposed
 the Terraform says. Complements [gap-assessment.md](gap-assessment.md), which was written
 from the IaC.
 
-**Scope of this scan.** Measured against **`overslash-dev` only**. The production project
-`overslash` was not reachable from the scanning account — see [Production](#production).
-Rows marked *inferred* apply to prod because both environments are rendered from the same
-modules in `infra/`; they are stated as inference, not measurement, and need re-running
-against prod before they go into an evidence pack.
+**Both environments measured** — `overslash` (production) and `overslash-dev` — on
+2026-09-22, read-only, via `roles/viewer`. Nothing here is inferred any more.
 
-Scanned 2026-09-22. Re-run before each revalidation — Recommender output is generated from
-a rolling observation window, so an empty result on a quiet project is not the same as a
-clean one.
+Re-run before each revalidation. Recommender output is generated from a rolling
+observation window, so an empty result on a quiet project is not the same as a clean one —
+and check for an *error* rather than trusting an empty list, which is how the first pass of
+this scan briefly mis-read production as having no findings.
 
 ---
 
-## Google Recommender findings
+## Google Recommender — production
 
-`gcloud recommender recommendations list --recommender=google.cloudsql.instance.SecurityRecommender --location=europe-west1`
+### Cloud SQL Security (`google.cloudsql.instance.SecurityRecommender`, `europe-west1`)
 
-| Priority | Subtype | Finding | CASA |
-|----------|---------|---------|------|
-| **P2** | `REQUIRE_SSL` | "Configure the instance to mandate SSL encryption for direct connections." `overslash-dev-db` | **4.1.1** |
-| **P3** | `ENABLE_INSTANCE_PASSWORD_POLICY` | Instance-level password policy not enabled for built-in authentication users | 1.1.1 |
-| **P3** | `ENABLE_USER_PASSWORD_POLICY` | No password expiry policy and no account lockout on consecutive failures | 1.1.1 |
-| **P4** | `ENABLE_DATABASE_AUDITING` | Database auditing not enabled — no record of which user ran what | **6.7.1** |
+Four on `overslash-prod-db`. The paired `SecurityInsight` severities are Google's own
+rating of the underlying observation:
 
-`--recommender=google.iam.policy.Recommender --location=global`
+| Recommendation | Insight severity | Finding | CASA |
+|---|---|---|---|
+| **P2** `REQUIRE_SSL` | **HIGH** `SSL_NOT_REQUIRED` | "This instance is not enforcing SSL encryption requirements for direct connections." | **4.1.1** |
+| P3 `ENABLE_INSTANCE_PASSWORD_POLICY` | MEDIUM | No password policy for built-in authentication users | 1.1.1 |
+| P3 `ENABLE_USER_PASSWORD_POLICY` | MEDIUM | No password expiry, no lockout on consecutive failures | 1.1.1 |
+| P4 `ENABLE_DATABASE_AUDITING` | LOW | No record of which database user ran what | 6.7.1 |
 
-| Priority | Finding | CASA |
-|----------|---------|------|
-| **P2** | `roles/editor` on `13553719731-compute@developer.gserviceaccount.com` — **the default Compute Engine service account** — unused for the entire observation window. Recommender's suggested operation is to remove the binding | **3.1.1** |
+Identical four on `overslash-dev-db`.
 
-This one is worth dwelling on. The IaC audit correctly reported "no `roles/editor` in code" —
-and that is true, `infra/modules/iam/main.tf` grants nothing of the sort. The binding is a
-**GCP default**, created with the project and invisible to Terraform. It is exactly the
-class of finding that reading the repo cannot produce, which is why this scan exists.
+### IAM policy (`google.iam.policy.Recommender`, `global`)
+
+Two P2 recommendations on production:
+
+| Member | Role | Permissions used in 90 days | Recommended |
+|---|---|---|---|
+| `212015650448-compute@developer.gserviceaccount.com` — **the default Compute Engine service account** | `roles/editor` | **0** | remove the binding |
+| `212015650448@cloudservices.gserviceaccount.com` — the Google APIs service agent | `roles/editor` | 12 | downgrade to `roles/compute.editor` |
+
+For contrast, the third insight on the project is `user:amanuelmartincanto@gmail.com` at
+`roles/owner` with 198 permissions used — a real, exercised binding.
+
+Dev carries the same default-Compute-SA finding.
+
+**This is the class of finding that reading the repo cannot produce.** The IaC audit
+correctly reported "no `roles/editor` in code" — true, `infra/modules/iam/main.tf` grants
+nothing of the sort. Both bindings are project-creation defaults, invisible to Terraform,
+and there is no `constraints/iam.automaticIamGrantsForDefaultServiceAccounts` to stop them
+being recreated.
 
 ---
 
-## Live configuration, measured
+## Measured configuration
 
-### Cloud SQL — `overslash-dev-db`
+### Cloud SQL
 
-| Setting | Live value | Terraform | CASA |
-|---------|-----------|-----------|------|
-| `sslMode` | **`ALLOW_UNENCRYPTED_AND_ENCRYPTED`** | unset (`infra/modules/cloud-sql/main.tf:61-67`) | **4.1.1** |
-| `requireSsl` | `false` | unset | **4.1.1** |
-| `ipv4Enabled` | **`true`** (public IP `34.14.123.133`) | `!use_private_vpc`, and `infra/env/dev.tfvars:70` sets `use_private_vpc=false` | 6.2.1 |
-| `authorizedNetworks` | **none** | none declared | — |
-| `deletionProtectionEnabled` | **`false`** | `infra/modules/cloud-sql/main.tf:49` | — |
-| `availabilityType` | `ZONAL` | `:55` | — |
-| `databaseFlags` | `max_connections=100` only — no `pgaudit`, no `log_connections`, no `log_disconnections` | `:80-83` | 6.7.1 |
-| `tier` | `db-f1-micro` | `infra/env/dev.tfvars` | — |
-| Backups / PITR | enabled, 7 retained, PITR on, 7-day transaction log retention, logs in Cloud Storage | `:69-78` | — |
-| Built-in users | `overslash`, `postgres` | — | 1.2.1 |
+| Setting | **`overslash-prod-db`** | `overslash-dev-db` | Terraform | CASA |
+|---|---|---|---|---|
+| `sslMode` | **`ALLOW_UNENCRYPTED_AND_ENCRYPTED`** | same | unset (`infra/modules/cloud-sql/main.tf:61-67`) | **4.1.1** |
+| `requireSsl` | `false` | `false` | unset | **4.1.1** |
+| `ipv4Enabled` | **`false`** — private IP on `overslash-prod-vpc` | `true`, public IP, **no authorized networks** | `!use_private_vpc` | 6.2.1 |
+| `deletionProtectionEnabled` | **`false`** | `false` | `:49` | — |
+| `availabilityType` | `ZONAL` | `ZONAL` | `:55` | — |
+| `tier` | `db-f1-micro` | `db-f1-micro` | tfvars | — |
+| `databaseFlags` | `max_connections=100` only | same | `:80-83` | 6.7.1 |
+| Backups / PITR | enabled, 7 retained, PITR on, 7-day transaction logs | same | `:69-78` | — |
 
-**Read the public-IP row precisely.** A public IP with *zero* authorized networks is not an
-open database — GCP denies direct connections when the allowlist is empty, so the live
-reachable path is the Cloud SQL Auth Proxy and the language connectors, both of which
-authenticate through IAM. The finding is not "the database is on the internet". It is that
-(a) `sslMode` permits unencrypted connections, which is what Recommender's P2 flags and
-what 4.1.1 asks about, and (b) the public surface exists at all, one `authorizedNetworks`
-entry away from being reachable, with no `constraints/sql.restrictPublicIp` org policy to
-stop that happening. Prod sets `use_private_vpc=true` and has no public IP, so (b) is
-dev-only; (a) is *inferred* to apply to prod too, because `ssl_mode` is unset in the shared
-module.
+Production is correctly private — that half of the dev/prod difference holds. What does
+**not** hold is the SSL posture: `sslMode` is unset in the shared module, so production
+accepts unencrypted connections too, and that is what Google rates **HIGH**.
 
-`postgres` is the Cloud SQL built-in superuser. Confirm its password was set and is
-non-default before answering 1.2.1 — the Test Guide's own wording exempts "Admin with a
-user-defined password", so this is a question to answer, not a finding.
+`deletionProtectionEnabled: false` **on the production database** is confirmed live.
 
-### IAM — project bindings
+On the dev public IP, read it precisely: a public IP with *zero* authorized networks is not
+an open database, because GCP denies direct connections when the allowlist is empty. The
+finding is the permissive `sslMode` and the existence of the surface — one
+`authorizedNetworks` entry away from reachable, with no `constraints/sql.restrictPublicIp`
+to prevent that.
 
-Full policy read on `overslash-dev`. Beyond the Recommender finding above:
+### Memorystore — previously unverified anywhere
 
-| Binding | Note | CASA |
-|---------|------|------|
-| `roles/editor` → default Compute SA | GCP default, unmanaged, unused | **3.1.1** |
-| `roles/owner` → `factory@software-factory-491814.iam.gserviceaccount.com` | An automation service account **from a different project** holds Owner on this one. Intentional (it is how this scan ran) but it is a standing cross-project Owner grant that a lab will ask about, and it should be time-bound or scoped down | **3.1.1** |
-| `roles/cloudsql.admin` → `overslash-dev-scheduler` | Confirms the IaC finding live. The task it performs is one `settings.activationPolicy` PATCH, which needs `cloudsql.instances.update` | 3.1.1 |
-| `roles/secretmanager.secretAccessor` → `overslash-dev-run` | **Project-wide.** The API can read every secret in the project, not the 14 it is wired to | **6.7.1** |
-| `roles/iam.serviceAccountUser` → `overslash-dev-build` | Project-wide — impersonation of any SA in the project | 3.1.1 |
-| User-managed service account keys | **none** on any of the three service accounts — a genuine positive, and the answer to a question labs always ask | — |
+Memorystore only exists where `use_private_vpc` is true, so it has no dev counterpart and
+the `gap-assessment.md` 6.7.1 finding rested on the module alone. Now measured:
 
-### Audit logging
+| Instance | Tier | `authEnabled` | `transitEncryptionMode` | Persistence |
+|---|---|---|---|---|
+| `overslash-prod-valkey` | `BASIC` | **unset** | **`DISABLED`** | `DISABLED` |
+
+**Confirmed: no AUTH and no in-transit encryption**, on the cache that `.env.example:20-30`
+describes as holding "people's names, addresses and phone numbers". Anything that reaches
+the VPC reads and writes it without credentials, in cleartext. `BASIC` also means no
+replica and no persistence.
+
+### Audit logging — both projects
 
 ```
 auditConfigs: NONE
 ```
 
-No `google_project_iam_audit_config` exists, so **Data Access audit logs are off** for
-Secret Manager, Cloud SQL and Cloud Run. This is the measured confirmation of the
-`gap-assessment.md` 6.7.1 verdict: the requirement's third clause is "access to secrets
-shall be logged or monitored", and today an `AccessSecretVersion` call leaves no record.
+**Data Access audit logs are off in production.** No `google_project_iam_audit_config`
+exists, so an `AccessSecretVersion` call against the vault's master key leaves no record.
+This is the measured half of the 6.7.1 verdict, which until now rested on the *absence* of
+a Terraform resource.
 
-Log sinks: only `_Required` and `_Default`. No export to a tamper-evident store.
+Log sinks: only `_Required` and `_Default` on both projects. No export to a tamper-evident
+store.
 
 | Bucket | Retention | Locked |
-|--------|-----------|--------|
+|---|---|---|
 | `_Default` | 30 days | **no** |
 | `_Required` | 400 days | yes |
 
-`_Required` holds Admin Activity only. Everything an assessor would want to see —
-application logs, Data Access, access patterns — is in `_Default`, at 30 days, unlocked,
-and deletable by anyone with `roles/logging.admin`.
+`_Required` holds Admin Activity only. Application logs, Data Access and access patterns
+all live in `_Default` — 30 days, unlocked, deletable by anyone with `roles/logging.admin`.
+
+### IAM — production project bindings
+
+| Binding | Note | CASA |
+|---|---|---|
+| `roles/editor` → default Compute SA **and** cloudservices agent | GCP defaults; the first is unused | **3.1.1** |
+| `roles/secretmanager.secretAccessor` → `overslash-prod-run` | **Project-wide** — the API can read every secret in the project, not the 14 it is wired to | **6.7.1** |
+| `roles/cloudsql.admin` → `overslash-prod-scheduler` | For a task that is one `settings.activationPolicy` PATCH, needing only `cloudsql.instances.update` | 3.1.1 |
+| `roles/iam.serviceAccountUser` → `overslash-prod-build` | Project-wide — impersonation of any SA | 3.1.1 |
+| `roles/owner` | **One human, no service accounts** — better than dev, which also has an automation SA at Owner | — |
+| User-managed SA keys | **none**, on all three service accounts, in both projects | — |
+
+The last row is a genuine positive and the answer to a question labs always ask.
 
 ### Cloud Run
 
-| Service | `run.googleapis.com/ingress` |
-|---------|------------------------------|
-| `overslash-dev-api` | **`all`** |
-| `overslash-dev-overfwd` | **`all`** |
+| Service | Ingress |
+|---|---|
+| `overslash-prod-api` | **`all`** |
+| `overslash-prod-overfwd` | **`all`** |
+| `overslash-prod-shortener` | **`all`** |
 
-Confirms the IaC reading. On prod, where the API sits behind a GCLB, `all` means the raw
-`*.run.app` URL stays directly reachable and bypasses the load balancer's host allowlist,
-its access logging and any future Cloud Armor policy. *Inferred for prod* — re-measure.
+`overslash-prod-api` sits behind the GCLB, so `all` means its raw `*.run.app` URL stays
+directly reachable and bypasses the load balancer's host allowlist, its access logging, and
+any Cloud Armor policy added later. The correct value for an LB-fronted service is
+`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`.
 
-### Secret Manager
-
-16 secrets. **None declares `rotation`, `nextRotationTime` or `expireTime`.** Combined with
-every consumer pinning `version = "latest"`, a rotation is a revision roll rather than a
-config change — which is good — but nothing schedules, tracks or alerts on rotation age,
-and that is the shape of evidence 6.7.1 asks for.
-
-### Artifact Registry and build supply chain
+### Load balancer — production
 
 | | |
 |---|---|
-| Repositories | `overslash-dev-registry` (standard), `overslash-dev-dockerhub` (remote/pull-through) |
-| Encryption | Google-managed keys (no CMEK) |
-| `containerscanning.googleapis.com` | **not enabled** |
-| `containeranalysis` / `ondemandscanning` | **not enabled** |
-| `binaryauthorization.googleapis.com` | **not enabled** |
-| `securitycenter.googleapis.com` | **not enabled** |
+| `gcloud compute ssl-policies list` | **empty** — the HTTPS proxy runs GCP's default profile |
+| `gcloud compute security-policies list` | **empty** — no Cloud Armor |
 
-No container image vulnerability scanning anywhere, which pairs with the CI-side finding
-under 6.1.1 — neither the dependency tree nor the built image is scanned.
+No edge rate limiting, no OWASP managed ruleset, no adaptive protection, no geo/IP
+blocking. And the TLS posture is unpinned: an external probe on 2026-09-22 showed
+`api.overslash.com` negotiating TLS 1.2/1.3 and refusing 1.0/1.1, so the *effective* state
+is fine — but nothing in the configuration says so, there is no declared policy to cite as
+evidence, and a change to Google's default would move it silently.
 
-### Storage
+### Secret Manager
 
-| Bucket | UBLA | Public access prevention | CMEK | Versioning |
-|--------|------|--------------------------|------|------------|
-| `overslash-dev_cloudbuild` | **`false`** | `inherited` (not enforced) | none | none |
+16 secrets in each project. **None declares `rotation`, `nextRotationTime` or
+`expireTime`.** Every consumer pins `version = "latest"`, so a rotation is a revision roll
+rather than a config change — good — but nothing schedules, tracks or alerts on rotation
+age, which is the shape of evidence 6.7.1 asks for.
 
-Auto-created by Cloud Build and not managed by Terraform. It holds **source archives of
-the repository** uploaded for each build, under legacy ACLs rather than uniform
-bucket-level access, with public-access prevention merely inherited rather than enforced.
-The Terraform state bucket is configured correctly by `bin/bootstrap-tfstate.sh:32-62`
-(UBLA, public-access-prevention, versioning) — this is a different bucket that nothing in
-the repo created or governs.
+### Monitoring — the count-gate, confirmed
 
-### Organization policy
+| | |
+|---|---|
+| Alert policies deployed | **8**, all enabled |
+| Uptime checks deployed | **0** |
 
-None of the constraints that would turn the above into guardrails are set:
+The arithmetic matches `infra/` exactly: 12 policies declared, minus the 3 disabled at
+`infra/env/prod.tfvars:113-119` (`api_latency`, `oauth_refresh`, `upstream_error`), minus
+`[P0] API Down`, which is `count`-gated on `api_domain != ""` while prod sets
+`domain = ""`. **So production has no GCM uptime check and no API-down page**; the only
+deployed P0 is `API High 5xx Rate`, which cannot fire when the service is returning
+nothing at all. Better Stack covers the detection out-of-band, but it is console-managed
+and outside the reviewable configuration.
 
-`constraints/sql.restrictPublicIp` · `constraints/iam.disableServiceAccountKeyCreation` ·
-`constraints/run.allowedIngress` · `constraints/compute.requireOsLogin` ·
-`constraints/storage.publicAccessPrevention`
+Deployed: `[P0] API High 5xx Rate`, `[P1]` API High CPU / API High Memory / Cloud SQL High
+CPU / Cloud SQL High Disk / Background Task Stale / Webhook Delivery Failure Rate,
+`[P2] API High 4xx Rate`. Every one is an availability or capacity signal — there is no
+alert on any security event.
 
-Every guardrail in this stack is convention expressed in HCL, so a `gcloud` command or a
-console click can move the project outside it without failing anything.
+### Storage — production
+
+| Bucket | UBLA | Public access prevention | Versioning | CMEK |
+|---|---|---|---|---|
+| `overslash-tfstate` | `true` | **enforced** | `true` | none |
+| `overslash_cloudbuild` | **`false`** | **`inherited`** | none | none |
+
+`overslash-tfstate` is configured correctly by `bin/bootstrap-tfstate.sh:32-62` — the only
+gap is CMEK, which matters because versioning retains every historical value of the
+generated `encryption-key` for 90 days.
+
+`overslash_cloudbuild` is auto-created by Cloud Build, **not managed by Terraform**, and
+holds source archives of the repository uploaded for each build — under legacy ACLs rather
+than uniform bucket-level access, with public-access prevention merely inherited rather
+than enforced. Same finding in dev.
+
+### Supply chain and organization policy
+
+Enabled on neither project: `containerscanning.googleapis.com`,
+`containeranalysis`/`ondemandscanning`, `binaryauthorization.googleapis.com`,
+`securitycenter.googleapis.com`. No image scanning, no deploy-time policy, no SCC — which
+pairs with the CI-side 6.1.1 finding: neither the dependency tree nor the built image is
+scanned anywhere.
+
+Organization policy constraints set on either project: **none**.
+`sql.restrictPublicIp` · `iam.disableServiceAccountKeyCreation` · `run.allowedIngress` ·
+`storage.publicAccessPrevention` · `iam.automaticIamGrantsForDefaultServiceAccounts` are
+all unset. Every guardrail in this stack is convention expressed in HCL, so a `gcloud`
+command or a console click moves the project outside it without failing anything.
 
 ---
 
-## Production
+## How this scan was run
 
-**Not scanned.** The account this session authenticates as
-(`factory@software-factory-491814.iam.gserviceaccount.com`) has no access to the
-`overslash` project — `gcloud projects describe overslash` returns `PERMISSION_DENIED`, and
-the project does not appear in `gcloud projects list`. It holds Owner on `overslash-dev`
-and `overfolder-dev` only.
+`roles/viewer` on both projects is sufficient and is the right grant: it carries all 297
+recommender permissions and `resourcemanager.projects.getIamPolicy` (the only way to read
+`auditConfigs` — the console's IAM page does not show it), while **excluding**
+`secretmanager.versions.access`, `storage.objects.get` and `cloudsql.instances.login`. A
+Viewer cannot read secret payloads, Terraform state objects, or database contents.
 
-To complete the scan, either grant a read-only binding:
+Two gotchas worth recording for the next run:
 
-```
-gcloud projects add-iam-policy-binding overslash \
-  --member=serviceAccount:factory@software-factory-491814.iam.gserviceaccount.com \
-  --role=roles/viewer
-gcloud projects add-iam-policy-binding overslash \
-  --member=serviceAccount:factory@software-factory-491814.iam.gserviceaccount.com \
-  --role=roles/recommender.viewer
-```
-
-or run the scan directly and paste the output:
-
-```
-gcloud recommender recommendations list --project=overslash \
-  --location=europe-west1 --recommender=google.cloudsql.instance.SecurityRecommender \
-  --format="table(priority,recommenderSubtype,description)"
-gcloud recommender recommendations list --project=overslash \
-  --location=global --recommender=google.iam.policy.Recommender \
-  --format="table(priority,description)"
-gcloud projects get-iam-policy overslash --format=json     # bindings + auditConfigs
-gcloud sql instances describe overslash-db \
-  --format="json(settings.ipConfiguration,settings.databaseFlags,settings.deletionProtectionEnabled)"
-gcloud logging sinks list --project=overslash
-gcloud logging buckets list --project=overslash
-gcloud run services list --project=overslash --region=europe-west1 \
-  --format="value(metadata.name,metadata.annotations['run.googleapis.com/ingress'])"
-gcloud redis instances list --project=overslash --region=europe-west1 \
-  --format="value(name,authEnabled,transitEncryptionMode)"
-```
-
-The last one has no dev counterpart — Memorystore only exists where `use_private_vpc` is
-true, so the `auth_enabled` / `transit_encryption_mode` finding in `gap-assessment.md`
-6.7.1 is **unverified against a live instance** and rests on the module alone.
-
-Two things to expect prod to differ on, both in prod's favour: no public Cloud SQL IP
-(`use_private_vpc = true`), and `DEV_AUTH` unset. Everything else in this document is
-rendered from the same modules and should be assumed present until measured.
+- **Quota project.** `--project` selects the resource; the *quota* project comes from the
+  active config. Set `CLOUDSDK_BILLING_QUOTA_PROJECT` to a project where the API is
+  enabled and you hold `serviceusage.services.use` — `roles/viewer` does not include it,
+  so production cannot bill itself. Unset it for `gcloud projects …` calls.
+- **Cloud SQL recommenders are regional** (`--location=europe-west1`); IAM policy
+  recommenders are `--location=global`. A sweep that only queries `global` silently
+  returns nothing for Cloud SQL.
+- `gcloud alpha` is not installed in this environment, so `gcloud alpha monitoring
+  policies list` reports nothing and looks like a measurement. The Monitoring REST API
+  (`monitoring.googleapis.com/v3/projects/<p>/alertPolicies`) is the reliable path.
 
 ---
 
 ## What this adds to the gap assessment
 
-Nothing here overturns a verdict. It does three things:
+No verdict is overturned. It does three things:
 
-1. **Confirms three `gap` rows by measurement rather than by reading HCL** — 4.1.1
-   (Recommender's own P2 on `REQUIRE_SSL`), 6.7.1 (`auditConfigs: NONE`, project-wide
-   `secretAccessor`, no secret rotation metadata), and the Cloud Run ingress reading.
-2. **Adds two findings the IaC could not show**: `roles/editor` on the default Compute
-   service account, and the unmanaged `_cloudbuild` bucket holding repository source
-   archives without uniform bucket-level access.
-3. **Supplies citable evidence.** "Google's own Recommender rates this P2" is a stronger
-   line in a submission than "we read our Terraform and think it is unset" — and
-   remediating a Recommender finding closes it in Google's console, which is itself the
-   artifact.
+1. **Converts inference into measurement on production** — 4.1.1 (`sslMode` permissive in
+   prod, rated HIGH by Google), 6.7.1 (`auditConfigs: NONE`, project-wide `secretAccessor`,
+   no rotation metadata), Cloud Run ingress, no SSL policy, no Cloud Armor, and the
+   `deletion_protection = false` on the production database.
+2. **Verifies one finding that had no evidence at all** — Memorystore has neither AUTH nor
+   transit encryption. It has no dev counterpart, so until this scan it rested entirely on
+   reading the module.
+3. **Adds three findings the IaC could not show**: `roles/editor` on two GCP-default
+   service accounts; the unmanaged `_cloudbuild` bucket holding repository source archives
+   without uniform bucket-level access; and the confirmation that production runs 8 alert
+   policies and **zero** uptime checks, so the `[P0] API Down` page does not exist.
+
+And it supplies better evidence than prose: "Google's own Recommender rates this P2, with a
+HIGH-severity insight behind it" is a stronger line in a submission than "we read our
+Terraform and think it is unset" — and remediating a Recommender finding closes it in
+Google's console, which is itself the artifact.
