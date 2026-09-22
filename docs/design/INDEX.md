@@ -3,6 +3,8 @@
 Design documents for Overslash, migrated from the Overfolder workspace repo.
 
 > The live product spec is at [SPEC.md](../../SPEC.md). These design docs capture the original planning and alternatives considered.
+>
+> Compliance assessments are **not** design docs and live at [docs/compliance/](../compliance/casa/README.md) — currently the CASA gap assessment for Google restricted-scope verification.
 
 ---
 

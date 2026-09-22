@@ -297,6 +297,7 @@
 - DPA, security.txt, vulnerability disclosure policy, subprocessor list.
 - Documented manual GDPR request process (export + hard-delete handled by hand at launch; automation deferred).
 - Master-key rotation runbook + tested rotation; Postgres PITR restore drill.
+- **CASA readiness** — the annual assessment Google requires for the restricted Gmail/Drive/Keep scopes the system OAuth client requests. Gap assessment against CASA Specification v2.1.1 is in [docs/compliance/casa/](docs/compliance/casa/README.md): 17 of 55 requirements are gaps, two of which are live vulnerabilities (unrestricted SSRF on the action-execution path; cross-tenant API-key minting). Remediation is tracked in [TODO.md §1.6](TODO.md).
 - PagerDuty (or Slack) integration key bound to `infra/modules/monitoring/`.
 
 **Dashboard residuals** (carry-overs from review cards `504a7` / `20ae2` / `2e268`):
