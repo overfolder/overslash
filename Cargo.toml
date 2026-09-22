@@ -40,6 +40,18 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 regex = "1"
 async-trait = "0.1"
 
+# Lints every workspace member inherits via `[lints] workspace = true`.
+#
+# `used_underscore_binding` is pedantic-group, so it is allow-by-default: an
+# `_name` binding that is then read compiles silently. The underscore is how
+# this codebase says "deliberately unused" — a tuple element we destructure
+# past, a guard we only hold. When a later edit starts reading one, the name
+# now lies about its own purpose, and `_` prefixes stop being a reliable
+# signal of what is dead. A genuinely unused binding keeps its underscore;
+# one that gets read loses it.
+[workspace.lints.clippy]
+used_underscore_binding = "warn"
+
 # Fast dev builds: minimal debug info
 [profile.dev]
 debug = "line-tables-only"

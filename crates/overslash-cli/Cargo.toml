@@ -51,3 +51,6 @@ urlencoding = "2"
 # `ServiceExt::oneshot`, so the route-precedence test can drive a Router
 # without binding a port.
 tower = "0.5"
+
+[lints]
+workspace = true

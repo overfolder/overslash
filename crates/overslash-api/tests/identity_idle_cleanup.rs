@@ -349,9 +349,9 @@ async fn test_cannot_restore_child_under_archived_parent() {
     let pool = common::test_pool().await;
     let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
-    let (_org_id, admin_key, agent_id) =
+    let (org_id, admin_key, agent_id) =
         setup_hierarchy(&client, &base, "restore-under-archived").await;
-    let org_uuid: Uuid = _org_id.parse().unwrap();
+    let org_uuid: Uuid = org_id.parse().unwrap();
 
     // Build parent → child sub-agents.
     let parent_sub = make_subagent(&client, &base, &admin_key, &agent_id, "p").await;

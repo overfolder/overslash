@@ -8,6 +8,8 @@
 //! Dry-run mode (`EXPORTER_DRY_RUN=1`) prints the payload as JSON and skips
 //! the HTTPS POST — used for local validation and the unit tests.
 
+#![forbid(unsafe_code)]
+
 mod cloud_monitoring;
 mod queries;
 
