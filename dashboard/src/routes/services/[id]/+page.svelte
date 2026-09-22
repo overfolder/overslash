@@ -24,6 +24,7 @@
 	import type {
 		ActionPagination,
 		ActionSummary,
+		AuthMode,
 		ConnectionSummary,
 		Identity,
 		SecretSummary,
@@ -50,6 +51,7 @@
 	import { resolveOwner, ownerLabel, ownerTitle } from '$lib/ownerLabel';
 	import { probeRejected } from '$lib/public-request';
 	import { failureKind } from '$lib/setup-outcome';
+	import { connectViaPopup, PopupBlockedError } from '$lib/oauth-connect';
 
 
 	const id = $derived($page.params.id ?? '');
@@ -111,6 +113,58 @@
 			error = e instanceof ApiError ? `Could not activate (${e.status})` : 'Could not activate';
 		} finally {
 			testing = false;
+		}
+	}
+
+	/**
+	 * Switch which credential kind this instance authenticates with.
+	 *
+	 * Its own action rather than part of the general save, because a switch has
+	 * consequences the other fields do not: the server drops the instance back
+	 * to `pending_setup` and mints a fresh handshake for the new mode, so the
+	 * user has something to do next. Nothing is destroyed — the mode they are
+	 * leaving keeps its credential, so switching back needs no re-entry.
+	 */
+	async function switchAuthMode(key: string) {
+		if (!svc || key === (activeMode?.key ?? '')) return;
+		switchingMode = true;
+		error = null;
+		modeSetupUrl = null;
+		try {
+			const updated = await updateService(svc.id, { auth_mode: key });
+			svc = updated;
+			editCredentials = seedCredentials(template, updated);
+
+			if (updated.connect?.auth_url) {
+				const before = new Set(connections.map((c) => c.id));
+				const controller = new AbortController();
+				try {
+					await connectViaPopup({
+						authUrl: updated.connect.auth_url,
+						provider: oauthProvider ?? '',
+						beforeIds: before,
+						signal: controller.signal,
+						onPoll: (rows) => (connections = rows)
+					});
+					svc = await getService(svc.id);
+				} catch (e) {
+					if (e instanceof PopupBlockedError) {
+						error = e.message;
+					} else {
+						throw e;
+					}
+				}
+			} else if (updated.setup) {
+				// The value is pasted on a page we never see, so all this
+				// surface can do is hand over the link. Prefer the shortened
+				// form — it is the one that survives a chat message.
+				modeSetupUrl = updated.setup.short_url ?? updated.setup.setup_url;
+			}
+		} catch (e) {
+			error =
+				e instanceof ApiError ? `Could not switch auth method (${e.status})` : 'Could not switch auth method';
+		} finally {
+			switchingMode = false;
 		}
 	}
 
@@ -240,10 +294,28 @@
 
 	// Group-assignment form state
 	let savingGroup = $state(false);
+	// Auth-mode switching
+	let switchingMode = $state(false);
+	/** Setup link minted by the last switch into a secret-backed mode. */
+	let modeSetupUrl = $state<string | null>(null);
 
-	const oauthAuth = $derived(
-		(template?.auth ?? []).find((a: any) => a?.type === 'oauth') as any
+	// The alternative credential kinds the template accepts, and the one this
+	// instance actually uses. Everything below reads the template *through*
+	// this: a template offering OAuth or a token always "has OAuth" when read
+	// whole, which would hide the token field on an instance that authenticates
+	// with a token.
+	const modes = $derived((template?.auth_modes ?? []) as AuthMode[]);
+	const hasModeChoice = $derived(modes.length > 1);
+	const activeMode = $derived(
+		modes.find((m) => m.key === svc?.auth_mode) ?? modes.find((m) => m.default) ?? modes[0]
 	);
+	const modeAuth = $derived.by(() => {
+		const all = (template?.auth ?? []) as any[];
+		const schemes = activeMode?.schemes;
+		if (!schemes) return all;
+		return all.filter((a) => schemes.includes(a?.scheme ?? ''));
+	});
+	const oauthAuth = $derived(modeAuth.find((a: any) => a?.type === 'oauth') as any);
 	const isMcp = $derived(template?.runtime === 'mcp');
 	// MCP-runtime templates with `auth.kind: oauth` (D24) resolve through the
 	// same provider connection as HTTP OAuth, so they reuse the whole connect
@@ -260,9 +332,23 @@
 	// independently via `credentials[slot]`. A template may declare several
 	// (email's org-wide `gateway` key plus the per-instance mailbox username
 	// and password its header joins).
-	const secretSlots = $derived((template?.secrets ?? []) as SecretSlot[]);
+	const secretSlots = $derived.by(() => {
+		const all = (template?.secrets ?? []) as SecretSlot[];
+		const schemes = activeMode?.schemes;
+		if (!schemes || !hasModeChoice) return all;
+		// A slot belongs to the mode whose scheme reads it. `slots` is the
+		// authoritative list; a scheme declaring none reads the slot named
+		// after itself (the implicit-slot rule).
+		const keys = new Set<string>();
+		for (const a of modeAuth as any[]) {
+			if (a?.type !== 'secret') continue;
+			const read: string[] = a.slots?.length ? a.slots : [a.scheme];
+			for (const k of read) keys.add(k);
+		}
+		return all.filter((slot) => keys.has(slot.key));
+	});
 	const usesSecret = $derived(
-		secretSlots.length > 0 || (template?.auth ?? []).some((a: any) => a?.type === 'secret')
+		secretSlots.length > 0 || modeAuth.some((a: any) => a?.type === 'secret')
 	);
 	// An API from before credential slots sends no `secrets` — fall back to the
 	// legacy single scalar field in that case.
@@ -956,6 +1042,38 @@
 						inherited={template?.instance_defaults?.config}
 						idPrefix="edit-service-config"
 					/>
+				{/if}
+				{#if hasModeChoice && !isSystem}
+					<div class="field auth-modes">
+						<span class="label">Authentication method</span>
+						<div class="auth-mode-row">
+							{#each modes as mode (mode.key)}
+								<button
+									type="button"
+									class="auth-mode"
+									class:selected={activeMode?.key === mode.key}
+									disabled={switchingMode || activeMode?.key === mode.key}
+									onclick={() => switchAuthMode(mode.key)}
+								>
+									<span class="auth-mode-label">{mode.label || mode.key}</span>
+									{#if mode.description}
+										<small>{mode.description}</small>
+									{/if}
+								</button>
+							{/each}
+						</div>
+						<small>
+							Switching keeps the other method's credential, so you can switch back
+							without entering it again. The service returns to setup until its
+							credential has been checked.
+						</small>
+						{#if modeSetupUrl}
+							<div class="auth-mode-setup">
+								<span>Send this link to whoever has the credential:</span>
+								<code>{modeSetupUrl}</code>
+							</div>
+						{/if}
+					</div>
 				{/if}
 				{#if usesSecret && !usesOAuth && !isSystem && schemeKeyed}
 					<ServiceCredentials
@@ -1766,5 +1884,53 @@
 	/* The verdict wants the row's full width; the button does not. */
 	.test-body :global(.verdict) {
 		align-self: stretch;
+	}
+
+	/* Auth-method switcher, shown only when the template offers alternatives. */
+	.auth-modes .auth-mode-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-bottom: 0.35rem;
+	}
+	.auth-mode {
+		flex: 1 1 14rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		align-items: flex-start;
+		text-align: left;
+		padding: 0.6rem;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: none;
+		cursor: pointer;
+		color: inherit;
+		font: inherit;
+	}
+	.auth-mode:hover:not(:disabled) {
+		background: var(--color-surface);
+	}
+	.auth-mode.selected {
+		border-color: var(--color-primary);
+		background: var(--color-primary-bg);
+		cursor: default;
+	}
+	.auth-mode:disabled:not(.selected) {
+		opacity: 0.6;
+		cursor: progress;
+	}
+	.auth-mode-label {
+		font-weight: 500;
+	}
+	.auth-mode-setup {
+		margin-top: 0.5rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	.auth-mode-setup code {
+		word-break: break-all;
+		font-family: var(--font-mono);
 	}
 </style>

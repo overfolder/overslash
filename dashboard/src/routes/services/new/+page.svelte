@@ -15,6 +15,7 @@
 		updateService
 	} from '$lib/api/services';
 	import type {
+		AuthMode,
 		ConnectionSummary,
 		OAuthProviderInfo,
 		SecretSummary,
@@ -224,15 +225,47 @@
 		})
 	);
 
-	// Auth modes available on the selected template (oauth or secret)
-	const authModes = $derived(
-		(selectedDetail?.auth ?? []).map((a: any) => a?.type as string).filter(Boolean)
+	// The alternative credential kinds this template accepts. A template that
+	// declares none still reports one implicit mode holding every scheme, so
+	// there is always at least one; the picker appears only past one.
+	const modes = $derived((selectedDetail?.auth_modes ?? []) as AuthMode[]);
+	const hasModeChoice = $derived(modes.length > 1);
+	// Which one the form is currently offering credentials for. Reset to the
+	// template's default whenever the selected template changes — a mode key
+	// from the previously selected template means nothing here.
+	let selectedMode = $state<string | undefined>(undefined);
+	const activeMode = $derived(
+		modes.find((m) => m.key === selectedMode) ?? modes.find((m) => m.default) ?? modes[0]
 	);
-	const usesSecret = $derived(authModes.includes('secret'));
-	// Every credential slot the template declares — one picker each, bound via
-	// `credentials[slot]` (e.g. email's `gateway` plus its mailbox username
+	// Every auth entry the *active mode* activates. This narrowing is the whole
+	// point: read across all modes, a template offering OAuth or a token always
+	// "uses OAuth", and the OAuth branch below would suppress the token field
+	// on a template whose whole purpose is to offer it.
+	const modeAuth = $derived.by(() => {
+		const all = (selectedDetail?.auth ?? []) as any[];
+		const schemes = activeMode?.schemes;
+		if (!schemes) return all;
+		return all.filter((a) => schemes.includes(a?.scheme ?? ''));
+	});
+	const usesSecret = $derived(modeAuth.some((a: any) => a?.type === 'secret'));
+	// Every credential slot the active mode declares — one picker each, bound
+	// via `credentials[slot]` (e.g. email's `gateway` plus its mailbox username
 	// and password).
-	const secretSlots = $derived((selectedDetail?.secrets ?? []) as SecretSlot[]);
+	const secretSlots = $derived.by(() => {
+		const all = (selectedDetail?.secrets ?? []) as SecretSlot[];
+		const schemes = activeMode?.schemes;
+		if (!schemes || !hasModeChoice) return all;
+		// A slot belongs to the mode whose scheme reads it. `slots` is the
+		// authoritative list; a scheme with no `slots` reads the one named
+		// after itself (the implicit-slot rule).
+		const keys = new Set<string>();
+		for (const a of modeAuth as any[]) {
+			if (a?.type !== 'secret') continue;
+			const read: string[] = a.slots?.length ? a.slots : [a.scheme];
+			for (const k of read) keys.add(k);
+		}
+		return all.filter((s) => keys.has(s.key));
+	});
 	// An API from before credential slots sends no `secrets` — fall back to the
 	// legacy single scalar field in that case.
 	const schemeKeyed = $derived(usesSecret && secretSlots.length > 0);
@@ -240,7 +273,7 @@
 	// (D24) normalized to the same {provider, scopes} shape so the connect
 	// surface below is shared. MCP OAuth declares no template-level scopes.
 	const oauthProvider = $derived.by(() => {
-		const httpOauth = (selectedDetail?.auth ?? []).find((a: any) => a?.type === 'oauth') as any;
+		const httpOauth = modeAuth.find((a: any) => a?.type === 'oauth') as any;
 		if (httpOauth) return httpOauth;
 		if (isMcp && selectedDetail?.mcp?.auth_kind === 'oauth' && selectedDetail?.mcp?.provider) {
 			return {
@@ -391,6 +424,9 @@
 		try {
 			selectedDetail = await getTemplate(t.key);
 			nameInput = t.key;
+			// A mode key from the previously selected template means nothing
+			// here, so start each template on its own default.
+			selectedMode = (selectedDetail?.auth_modes ?? []).find((m) => m.default)?.key;
 			// Seed one entry per secret scheme so the per-scheme pickers bind
 			// to defined slots on the configure step's first render.
 			const seeded: Record<string, string> = {};
@@ -562,6 +598,10 @@
 			const instance = await createService({
 				template_key: selectedDetail.key,
 				name: nameInput.trim() || undefined,
+				// Only when the template actually offers a choice: sending the
+				// sole implicit mode's key would pin every instance to a name
+				// the template never declared.
+				auth_mode: hasModeChoice ? activeMode?.key : undefined,
 				connection_id: connectionId || undefined,
 				credentials: sendCredentials ? cleanedCredentials : undefined,
 				secret_name: !sendCredentials ? secretName.trim() || undefined : undefined,
@@ -1303,6 +1343,33 @@
 				/>
 			{/if}
 
+			{#if hasModeChoice}
+				<fieldset class="auth-modes">
+					<legend class="label">How will this service authenticate?</legend>
+					{#each modes as mode (mode.key)}
+						<label class="auth-mode" class:selected={activeMode?.key === mode.key}>
+							<input
+								type="radio"
+								name="new-service-auth-mode"
+								value={mode.key}
+								checked={activeMode?.key === mode.key}
+								onchange={() => (selectedMode = mode.key)}
+							/>
+							<span class="auth-mode-body">
+								<span class="auth-mode-label">{mode.label || mode.key}</span>
+								{#if mode.description}
+									<small>{mode.description}</small>
+								{/if}
+							</span>
+						</label>
+					{/each}
+					<small class="auth-mode-note">
+						Pick one — this service uses that credential for every call. You can
+						switch later without losing the other.
+					</small>
+				</fieldset>
+			{/if}
+
 			{#if usesSecret && !usesOAuth && schemeKeyed}
 				<ServiceCredentials
 					slots={secretSlots}
@@ -1688,5 +1755,50 @@
 		font-size: 0.8rem;
 		color: var(--color-text-muted);
 		margin: 0 0 1.25rem;
+	}
+
+	/* Auth-mode picker: one row per alternative credential kind, shown only
+	   when the template declares more than one. */
+	.auth-modes {
+		border: 1px solid var(--color-border-subtle);
+		border-radius: var(--radius-md);
+		padding: 0.75rem;
+		margin: 0 0 1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.auth-modes legend {
+		padding: 0 0.25rem;
+	}
+	.auth-mode {
+		display: flex;
+		gap: 0.6rem;
+		align-items: flex-start;
+		padding: 0.6rem;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+	}
+	.auth-mode:hover {
+		background: var(--color-surface);
+	}
+	.auth-mode.selected {
+		border-color: var(--color-primary);
+		background: var(--color-primary-bg);
+	}
+	.auth-mode input {
+		margin-top: 0.2rem;
+	}
+	.auth-mode-body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+	.auth-mode-label {
+		font-weight: 500;
+	}
+	.auth-mode-note {
+		color: var(--color-text-muted);
 	}
 </style>
