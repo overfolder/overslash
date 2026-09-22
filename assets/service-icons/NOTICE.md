@@ -70,6 +70,7 @@ that as a signal when sourcing them.
 | `client_chatgpt` | OpenAI, L.L.C. | https://openai.com/brand/ | No OpenAI mark in simple-icons. Source from the vendor brand page before shipping. |
 | `client_vscode` | Microsoft Corporation | https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks | No Microsoft marks in simple-icons. Source from the vendor brand page before shipping. |
 | `eventbrite` | Eventbrite, Inc. | https://www.eventbrite.com/l/for-press/ | No simple-icons entry. Source from the vendor brand page before shipping. |
+| `langfuse` | Langfuse GmbH | https://langfuse.com/ | No Langfuse mark in simple-icons. Source from the vendor brand page before shipping. |
 | `linkedin` | LinkedIn Corporation (Microsoft) | https://brand.linkedin.com/ | Removed from simple-icons at the brand's request. Source from the vendor brand page before shipping. |
 | `outlook` | Microsoft Corporation | https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks | No Microsoft marks in simple-icons. Source from the vendor brand page before shipping. |
 | `slack` | Slack Technologies, LLC (Salesforce) | https://slack.com/media-kit | Removed from simple-icons at the brand's request. Source from the vendor brand page before shipping. |
