@@ -432,7 +432,6 @@ pub async fn kernel_update_service(
     // here moves an instance between owners, so one audience covers both.
     super::fire_service_event(
         ctx.db.clone(),
-        ctx.http_client.clone(),
         super::ServiceEvent {
             org_id: ctx.org_id,
             event_type: crate::services::events::EventType::ServiceUpdated,

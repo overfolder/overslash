@@ -37,21 +37,39 @@ The AL2 verification text for 5.1.5 is written for exactly this case:
 > implements robust input validation and uses allowlists to restrict requests to trusted
 > and necessary domains or IP addresses.**
 
-So the finding is adjudicable. But the exemption is conditional, and today Overslash meets
-neither condition on the path the scanner will hit — see V1 in
-[gap-assessment.md](gap-assessment.md). The argument has to be earned before it can be
-made.
+So the finding is adjudicable. But the exemption is conditional. The first condition —
+robust input validation with an IP deny-list on the path the scanner will hit — is now
+**met** on action execution and webhook delivery (V1 in
+[gap-assessment.md](gap-assessment.md) is fixed). The second — "allowlists to restrict
+requests to trusted and necessary domains" — is the one still to argue, because raw Mode A
+has no destination allowlist by design, and the `http` pseudo-service grant decides
+whether that capability is on by default.
 
 ## What has to be true before a lab scans us
 
-**1. The deny-list must exist and be on the path.**
-`ssrf_guard::build_pinned_client` already denies loopback, RFC 1918, link-local, CGNAT,
-ULA, multicast, broadcast, unspecified and documentation ranges, on both IPv4 and
-IPv4-mapped/compatible IPv6; it pins the resolved IP via `.resolve()` to close DNS
-rebinding, and sets `Policy::none()` so a cooperative upstream cannot 3xx us inward. It
-must be wired into the action-execution path and the webhook dispatcher. Then the lab's
-`http://169.254.169.254/` and `https://127.0.0.1/` probes return a 400 and the *internal*
-half of 5.1.5 — the half that is unambiguously a vulnerability — passes cleanly.
+**1. The deny-list must exist and be on the path. — Done.**
+`ssrf_guard` denies loopback, RFC 1918, link-local, CGNAT, ULA, multicast, broadcast,
+unspecified and documentation ranges, on both IPv4 and IPv4-mapped/compatible IPv6; it
+pins the resolved IP via `.resolve()` to close DNS rebinding, and sets `Policy::none()` so
+a cooperative upstream cannot 3xx us inward. It is now on the action-execution path —
+`services/http_caller` builds its client from the URL through the guard rather than
+accepting one, so all five call sites are covered by construction — and on the webhook
+dispatcher, per attempt. The lab's `http://169.254.169.254/` and `https://127.0.0.1/`
+probes return a **400**, and the *internal* half of 5.1.5 — the half that is unambiguously
+a vulnerability — passes cleanly. `crates/overslash-api/tests/ssrf_guard.rs` is the
+evidence to hand the lab, including that a 302 toward the metadata endpoint is returned
+rather than followed.
+
+Two things for the memo. First, the allow-list: a self-hosted deployment can declare its
+own private ranges in `OVERSLASH_SSRF_ALLOWED_CIDRS`, which is read from the process
+environment and is therefore not reachable by anything a scanner can send. A scan target
+should have it unset, and the memo should say so — an operator who set it and then
+commissioned a scan would get findings about their own network, correctly.
+
+Second, a caveat to state rather than let a scanner find: OIDC issuer discovery
+(`routes/org_idp_configs.rs`) still runs behind a hand-rolled string check instead of the
+shared guard, so a DNS name that resolves inward passes it. Org-admin only, and tracked
+in TODO §1.6 — but a scan run with an admin credential will reach it.
 
 **2. The external half must be framed as an allowlist, not as unrestricted egress.**
 The distinction to make, and it is a real one:
@@ -119,8 +137,9 @@ deliberately rather than discovering this mid-run.
 
 ## Sequence
 
-1. Land the P0 SSRF work (V1) and the P1 webhook work, so the scan's internal-target
-   probes are refused.
+1. ~~Land the P0 SSRF work (V1)~~ **done** — the scan's internal-target probes are
+   refused on action execution and webhook delivery. Still to land: the P1 webhook work,
+   and the OIDC issuer-discovery residual.
 2. Decide the `http` pseudo-service default grant, since it determines which argument the
    memo makes.
 3. Close the dev-environment deltas above, or stand up a dedicated scan environment.

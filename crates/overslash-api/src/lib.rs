@@ -186,6 +186,13 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     let (embedder, embeddings_available) = init_embeddings(&db).await;
 
+    // Parse the egress allow-list now, so "your outbound reach is wider than
+    // the default, and here is exactly how much" lands next to the rest of
+    // startup rather than in the middle of the day's traffic — and so a
+    // deployment that set the dangerous metadata variable and nothing else
+    // hears about it before it wonders why nothing happened.
+    services::ssrf_guard::log_egress_configuration();
+
     let http_client = reqwest::Client::new();
     let mailer = services::email::build_mailer(&config, http_client.clone());
 
@@ -228,10 +235,6 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     {
         let db = background_db.clone();
         let system = overslash_db::scopes::SystemScope::new_internal(db.clone());
-        // The auto-bubble and expiry sweeps emit the same events their
-        // human-driven counterparts do, so they need a client for the webhook
-        // half of that.
-        let bg_http_client = state.http_client.clone();
         // Hoisted out of the task: it is constant for the process lifetime, and
         // reading it inside the `async move` would drag the whole `Config` in.
         let orphan_grace = state.config.orphan_execution_grace_secs();
@@ -247,7 +250,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 instrumented_step(
                     "approval_expiry",
-                    services::approval_expiry::process_expiry(&system, &bg_http_client),
+                    services::approval_expiry::process_expiry(&system),
                     |n| {
                         tracing::info!("Expired {n} stale approvals");
                         for _ in 0..n {
@@ -334,7 +337,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                 .await;
                 instrumented_step(
                     "auto_bubble",
-                    services::permission_chain::process_auto_bubble(&system, &bg_http_client),
+                    services::permission_chain::process_auto_bubble(&system),
                     |n| tracing::info!("Auto-bubbled {n} approvals"),
                 )
                 .await;
@@ -421,7 +424,6 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         // Webhook retry loop
         tokio::spawn(services::webhook_dispatcher::spawn_retry_loop(
             background_db.clone(),
-            state.http_client.clone(),
         ));
 
         // Webhook DLQ digest (daily, 13:00 UTC). Idempotent across replicas

@@ -587,7 +587,6 @@ pub async fn kernel_create_service(
     // the connection and the setup links this call wired up.
     super::fire_service_event(
         ctx.db.clone(),
-        ctx.http_client.clone(),
         super::ServiceEvent {
             org_id: ctx.org_id,
             event_type: crate::services::events::EventType::ServiceCreated,

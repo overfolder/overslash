@@ -1,8 +1,21 @@
-//! The thin HTTP transport under every action call.
+//! The HTTP transport under every action call.
 //!
-//! Deliberately dumb: it takes already-resolved values (including a
-//! [`Duration`], never a [`crate::services::call_timeout::CallTimeout`]) and
-//! knows nothing about where they came from.
+//! Deliberately dumb about *policy*: it takes already-resolved values
+//! (including a [`Duration`], never a
+//! [`crate::services::call_timeout::CallTimeout`]) and knows nothing about
+//! where they came from.
+//!
+//! # The one thing it is not dumb about
+//!
+//! It builds its own client, from the URL, via
+//! [`crate::services::ssrf_guard::outbound_client`] — it does not accept one.
+//! Every outbound action request reaches the wire through the three functions
+//! below, so owning client construction here is what makes "a Mode A call
+//! cannot dial 169.254.169.254" a property of the transport rather than a rule
+//! each of the five call sites has to remember. The guard resolves the host,
+//! refuses private / loopback / link-local answers, pins the validated IP, and
+//! disables redirects; it pools the resulting client per validated address, so
+//! this is not a handshake per call.
 //!
 //! # Two different meanings of "timeout"
 //!
@@ -23,14 +36,17 @@
 //! chunks* thereafter. A slow-but-live 900MB export runs as long as it needs;
 //! a stalled one still dies.
 //!
-//! A per-request idle timeout is not available directly: `read_timeout` is
-//! `ClientBuilder`-only in reqwest 0.13, and building a client per call would
-//! cost a TLS handshake every time.
+//! A per-request idle timeout is still not available directly: `read_timeout`
+//! is `ClientBuilder`-only in reqwest 0.13, and the pooled clients the guard
+//! hands out are shared by calls with different budgets, so it cannot be set
+//! per call there either. [`idle_guarded_stream`] remains the answer.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use overslash_core::types::ActionResult;
+
+use crate::error::AppError;
 
 /// Errors from an HTTP call.
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +60,28 @@ pub enum CallError {
         content_type: Option<String>,
         limit_bytes: usize,
     },
+
+    /// The SSRF guard refused the target before anything was dialed.
+    ///
+    /// Distinct from `Request(e)`: nothing left the process, and the caller
+    /// asked for something we will not do — so it maps to a 400, not a 502.
+    #[error("{0}")]
+    Blocked(String),
+
+    /// The guard could not reach a verdict — a resolver task that failed to
+    /// join, or a client builder that refused to build.
+    ///
+    /// Kept apart from [`CallError::Blocked`] because the two say opposite
+    /// things about whose fault it is: "we will not dial that" is the
+    /// caller's answer and a 400, while "we could not tell" is ours and a
+    /// 500. Collapsing them would have a transient host-level failure read
+    /// as a malformed request, and a caller would retune a URL that was fine.
+    #[error("{0}")]
+    GuardFailed(String),
+
+    /// The upstream kept redirecting past [`MAX_REDIRECTS`].
+    #[error("upstream redirected more than {max} times")]
+    TooManyRedirects { max: usize },
 
     /// The upstream did not answer within the resolved per-call timeout.
     ///
@@ -114,13 +152,135 @@ fn build_request(
     builder
 }
 
+/// Resolve, validate and pin the target, returning the client to send on and
+/// the parsed URL to resolve a `Location` against.
+///
+/// The single place the transport acquires a client. See the module docs.
+async fn guarded_client(url: &str) -> Result<(reqwest::Client, url::Url), CallError> {
+    crate::services::ssrf_guard::outbound_client(url)
+        .await
+        .map_err(|e| match e {
+            // The guard is careful about this distinction — `BadRequest` for
+            // anything about the target, `Internal` only for a failure of its
+            // own machinery — so the transport keeps it rather than flattening
+            // both into "blocked".
+            AppError::BadRequest(msg) => CallError::Blocked(msg),
+            other => CallError::GuardFailed(other.to_string()),
+        })
+}
+
+/// How many redirects a call follows.
+///
+/// Above the 3 the template-import hop loop allows, because a cloud-storage
+/// download routinely costs two (signed-URL issuer → CDN) and a third is
+/// plausible; below the 10 `reqwest` follows by default, which was never a
+/// deliberate choice here.
+const MAX_REDIRECTS: usize = 5;
+
+/// Headers that carry a credential and must not travel where it does not
+/// belong.
+///
+/// On this path `Authorization` is an injected vault secret, so forwarding it
+/// to wherever an upstream points is a credential disclosure — to a CDN in the
+/// benign case and to whoever the upstream names in the other one. `reqwest`'s
+/// own default policy strips exactly these; following redirects by hand means
+/// re-implementing that rather than inheriting it.
+fn is_credential_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("authorization")
+        || name.eq_ignore_ascii_case("cookie")
+        || name.eq_ignore_ascii_case("proxy-authorization")
+        || name.eq_ignore_ascii_case("www-authenticate")
+}
+
+/// Whether a credential may follow this hop.
+///
+/// Only to the **same host**, and never onto a weaker transport. A different
+/// host is a different party, whoever named it. An `https` → `http` downgrade
+/// would put a vault secret on the wire in clear, which is worth refusing even
+/// when the host is unchanged. A port change on the same host is neither of
+/// those, and stripping there would break ordinary same-service redirects
+/// without taking anything away from an attacker.
+fn credential_may_follow(from: &url::Url, to: &url::Url) -> bool {
+    from.host_str() == to.host_str() && !(from.scheme() == "https" && to.scheme() == "http")
+}
+
+/// Send, and follow redirects **with the guard re-run on every hop**.
+///
+/// The pinned client sets `Policy::none()`, because letting `reqwest` follow
+/// is precisely the hole: a validated first hop says nothing about where a 302
+/// points. But refusing to follow at all is not an option either — a Google
+/// Drive download *is* a redirect to a signed URL on another host, which is
+/// what `tests/large_file.rs::test_google_drive_redirect_stream` asserts. So
+/// each hop gets its own resolve, its own policy check and its own pin, the
+/// same shape `routes/templates/fetch.rs` already uses for OpenAPI import.
+///
+/// Method and body follow the convention `reqwest` and browsers use: 303
+/// becomes a GET, 301/302 become a GET when the original was a POST, and
+/// 307/308 replay both. A streamed request body cannot be replayed at all,
+/// which is why [`call_streaming_upload`] does not come through here.
+async fn send_following_redirects(
+    method: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+    body: Option<&str>,
+    total_timeout: Option<Duration>,
+    timeout_ms: u64,
+) -> Result<reqwest::Response, CallError> {
+    let mut method = method.to_string();
+    let mut body = body.map(str::to_owned);
+    let mut headers = headers.clone();
+    let mut target = url.to_string();
+
+    for _hop in 0..=MAX_REDIRECTS {
+        let (client, current) = guarded_client(&target).await?;
+        let outgoing = match body.as_deref() {
+            Some(b) => OutgoingBody::Text(b),
+            None => OutgoingBody::None,
+        };
+        let response = build_request(&client, &method, &target, &headers, outgoing, total_timeout)
+            .send()
+            .await
+            .map_err(|e| map_reqwest_timeout(e, timeout_ms))?;
+
+        let status = response.status();
+        if !status.is_redirection() {
+            return Ok(response);
+        }
+        // A 3xx without a usable `Location` — a 304, or a 300 offering no
+        // default — is the upstream's answer, not an instruction to move.
+        let Some(location) = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+        else {
+            return Ok(response);
+        };
+
+        let next = current.join(&location).map_err(|e| {
+            CallError::Blocked(format!("upstream redirect is not a usable URL: {e}"))
+        })?;
+        if !credential_may_follow(&current, &next) {
+            headers.retain(|name, _| !is_credential_header(name));
+        }
+        if status == 303
+            || (matches!(status.as_u16(), 301 | 302) && method.eq_ignore_ascii_case("POST"))
+        {
+            method = "GET".to_string();
+            body = None;
+        }
+        target = next.to_string();
+    }
+
+    Err(CallError::TooManyRedirects { max: MAX_REDIRECTS })
+}
+
 /// Call an HTTP endpoint, buffering the response. Returns an error if the
 /// response body exceeds `max_body_bytes`.
 ///
 /// `timeout` is a total deadline covering connect through the last byte of the
 /// body.
 pub async fn call(
-    client: &reqwest::Client,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
@@ -128,20 +288,48 @@ pub async fn call(
     max_body_bytes: usize,
     timeout: Duration,
 ) -> Result<ActionResult, CallError> {
-    let start = Instant::now();
     let timeout_ms = timeout.as_millis() as u64;
-
-    let response = build_request(
-        client,
-        method,
-        url,
-        headers,
-        to_outgoing(body),
-        Some(timeout),
+    // One deadline over the whole thing, because `timeout` is documented as a
+    // *total* one and neither of the per-request bounds inside is. The
+    // `RequestBuilder::timeout` each hop carries restarts on every hop, so a
+    // chain of redirects could spend `MAX_REDIRECTS × timeout`; and the host
+    // lookup that precedes the first hop runs before any reqwest client
+    // exists. Both are bounded individually — the guard caps DNS — but only
+    // an outer deadline makes the documented contract true.
+    match tokio::time::timeout(
+        timeout,
+        call_inner(
+            method,
+            url,
+            headers,
+            body,
+            max_body_bytes,
+            timeout,
+            timeout_ms,
+        ),
     )
-    .send()
     .await
-    .map_err(|e| map_reqwest_timeout(e, timeout_ms))?;
+    {
+        Ok(result) => result,
+        Err(_elapsed) => Err(CallError::Timeout { timeout_ms }),
+    }
+}
+
+/// [`call`] without its deadline. Split out only so the deadline can wrap
+/// every step, the body buffering included.
+#[allow(clippy::too_many_arguments)]
+async fn call_inner(
+    method: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+    body: Option<&str>,
+    max_body_bytes: usize,
+    timeout: Duration,
+    timeout_ms: u64,
+) -> Result<ActionResult, CallError> {
+    let start = Instant::now();
+    let response =
+        send_following_redirects(method, url, headers, body, Some(timeout), timeout_ms).await?;
     let status_code = response.status().as_u16();
 
     // Fold rather than collect: a `HashMap` built straight from the iterator
@@ -216,7 +404,6 @@ pub async fn call(
 /// headers). Nothing has reached the client when it fires, so the caller can
 /// still turn it into a clean 504. See the module docs.
 pub async fn call_streaming(
-    client: &reqwest::Client,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
@@ -224,23 +411,16 @@ pub async fn call_streaming(
     timeout: Duration,
 ) -> Result<reqwest::Response, CallError> {
     let timeout_ms = timeout.as_millis() as u64;
+    // Inside the deadline: the guard resolves DNS, and a hostile resolver is
+    // exactly as good a way to hang the header phase as a hostile upstream.
     match tokio::time::timeout(
         timeout,
-        build_request(client, method, url, headers, to_outgoing(body), None).send(),
+        send_following_redirects(method, url, headers, body, None, timeout_ms),
     )
     .await
     {
-        Ok(res) => res.map_err(|e| map_reqwest_timeout(e, timeout_ms)),
+        Ok(res) => res,
         Err(_elapsed) => Err(CallError::Timeout { timeout_ms }),
-    }
-}
-
-/// The `Option<&str>` both public buffered/streamed entry points still take,
-/// as the enum the builder now speaks.
-fn to_outgoing(body: Option<&str>) -> OutgoingBody<'_> {
-    match body {
-        Some(b) => OutgoingBody::Text(b),
-        None => OutgoingBody::None,
     }
 }
 
@@ -263,14 +443,14 @@ fn to_outgoing(body: Option<&str>) -> OutgoingBody<'_> {
 /// [`crate::services::proxy_upload::metered_body`]) and that meter carries both
 /// the idle guard and the byte ceiling.
 pub async fn call_streaming_upload(
-    client: &reqwest::Client,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
     body: reqwest::Body,
 ) -> Result<reqwest::Response, CallError> {
+    let (client, _) = guarded_client(url).await?;
     build_request(
-        client,
+        &client,
         method,
         url,
         headers,

@@ -152,6 +152,7 @@ mod shared_router_isolation;
 mod short_url;
 mod shortcut;
 mod slack;
+mod ssrf_guard;
 mod subdomain_oauth_as;
 mod template_validation;
 mod templates;

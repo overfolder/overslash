@@ -168,7 +168,6 @@ pub(super) async fn resolve_approval(
         // that gained it would not learn so until its next poll.
         crate::services::events::emit_all(
             state.db_pool(&ext),
-            state.http_client.clone(),
             vec![
                 crate::services::events::approvals::bubbled(
                     &scope,
@@ -546,7 +545,6 @@ pub(super) async fn resolve_approval(
         .await;
         crate::services::events::emit(
             state.db_pool(&ext),
-            state.http_client.clone(),
             crate::services::events::EventDraft {
                 org_id: auth.org_id,
                 event_type: crate::services::events::EventType::ApprovalResolved,

@@ -85,7 +85,7 @@ pub async fn build_client(
         headers.insert(name, value);
     }
 
-    // Apply OVERSLASH_SSRF_ALLOW_PRIVATE-gated host overrides so e2e tests
+    // Apply the allow-list-gated host overrides so e2e tests
     // can route MCP calls at a local fake. Same semantics as the HTTP path
     // in `action_caller::call_action_request`.
     let resolved_url = state.config.apply_base_overrides(url);

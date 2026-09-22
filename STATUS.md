@@ -135,7 +135,7 @@
 ### Multi-Provider OIDC Authentication
 
 - Generic OIDC provider support — `/auth/login/{provider_key}` and `/auth/callback/{provider_key}` replacing Google-specific routes
-- OIDC Discovery — auto-discover IdP endpoints from `.well-known/openid-configuration` with SSRF protection
+- OIDC Discovery — auto-discover IdP endpoints from `.well-known/openid-configuration`, behind a hand-rolled host check (not `ssrf_guard`; see TODO §1.6)
 - GitHub social login — GitHub userinfo + email API integration
 - Per-org IdP configuration — `org_idp_configs` table (CRUD API at `/v1/org-idp-configs`)
 - Env var vs DB precedence — env vars (`GOOGLE_AUTH_CLIENT_ID`, `GITHUB_AUTH_CLIENT_ID`) take precedence over DB config
@@ -297,7 +297,7 @@
 - DPA, security.txt, vulnerability disclosure policy, subprocessor list.
 - Documented manual GDPR request process (export + hard-delete handled by hand at launch; automation deferred).
 - Master-key rotation runbook + tested rotation; Postgres PITR restore drill.
-- **CASA readiness** — the annual assessment Google requires for the restricted Gmail/Drive/Keep scopes the system OAuth client requests. Gap assessment against CASA Specification v2.1.1 is in [docs/compliance/casa/](docs/compliance/casa/README.md): 17 of 55 requirements are gaps, two of which are live vulnerabilities (unrestricted SSRF on the action-execution path; cross-tenant API-key minting). Remediation is tracked in [TODO.md §1.6](TODO.md).
+- **CASA readiness** — the annual assessment Google requires for the restricted Gmail/Drive/Keep scopes the system OAuth client requests. Gap assessment against CASA Specification v2.1.1 is in [docs/compliance/casa/](docs/compliance/casa/README.md): 13 of 55 requirements are gaps, and **neither of the two live vulnerabilities it found is still open**. Cross-tenant API-key minting is closed (the org comes from the credential, and migration 121 enforces the pair); unrestricted SSRF on the action-execution path is closed (action execution and webhook delivery resolve, check and pin every target through `ssrf_guard`, re-running it on each redirect hop). Remediation is tracked in [TODO.md §1.6](TODO.md).
 - PagerDuty (or Slack) integration key bound to `infra/modules/monitoring/`.
 
 **Dashboard residuals** (carry-overs from review cards `504a7` / `20ae2` / `2e268`):

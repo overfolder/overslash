@@ -453,7 +453,7 @@ export async function seedApprovalResolution(session, approvalId, resolution) {
  * executes immediately — no approval detour. Pair with a URL that 404s/500s
  * to seed an upstream-error execution (`detail.is_error: true` on the
  * `action.executed` audit row), or a healthy one (e.g. `/health`) for a
- * success row. Requires the e2e stack (`OVERSLASH_SSRF_ALLOW_PRIVATE=1`)
+ * success row. Requires the e2e stack (`OVERSLASH_SSRF_ALLOWED_CIDRS`)
  * when pointing at localhost.
  *
  * @param {import('./auth.mjs').Session} session

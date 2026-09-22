@@ -115,7 +115,7 @@ async fn seed_approval(
 
 async fn sweep(pool: &PgPool) -> u64 {
     let system = SystemScope::new_internal(pool.clone());
-    overslash_api::services::approval_expiry::process_expiry(&system, &Client::new())
+    overslash_api::services::approval_expiry::process_expiry(&system)
         .await
         .unwrap()
 }
@@ -349,13 +349,9 @@ async fn one_tick_drains_several_batches() {
     }
 
     let system = SystemScope::new_internal(pool.clone());
-    let expired = overslash_api::services::approval_expiry::process_expiry_batched(
-        &system,
-        &Client::new(),
-        1,
-    )
-    .await
-    .unwrap();
+    let expired = overslash_api::services::approval_expiry::process_expiry_batched(&system, 1)
+        .await
+        .unwrap();
     assert_eq!(expired, 3, "one tick drains past the first batch");
     let events = await_events(&pool, c.org_id, "approval.resolved", 3).await;
     assert_eq!(events.len(), 3, "every batch in the tick emitted");
@@ -375,22 +371,14 @@ async fn a_backlog_past_the_tick_ceiling_is_left_for_the_next_tick() {
     }
 
     let system = SystemScope::new_internal(pool.clone());
-    let first = overslash_api::services::approval_expiry::process_expiry_batched(
-        &system,
-        &Client::new(),
-        1,
-    )
-    .await
-    .unwrap();
+    let first = overslash_api::services::approval_expiry::process_expiry_batched(&system, 1)
+        .await
+        .unwrap();
     assert_eq!(first, 4, "the tick stops at its ceiling");
 
-    let second = overslash_api::services::approval_expiry::process_expiry_batched(
-        &system,
-        &Client::new(),
-        1,
-    )
-    .await
-    .unwrap();
+    let second = overslash_api::services::approval_expiry::process_expiry_batched(&system, 1)
+        .await
+        .unwrap();
     assert_eq!(second, 1, "the remainder is picked up, not dropped");
 }
 

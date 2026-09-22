@@ -3282,6 +3282,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac 0.13.0",
+ "ipnet",
  "jaq-core",
  "jaq-json",
  "jaq-std",

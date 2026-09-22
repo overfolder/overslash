@@ -16,7 +16,8 @@
 //! (`/token`) endpoints. The MCP "resource" is also served from the same
 //! mock — it's only used for resource-metadata-URL discovery.
 //!
-//! `OVERSLASH_SSRF_ALLOW_PRIVATE=1` opens loopback for the SSRF guard so
+//! `OVERSLASH_SSRF_ALLOWED_CIDRS=127.0.0.0/8,::1/128` declares loopback
+//! reachable for the SSRF guard so
 //! the mock at 127.0.0.1 can be reached.
 
 use crate::common;
@@ -145,7 +146,7 @@ fn allow_loopback() {
     // Safe in tests: the env var is process-wide but each test runs in its
     // own process under cargo nextest / cargo test default.
     unsafe {
-        std::env::set_var("OVERSLASH_SSRF_ALLOW_PRIVATE", "1");
+        std::env::set_var("OVERSLASH_SSRF_ALLOWED_CIDRS", "127.0.0.0/8,::1/128");
     }
 }
 

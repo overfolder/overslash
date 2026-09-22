@@ -30,13 +30,17 @@ vulnerabilities carry both.
 
 ## Read this first: live vulnerabilities
 
-These were found while assessing and are **not** compliance gaps. They should be decided
-on their own timeline rather than waiting for a CASA engagement. **V2 is fixed**; V1 is
-still exploitable on the current `dev` head.
+These were found while assessing and are **not** compliance gaps. They were exploitable on
+the `dev` head this document was written against, and were decided on their own timeline
+rather than waiting for a CASA engagement. **Both are now fixed** — V2 first, then V1.
+Each block below is kept as the record of what was wrong.
 
-### V1 — Unrestricted SSRF on the action-execution path
+### V1 — Unrestricted SSRF on the action-execution path — **fixed**
 
-Any authenticated org member can make Overslash issue an arbitrary HTTP request to an
+*Fixed in the PR that carries this edit; the description below is kept as the record of
+what was wrong, with the remedy and the residual at the end.*
+
+Any authenticated org member could make Overslash issue an arbitrary HTTP request to an
 internal address and read the response body.
 
 - Mode A URL validation stops at "parses, scheme is `http`/`https`, has a host" —
@@ -54,20 +58,63 @@ internal address and read the response body.
   groups only — they are their own approvers").
 
 So `POST /v1/actions/call {"service":"http","method":"GET","url":"http://169.254.169.254/…"}`
-reaches the metadata endpoint, and `http://localhost:*` reaches anything the container can.
+reached the metadata endpoint, and `http://localhost:*` reached anything the container
+could. The same gap existed on webhook delivery — see 7.3.1.
 
-The fix is mostly wiring, not design: `crates/overslash-api/src/services/ssrf_guard.rs`
-is already correct — it denies loopback / private / link-local / CGNAT / broadcast /
-multicast / unspecified / documentation IPv4 and loopback / ULA / link-local / multicast
-IPv6, recurses into IPv4-mapped *and* IPv4-compatible v6 addresses, pins the validated IP
-via `.resolve()` to close DNS rebinding, and sets `Policy::none()` so a redirect cannot
-walk it inward. It is simply not on this path; it covers only OAuth-upstream discovery,
-template import and MCP dispatch. The codebase names this exact attack elsewhere
-(`routes/actions/deferred.rs:79-84`, `services/deferred_download.rs:355-362`).
+**The remedy.** The fix was wiring, not design:
+`crates/overslash-api/src/services/ssrf_guard.rs` was already correct — it denies loopback
+/ private / link-local / CGNAT / broadcast / multicast / unspecified / documentation IPv4
+and loopback / ULA / link-local / multicast IPv6, recurses into IPv4-mapped *and*
+IPv4-compatible v6 addresses, pins the validated IP via `.resolve()` to close DNS
+rebinding, and sets `Policy::none()` so a redirect cannot walk it inward. It was simply
+not on this path.
 
-Also reopen whether `Everyone` should hold `admin` on `http` by default. The comment says
-it preserves a migrated default; it is now the difference between "SSRF requires a
-deliberate grant" and "SSRF is available to every member on day one".
+It is now. `services/http_caller.rs` — the transport all five action-execution call sites
+share — no longer *accepts* a `reqwest::Client`; it builds one per request from the URL
+through `ssrf_guard::outbound_client`, so a new call site cannot reach the wire without
+the guard. `services/webhook_dispatcher.rs::deliver` does the same for the registrant's
+URL. A refusal is `CallError::Blocked`, which maps to a 400 and writes an
+`action.executed` audit row with `detail.error.kind = "blocked"`. Coverage is
+`crates/overslash-api/tests/ssrf_guard.rs`: the metadata endpoint, RFC1918, CGNAT, ULA
+and v4-mapped addresses are refused on both the buffered and the streamed fork, a 302
+toward the metadata endpoint is handed back rather than followed, and two positive
+controls keep the loopback fakes honest.
+
+**Residual — SSRF on OIDC issuer discovery.** `routes/org_idp_configs.rs:135` and `:521`
+dial an admin-supplied `issuer_url` through the shared `state.http_client`, behind a
+**second, hand-rolled guard** (`services/oidc_discovery.rs:85-125`) rather than
+`ssrf_guard`. That guard checks the *string*: it parses the host, rejects it if it is an
+IP literal in a private range, and blocks three names. So a hostname that resolves to
+10.0.0.1 passes it, and the shared client follows up to 10 redirects, so a cooperative
+issuer can walk it inward after the check. The handler echoes the fetch error
+(`OIDC discovery failed: {e}`), including the upstream body on a non-2xx, which makes it
+an oracle. Narrower than V1 — org-admin only — but the same class, and the remedy is to
+delete the hand-rolled check and call `ssrf_guard::outbound_client`. Not folded into V1
+because it is a different surface with different tests; tracked in
+[TODO.md §1.6](../../../TODO.md).
+
+**Self-hosted private networking.** The deny-list would otherwise make Overslash
+unable to reach a service on the operator's own network, so a self-hosted deployment
+declares the ranges it needs in `OVERSLASH_SSRF_ALLOWED_CIDRS`. Operator-only (process
+environment; no org, user, template or request can reach it), checked against the
+resolved address rather than the URL, specific about which ranges it opens, and still
+pinned. The multi-tenant deployment sets nothing, so its egress is public-only. There is
+no boolean bypass — the previous `OVERSLASH_SSRF_ALLOW_PRIVATE` is gone.
+
+The allow-list explicitly **cannot** reach the instance-metadata ranges (`169.254.0.0/16`,
+`fd00:ec2::/32`, and the v4-in-v6 spellings of both): they are denied before it is
+consulted, so not even `0.0.0.0/0` opens them. A second variable,
+`OVERSLASH_DANGER_ALLOW_METADATA_CIDR`, is the only gate past that, and it opens nothing
+by itself — it merely lets the allow-list cover those ranges. This is the answer to the
+one 5.1.5 finding a lab will not adjudicate: the metadata endpoint is unreachable on any
+configuration short of two deliberate, separately-named acts.
+
+**Still open — the default grant.** Whether `Everyone` should hold `admin` on `http` by
+default is a behaviour change for new orgs, so it was deliberately left to a human. The
+comment says it preserves a migrated default; it is now the difference between "raw HTTP
+requires a deliberate grant" and "raw HTTP is available to every member on day one".
+Removing it is also what [dast-readiness.md](dast-readiness.md) needs to be able to tell
+a scanning lab: that the default-configured product has no unbounded egress at all.
 
 ### V2 — Cross-tenant API-key minting — **FIXED**
 
@@ -189,7 +236,7 @@ magic link.
 | 5.1.2 | Redirects and forwards allowlisted, or warned | `pass` | `sanitize_next` accepts only same-origin paths — must start `/`, must not start `//`, no CR/LF (`routes/auth/mod.rs:199-204`). OAuth `redirect_uri` is exact-match. The LB's catch-all 301 to `www` is static config (`infra/modules/api-lb/main.tf:154-181`) | — |
 | 5.1.3 | Avoid `eval()` / dynamic code execution; sandbox where unavoidable | `statement` | Overslash *does* evaluate user-supplied jq filters — that is a product feature. It runs in-process with syntax validation and a timeout, over JSON only, with no filesystem, network or shell reach (`services/response_filter.rs:145-199`). No `Command::new` exists in any server crate. Needs a written description of the sandbox | Med |
 | 5.1.4 | Protect against template injection | `statement` | `{param}` interpolation in action descriptions is plain string substitution, not a template engine. Server-rendered HTML interpolations pass `html_escape` (`routes/connect_gate.rs:294-307`, `routes/oauth_upstream.rs:620-680`). One rough edge to fix or disclose: `oauth_upstream.rs:646` puts an HTML-escaped value inside a JavaScript string literal (`window.location.href = '{return_to}'`) — the wrong encoder for that context. It holds today (entities are not decoded inside `<script>`, and `'` → `&#x27;` blocks termination) but backslash is not escaped | Med |
-| 5.1.5 | Prevent Server-Side Request Forgery | `gap` | **V1.** See the top of this document, and [dast-readiness.md](dast-readiness.md) — this requirement needs both a fix *and* a scoping argument, because outbound HTTP on user-supplied input is the product | **Critical** (+ vuln) |
+| 5.1.5 | Prevent Server-Side Request Forgery | `statement` | **V1 fixed.** Action execution and webhook delivery now resolve, check and pin every target through `services/ssrf_guard.rs`, re-running the guard on each redirect hop and stripping credentials that would cross a host boundary; the transport (`services/http_caller.rs`) owns client construction so a new call site cannot bypass it. Tests: `tests/ssrf_guard.rs`. Three things still need saying to a lab: the operator allow-list a self-hoster uses for its own private network (`OVERSLASH_SSRF_ALLOWED_CIDRS` — environment-only, never set on the multi-tenant deployment), the residual issuer-discovery surface at `routes/org_idp_configs.rs:135`/`:521`, and the scoping argument in [dast-readiness.md](dast-readiness.md) — outbound HTTP on user-supplied input *is* the product, so the control is a deny-list of destinations, not an absence of egress | Medium |
 | 5.1.6 | Protect against XPath / XML injection | `n/a` | No XML is parsed anywhere. No `quick-xml`, `roxmltree`, `xml-rs` or `serde-xml` in `Cargo.lock`; all payloads are JSON, and templates are YAML | — |
 | 5.1.7 | Context-aware escaping against reflected, stored and DOM XSS | `statement` | Six `{@html}` sinks in the dashboard, each fed by an escaping helper — `lib/api.ts:53-87` escapes both values and keys, `lib/approvals/format.ts:107-118`, `components/api-explorer/ResponsePanel.svelte:54-59`. No unescaped sink found. Svelte escapes by default elsewhere. Disclose the JS-context issue from 5.1.4; the scan confirms the rest | Med |
 | 5.1.8 | Protect against database injection | `pass` | Effectively every query is a compile-time-checked `sqlx::query!` / `query_as!` macro with bind parameters, and `clippy.toml:1-5` sets `disallowed-methods` to **ban** runtime-string SQL, enforced by `cargo clippy -D warnings` in CI. The only dynamic SQL is `services/key_rotation.rs:218-291`, built from a `const TARGETS: &[Target]` of `&'static str` table and column names | — |
@@ -223,7 +270,7 @@ when it was written.
 | 7.2.1 | Payloads authenticated with HMAC-SHA256 or stronger | `pass` | **Provider:** HMAC-SHA256 over the raw serialized envelope, sent as `X-Overslash-Signature: sha256=<hex>` (`services/webhook_dispatcher.rs:111-121`), with a 256-bit CSPRNG signing secret minted per subscription (`routes/webhooks.rs:57-61`). **Consumer:** the Stripe handler computes over `"<timestamp>.<raw body>"` using the raw bytes, never a re-serialization (`routes/billing/webhook.rs:360-370`) | — |
 | 7.2.2 | Signature verification uses a timing-safe comparison | `pass` | `subtle::ConstantTimeEq` over every candidate `v1` signature — `routes/billing/webhook.rs:371-384`. This is the code snippet to paste into the evidence pack verbatim | — |
 | 7.2.3 | Payloads include replay protection via signed timestamps | `gap` | **Consumer side passes** — Stripe's `t=` is inside the signed payload and events outside a ±tolerance window are rejected (`routes/billing/webhook.rs:310-358`). **Provider side fails** — our outbound signature is `sha256=<hmac>` with no timestamp header and no signed time component, so a captured delivery replays forever. Fixing it changes the signature format, so it needs a versioned header and a migration note for existing consumers | **High** |
-| 7.3.1 | Provider implements SSRF mitigations for user-supplied callback URLs | `gap` | Callback URLs *are* user-supplied, so the "not applicable" exemption does not apply. Delivery uses the shared client and never touches `ssrf_guard`, so `https://127.0.0.1/…`, `https://10.0.0.1/…` and `http://169.254.169.254/…` are all deliverable targets — and a delivery's status and body are recorded, which makes it an oracle. Same fix as V1, applied to a second call site | **High** |
+| 7.3.1 | Provider implements SSRF mitigations for user-supplied callback URLs | `pass` | `services/webhook_dispatcher.rs::deliver` resolves the registrant's URL through `ssrf_guard::outbound_client` on **every** attempt — first try and each retry — so loopback, RFC1918, link-local and CGNAT targets are refused before a socket opens, the validated IP is pinned against rebinding, and redirects are off. A refusal is recorded on the delivery row with no `status_code`, so the oracle reads as a failure rather than a response. Tests: `tests/ssrf_guard.rs::webhook_delivery_refuses_a_link_local_endpoint` plus a loopback positive control | — |
 | 7.3.2 | Signing secrets not hardcoded or in version control | `pass` | Generated per subscription from 32 CSPRNG bytes at creation time (`routes/webhooks.rs:57-61`), stored in the database, returned to the registrant once. No webhook secret appears in the repo. `STRIPE_WEBHOOK_SECRET` is a Secret Manager entry injected via `secret_key_ref` (`infra/modules/cloud-run/main.tf:426-455`) | — |
 
 ---
@@ -232,33 +279,36 @@ when it was written.
 
 | Verdict | Count |
 |---------|-------|
-| `pass` | 25 |
-| `statement` | 12 |
-| `gap` | 15 |
+| `pass` | 26 |
+| `statement` | 13 |
+| `gap` | 13 |
 | `scan` | 1 |
 | `n/a` | 2 |
 
-Of the 15 gaps, **1 is also a live vulnerability** (5.1.5 / V1) and 4 are the unbuilt
-webhook-provider section. V2 closed 3.1.2 and 3.1.4, which are now `pass`.
+Of the 13 gaps, **none is a live vulnerability** any more, and 3 are the unbuilt
+webhook-provider section. The counts moved from the original assessment because the two
+vulnerabilities closed four rows between them: V2 made 3.1.2 and 3.1.4 `pass`, and V1
+made 7.3.1 `pass` and 5.1.5 `statement`.
 
 ## Priority ladder
 
 Remediation is tracked in [TODO.md §1.6](../../../TODO.md). The ordering:
 
-**P0 — live vulnerabilities.** V1 (route Mode A and webhook delivery through
-`ssrf_guard::build_pinned_client`; revisit the default `Everyone → admin on http` grant).
-Decide on a security timeline, not a compliance one. ~~V2~~ is fixed: the org comes from
-the credential, the identity resolves through that scope, migration 121 enforces the pair,
-and the unauthenticated bootstrap branch is gone.
+**P0 — live vulnerabilities. Both done.** ~~V2~~ — the org comes from the credential, the
+identity resolves through that scope, migration 121 enforces the pair, and the
+unauthenticated bootstrap branch is gone. ~~V1~~ — Mode A and webhook delivery run through
+the SSRF guard. Two follow-ups survive V1, neither a P0: the default `Everyone → admin on
+http` grant (a behaviour change for new orgs, so a human decision) and the residual
+issuer-discovery surface at `routes/org_idp_configs.rs:135`/`:521`.
 
 **P1 — hard CASA fails.** `Secure` on `oss_session` plus `__Host-`/`__Secure-` prefixes
 (2.3.1); **server-side sessions** — a sessions table with a `jti` claim checked per
 request, which keeps the 7-day UX while satisfying 2.2.1, 2.2.2 and 2.2.3 at the cost of
 one indexed lookup (cacheable in Valkey) (2.2.x); a security-headers layer on the API and
-a `headers` block in `dashboard/vercel.json` (4.x/6.x adjacency); **webhook section 7 in
-full** — `https://` at registration, delivery through `ssrf_guard`, a challenge-response
-ownership handshake, and a signed timestamp header behind a versioned signature (7.1.1,
-7.1.2, 7.2.3, 7.3.1); dependency vulnerability scanning in CI plus clearing the four
+a `headers` block in `dashboard/vercel.json` (4.x/6.x adjacency); **the rest of webhook
+section 7** — `https://` at registration, a challenge-response ownership handshake, and a
+signed timestamp header behind a versioned signature (7.1.1, 7.1.2, 7.2.3; delivery
+through `ssrf_guard` is done); dependency vulnerability scanning in CI plus clearing the four
 fixable advisories (6.1.1); require TLS on outbound calls (4.1.1); a `redirect_uri` scheme
 allowlist on DCR (3.2.2); `SECURITY.md` with a disclosure policy.
 

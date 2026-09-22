@@ -88,19 +88,20 @@ pub(super) fn parse_service_base_overrides(raw: Option<&str>) -> HashMap<String,
     out
 }
 
-/// Returns true if the override target is loopback or
-/// `OVERSLASH_SSRF_ALLOW_PRIVATE` is set to a truthy value. Mirrors the SSRF
-/// guard so production deploys can leave `OVERSLASH_SERVICE_BASE_OVERRIDES`
-/// set harmlessly: a public override target is silently dropped.
+/// Whether a `OVERSLASH_SERVICE_BASE_OVERRIDES` target is one this deployment
+/// could dial anyway.
+///
+/// Mirrors the SSRF guard so a production deploy can leave the variable set
+/// harmlessly: a target the guard would refuse is silently dropped here rather
+/// than rewriting a host into a request that then fails at the transport.
+///
+/// Loopback, or inside a range the operator listed in
+/// `OVERSLASH_SSRF_ALLOWED_CIDRS` — the same allow-list
+/// [`crate::services::ssrf_guard`] consults, and the only way past the
+/// deny-list there. A hostname target resolves to `false`: this check is
+/// synchronous and a name is not an address, and the guard will make the real
+/// decision at call time either way.
 pub(super) fn ssrf_allowed_for(base_url: &str) -> bool {
-    if let Ok(v) = env::var("OVERSLASH_SSRF_ALLOW_PRIVATE") {
-        // Accept the same truthy spellings as `CLOUD_BILLING` etc. above so a
-        // stray `OVERSLASH_SSRF_ALLOW_PRIVATE=0` doesn't accidentally enable
-        // the bypass.
-        if matches!(v.as_str(), "true" | "1" | "yes") {
-            return true;
-        }
-    }
     let Ok(parsed) = url::Url::parse(base_url) else {
         return false;
     };
@@ -110,10 +111,19 @@ pub(super) fn ssrf_allowed_for(base_url: &str) -> bool {
     if matches!(host, "localhost" | "127.0.0.1" | "::1") {
         return true;
     }
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return ip.is_loopback();
+    // `host_str` brackets an IPv6 literal; `Host` hands back the bare form.
+    let ip = match parsed.host() {
+        Some(url::Host::Ipv4(v4)) => std::net::IpAddr::V4(v4),
+        Some(url::Host::Ipv6(v6)) => std::net::IpAddr::V6(v6),
+        _ => return false,
+    };
+    if ip.is_loopback() {
+        return true;
     }
-    false
+    let allowed = env::var("OVERSLASH_SSRF_ALLOWED_CIDRS")
+        .map(|raw| crate::services::ssrf_guard::parse_allowed_cidrs(&raw))
+        .unwrap_or_default();
+    allowed.iter().any(|net| net.contains(&ip))
 }
 
 /// Build the default `public_url` from the bind host/port. We map

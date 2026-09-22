@@ -286,7 +286,6 @@ pub(crate) async fn run(t: ApprovalTail<'_>) -> Result<Vec<Uuid>> {
         .await;
         crate::services::events::emit(
             state.db_pool(ext),
-            state.http_client.clone(),
             crate::services::events::EventDraft {
                 org_id: audit_org_id,
                 event_type,

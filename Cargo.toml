@@ -30,6 +30,9 @@ clap = { version = "4", features = ["derive", "env"] }
 rust-embed = { version = "8", features = ["mime-guess", "interpolate-folder-path", "debug-embed"] }
 mime_guess = "2"
 url = "2"
+# CIDR parsing for the operator egress allow-list (`OVERSLASH_SSRF_ALLOWED_CIDRS`).
+# Already in the tree transitively via hyper; named here so the guard can use it.
+ipnet = "2"
 subtle = "2"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
