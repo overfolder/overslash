@@ -539,3 +539,92 @@ async fn a_stale_connection_does_not_blank_the_badge_after_switching_to_a_token(
          stale connection: {detail}"
     );
 }
+
+/// A stored `NULL` auth_mode means "the template's default", so naming that
+/// default explicitly is not a switch.
+///
+/// Regression: every instance created before the column existed carries
+/// `NULL`, and a caller echoing back the mode `get_service` reported compared
+/// `Some("oauth")` against `None` — registering as a change and knocking a
+/// working service into `pending_setup` with a handshake nobody asked for.
+#[tokio::test]
+async fn naming_the_default_mode_on_a_pre_migration_instance_is_not_a_switch() {
+    ensure_oauth_env();
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, _ident, api_key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    seed_dual_mode_template(&base, &client, &admin_key, "dm-null").await;
+
+    let (status, created) = create_service(
+        &base,
+        &client,
+        &api_key,
+        json!({
+            "template_key": "dm-null",
+            "name": "svc-null",
+            "auth_mode": "oauth",
+            "skip_connect": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(created["status"], "active", "{created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let instance_id = uuid::Uuid::parse_str(&id).unwrap();
+    let owner_id: uuid::Uuid = created["owner_identity_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Put the row back the way every pre-migration instance is stored.
+    sqlx::query!(
+        "UPDATE service_instances SET auth_mode = NULL WHERE id = $1",
+        instance_id
+    )
+    .execute(&pool)
+    .await
+    .expect("clear auth_mode");
+
+    let owner_key =
+        key_for_identity(&base, &client, &admin_key, org_id, &owner_id.to_string()).await;
+
+    // Naming the template's default — exactly what a caller echoing back
+    // `get_service` would send.
+    let resp = client
+        .put(format!("{base}/v1/services/{id}/manage"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&json!({ "auth_mode": "oauth" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let same: Value = resp.json().await.unwrap();
+
+    assert_eq!(
+        same["status"], "active",
+        "naming the mode an instance is already on must not re-gate it: {same}"
+    );
+    assert!(
+        same.get("connect").is_none(),
+        "no handshake should be minted for a non-switch: {same}"
+    );
+    assert!(same.get("setup").is_none(), "{same}");
+
+    // The other mode is still a real switch.
+    let resp = client
+        .put(format!("{base}/v1/services/{id}/manage"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&json!({ "auth_mode": "token" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let switched: Value = resp.json().await.unwrap();
+    assert_eq!(switched["auth_mode"], "token", "{switched}");
+    assert_eq!(
+        switched["status"], "pending_setup",
+        "switching off the default is still a switch: {switched}"
+    );
+}

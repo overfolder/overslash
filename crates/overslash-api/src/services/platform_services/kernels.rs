@@ -429,9 +429,26 @@ pub async fn kernel_update_service(
     };
     // A switch is only a switch when the mode actually changes: re-sending the
     // current one must not drop a live service back into setup.
-    let mode_changed = new_auth_mode
-        .as_deref()
-        .is_some_and(|m| Some(m) != existing.auth_mode.as_deref());
+    //
+    // A stored `NULL` *means* "the template's default", so it has to be read
+    // as that before the comparison. Every instance created before this column
+    // existed carries `NULL`, and naming its mode explicitly — which is what a
+    // caller does when it echoes back what `get_service` reported — would
+    // otherwise register as a change and knock a working service into
+    // `pending_setup` with a fresh handshake nobody asked for.
+    let mode_changed = match new_auth_mode.as_deref() {
+        Some(requested) => {
+            let template_def = template_def
+                .as_ref()
+                .expect("resolved above whenever auth_mode is present");
+            let current = existing
+                .auth_mode
+                .clone()
+                .unwrap_or_else(|| template_def.default_auth_mode());
+            requested != current
+        }
+        None => false,
+    };
 
     let update = UpdateServiceInstance {
         auth_mode: new_auth_mode.as_deref(),
