@@ -414,6 +414,7 @@ fn fields_into_call_args(fields: CallFields) -> anyhow::Result<services::CallArg
 mod cli_tests {
     use super::*;
     use clap::Parser;
+    use std::sync::Mutex;
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).unwrap_or_else(|e| panic!("parse {args:?}: {e}"))
@@ -612,31 +613,69 @@ mod cli_tests {
 
     /// `resolve_host` exists because clap's `env = "HOST"` treats `HOST=""`
     /// as a value and lets it beat `default_value`, binding the server to
-    /// `":8080"`. These cover the precedence it replaces that with.
+    /// `":8080"`. These cover the precedence it replaces that with:
+    /// `--host` > `HOST` > `0.0.0.0`.
+    ///
+    /// Every case pins `HOST` explicitly. The function falls through to the
+    /// variable whenever the flag is blank, so a `HOST` inherited from the
+    /// runner's shell would otherwise decide the result.
+    fn with_host<R>(host: Option<&str>, f: impl FnOnce() -> R) -> R {
+        static HOST_LOCK: Mutex<()> = Mutex::new(());
+        let guard = HOST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: HOST_LOCK serialises env mutation across this cohort.
+        unsafe {
+            match host {
+                Some(v) => std::env::set_var("HOST", v),
+                None => std::env::remove_var("HOST"),
+            }
+        }
+        let out = f();
+        unsafe {
+            std::env::remove_var("HOST");
+        }
+        // Released before the caller asserts: a panic inside the guard would
+        // poison the mutex and mask the real failure in every sibling.
+        drop(guard);
+        out
+    }
+
     #[test]
-    fn resolve_host_prefers_the_flag() {
-        assert_eq!(resolve_host(Some("127.0.0.1".into())), "127.0.0.1");
+    fn resolve_host_prefers_the_flag_over_the_variable() {
+        let got = with_host(Some("10.0.0.1"), || resolve_host(Some("127.0.0.1".into())));
+        assert_eq!(got, "127.0.0.1");
+    }
+
+    #[test]
+    fn resolve_host_uses_the_variable_when_there_is_no_flag() {
+        let got = with_host(Some("10.0.0.1"), || resolve_host(None));
+        assert_eq!(got, "10.0.0.1");
     }
 
     #[test]
     fn resolve_host_falls_back_to_the_default_for_a_blank_flag() {
-        // `--host ""` and `--host "   "` are both "the operator said nothing".
-        assert_eq!(resolve_host(Some(String::new())), "0.0.0.0");
-        assert_eq!(resolve_host(Some("   ".into())), "0.0.0.0");
+        // `--host ""` and `--host "   "` are both "the operator said nothing",
+        // so the variable gets its turn — and with none set, the default.
+        let (empty, spaces) = with_host(None, || {
+            (
+                resolve_host(Some(String::new())),
+                resolve_host(Some("   ".into())),
+            )
+        });
+        assert_eq!(empty, "0.0.0.0");
+        assert_eq!(spaces, "0.0.0.0");
     }
 
     #[test]
-    fn resolve_host_defaults_when_no_flag_and_no_env() {
-        // HOST is read through `overslash_env`, which treats empty as unset;
-        // with neither flag nor variable the documented default stands.
-        assert_eq!(
-            resolve_host(None),
-            std::env::var("HOST")
-                .ok()
-                .map(|h| h.trim().to_string())
-                .filter(|h| !h.is_empty())
-                .unwrap_or_else(|| "0.0.0.0".into()),
-            "no flag: HOST if usable, else the default"
-        );
+    fn resolve_host_treats_an_empty_variable_as_unset() {
+        // The bug this replaced: clap let `HOST=""` beat `default_value`,
+        // and the server bound to ":8080".
+        let got = with_host(Some(""), || resolve_host(None));
+        assert_eq!(got, "0.0.0.0");
+    }
+
+    #[test]
+    fn resolve_host_defaults_when_neither_flag_nor_variable_is_set() {
+        let got = with_host(None, || resolve_host(None));
+        assert_eq!(got, "0.0.0.0");
     }
 }
