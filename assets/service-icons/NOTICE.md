@@ -38,6 +38,7 @@ data only — **not** the trademarks it depicts. See simple-icons'
 | `client_zed.svg` | Zed Industries | simple-icons 16.28.0 (`zedindustries`) | https://github.com/zed-industries/zed/blob/ccc939124fa2f366b3029926447fd0a0c46a85c7/assets/icons/logo_96.svg |
 | `deepwiki.svg` | Overspiral S.L. | local/book.svg | — |
 | `email.svg` | Overspiral S.L. | local/envelope.svg | — |
+| `figma.svg` | Figma | simple-icons 16.28.0 (`figma`) | https://www.figma.com/using-the-figma-brand/ |
 | `github.svg` | GitHub | simple-icons 16.28.0 (`github`) | https://github.com/logos |
 | `gmail.svg` | Gmail | simple-icons 16.28.0 (`gmail`) | https://fonts.gstatic.com/s/i/productlogos/gmail_2020q4/v8/192px.svg |
 | `google_calendar.svg` | Google Calendar | simple-icons 16.28.0 (`googlecalendar`) | https://fonts.gstatic.com/s/i/productlogos/calendar_2020q4/v8/192px.svg |

@@ -56,6 +56,7 @@ import { api } from './api.mjs';
  *   userLevel?: boolean,
  *   groups?: { group_id: string, access_level?: string }[],
  *   bearer?: string,
+ *   skipConnect?: boolean,
  * }} SeedServiceInput
  *
  * @typedef {{
@@ -197,6 +198,10 @@ export async function seedService(session, input) {
 	// only path to a service nobody owns.
 	if (input.userLevel != null) body.user_level = input.userLevel;
 	if (input.groups) body.groups = input.groups;
+	// An OAuth template's create mints a connect flow and returns its URL. A
+	// scenario that supplies the connection itself (via
+	// `POST /v1/connections/import`) wants the instance without that detour.
+	if (input.skipConnect) body.skip_connect = true;
 
 	try {
 		return await api(session, '/v1/services', {

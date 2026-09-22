@@ -738,6 +738,21 @@ fn shipped_list_actions_declare_pagination() {
         "holded:list_taxes",
         "holded:list_expenses_accounts",
         "holded:list_accounting_accounts",
+        // Figma paginates exactly two things — the team-library endpoints and
+        // version history — and those declare it. Everything below returns the
+        // whole collection in one response, with neither a page size nor a
+        // cursor to offer: each is already bounded by the entity named in its
+        // path. One file's comments, one file's published components, one
+        // file's published styles, one file's dev resources, one project's
+        // files, one team's projects. `list_dev_resources` narrows with
+        // `node_ids` and `list_comments` with nothing at all, which is Figma's
+        // design, not an omission in the template.
+        "figma:list_comments",
+        "figma:list_dev_resources",
+        "figma:list_file_components",
+        "figma:list_file_styles",
+        "figma:list_project_files",
+        "figma:list_team_projects",
     ];
 
     fn looks_like_a_list(key: &str) -> bool {
