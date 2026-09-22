@@ -298,7 +298,8 @@ pub async fn kernel_update_service(
     let touches_credentials = input.credentials.is_some() || input.secret_name.is_some();
     // `config` is validated against the same template definition, so resolve
     // it once here rather than twice inside each branch.
-    let template_def = if touches_credentials || input.config.is_some() {
+    let template_def = if touches_credentials || input.config.is_some() || input.auth_mode.is_some()
+    {
         let template_lookup_identity = existing.owner_identity_id.or(Some(auth_identity));
         Some(
             resolve_template_definition(
@@ -399,8 +400,32 @@ pub async fn kernel_update_service(
         None => None,
     };
 
+    // Switching which credential kind this instance uses.
+    //
+    // Validated against the template so a typo cannot park an instance on a
+    // mode nothing resolves — `auth_for_mode` returns nothing for an unknown
+    // one, which would leave the service authenticating with no credential at
+    // all and no error to explain it.
+    let new_auth_mode = match input.auth_mode.as_deref() {
+        Some(requested) => {
+            let template_def = template_def
+                .as_ref()
+                .expect("resolved above whenever auth_mode is present");
+            let resolved = template_def
+                .resolve_auth_mode(Some(requested))
+                .map_err(|e| AppError::BadRequest(e.to_string()))?;
+            Some(resolved.key)
+        }
+        None => None,
+    };
+    // A switch is only a switch when the mode actually changes: re-sending the
+    // current one must not drop a live service back into setup.
+    let mode_changed = new_auth_mode
+        .as_deref()
+        .is_some_and(|m| Some(m) != existing.auth_mode.as_deref());
+
     let update = UpdateServiceInstance {
-        auth_mode: None,
+        auth_mode: new_auth_mode.as_deref(),
         name: input.name.as_deref(),
         connection_id: input.connection_id,
         secret_name: new_secret_name.as_ref().map(|o| o.as_deref()),
@@ -435,9 +460,130 @@ pub async fn kernel_update_service(
         &ctx.config.public_url,
     )
     .await;
+    let row_id = row.id;
+    let row_owner = row.owner_identity_id;
+    let row_credentials = row.credentials.0.clone();
+    let row_secret_name = row.secret_name.clone();
+    let row_connection_id = row.connection_id;
     let mut detail = row_to_detail(row);
     detail.icon_url = tv.icon_url;
     detail.test_action = tv.test_action;
+
+    // A mode switch is a new credential handshake, so it re-runs the one the
+    // create path runs — same gate, same mint, same verb to finish with.
+    //
+    // Nothing is destroyed on the way through: the old mode's binding and the
+    // old connection both stay on the row, so switching back is free and no
+    // credential anyone typed is lost. What changes is only which of them the
+    // executor reads.
+    if mode_changed
+        && let Some(template_def) = template_def.as_ref()
+        && let Some(owner) = row_owner
+    {
+        let mode = new_auth_mode.as_deref();
+        let pending = crate::services::service_setup::unbound_instance_slots(
+            template_def,
+            mode,
+            &row_credentials,
+            row_secret_name.as_deref(),
+        );
+        let oauth_provider = template_def.oauth_provider_for_mode(mode);
+        // "Does the new mode already have what it needs?" — an OAuth mode with
+        // a connection already pinned, or a secret mode whose slots are bound,
+        // needs no handshake and no re-verification.
+        let needs_credential = match oauth_provider {
+            Some(_) => row_connection_id.is_none(),
+            None => !pending.is_empty(),
+        };
+
+        // D86, applied to the switch: a service does not go live on a
+        // credential nothing has proven. Only gated where a probe exists to
+        // ungate it, or the instance would sit in `pending_setup` with no way
+        // out but the sweeper.
+        if needs_credential && template_def.test_action().is_some() {
+            match scope
+                .update_service_instance_status(
+                    row_id,
+                    crate::services::platform_services::verify::PENDING_SETUP,
+                )
+                .await
+            {
+                Ok(Some(updated)) => detail.status = updated.status,
+                Ok(None) => {}
+                Err(e) => return Err(AppError::Database(e)),
+            }
+        }
+
+        if needs_credential {
+            if let Some(provider) = oauth_provider.map(str::to_string) {
+                let connect_ctx = crate::services::platform_caller::PlatformCallContext {
+                    org_id: ctx.org_id,
+                    identity_id: ctx.identity_id,
+                    access_level: ctx.access_level,
+                    db: ctx.db.clone(),
+                    registry: ctx.registry.clone(),
+                    config: ctx.config.clone(),
+                    http_client: ctx.http_client.clone(),
+                };
+                let connect_input = crate::services::platform_connections::CreateConnectionInput {
+                    provider,
+                    scopes: template_action_scopes(template_def),
+                    byoc_credential_id: None,
+                    on_behalf_of: (Some(owner) != ctx.identity_id).then_some(owner),
+                    upgrade_connection_id: None,
+                    return_url: None,
+                    service_instance_id: Some(row_id),
+                    pin_service_ids: vec![],
+                    login_hint: None,
+                };
+                match crate::services::platform_connections::kernel_create_connection(
+                    connect_ctx,
+                    connect_input,
+                    crate::services::platform_connections::RequestMeta::default(),
+                )
+                .await
+                {
+                    Ok(resp) => {
+                        detail.connect = Some(super::types::ConnectBundle {
+                            auth_url: resp.auth_url,
+                            state: resp.state,
+                            flow_id: resp.flow_id,
+                            expires_at: resp.expires_at,
+                        });
+                    }
+                    // Best-effort, exactly as on create: the switch itself has
+                    // already happened, and failing the whole request over a
+                    // link would leave the caller unable to tell which.
+                    Err(err) => tracing::warn!(
+                        service_instance_id = %row_id,
+                        error = %err,
+                        "auth-mode switch: auto-connect failed; no connect bundle returned"
+                    ),
+                }
+            } else if !pending.is_empty() {
+                match crate::services::service_setup::mint_bundle(
+                    &ctx.db,
+                    &ctx.http_client,
+                    &ctx.config,
+                    ctx.org_id,
+                    owner,
+                    auth_identity,
+                    row_id,
+                    &pending,
+                    false,
+                )
+                .await
+                {
+                    Ok(bundle) => detail.setup = Some(bundle),
+                    Err(err) => tracing::warn!(
+                        service_instance_id = %row_id,
+                        error = %err,
+                        "auth-mode switch: setup-link mint failed; no setup bundle returned"
+                    ),
+                }
+            }
+        }
+    }
 
     // The owner *after* the update, which is also the owner before it: nothing
     // here moves an instance between owners, so one audience covers both.

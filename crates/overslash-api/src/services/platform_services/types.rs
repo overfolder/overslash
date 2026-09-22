@@ -170,6 +170,14 @@ pub struct UpdateServiceInput {
     pub url: Option<Option<String>>,
     /// `Some` = update the flag; `None` = leave unchanged.
     pub use_default_connection: Option<bool>,
+    /// Switch the instance to a different one of the template's auth modes.
+    ///
+    /// Destroys nothing: the bound credentials and the connection both stay,
+    /// so switching back costs no re-entry of either. The instance drops to
+    /// `pending_setup` when the new mode's credentials are not already in
+    /// place, and goes live again only once its probe passes (D86).
+    #[serde(default)]
+    pub auth_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -215,6 +223,11 @@ pub struct ServiceInstanceSummary {
     /// When `false`, an unbound instance won't fall back to the default
     /// connection. See `service_instances.use_default_connection`.
     pub use_default_connection: bool,
+    /// Which of the template's alternative credential kinds this instance
+    /// authenticates with. Absent on an instance left on the template's
+    /// default, and on every template that declares only one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_mode: Option<String>,
     #[serde(default)]
     pub groups: Vec<ServiceGroupRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -290,6 +303,10 @@ pub struct ServiceInstanceDetail {
     /// When `false`, an unbound instance won't fall back to the default
     /// connection. See `service_instances.use_default_connection`.
     pub use_default_connection: bool,
+    /// Which of the template's alternative credential kinds this instance
+    /// authenticates with. See [`ServiceInstanceDetail::auth_mode`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_mode: Option<String>,
     pub status: String,
     pub is_system: bool,
     pub created_at: String,
@@ -304,17 +321,20 @@ pub struct ServiceInstanceDetail {
     /// dashboard reads to decide whether to offer a Test button.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_action: Option<crate::routes::actions::probe::TestActionRef>,
-    /// Present on the response to `POST /v1/services` when the kernel
-    /// auto-initiated an OAuth flow as part of setting up the instance.
-    /// The caller hands `auth_url` to the user and the OAuth callback
-    /// will write `connection_id` back onto this row when the dance
+    /// Present when the kernel auto-initiated an OAuth flow as part of
+    /// setting the instance up: on `POST /v1/services`, and on the
+    /// `PUT /v1/services/{id}/manage` that switches it into an OAuth
+    /// `auth_mode`. The caller hands `auth_url` to the user and the OAuth
+    /// callback will write `connection_id` back onto this row when the dance
     /// finishes. Omitted on every other code path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connect: Option<ConnectBundle>,
-    /// Present on the response to `POST /v1/services` when the kernel minted
-    /// setup links for the instance's unbound credential slots. The secret
-    /// twin of [`Self::connect`] — the caller hands `setup.setup_url` to its
-    /// user exactly as it hands over `connect.auth_url`.
+    /// Present when the kernel minted setup links for the instance's unbound
+    /// credential slots — on `POST /v1/services`, and on the
+    /// `PUT /v1/services/{id}/manage` that switches it into a secret-backed
+    /// `auth_mode`. The secret twin of [`Self::connect`] — the caller hands
+    /// `setup.setup_url` to its user exactly as it hands over
+    /// `connect.auth_url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub setup: Option<crate::services::service_setup::SetupBundle>,
 }

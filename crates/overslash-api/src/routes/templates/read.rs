@@ -231,6 +231,7 @@ pub(super) async fn get_template(
         icon_url: resolve_icon_url(svc.icon.as_ref(), &state.config.public_url),
         auth,
         secrets: svc.all_slots(),
+        auth_modes: svc.auth_modes(),
         openapi: openapi_yaml,
         actions: actions_from_definition(svc),
         scopes: template_required_scopes(svc),

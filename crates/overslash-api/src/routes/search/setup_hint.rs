@@ -54,6 +54,16 @@ pub(super) struct SetupStep {
     /// What to do with what the call returns, when that is not obvious.
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<&'static str>,
+    /// Present only when the template accepts more than one kind of
+    /// credential: which `auth_mode` values exist and which is the default.
+    ///
+    /// Separate from `note` because `note` is a fixed string per auth kind
+    /// while this names the modes of *this* template, and because an agent
+    /// that ignores it still gets a working chain — just always the default
+    /// one, which is the wrong answer only for a user who has the other
+    /// credential.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    alternatives: Option<String>,
 }
 
 /// `awaiting_setup`: the caller already has an instance of this template
@@ -64,10 +74,14 @@ pub(super) fn build_auth_status(
     connected: bool,
     awaiting_setup: bool,
 ) -> AuthStatus {
-    // Pick the first declared auth method as the primary face the caller
-    // sees. Templates that mix auth methods (rare) still surface here with
-    // the preferred one first — exactly how the dashboard displays them.
-    let (kind, provider) = match def.auth.first() {
+    // The face the caller sees is the template's *default* auth mode, not
+    // whichever entry happens to sort first. On a template offering OAuth or a
+    // token those are alternatives, and `create_service` with no `auth_mode`
+    // resolves to the default — so the chain we describe has to be the chain
+    // that call will actually produce.
+    let default_mode = def.default_auth_mode();
+    let mode_auth = def.auth_for_mode(Some(&default_mode));
+    let (kind, provider) = match mode_auth.first() {
         Some(ServiceAuth::OAuth { provider, .. }) => ("oauth".into(), Some(provider.clone())),
         Some(ServiceAuth::Secret { .. }) => ("secret".into(), None),
         None => ("none".into(), None),
@@ -116,6 +130,8 @@ fn finish_setup_steps() -> Vec<SetupStep> {
              because the value is already stored, so add `force: true` to replace it. It \
              becomes callable, and visible to search, once the credential checks out",
         ),
+        // The instance already exists, so its mode is settled.
+        alternatives: None,
     }]
 }
 
@@ -127,7 +143,9 @@ fn finish_setup_steps() -> Vec<SetupStep> {
 /// `connect.auth_url` for OAuth, `setup.setup_url` for a secret. The `note` is
 /// load-bearing, since it names the field the URL arrives on.
 fn build_setup_steps(def: &ServiceDefinition) -> Vec<SetupStep> {
-    let note = match def.auth.first() {
+    let default_mode = def.default_auth_mode();
+    let mode_auth = def.auth_for_mode(Some(&default_mode));
+    let note = match mode_auth.first() {
         Some(ServiceAuth::OAuth { .. }) => {
             // Hedged for the same reason as the secret arm below:
             // `want_auto_connect` needs an owner, so an org-level create gets
@@ -158,13 +176,50 @@ fn build_setup_steps(def: &ServiceDefinition) -> Vec<SetupStep> {
         None => "pick any `name`; it becomes the `service` you call afterwards",
     };
 
+    // A template offering alternatives has to say so, or an agent following
+    // this chain can only ever reach the default one — and the whole point of
+    // the other mode is that some users can only use that one.
+    let modes = def.auth_modes();
+    let alternatives = (modes.len() > 1).then(|| {
+        let names: Vec<String> = modes
+            .iter()
+            .map(|m| {
+                let label = if m.label.is_empty() {
+                    m.key.clone()
+                } else {
+                    format!("{} ({})", m.key, m.label)
+                };
+                if m.key == default_mode {
+                    format!("{label} [default]")
+                } else {
+                    label
+                }
+            })
+            .collect();
+        format!(
+            "this template accepts more than one kind of credential — pass \
+             `auth_mode` to pick: {}. Ask your user which they have rather \
+             than guessing; the handshake differs per mode",
+            names.join(", ")
+        )
+    });
+
+    let mut params = serde_json::Map::from_iter([(
+        "template_key".to_string(),
+        serde_json::Value::String(def.key.clone()),
+    )]);
+    if alternatives.is_some() {
+        params.insert(
+            "auth_mode".to_string(),
+            serde_json::Value::String(default_mode.clone()),
+        );
+    }
+
     vec![SetupStep {
         action: "create_service",
-        params: serde_json::Map::from_iter([(
-            "template_key".to_string(),
-            serde_json::Value::String(def.key.clone()),
-        )]),
+        params,
         note: Some(note),
+        alternatives,
     }]
 }
 

@@ -15,6 +15,7 @@ use super::schemes::{extract_api_key, extract_http_auth, extract_oauth2};
 
 /// A template's whole credential model: what an operator fills in, and the
 /// injections that read it.
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct CompiledCredentials {
     /// The injections — one per securityScheme.
     pub auth: Vec<ServiceAuth>,

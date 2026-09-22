@@ -306,31 +306,105 @@ fn shipped_github_templates_auth() {
     assert!(gh.actions.contains_key("list_installations"));
     assert!(!gh.hidden, "github template must not be hidden");
 
-    // `github_legacy_oauth` keeps the classic OAuth App scopes and is
-    // marked `x-overslash-hidden: true` so it stays out of agent-facing
-    // catalogs while remaining reachable by key.
-    let legacy = reg
-        .get("github_legacy_oauth")
-        .expect("github_legacy_oauth template missing");
-    assert!(legacy.hidden, "github_legacy_oauth must compile as hidden");
-    match legacy
-        .auth
-        .iter()
-        .find(|a| matches!(a, ServiceAuth::OAuth { .. }))
-    {
-        Some(ServiceAuth::OAuth {
-            provider, scopes, ..
-        }) => {
-            assert_eq!(provider, "github");
-            for s in ["repo", "read:user", "user:email"] {
+    // …and it offers a personal access token as the alternative, on the same
+    // host and the same paths. The two are modes of one template rather than
+    // two templates, which is what `github_legacy_oauth` used to be.
+    let modes = gh.auth_modes();
+    assert_eq!(
+        modes.iter().map(|m| m.key.as_str()).collect::<Vec<_>>(),
+        ["oauth", "token"],
+        "github must declare both auth modes"
+    );
+    assert_eq!(gh.default_auth_mode(), "oauth");
+
+    // The narrowing the whole feature rests on: each mode resolves to exactly
+    // its own credential, never both, and never the other one's.
+    assert!(
+        gh.oauth_provider_for_mode(Some("oauth")).is_some(),
+        "the oauth mode must resolve a provider"
+    );
+    assert!(
+        gh.oauth_provider_for_mode(Some("token")).is_none(),
+        "the token mode must resolve no OAuth provider — otherwise create_service \
+         mints an auth_url nobody asked for and the credentials badge demands a \
+         connection that will never come"
+    );
+    assert_eq!(
+        gh.all_slots_for_mode(Some("token"))
+            .iter()
+            .map(|s| s.key.as_str())
+            .collect::<Vec<_>>(),
+        ["token"],
+    );
+    assert!(
+        gh.all_slots_for_mode(Some("oauth")).is_empty(),
+        "the oauth mode owes no vault secret"
+    );
+}
+
+/// Every template that offers alternative auth modes must offer them
+/// *completely*: a mode nobody can finish setting up is worse than not
+/// offering it, because `create_service` will have already committed the
+/// instance by the time anyone finds out.
+#[test]
+fn shipped_dual_mode_templates_are_resolvable_in_every_mode() {
+    let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("services");
+    let reg =
+        ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
+            .unwrap();
+
+    let mut seen = Vec::new();
+    for key in ["figma", "github", "notion"] {
+        let def = reg
+            .get(key)
+            .unwrap_or_else(|| panic!("{key} template missing"));
+        let modes = def.auth_modes();
+        assert!(
+            modes.len() > 1,
+            "{key} is expected to offer alternative auth modes"
+        );
+        assert_eq!(
+            modes.iter().filter(|m| m.default).count(),
+            1,
+            "{key} must mark exactly one default mode"
+        );
+        for mode in &modes {
+            let entries = def.auth_for_mode(Some(&mode.key));
+            assert!(
+                !entries.is_empty(),
+                "{key}/{} resolves no credential at all",
+                mode.key
+            );
+            assert!(
+                !mode.label.is_empty(),
+                "{key}/{} needs a label; the dashboard picker renders it",
+                mode.key
+            );
+            // A secret mode with no vault name has nowhere to store the value,
+            // so no setup link can be minted and the operator is stuck.
+            for slot in def.all_slots_for_mode(Some(&mode.key)) {
                 assert!(
-                    scopes.iter().any(|x| x == s),
-                    "legacy template missing scope {s}"
+                    !slot.default_secret_name.is_empty(),
+                    "{key}/{}: slot `{}` declares no default_secret_name, so no \
+                     setup link can ever be minted for it",
+                    mode.key,
+                    slot.key
                 );
             }
         }
-        _ => panic!("github_legacy_oauth template must declare OAuth auth"),
+        // The probe has to work in *both* modes — it is what gates go-live.
+        assert!(
+            def.test_action().is_some(),
+            "{key} offers alternative modes but declares no credential probe"
+        );
+        seen.push(key);
     }
+    assert_eq!(seen.len(), 3);
 }
 
 /// Every shipped template's declared credential probe must resolve to a real,

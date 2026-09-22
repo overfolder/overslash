@@ -517,7 +517,7 @@ mod tests {
     fn every_variant_is_in_all() {
         // `ALL` drives name resolution and did-you-mean suggestions, so a
         // variant missing from it is invisible to the lint.
-        assert_eq!(ALL.len(), 34, "ALL has drifted from the enum");
+        assert_eq!(ALL.len(), 35, "ALL has drifted from the enum");
         let mut keys: Vec<&str> = ALL.iter().map(|e| e.key()).collect();
         keys.sort_unstable();
         let before = keys.len();

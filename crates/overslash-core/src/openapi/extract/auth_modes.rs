@@ -1,5 +1,10 @@
 //! `components.x-overslash-auth-modes` — the alternative credential kinds a
 //! template accepts, of which an instance picks exactly one at creation.
+//!
+//! Prefixed spelling only, matching its `components` siblings
+//! `x-overslash-secrets` and `x-overslash-config`: `alias.rs` rewrites
+//! unprefixed forms at the root, `info`, operation, parameter and
+//! security-scheme positions, and deliberately not here.
 
 use serde_json::Value;
 
@@ -184,5 +189,152 @@ pub(super) fn extract_auth_modes(
 pub(crate) fn scheme_key(auth: &ServiceAuth) -> &str {
     match auth {
         ServiceAuth::OAuth { scheme, .. } | ServiceAuth::Secret { scheme, .. } => scheme,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::auth::extract_auth;
+    use serde_json::json;
+
+    /// Two schemes, two modes — the shape `services/figma.yaml` ships.
+    fn dual_mode() -> serde_json::Value {
+        json!({
+            "x-overslash-auth-modes": {
+                "oauth": {"label": "Sign in", "default": true, "schemes": ["oauth"]},
+                "token": {"label": "API token", "schemes": ["token"]},
+            },
+            "securitySchemes": {
+                "oauth": {"type": "oauth2", "x-overslash-provider": "figma", "flows": {}},
+                "token": {
+                    "type": "apiKey", "in": "header", "name": "X-Figma-Token",
+                    "x-overslash-default_secret_name": "figma_pat",
+                },
+            },
+        })
+    }
+
+    #[test]
+    fn modes_compile_and_name_their_schemes() {
+        let creds = extract_auth(Some(&dual_mode())).expect("should compile");
+        let modes = &creds.auth_modes;
+        assert_eq!(
+            modes.iter().map(|m| m.key.as_str()).collect::<Vec<_>>(),
+            ["oauth", "token"]
+        );
+        assert!(modes[0].default);
+        assert!(!modes[1].default);
+        assert_eq!(modes[1].schemes, ["token"]);
+        assert_eq!(modes[0].label, "Sign in");
+    }
+
+    /// The OAuth entry has to carry the `securitySchemes` key it came from, or
+    /// a mode could never select it — `Secret` always did, `OAuth` did not.
+    #[test]
+    fn the_oauth_entry_remembers_its_scheme_key() {
+        let creds = extract_auth(Some(&dual_mode())).expect("should compile");
+        let oauth = creds
+            .auth
+            .iter()
+            .find(|a| matches!(a, crate::types::ServiceAuth::OAuth { .. }))
+            .expect("oauth entry missing");
+        assert_eq!(super::scheme_key(oauth), "oauth");
+    }
+
+    /// Absent means "no alternation" — every scheme, together. This is the
+    /// reading `services/email.yaml` depends on, so it must survive untouched.
+    #[test]
+    fn a_template_without_the_block_declares_no_modes() {
+        let mut doc = dual_mode();
+        doc.as_object_mut()
+            .unwrap()
+            .remove("x-overslash-auth-modes");
+        let creds = extract_auth(Some(&doc)).expect("should compile");
+        assert!(
+            creds.auth_modes.is_empty(),
+            "no block must mean no alternation, not an invented one"
+        );
+    }
+
+    #[test]
+    fn a_mode_naming_an_undeclared_scheme_is_an_error() {
+        let mut doc = dual_mode();
+        doc["x-overslash-auth-modes"]["token"]["schemes"] = json!(["nope"]);
+        let errs = extract_auth(Some(&doc)).expect_err("should not compile");
+        assert!(
+            errs.iter().any(|e| e.message.contains("does not declare")),
+            "{errs:?}"
+        );
+    }
+
+    /// A scheme in no mode is a credential the dashboard collects and no
+    /// request ever carries.
+    #[test]
+    fn a_scheme_in_no_mode_is_an_error() {
+        let mut doc = dual_mode();
+        doc["x-overslash-auth-modes"]
+            .as_object_mut()
+            .unwrap()
+            .remove("token");
+        doc["x-overslash-auth-modes"]["oauth"]["default"] = json!(true);
+        let errs = extract_auth(Some(&doc)).expect_err("should not compile");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("belongs to no auth mode")),
+            "{errs:?}"
+        );
+    }
+
+    /// Map order is not an ordering, so "which mode does a bare create get"
+    /// cannot be left to it.
+    #[test]
+    fn several_modes_need_exactly_one_default() {
+        let mut doc = dual_mode();
+        doc["x-overslash-auth-modes"]["token"]["default"] = json!(true);
+        let errs = extract_auth(Some(&doc)).expect_err("two defaults should not compile");
+        assert!(
+            errs.iter().any(|e| e.message.contains("exactly one")),
+            "{errs:?}"
+        );
+
+        let mut doc = dual_mode();
+        doc["x-overslash-auth-modes"]["oauth"]["default"] = json!(false);
+        let errs = extract_auth(Some(&doc)).expect_err("no default should not compile");
+        assert!(
+            errs.iter().any(|e| e.message.contains("exactly one")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_mode_naming_no_schemes_is_an_error() {
+        let mut doc = dual_mode();
+        doc["x-overslash-auth-modes"]["token"]["schemes"] = json!([]);
+        let errs = extract_auth(Some(&doc)).expect_err("should not compile");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("at least one scheme")),
+            "{errs:?}"
+        );
+    }
+
+    /// Two OAuth schemes in one mode is two providers for one request, and
+    /// nothing downstream chooses between them.
+    #[test]
+    fn a_mode_with_two_oauth_schemes_is_an_error() {
+        let doc = json!({
+            "x-overslash-auth-modes": {
+                "both": {"schemes": ["a", "b"]},
+            },
+            "securitySchemes": {
+                "a": {"type": "oauth2", "x-overslash-provider": "one", "flows": {}},
+                "b": {"type": "oauth2", "x-overslash-provider": "two", "flows": {}},
+            },
+        });
+        let errs = extract_auth(Some(&doc)).expect_err("should not compile");
+        assert!(
+            errs.iter().any(|e| e.message.contains("OAuth schemes")),
+            "{errs:?}"
+        );
     }
 }
