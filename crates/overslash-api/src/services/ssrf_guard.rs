@@ -84,6 +84,10 @@ pub fn default_policy(ip: &IpAddr) -> bool {
     is_disallowed_ip(ip)
 }
 
+/// Ceiling on one host lookup. Generous against a slow resolver, finite
+/// against a stalled one — the point is only that it ends.
+const DNS_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// A URL that cleared the guard: parsed, resolved, and reduced to the one
 /// address we are willing to dial.
 struct Validated {
@@ -133,14 +137,27 @@ where
         .ok_or_else(|| AppError::BadRequest("URL has no port".into()))?;
 
     let host_for_resolve = host.clone();
-    let addrs: Vec<IpAddr> = tokio::task::spawn_blocking(move || {
+    let resolve = tokio::task::spawn_blocking(move || {
         (host_for_resolve.as_str(), port)
             .to_socket_addrs()
             .map(|iter| iter.map(|a| a.ip()).collect::<Vec<_>>())
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("dns resolver join error: {e}")))?
-    .map_err(|e| AppError::BadRequest(format!("could not resolve host {host:?}: {e}")))?;
+    });
+    // `getaddrinfo` has no deadline of its own, and it runs *before* the
+    // reqwest client that carries one exists — so without this a hostile or
+    // merely broken resolver stalls a call past whatever budget the caller
+    // was promised. Bounded here rather than at each call site because every
+    // guard caller has the same problem and only this one has the lookup.
+    let addrs: Vec<IpAddr> = match tokio::time::timeout(DNS_TIMEOUT, resolve).await {
+        Ok(joined) => joined
+            .map_err(|e| AppError::Internal(format!("dns resolver join error: {e}")))?
+            .map_err(|e| AppError::BadRequest(format!("could not resolve host {host:?}: {e}")))?,
+        Err(_elapsed) => {
+            return Err(AppError::BadRequest(format!(
+                "could not resolve host {host:?} within {}s",
+                DNS_TIMEOUT.as_secs()
+            )));
+        }
+    };
 
     if addrs.is_empty() {
         return Err(AppError::BadRequest(format!(

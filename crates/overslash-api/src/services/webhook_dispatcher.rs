@@ -115,27 +115,37 @@ async fn deliver(
 
     let system = SystemScope::new_internal(pool.clone());
 
-    let http_client = match crate::services::ssrf_guard::outbound_client(url).await {
-        Ok((client, _)) => client,
-        Err(e) => {
-            let _ = system
-                .mark_webhook_failed(delivery_id, None, &e.to_string())
-                .await;
-            record_failed_attempt(event_type, attempt);
-            return;
-        }
-    };
+    // One deadline over resolution *and* the request. The guard looks the host
+    // up before a client with a timeout exists, so a `RequestBuilder::timeout`
+    // alone would leave the lookup outside the 10s this function promises.
+    let attempt_deadline = std::time::Duration::from_secs(10);
+    let sent = tokio::time::timeout(attempt_deadline, async {
+        let (http_client, _) = crate::services::ssrf_guard::outbound_client(url).await?;
+        http_client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("X-Overslash-Event", event_type)
+            .header("X-Overslash-Delivery", delivery_id.to_string())
+            .header("X-Overslash-Signature", format!("sha256={signature}"))
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| crate::error::AppError::BadGateway(e.to_string()))
+    })
+    .await;
 
-    let result = http_client
-        .post(url)
-        .header("Content-Type", "application/json")
-        .header("X-Overslash-Event", event_type)
-        .header("X-Overslash-Delivery", delivery_id.to_string())
-        .header("X-Overslash-Signature", format!("sha256={signature}"))
-        .body(body)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await;
+    let result = match sent {
+        Ok(Ok(resp)) => Ok(resp),
+        // A refusal by the guard and a transport failure land on the same row
+        // the same way: no status, the reason as the body. The distinction
+        // that matters to a registrant — "we would not dial this" versus "it
+        // did not answer" — is in the text.
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_elapsed) => Err(format!(
+            "webhook delivery did not complete within {}s",
+            attempt_deadline.as_secs()
+        )),
+    };
 
     match result {
         Ok(resp) => {
@@ -154,10 +164,8 @@ async fn deliver(
                 record_failed_attempt(event_type, attempt);
             }
         }
-        Err(e) => {
-            let _ = system
-                .mark_webhook_failed(delivery_id, None, &e.to_string())
-                .await;
+        Err(reason) => {
+            let _ = system.mark_webhook_failed(delivery_id, None, &reason).await;
             record_failed_attempt(event_type, attempt);
         }
     }

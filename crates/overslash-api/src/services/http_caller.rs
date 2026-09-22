@@ -268,9 +268,38 @@ pub async fn call(
     max_body_bytes: usize,
     timeout: Duration,
 ) -> Result<ActionResult, CallError> {
-    let start = Instant::now();
     let timeout_ms = timeout.as_millis() as u64;
+    // One deadline over the whole thing, because `timeout` is documented as a
+    // *total* one and neither of the per-request bounds inside is. The
+    // `RequestBuilder::timeout` each hop carries restarts on every hop, so a
+    // chain of redirects could spend `MAX_REDIRECTS × timeout`; and the host
+    // lookup that precedes the first hop runs before any reqwest client
+    // exists. Both are bounded individually — the guard caps DNS — but only
+    // an outer deadline makes the documented contract true.
+    match tokio::time::timeout(
+        timeout,
+        call_inner(method, url, headers, body, max_body_bytes, timeout, timeout_ms),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_elapsed) => Err(CallError::Timeout { timeout_ms }),
+    }
+}
 
+/// [`call`] without its deadline. Split out only so the deadline can wrap
+/// every step, the body buffering included.
+#[allow(clippy::too_many_arguments)]
+async fn call_inner(
+    method: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+    body: Option<&str>,
+    max_body_bytes: usize,
+    timeout: Duration,
+    timeout_ms: u64,
+) -> Result<ActionResult, CallError> {
+    let start = Instant::now();
     let response =
         send_following_redirects(method, url, headers, body, Some(timeout), timeout_ms).await?;
     let status_code = response.status().as_u16();
