@@ -866,8 +866,24 @@ paths:
                 dev_resources:
                   type: array
                   description: >-
-                    Dev resources to create, each
-                    `{name, url, file_key, node_id}`.
+                    Dev resources to create. Each entry names its own file and
+                    node, which is why this action cannot be scoped to one file.
+                  items:
+                    type: object
+                    required: [name, url, file_key, node_id]
+                    properties:
+                      name:
+                        type: string
+                        description: Label shown on the node in Figma.
+                      url:
+                        type: string
+                        description: Where the link points — a PR, a source file, a ticket.
+                      file_key:
+                        type: string
+                        description: File key, as in `get_file`. Must be a main file key, not a branch.
+                      node_id:
+                        type: string
+                        description: Node to attach to, e.g. `1:23`.
     put:
       operationId: update_dev_resources
       summary: Update attached dev resources
@@ -899,8 +915,21 @@ paths:
                 dev_resources:
                   type: array
                   description: >-
-                    Dev resources to update, each `{id}` plus the `name` and/or
-                    `url` to change.
+                    Dev resources to update, named by id. Only the fields
+                    present on an entry are changed.
+                  items:
+                    type: object
+                    required: [id]
+                    properties:
+                      id:
+                        type: string
+                        description: Dev-resource id, from `list_dev_resources`.
+                      name:
+                        type: string
+                        description: New label. Omit to leave it.
+                      url:
+                        type: string
+                        description: New target. Omit to leave it.
   /v1/files/{file_key}/dev_resources/{dev_resource_id}:
     parameters:
       - name: file_key

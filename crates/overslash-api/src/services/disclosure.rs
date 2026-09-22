@@ -30,7 +30,8 @@
 //! somewhere durable: `approvals.disclosed_fields`, `audit_log.detail.disclosed`,
 //! and the inline `pending_approval` envelope the calling agent reads.
 //!
-//! So every failure collapses to [`classify`], whose `&'static str` return type
+//! So every failure collapses to [`classify_runtime_error`], whose `&'static str`
+//! return type
 //! is the guarantee. Nothing in this module lets a jaq message reach a
 //! `DisclosedField`. Keep it that way — this is the same rule
 //! [`crate::services::credential_template`] enforces over credentials, and
@@ -46,7 +47,7 @@ use overslash_core::types::DisclosureField;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::response_filter::{JqErr, run_jq_blocking};
+use super::response_filter::{JqErr, classify_runtime_error, run_jq_blocking};
 
 /// Hard ceiling on the stringified length of a single disclosed value,
 /// applied on top of the per-field `max_chars` clamp. Stops a rogue filter
@@ -163,7 +164,7 @@ fn run_one(field: &DisclosureField, input_str: &str) -> Option<DisclosedField> {
             }
         }
         Err(JqErr::RuntimeError(msg)) => {
-            let class = classify(&msg);
+            let class = classify_runtime_error(&msg);
             // The operator-facing half: enough to find the broken template
             // without carrying the operand. Mirrors the `expr_sha256` the
             // audit `filter` block already logs in place of filter output.
@@ -198,32 +199,6 @@ fn run_one(field: &DisclosureField, input_str: &str) -> Option<DisclosedField> {
             truncated: true,
             primary: field.primary,
         }),
-    }
-}
-
-/// The only thing we may say about a jaq failure — see the module docs.
-///
-/// Returns `&'static str`, never a slice of `msg`: the classification is a
-/// whitelist of jaq's own fixed prefixes, which in `jaq_core::Error` always
-/// precede the first operand (`Error::index` builds
-/// `["cannot index ", Val(l), " with ", Val(r)]`, and `math`/`typ` are the
-/// same shape). Nothing operand-derived can ride out. A filter can try to
-/// imitate a prefix by raising `error("cannot index …")`, but jaq renders a
-/// raised string with its JSON quotes, so it never matches — and the return
-/// type means a match would only ever buy a wrong hint anyway.
-///
-/// The class survives because it is genuinely the useful half: "your dot-path
-/// indexed something that is not an object" is what shortens the round trip
-/// for a template author who can no longer read the message.
-fn classify(msg: &str) -> &'static str {
-    if msg.starts_with("cannot index ") {
-        "filter runtime error (cannot index)"
-    } else if msg.starts_with("cannot calculate ") {
-        "filter runtime error (cannot calculate)"
-    } else if msg.starts_with("cannot use ") {
-        "filter runtime error (cannot use)"
-    } else {
-        "filter runtime error"
     }
 }
 

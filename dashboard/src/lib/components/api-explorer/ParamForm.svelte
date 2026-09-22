@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { ActionDetail, ActionParam, ExtraArg } from '$lib/types';
+	import { shapeErrors, shapeFields, skeletonFor } from './shape';
 
 	let {
 		detail,
@@ -55,6 +56,23 @@
 	const scopeLabels = $derived(
 		new Map((detail.scope_param ?? []).map((s) => [s.param, s.label]))
 	);
+
+	/** The same complaint the gateway would make, made before the round trip.
+	 *  Only for a param that declares a shape — without one the server is
+	 *  unconstrained inside, and so is this. Unparseable JSON is reported as
+	 *  itself rather than as a schema miss, since that is the likelier mistake
+	 *  in a textarea. */
+	function paramErrors(name: string, p: ActionParam): string[] {
+		const raw = values[name] ?? '';
+		if (!p.shape || raw.trim() === '') return [];
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return ['not valid JSON'];
+		}
+		return shapeErrors(parsed, p.shape, relaxed, name);
+	}
 
 	function inputTypeOf(p: ActionParam): 'text' | 'number' | 'textarea' | 'select' | 'combo' {
 		// An advisory enum keeps its members one click away but must stay
@@ -117,14 +135,42 @@
 						{/each}
 					</datalist>
 				{:else if kind === 'textarea'}
+					{@const fields = shapeFields(p.shape)}
+					{@const errors = paramErrors(name, p)}
 					<textarea
 						id={`param-${name}`}
 						class="control mono"
-						rows="3"
-						placeholder={`JSON ${p.type}`}
+						class:invalid={errors.length > 0}
+						rows={p.shape ? 6 : 3}
+						placeholder={skeletonFor(p.shape, p.type) || `JSON ${p.type}`}
 						value={values[name] ?? ''}
 						oninput={(e) => onchange(name, (e.currentTarget as HTMLTextAreaElement).value)}
 					></textarea>
+					{#if errors.length > 0}
+						<ul class="errors">
+							{#each errors as message (message)}
+								<li>{message}</li>
+							{/each}
+						</ul>
+					{/if}
+					{#if fields.length > 0}
+						<details class="shape">
+							<summary>{fields.length} field{fields.length === 1 ? '' : 's'}</summary>
+							<ul>
+								{#each fields as f (f.path)}
+									<li style={`padding-left: ${f.depth * 0.9}rem`}>
+										<code>{f.path}</code>
+										{#if f.type}<span class="ftype">{f.type}</span>{/if}
+										{#if f.required}<span class="freq">required</span>{/if}
+										{#if f.enumValues && f.enumValues.length > 0}
+											<span class="fenum">{f.enumValues.join(' | ')}</span>
+										{/if}
+										{#if f.description}<span class="fdesc">{f.description}</span>{/if}
+									</li>
+								{/each}
+							</ul>
+						</details>
+					{/if}
 				{:else}
 					<input
 						id={`param-${name}`}
@@ -211,6 +257,48 @@
 		background: var(--color-surface-alt, var(--color-surface));
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-sm, 4px);
+	}
+	.control.invalid {
+		border-color: var(--color-danger, #c0392b);
+	}
+	.errors {
+		margin: 0.3rem 0 0;
+		padding-left: 1rem;
+		font-size: 0.72rem;
+		color: var(--color-danger, #c0392b);
+	}
+	.shape {
+		margin-top: 0.3rem;
+		font-size: 0.72rem;
+		color: var(--color-text-muted);
+	}
+	.shape summary {
+		cursor: pointer;
+	}
+	.shape ul {
+		margin: 0.3rem 0 0;
+		padding: 0;
+		list-style: none;
+	}
+	.shape li {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+		align-items: baseline;
+		padding-top: 0.15rem;
+	}
+	.shape code {
+		color: var(--color-text);
+	}
+	.ftype {
+		opacity: 0.75;
+	}
+	.freq {
+		color: var(--color-text);
+	}
+	.fenum,
+	.fdesc {
+		opacity: 0.8;
 	}
 	.control {
 		width: 100%;

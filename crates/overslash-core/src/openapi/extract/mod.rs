@@ -31,6 +31,7 @@ mod auth;
 mod mcp;
 mod params;
 mod schemes;
+mod shape;
 
 pub use mcp::overlay_discovered_tools;
 
@@ -43,10 +44,9 @@ use params::parse_resolver;
 /// list of either — into [`ScopeParams`].
 ///
 /// Absent is the common case and means "unscoped" (`{service}:{action}:*`).
-/// A shape that is neither a string nor a list of strings is an **error**
-/// rather than a silent drop: dropping it would quietly widen the action's
-/// permission key to the wildcard, which is the opposite of what the author
-/// asked for.
+/// A shape this cannot read is an **error** rather than a silent drop:
+/// dropping it would quietly widen the action's permission key to the
+/// wildcard, which is the opposite of what the author asked for.
 fn parse_scope_params(raw: Option<&Value>, base: &str) -> Result<ScopeParams, ValidationIssue> {
     let invalid = |msg: String| {
         ValidationIssue::new(
@@ -55,26 +55,22 @@ fn parse_scope_params(raw: Option<&Value>, base: &str) -> Result<ScopeParams, Va
             format!("{base}.x-overslash-scope_param"),
         )
     };
-    let entries: Vec<&str> = match raw {
+    // Entries are heterogeneous: a bare `param` / `param:label` string, or a
+    // `{param, label?, extract}` mapping for a param whose value is not itself
+    // the thing being gated. A list may mix the two, which is what lets an
+    // action scope on one plain param and one extracted param side by side.
+    let entries: Vec<Value> = match raw {
         None | Some(Value::Null) => return Ok(ScopeParams::default()),
-        Some(Value::String(s)) => vec![s.as_str()],
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|v| {
-                v.as_str().ok_or_else(|| {
-                    invalid(format!(
-                        "x-overslash-scope_param list entries must be strings (got {v})"
-                    ))
-                })
-            })
-            .collect::<Result<_, _>>()?,
+        Some(Value::Array(items)) => items.clone(),
+        Some(v @ (Value::String(_) | Value::Object(_))) => vec![v.clone()],
         Some(other) => {
             return Err(invalid(format!(
-                "x-overslash-scope_param must be a param name or a list of them (got {other})"
+                "x-overslash-scope_param must be a param name, a mapping, or a list of \
+                 them (got {other})"
             )));
         }
     };
-    ScopeParams::parse_list(entries).map_err(invalid)
+    ScopeParams::parse_entries(entries.iter()).map_err(invalid)
 }
 
 // ── servers → hosts ──────────────────────────────────────────────────

@@ -22,11 +22,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_core::search::{Candidate, MIN_SCORE, apply_post_bonuses, keyword_fuzzy_score};
-use overslash_core::types::{DeclaredRisk, ServiceAction, ServiceDefinition};
+use overslash_core::types::{DeclaredRisk, ServiceDefinition};
 use overslash_db::repos::{org as org_repo, service_action_embedding, service_template};
 use overslash_db::scopes::{OrgScope, UserScope};
 
+mod params;
 mod setup_hint;
+use params::{ParamInfo, param_infos};
 use setup_hint::{AuthStatus, build_auth_status};
 
 use crate::{
@@ -178,78 +180,6 @@ struct SearchResult {
     /// relaxation at all.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     additional_properties: bool,
-}
-
-/// The model-facing projection of an [`ServiceAction`] parameter.
-///
-/// Deliberately not `ActionParam` itself: that type also carries `resolve`,
-/// `sql_field`, `sql_database` and `instance_config`, which are gateway
-/// plumbing the caller neither supplies nor benefits from seeing.
-#[derive(Serialize)]
-struct ParamInfo {
-    name: String,
-    #[serde(rename = "type", skip_serializing_if = "String::is_empty")]
-    param_type: String,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    required: bool,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    description: String,
-    #[serde(rename = "enum", skip_serializing_if = "Option::is_none")]
-    enum_values: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    default: Option<serde_json::Value>,
-}
-
-/// Longest parameter description carried into a search result.
-///
-/// Every row in a response holds up to this much per parameter, so the cap
-/// is a context-budget decision, not a display one. The widest action in the
-/// shipped registry declares 10 parameters, which bounds a row's parameter
-/// block at roughly 2 KB and a default 20-row response well under what the
-/// action's own descriptions already cost.
-const MAX_PARAM_DESCRIPTION_CHARS: usize = 160;
-
-/// Project an action's parameters for the model.
-///
-/// Ordering is explicit — required first, then alphabetical — because
-/// `ServiceAction.params` is a `HashMap`, and emitting its iteration order
-/// would make byte-identical requests return differently-ordered JSON.
-/// Required-first also front-loads what the caller cannot omit.
-fn param_infos(action: &ServiceAction) -> Vec<ParamInfo> {
-    let mut out: Vec<ParamInfo> = action
-        .params
-        .iter()
-        // `instance-config` params are pinned per service instance by an org
-        // admin and merged in under the caller's args at execution time. A
-        // caller has no business supplying them, so listing them here would
-        // only invite a wrong one.
-        .filter(|(_, p)| !p.instance_config)
-        .map(|(name, p)| ParamInfo {
-            name: name.clone(),
-            param_type: p.param_type.clone(),
-            required: p.required,
-            description: clamp_chars(&p.description, MAX_PARAM_DESCRIPTION_CHARS),
-            enum_values: p.enum_values.clone(),
-            default: p.default.clone(),
-        })
-        .collect();
-    out.sort_by(|a, b| {
-        b.required
-            .cmp(&a.required)
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    out
-}
-
-/// Truncate `s` to at most `max` characters, appending an ellipsis when it
-/// actually cut. Cuts at a char *index* rather than a byte index — `&s[..n]`
-/// panics mid-codepoint, and template descriptions are exactly the strings
-/// that carry non-ASCII.
-fn clamp_chars(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
-        Some((cut, _)) => format!("{}…", &s[..cut]),
-        None => s.to_string(),
-    }
 }
 
 /// Per-instance data carried from `collect_visible_templates` into the

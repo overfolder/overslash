@@ -275,4 +275,6 @@ pub enum RegistryError {
 }
 
 #[cfg(all(test, feature = "yaml"))]
+mod corpus_tests;
+#[cfg(all(test, feature = "yaml"))]
 mod tests;

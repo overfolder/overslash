@@ -233,16 +233,9 @@ pub(crate) mod fixtures {
             name.to_string(),
             crate::types::ActionParam {
                 param_type: "string".into(),
-                required: false,
-                description: String::new(),
-                enum_values: None,
-                default: None,
-                resolve: None,
-                aliases: vec![],
                 location: crate::types::ParamLocation::Header,
                 instance_config: true,
-                sql_field: None,
-                sql_database: None,
+                ..Default::default()
             },
         );
         base

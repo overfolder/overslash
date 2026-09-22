@@ -1,3 +1,4 @@
+use super::key::SCOPE_ERROR_LABEL;
 use super::key::{DerivedKey, SuggestedTier};
 use super::matching::{broadening_ladder, derive_keys, parse_derived_key};
 
@@ -212,7 +213,22 @@ pub fn suggest_tiers(permission_keys: &[String]) -> Vec<SuggestedTier> {
         return vec![];
     }
 
-    let derived = derive_keys(permission_keys);
+    // A `scope_error=` sentinel is never offered a rung. It means "we could not
+    // tell what this call is scoped to", so a standing rule covering it would
+    // authorize every future call that fails the same way — see
+    // `approvals::resolve`, which refuses the same thing from the other side.
+    // Dropping it here is what keeps the *dashboard* from putting the rung in
+    // front of an approver in the first place.
+    let offerable: Vec<String> = permission_keys
+        .iter()
+        .filter(|k| parse_derived_key(k).label.as_deref() != Some(SCOPE_ERROR_LABEL))
+        .cloned()
+        .collect();
+    if offerable.is_empty() {
+        return vec![];
+    }
+
+    let derived = derive_keys(&offerable);
     let ladders: Vec<Vec<String>> = derived.iter().map(broadening_ladder).collect();
 
     // Determine the max ladder length

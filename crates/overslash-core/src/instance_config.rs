@@ -134,16 +134,9 @@ mod tests {
     fn param(instance_config: bool) -> ActionParam {
         ActionParam {
             param_type: "string".into(),
-            required: false,
-            description: String::new(),
-            enum_values: None,
-            default: None,
-            resolve: None,
-            aliases: vec![],
             location: ParamLocation::Header,
             instance_config,
-            sql_field: None,
-            sql_database: None,
+            ..Default::default()
         }
     }
 

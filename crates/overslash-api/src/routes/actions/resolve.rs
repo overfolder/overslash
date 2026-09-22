@@ -182,6 +182,7 @@ pub(super) async fn resolve_request(
                 risk: None,
                 disclose: Vec::new(),
                 redact: Vec::new(),
+                json_string_params: Default::default(),
                 // The verb shape names no action, so there is no action rung —
                 // but the service still knows whether its upstream is slow.
                 action_timeout_ms: None,
@@ -381,6 +382,7 @@ pub(super) async fn resolve_request(
                     risk: Some(action.risk),
                     disclose: action.disclose.clone(),
                     redact: action.redact.clone(),
+                    json_string_params: json_string_params(action),
                     action_timeout_ms: action.timeout_ms,
                     service_timeout_ms: svc.default_timeout_ms,
                     action_wait_mode: action.wait_mode,
@@ -449,6 +451,7 @@ pub(super) async fn resolve_request(
                     risk: Some(action.risk),
                     disclose: Vec::new(),
                     redact: Vec::new(),
+                    json_string_params: Default::default(),
                     // Platform actions dispatch in-process; nothing is dialed,
                     // so there is no upstream to time out.
                     action_timeout_ms: None,
@@ -910,6 +913,7 @@ pub(super) async fn resolve_request(
                 risk: Some(action_risk),
                 disclose: action.disclose.clone(),
                 redact: action.redact.clone(),
+                json_string_params: json_string_params(action),
                 action_timeout_ms: action.timeout_ms,
                 service_timeout_ms: svc.default_timeout_ms,
                 action_wait_mode: action.wait_mode,
@@ -933,4 +937,18 @@ pub(super) async fn resolve_request(
     Err(AppError::BadRequest(
         "request must include 'service' plus either 'action' or ('method' + 'url'/'path')".into(),
     ))
+}
+
+/// The names of an action's params whose wire value is a serialized JSON
+/// document. Threaded onto [`ResolvedMeta`] so `apply_redactions` can descend
+/// into one without ever guessing that a string happens to hold JSON.
+fn json_string_params(
+    action: &overslash_core::types::ServiceAction,
+) -> std::collections::BTreeSet<String> {
+    action
+        .params
+        .iter()
+        .filter(|(_, p)| p.is_json_string())
+        .map(|(name, _)| name.clone())
+        .collect()
 }

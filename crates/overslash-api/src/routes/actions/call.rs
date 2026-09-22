@@ -316,12 +316,15 @@ pub(super) async fn call_action_impl(
     let perm_keys = if let Some(ref verb) = scope_meta.http_verb {
         PermissionKey::from_service_http(&scope_meta.service_key, &verb.method, &verb.path)
     } else {
-        PermissionKey::from_service_action(
-            &scope_meta.service_key,
-            &scope_meta.action_key,
+        let scope = resolve_scope_values(
             &scope_meta.scope_param,
             &canonical_scope_params(&req.params, &meta.canonical),
+            std::time::Duration::from_millis(state.config.filter_timeout_ms),
+            &scope_meta.service_key,
+            &scope_meta.action_key,
         )
+        .await;
+        PermissionKey::from_service_action(&scope_meta.service_key, &scope_meta.action_key, &scope)
     };
     // D42: per-table keys join (or, for the bare `:*` fallback, replace)
     // the scope_param keys; column keys ride separately as deny-screen.

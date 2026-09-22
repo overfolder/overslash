@@ -365,9 +365,13 @@ paths:
                 addLabelIds:
                   type: array
                   description: "Label IDs to add (e.g. ['STARRED', 'IMPORTANT'] or a custom label ID)"
+                  items:
+                    type: string
                 removeLabelIds:
                   type: array
                   description: "Label IDs to remove (e.g. ['UNREAD'] to mark read, ['INBOX'] to archive)"
+                  items:
+                    type: string
   /gmail/v1/users/{userId}/messages/{id}/untrash:
     post:
       operationId: untrash_message
