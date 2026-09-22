@@ -164,6 +164,12 @@ fn shipped_list_actions_declare_pagination() {
         "figma:list_file_styles",
         "figma:list_project_files",
         "figma:list_team_projects",
+        // A Langfuse key pair is scoped to one project, so this endpoint
+        // returns exactly that one — it declares no page size, no cursor and
+        // no filter because there is nothing to page through. The
+        // single-element `data` array is the shape of the answer, not a first
+        // page. Same situation as `shortcut:list_projects` above.
+        "langfuse:list_projects",
     ];
 
     fn looks_like_a_list(key: &str) -> bool {
@@ -533,6 +539,13 @@ fn shipped_structured_params_declare_their_shape() {
         "overslash:create_service:credentials",
         "overslash:create_service:groups",
         "overslash:import_template:include_operations",
+        // A score's metadata is caller-owned free-form JSON: Langfuse declares
+        // it `additionalProperties: true` with no key set, and the keys are
+        // whoever wrote the score's own. There is no shape to transcribe.
+        // Every other free-form field on this service is untyped upstream and
+        // is declared untyped here, which needs no entry; this one is the
+        // single place Langfuse says `object` and means "anything".
+        "langfuse:create_score:metadata",
     ];
 
     let reg = ServiceRegistry::load_from_dir(&shipped_services_dir(), Vars::for_tests()).unwrap();

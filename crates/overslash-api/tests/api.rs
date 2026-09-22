@@ -87,6 +87,7 @@ mod instance_visibility_consistency;
 mod integration;
 mod invite_adoption;
 mod key_rotation;
+mod langfuse;
 mod large_file;
 mod layered_templates;
 mod linkedin;

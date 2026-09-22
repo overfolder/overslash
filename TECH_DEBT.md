@@ -4,6 +4,35 @@ Known workarounds and deferred improvements.
 
 ---
 
+## A Langfuse instance cannot be re-pointed to another region from the dashboard
+
+`services/langfuse.yaml` resolves its host from
+`${LANGFUSE_URL:https://cloud.langfuse.com}` (D44), so every deployment gets the
+vendor's EU cloud by default and can repoint the *whole* template with
+`OVERSLASH_TEMPLATE_VAR_LANGFUSE_URL`. But Langfuse Cloud also runs US, JP and
+HIPAA regions, and Langfuse is self-hostable — so on a multi-tenant deployment
+two orgs can legitimately need two different hosts, which the deployment
+variable cannot express.
+
+The executor already supports this: `effective_base`
+(`routes/actions/service_resolve.rs`) takes `service_instances.url` ahead of
+`hosts.first()` unconditionally, so `POST /v1/services` with a `url` works
+today and the integration tests rely on it. What does not work is the
+*dashboard*: `configurable_url` (`routes/templates/mod.rs`) renders the URL
+field only for a host-less template, an MCP runtime, or one with an
+`secret_source: org` scheme. Langfuse is none of the three, so a US-region org
+has to call the API directly — which fails rule 6 (vertical integration).
+
+Deliberately not fixed here. The obvious rule — "more than one `servers[]`
+entry means the operator picks" — is wrong for `services/x.yaml`, whose two
+entries (`api.twitter.com`, `api.x.com`) are one service under two domains
+rather than a choice. The honest fix is an explicit opt-in on the template
+(an `x-overslash-*` key saying the endpoint is operator-chosen), which is new
+vendor vocabulary and wants its own decision rather than riding along with a
+service template.
+
+---
+
 ## SDK pins esbuild past tsup's declared range via an npm `override`
 
 `sdk/package.json` carries `overrides: { "esbuild": "^0.28.1" }`. It exists to

@@ -257,7 +257,8 @@ fn every_shipped_template_resolves_to_a_shipped_icon() {
     //
     // Templates listed as `pending` in assets/service-icons/manifest.json
     // legitimately have no mark yet and are expected to be iconless.
-    const EXPECTED_WITHOUT_ICON: &[&str] = &["eventbrite", "linkedin", "outlook", "slack"];
+    const EXPECTED_WITHOUT_ICON: &[&str] =
+        &["eventbrite", "langfuse", "linkedin", "outlook", "slack"];
 
     let reg = ServiceRegistry::load_from_dir(&shipped_services_dir(), Vars::for_tests()).unwrap();
 
