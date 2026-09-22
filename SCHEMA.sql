@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict pvHEBSOHVKRu1sS9fGrDGcmftSYuVyoNQR6SPgYEaYaMcmZ53D2QCcnGNljCPuM
+\restrict GO7npTcqC7FKoTtAkhWjqR1LDW2vIOJCAVFwBisEiRaIbm3e4OxJWq9Eb8F4R8O
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -1124,6 +1124,7 @@ CREATE TABLE public.service_instances (
     discovered_tools jsonb,
     discovered_at timestamp with time zone,
     config jsonb DEFAULT '{}'::jsonb NOT NULL,
+    auth_mode text,
     CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text, 'pending_setup'::text]))),
     CONSTRAINT service_instances_template_source_check CHECK ((template_source = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
 );
@@ -1155,6 +1156,13 @@ COMMENT ON COLUMN public.service_instances.discovered_tools IS 'MCP tools/list r
 --
 
 COMMENT ON COLUMN public.service_instances.config IS 'Per-instance non-secret param values: {param name -> scalar}. Only params the template marks x-overslash-instance-config may appear. Never secrets — those are vault references in credentials.';
+
+
+--
+-- Name: COLUMN service_instances.auth_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.service_instances.auth_mode IS 'Which of the template''s x-overslash-auth-modes this instance authenticates with (e.g. oauth, token). NULL = the template''s default mode, and the only possibility for a template declaring no modes.';
 
 
 --
@@ -3372,5 +3380,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict pvHEBSOHVKRu1sS9fGrDGcmftSYuVyoNQR6SPgYEaYaMcmZ53D2QCcnGNljCPuM
+\unrestrict GO7npTcqC7FKoTtAkhWjqR1LDW2vIOJCAVFwBisEiRaIbm3e4OxJWq9Eb8F4R8O
 
