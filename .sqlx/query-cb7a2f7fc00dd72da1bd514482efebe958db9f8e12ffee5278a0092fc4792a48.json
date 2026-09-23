@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, url, events, secret, active, created_at\n         FROM webhook_subscriptions WHERE org_id = $1 AND active = true AND $2 = ANY(events)",
+  "query": "SELECT id, org_id, url, events, secret, active, disabled_reason, created_at\n         FROM webhook_subscriptions WHERE org_id = $1 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,17 @@
       },
       {
         "ordinal": 6,
+        "name": "disabled_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "disabled_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -83,8 +94,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -94,8 +104,9 @@
       false,
       false,
       false,
+      true,
       false
     ]
   },
-  "hash": "42c42176777234e2d60173b4c2d949cb75ee210bd324636fa23180a420117ca2"
+  "hash": "cb7a2f7fc00dd72da1bd514482efebe958db9f8e12ffee5278a0092fc4792a48"
 }

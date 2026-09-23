@@ -1474,6 +1474,8 @@ The same event payload is delivered regardless of transport. Agents may use any 
 
 The `id` and `created_at` are stable across retries, so receivers can dedupe by `id` and reject stale replays by `created_at`. Routing headers mirror the envelope: `X-Overslash-Event` (event name), `X-Overslash-Delivery` (delivery id). `X-Overslash-Signature: sha256=<hex>` is HMAC-SHA256 over the raw body bytes (the envelope JSON), keyed with the subscription secret.
 
+**Webhook endpoints are HTTPS-only.** `POST /v1/webhooks` refuses an `http://` (or any non-`https`) URL with a 400, and the dispatcher refuses to deliver to one, recording the attempt as a failed delivery. The only exception is plain `http` to loopback when the operator allow-lists loopback in `OVERSLASH_SSRF_ALLOWED_CIDRS` (tests, a receiver on the same host). A subscription registered over `http://` before this rule is listed with `active: false` and `disabled_reason: "needs_https"`; nothing is delivered to it until it is recreated with an `https://` URL.
+
 When `notifications.managed_by_platform` is set (§5), Overslash's user-facing notifications (bell, email, 1-minute delayed webhook) are suppressed — but the event-stream transports above still fire normally, because the platform is the consumer.
 
 ---

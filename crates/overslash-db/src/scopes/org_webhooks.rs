@@ -24,7 +24,9 @@ impl OrgScope {
             .await
     }
 
-    /// List active webhook subscriptions in this org.
+    /// List this org's webhook subscriptions, including ones the platform
+    /// disabled (`active = false`, with `disabled_reason`) — the owner has to
+    /// see those to replace them.
     pub async fn list_webhook_subscriptions(
         &self,
     ) -> Result<Vec<WebhookSubscriptionRow>, sqlx::Error> {

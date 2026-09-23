@@ -18,6 +18,7 @@ pub mod events;
 pub mod execution_access;
 pub mod group_ceiling;
 pub mod http_caller;
+pub mod https_policy;
 pub mod hybrid;
 pub mod icon_url;
 pub mod identity_path;

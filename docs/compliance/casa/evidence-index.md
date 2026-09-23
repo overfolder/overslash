@@ -55,7 +55,7 @@ excerpt, without calling functions or underlying libraries.
 |-----|-----------------|--------|
 | 1.1.1 | Anti-automation in action: the magic-link throttle tripping, and the identical opaque response before and after | `need` |
 | 3.3.1 | MFA enforcement on an admin account — either our own step-up, or the IdP's challenge if we answer 3.3.1 by IdP delegation | `need` |
-| 7.1.1 | An `http://` webhook endpoint being rejected at registration | `need` |
+| 7.1.1 | An `http://` webhook endpoint being rejected at registration | `have` — `dashboard/scripts/screenshot-webhook-https.mjs` (`webhook-https-rejected.png`) |
 | 6.2.1 | Debug surfaces absent in production — `/auth/dev/token` returning 404, `/health` with no `db_error` field | `need` |
 
 Capture these with the existing scenarios library rather than by hand:

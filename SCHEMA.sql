@@ -1339,8 +1339,16 @@ CREATE TABLE public.webhook_subscriptions (
     events text[] NOT NULL,
     secret text NOT NULL,
     active boolean DEFAULT true NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    disabled_reason text
 );
+
+
+--
+-- Name: COLUMN webhook_subscriptions.disabled_reason; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.webhook_subscriptions.disabled_reason IS 'Why the platform disabled this subscription (needs_https). NULL for a subscription the platform has not disabled.';
 
 
 --

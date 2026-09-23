@@ -1871,7 +1871,8 @@
 				</button>
 			</div>
 			<p class="muted small">
-				Editing is not supported — to change a webhook, delete it and create a new one.
+				Webhook URLs must use <code>https://</code>. Editing is not supported — to change a
+				webhook, delete it and create a new one.
 			</p>
 
 			{#if createdWebhook}
@@ -1902,11 +1903,21 @@
 					<tbody>
 						{#each webhooks as wh (wh.id)}
 							<tr>
-								<td class="mono small">{wh.url}</td>
+								<td class="mono small">
+									{wh.url}
+									{#if wh.disabled_reason === 'needs_https'}
+										<p class="muted small wh-hint">
+											Not delivered: plain http:// is not allowed. Delete it and create it again
+											with an https:// URL.
+										</p>
+									{/if}
+								</td>
 								<td class="small">{wh.events.join(', ')}</td>
 								<td>
 									{#if wh.active}
 										<span class="badge badge-on">active</span>
+									{:else if wh.disabled_reason === 'needs_https'}
+										<span class="badge badge-off nowrap">needs HTTPS</span>
 									{:else}
 										<span class="badge badge-off">inactive</span>
 									{/if}
@@ -2253,6 +2264,13 @@
 	.actions-col {
 		text-align: right;
 		white-space: nowrap;
+	}
+	.nowrap {
+		white-space: nowrap;
+	}
+	.wh-hint {
+		margin: 0.25rem 0 0;
+		font-family: var(--font-sans, inherit);
 	}
 	.deliveries-row td {
 		background: var(--color-primary-bg, #f5f7ff);

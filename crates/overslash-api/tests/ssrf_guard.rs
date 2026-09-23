@@ -281,7 +281,10 @@ async fn webhook_delivery_refuses_a_link_local_endpoint() {
     let (pool, _fx) = common::test_pool_bootstrapped().await;
     let (base, key, org_id, _mock) = boot(pool.clone()).await;
 
-    let sub = create_subscription(&base, &key, METADATA, "ssrf.probe").await;
+    // `https`, because a plain-`http` webhook is refused at registration now
+    // (CASA 7.1.1) — and the guard must refuse the address regardless.
+    let metadata_https = METADATA.replacen("http://", "https://", 1);
+    let sub = create_subscription(&base, &key, &metadata_https, "ssrf.probe").await;
 
     overslash_api::services::webhook_dispatcher::dispatch(
         &pool,
