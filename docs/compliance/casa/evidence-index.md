@@ -75,7 +75,7 @@ what the product actually renders.
 |-----|----------|--------|
 | 6.7.1 | A documented access-control policy for server-side secrets: who can read what, through which path, and how access is logged and monitored | `need` |
 | 6.7.1 | Evidence that secret access is logged — requires `google_project_iam_audit_config` for Secret Manager Data Access logs plus a sink with locked retention | `need` |
-| 6.1.1 | A dependency-update and vulnerability-response policy: scan cadence, severity triage, patch SLA, and the justified-exception process for `rsa` and `paste` | `need` |
+| 6.1.1 | A dependency-update and vulnerability-response policy: scan cadence, severity triage, patch SLA, and the justified-exception process for `rsa` and `paste` | `have`: [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md), with the exceptions as config in `deny.toml` / `osv-scanner.toml` |
 | — | `SECURITY.md` with a vulnerability disclosure policy and a security contact. Not a numbered CASA requirement, but its absence on a public repo hosting a credential vault is the cheapest possible finding to avoid | `need` |
 | — | Master-key rotation runbook. [TODO.md](../../../TODO.md) marks it done; no file exists in `docs/runbooks/`, and [STATUS.md](../../../STATUS.md) — authoritative per the repo's Rule 1 — lists it as outstanding | `need` |
 | — | DR plan: RTO/RPO, restore procedure, and a recorded restore drill. PITR is configured (`infra/modules/cloud-sql/main.tf:69-78`) but never exercised | `need` |
@@ -84,4 +84,5 @@ what the product actually renders.
 
 | For | Artifact | Status |
 |-----|----------|--------|
+| 6.1.1 | Dependency scan output: the *Dependency audit* jobs (`cargo-deny`, `npm audit`, OSV). Take a recent scheduled run against `master`, which shows the two justified ignores filtered with their reasons | `have`: GitHub Actions, `.github/workflows/deps-audit.yml` |
 | The 18 DAST-validated requirements | An authenticated Burp Suite scan run with the ADA Burp Audit Scan Configuration. Developer-run at AL1; lab-run at AL2 | `need` — see [dast-readiness.md](dast-readiness.md) |
