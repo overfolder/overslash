@@ -815,7 +815,11 @@ where
         // and expose `/internal/metrics` so tests can assert on emitted
         // series. The recorder is process-global, so assert series
         // *presence*, never exact counts.
-        .merge(overslash_metrics::metrics_router(overslash_metrics::setup()));
+        .merge(overslash_metrics::metrics_router(overslash_metrics::setup()))
+        // Mirror production's outermost security-headers layer.
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -1004,7 +1008,10 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .merge(overslash_api::routes::unsubscribe::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
@@ -1159,7 +1166,10 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::account_invitations::router())
         .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1852,7 +1862,10 @@ where
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .merge(overslash_api::routes::search::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
@@ -2003,7 +2016,10 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::auth::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2165,7 +2181,10 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 

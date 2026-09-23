@@ -143,6 +143,7 @@ mod search;
 mod secret_requests;
 mod secrets_chain_visibility;
 mod secrets_dashboard;
+mod security_headers;
 mod service_auth_modes;
 mod service_connection_cleanup;
 mod service_icons;

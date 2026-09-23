@@ -305,8 +305,11 @@ orgs, so a human decision).
 **P1 — hard CASA fails.** ~~`Secure` on `oss_session` plus `__Host-`/`__Secure-` prefixes
 (2.3.1)~~ — done; **server-side sessions** — a sessions table with a `jti` claim checked per
 request, which keeps the 7-day UX while satisfying 2.2.1, 2.2.2 and 2.2.3 at the cost of
-one indexed lookup (cacheable in Valkey) (2.2.x); a security-headers layer on the API and
-a `headers` block in `dashboard/vercel.json` (4.x/6.x adjacency); **the rest of webhook
+one indexed lookup (cacheable in Valkey) (2.2.x); ~~a security-headers layer on the API and
+a `headers` block in `dashboard/vercel.json` (4.x/6.x adjacency)~~ — done: HSTS, nosniff,
+`X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` and a CSP on every API response
+(`middleware/security_headers.rs`), and an enforced dashboard CSP with no `'unsafe-inline'`
+in `script-src` (`kit.csp`, with the rest of the baseline in `vercel.json`); **the rest of webhook
 section 7** — `https://` at registration, a challenge-response ownership handshake, and a
 signed timestamp header behind a versioned signature (7.1.1, 7.1.2, 7.2.3; delivery
 through `ssrf_guard` is done); dependency vulnerability scanning in CI plus clearing the four
@@ -324,8 +327,8 @@ LB; `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`; least-privilege IAM in place of th
 project-wide `secretmanager.secretAccessor` and `cloudsql.admin` bindings; Memorystore
 `auth_enabled` + `transit_encryption_mode`; move `Keyring::test()` behind `#[cfg(test)]`;
 trusted-proxy configuration so `X-Forwarded-For` is not attacker-controlled
-(`extractors.rs:102-111`); `Cache-Control: no-store` on `secrets/reveal` and other
-sensitive responses.
+(`extractors.rs:102-111`); ~~`Cache-Control: no-store` on `secrets/reveal` and other
+sensitive responses~~ — done, as the default on every API response that does not set its own.
 
 **P3 — document rather than fix.** CMEK; SBOM, artifact signing and build provenance
 (`--provenance=false` at `infra/modules/cloud-build/main.tf:217`); the `rsa` and `paste`

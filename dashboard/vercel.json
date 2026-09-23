@@ -1,4 +1,16 @@
 {
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Strict-Transport-Security", "value": "max-age=63072000; includeSubDomains" },
+        { "key": "X-Content-Type-Options",    "value": "nosniff" },
+        { "key": "X-Frame-Options",           "value": "DENY" },
+        { "key": "Referrer-Policy",           "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy",        "value": "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), serial=(), usb=(), xr-spatial-tracking=()" }
+      ]
+    }
+  ],
   "rewrites": [
     { "source": "/v1/billing/geo",                         "destination": "/billing/geo" },
     { "source": "/auth/handoff",                           "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/__handoff_disabled_in_prod" },
