@@ -124,6 +124,9 @@ pub(super) async fn resolve_request(
         }
 
         let (path, url) = resolve_verb_host_and_path(&svc, service_key, &req.url, &req.path)?;
+        // Before the permission gate, so a plaintext target is a 400 now
+        // rather than an approval that can never execute (CASA 4.1.1).
+        crate::services::outbound_tls::check_url(&url)?;
 
         let resolved_auth = resolve_instance_auth(
             state,
@@ -500,6 +503,9 @@ pub(super) async fn resolve_request(
             ))
         })?;
         let base_url = format!("{base}{path}");
+        // An instance or org default stored before https was required is used
+        // verbatim — refuse it here, with the fix, not only at dial time.
+        crate::services::outbound_tls::check_url(&base)?;
 
         // Header-located params (e.g. a template-pinned `Notion-Version`) are
         // routed into the request headers below — they must not leak into the

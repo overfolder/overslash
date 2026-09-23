@@ -94,7 +94,11 @@ pub async fn build_client(
     // the reqwest client to that IP so a compromised resolver cannot rebind
     // to an internal target between validation and connect. Timeouts live
     // on this client too — state.http_client has no per-request deadline.
-    let (http, base) = ssrf_guard::build_pinned_client(&resolved_url, MCP_TIMEOUT).await?;
+    let (http, base, ip) =
+        ssrf_guard::build_pinned_client_validated(&resolved_url, MCP_TIMEOUT).await?;
+    // The bearer / OAuth token above rides this request — TLS or nothing,
+    // unless the operator allow-listed where it lands (CASA 4.1.1).
+    crate::services::outbound_tls::check_resolved(&base, &ip)?;
     Ok((
         McpClient::with_client_and_base(http, base, DEFAULT_MAX_BODY_BYTES),
         headers,

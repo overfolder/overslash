@@ -15,7 +15,9 @@
 //! each of the five call sites has to remember. The guard resolves the host,
 //! refuses private / loopback / link-local answers, pins the validated IP, and
 //! disables redirects; it pools the resulting client per validated address, so
-//! this is not a handshake per call.
+//! this is not a handshake per call. It also refuses plain `http` outside an
+//! operator-allowed range ([`crate::services::outbound_tls`]), since every
+//! request here may carry a vault credential.
 //!
 //! # Two different meanings of "timeout"
 //!
@@ -156,17 +158,25 @@ fn build_request(
 /// the parsed URL to resolve a `Location` against.
 ///
 /// The single place the transport acquires a client. See the module docs.
+///
+/// It also requires TLS ([`crate::services::outbound_tls`]), against the
+/// address the guard pinned — on every hop, so a redirect cannot walk a
+/// request down to plain `http` either.
 async fn guarded_client(url: &str) -> Result<(reqwest::Client, url::Url), CallError> {
-    crate::services::ssrf_guard::outbound_client(url)
-        .await
-        .map_err(|e| match e {
-            // The guard is careful about this distinction — `BadRequest` for
-            // anything about the target, `Internal` only for a failure of its
-            // own machinery — so the transport keeps it rather than flattening
-            // both into "blocked".
-            AppError::BadRequest(msg) => CallError::Blocked(msg),
-            other => CallError::GuardFailed(other.to_string()),
-        })
+    let checked = async {
+        let (client, parsed, ip) =
+            crate::services::ssrf_guard::outbound_client_validated(url).await?;
+        crate::services::outbound_tls::check_resolved(&parsed, &ip)?;
+        Ok::<_, AppError>((client, parsed))
+    };
+    checked.await.map_err(|e| match e {
+        // The guard is careful about this distinction — `BadRequest` for
+        // anything about the target, `Internal` only for a failure of its
+        // own machinery — so the transport keeps it rather than flattening
+        // both into "blocked".
+        AppError::BadRequest(msg) => CallError::Blocked(msg),
+        other => CallError::GuardFailed(other.to_string()),
+    })
 }
 
 /// How many redirects a call follows.

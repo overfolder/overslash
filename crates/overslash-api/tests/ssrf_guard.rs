@@ -23,6 +23,13 @@ use serde_json::{Value, json};
 /// and the one CASA 5.1.5 is written about.
 const METADATA: &str = "http://169.254.169.254/latest/meta-data/";
 
+/// The same target over `https`, for the Mode A tests. A Mode A call to a
+/// plain-`http` address outside the operator allow-list is now refused for
+/// want of TLS (CASA 4.1.1, `tests/outbound_tls.rs`) before the SSRF guard is
+/// ever consulted — so a test that means to prove the *guard* refuses an
+/// address has to ask for it over https, or it passes for the wrong reason.
+const METADATA_TLS: &str = "https://169.254.169.254/latest/meta-data/";
+
 async fn boot(pool: sqlx::PgPool) -> (String, String, uuid::Uuid, std::net::SocketAddr) {
     common::allow_loopback_ssrf();
     let (addr, client) = common::start_api(pool).await;
@@ -62,7 +69,7 @@ async fn mode_a_refuses_the_cloud_metadata_endpoint() {
     let (pool, _fx) = common::test_pool_bootstrapped().await;
     let (base, key, _org, _mock) = boot(pool).await;
 
-    let resp = raw_http(&base, &key, METADATA).await;
+    let resp = raw_http(&base, &key, METADATA_TLS).await;
     assert_eq!(
         resp.status(),
         400,
@@ -83,19 +90,25 @@ async fn mode_a_refuses_private_and_cgnat_addresses() {
     let (pool, _fx) = common::test_pool_bootstrapped().await;
     let (base, key, _org, _mock) = boot(pool).await;
 
+    // https, so it is the guard doing the refusing — see `METADATA_TLS`.
     for url in [
-        "http://10.0.0.1/admin",
-        "http://192.168.1.1/",
-        "http://172.16.0.1/",
+        "https://10.0.0.1/admin",
+        "https://192.168.1.1/",
+        "https://172.16.0.1/",
         // Carrier-grade NAT — the range a cloud load balancer's internal
         // plane lives on.
-        "http://100.64.0.1/",
+        "https://100.64.0.1/",
         // IPv6 unique-local and the v4-mapped spelling of RFC1918.
-        "http://[fd00::1]/",
-        "http://[::ffff:10.0.0.1]/",
+        "https://[fd00::1]/",
+        "https://[::ffff:10.0.0.1]/",
     ] {
         let resp = raw_http(&base, &key, url).await;
         assert_eq!(resp.status(), 400, "{url} should have been refused");
+        let msg = resp.text().await.unwrap();
+        assert!(
+            msg.contains("refusing to connect"),
+            "{url}: expected the SSRF guard's refusal, got {msg}"
+        );
     }
 }
 
@@ -121,7 +134,7 @@ async fn mode_a_refuses_the_metadata_endpoint_when_streaming() {
         json!({
             "service": "http",
             "method": "GET",
-            "url": METADATA,
+            "url": METADATA_TLS,
             "prefer_stream": true,
         }),
     )

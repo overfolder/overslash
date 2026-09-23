@@ -159,7 +159,7 @@ fn metadata_override_set() -> bool {
 /// rather than a test-only bypass means the suite exercises the code path a
 /// self-hoster actually runs, and `tests/ssrf_guard.rs` still proves the
 /// metadata endpoint, RFC1918 and CGNAT are refused while it is set.
-fn operator_allowed_ranges() -> &'static [ipnet::IpNet] {
+pub(crate) fn operator_allowed_ranges() -> &'static [ipnet::IpNet] {
     static RANGES: OnceLock<Vec<ipnet::IpNet>> = OnceLock::new();
     RANGES.get_or_init(|| {
         let ranges = overslash_env::optional("OVERSLASH_SSRF_ALLOWED_CIDRS")
@@ -448,6 +448,19 @@ pub async fn build_pinned_client(
     build_pinned_client_with_policy(url_str, timeout, default_policy).await
 }
 
+/// [`build_pinned_client`], also handing back the address the client is
+/// pinned to — for a caller whose own rule depends on where the request lands
+/// (the MCP transport requires TLS unless that address is operator-allowed; see
+/// [`crate::services::outbound_tls`]).
+pub async fn build_pinned_client_validated(
+    url_str: &str,
+    timeout: Duration,
+) -> Result<(reqwest::Client, Url, IpAddr), AppError> {
+    let v = resolve_and_validate(url_str, default_policy).await?;
+    let client = pinned_client(&v, timeout, Some(timeout))?;
+    Ok((client, v.url, v.ip))
+}
+
 /// Test seam for `build_pinned_client`. Production callers go through
 /// [`build_pinned_client`]; the template-import path injects a permissive
 /// policy from its own tests so it can point at a loopback mock.
@@ -541,7 +554,7 @@ pub async fn outbound_client(url_str: &str) -> Result<(reqwest::Client, Url), Ap
 /// [`outbound_client`], also handing back the address the client is pinned
 /// to — for a caller whose own rule depends on *where* the request lands, not
 /// just whether the guard allows it (OIDC discovery accepts plain `http` only
-/// to loopback).
+/// to loopback; the action transport only to an operator-allowed range).
 pub async fn outbound_client_validated(
     url_str: &str,
 ) -> Result<(reqwest::Client, Url, IpAddr), AppError> {

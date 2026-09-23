@@ -38,6 +38,7 @@ pub mod oauth_redirect_uri;
 pub mod oauth_upstream;
 pub mod oidc_discovery;
 pub mod org_signin;
+pub mod outbound_tls;
 pub mod pagination;
 pub mod param_resolver;
 pub mod permission_chain;

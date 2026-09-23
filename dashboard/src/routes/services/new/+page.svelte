@@ -49,6 +49,7 @@
 	import { credentialLabel, failureKind } from '$lib/setup-outcome';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
+	import EndpointTlsHint from '$lib/components/services/EndpointTlsHint.svelte';
 	import type { Group, GroupGrantPick } from '$lib/api/groups';
 
 
@@ -989,6 +990,7 @@
 						<label class="field">
 							<span class="label">URL</span>
 							<input type="text" bind:value={urlInput} disabled={saving} />
+							<EndpointTlsHint url={urlInput} />
 						</label>
 					{/if}
 
@@ -1330,8 +1332,9 @@
 					<input
 						type="text"
 						bind:value={urlInput}
-						placeholder={inheritedUrl ?? selectedDetail?.mcp?.url ?? 'http://host:8081/mcp'}
+						placeholder={inheritedUrl ?? selectedDetail?.mcp?.url ?? 'https://host/mcp'}
 					/>
+					<EndpointTlsHint url={urlInput} />
 					{#if mcpNeedsUrl}
 						<small>Required — this template has no default URL.</small>
 					{:else if inheritedUrl}
@@ -1351,6 +1354,7 @@
 								? `https://${selectedDetail.hosts[0]}`
 								: 'https://service.your-org.com')}
 					/>
+					<EndpointTlsHint url={urlInput} />
 					{#if httpUrlRequired}
 						<small>Required — this template has no default endpoint.</small>
 					{:else if inheritedUrl}

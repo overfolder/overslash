@@ -387,14 +387,11 @@ pub async fn kernel_update_service(
         (None, None)
     };
 
+    // https only, as on create (CASA 4.1.1).
     if let Some(Some(ref url)) = input.url
         && !url.is_empty()
-        && !url.starts_with("http://")
-        && !url.starts_with("https://")
     {
-        return Err(AppError::BadRequest(
-            "`url` must start with http:// or https://".into(),
-        ));
+        crate::services::outbound_tls::check_endpoint("url", url)?;
     }
 
     // An explicit `config` is a whole-map replace (an empty map clears every
