@@ -8,6 +8,7 @@ request restricted OAuth scopes.
 | [gap-assessment.md](gap-assessment.md) | All 55 CASA requirements, verdict + evidence per requirement |
 | [evidence-index.md](evidence-index.md) | What the lab will ask for, and where each artifact comes from |
 | [dast-readiness.md](dast-readiness.md) | The authenticated-scan problem, and how to answer it |
+| [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md) | 6.1.1: what is scanned and when, severity SLAs, who triages, and the time-boxed exception register |
 | [gcp-posture.md](gcp-posture.md) | Live Google Recommender findings + measured configuration, **both** `overslash` and `overslash-dev` |
 
 ---

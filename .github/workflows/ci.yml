@@ -33,6 +33,7 @@ jobs:
       infra: ${{ steps.filter.outputs.infra }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
       sdk: ${{ steps.filter.outputs.sdk }}
+      deps: ${{ steps.filter.outputs.deps }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -56,6 +57,18 @@ jobs:
               - '.github/workflows/ci.yml'
             sdk:
               - 'sdk/**'
+              - '.github/workflows/ci.yml'
+            deps:
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'dashboard/package.json'
+              - 'dashboard/package-lock.json'
+              - 'sdk/package.json'
+              - 'sdk/package-lock.json'
+              - 'deny.toml'
+              - 'osv-scanner.toml'
+              - 'scripts/check-deny-reviews.sh'
+              - '.github/workflows/deps-audit.yml'
               - '.github/workflows/ci.yml'
 
   # Unconditional, unlike `lint`: the `rust` paths filter skips a docs-only PR,
@@ -549,6 +562,18 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # CASA 6.1.1: cargo-deny + npm audit + OSV over every lockfile. The jobs
+  # live in deps-audit.yml so its daily schedule (which catches advisories
+  # published against an unchanged lockfile) runs the exact same checks.
+  # Here it gates only changes that can alter the dependency set or the
+  # scanner config — see that file for why an unrelated PR is not blocked by
+  # a fresh advisory. No toolchain, no build: well under a minute.
+  deps-audit:
+    name: Dependency audit
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
+    uses: ./.github/workflows/deps-audit.yml
+
   # Reports how much *production code* the PR touches: files under `src/`,
   # source extensions only, test files, the test-support crates and inline
   # `#[cfg(test)]` modules stripped out. `git diff --shortstat` is useless here
@@ -610,7 +635,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, docs, lint, coverage, sql-policy, infra, dashboard, sdk, e2e]
+    needs: [changes, docs, lint, coverage, sql-policy, infra, dashboard, sdk, e2e, deps-audit]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs passed or were skipped

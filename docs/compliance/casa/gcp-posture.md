@@ -201,9 +201,10 @@ than enforced. Same finding in dev.
 
 Enabled on neither project: `containerscanning.googleapis.com`,
 `containeranalysis`/`ondemandscanning`, `binaryauthorization.googleapis.com`,
-`securitycenter.googleapis.com`. No image scanning, no deploy-time policy, no SCC — which
-pairs with the CI-side 6.1.1 finding: neither the dependency tree nor the built image is
-scanned anywhere.
+`securitycenter.googleapis.com`. No image scanning, no deploy-time policy, no SCC. The
+dependency tree is now scanned in CI (6.1.1, see
+[dependency-vulnerability-policy.md](dependency-vulnerability-policy.md)), but the built
+image — its base-layer OS packages in particular — is still scanned nowhere.
 
 Organization policy constraints set on either project: **none**.
 `sql.restrictPublicIp` · `iam.disableServiceAccountKeyCreation` · `run.allowedIngress` ·

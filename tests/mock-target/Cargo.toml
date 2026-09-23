@@ -3,6 +3,9 @@ name = "mock-target"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+# Test fixture; never published. Also tells cargo-deny to skip its (absent)
+# license field — see [licenses.private] in deny.toml.
+publish = false
 
 [dependencies]
 axum = { workspace = true }
