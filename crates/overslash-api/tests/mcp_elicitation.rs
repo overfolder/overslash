@@ -1246,6 +1246,65 @@ async fn elicitation_suppressed_after_recent_cancel() {
     );
 }
 
+/// Whatever happens to an elicitation answer, the row must end terminal.
+///
+/// The originator polls this row and gives up only at `DEFAULT_TIMEOUT`
+/// (300s), so a row left `claimed` by a failed completion is a five-minute
+/// hang on a live `tools/call` — for a caller that could have had the
+/// `pending_approval` envelope immediately. `complete_from_elicitation`
+/// handles its *expected* failures itself; this pins the unexpected kind,
+/// injected here as a loopback that cannot connect.
+#[tokio::test]
+async fn a_failed_completion_still_retires_the_row() {
+    let fx = bootstrap_mcp(true).await;
+    let approval_id = seed_pending_approval(&fx).await;
+
+    let elicit_id = format!("elicit_{}", Uuid::new_v4());
+    db::mcp_elicitation::insert(
+        &fx.pool,
+        &elicit_id,
+        Uuid::new_v4(),
+        fx.agent_id,
+        approval_id,
+    )
+    .await
+    .unwrap();
+
+    // Point the resolve loopback at a port nothing is listening on, so the
+    // helper fails with a transport error rather than a handled 4xx.
+    let mut state = build_state_for_session(&fx).await;
+    state.config.public_url = "http://127.0.0.1:1".to_string();
+
+    overslash_api::routes::mcp::complete_elicitation_and_retire(
+        &state,
+        &axum::http::Extensions::new(),
+        &fx.pool,
+        &elicit_id,
+        &json!({ "action": "accept", "content": { "decision": "allow" } }),
+    )
+    .await;
+
+    let row = db::mcp_elicitation::get(&fx.pool, &elicit_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.status,
+        db::mcp_elicitation::STATUS_CANCELLED,
+        "a failed completion must not leave the row claimed: {row:?}"
+    );
+
+    // And the approval is untouched, so the model's fallback is the ordinary
+    // pending_approval envelope rather than a phantom denial.
+    let approval_status: String = sqlx::query("SELECT status FROM approvals WHERE id = $1")
+        .bind(approval_id)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap()
+        .get("status");
+    assert_eq!(approval_status, "pending");
+}
+
 // ─── await_completion ──────────────────────────────────────────────────────
 
 #[tokio::test]
