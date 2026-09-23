@@ -137,7 +137,23 @@ pub async fn await_completion_with_timeout(
         }
 
         if tokio::time::Instant::now() >= deadline {
-            let _ = repo::cancel(state.db(ext), elicit_id).await;
+            // Retire the row so it stops suppressing auto-call on its
+            // approval and starts counting toward the post-cancel cooldown.
+            //
+            // A failure here is survivable but not silent: the caller still
+            // gets `Abandoned` and the model still gets its envelope, so the
+            // answer is right either way — what is lost is the cooldown and
+            // the auto-call unblock, until `mcp_elicitation_reap` catches the
+            // row. That backstop is deliberate, but it is
+            // `DEFAULT_TIMEOUT + SWEEP_GRACE_SECS` away (360s by default), so
+            // a transient DB error here is worth seeing rather than
+            // rediscovering from a stuck approval.
+            if let Err(e) = repo::cancel(state.db(ext), elicit_id).await {
+                tracing::warn!(
+                    elicit_id,
+                    "cancel timed-out mcp elicitation failed, leaving it for the sweeper: {e}"
+                );
+            }
             return ElicitOutcome::Abandoned;
         }
         sleep(POLL_INTERVAL).await;
