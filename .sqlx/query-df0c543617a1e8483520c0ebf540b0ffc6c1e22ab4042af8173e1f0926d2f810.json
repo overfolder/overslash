@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, url, events, secret, active, disabled_reason, created_at\n         FROM webhook_subscriptions WHERE org_id = $1 ORDER BY created_at",
+  "query": "SELECT id, org_id, url, events, secret, active, disabled_reason,\n                   verification_status, verified_at, grandfathered,\n                   verification_attempted_at, verification_error, created_at\n         FROM webhook_subscriptions WHERE org_id = $1 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -82,6 +82,61 @@
       },
       {
         "ordinal": 7,
+        "name": "verification_status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_status"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "verified_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verified_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "grandfathered",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "grandfathered"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "verification_attempted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_attempted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "verification_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_error"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -105,8 +160,13 @@
       false,
       false,
       true,
+      false,
+      true,
+      false,
+      true,
+      true,
       false
     ]
   },
-  "hash": "cb7a2f7fc00dd72da1bd514482efebe958db9f8e12ffee5278a0092fc4792a48"
+  "hash": "df0c543617a1e8483520c0ebf540b0ffc6c1e22ab4042af8173e1f0926d2f810"
 }

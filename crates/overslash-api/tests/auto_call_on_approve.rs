@@ -42,9 +42,13 @@ async fn echo(_uri: axum::http::Uri, _headers: HeaderMap, body: axum::body::Byte
     }))
 }
 
-async fn receive_webhook(State(s): State<Sink>, Json(p): Json<Value>) -> &'static str {
+async fn receive_webhook(State(s): State<Sink>, Json(p): Json<Value>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if let Some(echo) = overslash_fakes::openapi::verification_echo(&p) {
+        return echo.into_response();
+    }
     s.lock().unwrap().payloads.push(p);
-    "ok"
+    "ok".into_response()
 }
 
 async fn list_webhooks(State(s): State<Sink>) -> Json<Value> {

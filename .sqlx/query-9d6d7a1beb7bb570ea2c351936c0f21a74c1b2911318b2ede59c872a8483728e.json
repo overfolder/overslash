@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO webhook_deliveries (subscription_id, event, payload, next_retry_at)\n         VALUES ($1, $2, $3, now())\n         RETURNING id, subscription_id, event, payload, status_code, response_body, attempts, next_retry_at, delivered_at, created_at",
+  "query": "SELECT d.id, d.subscription_id, d.event, d.payload, d.attempts, d.created_at,\n                s.url, s.secret\n         FROM webhook_deliveries d\n         JOIN webhook_subscriptions s ON d.subscription_id = s.id\n         WHERE d.delivered_at IS NULL AND d.attempts < 5 AND d.next_retry_at <= now()\n           AND s.active = true AND s.verification_status = 'verified'\n         ORDER BY d.next_retry_at\n         LIMIT $1",
   "describe": {
     "columns": [
       {
@@ -49,28 +49,6 @@
       },
       {
         "ordinal": 4,
-        "name": "status_code",
-        "type_info": "Int4",
-        "origin": {
-          "Table": {
-            "table": "webhook_deliveries",
-            "name": "status_code"
-          }
-        }
-      },
-      {
-        "ordinal": 5,
-        "name": "response_body",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "webhook_deliveries",
-            "name": "response_body"
-          }
-        }
-      },
-      {
-        "ordinal": 6,
         "name": "attempts",
         "type_info": "Int4",
         "origin": {
@@ -81,29 +59,7 @@
         }
       },
       {
-        "ordinal": 7,
-        "name": "next_retry_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "webhook_deliveries",
-            "name": "next_retry_at"
-          }
-        }
-      },
-      {
-        "ordinal": 8,
-        "name": "delivered_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "webhook_deliveries",
-            "name": "delivered_at"
-          }
-        }
-      },
-      {
-        "ordinal": 9,
+        "ordinal": 5,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -112,13 +68,33 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 6,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "secret",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "secret"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text",
-        "Jsonb"
+        "Int8"
       ]
     },
     "nullable": [
@@ -126,13 +102,11 @@
       false,
       false,
       false,
-      true,
-      true,
       false,
-      true,
-      true,
+      false,
+      false,
       false
     ]
   },
-  "hash": "607887f5cde1054f3bc01b06d70dd03a9a7f006ec90bb931dba437dabad59090"
+  "hash": "9d6d7a1beb7bb570ea2c351936c0f21a74c1b2911318b2ede59c872a8483728e"
 }

@@ -235,6 +235,14 @@ export interface Webhook {
   /** Why the platform switched it off. `needs_https`: a plain http:// URL
    *  registered before HTTPS was enforced — nothing is delivered to it. */
   disabled_reason?: string;
+  /** Endpoint ownership (CASA 7.1.2). Only `verified` subscriptions are
+   *  delivered to; events for a pending one are held until it verifies. */
+  verification_status: 'pending_verification' | 'verified';
+  verified_at: string | null;
+  /** Verified by migration because it predates the handshake. */
+  grandfathered: boolean;
+  /** Why the last handshake failed; absent after a success. */
+  verification_error?: string;
 }
 
 export interface WebhookCreated extends Webhook {
@@ -249,6 +257,8 @@ export interface WebhookDelivery {
   delivered_at: string | null;
   created_at: string;
   next_retry_at: string | null;
+  /** `pending_verification`: raised before the webhook verified; not sent yet. */
+  held_reason?: string;
 }
 
 // -- Service templates (catalog) --

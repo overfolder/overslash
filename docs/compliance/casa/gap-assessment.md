@@ -267,7 +267,7 @@ when it was written.
 | Req | Requirement | Verdict | Evidence / gap | Sev |
 |-----|-------------|---------|----------------|-----|
 | 7.1.1 | Webhook traffic exclusively HTTPS, TLS 1.2+ | `pass` | Registration parses the URL into a typed `HttpsUrl` (`services/https_policy.rs`) and refuses `http://` and every other scheme with a 400 (`routes/webhooks.rs::create_webhook`); there is no update endpoint. The dispatcher re-checks on every attempt — from the string, then against the address the SSRF guard pinned — and records a refusal as a failed delivery without dialing (`services/webhook_dispatcher.rs::deliver`). Pre-existing `http://` subscriptions were disabled by migration 124 (`active = false`, `disabled_reason = needs_https`, still listed to the owner). Sole exception: plain `http` to **loopback**, and only when the operator allow-lists loopback in `OVERSLASH_SSRF_ALLOWED_CIDRS` — the same rule OIDC discovery uses; nothing sent that way leaves the host. TLS 1.2+ holds by construction: reqwest 0.13 is built on rustls, which implements only TLS 1.2 and 1.3. Tests: `tests/webhook_https.rs` | — |
-| 7.1.2 | Provider verifies endpoint ownership before delivering events | `gap` | No challenge-response handshake and no manual verification step; the first event ships on the first trigger after registration. Partial compensating control: registration is org-admin-only (`AdminAcl` at `routes/webhooks.rs:51`). At AL2 the lab registers a callback it controls and checks that nothing arrives before verification, so the compensating control alone will not pass | **High** |
+| 7.1.2 | Provider verifies endpoint ownership before delivering events | `pass` | Challenge-response handshake. A new subscription is stored `pending_verification`; registration then POSTs a signed `webhook.verification` envelope carrying 32 random bytes as `data.challenge`, and only a 2xx echoing it back (bare body or `{"challenge"}`, 10s, 4 KiB cap) marks it `verified` (`services/webhook_dispatcher.rs::verify_endpoint`, `routes/webhooks.rs::run_verification`); `POST /v1/webhooks/{id}/verify` re-runs it. The dispatcher dials only verified subscriptions: an event for a pending one is recorded as a delivery with `held_reason = pending_verification` and no attempt, and the retry sweep joins on `verification_status = 'verified'`, so held rows are sent only after verification. The handshake uses the same `send_signed` path as deliveries — HTTPS-only (7.1.1) and through `ssrf_guard` (7.3.1) — and reports failures without the response body. Outcomes are audited (`webhook.verified`, `webhook.verification_failed`). **Compensating control for legacy rows:** migration 125 marked every subscription that existed before the handshake `verified` with `grandfathered = true` and `verified_at` = the migration time, so existing consumers were not cut off; all of them were created by org admins (`AdminAcl`). A lab registering its own callback sees the handshake arrive first and nothing else until it echoes; the flag shows up as `"grandfathered": true` in `GET /v1/webhooks` and in the dashboard's Webhooks card, and clears on a successful re-verification. Tests: `tests/webhook_verification.rs` | — |
 | 7.2.1 | Payloads authenticated with HMAC-SHA256 or stronger | `pass` | **Provider:** HMAC-SHA256 over the raw serialized envelope, sent as `X-Overslash-Signature: sha256=<hex>` (`services/webhook_dispatcher.rs:111-121`), with a 256-bit CSPRNG signing secret minted per subscription (`routes/webhooks.rs:57-61`). **Consumer:** the Stripe handler computes over `"<timestamp>.<raw body>"` using the raw bytes, never a re-serialization (`routes/billing/webhook.rs:360-370`) | — |
 | 7.2.2 | Signature verification uses a timing-safe comparison | `pass` | `subtle::ConstantTimeEq` over every candidate `v1` signature — `routes/billing/webhook.rs:371-384`. This is the code snippet to paste into the evidence pack verbatim | — |
 | 7.2.3 | Payloads include replay protection via signed timestamps | `gap` | **Consumer side passes** — Stripe's `t=` is inside the signed payload and events outside a ±tolerance window are rejected (`routes/billing/webhook.rs:310-358`). **Provider side fails** — our outbound signature is `sha256=<hmac>` with no timestamp header and no signed time component, so a captured delivery replays forever. Fixing it changes the signature format, so it needs a versioned header and a migration note for existing consumers | **High** |
@@ -280,17 +280,18 @@ when it was written.
 
 | Verdict | Count |
 |---------|-------|
-| `pass` | 30 |
+| `pass` | 31 |
 | `statement` | 13 |
-| `gap` | 9 |
+| `gap` | 8 |
 | `scan` | 1 |
 | `n/a` | 2 |
 
-Of the 9 gaps, **none is a live vulnerability** any more, and 2 are the unbuilt
-webhook-provider section. The counts moved from the original assessment because the two
+Of the 8 gaps, **none is a live vulnerability** any more, and 1 is the unbuilt
+webhook-provider replay protection (7.2.3). The counts moved from the original assessment because the two
 vulnerabilities closed four rows between them: V2 made 3.1.2 and 3.1.4 `pass`, and V1
 made 7.3.1 `pass` and 5.1.5 `statement`. The prefixed-cookie rework then made 2.3.1 `pass`,
-dependency scanning made 6.1.1 `pass`, and HTTPS-only webhooks made 7.1.1 `pass`.
+dependency scanning made 6.1.1 `pass`, HTTPS-only webhooks made 7.1.1 `pass`, and the
+endpoint-ownership handshake made 7.1.2 `pass`.
 
 ## Priority ladder
 
@@ -311,9 +312,9 @@ a `headers` block in `dashboard/vercel.json` (4.x/6.x adjacency)~~ — done: HST
 `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` and a CSP on every API response
 (`middleware/security_headers.rs`), and an enforced dashboard CSP with no `'unsafe-inline'`
 in `script-src` (`kit.csp`, with the rest of the baseline in `vercel.json`); **the rest of webhook
-section 7** — a challenge-response ownership handshake, and a signed timestamp header
-behind a versioned signature (7.1.2, 7.2.3; delivery through `ssrf_guard` and HTTPS-only
-endpoints, 7.1.1, are done); ~~dependency vulnerability scanning in CI plus clearing the four
+section 7** — a signed timestamp header behind a versioned signature (7.2.3; delivery
+through `ssrf_guard`, HTTPS-only endpoints and the ownership handshake — 7.3.1, 7.1.1,
+7.1.2 — are done); ~~dependency vulnerability scanning in CI plus clearing the four
 fixable advisories (6.1.1)~~ — done; ~~require TLS on outbound calls (4.1.1)~~ — done for action
 traffic (MCP OAuth upstream remains); `SECURITY.md` with a disclosure policy. (The `redirect_uri` allowlist on DCR, 3.2.2, is done.)
 

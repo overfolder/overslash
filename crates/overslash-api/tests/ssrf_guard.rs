@@ -288,7 +288,8 @@ async fn only_delivery(pool: &sqlx::PgPool, sub: uuid::Uuid) -> (Option<i32>, Op
 
 /// The registrant-supplied URL is the SSRF vector, and the delivery row
 /// records the response *body* — so an unguarded dispatcher is a read oracle,
-/// not just a blind request.
+/// not just a blind request. Both outbound requests are guarded: the
+/// ownership handshake at registration (CASA 7.1.2) and every delivery.
 #[tokio::test]
 async fn webhook_delivery_refuses_a_link_local_endpoint() {
     let (pool, _fx) = common::test_pool_bootstrapped().await;
@@ -297,8 +298,34 @@ async fn webhook_delivery_refuses_a_link_local_endpoint() {
     // `https`, because a plain-`http` webhook is refused at registration now
     // (CASA 7.1.1) — and the guard must refuse the address regardless.
     let metadata_https = METADATA.replacen("http://", "https://", 1);
-    let sub = create_subscription(&base, &key, &metadata_https, "ssrf.probe").await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/webhooks"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&json!({ "url": metadata_https, "events": ["ssrf.probe"] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "webhook creation failed");
+    let body: Value = resp.json().await.unwrap();
+    let sub: uuid::Uuid = body["id"].as_str().unwrap().parse().unwrap();
 
+    // The handshake went through the guard and was refused before dialing.
+    assert_eq!(body["verification_status"], "pending_verification");
+    let why = body["verification_error"].as_str().unwrap_or_default();
+    assert!(
+        why.contains("refusing to connect") && why.contains("169.254.169.254"),
+        "expected the guard's refusal as the verification error, got {why:?}"
+    );
+
+    // Deliveries are guarded on their own, not just by the handshake having
+    // failed: force the row verified and dispatch.
+    sqlx::query!(
+        "UPDATE webhook_subscriptions SET verification_status = 'verified' WHERE id = $1",
+        sub
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     overslash_api::services::webhook_dispatcher::dispatch(
         &pool,
         org_id,

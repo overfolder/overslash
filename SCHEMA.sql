@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict FuCS0T1upv0JbKTjR6j4EZ5rbN8OAnQcEiuoEj7u85ztRjQuYGuYSRgdYIJo3mL
+\restrict c4ZOwNzpn1YqvUvZuguiaNIKICNL7i6say5iMyjrzQpjImZ1lV1UyxBIEteL3f4
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -1313,8 +1313,16 @@ CREATE TABLE public.webhook_deliveries (
     attempts integer DEFAULT 0 NOT NULL,
     next_retry_at timestamp with time zone,
     delivered_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    held_reason text
 );
+
+
+--
+-- Name: COLUMN webhook_deliveries.held_reason; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.webhook_deliveries.held_reason IS 'Set while the delivery is held back and not dialed (pending_verification). NULL once released or for a normal delivery.';
 
 
 --
@@ -1340,7 +1348,13 @@ CREATE TABLE public.webhook_subscriptions (
     secret text NOT NULL,
     active boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    disabled_reason text
+    disabled_reason text,
+    verification_status text DEFAULT 'pending_verification'::text NOT NULL,
+    verified_at timestamp with time zone,
+    grandfathered boolean DEFAULT false NOT NULL,
+    verification_attempted_at timestamp with time zone,
+    verification_error text,
+    CONSTRAINT webhook_subscriptions_verification_status_check CHECK ((verification_status = ANY (ARRAY['pending_verification'::text, 'verified'::text])))
 );
 
 
@@ -1349,6 +1363,27 @@ CREATE TABLE public.webhook_subscriptions (
 --
 
 COMMENT ON COLUMN public.webhook_subscriptions.disabled_reason IS 'Why the platform disabled this subscription (needs_https). NULL for a subscription the platform has not disabled.';
+
+
+--
+-- Name: COLUMN webhook_subscriptions.verification_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.webhook_subscriptions.verification_status IS 'pending_verification until the endpoint echoes the ownership challenge; only verified subscriptions receive events.';
+
+
+--
+-- Name: COLUMN webhook_subscriptions.grandfathered; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.webhook_subscriptions.grandfathered IS 'Marked verified by migration 125 without a handshake (predates CASA 7.1.2). Cleared by a successful re-verification.';
+
+
+--
+-- Name: COLUMN webhook_subscriptions.verification_error; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.webhook_subscriptions.verification_error IS 'Why the last handshake failed. NULL after a success.';
 
 
 --
@@ -3395,5 +3430,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict FuCS0T1upv0JbKTjR6j4EZ5rbN8OAnQcEiuoEj7u85ztRjQuYGuYSRgdYIJo3mL
+\unrestrict c4ZOwNzpn1YqvUvZuguiaNIKICNL7i6say5iMyjrzQpjImZ1lV1UyxBIEteL3f4
 

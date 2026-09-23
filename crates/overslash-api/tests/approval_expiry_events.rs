@@ -258,8 +258,9 @@ async fn expiry_reaches_webhook_subscribers_too() {
     .await;
     sweep(&pool).await;
 
-    // The HTTP delivery fails — nothing listens on port 9 — but the row records
-    // the payload that was signed and sent, which is what proves the routing.
+    // Nothing listens on port 9, so the subscription never verifies and the
+    // delivery is held — but the row records the payload that would be sent,
+    // which is what proves the routing.
     let deadline = std::time::Instant::now() + EMIT_WAIT;
     let delivered = loop {
         let row: Option<Value> = sqlx::query_scalar!(
