@@ -121,6 +121,13 @@ pub struct SeedOrg {
     pub client_id: String,
     pub client_secret: String,
     pub allowed_email_domains: Vec<String>,
+    /// Mirror this IdP's group claim into directory groups at sign-in.
+    /// Defaults off, matching a real config.
+    #[serde(default)]
+    pub group_sync_enabled: bool,
+    /// Claim name carrying group membership. `None` keeps the `groups` default.
+    #[serde(default)]
+    pub group_claim: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -229,6 +236,8 @@ async fn seed_e2e_idps(
                     },
                     Some(true),
                     Some(o.allowed_email_domains.as_slice()),
+                    Some(o.group_sync_enabled),
+                    o.group_claim.as_deref(),
                 )
                 .await?;
             cfg.id
@@ -240,6 +249,8 @@ async fn seed_e2e_idps(
                     Some(enc_secret.as_slice()),
                     true,
                     o.allowed_email_domains.as_slice(),
+                    o.group_sync_enabled,
+                    o.group_claim.as_deref(),
                 )
                 .await
                 .map_err(|e| {

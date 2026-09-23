@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO group_directory_sources (group_id, directory_group_id)\n         SELECT g.id, dg.id\n           FROM groups g\n           JOIN directory_groups dg ON dg.id = $2 AND dg.org_id = $3\n          WHERE g.id = $1 AND g.org_id = $3\n         ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "442e36b86181beefda6a6027285115d3e459836a1a2950e4054add8c3daf492d"
+}

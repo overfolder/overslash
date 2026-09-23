@@ -101,6 +101,14 @@ struct NormalizedUserInfo {
     email: String,
     name: Option<String>,
     picture: Option<String>,
+    /// Every other claim the IdP returned, merged from `/userinfo` and the ID
+    /// token. The four fields above are what Overslash has always understood;
+    /// this is what an org's *own* IdP additionally asserts, and the only
+    /// consumer today is directory group sync, which reads one admin-named key
+    /// out of it. Empty for providers that assert nothing extra (GitHub, magic
+    /// link) — and an empty bag means "no claim", which is why sync treats it
+    /// as "change nothing" rather than "member of nothing".
+    claims: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Absolute URL for `path` on a corp org's dashboard host,

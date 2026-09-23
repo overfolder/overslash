@@ -5,11 +5,15 @@
 	import { ApiError } from '$lib/session';
 	import {
 		groupsApi,
+		directoryGroupsApi,
 		identitiesApi,
 		servicesApi,
 		type Group,
 		type GroupGrant,
+		type DirectoryGroup,
+		type DirectoryGroupSummary,
 		type Identity,
+		type MemberOrigin,
 		type ServiceInstanceSummary
 	} from '$lib/api/groups';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
@@ -22,6 +26,11 @@
 	let group = $state<Group | null>(null);
 	let grants = $state<GroupGrant[]>([]);
 	let memberIds = $state<string[]>([]);
+	let memberOrigins = $state<MemberOrigin[]>([]);
+	let directorySources = $state<DirectoryGroup[]>([]);
+	let allDirectoryGroups = $state<DirectoryGroupSummary[]>([]);
+	let sourceBusy = $state(false);
+	let sourceError = $state<string | null>(null);
 	let identities = $state<Identity[]>([]);
 	let services = $state<ServiceInstanceSummary[]>([]);
 	let loading = $state(true);
@@ -74,6 +83,61 @@
 	// recovery surface. Mirror that lock in the UI so the controls don't
 	// look interactive when the API will reject them.
 	const grantsLocked = $derived(isAdminsGroup);
+
+	/** Directory-derived membership per identity, for the badges below. */
+	const originById = $derived(new Map(memberOrigins.map((o) => [o.identity_id, o])));
+	const directoryGroupById = $derived(new Map(allDirectoryGroups.map((d) => [d.id, d])));
+	/** System groups cannot take a directory source — the API refuses it. */
+	const canMapDirectory = $derived(group != null && !group.is_system);
+	const unmappedDirectoryGroups = $derived(
+		allDirectoryGroups.filter((d) => !directorySources.some((s) => s.id === d.id))
+	);
+
+	/** A member the directory asserts and no admin assigned has no manual row to
+	 *  delete, so the API answers 409. Suppress the button rather than offer an
+	 *  action that cannot work. */
+	function isDirectoryOnly(id: string): boolean {
+		const o = originById.get(id);
+		return o != null && !o.direct && o.via_directory_group_ids.length > 0;
+	}
+
+	function viaLabel(id: string): string {
+		const o = originById.get(id);
+		if (!o) return '';
+		const names = o.via_directory_group_ids.map(
+			(gid) => directoryGroupById.get(gid)?.display_name ?? gid.slice(0, 8)
+		);
+		return names.join(', ');
+	}
+
+	async function addDirectorySource(directoryGroupId: string) {
+		if (!directoryGroupId) return;
+		sourceBusy = true;
+		sourceError = null;
+		try {
+			await groupsApi.addDirectorySource(groupId, directoryGroupId);
+			await load();
+		} catch (e) {
+			sourceError =
+				e instanceof ApiError ? `Could not add source: ${e.status}` : 'Could not add source';
+		} finally {
+			sourceBusy = false;
+		}
+	}
+
+	async function removeDirectorySource(directoryGroupId: string) {
+		sourceBusy = true;
+		sourceError = null;
+		try {
+			await groupsApi.removeDirectorySource(groupId, directoryGroupId);
+			await load();
+		} catch (e) {
+			sourceError =
+				e instanceof ApiError ? `Could not remove source: ${e.status}` : 'Could not remove source';
+		} finally {
+			sourceBusy = false;
+		}
+	}
 	const canManageGrantRow = $derived((!isSelfGroup || isSelfOwner) && !grantsLocked);
 
 	const removalNeedsConfirm = (g: GroupGrant): boolean =>
@@ -132,16 +196,22 @@
 		loading = true;
 		error = null;
 		try {
-			const [g, gr, mems, idents, svcs] = await Promise.all([
+			const [g, gr, mems, origins, sources, directory, idents, svcs] = await Promise.all([
 				groupsApi.get(groupId),
 				groupsApi.listGrants(groupId),
 				groupsApi.listMembers(groupId),
+				groupsApi.listMemberOrigins(groupId).catch(() => [] as MemberOrigin[]),
+				groupsApi.listDirectorySources(groupId).catch(() => [] as DirectoryGroup[]),
+				directoryGroupsApi.list().catch(() => [] as DirectoryGroupSummary[]),
 				identitiesApi.list().catch(() => [] as Identity[]),
 				servicesApi.list().catch(() => [] as ServiceInstanceSummary[])
 			]);
 			group = g;
 			grants = gr;
 			memberIds = mems;
+			memberOrigins = origins;
+			directorySources = sources;
+			allDirectoryGroups = directory;
 			identities = idents;
 			services = svcs;
 			editName = g.name;
@@ -450,6 +520,61 @@
 			{/if}
 		</section>
 
+		{#if canMapDirectory && (directorySources.length > 0 || allDirectoryGroups.length > 0)}
+			<section class="card">
+				<div class="section-head">
+					<h2>Directory sources</h2>
+				</div>
+				<p class="hint">
+					Everyone your identity provider places in one of these groups is a member here, and
+					keeps this group's access for as long as they stay in it. Removing a source revokes
+					that access immediately.
+				</p>
+
+				{#if sourceError}<div class="error">{sourceError}</div>{/if}
+
+				{#if directorySources.length === 0}
+					<p class="muted">No directory sources. Membership is managed by hand.</p>
+				{:else}
+					<ul class="members">
+						{#each directorySources as src (src.id)}
+							<li>
+								<span class="name">{src.display_name}</span>
+								{#if src.display_name !== src.external_id}
+									<span class="ext">{src.external_id}</span>
+								{/if}
+								<button
+									class="link-danger"
+									disabled={sourceBusy}
+									onclick={() => removeDirectorySource(src.id)}>Remove</button
+								>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+
+				{#if unmappedDirectoryGroups.length > 0}
+					<div class="add-source">
+						<select
+							disabled={sourceBusy}
+							value=""
+							onchange={(e) => {
+								const sel = e.currentTarget as HTMLSelectElement;
+								const id = sel.value;
+								sel.value = '';
+								addDirectorySource(id);
+							}}
+						>
+							<option value="">Add a directory group…</option>
+							{#each unmappedDirectoryGroups as d (d.id)}
+								<option value={d.id}>{d.display_name} ({d.member_count})</option>
+							{/each}
+						</select>
+					</div>
+				{/if}
+			</section>
+		{/if}
+
 		<section class="card">
 			<div class="section-head">
 				<h2>Members</h2>
@@ -477,7 +602,12 @@
 							{#if d?.secondary}
 								<span class="ext">{d.secondary}</span>
 							{/if}
-							{#if !isSelfGroup}
+							{#if isDirectoryOnly(id)}
+								<span class="via" title="Membership comes from your identity provider">
+									via {viaLabel(id)}
+								</span>
+							{/if}
+							{#if !isSelfGroup && !isDirectoryOnly(id)}
 								<button class="link-danger" onclick={() => removeMember(id)}>Remove</button>
 							{/if}
 						</li>
@@ -660,6 +790,16 @@
 	.members .name {
 		font: var(--text-body-medium);
 		color: var(--color-text);
+	}
+	.via {
+		font-size: var(--text-xs);
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 0.05rem 0.35rem;
+	}
+	.add-source {
+		margin-top: var(--space-3);
 	}
 	.members .ext {
 		color: var(--color-text-muted);

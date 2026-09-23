@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM identity_directory_groups idg\n          USING directory_groups dg\n          WHERE idg.directory_group_id = dg.id\n            AND idg.identity_id = $1\n            AND dg.org_id = $2\n            AND dg.source = $3\n            AND dg.idp_config_id IS NOT DISTINCT FROM $4\n            AND NOT (idg.directory_group_id = ANY($5))\n          RETURNING idg.directory_group_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "directory_group_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identity_directory_groups",
+            "name": "directory_group_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a92e874927cf2d76bfb13fd38db20bfcc4b156d01b9f1bb8fe45b68152b96a3d"
+}

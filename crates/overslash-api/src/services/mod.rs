@@ -11,6 +11,7 @@ pub mod client_credentials;
 pub mod compact_response;
 pub mod credential_template;
 pub mod deferred_download;
+pub mod directory_sync;
 pub mod disclosure;
 pub mod email;
 pub mod embedding_backfill;

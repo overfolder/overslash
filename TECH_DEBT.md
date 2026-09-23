@@ -417,3 +417,28 @@ regenerating the file, to keep a 4-line schema change from arriving as a
 230-line diff. Fixing this properly is `make schema` plus a CI job that dumps a
 migrated database and fails on any difference — cheap, but it wants its own PR
 so the regeneration noise is reviewable on its own.
+
+---
+
+## The login ID token's signature is not verified
+
+Directory group sync (D-NEXT) reads group claims from `/userinfo` **and** the
+ID token, because Entra will not release `groups` on the v2 userinfo endpoint.
+`routes/auth/userinfo.rs::id_token_claims` base64-decodes the payload without
+checking the signature.
+
+This is defensible rather than sloppy: OIDC Core §3.1.3.7 explicitly permits
+skipping signature validation when the ID token is received directly from the
+token endpoint over TLS, which is this path — our own request, our own code,
+PKCE-bound. The `nonce` claim *is* checked against the one the login minted, so
+an ID token lifted from a different login is discarded rather than partially
+trusted. What is missing is defence against a compromised or
+man-in-the-middled token endpoint, which TLS is already the control for.
+
+To tighten: fetch the provider's JWKS and verify RS256/ES256 before reading
+claims. `oauth_providers.jwks_uri` already exists, is populated for the builtin
+providers by OIDC discovery, and is currently read by nothing. The fetch must
+go through `ssrf_guard::outbound_client` — the issuer-discovery surface in
+TODO §1.6 is the same class of problem and should be fixed with it rather than
+separately. Note the fakes mint no ID token at all, so the e2e IdP fakes would
+need a JWKS endpoint and a signed payload before this can be tested end to end.

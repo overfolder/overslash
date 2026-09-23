@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE org_idp_configs SET is_default = true, updated_at = now()\n         WHERE id = $1 AND org_id = $2\n         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
+  "query": "SELECT g.id, g.org_id, g.name, g.description, g.is_system, g.system_kind, g.owner_identity_id, g.created_at, g.updated_at\n         FROM groups g\n         JOIN effective_identity_groups ig ON ig.group_id = g.id\n         JOIN identities i ON i.id = ig.identity_id\n         WHERE ig.identity_id = $1 AND g.org_id = $2 AND i.org_id = $2\n         ORDER BY g.name",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "org_idp_configs",
+            "table": "groups",
             "name": "id"
           }
         }
@@ -20,95 +20,84 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "org_idp_configs",
+            "table": "groups",
             "name": "org_id"
           }
         }
       },
       {
         "ordinal": 2,
-        "name": "provider_key",
+        "name": "name",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "org_idp_configs",
-            "name": "provider_key"
+            "table": "groups",
+            "name": "name"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "encrypted_client_id",
-        "type_info": "Bytea",
+        "name": "description",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "org_idp_configs",
-            "name": "encrypted_client_id"
+            "table": "groups",
+            "name": "description"
           }
         }
       },
       {
         "ordinal": 4,
-        "name": "encrypted_client_secret",
-        "type_info": "Bytea",
+        "name": "is_system",
+        "type_info": "Bool",
         "origin": {
           "Table": {
-            "table": "org_idp_configs",
-            "name": "encrypted_client_secret"
+            "table": "groups",
+            "name": "is_system"
           }
         }
       },
       {
         "ordinal": 5,
-        "name": "enabled",
-        "type_info": "Bool",
+        "name": "system_kind",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "org_idp_configs",
-            "name": "enabled"
+            "table": "groups",
+            "name": "system_kind"
           }
         }
       },
       {
         "ordinal": 6,
-        "name": "allowed_email_domains",
-        "type_info": "TextArray",
+        "name": "owner_identity_id",
+        "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "org_idp_configs",
-            "name": "allowed_email_domains"
+            "table": "groups",
+            "name": "owner_identity_id"
           }
         }
       },
       {
         "ordinal": 7,
-        "name": "is_default",
-        "type_info": "Bool",
-        "origin": {
-          "Table": {
-            "table": "org_idp_configs",
-            "name": "is_default"
-          }
-        }
-      },
-      {
-        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "org_idp_configs",
+            "table": "groups",
             "name": "created_at"
           }
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "org_idp_configs",
+            "table": "groups",
             "name": "updated_at"
           }
         }
@@ -124,14 +113,13 @@
       false,
       false,
       false,
+      false,
+      false,
       true,
       true,
-      false,
-      false,
-      false,
       false,
       false
     ]
   },
-  "hash": "7bd161747503e2b832d9450a4ce19eb87de6b30f69e103c65b59ae1167af3300"
+  "hash": "7d5b2ae847d13b92214ed70836e4421c8aff6450911055cae9caaed44e36073d"
 }

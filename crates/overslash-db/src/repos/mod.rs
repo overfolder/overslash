@@ -23,6 +23,7 @@ pub mod billing_email_log;
 pub mod byoc_credential;
 pub mod call_result;
 pub mod connection;
+pub mod directory_group;
 pub mod download_token;
 pub mod email_unsubscribe_token;
 pub mod enabled_global_template;

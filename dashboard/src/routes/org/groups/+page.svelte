@@ -3,7 +3,14 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { ApiError } from '$lib/session';
-	import { groupsApi, identitiesApi, type Group, type Identity } from '$lib/api/groups';
+	import {
+		groupsApi,
+		directoryGroupsApi,
+		identitiesApi,
+		type Group,
+		type DirectoryGroupSummary,
+		type Identity
+	} from '$lib/api/groups';
 	import { shortEmail } from '$lib/identityDisplay';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
@@ -22,6 +29,14 @@
 
 	let deleteTarget = $state<Group | null>(null);
 	let deleteBusy = $state(false);
+
+	let directoryGroups = $state<DirectoryGroupSummary[]>([]);
+	let mapBusy = $state<string | null>(null);
+	let mapError = $state<string | null>(null);
+
+	const groupName = $derived(new Map(rows.map((r) => [r.id, r.name])));
+	/** Groups an admin may map onto — system groups are refused by the API. */
+	const mappableGroups = $derived(rows.filter((r) => !r.is_system));
 
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
 	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
@@ -70,11 +85,15 @@
 			// `list()` (no include_self) now returns the caller's own Myself row
 			// alongside non-self groups; the backend hides other users' Myself
 			// unless `?include_self=true`. See SPEC §7 *Myself groups*.
-			const [groups, idents] = await Promise.all([
+			const [groups, idents, directory] = await Promise.all([
 				groupsApi.list(),
-				identitiesApi.list().catch(() => [] as Identity[])
+				identitiesApi.list().catch(() => [] as Identity[]),
+				// Empty for every org that has not turned group sync on, which
+				// is the default — the section below then stays hidden.
+				directoryGroupsApi.list().catch(() => [] as DirectoryGroupSummary[])
 			]);
 			identities = idents;
+			directoryGroups = directory;
 			const enriched = await Promise.all(
 				groups.map(async (g) => {
 					const [grants, members] = await Promise.all([
@@ -128,6 +147,34 @@
 			}
 		} finally {
 			createBusy = false;
+		}
+	}
+
+	async function mapTo(directoryGroupId: string, groupId: string) {
+		if (!groupId) return;
+		mapBusy = directoryGroupId;
+		mapError = null;
+		try {
+			await groupsApi.addDirectorySource(groupId, directoryGroupId);
+			await load();
+		} catch (e) {
+			mapError =
+				e instanceof ApiError ? `Could not map: ${e.status}` : 'Could not map directory group';
+		} finally {
+			mapBusy = null;
+		}
+	}
+
+	async function unmap(directoryGroupId: string, groupId: string) {
+		mapBusy = directoryGroupId;
+		mapError = null;
+		try {
+			await groupsApi.removeDirectorySource(groupId, directoryGroupId);
+			await load();
+		} catch (e) {
+			mapError = e instanceof ApiError ? `Could not unmap: ${e.status}` : 'Could not unmap';
+		} finally {
+			mapBusy = null;
 		}
 	}
 
@@ -201,6 +248,85 @@
 			</tbody>
 		</table>
 	{/if}
+
+	{#if directoryGroups.length > 0}
+		<section class="directory">
+			<header class="section-header">
+				<div>
+					<h2>Directory groups</h2>
+					<p class="subtitle">
+						Groups your identity provider reports, refreshed each time someone signs in. They
+						grant nothing on their own — map one onto a group above to give its members that
+						group's access.
+					</p>
+				</div>
+			</header>
+
+			{#if mapError}<div class="state error">{mapError}</div>{/if}
+
+			<table class="table">
+				<thead>
+					<tr>
+						<th>Group</th>
+						<th class="num">Members</th>
+						<th>Grants access through</th>
+						<th class="actions-col"></th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each directoryGroups as d (d.id)}
+						<tr>
+							<td>
+								<span class="name">{d.display_name}</span>
+								{#if d.display_name !== d.external_id}
+									<span class="muted mono">{d.external_id}</span>
+								{/if}
+							</td>
+							<td class="num">{d.member_count}</td>
+							<td>
+								{#if d.mapped_group_ids.length === 0}
+									<span class="muted">Not mapped — grants nothing</span>
+								{:else}
+									<span class="chips">
+										{#each d.mapped_group_ids as gid (gid)}
+											<span class="chip">
+												{groupName.get(gid) ?? gid.slice(0, 8)}
+												<button
+													class="chip-x"
+													title="Stop granting access through this group"
+													disabled={mapBusy === d.id}
+													onclick={() => unmap(d.id, gid)}>×</button
+												>
+											</span>
+										{/each}
+									</span>
+								{/if}
+							</td>
+							<td class="actions-col">
+								<select
+									disabled={mapBusy === d.id || mappableGroups.length === 0}
+									value=""
+									onchange={(e) => {
+										const sel = e.currentTarget as HTMLSelectElement;
+										const gid = sel.value;
+										sel.value = '';
+										mapTo(d.id, gid);
+									}}
+								>
+									<option value="">Map to group…</option>
+									{#each mappableGroups as g (g.id)}
+										{#if !d.mapped_group_ids.includes(g.id)}
+											<option value={g.id}>{g.name}</option>
+										{/if}
+									{/each}
+								</select>
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</section>
+	{/if}
 </div>
 
 {#if showCreate}
@@ -240,6 +366,53 @@
 />
 
 <style>
+	.directory {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
+	}
+	.section-header h2 {
+		margin: 0;
+		font-size: var(--text-lg);
+	}
+	.name {
+		font-weight: 500;
+	}
+	.mono {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		margin-left: var(--space-2);
+	}
+	.chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+	}
+	.chip {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		padding: 0.1rem 0.45rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		font-size: var(--text-xs);
+	}
+	.chip-x {
+		background: none;
+		border: none;
+		cursor: pointer;
+		color: var(--text-muted);
+		padding: 0;
+		font-size: var(--text-sm);
+		line-height: 1;
+	}
+	.chip-x:hover {
+		color: var(--danger);
+	}
+	.chip-x:disabled {
+		cursor: default;
+		opacity: 0.5;
+	}
 	.page {
 		max-width: 1100px;
 		display: flex;

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict FuCS0T1upv0JbKTjR6j4EZ5rbN8OAnQcEiuoEj7u85ztRjQuYGuYSRgdYIJo3mL
+\restrict Znjd3Fipa7eDjqw0w9K4inYCdssck59otTd68YBFn9Wbn5Xl3urvD2UUsT0bRUZ
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -267,6 +267,23 @@ COMMENT ON COLUMN public.connections.reauth_required IS 'When true, the connecti
 
 
 --
+-- Name: directory_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.directory_groups (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    idp_config_id uuid,
+    source text DEFAULT 'oidc_claim'::text NOT NULL,
+    external_id text NOT NULL,
+    display_name text NOT NULL,
+    first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT directory_groups_source_check CHECK ((source = 'oidc_claim'::text))
+);
+
+
+--
 -- Name: download_tokens; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -325,6 +342,54 @@ COMMENT ON COLUMN public.download_tokens.credential_ref IS 'How to re-resolve th
 --
 
 COMMENT ON COLUMN public.download_tokens.call_result_id IS 'When set, redemption serves these stored bytes instead of replaying `request`. Mutually exclusive with `request` (download_tokens_one_byte_source).';
+
+
+--
+-- Name: group_directory_sources; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.group_directory_sources (
+    group_id uuid NOT NULL,
+    directory_group_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: identity_directory_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_directory_groups (
+    identity_id uuid NOT NULL,
+    directory_group_id uuid NOT NULL,
+    synced_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: identity_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_groups (
+    identity_id uuid NOT NULL,
+    group_id uuid NOT NULL,
+    assigned_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: effective_identity_groups; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.effective_identity_groups AS
+ SELECT ig.identity_id,
+    ig.group_id
+   FROM public.identity_groups ig
+UNION
+ SELECT idg.identity_id,
+    gds.group_id
+   FROM (public.identity_directory_groups idg
+     JOIN public.group_directory_sources gds ON ((gds.directory_group_id = idg.directory_group_id)));
 
 
 --
@@ -569,17 +634,6 @@ CREATE TABLE public.identities (
     auto_call_on_approve boolean DEFAULT true NOT NULL,
     CONSTRAINT identities_is_org_admin_only_user CHECK (((kind = 'user'::text) OR (is_org_admin = false))),
     CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text, 'sub_agent'::text])))
-);
-
-
---
--- Name: identity_groups; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.identity_groups (
-    identity_id uuid NOT NULL,
-    group_id uuid NOT NULL,
-    assigned_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -851,6 +905,8 @@ CREATE TABLE public.org_idp_configs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     is_default boolean DEFAULT false NOT NULL,
+    group_sync_enabled boolean DEFAULT false NOT NULL,
+    group_claim text DEFAULT 'groups'::text NOT NULL,
     CONSTRAINT org_idp_configs_creds_both_or_neither CHECK ((((encrypted_client_id IS NULL) AND (encrypted_client_secret IS NULL)) OR ((encrypted_client_id IS NOT NULL) AND (encrypted_client_secret IS NOT NULL))))
 );
 
@@ -1439,6 +1495,22 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: directory_groups directory_groups_org_id_source_external_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_groups
+    ADD CONSTRAINT directory_groups_org_id_source_external_id_key UNIQUE (org_id, source, external_id);
+
+
+--
+-- Name: directory_groups directory_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_groups
+    ADD CONSTRAINT directory_groups_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: download_tokens download_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1484,6 +1556,14 @@ ALTER TABLE ONLY public.events
 
 ALTER TABLE ONLY public.executions
     ADD CONSTRAINT executions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: group_directory_sources group_directory_sources_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.group_directory_sources
+    ADD CONSTRAINT group_directory_sources_pkey PRIMARY KEY (group_id, directory_group_id);
 
 
 --
@@ -1540,6 +1620,14 @@ ALTER TABLE ONLY public.identities
 
 ALTER TABLE ONLY public.identities
     ADD CONSTRAINT identities_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: identity_directory_groups identity_directory_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_directory_groups
+    ADD CONSTRAINT identity_directory_groups_pkey PRIMARY KEY (identity_id, directory_group_id);
 
 
 --
@@ -2033,6 +2121,20 @@ CREATE INDEX idx_connections_provider ON public.connections USING btree (org_id,
 
 
 --
+-- Name: idx_directory_groups_idp_config; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_directory_groups_idp_config ON public.directory_groups USING btree (idp_config_id);
+
+
+--
+-- Name: idx_directory_groups_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_directory_groups_org ON public.directory_groups USING btree (org_id);
+
+
+--
 -- Name: idx_executions_approval_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2079,6 +2181,13 @@ CREATE INDEX idx_executions_pending_expiry ON public.executions USING btree (exp
 --
 
 CREATE INDEX idx_executions_unread ON public.executions USING btree (org_id, completed_at) WHERE ((status = ANY (ARRAY['executed'::text, 'failed'::text])) AND (result_viewed_at IS NULL));
+
+
+--
+-- Name: idx_group_directory_sources_directory_group; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_group_directory_sources_directory_group ON public.group_directory_sources USING btree (directory_group_id);
 
 
 --
@@ -2156,6 +2265,20 @@ CREATE INDEX idx_identities_parent ON public.identities USING btree (parent_id) 
 --
 
 CREATE INDEX idx_identities_user ON public.identities USING btree (user_id);
+
+
+--
+-- Name: idx_identity_directory_groups_group; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identity_directory_groups_group ON public.identity_directory_groups USING btree (directory_group_id);
+
+
+--
+-- Name: idx_identity_directory_groups_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identity_directory_groups_identity ON public.identity_directory_groups USING btree (identity_id);
 
 
 --
@@ -2744,6 +2867,22 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: directory_groups directory_groups_idp_config_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_groups
+    ADD CONSTRAINT directory_groups_idp_config_id_fkey FOREIGN KEY (idp_config_id) REFERENCES public.org_idp_configs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: directory_groups directory_groups_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_groups
+    ADD CONSTRAINT directory_groups_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: download_tokens download_tokens_call_result_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2848,6 +2987,22 @@ ALTER TABLE ONLY public.executions
 
 
 --
+-- Name: group_directory_sources group_directory_sources_directory_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.group_directory_sources
+    ADD CONSTRAINT group_directory_sources_directory_group_id_fkey FOREIGN KEY (directory_group_id) REFERENCES public.directory_groups(id) ON DELETE CASCADE;
+
+
+--
+-- Name: group_directory_sources group_directory_sources_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.group_directory_sources
+    ADD CONSTRAINT group_directory_sources_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.groups(id) ON DELETE CASCADE;
+
+
+--
 -- Name: group_grants group_grants_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2909,6 +3064,22 @@ ALTER TABLE ONLY public.identities
 
 ALTER TABLE ONLY public.identities
     ADD CONSTRAINT identities_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: identity_directory_groups identity_directory_groups_directory_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_directory_groups
+    ADD CONSTRAINT identity_directory_groups_directory_group_id_fkey FOREIGN KEY (directory_group_id) REFERENCES public.directory_groups(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identity_directory_groups identity_directory_groups_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_directory_groups
+    ADD CONSTRAINT identity_directory_groups_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
 
 
 --
@@ -3395,5 +3566,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict FuCS0T1upv0JbKTjR6j4EZ5rbN8OAnQcEiuoEj7u85ztRjQuYGuYSRgdYIJo3mL
+\unrestrict Znjd3Fipa7eDjqw0w9K4inYCdssck59otTd68YBFn9Wbn5Xl3urvD2UUsT0bRUZ
 

@@ -569,6 +569,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::org_oauth_credentials::router())
         .merge(routes::org_service_keys::router())
         .merge(routes::groups::router())
+        .merge(routes::directory_groups::router())
         .merge(routes::rate_limits::router())
         .merge(billing_api_routes)
         .layer(axum::middleware::from_fn_with_state(
