@@ -123,12 +123,35 @@ async fn deliver(
 ) {
     let body = serde_json::to_string(envelope).unwrap_or_default();
     let system = SystemScope::new_internal(pool.clone());
-    let result = send_signed(url, secret, event_type, delivery_id, body).await;
+    // One deadline over the request *and* the response body: the pinned
+    // client has no total timeout, so an endpoint that sent its headers and
+    // then stalled would otherwise hold this attempt — and the sequential
+    // retry sweep behind it — forever.
+    let result = tokio::time::timeout(ATTEMPT_DEADLINE, async {
+        let mut resp = send_signed(url, secret, event_type, delivery_id, body).await?;
+        let status = resp.status().as_u16() as i32;
+        let mut kept = Vec::new();
+        // Keep what fits in the cap and stop reading; the rest is the
+        // receiver's business, not ours to store.
+        while kept.len() < DELIVERY_BODY_CAP {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => kept.extend_from_slice(&chunk),
+                Ok(None) | Err(_) => break,
+            }
+        }
+        kept.truncate(DELIVERY_BODY_CAP);
+        Ok::<_, String>((status, String::from_utf8_lossy(&kept).into_owned()))
+    })
+    .await
+    .unwrap_or_else(|_elapsed| {
+        Err(format!(
+            "webhook delivery did not complete within {}s",
+            ATTEMPT_DEADLINE.as_secs()
+        ))
+    });
 
     match result {
-        Ok(resp) => {
-            let status = resp.status().as_u16() as i32;
-            let body = resp.text().await.unwrap_or_default();
+        Ok((status, body)) => {
             if (200..300).contains(&(status as u16).into()) {
                 let _ = system
                     .mark_webhook_delivered(delivery_id, status, &body)
@@ -149,9 +172,12 @@ async fn deliver(
     }
 }
 
-/// How long one outbound webhook request — delivery or verification — may
-/// take, host resolution included.
+/// How long one outbound webhook exchange — delivery or verification — may
+/// take, host resolution and the response body included.
 const ATTEMPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The most of a delivery's response body we keep on the delivery row.
+const DELIVERY_BODY_CAP: usize = 16 * 1024;
 
 /// Sign `body` with the subscription secret and POST it to `url`: HTTPS-only
 /// (CASA 7.1.1), through the SSRF guard (7.3.1), one deadline over resolution

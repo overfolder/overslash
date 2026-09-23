@@ -62,6 +62,8 @@ struct Received {
 struct Receiver {
     answer: Arc<Mutex<Answer>>,
     received: Arc<Mutex<Vec<Received>>>,
+    /// Answer events with 200 headers and a body that never finishes.
+    stall_events: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Receiver {
@@ -104,6 +106,13 @@ async fn receive(State(r): State<Receiver>, headers: HeaderMap, raw: String) -> 
         body: body.clone(),
     });
     if body["type"] != "webhook.verification" {
+        if r.stall_events.load(std::sync::atomic::Ordering::SeqCst) {
+            let never = futures_util::stream::once(async {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                Ok::<_, std::convert::Infallible>("ok")
+            });
+            return axum::body::Body::from_stream(never).into_response();
+        }
         return "ok".into_response();
     }
     let answer = *r.answer.lock().unwrap();
@@ -127,6 +136,7 @@ async fn start_receiver(answer: Answer) -> (String, Receiver) {
     let r = Receiver {
         answer: Arc::new(Mutex::new(answer)),
         received: Arc::new(Mutex::new(Vec::new())),
+        stall_events: Arc::default(),
     };
     let app = Router::new()
         .route("/hook", post(receive))
@@ -308,6 +318,36 @@ async fn a_correct_echo_that_arrives_after_the_deadline_fails() {
         took < std::time::Duration::from_secs(12),
         "registration waited {took:?}, past the 10s handshake deadline"
     );
+}
+
+/// The same deadline bounds a delivery: an endpoint that answers 200 and
+/// then never finishes its body gets a failed (retryable) attempt at 10s,
+/// instead of holding the dispatcher — and the sequential retry sweep behind
+/// it — forever.
+#[tokio::test]
+async fn a_delivery_whose_body_never_finishes_fails_at_the_deadline() {
+    let api = boot().await;
+    let (url, rx) = start_receiver(Answer::EchoJson).await;
+    let wh = api.register(&url).await;
+    let id = wh["id"].as_str().unwrap();
+    assert_eq!(wh["verification_status"], "verified");
+    rx.stall_events
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let started = std::time::Instant::now();
+    tokio::time::timeout(std::time::Duration::from_secs(20), api.fire())
+        .await
+        .expect("dispatch hung on a stalled response body");
+    assert!(started.elapsed() < std::time::Duration::from_secs(15));
+
+    let rows = api.deliveries(id).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(
+        rows[0]["delivered_at"].is_null(),
+        "not counted as delivered"
+    );
+    assert_eq!(rows[0]["attempts"], 1);
+    assert!(rows[0]["next_retry_at"].is_string(), "left for a retry");
 }
 
 #[tokio::test]
