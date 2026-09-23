@@ -66,10 +66,10 @@ environment and is therefore not reachable by anything a scanner can send. A sca
 should have it unset, and the memo should say so — an operator who set it and then
 commissioned a scan would get findings about their own network, correctly.
 
-Second, a caveat to state rather than let a scanner find: OIDC issuer discovery
-(`routes/org_idp_configs.rs`) still runs behind a hand-rolled string check instead of the
-shared guard, so a DNS name that resolves inward passes it. Org-admin only, and tracked
-in TODO §1.6 — but a scan run with an admin credential will reach it.
+Second, OIDC issuer discovery (`routes/org_idp_configs.rs`), which a scan run with an
+admin credential will reach, goes through the same guard on every hop. It accepts plain
+`http` only to loopback, and it returns one generic error whatever the upstream said, so
+it is neither a path inward nor an oracle.
 
 **2. The external half must be framed as an allowlist, not as unrestricted egress.**
 The distinction to make, and it is a real one:
@@ -138,8 +138,8 @@ deliberately rather than discovering this mid-run.
 ## Sequence
 
 1. ~~Land the P0 SSRF work (V1)~~ **done** — the scan's internal-target probes are
-   refused on action execution and webhook delivery. Still to land: the P1 webhook work,
-   and the OIDC issuer-discovery residual.
+   refused on action execution and webhook delivery. OIDC issuer discovery followed. Still to
+   land: the P1 webhook work.
 2. Decide the `http` pseudo-service default grant, since it determines which argument the
    memo makes.
 3. Close the dev-environment deltas above, or stand up a dedicated scan environment.

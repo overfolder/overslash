@@ -9,8 +9,9 @@
 //!
 //! Every outbound request whose URL a caller can influence goes through here:
 //! template OpenAPI import, MCP dispatch, OAuth upstream discovery, the
-//! action-execution transport ([`crate::services::http_caller`]) and webhook
-//! delivery ([`crate::services::webhook_dispatcher`]).
+//! action-execution transport ([`crate::services::http_caller`]), webhook
+//! delivery ([`crate::services::webhook_dispatcher`]) and OIDC issuer
+//! discovery ([`crate::services::oidc_discovery`]).
 //!
 //! # Two entry points, one policy
 //!
@@ -533,6 +534,17 @@ fn cached_client_count() -> usize {
 /// policy (follow up to 10) and no pin, so a 302 or a rebind defeats any check
 /// made at the URL layer. That is exactly the hole this closes.
 pub async fn outbound_client(url_str: &str) -> Result<(reqwest::Client, Url), AppError> {
+    let (client, url, _ip) = outbound_client_validated(url_str).await?;
+    Ok((client, url))
+}
+
+/// [`outbound_client`], also handing back the address the client is pinned
+/// to — for a caller whose own rule depends on *where* the request lands, not
+/// just whether the guard allows it (OIDC discovery accepts plain `http` only
+/// to loopback).
+pub async fn outbound_client_validated(
+    url_str: &str,
+) -> Result<(reqwest::Client, Url, IpAddr), AppError> {
     let v = resolve_and_validate(url_str, default_policy).await?;
     let key: ClientKey = (v.host.clone(), v.port, v.ip);
 
@@ -540,7 +552,7 @@ pub async fn outbound_client(url_str: &str) -> Result<(reqwest::Client, Url), Ap
         let mut guard = cache().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = guard.get_mut(&key) {
             entry.last_used = Instant::now();
-            return Ok((entry.client.clone(), v.url));
+            return Ok((entry.client.clone(), v.url, v.ip));
         }
     }
 
@@ -562,7 +574,7 @@ pub async fn outbound_client(url_str: &str) -> Result<(reqwest::Client, Url), Ap
         );
     }
 
-    Ok((client, v.url))
+    Ok((client, v.url, v.ip))
 }
 
 #[cfg(test)]

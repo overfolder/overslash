@@ -136,7 +136,7 @@
 ### Multi-Provider OIDC Authentication
 
 - Generic OIDC provider support — `/auth/login/{provider_key}` and `/auth/callback/{provider_key}` replacing Google-specific routes
-- OIDC Discovery — auto-discover IdP endpoints from `.well-known/openid-configuration`, behind a hand-rolled host check (not `ssrf_guard`; see TODO §1.6)
+- OIDC Discovery — auto-discover IdP endpoints from `.well-known/openid-configuration`, through `ssrf_guard` on every hop; `https` required, plain `http` to loopback only; upstream errors are logged, never echoed
 - GitHub social login — GitHub userinfo + email API integration
 - Per-org IdP configuration — `org_idp_configs` table (CRUD API at `/v1/org-idp-configs`)
 - Env var vs DB precedence — env vars (`GOOGLE_AUTH_CLIENT_ID`, `GITHUB_AUTH_CLIENT_ID`) take precedence over DB config
