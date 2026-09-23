@@ -86,7 +86,8 @@ are gaps today.
 - [ ] Security-headers layer on the API + a `headers` block in `dashboard/vercel.json` (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy; HSTS on the API).
 - [ ] **Dependency vulnerability scanning in CI** — `cargo-deny` + `npm audit` + OSV, with a written triage policy. Clear the four fixable advisories (`h2`, `rustls`, `crossbeam-epoch`, `event-listener`); justify `rsa` (unreached) and `paste` (unmaintained, no fix). (6.1.1)
 - [ ] Require TLS on outbound calls — reject `http://` for Mode A and for instance/org base URLs, since vault credentials ride those requests. (4.1.1)
-- [ ] `redirect_uri` scheme allowlist + loopback-only rule + array cap on Dynamic Client Registration. (3.2.2)
+- [x] `redirect_uri` scheme allowlist + loopback-only rule + array cap on Dynamic Client Registration. https, loopback-only http, and reverse-DNS or named app schemes (cursor, vscode, windsurf); at most 10 URIs of 2048 bytes each (`services/oauth_redirect_uri.rs`). (3.2.2)
+- [ ] Per-IP registration cap on `POST /oauth/register` — the residual from 3.2.2, and the anti-automation half of 3.1.5.
 - [ ] `SECURITY.md` with a vulnerability disclosure policy and a security contact. Pairs with the `security.txt` item in §1.5.
 
 **P2 — will be raised by a lab.**
