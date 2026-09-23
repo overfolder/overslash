@@ -11,6 +11,7 @@
 	} from '$lib/types';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import EndpointTlsHint from '$lib/components/services/EndpointTlsHint.svelte';
 
 	let { data } = $props();
 
@@ -384,6 +385,7 @@
 						<span class="hint">
 							Your org's own deployment. Leave blank to use the template's default.
 						</span>
+						<EndpointTlsHint url={defaultUrl} />
 					</label>
 				{/if}
 				{#each pinnableParams as p (p.name)}

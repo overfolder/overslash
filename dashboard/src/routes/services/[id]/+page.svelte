@@ -52,6 +52,7 @@
 	import { probeRejected } from '$lib/public-request';
 	import { failureKind } from '$lib/setup-outcome';
 	import { connectViaPopup, PopupBlockedError } from '$lib/oauth-connect';
+	import EndpointTlsHint from '$lib/components/services/EndpointTlsHint.svelte';
 
 
 	const id = $derived($page.params.id ?? '');
@@ -601,7 +602,13 @@
 			editCredentials = seedCredentials(template, updated);
 			editConfig = seedConfig(template, updated);
 		} catch (e) {
-			error = e instanceof ApiError ? `Save failed (${e.status})` : 'Save failed';
+			// The server's reason, not just its status: a refused endpoint (plain
+			// http://, a malformed URL) says what to change, and "Save failed
+			// (400)" does not.
+			error =
+				e instanceof ApiError
+					? `Save failed (${e.status})${apiErrorReason(e) ? `: ${apiErrorReason(e)}` : ''}`
+					: 'Save failed';
 		} finally {
 			saving = false;
 		}
@@ -1005,8 +1012,9 @@
 						<input
 							type="text"
 							bind:value={editUrl}
-							placeholder={inheritedUrl ?? template?.mcp?.url ?? 'http://host:8081/mcp'}
+							placeholder={inheritedUrl ?? template?.mcp?.url ?? 'https://host/mcp'}
 						/>
+						<EndpointTlsHint url={editUrl} />
 						{#if inheritedUrl}
 							<small>Leave blank to use your org's deployment ({inheritedUrl}).</small>
 						{:else if template?.mcp?.url}
@@ -1026,6 +1034,7 @@
 									? `https://${template.hosts[0]}`
 									: 'https://service.your-org.com')}
 						/>
+						<EndpointTlsHint url={editUrl} />
 						{#if editUrlRequired}
 							<small>Required — this template has no default endpoint.</small>
 						{:else if inheritedUrl}

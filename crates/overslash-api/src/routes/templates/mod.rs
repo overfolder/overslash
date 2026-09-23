@@ -65,6 +65,52 @@ use write::{create_template, delete_template, update_template};
 // rows as `/v1/templates/{key}/actions`.
 pub(crate) use dto::ActionSummary;
 
+/// An endpoint a template or layer writes must be `https` (CASA 4.1.1): it
+/// receives the instance's credentials verbatim. Lives here, not in core's
+/// validator, because the one exception — an operator-allowed private range
+/// (see [`crate::services::outbound_tls`]) — is deployment configuration core
+/// cannot see.
+fn endpoint_tls_issue(url: &str, path: &str) -> Option<ValidationIssue> {
+    match crate::services::outbound_tls::check_url(url) {
+        Err(AppError::BadRequest(msg)) => {
+            Some(ValidationIssue::new("endpoint_requires_https", msg, path))
+        }
+        _ => None,
+    }
+}
+
+/// [`endpoint_tls_issue`] over a compiled standalone template: its `mcp.url`.
+/// (`servers[]` needs no check — they reduce to bare hosts that are always
+/// dialed over https; see `effective_base`.)
+fn template_endpoint_issues(def: &ServiceDefinition) -> Vec<ValidationIssue> {
+    def.mcp
+        .as_ref()
+        .and_then(|m| m.url.as_deref())
+        .and_then(|u| endpoint_tls_issue(u, "mcp.url"))
+        .into_iter()
+        .collect()
+}
+
+/// [`endpoint_tls_issue`] over a derived layer: its `instance_defaults.url`.
+fn delta_endpoint_issues(delta: &Delta) -> Vec<ValidationIssue> {
+    delta
+        .instance_defaults
+        .as_ref()
+        .and_then(|d| d.url.as_deref())
+        .and_then(|u| endpoint_tls_issue(u, "instance_defaults.url"))
+        .into_iter()
+        .collect()
+}
+
+/// Fold extra errors into a report, keeping `valid` honest.
+fn with_errors(mut report: ValidationReport, errors: Vec<ValidationIssue>) -> ValidationReport {
+    if !errors.is_empty() {
+        report.errors.extend(errors);
+        report.valid = false;
+    }
+    report
+}
+
 /// Run `parse_normalize_compile_yaml` and then validate that every
 /// `x-overslash-disclose` filter and `x-overslash-sql-database` expression is
 /// a syntactically valid jq expression. jq syntax validation lives in
@@ -122,6 +168,7 @@ fn parse_normalize_compile_and_check_disclose(
             }
         }
     }
+    extra.extend(template_endpoint_issues(&def));
     if extra.is_empty() {
         Ok((doc, def))
     } else {

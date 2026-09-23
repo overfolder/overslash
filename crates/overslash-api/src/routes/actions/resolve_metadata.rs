@@ -69,6 +69,7 @@ pub(crate) async fn resolve_action_metadata(
             )));
         }
         let (path, raw_url) = resolve_verb_host_and_path(&svc, service_key, &req.url, &req.path)?;
+        crate::services::outbound_tls::check_url(&raw_url)?;
         let auth_injected_estimate = !svc.auth.is_empty()
             || instance.connection_id.is_some()
             || instance.secret_name.is_some();

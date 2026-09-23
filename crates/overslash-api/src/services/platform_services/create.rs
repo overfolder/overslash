@@ -267,14 +267,12 @@ pub async fn kernel_create_service(
         }
     }
 
+    // https only — this endpoint receives the instance's credentials (CASA
+    // 4.1.1). Refused here, where the user can fix it, not only at dial time.
     if let Some(url) = input.url.as_deref()
         && !url.is_empty()
-        && !url.starts_with("http://")
-        && !url.starts_with("https://")
     {
-        return Err(AppError::BadRequest(
-            "`url` must start with http:// or https://".into(),
-        ));
+        crate::services::outbound_tls::check_endpoint("url", url)?;
     }
 
     // Which of the template's alternative credential kinds this instance uses.
