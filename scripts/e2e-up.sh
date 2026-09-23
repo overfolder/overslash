@@ -210,10 +210,16 @@ SQL
 #    must be known when the API starts so cloud-billing success/cancel URLs
 #    point at the real dashboard host (the Stripe fake redirects to them
 #    after simulated checkout).
+#
+#    The URLs say `localhost`, not `127.0.0.1`, although both listeners bind
+#    127.0.0.1: every auth cookie is `Secure` with a `__Host-` prefix (CASA
+#    2.3.1), and Playwright's APIRequestContext cookie jar only treats
+#    `localhost` / `*.localhost` as a secure http origin — it silently
+#    withholds a `Secure` cookie from `http://127.0.0.1` (browsers don't).
 API_PORT=$(free_port)
-API_URL="http://127.0.0.1:$API_PORT"
+API_URL="http://localhost:$API_PORT"
 DASH_PORT=$(free_port)
-DASH_URL="http://127.0.0.1:$DASH_PORT"
+DASH_URL="http://localhost:$DASH_PORT"
 
 # Build OVERSLASH_SERVICE_BASE_OVERRIDES from the fakes' resolved URLs, keyed by
 # the upstream hostnames the shipped service templates use. Add more as needed.

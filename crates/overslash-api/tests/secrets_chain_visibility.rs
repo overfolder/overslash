@@ -222,7 +222,7 @@ async fn agents_see_only_their_own_subtree_secrets() {
     let cookie = mint_session_cookie(org_id, user_id);
     let resp = client
         .get(format!("{base}/v1/secrets"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -276,7 +276,7 @@ async fn agents_see_only_their_own_subtree_secrets() {
     let cookie = mint_session_cookie(org_id, user_id);
     let reveal: Value = client
         .post(format!("{base}/v1/secrets/secret_b/versions/1/reveal"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap()

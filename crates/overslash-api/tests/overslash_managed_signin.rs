@@ -41,7 +41,10 @@ fn session_cookie(org_id: Uuid, identity_id: Uuid, user_id: Uuid) -> String {
         user_id: Some(user_id),
         mcp_client_id: None,
     };
-    format!("oss_session={}", jwt::mint(&secret, &claims).expect("mint"))
+    format!(
+        "__Host-oss_session={}",
+        jwt::mint(&secret, &claims).expect("mint")
+    )
 }
 
 #[tokio::test]
@@ -375,7 +378,7 @@ async fn callback_admits_invited_email_on_corp_subdomain() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -513,7 +516,7 @@ async fn invite_gate_applies_to_dedicated_idp_when_flag_on() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -607,7 +610,7 @@ async fn existing_member_admitted_when_new_idp_subject_misses_invite() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -723,7 +726,7 @@ async fn existing_admin_keeps_admin_via_second_idp() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -830,7 +833,7 @@ async fn re_invite_of_current_member_is_rejected_and_resignin_is_idempotent() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -860,7 +863,7 @@ async fn re_invite_of_current_member_is_rejected_and_resignin_is_idempotent() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -960,7 +963,7 @@ async fn single_org_mode_bypasses_invite_gate() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -1012,7 +1015,7 @@ async fn callback_rejects_uninvited_email_on_managed_signin_org() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -1107,7 +1110,7 @@ async fn callback_admits_by_domain_when_invite_not_required() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -1165,7 +1168,7 @@ async fn callback_rejects_when_domain_admission_unconfigured() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -1207,7 +1210,7 @@ async fn callback_rejects_domain_not_on_allowlist() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await

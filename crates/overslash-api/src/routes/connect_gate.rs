@@ -23,8 +23,8 @@ use overslash_db::repos::oauth_connection_flow::OauthConnectionFlowRow;
 use overslash_db::repos::{identity, membership};
 
 use crate::AppState;
+use crate::cookies;
 use crate::error::AppError;
-use crate::extractors::extract_cookie;
 use crate::routes::auth::{session_cookie, signing_key_bytes};
 use crate::services::jwt;
 
@@ -41,7 +41,7 @@ pub enum SessionError {
 }
 
 pub fn read_session(state: &AppState, headers: &HeaderMap) -> Result<ParsedSession, SessionError> {
-    let token = extract_cookie(headers, "oss_session").ok_or(SessionError::Missing)?;
+    let token = cookies::read_session(headers, state).ok_or(SessionError::Missing)?;
     let signing_key = signing_key_bytes(&state.config.signing_key);
     let claims =
         jwt::verify(&signing_key, &token, jwt::AUD_SESSION).map_err(|_| SessionError::Invalid)?;

@@ -318,15 +318,11 @@ fn extract_optional_session_user(
     state: &AppState,
     headers: &axum::http::HeaderMap,
 ) -> Option<Uuid> {
-    let cookie = headers.get("cookie").and_then(|v| v.to_str().ok())?;
-    let token = cookie
-        .split(';')
-        .map(str::trim)
-        .find_map(|kv| kv.strip_prefix("oss_session="))?;
+    let token = crate::cookies::read_session(headers, state)?;
     let signing_key = hex::decode(&state.config.signing_key)
         .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
     let claims =
-        crate::services::jwt::verify(&signing_key, token, crate::services::jwt::AUD_SESSION)
+        crate::services::jwt::verify(&signing_key, &token, crate::services::jwt::AUD_SESSION)
             .ok()?;
     claims.user_id
 }

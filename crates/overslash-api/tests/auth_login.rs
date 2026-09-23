@@ -26,9 +26,18 @@ async fn dev_token_returns_jwt_when_enabled() {
         .iter()
         .filter_map(|v| v.to_str().ok())
         .collect();
+    let session = cookies
+        .iter()
+        .find(|c| c.starts_with("__Host-oss_session="))
+        .unwrap_or_else(|| panic!("expected __Host-oss_session cookie, got: {cookies:?}"));
+    // CASA 2.3.1: host-only session cookie is `Secure`, `Path=/`, no Domain.
+    assert!(session.contains("; Secure"), "{session}");
+    assert!(session.contains("; HttpOnly"), "{session}");
+    assert!(session.contains("; Path=/;"), "{session}");
+    assert!(!session.contains("Domain="), "{session}");
     assert!(
-        cookies.iter().any(|c| c.starts_with("oss_session=")),
-        "expected oss_session cookie, got: {cookies:?}"
+        !cookies.iter().any(|c| c.starts_with("oss_session=")),
+        "unprefixed session cookie must not be minted: {cookies:?}"
     );
 
     let body: Value = resp.json().await.unwrap();
@@ -103,7 +112,7 @@ async fn me_returns_user_with_valid_session() {
     // Use the token to call /auth/me
     let me_resp = client
         .get(format!("{base}/auth/me"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .send()
         .await
         .unwrap();
@@ -132,7 +141,7 @@ async fn me_returns_401_with_invalid_token() {
 
     let resp = client
         .get(format!("{base}/auth/me"))
-        .header("cookie", "oss_session=garbage.token.here")
+        .header("cookie", "__Host-oss_session=garbage.token.here")
         .send()
         .await
         .unwrap();
@@ -158,7 +167,7 @@ async fn dev_user_is_org_admin_via_me_identity() {
     // First call: dev user freshly bootstrapped → should be org admin.
     let me1: Value = client
         .get(format!("{base}/auth/me/identity"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .send()
         .await
         .unwrap()
@@ -181,7 +190,7 @@ async fn dev_user_is_org_admin_via_me_identity() {
     let token2_str = token2["token"].as_str().unwrap();
     let me2: Value = client
         .get(format!("{base}/auth/me/identity"))
-        .header("cookie", format!("oss_session={token2_str}"))
+        .header("cookie", format!("__Host-oss_session={token2_str}"))
         .send()
         .await
         .unwrap()
@@ -207,4 +216,60 @@ async fn google_login_returns_404_when_not_configured() {
 
     // Google auth client ID/secret not set → 404
     assert_eq!(resp.status(), 404);
+}
+
+// --- Cookie prefixes (CASA 2.3.1) ---
+
+#[tokio::test]
+async fn unprefixed_session_cookie_is_rejected() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+
+    let token_resp: Value = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token_resp["token"].as_str().unwrap();
+
+    // A perfectly valid JWT under the pre-rename name is not a session.
+    for path in ["/auth/me", "/auth/me/identity"] {
+        let resp = client
+            .get(format!("{base}{path}"))
+            .header("cookie", format!("oss_session={token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401, "{path} accepted legacy cookie");
+    }
+}
+
+#[tokio::test]
+async fn logout_clears_prefixed_and_legacy_session_cookies() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+
+    let resp = client
+        .post(format!("{base}/auth/logout"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let cookies: Vec<_> = resp
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    for name in ["__Host-oss_session=;", "oss_session=;"] {
+        let c = cookies
+            .iter()
+            .find(|c| c.starts_with(name))
+            .unwrap_or_else(|| panic!("no {name} clear in {cookies:?}"));
+        assert!(c.contains("Max-Age=0"), "{c}");
+        assert!(c.contains("; Secure"), "{c}");
+    }
 }

@@ -60,7 +60,7 @@ async fn test_get_secret_with_session_cookie_works() {
     let cookie = mint_session_cookie(org_id, ident_id);
     let resp = client
         .get(format!("{base}/v1/secrets/db_password"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -91,7 +91,7 @@ async fn test_list_secrets_with_session_cookie_works() {
     let cookie = mint_session_cookie(org_id, ident_id);
     let resp = client
         .get(format!("{base}/v1/secrets"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -109,7 +109,7 @@ async fn test_get_secret_with_invalid_session_cookie_returns_401() {
 
     let resp = client
         .get(format!("{base}/v1/secrets"))
-        .header("cookie", "oss_session=not.a.real.jwt")
+        .header("cookie", "__Host-oss_session=not.a.real.jwt")
         .send()
         .await
         .unwrap();

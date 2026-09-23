@@ -107,7 +107,7 @@ test.describe('multi-IdP per-org', () => {
 
 		// Drop a screenshot of the profile view after the Auth0 login so the
 		// PR description has visual proof. The cookies set by the redirect
-		// chain are domain-127.0.0.1-wide, so the dashboard origin sees them.
+		// chain are host-wide on `localhost` (ports don't scope cookies), so the dashboard origin sees them.
 		await page.goto('/account');
 		const png = await page.screenshot({ fullPage: true });
 		await testInfo.attach('account-after-auth0-login.png', {

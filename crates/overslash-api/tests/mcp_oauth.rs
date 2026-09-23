@@ -232,7 +232,11 @@ async fn authorize_rejects_mismatched_redirect_uri() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .unwrap()
         .to_string();
     let session_cookie = cookie.split(';').next().unwrap().to_string();
@@ -277,7 +281,11 @@ async fn authorize_full_flow_issues_code_and_token() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -469,7 +477,11 @@ async fn token_rejects_wrong_pkce_verifier() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -591,7 +603,11 @@ async fn mcp_tools_call_forwards_to_rest_with_bearer() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -793,7 +809,11 @@ async fn authorize_first_time_redirects_to_consent() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -840,7 +860,11 @@ async fn authorize_reuses_binding_on_second_login() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -907,7 +931,11 @@ async fn consent_finish_rejects_invalid_request_id() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -954,14 +982,18 @@ async fn mcp_rejects_user_kind_bearer() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .unwrap()
         .to_string();
     let session_jwt = cookie
         .split(';')
         .next()
         .unwrap()
-        .strip_prefix("oss_session=")
+        .strip_prefix("__Host-oss_session=")
         .unwrap()
         .to_string();
 
@@ -1037,7 +1069,11 @@ async fn consent_new_defaults_inherit_permissions_false() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -1133,7 +1169,11 @@ async fn consent_context_does_not_match_reauth_for_anonymous_reregistration() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -1249,7 +1289,11 @@ async fn consent_finish_reauth_rejects_spoofed_agent_id() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -1437,7 +1481,11 @@ async fn consent_context_reports_reauth_for_similar_reregistered_client() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -1616,7 +1664,11 @@ async fn enroll_until_consent_with_capabilities(
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -1892,7 +1944,11 @@ async fn consent_finish_missing_elicitation_field_preserves_binding() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -2102,7 +2158,11 @@ async fn consent_context_reauth_target_carries_existing_elicitation() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();
@@ -2423,12 +2483,12 @@ async fn mcp_overslash_call_rejects_mixed_approval_and_service_args() {
     );
 }
 
-/// Decode the `org` claim from an `oss_session=<jwt>` cookie without verifying
+/// Decode the `org` claim from an `__Host-oss_session=<jwt>` cookie without verifying
 /// the signature — tests only need the payload to cross-check the consent
 /// context against the session that minted it.
 fn jwt_org_claim(session_cookie: &str) -> Uuid {
     let token = session_cookie
-        .strip_prefix("oss_session=")
+        .strip_prefix("__Host-oss_session=")
         .unwrap_or(session_cookie);
     let payload_b64 = token.split('.').nth(1).expect("jwt payload segment");
     let payload = URL_SAFE_NO_PAD
@@ -2461,7 +2521,11 @@ async fn consent_context_includes_org() {
         .headers()
         .get_all("set-cookie")
         .iter()
-        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .find_map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|s| s.starts_with("__Host-oss_session="))
+        })
         .and_then(|c| c.split(';').next())
         .unwrap()
         .to_string();

@@ -305,7 +305,7 @@ async fn dev_session(client: &reqwest::Client, base: &str, org: Option<&str>) ->
         .get_all(reqwest::header::SET_COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .find(|v| v.starts_with("oss_session="))
+        .find(|v| v.starts_with("__Host-oss_session="))
         .expect("no oss_session cookie");
     raw.split(';').next().unwrap().to_string()
 }

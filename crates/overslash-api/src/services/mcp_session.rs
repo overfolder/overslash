@@ -252,7 +252,13 @@ pub async fn complete_from_elicitation(
     let resolve_resp = state
         .http_client
         .post(&resolve_url)
-        .header("Cookie", format!("oss_session={}", user_session_jwt))
+        .header(
+            "Cookie",
+            format!(
+                "{}={user_session_jwt}",
+                crate::cookies::name_for(state, crate::cookies::SESSION)
+            ),
+        )
         .json(&resolve_body)
         .send()
         .await?;

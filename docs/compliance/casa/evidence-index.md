@@ -45,7 +45,8 @@ excerpt, without calling functions or underlying libraries.
 | 3.2.1 | PKCE S256 enforcement and exact-match `redirect_uri` at both authorize and token exchange | `have` | `routes/oauth/authorize.rs:39-51,85-87`; `routes/oauth/token.rs:102-103` |
 | 2.3.4 | The `aud` split preventing cookie↔bearer replay | `have` | `services/jwt.rs:6-11` |
 | 6.5.1 | `scrub_transport_error` — a strong affirmative artifact, since it declines to log a URL *because* credentials live in the query | `have` | `services/audit_capture.rs:93-118` |
-| 2.3.1 / 2.2.x | Cookie construction and server-side session lookup | `need` | Lands with the P1 session work |
+| 2.3.1 | Cookie construction: one builder, `Secure` + `__Host-`/`__Secure-` on every cookie, prefixed-only reader | `have` | `crates/overslash-api/src/cookies.rs` |
+| 2.2.x | Server-side session lookup | `need` | Lands with the P1 session work |
 | 5.1.5 | `ssrf_guard` denial ranges, `.resolve()` pinning, `Policy::none()` — **and** the call sites proving it is on the execution path | `have` / `need` | `services/ssrf_guard.rs:17-43,121-129`; call sites land with P0 |
 
 ## Screenshots
