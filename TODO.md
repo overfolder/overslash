@@ -68,7 +68,7 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 The annual security assessment Google requires of apps holding restricted OAuth scopes —
 we ship `gmail.*`, `drive` and `keep` templates, so the system OAuth client needs it.
 Full assessment in [docs/compliance/casa/](docs/compliance/casa/README.md); the gap list
-is [gap-assessment.md](docs/compliance/casa/gap-assessment.md). 15 of 55 requirements
+is [gap-assessment.md](docs/compliance/casa/gap-assessment.md). 12 of 55 requirements
 are gaps today.
 
 **P0 — live vulnerabilities, not compliance items. Decide on a security timeline.**
@@ -80,7 +80,7 @@ are gaps today.
 
 **P1 — hard CASA fails.**
 
-- [ ] `Secure` on `oss_session`, plus `__Host-`/`__Secure-` cookie prefixes. (2.3.1)
+- [x] `Secure` on every auth cookie, plus `__Host-`/`__Secure-` prefixes — one builder in `crates/overslash-api/src/cookies.rs`; the unprefixed `oss_session` is no longer read and is cleared on login/logout. One-time logout of every user on deploy. (2.3.1 — now `pass`)
 - [ ] **Server-side sessions** — a sessions table with a `jti` claim checked per request. Keeps the 7-day UX while making logout, identity change and admin revoke effective, and gives a "terminate all other sessions" surface. One indexed lookup per request, cacheable in Valkey. (2.2.1, 2.2.2, 2.2.3)
 - [ ] **Webhook section 7** — `https://` enforced at registration, a challenge-response endpoint-ownership handshake before first delivery, and a signed timestamp header behind a versioned signature (breaking for existing consumers — needs a migration note). Delivery through the SSRF guard is done (7.3.1). (7.1.1, 7.1.2, 7.2.3)
 - [ ] Security-headers layer on the API + a `headers` block in `dashboard/vercel.json` (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy; HSTS on the API).

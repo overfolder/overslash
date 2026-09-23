@@ -159,7 +159,7 @@ async fn initiate_mints_flow_and_gate_redirects_for_owner() {
 
     let resp = client
         .post(format!("{base}/v1/mcp_upstream/initiate"))
-        .header("cookie", format!("oss_session={session}"))
+        .header("cookie", format!("__Host-oss_session={session}"))
         .json(&json!({
             "as_issuer": format!("http://{upstream}"),
             "upstream_resource": format!("http://{upstream}/mcp"),
@@ -176,7 +176,7 @@ async fn initiate_mints_flow_and_gate_redirects_for_owner() {
     // Owner clicks the gate — should 302 to the upstream authorize URL.
     let r = client
         .get(proxied)
-        .header("cookie", format!("oss_session={session}"))
+        .header("cookie", format!("__Host-oss_session={session}"))
         .send()
         .await
         .unwrap();
@@ -206,7 +206,7 @@ async fn gate_hard_rejects_when_session_belongs_to_different_identity() {
     // Owner mints a flow.
     let body: Value = client
         .post(format!("{base}/v1/mcp_upstream/initiate"))
-        .header("cookie", format!("oss_session={owner_session}"))
+        .header("cookie", format!("__Host-oss_session={owner_session}"))
         .json(&json!({
             "as_issuer": format!("http://{upstream}"),
             "upstream_resource": format!("http://{upstream}/mcp"),
@@ -226,7 +226,7 @@ async fn gate_hard_rejects_when_session_belongs_to_different_identity() {
 
     let r = client
         .get(proxied)
-        .header("cookie", format!("oss_session={imposter_session}"))
+        .header("cookie", format!("__Host-oss_session={imposter_session}"))
         .send()
         .await
         .unwrap();
@@ -253,7 +253,7 @@ async fn callback_rejects_when_session_doesnt_match_flow_security_boundary() {
     // Owner mints a flow.
     let body: Value = client
         .post(format!("{base}/v1/mcp_upstream/initiate"))
-        .header("cookie", format!("oss_session={owner_session}"))
+        .header("cookie", format!("__Host-oss_session={owner_session}"))
         .json(&json!({
             "as_issuer": format!("http://{upstream}"),
             "upstream_resource": format!("http://{upstream}/mcp"),
@@ -275,7 +275,7 @@ async fn callback_rejects_when_session_doesnt_match_flow_security_boundary() {
     let callback_url = format!("{base}/oauth/upstream/callback?code=anycode&state={flow_id}");
     let r = client
         .get(&callback_url)
-        .header("cookie", format!("oss_session={imposter_session}"))
+        .header("cookie", format!("__Host-oss_session={imposter_session}"))
         .send()
         .await
         .unwrap();
@@ -289,7 +289,7 @@ async fn callback_rejects_when_session_doesnt_match_flow_security_boundary() {
     // complete it. Re-issue from owner's session and observe success.
     let owner_callback = client
         .get(&callback_url)
-        .header("cookie", format!("oss_session={owner_session}"))
+        .header("cookie", format!("__Host-oss_session={owner_session}"))
         .send()
         .await
         .unwrap();
@@ -315,7 +315,7 @@ async fn replay_returns_410_after_consume() {
 
     let body: Value = client
         .post(format!("{base}/v1/mcp_upstream/initiate"))
-        .header("cookie", format!("oss_session={owner_session}"))
+        .header("cookie", format!("__Host-oss_session={owner_session}"))
         .json(&json!({
             "as_issuer": format!("http://{upstream}"),
             "upstream_resource": format!("http://{upstream}/mcp"),
@@ -333,7 +333,7 @@ async fn replay_returns_410_after_consume() {
     // Owner consumes the flow.
     let r1 = client
         .get(&callback_url)
-        .header("cookie", format!("oss_session={owner_session}"))
+        .header("cookie", format!("__Host-oss_session={owner_session}"))
         .send()
         .await
         .unwrap();
@@ -342,7 +342,7 @@ async fn replay_returns_410_after_consume() {
     // Replay → 410.
     let r2 = client
         .get(&callback_url)
-        .header("cookie", format!("oss_session={owner_session}"))
+        .header("cookie", format!("__Host-oss_session={owner_session}"))
         .send()
         .await
         .unwrap();
@@ -365,7 +365,7 @@ async fn initiate_rejects_foreign_identity_id() {
     // attribute connections to identities they don't own.
     let resp = client
         .post(format!("{base}/v1/mcp_upstream/initiate"))
-        .header("cookie", format!("oss_session={owner_session}"))
+        .header("cookie", format!("__Host-oss_session={owner_session}"))
         .json(&json!({
             "as_issuer": format!("http://{upstream}"),
             "upstream_resource": format!("http://{upstream}/mcp"),
@@ -392,7 +392,7 @@ async fn list_connections_rejects_foreign_identity() {
             "{base}/v1/identities/{}/mcp_upstream_connections",
             Uuid::new_v4()
         ))
-        .header("cookie", format!("oss_session={owner_session}"))
+        .header("cookie", format!("__Host-oss_session={owner_session}"))
         .send()
         .await
         .unwrap();
@@ -412,7 +412,7 @@ async fn gate_redirects_to_login_when_no_session_cookie() {
 
     let body: Value = client
         .post(format!("{base}/v1/mcp_upstream/initiate"))
-        .header("cookie", format!("oss_session={owner_session}"))
+        .header("cookie", format!("__Host-oss_session={owner_session}"))
         .json(&json!({
             "as_issuer": format!("http://{upstream}"),
             "upstream_resource": format!("http://{upstream}/mcp"),
@@ -458,7 +458,7 @@ async fn idempotent_initiate_returns_existing_flow() {
     });
     let first: Value = client
         .post(format!("{base}/v1/mcp_upstream/initiate"))
-        .header("cookie", format!("oss_session={owner_session}"))
+        .header("cookie", format!("__Host-oss_session={owner_session}"))
         .json(&req)
         .send()
         .await
@@ -468,7 +468,7 @@ async fn idempotent_initiate_returns_existing_flow() {
         .unwrap();
     let second: Value = client
         .post(format!("{base}/v1/mcp_upstream/initiate"))
-        .header("cookie", format!("oss_session={owner_session}"))
+        .header("cookie", format!("__Host-oss_session={owner_session}"))
         .json(&req)
         .send()
         .await

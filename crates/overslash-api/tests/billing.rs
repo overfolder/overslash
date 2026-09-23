@@ -535,7 +535,7 @@ async fn test_create_checkout_returns_stripe_url() {
 
     let resp = client
         .post(format!("{base}/v1/billing/checkout"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .header("host", format!("{addr}")) // ensure no subdomain mismatch
         .json(&json!({
             "org_name": "My Team",
@@ -600,7 +600,7 @@ async fn test_create_checkout_expires_stripe_session_on_db_failure() {
 
     let resp = client
         .post(format!("{base}/v1/billing/checkout"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({
             "org_name": "Will Fail",
             "org_slug": format!("fail-{}", Uuid::new_v4().simple()),
@@ -664,7 +664,7 @@ async fn test_create_checkout_deletes_orphan_stripe_customer_on_db_failure() {
 
     let resp = client
         .post(format!("{base}/v1/billing/checkout"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({
             "org_name": "Orphan",
             "org_slug": format!("orphan-{}", Uuid::new_v4().simple()),
@@ -1957,7 +1957,7 @@ async fn test_checkout_status_pending_then_fulfilled() {
     // Before fulfillment: status = "pending".
     let resp: Value = client
         .get(format!("{base}/v1/billing/checkout/{session_id}/status"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap()
@@ -1975,7 +1975,7 @@ async fn test_checkout_status_pending_then_fulfilled() {
     // After fulfillment: status = "fulfilled" with redirect_to.
     let resp: Value = client
         .get(format!("{base}/v1/billing/checkout/{session_id}/status"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap()

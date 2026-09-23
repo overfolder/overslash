@@ -1434,7 +1434,7 @@ pub fn session_cookie(org_id: Uuid, identity_id: Uuid) -> String {
     };
     let token = overslash_api::services::jwt::mint(&signing_key_bytes(), &claims)
         .expect("mint test session");
-    format!("oss_session={token}")
+    format!("__Host-oss_session={token}")
 }
 
 /// Test helper: the org's Everyone group id. Every user identity in the org is

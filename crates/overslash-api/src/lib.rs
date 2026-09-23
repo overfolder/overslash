@@ -8,6 +8,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod config;
+pub mod cookies;
 pub mod error;
 pub mod extractors;
 pub mod impersonation;

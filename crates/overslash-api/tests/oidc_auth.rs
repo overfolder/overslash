@@ -70,9 +70,20 @@ async fn provider_login_redirects_to_google_with_pkce() {
         .iter()
         .filter_map(|v| v.to_str().ok())
         .collect();
-    assert!(cookies.iter().any(|c| c.starts_with("oss_auth_nonce=")));
-    assert!(cookies.iter().any(|c| c.starts_with("oss_auth_verifier=")));
-    assert!(cookies.iter().any(|c| c.starts_with("oss_auth_org=")));
+    for name in [
+        "__Host-oss_auth_nonce=",
+        "__Host-oss_auth_verifier=",
+        "__Host-oss_auth_org=",
+    ] {
+        let c = cookies
+            .iter()
+            .find(|c| c.starts_with(name))
+            .unwrap_or_else(|| panic!("no {name} in {cookies:?}"));
+        // CASA 2.3.1: `__Host-` demands Secure, Path=/ and no Domain.
+        assert!(c.contains("; Secure"), "{c}");
+        assert!(c.contains("; Path=/;"), "{c}");
+        assert!(!c.contains("Domain="), "{c}");
+    }
 }
 
 #[tokio::test]
@@ -180,7 +191,7 @@ async fn google_callback_provisions_user_and_sets_session() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=test_verifier; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=test_verifier; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -198,7 +209,7 @@ async fn google_callback_provisions_user_and_sets_session() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce2}; oss_auth_verifier=test_verifier; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce2}; __Host-oss_auth_verifier=test_verifier; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -211,7 +222,7 @@ async fn google_callback_provisions_user_and_sets_session() {
         .filter_map(|v| v.to_str().ok())
         .collect();
     assert!(
-        cookies.iter().any(|c| c.starts_with("oss_session=")),
+        cookies.iter().any(|c| c.starts_with("__Host-oss_session=")),
         "expected oss_session cookie, got: {cookies:?}"
     );
 
@@ -256,7 +267,7 @@ async fn callback_rejects_nonce_mismatch() {
         ))
         .header(
             "cookie",
-            "oss_auth_nonce=wrong-nonce; oss_auth_verifier=v; oss_auth_org=none",
+            "__Host-oss_auth_nonce=wrong-nonce; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none",
         )
         .send()
         .await
@@ -286,7 +297,7 @@ async fn callback_rejects_provider_mismatch_in_state() {
         ))
         .header(
             "cookie",
-            "oss_auth_nonce=nonce123; oss_auth_verifier=v; oss_auth_org=none",
+            "__Host-oss_auth_nonce=nonce123; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none",
         )
         .send()
         .await
@@ -359,7 +370,7 @@ async fn google_compat_callback_handles_old_state_format() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -655,7 +666,7 @@ async fn subsequent_login_updates_profile() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce1}; oss_auth_verifier=v; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce1}; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -679,7 +690,7 @@ async fn subsequent_login_updates_profile() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce2}; oss_auth_verifier=v; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce2}; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -1020,7 +1031,7 @@ async fn create_idp_config_coexists_with_env_var_creds() {
     // separately via `orgs.allow_overslash_managed_signin` + `org_invites`.
     let resp = client
         .post(format!("{base}/v1/org-idp-configs"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .json(&json!({
             "provider_key": "google",
             "client_id": "db_id",
@@ -1157,7 +1168,7 @@ async fn domain_provisioning_filters_by_provider_key() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -1286,7 +1297,7 @@ async fn list_idp_configs_shows_env_as_readonly() {
     // List IdP configs — should show env providers
     let configs: Vec<Value> = client
         .get(format!("{base}/v1/org-idp-configs"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .send()
         .await
         .unwrap()

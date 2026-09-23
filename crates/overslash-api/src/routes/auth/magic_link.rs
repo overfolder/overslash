@@ -210,6 +210,10 @@ pub(super) async fn verify_magic_link(
     let session_cookie = session_cookie(&state, &token)?;
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie);
+    cookies::append_all(
+        &mut resp_headers,
+        cookies::legacy_session_clears_for(&state),
+    );
 
     // Magic-link is a root-apex-only flow that always mints a personal-org
     // session, so redirect straight to the configured root dashboard. Do NOT

@@ -57,7 +57,7 @@ export interface ProvideMetadata {
 	require_user_session: boolean;
 	/**
 	 * Opportunistic session binding: populated iff the visitor already holds a
-	 * valid `oss_session` cookie for this request's org. Also what decides
+	 * valid session cookie for this request's org. Also what decides
 	 * whether a Test button can be offered on the setup page, since the probe
 	 * runs through the authenticated call path.
 	 */

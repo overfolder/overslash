@@ -154,7 +154,7 @@ async fn handoff_endpoint_sets_session_and_redirects_on_success() {
         .collect();
     let session = cookies
         .iter()
-        .find(|c| c.starts_with("oss_session="))
+        .find(|c| c.starts_with("__Host-oss_session="))
         .expect("expected oss_session cookie");
     // Host-only: no `Domain=` attribute. Cross-tenant `.vercel.app` must
     // never inherit the cookie.

@@ -199,8 +199,8 @@ magic link.
 | 2.2.1 | Logout invalidates all stateful session tokens incl. refresh | `gap` | Logout only emits a clearing `Set-Cookie` — `routes/auth/session.rs:5-17`. The JWT stays valid for its full 7 days. No denylist, no session table, no `session_version` claim. (The MCP side *does* have real refresh-token revocation with replay detection and chain revocation — `routes/oauth/token.rs:158-168` — so the pattern exists in-repo) | **High** |
 | 2.2.2 | Option to terminate all other active sessions after credential change | `gap` | No mechanism. With no password there is no "password change", but magic-link login *is* account recovery, and the requirement covers reset/recovery explicitly. Falls out of the same fix as 2.2.1 | Med |
 | 2.2.3 | Non-revocable stateless tokens expire within 24 hours | `gap` | `exp: now + 7 * 24 * 3600` in seven mint sites (`routes/auth/magic_link.rs:203`, `auth/providers.rs:375`, `auth/session.rs:261`, `auth/dev_token.rs:292`, `oauth/consent.rs:428`, `orgs/create.rs:188`, `connect_gate.rs:175`); cookie `Max-Age=604800` (`routes/auth/mod.rs:188`). The token carries no `jti` and there is no server-side state, so it is non-revocable by definition. **7 days > 24 hours — a literal fail** | **High** |
-| 2.3.1 | Cookie session tokens have `Secure` | `gap` | `routes/auth/mod.rs:188` — `oss_session={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`. No `Secure`. Same for the OAuth state cookies (`auth/providers.rs:207,217`) and the logout clear (`auth/session.rs:9`). The *only* cookie in the repo with `Secure` is the Vercel preview handoff (`auth/providers.rs:525`), which proves the attribute is understood. With `Domain=.app.<apex>` set, one plaintext request to any subdomain leaks a 7-day bearer. No `__Host-`/`__Secure-` prefix either | **High** |
-| 2.3.2 | Cookie session tokens have `HttpOnly` | `pass` | `routes/auth/mod.rs:188` | — |
+| 2.3.1 | Cookie session tokens have `Secure` | `pass` | Every cookie is built by one helper, `crates/overslash-api/src/cookies.rs:50-59` (`build`), which always emits `HttpOnly; SameSite=Lax; Secure` and a browser-enforced prefix: `__Secure-oss_session` (plus `__Secure-oss_auth_*`) when `SESSION_COOKIE_DOMAIN` is set, `__Host-…` with `Path=/` and no Domain when it is not; the Vercel preview handoff is always `__Host-oss_session`. The session, the IdP state cookies, their clears and the logout clear all go through it. The reader (`cookies.rs:138-144`) accepts only prefixed names, so a cookie planted over plaintext cannot be presented as a session; the unprefixed `oss_session` is rejected (`tests/auth_login.rs::unprefixed_session_cookie_is_rejected`) and actively cleared on login and logout. Attribute assertions: `tests/auth_login.rs`, `tests/oidc_auth.rs`, unit tests in `cookies.rs`. Plain `http://` works only on localhost / loopback, which browsers treat as a secure context | — |
+| 2.3.2 | Cookie session tokens have `HttpOnly` | `pass` | `cookies.rs:50-59` — every cookie, no opt-out | — |
 | 2.3.3 | Session tokens dynamically generated after authentication | `pass` | A fresh JWT is minted on every login and on org switch / OAuth consent (`routes/oauth/consent.rs:443`), so there is no session fixation. `osk_` API keys are the documented programmatic-access carve-out, not session tokens | — |
 | 2.3.4 | Stateless tokens protected against tampering, replay, enveloping, key substitution | `statement` | HS256 with a fixed algorithm on decode, plus an `aud` split (`session` vs `mcp`) that stops a cookie JWT being replayed against `/mcp` and vice versa — `services/jwt.rs:6-11`, tests at `:215-237`. **Caveat to disclose:** `signing_key_bytes` falls back to the raw UTF-8 bytes of an arbitrary string when `SIGNING_KEY` is not hex (`services/jwt.rs:139-141`, duplicated at `extractors.rs:184-185,219-220,503-504`) with no length floor, so a short key is accepted | Med |
 | 2.4.1 | Full login session or re-auth before sensitive transactions | `statement` | `GET /v1/secrets/{name}/versions/{v}/reveal` requires a **session cookie** — an API key cannot reach it — and writes a `secret.revealed` audit row (`routes/secrets.rs:334-379`). `InstanceAdminAuth` is likewise cookie-only and uncached, so revocation is immediate (`extractors.rs:722-742`). There is no step-up re-authentication, which is what a lab will probe; see 3.3.1 | Med |
@@ -279,16 +279,16 @@ when it was written.
 
 | Verdict | Count |
 |---------|-------|
-| `pass` | 26 |
+| `pass` | 27 |
 | `statement` | 13 |
-| `gap` | 13 |
+| `gap` | 12 |
 | `scan` | 1 |
 | `n/a` | 2 |
 
 Of the 13 gaps, **none is a live vulnerability** any more, and 3 are the unbuilt
 webhook-provider section. The counts moved from the original assessment because the two
 vulnerabilities closed four rows between them: V2 made 3.1.2 and 3.1.4 `pass`, and V1
-made 7.3.1 `pass` and 5.1.5 `statement`.
+made 7.3.1 `pass` and 5.1.5 `statement`. The prefixed-cookie rework then made 2.3.1 `pass`.
 
 ## Priority ladder
 
@@ -301,8 +301,8 @@ the SSRF guard. Two follow-ups survive V1, neither a P0: the default `Everyone �
 http` grant (a behaviour change for new orgs, so a human decision) and the residual
 issuer-discovery surface at `routes/org_idp_configs.rs:135`/`:521`.
 
-**P1 — hard CASA fails.** `Secure` on `oss_session` plus `__Host-`/`__Secure-` prefixes
-(2.3.1); **server-side sessions** — a sessions table with a `jti` claim checked per
+**P1 — hard CASA fails.** ~~`Secure` on `oss_session` plus `__Host-`/`__Secure-` prefixes
+(2.3.1)~~ — done; **server-side sessions** — a sessions table with a `jti` claim checked per
 request, which keeps the 7-day UX while satisfying 2.2.1, 2.2.2 and 2.2.3 at the cost of
 one indexed lookup (cacheable in Valkey) (2.2.x); a security-headers layer on the API and
 a `headers` block in `dashboard/vercel.json` (4.x/6.x adjacency); **the rest of webhook

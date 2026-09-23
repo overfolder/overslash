@@ -170,7 +170,7 @@ async fn free_unlimited_endpoint_rejects_non_admin_session() {
     let cookie = mint_session_with_user(org_id, ident_id, user_id);
     let resp = client
         .post(format!("{base}/v1/orgs/free-unlimited"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(
             &json!({"name": "Partner Co", "slug": format!("partner-{}", Uuid::new_v4().simple())}),
         )
@@ -220,7 +220,7 @@ async fn instance_admin_creates_free_unlimited_org_self_hosted() {
     let new_slug = format!("partner-{}", Uuid::new_v4().simple());
     let resp = client
         .post(format!("{base}/v1/orgs/free-unlimited"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({"name": "Partner Co", "slug": new_slug}))
         .send()
         .await
@@ -294,7 +294,7 @@ async fn instance_admin_creates_free_unlimited_org_in_cloud_billing_mode() {
     let new_slug = format!("partner-{}", Uuid::new_v4().simple());
     let resp = client
         .post(format!("{base}/v1/orgs/free-unlimited"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({"name": "Cloud Partner", "slug": new_slug}))
         .send()
         .await
@@ -324,7 +324,7 @@ async fn whoami_includes_is_instance_admin() {
     let cookie = mint_session_with_user(org_id, ident_id, user_id);
     let resp = client
         .get(format!("{base}/auth/me/identity"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -338,7 +338,7 @@ async fn whoami_includes_is_instance_admin() {
         .unwrap();
     let resp = client
         .get(format!("{base}/auth/me/identity"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -366,7 +366,7 @@ async fn free_unlimited_endpoint_blocked_when_org_creation_disabled() {
     let cookie = mint_session_with_user(org_id, ident_id, user_id);
     let resp = client
         .post(format!("{base}/v1/orgs/free-unlimited"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({"name": "Locked Out", "slug": format!("locked-{}", Uuid::new_v4().simple())}))
         .send()
         .await
