@@ -1,0 +1,54 @@
+# Turns a failed *scheduled* dependency audit into a triage issue — the
+# intake step of docs/compliance/casa/dependency-vulnerability-policy.md.
+#
+# A separate workflow rather than a job inside deps-audit.yml because that
+# file is also called from ci.yml: a nested job asking for `issues: write`
+# would force every PR run to grant it. `workflow_run` fires only for runs
+# started by deps-audit.yml's own triggers (schedule / dispatch), never for
+# the ci.yml call, and runs from the default branch with its own token.
+#
+# One open issue at a time: if one is already open, the new failure is added
+# as a comment, so the issue's history is the triage record.
+name: Dependency audit report
+
+on:
+  workflow_run:
+    workflows: ["Dependency audit"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      contains(fromJSON('["schedule","workflow_dispatch"]'), github.event.workflow_run.event)
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      TITLE: "Dependency audit failing (scheduled scan)"
+    steps:
+      - name: Open or update the triage issue
+        run: |
+          body=$(cat <<EOF
+          The scheduled dependency audit failed: $RUN_URL
+
+          Triage per [the dependency vulnerability policy](https://github.com/$GH_REPO/blob/dev/docs/compliance/casa/dependency-vulnerability-policy.md):
+          read the failing job's log, classify each finding, then either fix
+          it (\`cargo update -p\` / \`npm update\`) or add a justified,
+          time-boxed ignore to \`deny.toml\` / \`osv-scanner.toml\`. An expired
+          \`review-by\` / \`ignoreUntil\` date shows up here too.
+          EOF
+          )
+          existing=$(gh issue list --state open --search "\"$TITLE\" in:title" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Still failing: $RUN_URL"
+          else
+            gh issue create --title "$TITLE" --label needs-triage --label dependencies --body "$body"
+          fi
