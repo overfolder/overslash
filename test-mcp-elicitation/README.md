@@ -30,11 +30,12 @@ uv run python handshake_test.py    # automated bidirectional smoke test (5 scena
 
 ## Wire it into Claude Code
 
-A project-scope `.mcp.json` is checked in, so just `cd` into this folder and run
-Claude Code from here — it will auto-discover the server. The accompanying
-`.claude/settings.local.json` pre-allows `mcp__test-elicit__show_message` so the
-harness-level permission prompt doesn't get in the way of the elicitation prompt
-we actually care about.
+A project-scope `.mcp.json` is checked in and carries **no absolute path** — it runs
+`uv run python server.py` against the current directory. So `cd` into this folder and
+run Claude Code from here; anywhere else and `uv` won't find `server.py`.
+
+`--allowedTools` below covers the harness-level permission prompt, so the only prompt
+you see is the elicitation dialog we actually care about.
 
 Headless one-shot:
 
@@ -43,7 +44,7 @@ cd test-mcp-elicitation
 claude --print 'Call the show_message tool with message="hello".' \
   --allowedTools 'mcp__test-elicit__show_message' \
   --permission-mode acceptEdits
-tail -n 30 /tmp/test-mcp-elicitation.log   # see the elicitation round-trip
+cat /tmp/test-mcp-elicitation.log   # see the elicitation round-trip
 ```
 
 Interactive (run from inside this folder):
@@ -55,10 +56,18 @@ claude
 # the elicitation dialog will appear; pick one of the four options.
 ```
 
-To wire it globally (any directory) instead:
+To probe URL mode or tasks without editing `.mcp.json`, point Claude Code at a
+throwaway config instead — `--strict-mcp-config` stops it also loading this folder's:
 
 ```sh
-claude mcp add test-elicit -- uv --directory /home/arturo/code/overslash/test-mcp-elicitation run python server.py
+cat > /tmp/probe-url.json <<'JSON'
+{"mcpServers":{"test-elicit":{"type":"stdio","command":"uv","args":[
+  "run","python","server.py",
+  "--elicit-mode","url","--force","--url","https://example.com/overslash-approve"]}}}
+JSON
+claude --print 'Call the show_message tool with message="urlprobe".' \
+  --mcp-config /tmp/probe-url.json --strict-mcp-config \
+  --allowedTools 'mcp__test-elicit__show_message' --permission-mode acceptEdits
 ```
 
 Server logs go to **stderr** *and* `/tmp/test-mcp-elicitation.log` (the file is
@@ -112,6 +121,11 @@ https://example.com/anything` for URL mode.
 - The "remember forever" decision is only kept in-memory; restarting the server
   resets it. Real Overslash would write a permission rule.
 - `decline` and `cancel` are both treated as `deny` for this mock.
+- **Pinned to `mcp>=1.10.0,<2`.** The low-level `Server` API this probe is built
+  on was reshaped in mcp 2.x, so an unpinned dependency resolves to 2.x and the
+  server dies at import with `'Server' object has no attribute 'list_tools'`.
+  Porting is only worth it when we need to probe the `2026-07-28` revision; 1.x
+  already negotiates `2025-11-25`, which is what Claude Code offers today.
 - The `mcp` Python SDK supports elicitation server-side; tasks (SEP-1686) are
   not yet exposed as a stable server-side API there as of writing, so this
   mock only covers Flow A from the design doc. Flow B verification will

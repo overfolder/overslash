@@ -228,7 +228,10 @@ async fn get_mcp_connection_returns_binding() {
     assert_eq!(conn["client_id"], fx.client_id);
     assert_eq!(conn["client_name"], "test-mcp");
     assert_eq!(conn["protocol_version"], "2025-06-18");
-    assert_eq!(conn["elicitation_enabled"], false);
+    // Default-on (migration 123): `bootstrap_mcp` creates the binding through
+    // a plain `upsert`, which never names the column, so this reads the
+    // schema default. If it ever comes back false, the default was reverted.
+    assert_eq!(conn["elicitation_enabled"], true);
     // Supported because we declared the capability when bootstrapping.
     assert_eq!(conn["elicitation_supported"], true);
 }
@@ -300,7 +303,7 @@ async fn patch_mcp_connection_toggles_elicitation() {
         .await
         .unwrap()
         .expect("binding exists");
-    assert!(binding.elicitation_enabled);
+    assert!(binding.elicitation_enabled());
 
     // Toggle back off.
     let resp = fx
@@ -385,8 +388,8 @@ async fn patch_mcp_connection_fans_out_to_all_bindings_for_agent() {
     .await
     .unwrap()
     .unwrap();
-    assert!(binding_a.elicitation_enabled, "primary binding updated");
-    assert!(binding_b.elicitation_enabled, "secondary binding updated");
+    assert!(binding_a.elicitation_enabled(), "primary binding updated");
+    assert!(binding_b.elicitation_enabled(), "secondary binding updated");
 }
 
 #[tokio::test]
@@ -548,7 +551,7 @@ async fn complete_from_elicitation_accept_allow_resolves_and_calls() {
         .await
         .unwrap()
         .unwrap();
-    db::mcp_client_agent_binding::set_elicitation_enabled(&fx.pool, binding.id, true)
+    db::mcp_client_agent_binding::set_elicitation_opted_out(&fx.pool, binding.id, false)
         .await
         .unwrap();
 
@@ -662,7 +665,7 @@ async fn complete_from_elicitation_allow_remember_without_keys_creates_rule() {
         .await
         .unwrap()
         .unwrap();
-    db::mcp_client_agent_binding::set_elicitation_enabled(&fx.pool, binding.id, true)
+    db::mcp_client_agent_binding::set_elicitation_opted_out(&fx.pool, binding.id, false)
         .await
         .unwrap();
 
@@ -784,7 +787,7 @@ async fn elicitation_eligible_keyed_on_calling_client_not_latest_binding() {
         .await
         .unwrap()
         .unwrap();
-    db::mcp_client_agent_binding::set_elicitation_enabled(&fx.pool, binding_a.id, true)
+    db::mcp_client_agent_binding::set_elicitation_opted_out(&fx.pool, binding_a.id, false)
         .await
         .unwrap();
 
@@ -860,7 +863,7 @@ async fn elicitation_eligible_keyed_on_calling_client_not_latest_binding() {
     .expect("binding A still exists");
     assert_eq!(chosen.client_id, fx.client_id);
     assert!(
-        chosen.elicitation_enabled,
+        chosen.elicitation_enabled(),
         "binding A was the one queried, with elicitation enabled"
     );
 
@@ -970,6 +973,11 @@ async fn cross_tenant_caller_cannot_answer_someone_elses_elicitation() {
 /// MCP-spec `action: "decline"` must resolve the underlying approval as
 /// denied — otherwise the approval stays `pending` and the elicitation
 /// re-fires on every retry of the same action, looping the user.
+///
+/// `decline` is now the *only* negative that denies. Its counterpart is
+/// `complete_from_elicitation_cancel_leaves_approval_pending`, which pins the
+/// other half of the rule: a `cancel` is "nobody answered", not "the user said
+/// no", and must leave the approval alone.
 #[tokio::test]
 async fn complete_from_elicitation_decline_resolves_approval_as_denied() {
     let fx = bootstrap_mcp(true).await;
@@ -1033,6 +1041,211 @@ async fn complete_from_elicitation_decline_resolves_approval_as_denied() {
     assert_eq!(approval_status, "denied");
 }
 
+/// Insert a bare `pending` approval owned by the fixture's agent.
+///
+/// The negative-outcome tests only care about what happens to the approval
+/// row, not about replaying a real upstream call, so they skip the
+/// service/secret/loopback scaffolding that
+/// `complete_from_elicitation_accept_allow_resolves_and_calls` needs.
+async fn seed_pending_approval(fx: &McpFixture) -> Uuid {
+    sqlx::query(
+        "INSERT INTO approvals (org_id, identity_id, action_summary, token,
+                                expires_at, current_resolver_identity_id,
+                                permission_keys)
+         VALUES ($1, $2, 'noop', $3, now() + interval '1 hour', $2, $4)
+         RETURNING id",
+    )
+    .bind(fx.org_id)
+    .bind(fx.agent_id)
+    .bind(format!("apr_{}", Uuid::new_v4()))
+    .bind(vec!["fake:noop:*".to_string()])
+    .fetch_one(&fx.pool)
+    .await
+    .unwrap()
+    .get("id")
+}
+
+/// The other half of the decline rule, and the regression test for the whole
+/// default-on change: `action: "cancel"` must NOT deny.
+///
+/// Headless / `--print` Claude Code auto-cancels an elicitation within
+/// milliseconds because it has no dialog to render (measured at 6ms against
+/// 2.1.278). Reading that as a denial would silently kill an approval no human
+/// ever saw. Instead the row is retired and the approval stays `pending`, so
+/// the SSE tail can hand the model the ordinary `pending_approval` envelope
+/// and the URL-reject fallback still works.
+#[tokio::test]
+async fn complete_from_elicitation_cancel_leaves_approval_pending() {
+    let fx = bootstrap_mcp(true).await;
+    let approval_id = seed_pending_approval(&fx).await;
+
+    let elicit_id = format!("elicit_{}", Uuid::new_v4());
+    db::mcp_elicitation::insert(
+        &fx.pool,
+        &elicit_id,
+        Uuid::new_v4(),
+        fx.agent_id,
+        approval_id,
+    )
+    .await
+    .unwrap();
+
+    let state = build_state_for_session(&fx).await;
+    mcp_session::complete_from_elicitation(
+        &state,
+        &axum::http::Extensions::new(),
+        &elicit_id,
+        &json!({ "action": "cancel" }),
+    )
+    .await
+    .unwrap();
+
+    let row = db::mcp_elicitation::get(&fx.pool, &elicit_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.status,
+        db::mcp_elicitation::STATUS_CANCELLED,
+        "cancel retires the row rather than failing it; row: {row:?}"
+    );
+    assert!(
+        row.final_response.is_none(),
+        "no decision was made, so there is nothing to report: {row:?}"
+    );
+
+    let approval_status: String = sqlx::query("SELECT status FROM approvals WHERE id = $1")
+        .bind(approval_id)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap()
+        .get("status");
+    assert_eq!(
+        approval_status, "pending",
+        "the approval must survive an unanswered dialog untouched"
+    );
+
+    // Auto-call suppression lifts immediately, so resolving from the
+    // dashboard behaves exactly as it would have without elicitation.
+    assert!(
+        !db::mcp_elicitation::has_active_for_approval(&fx.pool, approval_id)
+            .await
+            .unwrap()
+    );
+}
+
+/// A client that declared `elicitation` but answers `elicitation/create` with
+/// a JSON-RPC error — `-32601` from a `tools/call`-only bridge, `-32602` from
+/// a mode it doesn't support — reaches `post_mcp`'s bare-response branch,
+/// which normalises it to `{action:"cancel"}`. That must fall back, not deny:
+/// "I can't show this dialog" is the one case where denying is most obviously
+/// wrong.
+#[tokio::test]
+async fn complete_from_elicitation_client_error_answer_falls_back() {
+    let fx = bootstrap_mcp(true).await;
+    let approval_id = seed_pending_approval(&fx).await;
+
+    let elicit_id = format!("elicit_{}", Uuid::new_v4());
+    db::mcp_elicitation::insert(
+        &fx.pool,
+        &elicit_id,
+        Uuid::new_v4(),
+        fx.agent_id,
+        approval_id,
+    )
+    .await
+    .unwrap();
+
+    // Exactly the shape post_mcp synthesises from a bare `{id, error}` POST.
+    let state = build_state_for_session(&fx).await;
+    mcp_session::complete_from_elicitation(
+        &state,
+        &axum::http::Extensions::new(),
+        &elicit_id,
+        &json!({
+            "action": "cancel",
+            "content": { "code": -32601, "message": "Method not found" }
+        }),
+    )
+    .await
+    .unwrap();
+
+    let row = db::mcp_elicitation::get(&fx.pool, &elicit_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.status, db::mcp_elicitation::STATUS_CANCELLED);
+
+    let approval_status: String = sqlx::query("SELECT status FROM approvals WHERE id = $1")
+        .bind(approval_id)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap()
+        .get("status");
+    assert_eq!(approval_status, "pending");
+}
+
+/// After an unanswered dialog we stop eliciting that agent for
+/// `CANCEL_COOLDOWN`. Without it a headless client re-prompts on every retry:
+/// each gated call mints a *fresh* approval, so a per-approval guard would
+/// never bind, and the cancel is the only signal the protocol gives us that
+/// this peer cannot answer.
+#[tokio::test]
+async fn elicitation_suppressed_after_recent_cancel() {
+    let fx = bootstrap_mcp(true).await;
+    let cooldown_secs = 120_i64;
+    assert!(
+        !db::mcp_elicitation::cancelled_recently_for_agent(&fx.pool, fx.agent_id, cooldown_secs)
+            .await
+            .unwrap(),
+        "clean slate: nothing has been cancelled yet"
+    );
+
+    // Retire an elicitation the way an unanswered dialog does.
+    let approval_id = seed_pending_approval(&fx).await;
+    let elicit_id = format!("elicit_{}", Uuid::new_v4());
+    db::mcp_elicitation::insert(
+        &fx.pool,
+        &elicit_id,
+        Uuid::new_v4(),
+        fx.agent_id,
+        approval_id,
+    )
+    .await
+    .unwrap();
+    db::mcp_elicitation::cancel(&fx.pool, &elicit_id)
+        .await
+        .unwrap();
+
+    assert!(
+        db::mcp_elicitation::cancelled_recently_for_agent(&fx.pool, fx.agent_id, cooldown_secs)
+            .await
+            .unwrap(),
+        "a just-cancelled row must suppress the next elicitation"
+    );
+
+    // Backdate `completed_at` past the window. Predicating on completed_at
+    // rather than created_at is deliberate: a row retired by the originator's
+    // 300s timeout has an old created_at, and that is exactly when
+    // re-eliciting would hang the next call for another 300s.
+    sqlx::query(
+        "UPDATE pending_mcp_elicitations
+            SET completed_at = now() - interval '1 hour'
+          WHERE elicit_id = $1",
+    )
+    .bind(&elicit_id)
+    .execute(&fx.pool)
+    .await
+    .unwrap();
+
+    assert!(
+        !db::mcp_elicitation::cancelled_recently_for_agent(&fx.pool, fx.agent_id, cooldown_secs)
+            .await
+            .unwrap(),
+        "the cooldown must expire, not latch"
+    );
+}
+
 // ─── await_completion ──────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -1090,7 +1303,7 @@ async fn await_completion_returns_completed_when_row_finalises() {
 }
 
 #[tokio::test]
-async fn await_completion_returns_cancelled_on_timeout() {
+async fn await_completion_returns_abandoned_on_timeout() {
     let fx = bootstrap_mcp(false).await;
     let approval_id: Uuid = sqlx::query(
         "INSERT INTO approvals (org_id, identity_id, action_summary, token,
@@ -1126,8 +1339,8 @@ async fn await_completion_returns_cancelled_on_timeout() {
     )
     .await;
     assert!(
-        matches!(outcome, mcp_session::ElicitOutcome::Cancelled),
-        "expected Cancelled, got {outcome:?}"
+        matches!(outcome, mcp_session::ElicitOutcome::Abandoned),
+        "expected Abandoned, got {outcome:?}"
     );
 
     // Timeout path also cancels the row so a late receiver doesn't drive

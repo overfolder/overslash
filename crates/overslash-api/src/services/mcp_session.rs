@@ -27,9 +27,13 @@ pub enum ElicitOutcome {
     /// loopback resolve/call returned an error envelope). Emit `value` as a
     /// JSON-RPC `result` payload that lets the model see what happened.
     Failed(Value),
-    /// Row was cancelled (disconnect, expiry, or the receiver couldn't claim
-    /// it). Emit a JSON-RPC error to the model so it can fall back to URL.
-    Cancelled,
+    /// Nobody answered. The dialog was cancelled or dismissed, the client
+    /// replied with a JSON-RPC error, the originator's poll timed out, the
+    /// session disconnected, or the sweeper retired the row. The approval is
+    /// untouched and still `pending`, so the caller re-emits the ordinary
+    /// `pending_approval` envelope and the agent keeps the URL-reject
+    /// fallback it would have had with elicitation switched off.
+    Abandoned,
 }
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -41,6 +45,32 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// no row older than this can still have anybody listening, and no reap window
 /// shorter than this is safe.
 pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The platform default for a binding that has never expressed a choice.
+///
+/// Storage records only the explicit opt-out
+/// (`mcp_client_agent_bindings.elicitation_opted_out`), so this is the other
+/// half of the answer and the one place to change if the default ever flips
+/// back. It is not AND-ed with the client's declared capability here on
+/// purpose: capabilities are unknown when a binding is created, and the
+/// capability check belongs at request time in `elicitation_eligible`.
+pub(crate) const ELICITATION_DEFAULT_ENABLED: bool = true;
+
+/// How long an unanswered elicitation suppresses further elicitation for the
+/// same agent.
+///
+/// A `cancelled` row is the only signal the protocol gives us that the peer
+/// could not, or would not, answer: a headless client auto-cancels in
+/// milliseconds, and a human who just dismissed a dialog does not want the
+/// model's immediate retry to raise another one. Keyed on the agent rather
+/// than the approval because every gated call mints a *fresh* approval row —
+/// a per-approval counter would never bind.
+///
+/// Long enough to swallow a model's retry burst, short enough that a human
+/// who dismissed one dialog and then asks again gets a fresh one. Comfortably
+/// inside `mcp_elicitation_retention_secs` (>= 720s), so the rows it reads are
+/// never purged out from under it.
+pub(crate) const CANCEL_COOLDOWN: Duration = Duration::from_secs(120);
 
 /// Insert a fresh `pending_mcp_elicitations` row. Called by the originator
 /// pod just before it emits `elicitation/create` on its SSE stream.
@@ -91,13 +121,14 @@ pub async fn await_completion_with_timeout(
                 repo::STATUS_FAILED => {
                     return ElicitOutcome::Failed(row.final_response.unwrap_or(json!({})));
                 }
-                repo::STATUS_CANCELLED => return ElicitOutcome::Cancelled,
+                repo::STATUS_CANCELLED => return ElicitOutcome::Abandoned,
                 // pending or claimed → keep polling
                 _ => {}
             },
             Ok(None) => {
-                // Row vanished (manual cleanup or cascade). Treat as cancelled.
-                return ElicitOutcome::Cancelled;
+                // Row vanished (manual cleanup or cascade). Nobody is going
+                // to answer it now.
+                return ElicitOutcome::Abandoned;
             }
             Err(e) => {
                 tracing::error!(elicit_id, "poll mcp elicitation failed: {e}");
@@ -107,7 +138,7 @@ pub async fn await_completion_with_timeout(
 
         if tokio::time::Instant::now() >= deadline {
             let _ = repo::cancel(state.db(ext), elicit_id).await;
-            return ElicitOutcome::Cancelled;
+            return ElicitOutcome::Abandoned;
         }
         sleep(POLL_INTERVAL).await;
     }
@@ -140,13 +171,37 @@ pub async fn complete_from_elicitation(
         .cloned()
         .unwrap_or(Value::Null);
 
-    // `action` is the MCP-spec-level outcome (accept / decline / cancel).
-    // `decision` is *our* per-form choice the user picked when they did
-    // accept the dialog. A decline at the MCP level means "the user said
-    // no to this approval prompt" — that's a `deny` resolution as far as
-    // the approval row is concerned, not just a row-level cancel. Without
-    // this the approval stays `pending`, the elicitation re-fires on
-    // retry, and the user gets prompted in a loop.
+    // MCP separates the two negative outcomes, and so do we.
+    //
+    // `decline` is a human saying no — resolved as `deny` below, so a retry
+    // does not re-prompt for something already refused.
+    //
+    // `cancel` is *no answer*. The dialog was dismissed, or the client never
+    // rendered one: headless / `--print` Claude Code auto-cancels within
+    // milliseconds because it has no UI (measured at 6ms against 2.1.278),
+    // and a `tools/call`-only bridge that declared `elicitation` never shows
+    // a dialog at all. Reading that as a denial silently kills an approval
+    // the human never saw, and takes the URL-reject fallback away with it.
+    // Retire the row instead and leave the approval `pending`: the
+    // originator's SSE tail then answers the original `tools/call` with the
+    // same `pending_approval` envelope the no-elicitation path returns.
+    //
+    // Anything that is neither `accept` nor `decline` lands here too,
+    // including the `{action:"cancel"}` that `post_mcp` synthesises when the
+    // client answers with a JSON-RPC error — which is exactly the "declared
+    // elicitation but can't actually do it" case, where falling back is the
+    // only correct answer.
+    //
+    // This runs after `claim` so only one replica retires the row, and uses
+    // `cancel` rather than `fail` because `cancel` stamps `completed_at`,
+    // which the post-cancel cooldown in `elicitation_eligible` reads.
+    if action != "accept" && action != "decline" {
+        repo::cancel(state.db(ext), elicit_id).await?;
+        return Ok(());
+    }
+
+    // `decision` is *our* per-form choice the user picked when they accepted
+    // the dialog. A `decline` carries no form content, so it is a flat deny.
     let decision = if action == "accept" {
         content
             .get("decision")

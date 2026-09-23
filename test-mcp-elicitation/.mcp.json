@@ -1,18 +1,22 @@
 {
+  "_comment": [
+    "Project-scope MCP config for the elicitation probe. Run Claude Code from",
+    "THIS directory so it is auto-discovered and `uv run` resolves against this",
+    "folder -- no absolute path here, because one rots the moment the repo is",
+    "cloned elsewhere or checked out as a worktree.",
+    "",
+    "`test-elicit` is plain Flow A (form mode, capability-gated): the default",
+    "worth measuring, since URL mode and tasks are both still unreachable.",
+    "To probe those, point Claude Code at a throwaway --mcp-config instead;",
+    "the README has the exact invocation.",
+    "  tasks: --use-tasks --force --task-resolve-after-ms 500",
+    "  url:   --elicit-mode url --force --url https://example.com/overslash-approve"
+  ],
   "mcpServers": {
     "test-elicit": {
       "type": "stdio",
       "command": "uv",
-      "args": [
-        "--directory",
-        "/home/arturo/code/overslash/test-mcp-elicitation",
-        "run",
-        "python",
-        "server.py",
-        "--use-tasks",
-        "--force",
-        "--task-resolve-after-ms", "500"
-      ]
+      "args": ["run", "python", "server.py"]
     }
   }
 }

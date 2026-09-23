@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict GO7npTcqC7FKoTtAkhWjqR1LDW2vIOJCAVFwBisEiRaIbm3e4OxJWq9Eb8F4R8O
+\restrict FuCS0T1upv0JbKTjR6j4EZ5rbN8OAnQcEiuoEj7u85ztRjQuYGuYSRgdYIJo3mL
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -610,8 +610,8 @@ CREATE TABLE public.mcp_client_agent_bindings (
     agent_identity_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    elicitation_enabled boolean DEFAULT false NOT NULL,
-    self_approve_enabled boolean DEFAULT false NOT NULL
+    self_approve_enabled boolean DEFAULT false NOT NULL,
+    elicitation_opted_out boolean DEFAULT false NOT NULL
 );
 
 
@@ -2312,6 +2312,13 @@ CREATE INDEX idx_pending_checkouts_user ON public.pending_checkouts USING btree 
 
 
 --
+-- Name: idx_pending_mcp_elicit_agent_cancelled; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pending_mcp_elicit_agent_cancelled ON public.pending_mcp_elicitations USING btree (agent_identity_id, completed_at) WHERE (status = 'cancelled'::text);
+
+
+--
 -- Name: idx_pending_mcp_elicit_session; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3380,5 +3387,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict GO7npTcqC7FKoTtAkhWjqR1LDW2vIOJCAVFwBisEiRaIbm3e4OxJWq9Eb8F4R8O
+\unrestrict FuCS0T1upv0JbKTjR6j4EZ5rbN8OAnQcEiuoEj7u85ztRjQuYGuYSRgdYIJo3mL
 

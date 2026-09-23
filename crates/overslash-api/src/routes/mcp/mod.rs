@@ -180,6 +180,18 @@ async fn post_mcp(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| Uuid::parse_str(s).ok());
 
+    // A client that did not offer to read an event stream cannot be handed
+    // one. Streamable HTTP has POST carry `Accept: application/json,
+    // text/event-stream`; the absence of the stream type marks a
+    // `tools/call`-only bridge, and upgrading it to SSE would hang the call
+    // instead of answering it. Cheap to check, and it is the difference
+    // between "elicitation is off for you" and "your tool call never
+    // returns" — which matters now that elicitation is on by default.
+    let accepts_sse = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("text/event-stream"));
+
     // First try to parse as a request (has `method`). If that fails, try to
     // parse as a response — clients deliver elicitation answers as bare
     // `{ id, result }` / `{ id, error }` objects on POST /mcp.
@@ -191,7 +203,16 @@ async fn post_mcp(
             "initialize" => initialize_response(&state, &ext, &auth, &req).await,
             "tools/list" => tools_list_response(&state, &ext, &auth, req.id).await,
             "tools/call" => {
-                tools_call(&state, &ext, &auth, req, bearer.as_deref(), req_session_id).await
+                tools_call(
+                    &state,
+                    &ext,
+                    &auth,
+                    req,
+                    bearer.as_deref(),
+                    req_session_id,
+                    accepts_sse,
+                )
+                .await
             }
             "notifications/initialized" => (StatusCode::NO_CONTENT, "").into_response(),
             other => rpc_error_response(
