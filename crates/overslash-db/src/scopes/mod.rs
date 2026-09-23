@@ -50,6 +50,7 @@ mod org_approvals;
 mod org_audit;
 mod org_byoc;
 mod org_connections;
+mod org_directory_groups;
 mod org_events;
 mod org_executions;
 mod org_groups;

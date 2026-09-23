@@ -137,6 +137,13 @@ export interface IdpConfig {
    * page on a corp subdomain auto-redirects to the default; only one row
    * per org may be true. */
   is_default?: boolean;
+  /** Mirror this IdP's group claim into directory groups at each sign-in.
+   * Absent on managed (env) rows — only an org's own IdP may speak about its
+   * group structure. */
+  group_sync_enabled?: boolean;
+  /** Claim carrying group membership. `groups` suits Okta and Entra; Auth0
+   * needs its namespaced claim. */
+  group_claim?: string;
   created_at?: string;
   updated_at?: string;
 }

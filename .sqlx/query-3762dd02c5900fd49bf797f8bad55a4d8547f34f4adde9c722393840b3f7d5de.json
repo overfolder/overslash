@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at\n         FROM org_idp_configs WHERE org_id = $1 AND provider_key = $2",
+  "query": "UPDATE org_idp_configs SET is_default = false, updated_at = now()\n         WHERE id = $1 AND org_id = $2\n         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, group_sync_enabled, group_claim, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -93,6 +93,28 @@
       },
       {
         "ordinal": 8,
+        "name": "group_sync_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "group_sync_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "group_claim",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "group_claim"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -103,7 +125,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -117,7 +139,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -130,8 +152,10 @@
       false,
       false,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "eb49f4938bfc2f01771e4fe481654c4d2485d81f3f720e88fd294301635b8898"
+  "hash": "3762dd02c5900fd49bf797f8bad55a4d8547f34f4adde9c722393840b3f7d5de"
 }

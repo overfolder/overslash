@@ -702,6 +702,14 @@ A section/tab within the Org Dashboard for managing user groups. Groups define t
 - *Services list groups column (`/services`).* Group pills for self grants render as **"Myself"**, derived from `system_kind === 'self'` on the per-grant `ServiceGroupRef`.
 - *Service detail Groups table (`/services/<name>`).* Owner's self grants render as **"Myself"** (same rule). The "Restore Myself grant" inline affordance remains for owners who removed their own grant.
 
+**Directory groups in the dashboard.** When an org has group sync on for one of its IdPs (see *Identity Providers* below), the groups an IdP reports surface as their own thing — never mixed into the groups table, because they are a membership source rather than a ceiling (SPEC §5).
+
+- *Groups list (`/org/groups`).* A **Directory groups** section below the groups table, hidden entirely when nothing has been discovered. Columns: group (display name, plus the raw claim value when it differs — Entra sends object GUIDs), member count, *Grants access through* (chips naming the mapped groups, each with an × to unmap), and a *Map to group…* picker. An unmapped row reads "Not mapped — grants nothing", which is the honest description: discovery is not granting. System groups are excluded from the picker, as the API refuses them.
+- *Directory group detail (`/org/directory-groups/<id>`).* Linked from the group name in the section above. Shows the claim value, source, first/last seen; a **Grants access through** card carrying the mapping pills; and a **Members** list of the humans the directory places in it, with copy saying to add or remove them in the identity provider rather than here. A directory group is a thing an admin reasons about on its own — who is in it, what it grants, when it was last seen — and the list row answers none of that beyond a count.
+- *Group detail (`/org/groups/<id>`).* A **Directory sources** card above Members, listing the directory groups feeding this group as pills, plus the add affordance. Hidden on system groups. The copy states that removing a source revokes immediately, because it does.
+- *Adding a pill.* Everywhere a pill relationship is edited — mapped groups, directory sources — the affordance is the shared **`PillPicker`**: the pills, then a `+` button that opens a searchable dropdown (search field, filtered list, arrow/Enter/Escape). Never a bare `<select>`, and never the always-open chip input `GroupSearch` uses, which belongs to create forms; on an existing relationship a permanently-open search box reads as an unfinished form.
+- *Members list.* A member the directory asserts and no admin assigned carries a `via <directory group>` badge and **no Remove button** — there is no manual row to delete, and the API answers 409. The fix is to unmap the source or remove them upstream, which the badge points at.
+
 ```
 Group: Engineering
 
@@ -758,7 +766,9 @@ Overslash-managed providers are shown with an "env" badge and are read-only — 
 Per-provider settings:
 - **Auto-create users**: create user identity on first login (matched by email domain)
 - **Allowed email domains**: restrict which domains can log in (e.g., `acme.com`)
-- **Default group**: which group new users join on first login
+- **Group sync**: a column in the table, plus a *Sync groups* / *Stop group sync* action on the org's own rows. When on, the cell shows an `on` badge next to the claim name, and clicking the claim name edits it (`groups` suits Okta and Entra; Auth0 needs a namespaced claim such as `https://acme.com/groups`). Managed (`env`) rows show `—` and no action — only an org's own IdP may assert groups (D12). Turning it on means sign-ins through this IdP populate **Directory groups** on `/org/groups`; it grants nothing by itself.
+
+*Supersedes the previously specified **Default group** setting* ("which group new users join on first login"), which was never implemented. Group sync answers the same need — new users landing in the right group without an admin touching them — without the failure mode of a static default, which cannot express more than one group and never revokes.
 
 SAML 2.0: future concern. "SAML" appears greyed out in the type dropdown with a "coming soon" tooltip.
 

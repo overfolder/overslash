@@ -9,6 +9,7 @@ pub mod byoc_credentials;
 pub mod connect_gate;
 pub mod connections;
 pub mod dev_e2e;
+pub mod directory_groups;
 pub mod downloads;
 pub mod events;
 pub mod executions;

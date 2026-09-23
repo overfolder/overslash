@@ -14,6 +14,7 @@
 mod agent_icons;
 mod agent_self_setup_defaults;
 mod common;
+mod directory_group_sync;
 
 mod account_invitations;
 mod actions_reauth;
