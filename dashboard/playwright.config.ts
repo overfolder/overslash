@@ -21,8 +21,8 @@ if (existsSync(envFile)) {
 }
 
 const baseURL =
-	process.env.DASHBOARD_URL ?? envFromFile.DASHBOARD_URL ?? 'http://127.0.0.1:5173';
-const apiURL = process.env.API_URL ?? envFromFile.API_URL ?? 'http://127.0.0.1:3000';
+	process.env.DASHBOARD_URL ?? envFromFile.DASHBOARD_URL ?? 'http://localhost:5173';
+const apiURL = process.env.API_URL ?? envFromFile.API_URL ?? 'http://localhost:3000';
 
 // Re-export the resolved values into the process env so test fixtures
 // (e.g. tests/e2e/fixtures/auth.ts) can read them via `process.env.API_URL`

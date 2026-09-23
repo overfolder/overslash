@@ -14,7 +14,8 @@ import { resolveEnv } from './env.mjs';
 /**
  * Wire name of the session cookie. The e2e API sets no
  * `SESSION_COOKIE_DOMAIN`, so it mints the host-only `__Host-` form, which is
- * `Secure` — browsers still store and send it over http://127.0.0.1.
+ * `Secure` — browsers and Playwright's request context only store and send
+ * that over plain http on `localhost`, which is why e2e-up.sh serves there.
  * Mirrors `crates/overslash-api/src/cookies.rs`.
  */
 export const SESSION_COOKIE = '__Host-oss_session';
