@@ -328,3 +328,148 @@ async fn webhook_delivery_still_reaches_a_loopback_endpoint() {
         "the loopback endpoint must still deliver"
     );
 }
+
+// ── OIDC issuer discovery ───────────────────────────────────────────
+//
+// An org admin supplies `issuer_url`, and both `POST /v1/org-idp-configs` and
+// the `/discover` preview fetch its discovery document. Same guard, per hop,
+// plus a scheme rule of its own: `https`, or plain `http` to loopback only.
+// And unlike Mode A, the caller never sees what the network said — so the
+// assertions here are as much about what the error *omits* as that it fails.
+
+/// The two endpoints that fetch an issuer, each hit with `issuer_url`.
+async fn discover_both(base: &str, key: &str, issuer_url: &str) -> Vec<(u16, String)> {
+    let client = reqwest::Client::new();
+    let preview = client
+        .post(format!("{base}/v1/org-idp-configs/discover"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&json!({ "issuer_url": issuer_url }))
+        .send()
+        .await
+        .unwrap();
+    let create = client
+        .post(format!("{base}/v1/org-idp-configs"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&json!({
+            "issuer_url": issuer_url,
+            "client_id": "cid",
+            "client_secret": "csecret",
+        }))
+        .send()
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    for resp in [preview, create] {
+        let status = resp.status().as_u16();
+        out.push((status, resp.text().await.unwrap()));
+    }
+    out
+}
+
+/// Both endpoints fail with the generic discovery error, and neither names
+/// anything in `must_not_leak`.
+async fn assert_generic_refusal(base: &str, key: &str, issuer_url: &str, must_not_leak: &[&str]) {
+    for (status, body) in discover_both(base, key, issuer_url).await {
+        assert_eq!(status, 400, "{issuer_url}: expected a refusal, got {body}");
+        assert!(
+            body.contains("OIDC discovery failed")
+                && body.contains("could not retrieve a valid discovery document"),
+            "{issuer_url}: expected the generic discovery error, got {body}"
+        );
+        for leak in must_not_leak
+            .iter()
+            .chain(&["refusing to connect", "ami-id"])
+        {
+            assert!(
+                !body.contains(leak),
+                "{issuer_url}: the error leaked {leak:?}: {body}"
+            );
+        }
+    }
+}
+
+/// A loopback "issuer" that answers every path with `respond()`.
+async fn start_issuer<F>(respond: F) -> std::net::SocketAddr
+where
+    F: Fn() -> axum::response::Response + Clone + Send + Sync + 'static,
+{
+    let app = axum::Router::new().fallback(move || {
+        let respond = respond.clone();
+        async move { respond() }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// An issuer that redirects its discovery document to `to`.
+async fn start_redirecting_issuer(to: &'static str) -> std::net::SocketAddr {
+    start_issuer(move || Redirect::temporary(to).into_response()).await
+}
+
+/// The finding in its plainest form: a private address is refused before a
+/// socket is opened, and the caller is not told why.
+#[tokio::test]
+async fn oidc_discovery_refuses_a_private_ip_issuer() {
+    let (pool, _fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org, _mock) = boot(pool).await;
+
+    assert_generic_refusal(&base, &key, "https://10.0.0.1", &["10.0.0.1"]).await;
+    assert_generic_refusal(&base, &key, "https://169.254.169.254", &["169.254"]).await;
+}
+
+/// The shared client used to follow redirects without looking. Hop one here
+/// is a legitimate (loopback, allow-listed) issuer; hop two is where it
+/// points inward, and it must be checked exactly like hop one.
+#[tokio::test]
+async fn oidc_discovery_refuses_a_redirect_to_a_private_address() {
+    let (pool, _fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org, _mock) = boot(pool).await;
+
+    let to_metadata = start_redirecting_issuer(METADATA).await;
+    assert_generic_refusal(&base, &key, &format!("http://{to_metadata}"), &["169.254"]).await;
+
+    let to_rfc1918 =
+        start_redirecting_issuer("https://10.0.0.1/.well-known/openid-configuration").await;
+    assert_generic_refusal(&base, &key, &format!("http://{to_rfc1918}"), &["10.0.0.1"]).await;
+}
+
+/// Plain `http` is accepted only to loopback, on every hop — so a redirect
+/// cannot downgrade the fetch to cleartext toward any other host, public or
+/// allow-listed.
+#[tokio::test]
+async fn oidc_discovery_refuses_a_redirect_to_plain_http_off_loopback() {
+    let (pool, _fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org, _mock) = boot(pool).await;
+
+    // A public address the guard itself would allow: only the scheme rule
+    // stands between this redirect and a cleartext request.
+    let downgrade =
+        start_redirecting_issuer("http://1.1.1.1/.well-known/openid-configuration").await;
+    assert_generic_refusal(&base, &key, &format!("http://{downgrade}"), &["1.1.1.1"]).await;
+}
+
+/// The oracle half of the finding: a failing issuer's body used to come back
+/// verbatim in the error.
+#[tokio::test]
+async fn oidc_discovery_does_not_echo_the_upstream_body() {
+    let (pool, _fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org, _mock) = boot(pool).await;
+
+    let issuer = start_issuer(|| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "internal-secret-sentinel",
+        )
+            .into_response()
+    })
+    .await;
+    assert_generic_refusal(
+        &base,
+        &key,
+        &format!("http://{issuer}"),
+        &["internal-secret-sentinel", "500"],
+    )
+    .await;
+}

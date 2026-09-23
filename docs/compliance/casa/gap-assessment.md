@@ -80,18 +80,19 @@ and v4-mapped addresses are refused on both the buffered and the streamed fork, 
 toward the metadata endpoint is handed back rather than followed, and two positive
 controls keep the loopback fakes honest.
 
-**Residual — SSRF on OIDC issuer discovery.** `routes/org_idp_configs.rs:135` and `:521`
-dial an admin-supplied `issuer_url` through the shared `state.http_client`, behind a
-**second, hand-rolled guard** (`services/oidc_discovery.rs:85-125`) rather than
-`ssrf_guard`. That guard checks the *string*: it parses the host, rejects it if it is an
-IP literal in a private range, and blocks three names. So a hostname that resolves to
-10.0.0.1 passes it, and the shared client follows up to 10 redirects, so a cooperative
-issuer can walk it inward after the check. The handler echoes the fetch error
-(`OIDC discovery failed: {e}`), including the upstream body on a non-2xx, which makes it
-an oracle. Narrower than V1 — org-admin only — but the same class, and the remedy is to
-delete the hand-rolled check and call `ssrf_guard::outbound_client`. Not folded into V1
-because it is a different surface with different tests; tracked in
-[TODO.md §1.6](../../../TODO.md).
+**Fixed — SSRF on OIDC issuer discovery.** `routes/org_idp_configs.rs` fetches an
+admin-supplied `issuer_url` in two places: when creating a custom-OIDC IdP and in the
+`/discover` preview. Both used to go through the shared `state.http_client`, behind a
+hand-rolled string check that never resolved DNS, and the handler echoed the upstream
+error and body. That check is gone. `services/oidc_discovery.rs` now follows redirects
+by hand and runs every hop through `ssrf_guard::outbound_client_validated`, the same
+resolve-check-pin as V1. It adds a scheme rule of its own: `https`, or plain `http` only
+when the *resolved* address is loopback. HTTP to a private range is refused even when an
+operator allow-lists that range. After the input check, every failure returns one
+generic error, and the detail (guard refusal, status, a body snippet cut on a char
+boundary) is logged server-side instead, so the endpoint is no longer an oracle. Tests:
+`tests/ssrf_guard.rs` (private-IP issuer, redirect to metadata and RFC1918, redirect
+that downgrades to http, upstream body not echoed).
 
 **Self-hosted private networking.** The deny-list would otherwise make Overslash
 unable to reach a service on the operator's own network, so a self-hosted deployment
@@ -236,7 +237,7 @@ magic link.
 | 5.1.2 | Redirects and forwards allowlisted, or warned | `pass` | `sanitize_next` accepts only same-origin paths — must start `/`, must not start `//`, no CR/LF (`routes/auth/mod.rs:199-204`). OAuth `redirect_uri` is exact-match. The LB's catch-all 301 to `www` is static config (`infra/modules/api-lb/main.tf:154-181`) | — |
 | 5.1.3 | Avoid `eval()` / dynamic code execution; sandbox where unavoidable | `statement` | Overslash *does* evaluate user-supplied jq filters — that is a product feature. It runs in-process with syntax validation and a timeout, over JSON only, with no filesystem, network or shell reach (`services/response_filter.rs:145-199`). No `Command::new` exists in any server crate. Needs a written description of the sandbox | Med |
 | 5.1.4 | Protect against template injection | `statement` | `{param}` interpolation in action descriptions is plain string substitution, not a template engine. Server-rendered HTML interpolations pass `html_escape` (`routes/connect_gate.rs:294-307`, `routes/oauth_upstream.rs:620-680`). One rough edge to fix or disclose: `oauth_upstream.rs:646` puts an HTML-escaped value inside a JavaScript string literal (`window.location.href = '{return_to}'`) — the wrong encoder for that context. It holds today (entities are not decoded inside `<script>`, and `'` → `&#x27;` blocks termination) but backslash is not escaped | Med |
-| 5.1.5 | Prevent Server-Side Request Forgery | `statement` | **V1 fixed.** Action execution and webhook delivery now resolve, check and pin every target through `services/ssrf_guard.rs`, re-running the guard on each redirect hop and stripping credentials that would cross a host boundary; the transport (`services/http_caller.rs`) owns client construction so a new call site cannot bypass it. Tests: `tests/ssrf_guard.rs`. Three things still need saying to a lab: the operator allow-list a self-hoster uses for its own private network (`OVERSLASH_SSRF_ALLOWED_CIDRS` — environment-only, never set on the multi-tenant deployment), the residual issuer-discovery surface at `routes/org_idp_configs.rs:135`/`:521`, and the scoping argument in [dast-readiness.md](dast-readiness.md) — outbound HTTP on user-supplied input *is* the product, so the control is a deny-list of destinations, not an absence of egress | Medium |
+| 5.1.5 | Prevent Server-Side Request Forgery | `statement` | **V1 fixed.** Action execution, webhook delivery and OIDC issuer discovery now resolve, check and pin every target through `services/ssrf_guard.rs`, re-running the guard on each redirect hop and stripping credentials that would cross a host boundary; the transport (`services/http_caller.rs`) owns client construction so a new call site cannot bypass it. Tests: `tests/ssrf_guard.rs`. Two things still need saying to a lab: the operator allow-list a self-hoster uses for its own private network (`OVERSLASH_SSRF_ALLOWED_CIDRS` — environment-only, never set on the multi-tenant deployment) and the scoping argument in [dast-readiness.md](dast-readiness.md) — outbound HTTP on user-supplied input *is* the product, so the control is a deny-list of destinations, not an absence of egress | Medium |
 | 5.1.6 | Protect against XPath / XML injection | `n/a` | No XML is parsed anywhere. No `quick-xml`, `roxmltree`, `xml-rs` or `serde-xml` in `Cargo.lock`; all payloads are JSON, and templates are YAML | — |
 | 5.1.7 | Context-aware escaping against reflected, stored and DOM XSS | `statement` | Six `{@html}` sinks in the dashboard, each fed by an escaping helper — `lib/api.ts:53-87` escapes both values and keys, `lib/approvals/format.ts:107-118`, `components/api-explorer/ResponsePanel.svelte:54-59`. No unescaped sink found. Svelte escapes by default elsewhere. Disclose the JS-context issue from 5.1.4; the scan confirms the rest | Med |
 | 5.1.8 | Protect against database injection | `pass` | Effectively every query is a compile-time-checked `sqlx::query!` / `query_as!` macro with bind parameters, and `clippy.toml:1-5` sets `disallowed-methods` to **ban** runtime-string SQL, enforced by `cargo clippy -D warnings` in CI. The only dynamic SQL is `services/key_rotation.rs:218-291`, built from a `const TARGETS: &[Target]` of `&'static str` table and column names | — |
@@ -297,9 +298,9 @@ Remediation is tracked in [TODO.md §1.6](../../../TODO.md). The ordering:
 **P0 — live vulnerabilities. Both done.** ~~V2~~ — the org comes from the credential, the
 identity resolves through that scope, migration 121 enforces the pair, and the
 unauthenticated bootstrap branch is gone. ~~V1~~ — Mode A and webhook delivery run through
-the SSRF guard. Two follow-ups survive V1, neither a P0: the default `Everyone → admin on
-http` grant (a behaviour change for new orgs, so a human decision) and the residual
-issuer-discovery surface at `routes/org_idp_configs.rs:135`/`:521`.
+the SSRF guard, and so, since then, does OIDC issuer discovery. One follow-up survives
+V1, not a P0: the default `Everyone → admin on http` grant (a behaviour change for new
+orgs, so a human decision).
 
 **P1 — hard CASA fails.** ~~`Secure` on `oss_session` plus `__Host-`/`__Secure-` prefixes
 (2.3.1)~~ — done; **server-side sessions** — a sessions table with a `jti` claim checked per
