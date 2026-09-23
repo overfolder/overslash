@@ -33,6 +33,7 @@ pub mod mcp_client;
 pub mod mcp_session;
 pub mod oauth;
 pub mod oauth_as;
+pub mod oauth_redirect_uri;
 pub mod oauth_upstream;
 pub mod oidc_discovery;
 pub mod org_signin;

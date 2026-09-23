@@ -145,6 +145,8 @@ This is what `overslash mcp setup` was always supposed to be. The previous helpe
 
 `POST /oauth/register` accepts the standard RFC 7591 body (`redirect_uris`, `client_name`, `client_uri`, `software_id`, `software_version`, …) and returns a `client_id` (no `client_secret` — public clients with PKCE only). Persisted in `oauth_mcp_clients` (new table), with `created_at`, `last_seen_at`, `created_ip`, `created_user_agent`, and an `is_revoked` flag for admin cleanup.
 
+`redirect_uris` are parsed at the boundary (`services/oauth_redirect_uri.rs`). Only three shapes are accepted: `https://`, `http://` on a loopback host (`127.0.0.1`, `[::1]`, `localhost` — RFC 8252 §7.3), and a private-use app scheme that is either reverse-DNS or one of the named MCP-client schemes (`cursor`, `vscode`, `vscode-insiders`, `windsurf` — RFC 8252 §7.1). Fragments and userinfo are refused, and a registration holds at most 10 URIs of up to 2048 bytes each. Anything else gets `invalid_redirect_uri`. Stored strings are kept byte-for-byte, because authorize and token match against them exactly.
+
 **Open registration** is intentional: gating it would defeat the seamless "paste server URL → consent → done" flow that MCP clients implement. The blast radius is bounded — a malicious client still has to get a real user to consent in a real browser, and the AS metadata advertises only PKCE-protected public clients. Registered clients are visible to org-admins in the dashboard (new `Settings → MCP Clients` view, replacing the never-built `/settings/mcp` page) and revocable individually.
 
 ## Approval model

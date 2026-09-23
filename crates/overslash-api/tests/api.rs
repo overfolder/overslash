@@ -109,6 +109,7 @@ mod multi_org_backfill;
 mod myself_groups;
 mod notion;
 mod oauth_connections_ux;
+mod oauth_dcr_redirect_uris;
 mod oauth_default_identity_scopes;
 mod oauth_mcp_org_scoping;
 mod oauth_preview_handoff;
