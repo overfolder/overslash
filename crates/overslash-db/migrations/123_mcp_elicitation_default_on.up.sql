@@ -1,5 +1,5 @@
 -- Elicitation approvals become the default. See
--- docs/design/mcp-elicitation-approvals.md (Flow A, adopted) and the D-NEXT
+-- docs/design/mcp-elicitation-approvals.md (Flow A, adopted) and the D95
 -- decision entry.
 --
 -- The column is replaced rather than re-defaulted, because the old one could

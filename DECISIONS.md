@@ -982,7 +982,7 @@ The guard test is scoped to the modules where a raw read has actually produced a
 
 **MCP-runtime templates are deliberately untouched.** `x-overslash-mcp.auth` is a single `kind` discriminator, a separate vocabulary from `securitySchemes` with no notion of alternatives. It still contributes to `has_oauth` exactly as before. Extending modes to it is a clean follow-up and blocks nothing here, because every template that motivated this is an HTTP one.
 
-## D-NEXT: An unanswered elicitation is not a denial, and elicitation is on by default
+## D95: An unanswered elicitation is not a denial, and elicitation is on by default
 
 **Date**: 2026-09
 **Decision**: MCP approval elicitation ships on by default. Migration 123 replaces `mcp_client_agent_bindings.elicitation_enabled` with `elicitation_opted_out` — storage records only an explicit "no", the platform default lives in code, and the client-capability check moves entirely to request time; existing bindings carry over as opted out. The two negative MCP outcomes stop being synonyms: `decline` resolves the approval as `denied`, and *everything else* — `cancel`, a JSON-RPC error answer, a poll timeout, a disconnect, a sweeper reap — retires the elicitation row, leaves the approval `pending`, and closes the original `tools/call` with the same `pending_approval` envelope the non-elicitation path returns. Repeat prompting is bounded by a per-agent cooldown keyed on the last cancelled row, not by anything per-approval. A caller that did not send `Accept: text/event-stream` is never upgraded to SSE.
