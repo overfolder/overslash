@@ -25,6 +25,7 @@ use overslash_db::repos::{identity, membership};
 use crate::AppState;
 use crate::cookies;
 use crate::error::AppError;
+use crate::middleware::security_headers;
 use crate::routes::auth::{session_cookie, signing_key_bytes};
 use crate::services::jwt;
 
@@ -326,6 +327,9 @@ pub fn mismatch_html() -> Response {
     (StatusCode::FORBIDDEN, Html(body)).into_response()
 }
 
+const CANCEL_SCRIPT: &str =
+    "document.getElementById('cancel').addEventListener('click', () => window.close());";
+
 /// The loud admin/actor consent interstitial. Shown when the signed-in
 /// identity is *not* the flow's owner but is an org admin (or the flow's
 /// actor) and so may proceed on the owner's behalf. It must name **whose**
@@ -353,11 +357,13 @@ pub fn admin_consent_html(owner_label: &str, provider: &str, flow_id: &str) -> R
          <input type='hidden' name='id' value='{id}'>\
          <button type='submit' style='padding:.6rem 1.1rem;font-size:1rem;cursor:pointer'>\
          Continue to {prov}</button>\
-         <button type='button' onclick='window.close()' \
+         <button type='button' id=cancel \
          style='margin-left:.5rem;padding:.6rem 1.1rem;font-size:1rem;cursor:pointer'>Cancel</button>\
-         </form></body>"
+         </form><script>{CANCEL_SCRIPT}</script></body>"
     );
-    (StatusCode::OK, Html(body)).into_response()
+    // An `onclick=` attribute would need `'unsafe-hashes'`; a hashed block
+    // keeps the page's CSP to exactly this one script.
+    security_headers::html_with_inline_script(StatusCode::OK, body, CANCEL_SCRIPT)
 }
 
 #[cfg(test)]
