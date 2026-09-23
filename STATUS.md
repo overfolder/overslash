@@ -133,6 +133,18 @@
 - Approval resolution validates `remember_keys` against group ceiling
 - Backward compatible: no groups assigned = no ceiling enforced (permissive)
 
+### Directory Group Sync (D-NEXT)
+
+- `directory_groups`, `identity_directory_groups`, `group_directory_sources` + the `effective_identity_groups` view (migration 123)
+- Opt-in per IdP config: `org_idp_configs.group_sync_enabled` (default **off**) and `group_claim` (default `groups`)
+- At sign-in, an org's own IdP's group claim is mirrored into `directory_groups`; membership in `identity_directory_groups` is reconciled to match the claim exactly. Sync never writes `identity_groups`, so a manual assignment cannot be clobbered
+- Claims are read from `/userinfo` **and** the ID token (Entra releases `groups` only in the latter). The ID token's signature is unverified per OIDC Core §3.1.3.7; its `nonce` is checked against the login's — see TECH_DEBT.md
+- A directory group confers nothing until an admin maps it: `POST /v1/groups/{id}/directory-sources`. System groups refuse the edge
+- `GET /v1/directory-groups`, `GET|POST|DELETE /v1/groups/{id}/directory-sources`, `GET /v1/groups/{id}/member-origins`. `DELETE /v1/groups/{id}/members/{identity_id}` answers 409 for a directory-derived member
+- Never runs on Overslash-managed sign-in (D12), only for `kind = 'user'` identities, and never fails a login
+- Dashboard: *Directory groups* section on `/org/groups`, *Directory sources* card on the group detail page, `via <group>` badges with remove suppressed, per-IdP *Group sync* column on `/org`
+- **Not built**: Google Admin SDK / Cloud Identity pull, SCIM push, periodic re-sync sweep, general group nesting
+
 ### Multi-Provider OIDC Authentication
 
 - Generic OIDC provider support — `/auth/login/{provider_key}` and `/auth/callback/{provider_key}` replacing Google-specific routes
@@ -143,6 +155,7 @@
 - Multiple IdPs per org simultaneously
 - User provisioning by email domain matching (configurable per IdP config)
 - Profile update on subsequent logins (name, avatar synced from IdP claims)
+- Group claim → directory groups at sign-in, opt-in per config (see *Directory Group Sync*)
 - Available providers endpoint — `GET /auth/providers?org=<slug>` for login page
 - Backward-compatible Google login routes preserved
 

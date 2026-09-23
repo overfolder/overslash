@@ -18,6 +18,7 @@ impl OrgScope {
     /// the config defers to org-level OAuth App Credentials, both `Some`
     /// when the config has its own dedicated credentials. The DB CHECK
     /// enforces the both-or-neither invariant.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_org_idp_config(
         &self,
         provider_key: &str,
@@ -25,6 +26,8 @@ impl OrgScope {
         encrypted_client_secret: Option<&[u8]>,
         enabled: bool,
         allowed_email_domains: &[String],
+        group_sync_enabled: bool,
+        group_claim: Option<&str>,
     ) -> Result<OrgIdpConfigRow, sqlx::Error> {
         crate::repos::org_idp_config::create(
             self.db(),
@@ -34,6 +37,8 @@ impl OrgScope {
             encrypted_client_secret,
             enabled,
             allowed_email_domains,
+            group_sync_enabled,
+            group_claim,
         )
         .await
     }
@@ -80,6 +85,8 @@ impl OrgScope {
         creds: CredentialsUpdate<'_>,
         enabled: Option<bool>,
         allowed_email_domains: Option<&[String]>,
+        group_sync_enabled: Option<bool>,
+        group_claim: Option<&str>,
     ) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
         crate::repos::org_idp_config::update(
             self.db(),
@@ -88,6 +95,8 @@ impl OrgScope {
             creds,
             enabled,
             allowed_email_domains,
+            group_sync_enabled,
+            group_claim,
         )
         .await
     }

@@ -86,6 +86,43 @@ export interface Identity {
 	inherit_permissions: boolean;
 }
 
+/**
+ * A group as an external directory reports it.
+ *
+ * Not a ceiling: it carries no grants and confers nothing until an admin maps
+ * it onto a real group. See crates/overslash-api/src/routes/directory_groups.rs.
+ */
+export interface DirectoryGroup {
+	id: string;
+	org_id: string;
+	/** The IdP config that reported it, when it came from a login. */
+	idp_config_id?: string;
+	/** 'oidc_claim' today; widened as Admin SDK / SCIM sources land. */
+	source: string;
+	/** The claim value — a name from Okta, an object GUID from Entra. */
+	external_id: string;
+	display_name: string;
+	first_seen_at: string;
+	last_seen_at: string;
+}
+
+export interface DirectoryGroupSummary extends DirectoryGroup {
+	/** Humans the directory currently places in this group. */
+	member_count: number;
+	/** Groups it feeds. Empty means discovered but inert. */
+	mapped_group_ids: string[];
+}
+
+/** One member of a group and how they got there. A member can be both. */
+export interface MemberOrigin {
+	identity_id: string;
+	/** An admin put them here, and an admin can take them out. */
+	direct: boolean;
+	/** Directory groups routing them in. Non-empty with `direct: false` means
+	 *  there is no manual row to remove — the mapping has to go instead. */
+	via_directory_group_ids: string[];
+}
+
 export const groupsApi = {
 	list: (signal?: AbortSignal) => session.get<Group[]>('/v1/groups', signal),
 	/**
@@ -114,7 +151,29 @@ export const groupsApi = {
 	addMember: (id: string, identityId: string) =>
 		session.post<unknown>(`/v1/groups/${id}/members`, { identity_id: identityId }),
 	removeMember: (id: string, identityId: string) =>
-		session.delete<{ deleted: boolean }>(`/v1/groups/${id}/members/${identityId}`)
+		session.delete<{ deleted: boolean }>(`/v1/groups/${id}/members/${identityId}`),
+
+	/** Members tagged direct / via-directory. Companion to `listMembers`, which
+	 *  returns a bare id list and is left unchanged. */
+	listMemberOrigins: (id: string) =>
+		session.get<MemberOrigin[]>(`/v1/groups/${id}/member-origins`),
+
+	listDirectorySources: (id: string) =>
+		session.get<DirectoryGroup[]>(`/v1/groups/${id}/directory-sources`),
+	/** Map a directory group in. This is the act that grants something. */
+	addDirectorySource: (id: string, directoryGroupId: string) =>
+		session.post<{ created: boolean }>(`/v1/groups/${id}/directory-sources`, {
+			directory_group_id: directoryGroupId
+		}),
+	removeDirectorySource: (id: string, directoryGroupId: string) =>
+		session.delete<{ deleted: boolean }>(
+			`/v1/groups/${id}/directory-sources/${directoryGroupId}`
+		)
+};
+
+export const directoryGroupsApi = {
+	list: (signal?: AbortSignal) =>
+		session.get<DirectoryGroupSummary[]>('/v1/directory-groups', signal)
 };
 
 export const identitiesApi = {

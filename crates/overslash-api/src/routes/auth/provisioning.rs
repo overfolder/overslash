@@ -264,7 +264,52 @@ async fn provision_root_contents(
     Ok((org.id, identity_row.id, new_user.id, userinfo.email.clone()))
 }
 
+/// Resolve the actor for a corp-subdomain login, then refresh what the IdP
+/// says about their groups.
+///
+/// The sync lives in a wrapper rather than inside the resolver because the
+/// resolver has four success paths — known `external_id`, adopt-by-user,
+/// adopt-by-email, and fresh admission — and every one of them produces a
+/// human whose group membership the IdP has just re-asserted. Hanging the call
+/// on the single exit means a fifth path cannot be added without it.
 async fn provision_org_subdomain(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    userinfo: &NormalizedUserInfo,
+    slug: &str,
+) -> Result<(Uuid, Uuid, Uuid, String), AppError> {
+    let resolved = provision_org_subdomain_inner(state, ext, userinfo, slug).await?;
+    let (org_id, identity_id, _, _) = resolved;
+
+    // Best-effort by design. `sync_identity_groups` decides for itself whether
+    // this IdP is allowed to speak about groups; what matters here is that a
+    // failure inside it cannot cost the user their sign-in. A stale ceiling is
+    // recoverable at the next login — being unable to reach the dashboard
+    // because an IdP changed a claim shape is not.
+    match crate::services::directory_sync::sync_identity_groups(
+        state,
+        ext,
+        org_id,
+        identity_id,
+        &userinfo.provider_key,
+        &userinfo.claims,
+    )
+    .await
+    {
+        Ok(outcome) if outcome.ran => tracing::debug!(
+            %identity_id,
+            added = outcome.added.len(),
+            removed = outcome.removed.len(),
+            "directory group sync"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(%identity_id, error = %e, "directory group sync failed"),
+    }
+
+    Ok(resolved)
+}
+
+async fn provision_org_subdomain_inner(
     state: &AppState,
     ext: &axum::http::Extensions,
     userinfo: &NormalizedUserInfo,

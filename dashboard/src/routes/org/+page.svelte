@@ -497,6 +497,39 @@
 		}
 	}
 
+	// Group sync — mirror this IdP's group claim into directory groups at each
+	// sign-in. Only offered on an org's own IdP row: a claim arriving through
+	// Overslash-managed sign-in comes from the operator's shared OAuth app and
+	// says nothing about this org.
+	async function toggleGroupSync(cfg: IdpConfig) {
+		if (!cfg.id) return;
+		try {
+			await session.put(`/v1/org-idp-configs/${cfg.id}`, {
+				group_sync_enabled: !cfg.group_sync_enabled
+			});
+			await refetchIdp();
+		} catch (err) {
+			alert(asMessage(err));
+		}
+	}
+
+	async function editGroupClaim(cfg: IdpConfig) {
+		if (!cfg.id) return;
+		const next = prompt(
+			'Which claim carries group membership?\n\n' +
+				'Okta and Entra use "groups". Auth0 needs a namespaced claim such as ' +
+				'"https://acme.com/groups".',
+			cfg.group_claim ?? 'groups'
+		);
+		if (next == null || next.trim() === '' || next === cfg.group_claim) return;
+		try {
+			await session.put(`/v1/org-idp-configs/${cfg.id}`, { group_claim: next.trim() });
+			await refetchIdp();
+		} catch (err) {
+			alert(asMessage(err));
+		}
+	}
+
 	// "Default for sign-in" — the org's chosen IdP for the OAuth authorize
 	// bounce. Setting one here clears the previous default in the same
 	// transaction. MCP clients on `<slug>.api.overslash.com` and human users
@@ -1425,6 +1458,7 @@
 							<th>Type</th>
 							<th>Status</th>
 							<th>Default</th>
+							<th>Group sync</th>
 							<th class="actions-col">Actions</th>
 						</tr>
 					</thead>
@@ -1452,8 +1486,28 @@
 										<span class="muted small">—</span>
 									{/if}
 								</td>
+								<td>
+									{#if cfg.source !== 'db'}
+										<span class="muted small" title="Only an org's own IdP may assert groups">—</span>
+									{:else if cfg.group_sync_enabled}
+										<span class="badge badge-on">on</span>
+										<button
+											type="button"
+											class="btn-link"
+											title="Which claim carries group membership"
+											onclick={() => editGroupClaim(cfg)}
+										>
+											{cfg.group_claim ?? 'groups'}
+										</button>
+									{:else}
+										<span class="muted small">off</span>
+									{/if}
+								</td>
 								<td class="actions-col">
 									{#if cfg.source === 'db'}
+										<button type="button" class="btn-link" onclick={() => toggleGroupSync(cfg)}>
+											{cfg.group_sync_enabled ? 'Stop group sync' : 'Sync groups'}
+										</button>
 										<button type="button" class="btn-link" onclick={() => toggleIdp(cfg)}>
 											{cfg.enabled ? 'Disable' : 'Enable'}
 										</button>

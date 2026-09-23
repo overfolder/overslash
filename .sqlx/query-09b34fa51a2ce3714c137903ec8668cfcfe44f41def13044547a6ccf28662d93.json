@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT gg.service_instance_id, si.name AS service_name,\n                si.template_key, gg.access_level, gg.auto_approve_reads,\n                gg.auto_approve_level\n         FROM group_grants gg\n         JOIN identity_groups ig ON ig.group_id = gg.group_id\n         JOIN identities i ON i.id = ig.identity_id\n         JOIN groups g ON g.id = gg.group_id\n         JOIN service_instances si ON si.id = gg.service_instance_id\n         WHERE ig.identity_id = $1\n           AND i.org_id = $2\n           AND g.org_id = $2\n           AND si.org_id = $2",
+  "query": "SELECT gg.service_instance_id, si.name AS service_name,\n                si.template_key, gg.access_level, gg.auto_approve_reads,\n                gg.auto_approve_level\n         FROM group_grants gg\n         JOIN effective_identity_groups ig ON ig.group_id = gg.group_id\n         JOIN identities i ON i.id = ig.identity_id\n         JOIN groups g ON g.id = gg.group_id\n         JOIN service_instances si ON si.id = gg.service_instance_id\n         WHERE ig.identity_id = $1\n           AND i.org_id = $2\n           AND g.org_id = $2\n           AND si.org_id = $2",
   "describe": {
     "columns": [
       {
@@ -85,5 +85,5 @@
       false
     ]
   },
-  "hash": "2e3946399c42a7790959f1141a088f0de744f2236dbc0755553329b948781632"
+  "hash": "09b34fa51a2ce3714c137903ec8668cfcfe44f41def13044547a6ccf28662d93"
 }

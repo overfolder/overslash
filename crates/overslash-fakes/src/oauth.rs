@@ -14,12 +14,27 @@
 
 use axum::{
     Form, Json, Router,
+    extract::State,
     http::HeaderMap,
     routing::{get, post},
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
+use std::sync::{Arc, RwLock};
 
 use crate::{Handle, authorize_redirect_with_mock_code, bind, serve};
+
+/// Extra claims layered onto `/oidc/userinfo`, settable at runtime.
+///
+/// A real IdP's claim set is a tenant configuration, not a constant, and the
+/// claims that matter most to test — group membership — are exactly the ones
+/// that differ per deployment. Rather than freeze one shape into the fake, a
+/// test POSTs the claims it wants to `/control/userinfo-claims` and then drives
+/// the login. Empty by default, so every existing test sees the original fixed
+/// profile unchanged.
+#[derive(Clone, Default)]
+struct UserinfoState {
+    extra: Arc<RwLock<Map<String, Value>>>,
+}
 
 /// Boot the OAuth/OIDC fake on `127.0.0.1:0` (OS-assigned). Use
 /// [`start_on`] when you need a specific port.
@@ -34,10 +49,13 @@ pub async fn start_on(bind_addr: &str) -> Handle {
 }
 
 pub fn router() -> Router {
+    let state = UserinfoState::default();
     Router::new()
         .route("/oauth/authorize", get(authorize_redirect_with_mock_code))
         .route("/oauth/token", post(token))
         .route("/oidc/userinfo", get(oidc_userinfo))
+        .route("/control/userinfo-claims", post(set_userinfo_claims))
+        .with_state(state)
         .route("/.well-known/openid-configuration", get(oidc_discovery))
         .route("/github/user", get(github_user))
         .route("/github/user/emails", get(github_user_emails))
@@ -94,18 +112,34 @@ async fn token(Form(params): Form<Vec<(String, String)>>) -> Json<Value> {
     }
 }
 
-async fn oidc_userinfo(headers: HeaderMap) -> Json<Value> {
+/// Replace the extra claims `/oidc/userinfo` returns. The body is a JSON
+/// object; an empty object clears them.
+async fn set_userinfo_claims(
+    State(state): State<UserinfoState>,
+    Json(claims): Json<Map<String, Value>>,
+) -> Json<Value> {
+    *state.extra.write().unwrap() = claims;
+    Json(json!({ "ok": true }))
+}
+
+async fn oidc_userinfo(State(state): State<UserinfoState>, headers: HeaderMap) -> Json<Value> {
     let _token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("unknown");
-    Json(json!({
+    let mut claims = json!({
         "sub": "oidc-sub-testuser",
         "email": "testuser@example.com",
         "name": "Test User",
         "picture": "https://example.com/avatar.png",
-    }))
+    });
+    // Extras win, so a test can override `sub`/`email` as well as add claims.
+    let obj = claims.as_object_mut().expect("object");
+    for (k, v) in state.extra.read().unwrap().iter() {
+        obj.insert(k.clone(), v.clone());
+    }
+    Json(claims)
 }
 
 async fn oidc_discovery(headers: HeaderMap) -> Json<Value> {

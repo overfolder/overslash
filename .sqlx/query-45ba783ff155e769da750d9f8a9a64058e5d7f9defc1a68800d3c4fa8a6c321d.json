@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM group_directory_sources gds\n          USING groups g\n          WHERE gds.group_id = g.id\n            AND gds.group_id = $1\n            AND gds.directory_group_id = $2\n            AND g.org_id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "45ba783ff155e769da750d9f8a9a64058e5d7f9defc1a68800d3c4fa8a6c321d"
+}

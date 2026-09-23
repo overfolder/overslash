@@ -786,6 +786,7 @@ where
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
@@ -995,6 +996,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
@@ -1159,6 +1161,8 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::account_invitations::router())
         .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
+        .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::directory_groups::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1844,6 +1848,7 @@ where
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
@@ -1992,6 +1997,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::services::router())
         .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
@@ -2158,6 +2164,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())

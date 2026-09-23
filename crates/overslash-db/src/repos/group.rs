@@ -428,7 +428,7 @@ pub(crate) async fn list_groups_for_identity(
         GroupRow,
         "SELECT g.id, g.org_id, g.name, g.description, g.is_system, g.system_kind, g.owner_identity_id, g.created_at, g.updated_at
          FROM groups g
-         JOIN identity_groups ig ON ig.group_id = g.id
+         JOIN effective_identity_groups ig ON ig.group_id = g.id
          JOIN identities i ON i.id = ig.identity_id
          WHERE ig.identity_id = $1 AND g.org_id = $2 AND i.org_id = $2
          ORDER BY g.name",
@@ -445,10 +445,12 @@ pub(crate) async fn list_identity_ids_in_group(
     group_id: Uuid,
 ) -> Result<Vec<Uuid>, sqlx::Error> {
     let rows = sqlx::query!(
-        "SELECT ig.identity_id
-         FROM identity_groups ig
+        // `identity_id!` override: selecting through a view loses sqlx's
+        // NOT NULL inference, and the column is non-nullable in both arms.
+        r#"SELECT ig.identity_id AS "identity_id!"
+         FROM effective_identity_groups ig
          JOIN groups g ON g.id = ig.group_id
-         WHERE ig.group_id = $1 AND g.org_id = $2",
+         WHERE ig.group_id = $1 AND g.org_id = $2"#,
         group_id,
         org_id,
     )
@@ -464,7 +466,7 @@ pub(crate) async fn count_members_in_group(
 ) -> Result<i64, sqlx::Error> {
     let row = sqlx::query!(
         "SELECT COUNT(*) AS count
-         FROM identity_groups ig
+         FROM effective_identity_groups ig
          JOIN groups g ON g.id = ig.group_id
          WHERE ig.group_id = $1 AND g.org_id = $2",
         group_id,
@@ -476,6 +478,14 @@ pub(crate) async fn count_members_in_group(
 }
 
 /// Check whether an identity is a member of the system "Admins" group of an org.
+///
+/// Deliberately reads `identity_groups` rather than `effective_identity_groups`,
+/// unlike every other membership query in this file. Admins membership is held
+/// in lockstep with `identities.is_org_admin` by `sync_admins_group_tx`, and a
+/// system group is not a valid directory-source target, so there is nothing for
+/// the view's second arm to add here. Keeping the base table makes that
+/// structural: even if the handler guard were bypassed, an IdP group claim
+/// still could not mint an org admin.
 pub(crate) async fn is_identity_in_admins(
     pool: &PgPool,
     org_id: Uuid,
@@ -652,7 +662,7 @@ pub(crate) async fn get_ceiling_for_user(
                 si.template_key, gg.access_level, gg.auto_approve_reads,
                 gg.auto_approve_level
          FROM group_grants gg
-         JOIN identity_groups ig ON ig.group_id = gg.group_id
+         JOIN effective_identity_groups ig ON ig.group_id = gg.group_id
          JOIN identities i ON i.id = ig.identity_id
          JOIN groups g ON g.id = gg.group_id
          JOIN service_instances si ON si.id = gg.service_instance_id
@@ -679,7 +689,7 @@ pub(crate) async fn get_visible_service_ids(
     let rows = sqlx::query!(
         "SELECT DISTINCT gg.service_instance_id
          FROM group_grants gg
-         JOIN identity_groups ig ON ig.group_id = gg.group_id
+         JOIN effective_identity_groups ig ON ig.group_id = gg.group_id
          JOIN identities i ON i.id = ig.identity_id
          JOIN groups g ON g.id = gg.group_id
          JOIN service_instances si ON si.id = gg.service_instance_id
@@ -715,7 +725,7 @@ pub(crate) async fn caller_has_group_access_to_connection(
         "SELECT EXISTS (
              SELECT 1
              FROM group_grants gg
-             JOIN identity_groups ig ON ig.group_id = gg.group_id
+             JOIN effective_identity_groups ig ON ig.group_id = gg.group_id
              JOIN identities i ON i.id = ig.identity_id
              JOIN groups g ON g.id = gg.group_id
              JOIN service_instances si ON si.id = gg.service_instance_id

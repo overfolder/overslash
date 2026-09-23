@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE org_idp_configs SET is_default = false, updated_at = now()\n         WHERE id = $1 AND org_id = $2\n         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
+  "query": "INSERT INTO org_idp_configs (org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, group_sync_enabled, group_claim)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'groups'))\n         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, group_sync_enabled, group_claim, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -93,6 +93,28 @@
       },
       {
         "ordinal": 8,
+        "name": "group_sync_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "group_sync_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "group_claim",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "group_claim"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -103,7 +125,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -117,7 +139,13 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Text",
+        "Bytea",
+        "Bytea",
+        "Bool",
+        "TextArray",
+        "Bool",
+        "Text"
       ]
     },
     "nullable": [
@@ -130,8 +158,10 @@
       false,
       false,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "c4f908b263332527b851f990d1ab15a05bf93767ac7dc72d6ab191f1626a7b47"
+  "hash": "707c9362da2e93c0f61f92df1c297988ef80ad8f15b5ddeca7cc4901951cc4f0"
 }

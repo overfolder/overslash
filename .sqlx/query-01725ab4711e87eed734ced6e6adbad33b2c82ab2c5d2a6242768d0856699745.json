@@ -1,0 +1,113 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT dg.id, dg.org_id, dg.idp_config_id, dg.source, dg.external_id,\n                dg.display_name, dg.first_seen_at, dg.last_seen_at\n           FROM directory_groups dg\n           JOIN group_directory_sources gds ON gds.directory_group_id = dg.id\n          WHERE gds.group_id = $1 AND dg.org_id = $2\n          ORDER BY dg.display_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "idp_config_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "idp_config_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "external_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "external_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "first_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "first_seen_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "last_seen_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "01725ab4711e87eed734ced6e6adbad33b2c82ab2c5d2a6242768d0856699745"
+}

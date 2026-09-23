@@ -839,6 +839,21 @@ async fn unassign_identity(
         ));
     }
 
+    // Membership asserted purely by a directory has no `identity_groups` row
+    // to delete, so the unassign would report success and change nothing —
+    // and the member would still be there. Worse, an admin would believe they
+    // had revoked access. Say plainly that the fix is to unmap the directory
+    // group (or remove the human from it upstream).
+    if scope
+        .membership_is_directory_only(group_id, identity_id)
+        .await?
+    {
+        return Err(AppError::Conflict(
+            "this membership comes from a directory group; remove the mapping              under the group's directory sources, or remove the user from the              group in your identity provider"
+                .into(),
+        ));
+    }
+
     let deleted = scope
         .unassign_identity_from_group(identity_id, group_id)
         .await?;

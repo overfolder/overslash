@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT COUNT(*) AS count\n         FROM identity_groups ig\n         JOIN groups g ON g.id = ig.group_id\n         WHERE ig.group_id = $1 AND g.org_id = $2",
+  "query": "SELECT COUNT(*) AS count\n         FROM effective_identity_groups ig\n         JOIN groups g ON g.id = ig.group_id\n         WHERE ig.group_id = $1 AND g.org_id = $2",
   "describe": {
     "columns": [
       {
@@ -20,5 +20,5 @@
       null
     ]
   },
-  "hash": "3f5e2cc125e25a4c370afc93ba722425e747ff0217113dbac8752a9ab659a7e0"
+  "hash": "1cb9e0adac9a214dafc35002c73d94b29f5814940872f32f4a7cd25728e0e8a8"
 }

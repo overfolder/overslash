@@ -419,6 +419,11 @@ pub struct TokenResponse {
     pub expires_in: Option<i64>,
     pub token_type: Option<String>,
     pub scope: Option<String>,
+    /// Present on an OIDC token response. Carried because several IdPs release
+    /// group membership **only** here and not from `/userinfo` — Entra is the
+    /// notable one. Read by the login path for directory group sync; ignored
+    /// by the third-party connection flows, which are plain OAuth 2.
+    pub id_token: Option<String>,
 }
 
 impl TokenResponse {
@@ -634,6 +639,7 @@ mod tests {
             expires_in: None,
             token_type: None,
             scope: Some("openid email profile".into()),
+            id_token: None,
         };
         assert_eq!(t.granted_scopes(), vec!["openid", "email", "profile"]);
     }
@@ -646,6 +652,7 @@ mod tests {
             expires_in: None,
             token_type: None,
             scope: Some("repo,read:user".into()),
+            id_token: None,
         };
         assert_eq!(t.granted_scopes(), vec!["repo", "read:user"]);
     }
@@ -709,6 +716,7 @@ mod tests {
             expires_in: None,
             token_type: None,
             scope: None,
+            id_token: None,
         };
         assert!(t.granted_scopes().is_empty());
     }
@@ -720,6 +728,7 @@ mod tests {
             expires_in: None,
             token_type: None,
             scope: scope.map(String::from),
+            id_token: None,
         }
     }
 
