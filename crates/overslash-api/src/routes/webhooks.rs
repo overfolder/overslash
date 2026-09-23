@@ -140,7 +140,12 @@ async fn create_webhook(
     // handshake runs before we answer, so the registrant sees the outcome.
     // A failure is not an error here — the subscription exists, receives
     // nothing, and can be re-checked with `POST /v1/webhooks/{id}/verify`.
-    let row = run_verification(&scope, &auth, &ip, row).await?;
+    // Deleted by someone else while the handshake was in flight: creation
+    // still succeeded, so answer with the row as stored rather than a 404.
+    let row = match run_verification(&scope, &auth, &ip, &row).await? {
+        Some(updated) => updated,
+        None => row,
+    };
 
     Ok(Json(WebhookCreatedResponse {
         verification: VerificationView::from(&row),
@@ -176,18 +181,22 @@ async fn verify_webhook(
             row.disabled_reason.as_deref().unwrap_or("inactive")
         )));
     }
-    let row = run_verification(&scope, &acl, &ip, row).await?;
+    let row = run_verification(&scope, &acl, &ip, &row)
+        .await?
+        .ok_or_else(|| AppError::NotFound("webhook not found".into()))?;
     Ok(Json(row.into()))
 }
 
 /// Challenge the subscription's endpoint and record the outcome, audited.
-/// No DB connection is held across the outbound request.
+/// No DB connection is held across the outbound request. `None` when the
+/// subscription was deleted (or, for a success, re-pointed) while the
+/// handshake was in flight — there is nothing left to record it on.
 async fn run_verification(
     scope: &OrgScope,
     acl: &OrgAcl,
     ip: &ClientIp,
-    row: WebhookSubscriptionRow,
-) -> Result<WebhookSubscriptionRow> {
+    row: &WebhookSubscriptionRow,
+) -> Result<Option<WebhookSubscriptionRow>> {
     let outcome = webhook_dispatcher::verify_endpoint(&row.url, &row.secret).await;
     let was_grandfathered = row.grandfathered;
     let (updated, action, detail) = match &outcome {
@@ -204,9 +213,9 @@ async fn run_verification(
             serde_json::json!({ "url": &row.url, "error": reason }),
         ),
     };
-    // Deleted (or, for a success, re-pointed) while the handshake was in
-    // flight — nothing left to report on.
-    let updated = updated.ok_or_else(|| AppError::NotFound("webhook not found".into()))?;
+    let Some(updated) = updated else {
+        return Ok(None);
+    };
 
     let _ = scope
         .log_audit(AuditEntry {
@@ -221,7 +230,7 @@ async fn run_verification(
         })
         .await;
 
-    Ok(updated)
+    Ok(Some(updated))
 }
 
 async fn list_webhooks(scope: OrgScope) -> Result<Json<Vec<WebhookResponse>>> {
