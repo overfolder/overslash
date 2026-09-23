@@ -97,8 +97,11 @@ fn plaintext_may_reach(url: &Url, allowed: &[ipnet::IpNet]) -> bool {
     match url.host() {
         Some(url::Host::Ipv4(v4)) => covered(IpAddr::V4(v4)),
         Some(url::Host::Ipv6(v6)) => covered(IpAddr::V6(v6)),
+        // Both, not either: `localhost` usually resolves to 127.0.0.1 *and*
+        // ::1, and the guard refuses a host if any answer is outside the list —
+        // so accepting it on one family would pass a save that no call can use.
         Some(url::Host::Domain(d)) if d.eq_ignore_ascii_case("localhost") => {
-            covered(IpAddr::V4(Ipv4Addr::LOCALHOST)) || covered(IpAddr::V6(Ipv6Addr::LOCALHOST))
+            covered(IpAddr::V4(Ipv4Addr::LOCALHOST)) && covered(IpAddr::V6(Ipv6Addr::LOCALHOST))
         }
         Some(url::Host::Domain(_)) => true,
         None => false,
@@ -170,7 +173,7 @@ mod tests {
     /// host is still refused, both from the string (literal) and at dial time.
     #[test]
     fn an_allowed_range_permits_http_only_inside_it() {
-        let allowed = nets(&["10.42.0.0/16", "127.0.0.0/8"]);
+        let allowed = nets(&["10.42.0.0/16", "127.0.0.0/8", "::1/128"]);
         assert!(check_url_with("http://10.42.0.7:8080/api", &allowed).is_ok());
         assert!(check_url_with("http://localhost:1234", &allowed).is_ok());
         assert!(refused(check_url_with("http://10.99.0.7", &allowed)));
@@ -202,7 +205,12 @@ mod tests {
             "http://localhost:1",
             &nets(&["10.0.0.0/8"])
         )));
-        assert!(check_url_with("http://localhost:1", &nets(&["::1/128"])).is_ok());
+        // One family is not enough — see `plaintext_may_reach`.
+        assert!(refused(check_url_with(
+            "http://localhost:1",
+            &nets(&["::1/128"])
+        )));
+        assert!(check_url_with("http://localhost:1", &nets(&["127.0.0.0/8", "::1/128"])).is_ok());
     }
 
     #[test]
