@@ -677,6 +677,12 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         // so the GMP / OTel sidecar can scrape it over loopback unconditionally.
         .merge(overslash_metrics::metrics_router(metrics_handle))
         .layer(CompressionLayer::new())
+        // Outside compression and every router, so 404s, CORS preflights
+        // and `/internal/metrics` carry the baseline too. Sets each header
+        // only when the handler did not.
+        .layer(axum::middleware::from_fn(
+            middleware::security_headers::security_headers,
+        ))
         .layer(axum::middleware::from_fn(
             overslash_metrics::http::middleware,
         ))

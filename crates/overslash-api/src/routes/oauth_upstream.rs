@@ -30,6 +30,7 @@ use crate::{
     AppState,
     error::AppError,
     extractors::{ReqExt, SessionAuth},
+    middleware::security_headers,
     routes::connect_gate::{
         ParsedSession, SessionError, gone_html, html_escape, mismatch_html, read_session,
         session_authorized_for_org_identity,
@@ -624,16 +625,8 @@ fn switch_org_html(public_url: &str, flow_id: &str, target_org: Uuid) -> Respons
     // via fetch and redirect on success. The button is the only interactive
     // element so the page works fine even if JS doesn't load (the user just
     // sees a static notice).
-    let body = format!(
-        "<!doctype html><meta charset=utf-8><title>Switch org</title>\
-         <body style='font-family:system-ui;max-width:480px;margin:4rem auto;padding:0 1rem'>\
-         <h1>Switch org to continue</h1>\
-         <p>This OAuth link was created in a different org you belong to. \
-         Switch to that org to complete the connection.</p>\
-         <button id=switch type=button>Switch and continue</button>\
-         <p id=err style='color:#b00;display:none'></p>\
-         <script>\
-         document.getElementById('switch').addEventListener('click', async () => {{\
+    let script = format!(
+        "document.getElementById('switch').addEventListener('click', async () => {{\
            try {{\
              const r = await fetch('/auth/switch-org', {{\
                method: 'POST',\
@@ -648,12 +641,21 @@ fn switch_org_html(public_url: &str, flow_id: &str, target_org: Uuid) -> Respons
              err.textContent = 'Could not switch org: ' + e.message;\
              err.style.display = 'block';\
            }}\
-         }});\
-         </script></body>",
+         }});",
         org = html_escape(&target_org.to_string()),
         return_to = html_escape(&return_to),
     );
-    (StatusCode::OK, Html(body)).into_response()
+    let body = format!(
+        "<!doctype html><meta charset=utf-8><title>Switch org</title>\
+         <body style='font-family:system-ui;max-width:480px;margin:4rem auto;padding:0 1rem'>\
+         <h1>Switch org to continue</h1>\
+         <p>This OAuth link was created in a different org you belong to. \
+         Switch to that org to complete the connection.</p>\
+         <button id=switch type=button>Switch and continue</button>\
+         <p id=err style='color:#b00;display:none'></p>\
+         <script>{script}</script></body>"
+    );
+    security_headers::html_with_inline_script(StatusCode::OK, body, &script)
 }
 
 fn error_html(msg: &str) -> Response {
