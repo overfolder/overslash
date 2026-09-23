@@ -46,6 +46,9 @@ enum Answer {
     Wrong,
     /// Refuses the request.
     Unauthorized,
+    /// The headers after 6s and the correct echo 6s later: each half fits
+    /// inside 10s on its own, the whole exchange does not.
+    EchoTooSlowly,
 }
 
 struct Received {
@@ -103,11 +106,20 @@ async fn receive(State(r): State<Receiver>, headers: HeaderMap, raw: String) -> 
     if body["type"] != "webhook.verification" {
         return "ok".into_response();
     }
-    match *r.answer.lock().unwrap() {
+    let answer = *r.answer.lock().unwrap();
+    match answer {
         Answer::EchoJson => Json(json!({ "challenge": challenge })).into_response(),
         Answer::EchoPlain => format!("{challenge}\n").into_response(),
         Answer::Wrong => Json(json!({ "challenge": "not-the-challenge" })).into_response(),
         Answer::Unauthorized => StatusCode::UNAUTHORIZED.into_response(),
+        Answer::EchoTooSlowly => {
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            let late = futures_util::stream::once(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                Ok::<_, std::convert::Infallible>(challenge)
+            });
+            axum::body::Body::from_stream(late).into_response()
+        }
     }
 }
 
@@ -275,6 +287,27 @@ async fn a_wrong_or_refused_echo_stays_pending() {
             "pending_verification"
         );
     }
+}
+
+/// One deadline covers the whole handshake. An endpoint that takes most of it
+/// to send headers and then trickles the (correct) echo in must not stretch
+/// registration past it — nor get verified for answering at 12s.
+#[tokio::test]
+async fn a_correct_echo_that_arrives_after_the_deadline_fails() {
+    let api = boot().await;
+    let (url, _rx) = start_receiver(Answer::EchoTooSlowly).await;
+
+    let started = std::time::Instant::now();
+    let wh = api.register(&url).await;
+    let took = started.elapsed();
+
+    assert_eq!(wh["verification_status"], "pending_verification");
+    let err = wh["verification_error"].as_str().unwrap_or_default();
+    assert!(err.contains("within 10s"), "{err:?}");
+    assert!(
+        took < std::time::Duration::from_secs(12),
+        "registration waited {took:?}, past the 10s handshake deadline"
+    );
 }
 
 #[tokio::test]

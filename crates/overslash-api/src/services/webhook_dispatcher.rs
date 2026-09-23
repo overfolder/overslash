@@ -301,14 +301,29 @@ const VERIFICATION_BODY_CAP: usize = 4096;
 /// back, either as the whole body (`text/plain`, surrounding whitespace
 /// ignored) or as `{"challenge": "<value>"}`. Anything else fails.
 ///
-/// The request goes through [`send_signed`] — HTTPS-only, SSRF-guarded, one
-/// 10s deadline — so a handshake reaches nothing a delivery could not. The
-/// `Err` text is shown to the registrant and never includes the response
-/// body, so a failed handshake cannot be used to read what an address says.
+/// The request goes through [`send_signed`] — HTTPS-only, SSRF-guarded — so a
+/// handshake reaches nothing a delivery could not, and one 10s deadline covers
+/// the whole exchange, body included. The `Err` text is shown to the
+/// registrant and never includes the response body, so a failed handshake
+/// cannot be used to read what an address says.
 ///
 /// Like [`deliver`], this takes no DB connection: the caller records the
 /// outcome after the round trip.
 pub async fn verify_endpoint(url: &str, secret: &str) -> Result<(), String> {
+    // One deadline over the whole handshake — send, headers *and* body — so a
+    // slow endpoint cannot stretch it past 10s by trickling its answer in
+    // after `send_signed`'s own deadline has been met.
+    tokio::time::timeout(ATTEMPT_DEADLINE, challenge_endpoint(url, secret))
+        .await
+        .unwrap_or_else(|_elapsed| {
+            Err(format!(
+                "the endpoint did not answer the challenge within {}s",
+                ATTEMPT_DEADLINE.as_secs()
+            ))
+        })
+}
+
+async fn challenge_endpoint(url: &str, secret: &str) -> Result<(), String> {
     use rand::RngExt;
     let mut challenge = [0u8; 32];
     rand::rng().fill(&mut challenge);
@@ -333,30 +348,17 @@ pub async fn verify_endpoint(url: &str, secret: &str) -> Result<(), String> {
     }
 
     let mut received = Vec::new();
-    let read = tokio::time::timeout(ATTEMPT_DEADLINE, async {
-        while let Some(chunk) = resp.chunk().await? {
-            received.extend_from_slice(&chunk);
-            if received.len() > VERIFICATION_BODY_CAP {
-                break;
-            }
-        }
-        Ok::<_, reqwest::Error>(())
-    })
-    .await;
-    match read {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return Err(format!("reading the endpoint's answer failed: {e}")),
-        Err(_) => {
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("reading the endpoint's answer failed: {e}"))?
+    {
+        received.extend_from_slice(&chunk);
+        if received.len() > VERIFICATION_BODY_CAP {
             return Err(format!(
-                "the endpoint's answer did not complete within {}s",
-                ATTEMPT_DEADLINE.as_secs()
+                "endpoint answered with more than {VERIFICATION_BODY_CAP} bytes — expected only the challenge"
             ));
         }
-    }
-    if received.len() > VERIFICATION_BODY_CAP {
-        return Err(format!(
-            "endpoint answered with more than {VERIFICATION_BODY_CAP} bytes — expected only the challenge"
-        ));
     }
 
     if echoed_challenge(&received).is_some_and(|echo| echo == challenge) {
