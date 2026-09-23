@@ -5,7 +5,8 @@
 //! check every address, pin. On top of that, discovery requires `https`, with
 //! a single exception: plain `http` to a loopback address, which the guard only
 //! lets through when the operator allow-listed loopback (the test suite and
-//! `scripts/e2e-up.sh`, whose IdP fakes bind there). `http` to a private range
+//! `scripts/e2e-up.sh`, whose IdP fakes bind there). The rule is shared with
+//! webhook delivery and lives in [`crate::services::https_policy`]. `http` to a private range
 //! is refused even when that range is allow-listed — a self-hosted IdP on the
 //! operator's network still speaks TLS.
 //!
@@ -14,13 +15,13 @@
 //! guard refusal, status, a body snippet — is logged instead. Echoing it would
 //! let an admin use this endpoint to probe what resolves and what answers.
 
-use std::net::IpAddr;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::error::AppError;
+use crate::services::https_policy::{names_loopback, scheme_allowed};
 use crate::services::ssrf_guard;
 
 /// Parsed OIDC Discovery document from `.well-known/openid-configuration`.
@@ -170,29 +171,6 @@ async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     Err(format!("more than {MAX_REDIRECTS} redirects"))
 }
 
-/// `https` anywhere the guard allows; `http` only to loopback.
-fn scheme_allowed(scheme: &str, ip: &IpAddr) -> bool {
-    match scheme {
-        "https" => true,
-        "http" => match ip {
-            IpAddr::V4(v4) => v4.is_loopback(),
-            IpAddr::V6(v6) => v6.is_loopback() || v6.to_ipv4().is_some_and(|m| m.is_loopback()),
-        },
-        _ => false,
-    }
-}
-
-/// Whether the URL's host is written as loopback: `localhost` or a loopback
-/// literal. Only a pre-filter — the resolved address is what counts.
-fn names_loopback(url: &Url) -> bool {
-    match url.host() {
-        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(v4)) => scheme_allowed("http", &IpAddr::V4(v4)),
-        Some(url::Host::Ipv6(v6)) => scheme_allowed("http", &IpAddr::V6(v6)),
-        None => false,
-    }
-}
-
 async fn read_capped(resp: reqwest::Response) -> Result<Vec<u8>, String> {
     use futures_util::StreamExt;
 
@@ -219,32 +197,6 @@ fn snippet(body: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    fn ip(s: &str) -> IpAddr {
-        s.parse().unwrap()
-    }
-
-    #[test]
-    fn https_is_accepted_wherever_the_guard_allows() {
-        assert!(scheme_allowed("https", &ip("8.8.8.8")));
-        assert!(scheme_allowed("https", &ip("127.0.0.1")));
-    }
-
-    #[test]
-    fn http_is_accepted_only_to_loopback() {
-        assert!(scheme_allowed("http", &ip("127.0.0.1")));
-        assert!(scheme_allowed("http", &ip("::1")));
-        assert!(scheme_allowed("http", &ip("::ffff:127.0.0.1")));
-
-        assert!(!scheme_allowed("http", &ip("8.8.8.8")));
-        assert!(!scheme_allowed("http", &ip("10.0.0.1")));
-        assert!(!scheme_allowed("http", &ip("fd00::1")));
-    }
-
-    #[test]
-    fn other_schemes_are_refused() {
-        assert!(!scheme_allowed("ftp", &ip("127.0.0.1")));
-    }
-
     #[test]
     fn snippet_never_splits_a_codepoint() {
         let body = "é".repeat(LOG_SNIPPET_BYTES);
@@ -265,20 +217,6 @@ mod tests {
                 matches!(err, OidcDiscoveryError::InvalidUrl(_)),
                 "{url}: {err}"
             );
-        }
-    }
-
-    #[test]
-    fn loopback_hosts_are_recognised_from_the_string() {
-        for url in [
-            "http://localhost:8080",
-            "http://127.0.0.1",
-            "http://[::1]:9",
-        ] {
-            assert!(names_loopback(&Url::parse(url).unwrap()), "{url}");
-        }
-        for url in ["http://issuer.example", "http://10.0.0.1"] {
-            assert!(!names_loopback(&Url::parse(url).unwrap()), "{url}");
         }
     }
 }

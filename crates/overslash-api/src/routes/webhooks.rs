@@ -14,6 +14,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, ClientIp},
+    services::https_policy::HttpsUrl,
 };
 
 pub fn router() -> Router<AppState> {
@@ -35,6 +36,11 @@ struct WebhookResponse {
     url: String,
     events: Vec<String>,
     active: bool,
+    /// Set when the platform switched the subscription off. `needs_https`: the
+    /// URL is plain `http://`, registered before HTTPS was enforced; nothing is
+    /// delivered to it. Replace it with an `https://` subscription.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disabled_reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -54,6 +60,11 @@ async fn create_webhook(
     Json(req): Json<CreateWebhookRequest>,
 ) -> Result<Json<WebhookCreatedResponse>> {
     let auth = acl;
+    // CASA 7.1.1: webhook traffic is HTTPS-only. Plain http survives only to a
+    // loopback host the SSRF allow-list already opens (tests, self-hosters).
+    let url = HttpsUrl::parse(&req.url)
+        .map_err(|e| AppError::BadRequest(format!("invalid webhook url: {e}")))?;
+
     // Generate a signing secret for this subscription
     use rand::RngExt;
     let mut secret_bytes = [0u8; 32];
@@ -61,7 +72,7 @@ async fn create_webhook(
     let secret = hex::encode(secret_bytes);
 
     let row = scope
-        .create_webhook_subscription(&req.url, &req.events, &secret)
+        .create_webhook_subscription(url.as_str(), &req.events, &secret)
         .await?;
 
     let _ = scope
@@ -95,6 +106,7 @@ async fn list_webhooks(scope: OrgScope) -> Result<Json<Vec<WebhookResponse>>> {
                 url: r.url,
                 events: r.events,
                 active: r.active,
+                disabled_reason: r.disabled_reason,
             })
             .collect(),
     ))

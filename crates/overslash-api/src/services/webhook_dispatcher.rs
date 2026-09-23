@@ -8,6 +8,9 @@ use uuid::Uuid;
 
 use overslash_db::{OrgScope, SystemScope};
 
+use crate::error::AppError;
+use crate::services::https_policy::{self, HttpsUrl};
+
 type HmacSha256 = Hmac<Sha256>;
 
 /// Dispatch a webhook event to all matching subscriptions for the org.
@@ -87,6 +90,8 @@ fn build_envelope(
 /// which the dashboard then shows back to whoever registered the endpoint.
 /// A refusal is a terminal-shaped failure recorded like any other: it will be
 /// retried, and it will be refused again, because the address is the problem.
+/// The same goes for a plain `http://` URL anywhere but loopback (CASA 7.1.1):
+/// the attempt is recorded as failed with the reason, and nothing is sent.
 ///
 /// Connection-hold invariant: this takes the `pool` (an `Arc`-cheap handle),
 /// **not** a checked-out `PoolConnection`, and never acquires a DB connection
@@ -120,7 +125,21 @@ async fn deliver(
     // alone would leave the lookup outside the 10s this function promises.
     let attempt_deadline = std::time::Duration::from_secs(10);
     let sent = tokio::time::timeout(attempt_deadline, async {
-        let (http_client, _) = crate::services::ssrf_guard::outbound_client(url).await?;
+        // CASA 7.1.1: never sign a payload onto the wire in the clear.
+        // Registration already refuses `http://`, so this only fires for a
+        // row that predates that check or was written around it — checked
+        // twice: from the string before any lookup, then against the address
+        // the guard actually pinned, so `localhost` resolving elsewhere
+        // cannot slip through either.
+        HttpsUrl::parse(url)
+            .map_err(|e| AppError::BadRequest(format!("webhook delivery refused: {e}")))?;
+        let (http_client, parsed, ip) =
+            crate::services::ssrf_guard::outbound_client_validated(url).await?;
+        if !https_policy::scheme_allowed(parsed.scheme(), &ip) {
+            return Err(AppError::BadRequest(format!(
+                "webhook delivery refused: plain http is only accepted to loopback (resolved {ip})"
+            )));
+        }
         http_client
             .post(url)
             .header("Content-Type", "application/json")
@@ -130,7 +149,7 @@ async fn deliver(
             .body(body)
             .send()
             .await
-            .map_err(|e| crate::error::AppError::BadGateway(e.to_string()))
+            .map_err(|e| AppError::BadGateway(e.to_string()))
     })
     .await;
 

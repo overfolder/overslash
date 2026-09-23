@@ -10,6 +10,9 @@ pub struct WebhookSubscriptionRow {
     pub events: Vec<String>,
     pub secret: String,
     pub active: bool,
+    /// Why the platform switched this subscription off, when it did —
+    /// `needs_https` for a plaintext URL registered before 7.1.1 enforcement.
+    pub disabled_reason: Option<String>,
     pub created_at: OffsetDateTime,
 }
 
@@ -38,7 +41,7 @@ pub(crate) async fn create_subscription(
         WebhookSubscriptionRow,
         "INSERT INTO webhook_subscriptions (org_id, url, events, secret)
          VALUES ($1, $2, $3, $4)
-         RETURNING id, org_id, url, events, secret, active, created_at",
+         RETURNING id, org_id, url, events, secret, active, disabled_reason, created_at",
         org_id,
         url,
         events,
@@ -54,8 +57,8 @@ pub(crate) async fn list_by_org(
 ) -> Result<Vec<WebhookSubscriptionRow>, sqlx::Error> {
     sqlx::query_as!(
         WebhookSubscriptionRow,
-        "SELECT id, org_id, url, events, secret, active, created_at
-         FROM webhook_subscriptions WHERE org_id = $1 AND active = true ORDER BY created_at",
+        "SELECT id, org_id, url, events, secret, active, disabled_reason, created_at
+         FROM webhook_subscriptions WHERE org_id = $1 ORDER BY created_at",
         org_id,
     )
     .fetch_all(pool)
@@ -84,7 +87,7 @@ pub(crate) async fn find_matching_subscriptions(
 ) -> Result<Vec<WebhookSubscriptionRow>, sqlx::Error> {
     sqlx::query_as!(
         WebhookSubscriptionRow,
-        "SELECT id, org_id, url, events, secret, active, created_at
+        "SELECT id, org_id, url, events, secret, active, disabled_reason, created_at
          FROM webhook_subscriptions WHERE org_id = $1 AND active = true AND $2 = ANY(events)",
         org_id,
         event,
@@ -209,6 +212,7 @@ pub(crate) async fn get_pending_deliveries(
          FROM webhook_deliveries d
          JOIN webhook_subscriptions s ON d.subscription_id = s.id
          WHERE d.delivered_at IS NULL AND d.attempts < 5 AND d.next_retry_at <= now()
+           AND s.active = true
          ORDER BY d.next_retry_at
          LIMIT $1",
         limit,

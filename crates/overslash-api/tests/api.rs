@@ -166,5 +166,6 @@ mod upstream_metrics;
 mod version;
 mod wait_mode;
 mod webhook_digest;
+mod webhook_https;
 mod welcome_unsubscribe;
 mod whatsapp;

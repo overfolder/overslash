@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT d.id, d.subscription_id, d.event, d.payload, d.attempts, d.created_at,\n                s.url, s.secret\n         FROM webhook_deliveries d\n         JOIN webhook_subscriptions s ON d.subscription_id = s.id\n         WHERE d.delivered_at IS NULL AND d.attempts < 5 AND d.next_retry_at <= now()\n         ORDER BY d.next_retry_at\n         LIMIT $1",
+  "query": "SELECT id, org_id, url, events, secret, active, disabled_reason, created_at\n         FROM webhook_subscriptions WHERE org_id = $1 AND active = true AND $2 = ANY(events)",
   "describe": {
     "columns": [
       {
@@ -9,68 +9,24 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "webhook_deliveries",
+            "table": "webhook_subscriptions",
             "name": "id"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "subscription_id",
+        "name": "org_id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "webhook_deliveries",
-            "name": "subscription_id"
+            "table": "webhook_subscriptions",
+            "name": "org_id"
           }
         }
       },
       {
         "ordinal": 2,
-        "name": "event",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "webhook_deliveries",
-            "name": "event"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
-        "name": "payload",
-        "type_info": "Jsonb",
-        "origin": {
-          "Table": {
-            "table": "webhook_deliveries",
-            "name": "payload"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
-        "name": "attempts",
-        "type_info": "Int4",
-        "origin": {
-          "Table": {
-            "table": "webhook_deliveries",
-            "name": "attempts"
-          }
-        }
-      },
-      {
-        "ordinal": 5,
-        "name": "created_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "webhook_deliveries",
-            "name": "created_at"
-          }
-        }
-      },
-      {
-        "ordinal": 6,
         "name": "url",
         "type_info": "Text",
         "origin": {
@@ -81,7 +37,18 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 3,
+        "name": "events",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "events"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "secret",
         "type_info": "Text",
         "origin": {
@@ -90,11 +57,45 @@
             "name": "secret"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "active",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "active"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "disabled_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "disabled_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Int8"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -104,9 +105,9 @@
       false,
       false,
       false,
-      false,
+      true,
       false
     ]
   },
-  "hash": "0e79e57c3b75ae49bd82988fe6d0c10ed0396d76390fea3883cac372513ba0a5"
+  "hash": "60b9b739f4d3af532c1068b31e275d11de9b6b48acf91e29aef6007c1c96a9df"
 }

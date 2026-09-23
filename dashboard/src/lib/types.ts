@@ -232,6 +232,9 @@ export interface Webhook {
   url: string;
   events: string[];
   active: boolean;
+  /** Why the platform switched it off. `needs_https`: a plain http:// URL
+   *  registered before HTTPS was enforced — nothing is delivered to it. */
+  disabled_reason?: string;
 }
 
 export interface WebhookCreated extends Webhook {

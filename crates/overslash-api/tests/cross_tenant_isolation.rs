@@ -440,7 +440,7 @@ async fn cross_tenant_webhook_delete_returns_404() {
         .post(format!("{base}/v1/webhooks"))
         .header(auth(&admin_b).0, auth(&admin_b).1)
         .json(&json!({
-            "url": "http://example.com/hook",
+            "url": "https://example.com/hook",
             "events": ["approval.created"],
         }))
         .send()

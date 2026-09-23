@@ -2089,7 +2089,7 @@ async fn test_list_webhook_deliveries_empty_for_new_subscription() {
         .post(format!("{base}/v1/webhooks"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
-            "url": "http://example.invalid/hook",
+            "url": "https://example.invalid/hook",
             "events": ["approval.resolved"]
         }))
         .send()
