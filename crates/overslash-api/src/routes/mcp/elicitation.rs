@@ -30,7 +30,7 @@ pub(super) async fn elicitation_eligible(
         Ok(Some(b)) => b,
         _ => return false,
     };
-    if !binding.elicitation_enabled {
+    if binding.elicitation_opted_out {
         return false;
     }
     let client =
@@ -40,20 +40,35 @@ pub(super) async fn elicitation_eligible(
             Ok(Some(c)) => c,
             _ => return false,
         };
-    client
+    if client
         .capabilities
         .as_ref()
         .and_then(|c| c.get("elicitation"))
-        .is_some()
+        .is_none()
+    {
+        return false;
+    }
+    // Back off after an unanswered dialog (see `CANCEL_COOLDOWN`). Last check
+    // of the four so it only costs a query for callers that would otherwise
+    // be promoted, and fails closed: the fallback is the URL-reject envelope,
+    // which is never *wrong*, only less convenient — whereas a wrong `true`
+    // here can leave a headless call waiting on a dialog nobody will answer.
+    matches!(
+        overslash_db::repos::mcp_elicitation::cancelled_recently_for_agent(
+            state.db(ext),
+            agent_id,
+            mcp_session::CANCEL_COOLDOWN.as_secs() as i64,
+        )
+        .await,
+        Ok(false)
+    )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn sse_elicitation_response(
     state: AppState,
     ext: axum::http::Extensions,
     rpc_id: Value,
     elicit_id: String,
-    approval_id: Uuid,
     action_summary: String,
     pending_outcome: Value,
 ) -> Response {
@@ -64,8 +79,14 @@ pub(super) fn sse_elicitation_response(
         "params": elicitation_params(&action_summary, &pending_outcome),
     });
 
-    let stream =
-        elicitation_event_stream(state, ext, rpc_id, elicit_id, approval_id, elicit_request);
+    let stream = elicitation_event_stream(
+        state,
+        ext,
+        rpc_id,
+        elicit_id,
+        elicit_request,
+        pending_outcome,
+    );
     Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
         .into_response()
@@ -76,8 +97,8 @@ fn elicitation_event_stream(
     ext: axum::http::Extensions,
     rpc_id: Value,
     elicit_id: String,
-    approval_id: Uuid,
     elicit_request: Value,
+    pending_outcome: Value,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     let first = stream::once(async move {
         Ok::<_, Infallible>(Event::default().json_data(elicit_request).unwrap())
@@ -85,36 +106,58 @@ fn elicitation_event_stream(
 
     let tail = stream::once(async move {
         let outcome = mcp_session::await_completion(&state, &ext, &elicit_id).await;
-        let result_event = match outcome {
-            mcp_session::ElicitOutcome::Completed(v) => json!({
-                "jsonrpc": "2.0",
-                "id": rpc_id,
-                "result": {
-                    "content": [{ "type": "text", "text": serde_json::to_string(&v).unwrap_or_default() }],
-                }
-            }),
-            mcp_session::ElicitOutcome::Failed(v) => json!({
-                "jsonrpc": "2.0",
-                "id": rpc_id,
-                "result": {
-                    "isError": true,
-                    "content": [{ "type": "text", "text": serde_json::to_string(&v).unwrap_or_default() }],
-                }
-            }),
-            mcp_session::ElicitOutcome::Cancelled => json!({
-                "jsonrpc": "2.0",
-                "id": rpc_id,
-                "error": {
-                    "code": INTERNAL_ERROR,
-                    "message": "elicitation cancelled or timed out",
-                    "data": { "approval_id": approval_id }
-                }
-            }),
-        };
-        Ok::<_, Infallible>(Event::default().json_data(result_event).unwrap())
+        Ok::<_, Infallible>(
+            Event::default()
+                .json_data(elicit_result_event(&rpc_id, outcome, &pending_outcome))
+                .unwrap(),
+        )
     });
 
     first.chain(tail)
+}
+
+/// Pure translation of a settled elicitation into the JSON-RPC frame that
+/// closes the original `tools/call`. Split out from the stream so the three
+/// outcomes can be pinned by unit test without a database or a live socket.
+fn elicit_result_event(
+    rpc_id: &Value,
+    outcome: mcp_session::ElicitOutcome,
+    pending_outcome: &Value,
+) -> Value {
+    match outcome {
+        mcp_session::ElicitOutcome::Completed(v) => json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": {
+                "content": [{ "type": "text", "text": serde_json::to_string(&v).unwrap_or_default() }],
+            }
+        }),
+        mcp_session::ElicitOutcome::Failed(v) => json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": {
+                "isError": true,
+                "content": [{ "type": "text", "text": serde_json::to_string(&v).unwrap_or_default() }],
+            }
+        }),
+        // Nobody answered. The approval is still pending, so close the call
+        // with the very envelope the non-elicitation path would have returned
+        // — same approval_id, approval_url, suggested_tiers,
+        // auto_call_on_approve — and the model falls back to the URL. A
+        // JSON-RPC error here would hand the model something it cannot act on
+        // while the approval sits there, live and unmentioned.
+        //
+        // Benign race: the user may have resolved the approval from the
+        // dashboard between the cancel and this frame, so the envelope can say
+        // `pending_approval` for an approval that is already `allowed`. The
+        // model's correct next move — `overslash_call` with the `approval_id`
+        // — is right for that state anyway, so it self-heals.
+        mcp_session::ElicitOutcome::Abandoned => json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": super::tools_call::pending_approval_result(pending_outcome),
+        }),
+    }
 }
 
 /// Build the elicitation/create params for a permission gap, mirroring the
@@ -177,4 +220,75 @@ fn elicitation_params(action_summary: &str, pending_outcome: &Value) -> Value {
             "io.overslash/risk": risk
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn envelope() -> Value {
+        json!({
+            "status": "pending_approval",
+            "approval_id": "11111111-1111-1111-1111-111111111111",
+            "approval_url": "https://example.test/approvals/1111",
+            "action_description": "send an email",
+            "suggested_tiers": [],
+            "auto_call_on_approve": true,
+        })
+    }
+
+    /// The whole point of the fallback: what the model reads after an
+    /// unanswered dialog must be the same bytes it would have read with
+    /// elicitation switched off. Not an error, not an annotated variant.
+    #[test]
+    fn abandoned_returns_the_pending_envelope_verbatim() {
+        let outcome = envelope();
+        let ev = elicit_result_event(&json!(7), mcp_session::ElicitOutcome::Abandoned, &outcome);
+
+        assert_eq!(ev["id"], json!(7));
+        assert!(
+            ev.get("error").is_none(),
+            "a JSON-RPC error would hand the model something it cannot act on \
+             while the approval is still live: {ev}"
+        );
+        assert!(
+            ev["result"].get("isError").is_none(),
+            "an unanswered dialog is not a failed call: {ev}"
+        );
+
+        let text = ev["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap(),
+            outcome,
+            "the envelope must round-trip unchanged"
+        );
+        assert_eq!(
+            ev["result"],
+            super::super::tools_call::pending_approval_result(&outcome),
+            "and be literally what the synchronous path builds"
+        );
+    }
+
+    #[test]
+    fn completed_is_a_plain_result_and_failed_carries_is_error() {
+        let done = elicit_result_event(
+            &json!(1),
+            mcp_session::ElicitOutcome::Completed(json!({"ok": true})),
+            &envelope(),
+        );
+        assert!(done["result"].get("isError").is_none());
+        assert_eq!(
+            done["result"]["content"][0]["text"].as_str().unwrap(),
+            r#"{"ok":true}"#
+        );
+
+        // A `decline` lands here: the user really did say no, so the model
+        // should see the call fail rather than a pending approval to chase.
+        let failed = elicit_result_event(
+            &json!(2),
+            mcp_session::ElicitOutcome::Failed(json!({"resolution": "deny"})),
+            &envelope(),
+        );
+        assert_eq!(failed["result"]["isError"], true);
+    }
 }

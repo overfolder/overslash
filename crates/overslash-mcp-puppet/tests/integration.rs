@@ -383,6 +383,59 @@ async fn call_tool_sse_with_scripted_answer_returns_final() {
     assert_eq!(answers[0]["content"]["decision"], "allow");
 }
 
+/// A `cancel` answer is still a normal answer as far as the transport is
+/// concerned: the server closes the call with a result, and the puppet must
+/// surface it as `Final`, not as a transport error.
+///
+/// This is the client-side half of the rule Overslash now implements — an
+/// unanswered dialog degrades to the ordinary `pending_approval` envelope
+/// rather than a denial or a JSON-RPC error, so there has to be a final frame
+/// to carry it. It is also what a headless Claude Code does within
+/// milliseconds, having no dialog to render.
+#[tokio::test]
+async fn call_tool_sse_with_cancel_answer_still_returns_final() {
+    let url = spawn_mock().await;
+    let (client, _) = PuppetClient::connect(ConnectOpts {
+        base_url: url,
+        auth: Auth::None,
+        declare_capabilities: ClientCaps {
+            elicitation: true,
+            ..Default::default()
+        },
+        protocol_version: None,
+        client_info: None,
+    })
+    .await
+    .unwrap();
+
+    let mut q = VecDeque::new();
+    q.push_back(ElicitationAnswer {
+        action: "cancel".into(),
+        content: None,
+    });
+
+    let step = client
+        .call_tool(
+            "needs_one_elicitation",
+            json!({}),
+            CallToolOpts { elicitations: q },
+        )
+        .await
+        .unwrap();
+    let CallStep::Final {
+        result,
+        elicitations,
+        ..
+    } = step
+    else {
+        panic!("expected Final, got a suspended or errored call");
+    };
+    assert_eq!(elicitations.len(), 1);
+    assert_eq!(elicitations[0].answer.action, "cancel");
+    let answers = &result.unwrap()["answers_received"];
+    assert_eq!(answers[0]["action"], "cancel");
+}
+
 #[tokio::test]
 async fn call_tool_sse_empty_queue_yields_suspended_then_resumes() {
     let url = spawn_mock().await;

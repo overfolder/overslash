@@ -1838,11 +1838,273 @@ async fn consent_finish_persists_elicitation_when_supported() {
     );
 }
 
-/// A hand-crafted POST cannot opt into elicitation when the client never
-/// announced support — server-side gating is independent of the dashboard's
-/// disabled toggle.
+/// Read back an enrolled agent's MCP binding through the same endpoint the
+/// dashboard uses. Named lookup, because consent mints the agent for us.
+async fn binding_elicitation(
+    client: &reqwest::Client,
+    base: &str,
+    session_cookie: &str,
+    agent_name: &str,
+) -> Option<bool> {
+    let identities: Value = client
+        .get(format!("{base}/v1/identities"))
+        .header("cookie", session_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id = identities
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"].as_str() == Some(agent_name))
+        .and_then(|i| i["id"].as_str())
+        .unwrap_or_else(|| panic!("{agent_name} agent enrolled"));
+    let mcp: Value = client
+        .get(format!(
+            "{base}/v1/identities/{}/mcp-connection",
+            urlencoding::encode(agent_id)
+        ))
+        .header("cookie", session_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    mcp["connection"]["elicitation_enabled"].as_bool()
+}
+
+/// Default-on (migration 123): a first connect that expresses no preference
+/// gets elicitation.
 #[tokio::test]
-async fn consent_finish_drops_elicitation_when_unsupported() {
+async fn consent_finish_defaults_elicitation_on_for_capable_client() {
+    let pool = common::test_pool().await;
+    let (request_id, session_cookie, client, base, _client_id) =
+        enroll_until_consent_with_capabilities(pool, Some(json!({ "elicitation": {} })), 9985)
+            .await;
+
+    let resp = client
+        .post(format!(
+            "{base}/v1/oauth/consent/{}/finish",
+            urlencoding::encode(&request_id)
+        ))
+        .header("cookie", &session_cookie)
+        .header("content-type", "application/json")
+        // Note the absent `elicitation_enabled` — an older dashboard build or
+        // a third-party POST.
+        .body(
+            json!({
+                "mode": "new",
+                "agent_name": "elicit-default",
+                "inherit_permissions": false,
+                "group_names": [],
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    assert_eq!(
+        binding_elicitation(&client, &base, &session_cookie, "elicit-default").await,
+        Some(true),
+        "a first connect with no stated preference takes the platform default"
+    );
+}
+
+/// A client that has not initialized yet — which is every freshly-registered
+/// client_id, since `initialize` needs a token consent has not issued — still
+/// gets the default *stored*. This is the whole reason the consent-time
+/// capability gate was removed: it could only ever see NULL capabilities, so
+/// gating on it pinned every first connect to off.
+///
+/// Safety is unchanged and lives one layer down: `elicitation_eligible`
+/// re-checks the declared capability on every call, by which point the client
+/// has actually told us. See `mcp_elicitation.rs`.
+#[tokio::test]
+async fn consent_finish_defaults_elicitation_on_even_before_the_client_declares() {
+    let pool = common::test_pool().await;
+    let (request_id, session_cookie, client, base, _client_id) =
+        enroll_until_consent_with_capabilities(pool, None, 9987).await;
+
+    let resp = client
+        .post(format!(
+            "{base}/v1/oauth/consent/{}/finish",
+            urlencoding::encode(&request_id)
+        ))
+        .header("cookie", &session_cookie)
+        .header("content-type", "application/json")
+        .body(
+            json!({
+                "mode": "new",
+                "agent_name": "elicit-undeclared",
+                "inherit_permissions": false,
+                "group_names": [],
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    assert_eq!(
+        binding_elicitation(&client, &base, &session_cookie, "elicit-undeclared").await,
+        Some(true),
+        "the stored choice is the platform default; capability is checked at call time"
+    );
+}
+
+/// The opt-out guarantee. Turning elicitation off must survive a reconnect
+/// that says nothing about it — otherwise the default silently reasserts
+/// itself every time the client re-authorises, and the toggle is a lie.
+#[tokio::test]
+async fn consent_finish_explicit_false_survives_reauth() {
+    let pool = common::test_pool().await;
+    let (request_id, session_cookie, client, base, _client_id) =
+        enroll_until_consent_with_capabilities(
+            pool.clone(),
+            Some(json!({ "elicitation": {} })),
+            9988,
+        )
+        .await;
+
+    // First connect: the user explicitly turns it off.
+    let resp = client
+        .post(format!(
+            "{base}/v1/oauth/consent/{}/finish",
+            urlencoding::encode(&request_id)
+        ))
+        .header("cookie", &session_cookie)
+        .header("content-type", "application/json")
+        .body(
+            json!({
+                "mode": "new",
+                "agent_name": "elicit-optout",
+                "inherit_permissions": false,
+                "group_names": [],
+                "elicitation_enabled": false,
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        binding_elicitation(&client, &base, &session_cookie, "elicit-optout").await,
+        Some(false),
+    );
+
+    // Re-register the same client metadata, which is what a client doing a
+    // fresh DCR + authorize looks like, and lands on the reauth branch
+    // pointed at the agent we just created. (Re-authorizing the *same*
+    // client_id would short-circuit straight to a code.)
+    let redirect = "http://127.0.0.1:9988/callback";
+    let reauth_client_id = register_client(&client, &base, redirect).await;
+    db::oauth_mcp_client::update_initialize_state(
+        &pool,
+        &reauth_client_id,
+        &json!({ "elicitation": {} }),
+        &json!({ "name": "test-client", "version": "1.0.0" }),
+        "2025-06-18",
+        Uuid::new_v4(),
+    )
+    .await
+    .unwrap();
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let (_, challenge) = pkce();
+    let url = format!(
+        "{base}/oauth/authorize?response_type=code&client_id={}\
+         &redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=mcp",
+        urlencoding::encode(&reauth_client_id),
+        urlencoding::encode(redirect),
+        urlencoding::encode(&challenge),
+    );
+    let loc = no_redirect
+        .get(&url)
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap()
+        .headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let reauth_request_id = loc
+        .split(&['?', '&'][..])
+        .find_map(|p| p.strip_prefix("request_id="))
+        .map(|r| urlencoding::decode(r).unwrap().into_owned())
+        .unwrap();
+
+    let ctx: Value = client
+        .get(format!(
+            "{base}/v1/oauth/consent/{}",
+            urlencoding::encode(&reauth_request_id)
+        ))
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ctx["mode"], "reauth", "expected the reauth branch: {ctx}");
+    assert_eq!(
+        ctx["reauth_target"]["elicitation_enabled"].as_bool(),
+        Some(false),
+        "the consent page must prefill the saved opt-out, not the default: {ctx}"
+    );
+    let agent_id = ctx["reauth_target"]["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Say nothing about elicitation, as an older dashboard build would.
+    let resp = client
+        .post(format!(
+            "{base}/v1/oauth/consent/{}/finish",
+            urlencoding::encode(&reauth_request_id)
+        ))
+        .header("cookie", &session_cookie)
+        .header("content-type", "application/json")
+        .body(
+            json!({
+                "mode": "reauth",
+                "reauth_agent_id": agent_id,
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "reauth must succeed");
+
+    assert_eq!(
+        binding_elicitation(&client, &base, &session_cookie, "elicit-optout").await,
+        Some(false),
+        "an explicit opt-out must not be undone by the platform default"
+    );
+}
+
+/// The counterpart of `consent_finish_defaults_elicitation_on_even_before_the_client_declares`:
+/// an explicit `true` for a client that has declared nothing is stored as-is,
+/// and it is `elicitation_eligible` — not consent — that refuses to elicit.
+///
+/// This replaces the old "consent forces it to false" behaviour, which looked
+/// like defence in depth but was really a bug: capabilities are always NULL at
+/// consent time for a new client_id, so the gate fired on every first connect
+/// rather than on the adversarial case it was written for.
+#[tokio::test]
+async fn consent_finish_stores_elicitation_choice_without_a_declared_capability() {
     let pool = common::test_pool().await;
     let (request_id, session_cookie, client, base, _client_id) =
         enroll_until_consent_with_capabilities(pool, None, 9984).await;
@@ -1869,39 +2131,10 @@ async fn consent_finish_drops_elicitation_when_unsupported() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let identities: Value = client
-        .get(format!("{base}/v1/identities"))
-        .header("cookie", &session_cookie)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let agent_id = identities
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|i| i["name"].as_str() == Some("elicit-forced"))
-        .and_then(|i| i["id"].as_str())
-        .expect("elicit-forced agent enrolled");
-    let mcp: Value = client
-        .get(format!(
-            "{base}/v1/identities/{}/mcp-connection",
-            urlencoding::encode(agent_id)
-        ))
-        .header("cookie", &session_cookie)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
     assert_eq!(
-        mcp["connection"]["elicitation_enabled"].as_bool(),
-        Some(false),
-        "binding must NOT have elicitation enabled when the client did not \
-         announce the capability, even if the POST asked for it: {mcp}"
+        binding_elicitation(&client, &base, &session_cookie, "elicit-forced").await,
+        Some(true),
+        "the choice is stored; whether it can be honoured is a call-time question"
     );
 }
 

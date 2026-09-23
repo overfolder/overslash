@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO mcp_client_agent_bindings\n           (org_id, user_identity_id, client_id, agent_identity_id)\n         VALUES ($1, $2, $3, $4)\n         ON CONFLICT (user_identity_id, client_id, org_id)\n           DO UPDATE SET agent_identity_id = EXCLUDED.agent_identity_id,\n                         updated_at = now()\n         RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,\n                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
+  "query": "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,\n                created_at, updated_at, elicitation_opted_out, self_approve_enabled\n           FROM mcp_client_agent_bindings\n          WHERE agent_identity_id = $1 AND client_id = $2\n          ORDER BY updated_at DESC\n          LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -82,12 +82,12 @@
       },
       {
         "ordinal": 7,
-        "name": "elicitation_enabled",
+        "name": "elicitation_opted_out",
         "type_info": "Bool",
         "origin": {
           "Table": {
             "table": "mcp_client_agent_bindings",
-            "name": "elicitation_enabled"
+            "name": "elicitation_opted_out"
           }
         }
       },
@@ -106,9 +106,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text",
-        "Uuid"
+        "Text"
       ]
     },
     "nullable": [
@@ -123,5 +121,5 @@
       false
     ]
   },
-  "hash": "ff6eee5144ec762ed57fc244670a93e197f0e79f5e9842813d498f59580684a0"
+  "hash": "e9b6ab62cd53fab55cac67b974423d0ae3f44d8507a07ec3865322f94ee3f2de"
 }

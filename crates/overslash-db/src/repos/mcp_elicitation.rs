@@ -50,6 +50,38 @@ pub async fn has_active_for_approval(
     Ok(row.unwrap_or(false))
 }
 
+/// True when this agent had an elicitation go unanswered inside the window.
+///
+/// A `cancelled` row is the only signal the protocol gives us that the peer
+/// could not, or would not, answer: a headless client auto-cancels in
+/// milliseconds because it has no dialog to render, and a human who has just
+/// dismissed one does not want the model's immediate retry to raise another.
+/// Keyed on the agent rather than the approval because every gated call mints
+/// a *fresh* approval row, so a per-approval guard would never bind.
+///
+/// Predicated on `completed_at`, not `created_at`: a row retired by the
+/// originator's 300s timeout has an old `created_at`, and that is precisely
+/// the case where re-eliciting would hang the next call for another 300s.
+pub async fn cancelled_recently_for_agent(
+    pool: &PgPool,
+    agent_identity_id: Uuid,
+    within_secs: i64,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query_scalar!(
+        "SELECT EXISTS(
+            SELECT 1 FROM pending_mcp_elicitations
+             WHERE agent_identity_id = $1
+               AND status = 'cancelled'
+               AND completed_at > now() - make_interval(secs => $2)
+         )",
+        agent_identity_id,
+        within_secs as f64,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row.unwrap_or(false))
+}
+
 pub async fn insert(
     pool: &PgPool,
     elicit_id: &str,

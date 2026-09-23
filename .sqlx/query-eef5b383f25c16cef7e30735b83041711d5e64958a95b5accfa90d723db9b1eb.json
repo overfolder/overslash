@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE mcp_client_agent_bindings\n            SET elicitation_enabled = $2,\n                updated_at = now()\n          WHERE id = $1\n         RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,\n                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
+  "query": "UPDATE mcp_client_agent_bindings\n            SET elicitation_opted_out = $2,\n                updated_at = now()\n          WHERE id = $1\n         RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,\n                   created_at, updated_at, elicitation_opted_out, self_approve_enabled",
   "describe": {
     "columns": [
       {
@@ -82,12 +82,12 @@
       },
       {
         "ordinal": 7,
-        "name": "elicitation_enabled",
+        "name": "elicitation_opted_out",
         "type_info": "Bool",
         "origin": {
           "Table": {
             "table": "mcp_client_agent_bindings",
-            "name": "elicitation_enabled"
+            "name": "elicitation_opted_out"
           }
         }
       },
@@ -121,5 +121,5 @@
       false
     ]
   },
-  "hash": "544853afa965c34812d4b940ba7c9fe0e331511cb689cfba454a811a50ca54dc"
+  "hash": "eef5b383f25c16cef7e30735b83041711d5e64958a95b5accfa90d723db9b1eb"
 }
