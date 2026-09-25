@@ -1046,3 +1046,18 @@ Flow B (task-augmented `tools/call`) stays rejected with its revisit condition u
 **A failed re-check does not downgrade a verified subscription.** Re-verification is a confirmation, not a probe; a deploy blip on the receiver while someone clicks Verify must not cut a working consumer off. The error is recorded and shown.
 
 **Grandfathering is the compensating control for the existing rows.** Forcing every live consumer to re-verify on deploy would be a flag day for integrations we do not operate. Every grandfathered row was created by an org admin, and the flag is visible in the API and the dashboard until a real handshake clears it. There is no update endpoint, so a URL can never change under a verified row; a new URL is a new subscription and starts pending.
+
+## D-NEXT: Webhook signatures cover a per-attempt timestamp, in a new header next to the unchanged legacy one
+
+**Date**: 2026-09-25
+**Decision**: Every outbound webhook attempt — first delivery, each retry, the verification challenge — carries `X-Overslash-Timestamp: <unix seconds>` and `X-Overslash-Signature-V1: v1=<hex>`, HMAC-SHA256 with the subscription secret over `"<timestamp>.<raw body>"`. The existing `X-Overslash-Signature: sha256=<hex>` (body only) is still sent, byte-for-byte as before, and is deprecated. Consumers verify `v1`: reject a missing timestamp, reject one more than 5 minutes off, compare in constant time.
+
+**Rationale**: CASA 7.2.3 — a body-only signature lets a captured delivery replay forever. The shape is Stripe's (`<t>.<body>`, `v1=` scheme prefix), which is also what our own Stripe consumer verifies, so receivers already know it.
+
+**A new header, not a new value in the old one.** Stripe puts `t=…,v1=…` in one header; doing that to `X-Overslash-Signature` would break every verifier that expects `sha256=<hex>` there — including our own SDK's, which refuses anything without that prefix. A separate `X-Overslash-Signature-V1` leaves old verifiers working untouched, and is also the permanent home of the new scheme, so dropping the legacy header later is a deletion, not a second migration. The `v1=` prefix stays inside the value so a secret rotation can send two comma-separated `v1` entries without another header.
+
+**The timestamp is its own header, not a `t=` inside the signature header.** One place for it; a verifier that logs deliveries can read it without parsing. It is only meaningful together with the `v1` MAC, which covers it.
+
+**Signed per attempt, not per delivery.** The body stays byte-identical across retries (stable `id`/`created_at` for dedupe), but each attempt is signed with the time it is sent. Otherwise a delivery retried 20 minutes later would fall outside the receiver's window and fail forever, and the tolerance would have to grow to the whole retry horizon — defeating it.
+
+**Grandfathering by keeping the old header, not by a per-subscription flag.** Every receiver keeps working with no migration and no state on our side; the cost is that replay protection is opt-in for a receiver until the legacy header is removed. That removal — announced date, then one deleted line in `send_signed` and a major SDK version — is tracked in TECH_DEBT.md.

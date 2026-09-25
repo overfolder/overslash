@@ -73,8 +73,10 @@ pub async fn dispatch(pool: &PgPool, org_id: Uuid, event: &str, payload: serde_j
 
 /// Build the stable webhook envelope: `{id, type, created_at, data}`.
 ///
-/// Used by both first-attempt and retry paths so replays are byte-identical
-/// (same id, same created_at, same signature).
+/// Used by both first-attempt and retry paths so every attempt's body is
+/// byte-identical (same id, same created_at, same legacy signature). The
+/// `v1` signature still differs per attempt: it covers the attempt's own
+/// timestamp.
 fn build_envelope(
     delivery_id: Uuid,
     event: &str,
@@ -181,7 +183,7 @@ const ATTEMPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10)
 /// The most of a delivery's response body we keep on the delivery row.
 const DELIVERY_BODY_CAP: usize = 16 * 1024;
 
-/// Sign `body` with the subscription secret and POST it to `url`: HTTPS-only
+/// Sign `body` with the subscription secret — see [`sign`] — and POST it to `url`: HTTPS-only
 /// (CASA 7.1.1), through the SSRF guard (7.3.1), one deadline over resolution
 /// and request. Shared by event delivery and the ownership handshake, so the
 /// handshake can never reach an address a delivery could not.
@@ -196,10 +198,10 @@ async fn send_signed(
     delivery_id: Uuid,
     body: String,
 ) -> Result<reqwest::Response, String> {
-    // HMAC-SHA256 signature over the raw body bytes (the envelope JSON).
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC key");
-    mac.update(body.as_bytes());
-    let signature = hex::encode(mac.finalize().into_bytes());
+    // Signed per attempt, not per delivery: a retry carries the same body but
+    // a fresh timestamp, so it lands inside the receiver's tolerance window
+    // while a captured earlier attempt does not (CASA 7.2.3).
+    let signature = sign(secret, OffsetDateTime::now_utc().unix_timestamp(), &body);
 
     // One deadline over resolution *and* the request. The guard looks the host
     // up before a client with a timeout exists, so a `RequestBuilder::timeout`
@@ -229,7 +231,9 @@ async fn send_signed(
             .header("X-Overslash-Org", org_id.to_string())
             .header("X-Overslash-Event", event_type)
             .header("X-Overslash-Delivery", delivery_id.to_string())
-            .header("X-Overslash-Signature", format!("sha256={signature}"))
+            .header(TIMESTAMP_HEADER, signature.timestamp.to_string())
+            .header(SIGNATURE_V1_HEADER, signature.v1)
+            .header(LEGACY_SIGNATURE_HEADER, signature.legacy)
             .body(body)
             .send()
             .await
@@ -248,6 +252,48 @@ async fn send_signed(
             "webhook request did not complete within {}s",
             ATTEMPT_DEADLINE.as_secs()
         )),
+    }
+}
+
+/// Unix seconds at which the attempt was signed — the `<timestamp>` inside
+/// the `v1` signature.
+pub const TIMESTAMP_HEADER: &str = "X-Overslash-Timestamp";
+
+/// `v1=<hex>`: HMAC-SHA256 over `"<timestamp>.<raw body>"`. The scheme prefix
+/// lets a later scheme, or a second `v1` during secret rotation, share the
+/// header as a comma-separated list; a verifier accepts if any `v1` matches.
+pub const SIGNATURE_V1_HEADER: &str = "X-Overslash-Signature-V1";
+
+/// `sha256=<hex>`: HMAC-SHA256 over the raw body alone. No time component, so
+/// it replays forever — kept, byte-for-byte as before, only so verifiers
+/// written against it keep working. Deprecated; see TECH_DEBT.md.
+pub const LEGACY_SIGNATURE_HEADER: &str = "X-Overslash-Signature";
+
+/// The signature headers of one attempt.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Signature {
+    pub timestamp: i64,
+    /// Value of [`SIGNATURE_V1_HEADER`].
+    pub v1: String,
+    /// Value of [`LEGACY_SIGNATURE_HEADER`].
+    pub legacy: String,
+}
+
+/// Sign `body` as sent at `timestamp`. Pure, so the wire format is pinned by
+/// unit tests without a receiver.
+pub fn sign(secret: &str, timestamp: i64, body: &str) -> Signature {
+    let hmac = |parts: &[&[u8]]| {
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC key");
+        for p in parts {
+            mac.update(p);
+        }
+        hex::encode(mac.finalize().into_bytes())
+    };
+    let ts = timestamp.to_string();
+    Signature {
+        timestamp,
+        v1: format!("v1={}", hmac(&[ts.as_bytes(), b".", body.as_bytes()])),
+        legacy: format!("sha256={}", hmac(&[body.as_bytes()])),
     }
 }
 
@@ -440,7 +486,32 @@ fn echoed_challenge(body: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::echoed_challenge;
+    use super::{Signature, echoed_challenge, sign};
+
+    #[test]
+    fn v1_covers_timestamp_and_body_and_legacy_covers_the_body() {
+        // Fixed vector, so a change to the wire format fails loudly here
+        // before it fails silently in every receiver.
+        let got = sign("whsec_test", 1_790_000_000, r#"{"id":"x"}"#);
+        assert_eq!(
+            got,
+            Signature {
+                timestamp: 1_790_000_000,
+                v1: "v1=67533a13d71e2eb77b03c01b4fe125052bbf1417cff15203550ad39a75c4995b".into(),
+                legacy: "sha256=efe09dee2f0a8b843785c534ae775acaa4e4143f8a95eb2446f509c062af9055"
+                    .into(),
+            }
+        );
+    }
+
+    #[test]
+    fn only_v1_changes_with_the_timestamp() {
+        let a = sign("s", 100, "body");
+        let b = sign("s", 101, "body");
+        assert_ne!(a.v1, b.v1);
+        assert_eq!(a.legacy, b.legacy);
+        assert_ne!(sign("s", 100, "body!").v1, a.v1);
+    }
 
     #[test]
     fn echo_is_read_from_json_or_plain_text() {

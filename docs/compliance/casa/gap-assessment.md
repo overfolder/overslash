@@ -268,9 +268,9 @@ when it was written.
 |-----|-------------|---------|----------------|-----|
 | 7.1.1 | Webhook traffic exclusively HTTPS, TLS 1.2+ | `pass` | Registration parses the URL into a typed `HttpsUrl` (`services/https_policy.rs`) and refuses `http://` and every other scheme with a 400 (`routes/webhooks.rs::create_webhook`); there is no update endpoint. The dispatcher re-checks on every attempt — from the string, then against the address the SSRF guard pinned — and records a refusal as a failed delivery without dialing (`services/webhook_dispatcher.rs::deliver`). Pre-existing `http://` subscriptions were disabled by migration 124 (`active = false`, `disabled_reason = needs_https`, still listed to the owner). Sole exception: plain `http` to **loopback**, and only when the operator allow-lists loopback in `OVERSLASH_SSRF_ALLOWED_CIDRS` — the same rule OIDC discovery uses; nothing sent that way leaves the host. TLS 1.2+ holds by construction: reqwest 0.13 is built on rustls, which implements only TLS 1.2 and 1.3. Tests: `tests/webhook_https.rs` | — |
 | 7.1.2 | Provider verifies endpoint ownership before delivering events | `pass` | Challenge-response handshake. A new subscription is stored `pending_verification`; registration then POSTs a signed `webhook.verification` envelope carrying 32 random bytes as `data.challenge` plus the registering `org_id` and `subscription_id` (also sent as `X-Overslash-Org` on every request, so a receiver can refuse a challenge from an org it does not serve), and only a 2xx echoing it back (bare body or `{"challenge"}`, 10s, 4 KiB cap) marks it `verified` (`services/webhook_dispatcher.rs::verify_endpoint`, `routes/webhooks.rs::run_verification`); `POST /v1/webhooks/{id}/verify` re-runs it. The dispatcher dials only verified subscriptions: an event for a pending one is recorded as a delivery with `held_reason = pending_verification` and no attempt, and the retry sweep joins on `verification_status = 'verified'`, so held rows are sent only after verification. The handshake uses the same `send_signed` path as deliveries — HTTPS-only (7.1.1) and through `ssrf_guard` (7.3.1) — and reports failures without the response body. Outcomes are audited (`webhook.verified`, `webhook.verification_failed`). **Compensating control for legacy rows:** migration 125 marked every subscription that existed before the handshake `verified` with `grandfathered = true` and `verified_at` = the migration time, so existing consumers were not cut off; all of them were created by org admins (`AdminAcl`). A lab registering its own callback sees the handshake arrive first and nothing else until it echoes; the flag shows up as `"grandfathered": true` in `GET /v1/webhooks` and in the dashboard's Webhooks card, and clears on a successful re-verification. Tests: `tests/webhook_verification.rs` | — |
-| 7.2.1 | Payloads authenticated with HMAC-SHA256 or stronger | `pass` | **Provider:** HMAC-SHA256 over the raw serialized envelope, sent as `X-Overslash-Signature: sha256=<hex>` (`services/webhook_dispatcher.rs:111-121`), with a 256-bit CSPRNG signing secret minted per subscription (`routes/webhooks.rs:57-61`). **Consumer:** the Stripe handler computes over `"<timestamp>.<raw body>"` using the raw bytes, never a re-serialization (`routes/billing/webhook.rs:360-370`) | — |
+| 7.2.1 | Payloads authenticated with HMAC-SHA256 or stronger | `pass` | **Provider:** HMAC-SHA256 over the raw serialized envelope, sent as `X-Overslash-Signature-V1: v1=<hex>` over `"<timestamp>.<body>"` plus the deprecated body-only `X-Overslash-Signature: sha256=<hex>` (`services/webhook_dispatcher.rs::sign`), with a 256-bit CSPRNG signing secret minted per subscription (`routes/webhooks.rs:57-61`). **Consumer:** the Stripe handler computes over `"<timestamp>.<raw body>"` using the raw bytes, never a re-serialization (`routes/billing/webhook.rs:360-370`) | — |
 | 7.2.2 | Signature verification uses a timing-safe comparison | `pass` | `subtle::ConstantTimeEq` over every candidate `v1` signature — `routes/billing/webhook.rs:371-384`. This is the code snippet to paste into the evidence pack verbatim | — |
-| 7.2.3 | Payloads include replay protection via signed timestamps | `gap` | **Consumer side passes** — Stripe's `t=` is inside the signed payload and events outside a ±tolerance window are rejected (`routes/billing/webhook.rs:310-358`). **Provider side fails** — our outbound signature is `sha256=<hmac>` with no timestamp header and no signed time component, so a captured delivery replays forever. Fixing it changes the signature format, so it needs a versioned header and a migration note for existing consumers | **High** |
+| 7.2.3 | Payloads include replay protection via signed timestamps | `pass` | **Provider:** every attempt carries `X-Overslash-Timestamp` (unix seconds) and `X-Overslash-Signature-V1: v1=<hex>`, HMAC-SHA256 over `"<timestamp>.<raw body>"`, computed per attempt so each retry is re-signed with a fresh timestamp (`services/webhook_dispatcher.rs::sign`, `send_signed`). Consumers are told to reject a missing timestamp, a timestamp more than ±5 minutes off, and to compare in constant time (SPEC.md §Webhook signatures); `@overslash/sdk/node` `verifyWebhook` does exactly that with a 300s default. **Compensating control for existing consumers:** the legacy body-only `X-Overslash-Signature: sha256=<hex>` is still sent unchanged so current verifiers keep working; it is marked deprecated in SPEC and the SDK and its removal is planned in TECH_DEBT.md. **Consumer:** Stripe's `t=` is inside the signed payload and events outside ±5 min are rejected (`routes/billing/webhook.rs:310-358`). Tests: `tests/webhook_signing.rs` (v1 covers timestamp+body, legacy still valid, retry gets a later timestamp), unit vector in `webhook_dispatcher.rs` shared with `sdk/test/webhook.test.ts` | — |
 | 7.3.1 | Provider implements SSRF mitigations for user-supplied callback URLs | `pass` | `services/webhook_dispatcher.rs::deliver` resolves the registrant's URL through `ssrf_guard::outbound_client` on **every** attempt — first try and each retry — so loopback, RFC1918, link-local and CGNAT targets are refused before a socket opens, the validated IP is pinned against rebinding, and redirects are off. A refusal is recorded on the delivery row with no `status_code`, so the oracle reads as a failure rather than a response. Tests: `tests/ssrf_guard.rs::webhook_delivery_refuses_a_link_local_endpoint` plus a loopback positive control | — |
 | 7.3.2 | Signing secrets not hardcoded or in version control | `pass` | Generated per subscription from 32 CSPRNG bytes at creation time (`routes/webhooks.rs:57-61`), stored in the database, returned to the registrant once. No webhook secret appears in the repo. `STRIPE_WEBHOOK_SECRET` is a Secret Manager entry injected via `secret_key_ref` (`infra/modules/cloud-run/main.tf:426-455`) | — |
 
@@ -280,18 +280,18 @@ when it was written.
 
 | Verdict | Count |
 |---------|-------|
-| `pass` | 31 |
+| `pass` | 32 |
 | `statement` | 13 |
-| `gap` | 8 |
+| `gap` | 7 |
 | `scan` | 1 |
 | `n/a` | 2 |
 
-Of the 8 gaps, **none is a live vulnerability** any more, and 1 is the unbuilt
-webhook-provider replay protection (7.2.3). The counts moved from the original assessment because the two
+Of the 7 gaps, **none is a live vulnerability** any more. The counts moved from the original assessment because the two
 vulnerabilities closed four rows between them: V2 made 3.1.2 and 3.1.4 `pass`, and V1
 made 7.3.1 `pass` and 5.1.5 `statement`. The prefixed-cookie rework then made 2.3.1 `pass`,
 dependency scanning made 6.1.1 `pass`, HTTPS-only webhooks made 7.1.1 `pass`, and the
-endpoint-ownership handshake made 7.1.2 `pass`.
+endpoint-ownership handshake made 7.1.2 `pass`, and signed timestamps on outbound webhooks
+made 7.2.3 `pass`.
 
 ## Priority ladder
 
@@ -311,10 +311,8 @@ one indexed lookup (cacheable in Valkey) (2.2.x); ~~a security-headers layer on 
 a `headers` block in `dashboard/vercel.json` (4.x/6.x adjacency)~~ — done: HSTS, nosniff,
 `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` and a CSP on every API response
 (`middleware/security_headers.rs`), and an enforced dashboard CSP with no `'unsafe-inline'`
-in `script-src` (`kit.csp`, with the rest of the baseline in `vercel.json`); **the rest of webhook
-section 7** — a signed timestamp header behind a versioned signature (7.2.3; delivery
-through `ssrf_guard`, HTTPS-only endpoints and the ownership handshake — 7.3.1, 7.1.1,
-7.1.2 — are done); ~~dependency vulnerability scanning in CI plus clearing the four
+in `script-src` (`kit.csp`, with the rest of the baseline in `vercel.json`); ~~**webhook section 7**~~ — done: delivery through `ssrf_guard`, HTTPS-only endpoints,
+the ownership handshake and signed timestamps (7.3.1, 7.1.1, 7.1.2, 7.2.3); ~~dependency vulnerability scanning in CI plus clearing the four
 fixable advisories (6.1.1)~~ — done; ~~require TLS on outbound calls (4.1.1)~~ — done for action
 traffic (MCP OAuth upstream remains); `SECURITY.md` with a disclosure policy. (The `redirect_uri` allowlist on DCR, 3.2.2, is done.)
 

@@ -24,7 +24,7 @@ snippets and the policies, because those are the parts it cannot test for. Assum
 | 5.1.3 | The jq sandbox: in-process, JSON-only, syntax-validated, timeout-bounded, no filesystem / network / shell | `need` | `services/response_filter.rs:145-199` |
 | 5.2.1 | "Overslash stores and serves no uploads." One-shot capability token, bytes forwarded to a pinned upstream, nothing written to disk, nothing served back | `need` | `routes/uploads.rs:15-24,58-67` |
 | 6.4.1 | Subdomain inventory: every record under `overslash.com`, its owning service, and a dangling-CNAME check | `need` | — |
-| 7.1.1 / 7.1.2 / 7.3.1 | The webhook-provider posture — this is one document covering scheme enforcement, ownership verification and SSRF mitigation on callback URLs. Scheme enforcement, the ownership handshake and SSRF mitigation have landed; only replay protection (7.2.3) is still open | `need` | `gap-assessment.md` §7 |
+| 7.1.1 / 7.1.2 / 7.3.1 | The webhook-provider posture — this is one document covering scheme enforcement, ownership verification and SSRF mitigation on callback URLs. Scheme enforcement, the ownership handshake, SSRF mitigation and replay protection (7.2.3) have all landed | `need` | `gap-assessment.md` §7 |
 | 5.1.5 | The SSRF scoping memo — the single most important piece of evidence in the pack | `need` | [dast-readiness.md](dast-readiness.md) |
 
 ## Code snippets
@@ -35,8 +35,8 @@ excerpt, without calling functions or underlying libraries.
 | For | Snippet | Status | Source |
 |-----|---------|--------|--------|
 | 7.2.2 | The timing-safe comparison. Ready to paste verbatim | `have` | `routes/billing/webhook.rs:371-384` |
-| 7.2.1 | HMAC-SHA256 over the raw body (consumer) and over the raw envelope (provider) | `have` | `routes/billing/webhook.rs:360-370`; `services/webhook_dispatcher.rs:111-121` |
-| 7.2.3 | Timestamp tolerance on the consumer side | `have` | `routes/billing/webhook.rs:310-358` |
+| 7.2.1 | HMAC-SHA256 over the raw body (consumer) and over the raw envelope (provider) | `have` | `routes/billing/webhook.rs:360-370`; `services/webhook_dispatcher.rs::sign` |
+| 7.2.3 | Timestamp tolerance on the consumer side; signed timestamp on the provider side, re-signed per attempt | `have` | `routes/billing/webhook.rs:310-358`; `services/webhook_dispatcher.rs::sign` + `tests/webhook_signing.rs` |
 | 1.1.2 / 1.3.3 | CSPRNG token generation and SHA-256-only storage | `have` | `routes/auth/magic_link.rs:118-129` |
 | 1.1.3 | Argon2id hashing of API keys | `have` | `routes/api_keys.rs:191-209` |
 | 4.1.3 | AES-256-GCM encrypt/decrypt with per-call nonce; the versioned keyring | `have` | `overslash-core/src/crypto.rs:78-93,184-186` |
