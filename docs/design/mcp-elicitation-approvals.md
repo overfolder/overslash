@@ -1,7 +1,7 @@
 # MCP Elicitation as Approval Surface
 
-**Status:** Adopted for Flow A, on by default (2026-09-22). Flow B (tasks-augmented) still rejected — its revisit condition is unmet.
-**Date:** 2026-04-24, revised 2026-09-22
+**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode became available client-side on 2026-09-24 and is now blocked on Overslash's own protocol version, not on any client.
+**Date:** 2026-04-24, revised 2026-09-22 and 2026-09-25
 **Related:** [`overslash.md`](overslash.md), [`mcp-integration.md`](mcp-integration.md), [`mcp-oauth-transport.md`](mcp-oauth-transport.md), [`agent-self-management.md`](agent-self-management.md)
 
 ---
@@ -92,8 +92,11 @@ silently swallowed, so the worst failure mode in the original analysis is gone. 
 condition is met the upgrade stays additive: URL-reject remains the fallback, and task
 augmentation lets the model keep working while the approval pends.
 
-URL mode is likewise still unreachable — `elicitation: {}` is form-only — which is why
-sensitive flows (provider OAuth, credential entry) continue to live in the dashboard.
+URL mode is a different story as of 2026-09-25: it shipped in Claude Code 2.1.282, on
+`2026-07-28` connections. Overslash cannot reach it yet, because `initialize` answers every
+handshake with a hardcoded `2025-06-18` — so sensitive flows (provider OAuth, credential entry)
+still live in the dashboard, but now for a reason on our side of the wire. See *Correction: URL
+mode is live* below.
 
 ---
 
@@ -160,14 +163,31 @@ So **Flow A works in interactive Claude Code today** (assuming a human is presen
 
 ### Does Codex support this?
 
+Revised 2026-09-25. The April rows were read off PR descriptions; these are read off the
+current docs and open issues, and are still **unverified by probe** — see the caveat below.
+
 | Feature | Status in Codex | Source |
 |---|---|---|
-| `elicitation/create` form mode | **Yes (recent)** — [PR #13425](https://github.com/openai/codex/pull/13425) merged 2026-03-05, makes elicitation a first-class `mcpServer/elicitation/request` in the v2 app-server (previously elicitations were silently auto-declined) | issue #6992, PR #13425 |
-| URL mode | Not explicitly confirmed; PR scope is the request/response plumbing | same |
-| Boolean approval pattern for modify-tools | **Yes** — Codex itself wraps modify-tools in a boolean elicitation as its approval primitive | `developers.openai.com/codex/mcp` |
+| `elicitation/create` form mode | **Yes** — [PR #13425](https://github.com/openai/codex/pull/13425) merged 2026-03-05, a first-class `mcpServer/elicitation/request` in the v2 app-server (previously elicitations were silently auto-declined) | issue #6992, PR #13425 |
+| URL mode | **Yes, but behind an off-by-default flag.** `2026-07-28` discovery requires `codex_apps_mcp_2026_07_28 = true` under `[features]` (or a runtime `experimentalFeature/enablement/set` override); discovery falls back to Legacy against a server that does not offer it. Same era gate as Claude Code, one rung earlier in its rollout. | [openai/codex#33952](https://github.com/openai/codex/issues/33952), [#35725](https://github.com/openai/codex/pull/35725), [Codex MCP docs](https://developers.openai.com/codex/mcp) |
+| Forwarding downstream elicitations | **Known broken** — [openai/codex#45621](https://github.com/openai/codex/issues/45621): the app-server auto-declines downstream `elicitation/create` (approval *and* form) instead of forwarding it to the controlling client. Worth tracking: an auto-decline is a *decline*, and under D95 that is the one negative outcome Overslash treats as a real denial. | issue #45621 |
+| Boolean approval pattern for modify-tools | **Yes** — Codex wraps modify-tools in a boolean elicitation as its own approval primitive | `developers.openai.com/codex/mcp` |
 | Tasks augmentation | **Not mentioned** | – |
 
-Both major coding agents now do elicitation; neither has publicly committed to client-side tasks support. **Tasks-augmented async is the right end-state, but not the safe assumption today.**
+**Not probed.** `codex-cli` 0.157.0 is installed in the dev environment but unauthenticated,
+and `codex login` is interactive. Until someone runs the harness against it, every row above is
+documentation, not measurement — which is precisely the distinction the Claude Code correction
+above exists to make. Point `test-mcp-elicitation/` at Codex and fill in a dated block.
+
+One asymmetry to watch if #45621 is still open when Codex reaches Overslash: an auto-decline is
+indistinguishable on the wire from a human clicking Deny, so it would resolve approvals as
+`denied` rather than falling back to the URL. That is the exact failure D95 removed for headless
+Claude Code, and the fix does not generalise — Overslash cannot tell the two apart, and should
+not try.
+
+Both major coding agents now do elicitation, and both now do URL mode behind an era gate.
+Neither has committed to client-side tasks support. **Tasks-augmented async is still the right
+end-state and still not the safe assumption.**
 
 ### What about OpenClaw / `mcp2cli`-style bridges?
 
@@ -333,7 +353,7 @@ capabilities = { "elicitation": {}, "roots": { "listChanged": true } }
 |---|---|---|---|
 | Protocol version | `2025-11-25` | `2025-11-25` | The bundle also carries `2026-07-28` wire schemas, but stdio still negotiates `2025-11-25`. |
 | Form-mode elicitation | Yes | **Yes** | Unchanged. `oneOf` + `const` + `title` renders and round-trips. |
-| URL mode | `-32602` | **`-32602`** | Unchanged: *"Client does not support URL-mode elicitation requests"*. `elicitation: {}` means form-only — per the SDK's own reader, `supportsUrlMode` is true only when `elicitation.url` is present. |
+| URL mode | `-32602` | **`-32602`** — but see the correction below | *"Client does not support URL-mode elicitation requests"*, and `elicitation: {}` is form-only. Both true as measured, and both an artifact of the negotiated era: this probe cannot reach `2026-07-28`, where the answer is different. |
 | `tasks.requests.tools.call` | Not declared; **silently swallowed** | Not declared; **rejected loudly** | *This is the one thing that changed.* Forcing a `CreateTaskResult` now fails client-side schema validation — *"content is required when the body carries 'task' — another result family cannot default into an empty tools/call success"* — and the model is told the call failed. The worst failure mode in the original table is gone. Flow B is still unreachable, but it is no longer invisible. |
 | `--print` / headless | auto-`cancel` | **auto-`cancel`, ~6 ms** | Measured: `elicitation/create` sent at `15:12:40.659`, `action=cancel` at `15:12:40.665`. `handleElicitation` opens with `if (!this.hostAnswersElicitations) return { action: "cancel" }`. An `Elicitation` hook still gets first refusal. |
 
@@ -346,9 +366,70 @@ the same mapping Overslash shipped — the run ended with Claude reporting to th
 Nobody denied anything. That is the failure this design has to rule out before elicitation can
 be a default, and it is why `cancel` no longer means `deny` (see the Decision section).
 
-**The stated revisit condition is still unmet.** `tasks.requests.tools.call` is not declared;
+**Flow B's revisit condition is still unmet.** `tasks.requests.tools.call` is not declared;
 the capability producer in the 2.1.278 bundle emits `{ roots: { listChanged: true },
 elicitation: {} }`, with a `tasks.requests.elicitation.create` branch sitting behind a function
 that hard-returns `false`. Flow B stays out of scope.
+
+### Correction: URL mode is live (2026-09-25)
+
+**The row above is a measurement, not a verdict, and the verdict drawn from it was wrong.**
+Claude Code **2.1.282** (2026-09-24) shipped URL-mode elicitation — two days after the probe
+run. From its changelog:
+
+> Added MCP URL-mode elicitation on 2026-07-28 protocol connections, so servers can ask Claude
+> Code to open a browser-based flow; no waiting dialog is left on screen when the server has no
+> way to confirm completion
+
+Confirmed in the 2.1.282 bundle. There are two capability producers, and which one runs depends
+on the negotiated era:
+
+```js
+function qfn(){ return { roots:{listChanged:true}, elicitation:{}, ... } }   // legacy
+function _dr(){ let e = B5(); if(!m3e()) return e;
+                return { ...e, elicitation:{ form:{}, url:{} } } }           // 2026-07-28
+function m3e(){ return x("tengu_mcp_url_elicitation", true) }                // flag, default on
+```
+
+So on a `2026-07-28` connection Claude Code declares `elicitation: { form: {}, url: {} }`, gated
+behind a remote flag that defaults **on**. (A per-server `bareElicitationCapability` option in
+`.mcp.json` forces the old bare shape back, for servers that choke on the richer one.)
+
+**Two compounding reasons the probe said otherwise**, both worth remembering before trusting a
+future negative result from it:
+
+1. The run was on 2.1.278, which predates the feature.
+2. The probe is pinned to `mcp>=1.10.0,<2`, and the 1.x Python SDK tops out at `2025-11-25`.
+   That pin was added *by this work*, to keep the low-level `Server` API the probe is built on.
+   It therefore guarantees a legacy negotiation — and a legacy negotiation guarantees
+   `elicitation: {}`. **A negative URL-mode result from this harness is currently unfalsifiable**
+   until the probe is ported to `mcp` 2.x. Treat the row above as "not reachable from here",
+   never as "not supported".
+
+**The blocker is now ours.** `routes/mcp/initialize.rs` answers every handshake with a hardcoded
+`"protocolVersion": "2025-06-18"`, so an Overslash connection never reaches the era where the
+client offers `url`. Supporting `2026-07-28` is real work — it is a different wire schema, not a
+constant bump — and is deliberately out of scope here. What changed is *why* URL mode is
+unavailable: it is no longer "the client doesn't do it."
+
+What that would unlock, when someone picks it up — the URL-returning paths that form mode can
+never serve, because the spec forbids credentials and OAuth in a form and because a browser
+round trip needs `notifications/elicitation/complete` to report back:
+
+| Path | Envelope | Note |
+|---|---|---|
+| `auth_url` | `needs_authentication`, `reauth_required`, `missing_scopes` | The canonical case: authorize at the provider, `elicitation/complete`, client retries the original `tools/call`. |
+| `provide_url` | `request_secret` | Credential entry. Form mode is forbidden here even where it would work. |
+| `setup_url` | `create_service` setup bundle | Wrinkle: a multi-slot template hands over *several* links (`requests[]`), and elicitation is one request / one answer. Needs design even once URL mode is available. |
+| `download_url` | `_full_result` (D61) | **Not** a candidate — the agent fetches it, no human in the loop. Same for `hint_url`. |
+
+`approval_url` already moved, under D95. It was the only one of the set that is a pure
+structured decision with no secret in it, which is exactly why it was reachable in form mode.
+
+One line in the code reads differently in this light. `routes/mcp/tools_call.rs` says the typed
+envelopes bypass elicitation because *"the agent has structured branching info already, no
+human-in-the-loop dialog applies."* That is half true: no dialog applies **to the agent**, but
+every one of those envelopes ends with a human opening a URL. Worth rewording whenever URL mode
+is picked up, because as written it reads as a design decision rather than a client limitation.
 
 See the test directory's README for run instructions and the exact `claude mcp add` / `.mcp.json` setup to wire it into Claude Code.

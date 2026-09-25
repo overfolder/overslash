@@ -76,23 +76,35 @@ gets multiplexed with Claude Code's own output).
 
 ## What we're checking
 
-Per the design doc, we want empirical answers to:
+Per the design doc, we want empirical answers to the questions below. Answers
+carry the version they were measured on — re-run and add a version rather than
+overwriting, since the value of this harness is the trend.
+
+**Read the caveat on question 4 before trusting a negative result.**
 
 1. **Does Claude Code render the elicitation as a UI dialog?** Yes in
-   interactive mode; **automatically `cancel`s within ~5ms in `--print` mode**
-   (no UI to render). Confirmed against 2.1.119.
+   interactive mode; **automatically `cancel`s in `--print` mode** (no UI to
+   render). 2.1.119: ~5 ms. 2.1.278: measured 6 ms.
 2. **Does it support `oneOf` titled choices?** Yes (rendered, picks fine in
-   tests via the handshake driver).
-3. **Does it declare `tasks.requests.tools.call` at initialize?** **No** in
-   2.1.119 — capabilities are `{ "elicitation": {}, "roots": {} }` with
-   protocol `2025-11-25`. Flow B is not reachable today.
-4. **URL mode?** **Not declared** by Claude Code 2.1.119. Forcing a URL-mode
-   elicitation gets a clean `-32602 "Client does not support URL-mode
-   elicitation requests"` rejection.
-5. **What happens if the server returns `CreateTaskResult` anyway?** Claude
-   Code 2.1.119 **silently swallows it as if it were an empty `CallToolResult`**
-   and never polls `tasks/get` / `tasks/result`. Worst failure mode of all —
-   gives no signal the application layer could detect to fall back.
+   tests via the handshake driver). Unchanged in 2.1.278.
+3. **Does it declare `tasks.requests.tools.call` at initialize?** **No**, in
+   both 2.1.119 and 2.1.278 — capabilities are `{ "elicitation": {}, "roots":
+   { "listChanged": true } }` with protocol `2025-11-25`. Flow B is not
+   reachable.
+4. **URL mode?** **Not reachable from this harness** — which is *not* the same
+   as not supported, and the difference has already misled us once. Forcing one
+   gets a clean `-32602 "Client does not support URL-mode elicitation
+   requests"`, because `elicitation: {}` is form-only. But Claude Code 2.1.282
+   declares `elicitation: { form: {}, url: {} }` on `2026-07-28` connections,
+   and this probe is pinned to `mcp<2`, which tops out at `2025-11-25`.
+   **The pin makes a negative URL-mode result unfalsifiable.** Port to `mcp`
+   2.x before claiming anything about URL mode either way.
+5. **What happens if the server returns `CreateTaskResult` anyway?** *Changed.*
+   2.1.119 **silently swallowed it** as an empty `CallToolResult` — the worst
+   failure mode, since nothing downstream could detect it. 2.1.278 **rejects it
+   loudly**: "content is required when the body carries 'task' — another result
+   family cannot default into an empty tools/call success". Still unreachable,
+   but no longer invisible.
 6. **What happens through a `tools/call`-only stdio bridge** (e.g. an
    OpenClaw-style `mcp2cli` wrapper that doesn't relay server-initiated
    requests)? Expect the elicitation to time out or be rejected with `-32601`
