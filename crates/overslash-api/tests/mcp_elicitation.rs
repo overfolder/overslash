@@ -945,9 +945,30 @@ async fn declining_the_remember_dialog_leaves_the_approval_pending() {
 
     assert_eq!(
         status_of(&fx, &next).await.as_deref(),
-        Some(db::mcp_elicitation::STATUS_CANCELLED)
+        Some(db::mcp_elicitation::STATUS_WITHDRAWN)
     );
     assert_eq!(approval_status(&fx, approval_id).await, "pending");
+    // A human answered both dialogs, so the client plainly can render them:
+    // backing out must not suppress the next dialog for this agent.
+    assert!(
+        !db::mcp_elicitation::cancelled_recently_for_agent(&fx.pool, fx.agent_id, 120)
+            .await
+            .unwrap(),
+        "declining the remember dialog must not start the cancel cooldown"
+    );
+    assert!(
+        matches!(
+            mcp_session::await_completion_with_timeout(
+                &state,
+                &axum::http::Extensions::new(),
+                &next,
+                Duration::from_secs(2),
+            )
+            .await,
+            mcp_session::ElicitOutcome::Abandoned
+        ),
+        "the originator must fall back to the pending envelope"
+    );
     assert_eq!(rules_for_agent(&fx).await, before, "no rule may be saved");
 }
 

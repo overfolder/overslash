@@ -317,9 +317,10 @@ and Allow once, where it means nothing, and had no room for a scope choice at
 all. Only "Allow & remember" needs scope and duration, so only it asks.
 
 action == "decline"  → tool error "denied by user", same as decision="deny".
-                       On the *remember* dialog it is instead treated like
-                       cancel: the user already said allow and backed out of
-                       the details, which is not a denial.
+                       On the *remember* dialog, decline and cancel both
+                       retire the row as `withdrawn`: approval left pending
+                       like a cancel, but no cooldown, because a human
+                       already answered the first dialog.
 action == "cancel"   → NOT a denial. Retire the elicitation row, leave the
                        approval pending, and close the tools/call with the
                        same pending_approval envelope the no-elicitation path

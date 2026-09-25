@@ -125,7 +125,9 @@ pub async fn await_completion_with_timeout(
                 repo::STATUS_FAILED => {
                     return ElicitOutcome::Failed(row.final_response.unwrap_or(json!({})));
                 }
-                repo::STATUS_CANCELLED => return ElicitOutcome::Abandoned,
+                repo::STATUS_CANCELLED | repo::STATUS_WITHDRAWN => {
+                    return ElicitOutcome::Abandoned;
+                }
                 repo::STATUS_FOLLOW_UP => {
                     // A follow_up row without a next id cannot be continued;
                     // treat it like any other dialog nobody finished.
@@ -234,18 +236,20 @@ pub async fn complete_from_elicitation(
     // This runs after `claim` so only one replica retires the row, and uses
     // `cancel` rather than `fail` because `cancel` stamps `completed_at`,
     // which the post-cancel cooldown in `elicitation_eligible` reads.
-    if action != "accept" && action != "decline" {
-        repo::cancel(state.db(ext), elicit_id).await?;
+    let is_remember_dialog = elicit_id.starts_with(REMEMBER_ID_PREFIX);
+
+    // The remember dialog only exists because a human already answered the
+    // first one with "allow". Declining or dismissing it is backing out of
+    // the details: not a denial, and not evidence that this client cannot
+    // answer dialogs either. So it retires as `withdrawn`, which ends the
+    // call like a dismissal (approval pending, ordinary envelope) without
+    // starting the per-agent cooldown a `cancelled` row would.
+    if is_remember_dialog && action != "accept" {
+        repo::withdraw(state.db(ext), elicit_id).await?;
         return Ok(());
     }
 
-    let is_remember_dialog = elicit_id.starts_with(REMEMBER_ID_PREFIX);
-
-    // The remember dialog only exists because the user already said "allow"
-    // in the first one. Declining it is backing out of the details, not a
-    // denial, so it retires like a dismissal: the approval stays pending and
-    // the model gets the ordinary envelope.
-    if is_remember_dialog && action == "decline" {
+    if action != "accept" && action != "decline" {
         repo::cancel(state.db(ext), elicit_id).await?;
         return Ok(());
     }
