@@ -128,6 +128,35 @@ flip it to `--elicit-mode form` (or remove the args entirely → defaults to
 `--elicit-mode auto`) to test plain Flow A, or `--elicit-mode url --force --url
 https://example.com/anything` for URL mode.
 
+## Probing Codex
+
+`codex-cli` speaks MCP too, and the same harness drives it. Two gotchas:
+
+```sh
+PROBE=$(pwd)
+codex mcp add test-elicit -- uv --directory "$PROBE" run python server.py
+
+# `codex exec` defaults to approval_policy=never, and Codex gates MCP tool
+# calls behind its *own* approval before the server is ever reached — you get
+# "MCP tool call requires approval, but approval policy is never" and no
+# elicitation at all. Bypass it, or you are measuring Codex's gate, not ours.
+codex exec --dangerously-bypass-approvals-and-sandbox \
+  'Call test-elicit show_message with message="probe". Report what came back.'
+
+cat /tmp/test-mcp-elicitation.log
+codex mcp remove test-elicit          # it is a *global* config entry — clean up
+```
+
+As of 0.157.0 (probed 2026-09-25) Codex declares
+`elicitation: { form: {}, url: {} }` on protocol `2025-06-18` — both modes, no
+era gate, unlike Claude Code.
+
+**Interactive Codex works**: the form dialog renders and the answer round-trips.
+**Headless `codex exec` does not**: it answers `decline` in ~1–2 ms for both
+modes (openai/codex#45621). That is *not* the same as Claude Code's headless
+`cancel`, and the difference matters a great deal downstream — see the design
+doc. Measure both surfaces; they disagree.
+
 ## Notes / known limits
 
 - The "remember forever" decision is only kept in-memory; restarting the server
