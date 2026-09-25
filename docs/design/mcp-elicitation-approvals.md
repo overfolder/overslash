@@ -1,6 +1,6 @@
 # MCP Elicitation as Approval Surface
 
-**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode became available client-side on 2026-09-24 and is now blocked on Overslash's own protocol version, not on any client.
+**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode is available client-side: Codex 0.157.0 offers it on `2025-06-18` (no work needed), Claude Code 2.1.282 only on `2026-07-28` (needs a protocol bump). Headless Codex auto-declines, which D95 reads as a real denial — see the probed Codex section.
 **Date:** 2026-04-24, revised 2026-09-22 and 2026-09-25
 **Related:** [`overslash.md`](overslash.md), [`mcp-integration.md`](mcp-integration.md), [`mcp-oauth-transport.md`](mcp-oauth-transport.md), [`agent-self-management.md`](agent-self-management.md)
 
@@ -163,31 +163,59 @@ So **Flow A works in interactive Claude Code today** (assuming a human is presen
 
 ### Does Codex support this?
 
-Revised 2026-09-25. The April rows were read off PR descriptions; these are read off the
-current docs and open issues, and are still **unverified by probe** — see the caveat below.
+**Probed 2026-09-25** against `codex-cli` 0.157.0, authenticated, via the same
+`test-mcp-elicitation/` harness. These rows are measurements, not documentation.
 
-| Feature | Status in Codex | Source |
+```
+client = codex-mcp-client 0.157.0
+protocolVersion = 2025-06-18
+capabilities = { "experimental": { "codex/auth-change": {} },
+                 "elicitation": { "form": {}, "url": {} } }
+```
+
+| Feature | Status in Codex 0.157.0 | Evidence |
 |---|---|---|
-| `elicitation/create` form mode | **Yes** — [PR #13425](https://github.com/openai/codex/pull/13425) merged 2026-03-05, a first-class `mcpServer/elicitation/request` in the v2 app-server (previously elicitations were silently auto-declined) | issue #6992, PR #13425 |
-| URL mode | **Yes, but behind an off-by-default flag.** `2026-07-28` discovery requires `codex_apps_mcp_2026_07_28 = true` under `[features]` (or a runtime `experimentalFeature/enablement/set` override); discovery falls back to Legacy against a server that does not offer it. Same era gate as Claude Code, one rung earlier in its rollout. | [openai/codex#33952](https://github.com/openai/codex/issues/33952), [#35725](https://github.com/openai/codex/pull/35725), [Codex MCP docs](https://developers.openai.com/codex/mcp) |
-| Forwarding downstream elicitations | **Known broken** — [openai/codex#45621](https://github.com/openai/codex/issues/45621): the app-server auto-declines downstream `elicitation/create` (approval *and* form) instead of forwarding it to the controlling client. Worth tracking: an auto-decline is a *decline*, and under D95 that is the one negative outcome Overslash treats as a real denial. | issue #45621 |
-| Boolean approval pattern for modify-tools | **Yes** — Codex wraps modify-tools in a boolean elicitation as its own approval primitive | `developers.openai.com/codex/mcp` |
-| Tasks augmentation | **Not mentioned** | – |
+| `elicitation/create` form mode | **Declared and reached.** The server's `elicitation/create` arrives. | Probe: `sending elicitation/create mode=form` |
+| URL mode | **Declared and reached — on `2025-06-18`.** Forcing `mode: "url"` is *accepted*, not rejected: no `-32602`, the request goes through and comes back with an answer. | Probe with `--elicit-mode url`; contrast Claude Code, which needs `2026-07-28` for this |
+| Answer in headless (`codex exec`) | **Auto-`decline`, ~1–2 ms.** Both modes. Not `cancel` — `decline`. | Probe: `elicit_form result: action=decline` at `12:00:09.222`, request sent `12:00:09.220` |
+| Codex's own MCP approval gate | Blocks the `tools/call` *before* the server is reached unless approvals are relaxed — `"MCP tool call requires approval, but approval policy is never"`. `codex exec` defaults to `never`. | Probe, first two runs |
+| Feature flags | `tool_call_mcp_elicitation` **stable, true**. `mcp_2026_07_28` and `codex_apps_mcp_2026_07_28` both **under development, false**. | `codex features list` |
+| Tasks augmentation | Not declared. | – |
 
-**Not probed.** `codex-cli` 0.157.0 is installed in the dev environment but unauthenticated,
-and `codex login` is interactive. Until someone runs the harness against it, every row above is
-documentation, not measurement — which is precisely the distinction the Claude Code correction
-above exists to make. Point `test-mcp-elicitation/` at Codex and fill in a dated block.
+Two findings matter more than the rest.
 
-One asymmetry to watch if #45621 is still open when Codex reaches Overslash: an auto-decline is
-indistinguishable on the wire from a human clicking Deny, so it would resolve approvals as
-`denied` rather than falling back to the URL. That is the exact failure D95 removed for headless
-Claude Code, and the fix does not generalise — Overslash cannot tell the two apart, and should
-not try.
+**URL mode is reachable today, on the protocol version Overslash already speaks.** Codex
+declares `elicitation: { form: {}, url: {} }` on `2025-06-18` — it does not gate URL mode behind
+the `2026-07-28` era the way Claude Code does. So the *Correction* block below is right about
+Claude Code and wrong as a general statement: a protocol bump is what unblocks URL mode **for
+Claude Code**, not what unblocks it at all. For Codex there is nothing in the way.
 
-Both major coding agents now do elicitation, and both now do URL mode behind an era gate.
-Neither has committed to client-side tasks support. **Tasks-augmented async is still the right
-end-state and still not the safe assumption.**
+**Headless Codex auto-declines, and `decline` is the one negative D95 treats as a real denial.**
+This is [openai/codex#45621](https://github.com/openai/codex/issues/45621) measured rather than
+cited: the app-server answers `elicitation/create` itself instead of forwarding it. The answer
+it picks is `decline`, in about a millisecond, in both modes.
+
+That is precisely the failure D95 removed for headless Claude Code, reintroduced through the
+other client — and the D95 fix does not reach it. Claude Code's headless path answers `cancel`,
+which D95 routes to the `pending_approval` fallback. Codex's answers `decline`, which D95 routes
+to `deny`, because a decline is a human saying no. **On the wire the two are indistinguishable,
+and Overslash should not try to tell them apart** — guessing which declines are real would break
+the guarantee that makes `decline` meaningful.
+
+So the practical position for a Codex-connected agent today:
+
+- Nothing needs enabling. D95's gate is `capabilities.get("elicitation").is_some()`, which is
+  shape-agnostic, so `{ form: {}, url: {} }` satisfies it exactly as `{}` does. Codex agents
+  already default to elicitation on.
+- That default is currently **unsafe for headless Codex**: every gated call is silently denied.
+  Interactive Codex was not probed (no TTY in the dev environment) and may well forward the
+  dialog properly; #45621 describes the app-server, which backs both, so this needs measuring
+  before anyone relies on the distinction.
+- The options, none of them taken here: suppress elicitation for `codex-mcp-client` until
+  #45621 closes (there is precedent for client-specific handling — `dispatch.rs` carries a
+  claude.ai argument-stringification workaround — but D95 deliberately has no client sniffing in
+  the eligibility path); leave it on and rely on the per-agent opt-out; or wait for the fix.
+  Whoever picks this up should re-probe first, since a point release could close it.
 
 ### What about OpenClaw / `mcp2cli`-style bridges?
 
@@ -406,11 +434,16 @@ future negative result from it:
    until the probe is ported to `mcp` 2.x. Treat the row above as "not reachable from here",
    never as "not supported".
 
-**The blocker is now ours.** `routes/mcp/initialize.rs` answers every handshake with a hardcoded
-`"protocolVersion": "2025-06-18"`, so an Overslash connection never reaches the era where the
-client offers `url`. Supporting `2026-07-28` is real work — it is a different wire schema, not a
-constant bump — and is deliberately out of scope here. What changed is *why* URL mode is
-unavailable: it is no longer "the client doesn't do it."
+**The blocker is ours, for Claude Code specifically.** `routes/mcp/initialize.rs` answers every
+handshake with a hardcoded `"protocolVersion": "2025-06-18"`, so an Overslash connection never
+reaches the era where *Claude Code* offers `url`. Supporting `2026-07-28` is real work — a
+different wire schema, not a constant bump — and is deliberately out of scope here. What changed
+is *why* URL mode is unavailable to that client: it is no longer "the client doesn't do it."
+
+**This does not generalise, and the first draft of this block wrongly implied it did.** Codex
+0.157.0 declares `elicitation: { form: {}, url: {} }` on `2025-06-18` — see the probed Codex
+section above — so for a Codex-connected agent URL mode needs no protocol work at all. The era
+gate is a Claude Code property, not a property of URL mode.
 
 What that would unlock, when someone picks it up — the URL-returning paths that form mode can
 never serve, because the spec forbids credentials and OAuth in a form and because a browser
