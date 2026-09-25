@@ -34,20 +34,43 @@ jobs:
       dashboard: ${{ steps.filter.outputs.dashboard }}
       sdk: ${{ steps.filter.outputs.sdk }}
       deps: ${{ steps.filter.outputs.deps }}
+      tooling: ${{ steps.filter.outputs.tooling }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
+          # Every path a build, test or gate reads belongs to some filter, or
+          # a PR touching only that path skips every substantive job and
+          # `ci-ok` goes green on nothing. Deliberately in no filter, because
+          # no CI job reads them and running one would prove nothing: prose
+          # (docs/**, root *.md other than SKILL.md, LICENSE), the generated
+          # SCHEMA.sql reference dump, .gitignore/.dockerignore, agent and
+          # editor config (.claude/**, .mcp.json, .actrc, .env.example) and
+          # the dev-only test-mcp-elicitation/ probe. `docs` still runs.
           filters: |
             rust:
               - 'crates/**'
+              # Workspace member (mock upstream for the integration tests).
+              - 'tests/mock-target/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'clippy.toml'
               - '.sqlx/**'
               - '.config/nextest.toml'
+              # Shipped templates: the registry corpus tests load every file.
+              - 'services/**'
+              # Compiled in via include_str! (icons.rs, slugs.rs, SKILL.md)
+              # and cross-checked against the templates by registry tests.
+              - 'assets/**'
+              - 'SKILL.md'
+              # lint runs the line-count / rust-version gates, e2e runs
+              # `make e2e` → scripts/e2e-up.sh.
+              - 'scripts/**'
+              - 'Makefile'
+              - '.github/actions/**'
+              - 'codecov.yml'
               - '.github/workflows/ci.yml'
             infra:
               - 'infra/**'
@@ -70,6 +93,19 @@ jobs:
               - 'scripts/check-deny-reviews.sh'
               - '.github/workflows/deps-audit.yml'
               - '.github/workflows/ci.yml'
+            # CI and release plumbing no other job exercises: the other
+            # workflows (release, release-please, sync-dev, allocate-decision,
+            # deps-audit-report), dependabot and release-please config, the
+            # git hooks, and the operator scripts under bin/ and docker/.
+            tooling:
+              - '.github/**'
+              - '.githooks/**'
+              - 'scripts/**'
+              - 'bin/**'
+              - 'docker/**'
+              - 'Makefile'
+              - 'release-please-config.json'
+              - '.release-please-manifest.json'
 
   # Unconditional, unlike `lint`: the `rust` paths filter skips a docs-only PR,
   # which is exactly the PR that moves a decision number. Checkout plus bash,
@@ -574,6 +610,44 @@ jobs:
     if: needs.changes.outputs.deps == 'true'
     uses: ./.github/workflows/deps-audit.yml
 
+  # Static checks for the files no other job reads: actionlint over every
+  # workflow (expression typos, unknown `needs`, bad action inputs — the
+  # mistakes that otherwise surface only when a release or schedule fires),
+  # and a parse of every hook, script and release-please config. The rest of
+  # the Makefile is exercised by e2e (`make e2e`). shellcheck/pyflakes are off on
+  # purpose: the runner image ships shellcheck, so leaving it implicit would
+  # make the result depend on whatever version the image carries.
+  tooling:
+    name: Workflows + scripts
+    needs: changes
+    if: needs.changes.outputs.tooling == 'true'
+    runs-on: ubuntu-latest
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install actionlint (checksum-pinned)
+        run: |
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" actionlint
+      - name: actionlint
+        run: '"$RUNNER_TEMP/actionlint" -color -shellcheck= -pyflakes='
+      - name: Bash syntax (hooks + scripts)
+        run: |
+          status=0
+          for f in .githooks/* scripts/*.sh scripts/lib/*.sh bin/*.sh docker/*/*.sh; do
+            bash -n "$f" || { echo "::error file=$f::bash -n failed"; status=1; }
+          done
+          exit "$status"
+      - name: Python syntax (scripts)
+        run: python3 -m py_compile scripts/*.py
+      - name: release-please config parses
+        run: jq empty release-please-config.json .release-please-manifest.json
+
   # Reports how much *production code* the PR touches: files under `src/`,
   # source extensions only, test files, the test-support crates and inline
   # `#[cfg(test)]` modules stripped out. `git diff --shortstat` is useless here
@@ -632,13 +706,49 @@ jobs:
           header: diff-stats
           message: ${{ steps.stats.outputs.markdown }}
 
+  # The one required check. Each gated job must have *succeeded* if its
+  # paths filter says the PR needs it, and may be skipped only when the filter
+  # says it does not — so a job skipped for any other reason (a broken `if:`,
+  # an output the `changes` job forgot to export) fails the gate instead of
+  # passing it. `changes` and `docs` always run. `failure` and `cancelled`
+  # never pass: a cancelled run proved nothing. A job listed in `needs` but
+  # missing from the map below is treated as always required.
+  #
+  # `always()`, not `!cancelled()`: a required check that is *skipped* counts
+  # as passing, so a cancelled workflow must still reach this job and fail it.
+  # A superseded PR run therefore shows a red ci-ok on its old SHA; the new
+  # run owns the new SHA.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, docs, lint, coverage, sql-policy, infra, dashboard, sdk, e2e, deps-audit]
+    needs: [changes, docs, lint, coverage, sql-policy, infra, dashboard, sdk, e2e, deps-audit, tooling]
     runs-on: ubuntu-latest
     steps:
-      - name: Verify all jobs passed or were skipped
+      - name: Verify every needed job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          # Whether each gated job was needed, from the same outputs its `if:`
+          # reads. Expressions render booleans as bare true/false, so this is
+          # JSON. Keep it in step with the `if:` of every job in `needs`.
+          REQUIRED: >-
+            {
+              "lint": ${{ needs.changes.outputs.rust == 'true' }},
+              "coverage": ${{ needs.changes.outputs.rust == 'true' }},
+              "sql-policy": ${{ needs.changes.outputs.rust == 'true' }},
+              "e2e": ${{ needs.changes.outputs.rust == 'true' || needs.changes.outputs.dashboard == 'true' }},
+              "infra": ${{ needs.changes.outputs.infra == 'true' }},
+              "dashboard": ${{ needs.changes.outputs.dashboard == 'true' }},
+              "sdk": ${{ needs.changes.outputs.sdk == 'true' }},
+              "deps-audit": ${{ needs.changes.outputs.deps == 'true' }},
+              "tooling": ${{ needs.changes.outputs.tooling == 'true' }}
+            }
         run: |
-          echo '${{ toJSON(needs) }}'
-          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped" or .value.result == "cancelled")'
+          jq -rn --argjson needs "$NEEDS" --argjson required "$REQUIRED" '
+            [ $needs | to_entries[]
+              | .value.result as $r
+              # has(), not `// true`: `//` also replaces an explicit false.
+              | (.key as $k | if $required | has($k) then $required[$k] else true end) as $q
+              | {job: .key, result: $r, needed: $q,
+                 ok: ($r == "success" or ($r == "skipped" and ($q | not)))} ]
+            | (.[] | "\(if .ok then "ok  " else "FAIL" end)  \(.job): \(.result) (needed: \(.needed))"),
+              (if all(.ok) then empty else error("a needed job did not succeed") end)'
