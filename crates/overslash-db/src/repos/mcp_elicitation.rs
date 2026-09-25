@@ -28,6 +28,17 @@ pub const STATUS_CLAIMED: &str = "claimed";
 pub const STATUS_COMPLETED: &str = "completed";
 pub const STATUS_FAILED: &str = "failed";
 pub const STATUS_CANCELLED: &str = "cancelled";
+/// Terminal for *this* row, but not for the dialog: the user picked
+/// "Allow & remember" and the originator should ask the scope + duration
+/// follow-up under the elicit id stored in `final_response.next_elicit_id`.
+pub const STATUS_FOLLOW_UP: &str = "follow_up";
+/// The follow-up ("remember") dialog was declined or dismissed. Ends like
+/// `cancelled` — the approval stays pending and the model gets the ordinary
+/// envelope — but is deliberately *not* `cancelled`: a follow-up is only ever
+/// shown after a human answered the first dialog, so it is no evidence that
+/// the client cannot answer dialogs and must not start the per-agent
+/// cooldown `cancelled_recently_for_agent` reads.
+pub const STATUS_WITHDRAWN: &str = "withdrawn";
 
 /// True when an elicitation row for `approval_id` is still active (pending
 /// or claimed). Used by `resolve_approval` to suppress auto-call: the
@@ -187,6 +198,47 @@ pub async fn fail(
     Ok(r.rows_affected())
 }
 
+/// Hand a claimed row over to its follow-up dialog. Gated on `claimed` for
+/// the same reason `complete` is gated on a live status: if the originator
+/// already timed out and cancelled, nobody is listening for a second dialog
+/// and the caller must retire the follow-up row it just opened.
+pub async fn follow_up(
+    pool: &PgPool,
+    elicit_id: &str,
+    next_elicit_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let r = sqlx::query!(
+        "UPDATE pending_mcp_elicitations
+            SET status = $2,
+                final_response = jsonb_build_object('next_elicit_id', $3::text),
+                completed_at = now()
+          WHERE elicit_id = $1 AND status = $4",
+        elicit_id,
+        STATUS_FOLLOW_UP,
+        next_elicit_id,
+        STATUS_CLAIMED,
+    )
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// Retire a live follow-up row as [`STATUS_WITHDRAWN`].
+pub async fn withdraw(pool: &PgPool, elicit_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE pending_mcp_elicitations
+            SET status = $2, completed_at = now()
+          WHERE elicit_id = $1 AND status IN ($3, $4)",
+        elicit_id,
+        STATUS_WITHDRAWN,
+        STATUS_PENDING,
+        STATUS_CLAIMED,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn cancel(pool: &PgPool, elicit_id: &str) -> Result<(), sqlx::Error> {
     // Cancellable from either `pending` (originator timeout / disconnect) or
     // `claimed` (receiver decided not to resolve, e.g. user clicked decline /
@@ -263,11 +315,13 @@ pub async fn cancel_orphaned(pool: &PgPool, older_than_secs: i64) -> Result<u64,
 pub async fn purge_terminal(pool: &PgPool, older_than_secs: i64) -> Result<u64, sqlx::Error> {
     let r = sqlx::query!(
         "DELETE FROM pending_mcp_elicitations
-          WHERE status IN ($1, $2, $3)
-            AND created_at < now() - make_interval(secs => $4)",
+          WHERE status IN ($1, $2, $3, $4, $5)
+            AND created_at < now() - make_interval(secs => $6)",
         STATUS_COMPLETED,
         STATUS_FAILED,
         STATUS_CANCELLED,
+        STATUS_FOLLOW_UP,
+        STATUS_WITHDRAWN,
         older_than_secs as f64,
     )
     .execute(pool)

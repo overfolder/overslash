@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE pending_mcp_elicitations\n            SET status = $2,\n                final_response = jsonb_build_object('next_elicit_id', $3::text),\n                completed_at = now()\n          WHERE elicit_id = $1 AND status = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ed771272de33c6784beff4f11a2ae58a0b7ede75f720e43047cbc2cba09abf69"
+}

@@ -653,14 +653,11 @@ async fn complete_from_elicitation_accept_allow_resolves_and_calls() {
     );
 }
 
-/// Regression: an MCP elicitation form that omits `remember_keys` (the
-/// flat schema the v1 form exposes) must still resolve `allow_remember`.
-/// Forwarding `remember_keys: []` to /resolve would return a 400 — instead
-/// we omit the field so the resolver falls back to `approval.permission_keys`
-/// and a permission rule is created.
-#[tokio::test]
-async fn complete_from_elicitation_allow_remember_without_keys_creates_rule() {
-    let fx = bootstrap_mcp(true).await;
+/// A real gated call (raw HTTP against a local echo server) that the agent
+/// cannot make yet, so `/resolve` + `/call` can run for real. Returns the
+/// approval id and the 202 `pending_approval` body, whose `suggested_tiers`
+/// is what the remember dialog offers.
+async fn gated_echo_approval(fx: &McpFixture) -> (Uuid, Value) {
     let binding = db::mcp_client_agent_binding::get_by_agent_identity(&fx.pool, fx.agent_id)
         .await
         .unwrap()
@@ -717,11 +714,299 @@ async fn complete_from_elicitation_allow_remember_without_keys_creates_rule() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 202);
-    let approval_id: Uuid = resp.json::<Value>().await.unwrap()["approval_id"]
-        .as_str()
+    let body: Value = resp.json().await.unwrap();
+    let approval_id = body["approval_id"].as_str().unwrap().parse().unwrap();
+    (approval_id, body)
+}
+
+/// Answer the decision dialog with "Allow & remember" and return the id of
+/// the follow-up (scope + duration) dialog it hands over to.
+async fn choose_allow_remember(
+    fx: &McpFixture,
+    state: &overslash_api::AppState,
+    approval_id: Uuid,
+) -> String {
+    let elicit_id = format!("elicit_{}", Uuid::new_v4());
+    db::mcp_elicitation::insert(
+        &fx.pool,
+        &elicit_id,
+        Uuid::new_v4(),
+        fx.agent_id,
+        approval_id,
+    )
+    .await
+    .unwrap();
+    mcp_session::complete_from_elicitation(
+        state,
+        &axum::http::Extensions::new(),
+        &elicit_id,
+        &json!({ "action": "accept", "content": { "decision": "allow_remember" } }),
+    )
+    .await
+    .expect("decision dialog answer");
+
+    let row = db::mcp_elicitation::get(&fx.pool, &elicit_id)
+        .await
         .unwrap()
-        .parse()
         .unwrap();
+    assert_eq!(
+        row.status,
+        db::mcp_elicitation::STATUS_FOLLOW_UP,
+        "row: {row:?}"
+    );
+    let next = row.final_response.unwrap()["next_elicit_id"]
+        .as_str()
+        .expect("follow_up row names its next dialog")
+        .to_string();
+    assert!(next.starts_with(mcp_session::REMEMBER_ID_PREFIX), "{next}");
+    next
+}
+
+async fn rules_for_agent(fx: &McpFixture) -> Vec<(String, Option<time::OffsetDateTime>)> {
+    sqlx::query(
+        "SELECT action_pattern, expires_at FROM permission_rules
+          WHERE identity_id = $1 ORDER BY action_pattern",
+    )
+    .bind(fx.agent_id)
+    .fetch_all(&fx.pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|r| (r.get("action_pattern"), r.get("expires_at")))
+    .collect()
+}
+
+/// Rules saved since `before` — bootstrap gives the agent some of its own.
+async fn new_rules(
+    fx: &McpFixture,
+    before: &[(String, Option<time::OffsetDateTime>)],
+) -> Vec<(String, Option<time::OffsetDateTime>)> {
+    rules_for_agent(fx)
+        .await
+        .into_iter()
+        .filter(|r| !before.contains(r))
+        .collect()
+}
+
+async fn approval_status(fx: &McpFixture, approval_id: Uuid) -> String {
+    sqlx::query("SELECT status FROM approvals WHERE id = $1")
+        .bind(approval_id)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap()
+        .get("status")
+}
+
+/// "Allow & remember" in the decision dialog must not resolve anything yet:
+/// it only opens the follow-up dialog, and the approval stays pending (and
+/// mid-elicitation, so auto-call stays suppressed) until that is answered.
+#[tokio::test]
+async fn allow_remember_opens_the_follow_up_dialog_without_resolving() {
+    let fx = bootstrap_mcp(true).await;
+    let (approval_id, _) = gated_echo_approval(&fx).await;
+    let state = build_state_for_session(&fx).await;
+    let before = rules_for_agent(&fx).await;
+
+    let next = choose_allow_remember(&fx, &state, approval_id).await;
+
+    assert_eq!(
+        status_of(&fx, &next).await.as_deref(),
+        Some(db::mcp_elicitation::STATUS_PENDING)
+    );
+    assert_eq!(approval_status(&fx, approval_id).await, "pending");
+    assert!(
+        db::mcp_elicitation::has_active_for_approval(&fx.pool, approval_id)
+            .await
+            .unwrap()
+    );
+    assert_eq!(rules_for_agent(&fx).await, before, "no rule may be saved");
+
+    // The originator's poll sees the hand-over.
+    match mcp_session::await_completion_with_timeout(
+        &state,
+        &axum::http::Extensions::new(),
+        &sqlx::query("SELECT elicit_id FROM pending_mcp_elicitations WHERE status = 'follow_up' AND approval_id = $1")
+            .bind(approval_id)
+            .fetch_one(&fx.pool)
+            .await
+            .unwrap()
+            .get::<String, _>("elicit_id"),
+        Duration::from_secs(2),
+    )
+    .await
+    {
+        mcp_session::ElicitOutcome::FollowUp(id) => assert_eq!(id, next),
+        other => panic!("expected FollowUp, got {other:?}"),
+    }
+}
+
+/// The granularity the dialog exists for: picking a broader tier and a
+/// duration remembers exactly that tier, expiring after that duration, and
+/// the gated call still runs.
+#[tokio::test]
+async fn remember_dialog_saves_the_picked_tier_with_its_ttl() {
+    let fx = bootstrap_mcp(true).await;
+    let (approval_id, pending) = gated_echo_approval(&fx).await;
+    let state = build_state_for_session(&fx).await;
+    let before = rules_for_agent(&fx).await;
+    let tiers = pending["suggested_tiers"].as_array().unwrap();
+    assert!(tiers.len() >= 2, "need a broader tier to pick: {pending}");
+    let broader: Vec<String> = serde_json::from_value(tiers[1]["keys"].clone()).unwrap();
+
+    let next = choose_allow_remember(&fx, &state, approval_id).await;
+    mcp_session::complete_from_elicitation(
+        &state,
+        &axum::http::Extensions::new(),
+        &next,
+        &json!({
+            "action": "accept",
+            "content": { "scope": serde_json::to_string(&broader).unwrap(), "ttl": "1h" }
+        }),
+    )
+    .await
+    .expect("remember dialog answer");
+
+    let row = db::mcp_elicitation::get(&fx.pool, &next)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.status,
+        db::mcp_elicitation::STATUS_COMPLETED,
+        "row: {row:?}"
+    );
+    assert_eq!(
+        row.final_response.unwrap()["execution"]["status"],
+        "executed"
+    );
+
+    let rules = new_rules(&fx, &before).await;
+    let mut patterns: Vec<String> = rules.iter().map(|(p, _)| p.clone()).collect();
+    patterns.sort();
+    let mut want = broader.clone();
+    want.sort();
+    assert_eq!(patterns, want);
+    let in_an_hour = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    for (pattern, expires) in rules {
+        let expires = expires.unwrap_or_else(|| panic!("{pattern} should expire"));
+        assert!(
+            (expires - in_an_hour).abs() < time::Duration::minutes(2),
+            "{pattern} expires at {expires}, want ≈ {in_an_hour}"
+        );
+    }
+}
+
+/// No scope picked (a client that skips defaults) remembers the approval's
+/// own keys — the narrowest rule — with no expiry.
+#[tokio::test]
+async fn remember_dialog_without_scope_saves_the_exact_keys() {
+    let fx = bootstrap_mcp(true).await;
+    let (approval_id, _) = gated_echo_approval(&fx).await;
+    let state = build_state_for_session(&fx).await;
+    let before = rules_for_agent(&fx).await;
+
+    let next = choose_allow_remember(&fx, &state, approval_id).await;
+    mcp_session::complete_from_elicitation(
+        &state,
+        &axum::http::Extensions::new(),
+        &next,
+        &json!({ "action": "accept", "content": {} }),
+    )
+    .await
+    .expect("remember dialog answer");
+
+    assert_eq!(
+        status_of(&fx, &next).await.as_deref(),
+        Some(db::mcp_elicitation::STATUS_COMPLETED)
+    );
+    let rules = new_rules(&fx, &before).await;
+    assert!(!rules.is_empty(), "expected a remembered rule");
+    assert!(rules.iter().all(|(_, e)| e.is_none()), "{rules:?}");
+}
+
+/// Declining the follow-up is backing out of the details after saying
+/// "allow" — not a denial. The approval stays pending for the URL fallback.
+#[tokio::test]
+async fn declining_the_remember_dialog_leaves_the_approval_pending() {
+    let fx = bootstrap_mcp(true).await;
+    let (approval_id, _) = gated_echo_approval(&fx).await;
+    let state = build_state_for_session(&fx).await;
+    let before = rules_for_agent(&fx).await;
+
+    let next = choose_allow_remember(&fx, &state, approval_id).await;
+    mcp_session::complete_from_elicitation(
+        &state,
+        &axum::http::Extensions::new(),
+        &next,
+        &json!({ "action": "decline" }),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        status_of(&fx, &next).await.as_deref(),
+        Some(db::mcp_elicitation::STATUS_WITHDRAWN)
+    );
+    assert_eq!(approval_status(&fx, approval_id).await, "pending");
+    // A human answered both dialogs, so the client plainly can render them:
+    // backing out must not suppress the next dialog for this agent.
+    assert!(
+        !db::mcp_elicitation::cancelled_recently_for_agent(&fx.pool, fx.agent_id, 120)
+            .await
+            .unwrap(),
+        "declining the remember dialog must not start the cancel cooldown"
+    );
+    assert!(
+        matches!(
+            mcp_session::await_completion_with_timeout(
+                &state,
+                &axum::http::Extensions::new(),
+                &next,
+                Duration::from_secs(2),
+            )
+            .await,
+            mcp_session::ElicitOutcome::Abandoned
+        ),
+        "the originator must fall back to the pending envelope"
+    );
+    assert_eq!(rules_for_agent(&fx).await, before, "no rule may be saved");
+}
+
+/// The scope value is client-supplied. A key that neither is a suggested
+/// tier nor covers the request must be refused by `/resolve`, not saved.
+#[tokio::test]
+async fn remember_dialog_refuses_a_forged_scope() {
+    let fx = bootstrap_mcp(true).await;
+    let (approval_id, _) = gated_echo_approval(&fx).await;
+    let state = build_state_for_session(&fx).await;
+    let before = rules_for_agent(&fx).await;
+
+    let next = choose_allow_remember(&fx, &state, approval_id).await;
+    mcp_session::complete_from_elicitation(
+        &state,
+        &axum::http::Extensions::new(),
+        &next,
+        &json!({ "action": "accept", "content": { "scope": r#"["http:ANY:evil.example/**"]"# } }),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        status_of(&fx, &next).await.as_deref(),
+        Some(db::mcp_elicitation::STATUS_FAILED)
+    );
+    assert_eq!(approval_status(&fx, approval_id).await, "pending");
+    assert_eq!(rules_for_agent(&fx).await, before, "no rule may be saved");
+}
+
+/// If the originator already gave up on the decision dialog, nobody will
+/// render the follow-up, so the hand-over must not happen: `follow_up` only
+/// moves a row that is still `claimed`, and returning 0 is what tells the
+/// receiver to retire the follow-up row it just opened.
+#[tokio::test]
+async fn follow_up_refuses_a_row_the_originator_cancelled() {
+    let fx = bootstrap_mcp(true).await;
+    let approval_id = seed_pending_approval(&fx).await;
 
     let elicit_id = format!("elicit_{}", Uuid::new_v4());
     db::mcp_elicitation::insert(
@@ -733,42 +1018,26 @@ async fn complete_from_elicitation_allow_remember_without_keys_creates_rule() {
     )
     .await
     .unwrap();
-
-    let state = build_state_for_session(&fx).await;
-    // No `remember_keys` in content — the v1 elicitation schema doesn't
-    // expose per-key checkboxes. Must still succeed.
-    mcp_session::complete_from_elicitation(
-        &state,
-        &axum::http::Extensions::new(),
-        &elicit_id,
-        &json!({
-            "action": "accept",
-            "content": { "decision": "allow_remember", "ttl": "forever" }
-        }),
-    )
-    .await
-    .expect("allow_remember without remember_keys must not fail");
-
-    let row = db::mcp_elicitation::get(&fx.pool, &elicit_id)
+    // Receiver claimed; then the originator's timeout cancelled underneath.
+    db::mcp_elicitation::claim(&fx.pool, &elicit_id)
         .await
         .unwrap()
+        .expect("claim");
+    db::mcp_elicitation::cancel(&fx.pool, &elicit_id)
+        .await
         .unwrap();
-    assert_eq!(
-        row.status,
-        db::mcp_elicitation::STATUS_COMPLETED,
-        "row: {row:?}"
-    );
 
-    // A permission rule should now exist for this identity (the resolver
-    // fell back to approval.permission_keys when remember_keys was omitted).
-    let count: i64 =
-        sqlx::query("SELECT count(*) AS n FROM permission_rules WHERE identity_id = $1")
-            .bind(fx.agent_id)
-            .fetch_one(&fx.pool)
+    let next = format!("{}{}", mcp_session::REMEMBER_ID_PREFIX, Uuid::new_v4());
+    assert_eq!(
+        db::mcp_elicitation::follow_up(&fx.pool, &elicit_id, &next)
             .await
-            .unwrap()
-            .get("n");
-    assert!(count >= 1, "expected at least one permission rule");
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        status_of(&fx, &elicit_id).await.as_deref(),
+        Some(db::mcp_elicitation::STATUS_CANCELLED)
+    );
 }
 
 /// Multi-client-per-agent regression: when one binding has elicitation
