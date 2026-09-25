@@ -1,6 +1,6 @@
 # MCP Elicitation as Approval Surface
 
-**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode is available client-side: Codex 0.157.0 offers it on `2025-06-18` (no work needed), Claude Code 2.1.282 only on `2026-07-28` (needs a protocol bump). Headless Codex auto-declines, which D95 reads as a real denial — see the probed Codex section.
+**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode is available client-side: Codex 0.157.0 offers it on `2025-06-18` (no work needed), Claude Code 2.1.282 only on `2026-07-28` (needs a protocol bump). Codex works interactively; **headless** Codex auto-declines, which D95 reads as a real denial — see the probed Codex section.
 **Date:** 2026-04-24, revised 2026-09-22 and 2026-09-25
 **Related:** [`overslash.md`](overslash.md), [`mcp-integration.md`](mcp-integration.md), [`mcp-oauth-transport.md`](mcp-oauth-transport.md), [`agent-self-management.md`](agent-self-management.md)
 
@@ -177,7 +177,8 @@ capabilities = { "experimental": { "codex/auth-change": {} },
 |---|---|---|
 | `elicitation/create` form mode | **Declared and reached.** The server's `elicitation/create` arrives. | Probe: `sending elicitation/create mode=form` |
 | URL mode | **Declared and reached — on `2025-06-18`.** Forcing `mode: "url"` is *accepted*, not rejected: no `-32602`, the request goes through and comes back with an answer. | Probe with `--elicit-mode url`; contrast Claude Code, which needs `2026-07-28` for this |
-| Answer in headless (`codex exec`) | **Auto-`decline`, ~1–2 ms.** Both modes. Not `cancel` — `decline`. | Probe: `elicit_form result: action=decline` at `12:00:09.222`, request sent `12:00:09.220` |
+| Answer in **interactive** (`codex`) | **Works.** The form dialog renders and the answer reaches the server. | Verified by the maintainer at a real terminal, 2026-09-25 |
+| Answer in **headless** (`codex exec`) | **Auto-`decline`, ~1–2 ms.** Both modes. Not `cancel` — `decline`. | Probe: `elicit_form result: action=decline` at `12:00:09.222`, request sent `12:00:09.220` |
 | Codex's own MCP approval gate | Blocks the `tools/call` *before* the server is reached unless approvals are relaxed — `"MCP tool call requires approval, but approval policy is never"`. `codex exec` defaults to `never`. | Probe, first two runs |
 | Feature flags | `tool_call_mcp_elicitation` **stable, true**. `mcp_2026_07_28` and `codex_apps_mcp_2026_07_28` both **under development, false**. | `codex features list` |
 | Tasks augmentation | Not declared. | – |
@@ -192,8 +193,14 @@ Claude Code**, not what unblocks it at all. For Codex there is nothing in the wa
 
 **Headless Codex auto-declines, and `decline` is the one negative D95 treats as a real denial.**
 This is [openai/codex#45621](https://github.com/openai/codex/issues/45621) measured rather than
-cited: the app-server answers `elicitation/create` itself instead of forwarding it. The answer
-it picks is `decline`, in about a millisecond, in both modes.
+cited: under `codex exec` the app-server answers `elicitation/create` itself instead of
+forwarding it. The answer it picks is `decline`, in about a millisecond, in both modes.
+
+**It is headless-only.** Interactive Codex renders the dialog and round-trips the answer — an
+earlier draft of this section inferred from #45621's wording ("the app-server", which backs both
+surfaces) that interactive would be affected too, and that inference was wrong. Form-mode
+elicitation on interactive Codex works today. The rest of this section is about `codex exec` and
+anything else driving Codex non-interactively.
 
 That is precisely the failure D95 removed for headless Claude Code, reintroduced through the
 other client — and the D95 fix does not reach it. Claude Code's headless path answers `cancel`,
@@ -204,18 +211,21 @@ the guarantee that makes `decline` meaningful.
 
 So the practical position for a Codex-connected agent today:
 
-- Nothing needs enabling. D95's gate is `capabilities.get("elicitation").is_some()`, which is
-  shape-agnostic, so `{ form: {}, url: {} }` satisfies it exactly as `{}` does. Codex agents
-  already default to elicitation on.
-- That default is currently **unsafe for headless Codex**: every gated call is silently denied.
-  Interactive Codex was not probed (no TTY in the dev environment) and may well forward the
-  dialog properly; #45621 describes the app-server, which backs both, so this needs measuring
-  before anyone relies on the distinction.
-- The options, none of them taken here: suppress elicitation for `codex-mcp-client` until
-  #45621 closes (there is precedent for client-specific handling — `dispatch.rs` carries a
-  claude.ai argument-stringification workaround — but D95 deliberately has no client sniffing in
-  the eligibility path); leave it on and rely on the per-agent opt-out; or wait for the fix.
-  Whoever picks this up should re-probe first, since a point release could close it.
+- **Nothing needs enabling, and interactive Codex works.** D95's gate is
+  `capabilities.get("elicitation").is_some()`, which is shape-agnostic, so
+  `{ form: {}, url: {} }` satisfies it exactly as `{}` does. Codex agents already default to
+  elicitation on, and for a human at a terminal that default is correct.
+- **The hazard is headless Codex only**, and it is narrow but real: every gated call is silently
+  denied, with no fallback to the approval URL.
+- **Suppressing elicitation for `codex-mcp-client` would be the wrong fix.** It would disable a
+  working feature for every interactive user to protect the headless case, and Overslash cannot
+  tell the two apart at `initialize` — the capability object and `clientInfo` are identical.
+  (There is precedent for client-specific handling — `dispatch.rs` carries a claude.ai
+  argument-stringification workaround — but it would not help here even if D95's eligibility path
+  were willing to sniff, which it deliberately is not.)
+- **What is left is the per-agent opt-out and waiting for the fix.** An operator running Codex
+  headlessly against Overslash should turn elicitation off for that agent; anyone else should
+  leave it on. Re-probe before acting on any of this, since a point release could close #45621.
 
 ### What about OpenClaw / `mcp2cli`-style bridges?
 

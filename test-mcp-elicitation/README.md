@@ -149,11 +149,13 @@ codex mcp remove test-elicit          # it is a *global* config entry — clean 
 
 As of 0.157.0 (probed 2026-09-25) Codex declares
 `elicitation: { form: {}, url: {} }` on protocol `2025-06-18` — both modes, no
-era gate, unlike Claude Code. Headless it then answers **`decline`** in ~1–2 ms
-for both modes (openai/codex#45621), which is *not* the same as Claude Code's
-`cancel` and matters a great deal downstream: see the design doc.
+era gate, unlike Claude Code.
 
-Interactive Codex is unprobed — no TTY in the dev environment.
+**Interactive Codex works**: the form dialog renders and the answer round-trips.
+**Headless `codex exec` does not**: it answers `decline` in ~1–2 ms for both
+modes (openai/codex#45621). That is *not* the same as Claude Code's headless
+`cancel`, and the difference matters a great deal downstream — see the design
+doc. Measure both surfaces; they disagree.
 
 ## Notes / known limits
 
