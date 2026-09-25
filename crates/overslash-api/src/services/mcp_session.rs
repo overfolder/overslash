@@ -283,10 +283,18 @@ pub async fn complete_from_elicitation(
             row.approval_id,
         )
         .await?;
-        if repo::follow_up(state.db(ext), elicit_id, &next_id).await? == 0 {
+        match repo::follow_up(state.db(ext), elicit_id, &next_id).await {
             // The originator already gave up on this row; nobody will
             // render the follow-up.
-            repo::cancel(state.db(ext), &next_id).await?;
+            Ok(0) => repo::cancel(state.db(ext), &next_id).await?,
+            Ok(_) => {}
+            Err(e) => {
+                // Our caller retires `elicit_id` on an `Err`, but it does not
+                // know about `next_id`: retire it here, or it would sit
+                // `pending` suppressing auto-call until the sweeper reaps it.
+                let _ = repo::cancel(state.db(ext), &next_id).await;
+                return Err(e.into());
+            }
         }
         return Ok(());
     }
